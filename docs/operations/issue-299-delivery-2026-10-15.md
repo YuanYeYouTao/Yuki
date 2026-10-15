@@ -241,3 +241,59 @@ Social person 目标支持显式 binding_id，按原 Provider 能力与目标授
 App 补充后 QQ 原合同保持。相关核心、Social、Work 与部署合同回归 59 passed／14 skipped，
 跳过均为未构建可选 Monty worker。ruff、两平台目标 mypy（598 source files）与 diff
 检查通过。未运行真实外部模型／QQ，也未重启或部署生产服务。
+
+## P11：参考客户端、独立进程与完整接续验收
+
+主包加入 HTTP-only `client_sdk.PersonalClient`、客户端 SQLite outbox 与 `yuki client`
+入口（保留 `qq-ai-bot-cli client`）。请求 UUID、目标、正文和附件引用先持久化再派发；
+记录 draft／submitted／accepted／result，传输未知时查询原请求并核对完整指纹。
+同服务器／Person 的设备共享原请求；另一 Person 不派发旧 outbox。凭据不保存到 outbox。
+服务端原请求查询补充授权后的操作指纹、失败原状态与原 Social 成功结果事件 ID，
+客户端不凭提示或其他消息猜测结果。SSE 重连重建各入口和 Work 投影。
+
+实际测试使用回环 HTTP 服务与独立 CLI 进程；不是直接调用服务替代客户端：
+
+- 两设备：草稿落盘后由新进程提交，同 UUID 跨设备重放，上传后发送附件、下载原版本，
+  撤销其中一台后另一台继续访问。
+- 丢弃最终 SSE 提示：旧连接结束，客户端始终在前台自动重连并核对 sync。
+- 服务器真实进程重启：故意禁止提交后提示，等待原结果与 Work 完成，再终止进程；
+  新进程沿原数据库，客户端读回原事件、同一 Work，不重复发送或执行。
+- App、QQ 私聊和 QQ 群三类 Work：A 交办／等待，B 经 HTTP 读卡片并补充；原 mailbox
+  原子接纳。重建运行时后取走补充并真实调用原工具，沿原分段预算自然 yield；再重建
+  运行时后继续，完成并发送 artifact。两端读到原 Work、累计预算和原文件版本。
+  另核效果回执的 manifest revision 与原入口一致，私聊与群结果留在原会话。
+
+验收发现并修复：工具证据写入和 Work 恢复配置读取中的 QQ 假定，App 效果回执的入口
+revision 标注，App 本会话普通回答的等待匹配，以及显式 person 目标缺少 binding_id 时
+返回候选而不猜入口。UUID5 的既有工作区快照也可按原授权下载；没有放宽文件归属或版本。
+
+| 场景 | 当前证据入口 |
+| --- | --- |
+| C01–C04、C20、C21、C25 | `test_app_messages.py`、`test_client_sdk.py`、`test_social_delivery_integrity.py` 与进程外 CLI |
+| C05–C08、C32、C37、C47 | `test_client_works.py`、`test_work_source_guard.py` 与三类 Work 的双冷恢复／原文件下载 |
+| C09、C12、C22 | `test_client_views.py` 与 `test_client_continuation.py` 的真实 SSE、服务器进程重启 |
+| C10、C11、C23 | `test_client_files.py`、`test_client_sdk.py`、独立 CLI 上传／原版本下载 |
+| C13、C14、C24、C31 | `test_client_api.py`、`test_client_identity.py` 与进程外两设备撤销 |
+| C15、C16 | P3 源码／构建记录与 `test_admin_api.py` 的旧入口、插件及 CLI 合同 |
+| C26、C27、C29、C36 | `test_private_binding_conversations.py`、`test_migration_0120.py` 与现行 canonical／恢复回归 |
+| C28、C30、C38 | canonical 入场、管理绑定、`test_client_link.py`、转移与原来源恢复测试 |
+| C33–C35 | `test_personal_entry_contract.py`：QQ／模拟 Telegram 读取、不可信标记、只读、两套声明、显式发送与 unknown 不重发 |
+| C45、C46、C48–C50 | `test_binding_ownership_privacy.py`、`test_rebuild_privacy_preparation.py`、P5 绑定区间与连续遗忘／重建回归 |
+
+矩阵中的 Telegram 是测试内构造的绑定和账本，不代表实现或联调了 Telegram Provider。
+真实 QQ、付费模型／ASR、生产迁移副本、部署及自然流量验收未执行。C17–C19、C39、
+C40–C44 按原任务书留给 ACP、个人 UI 和设备执行器阶段。本记录不修改历史任务书。
+
+验证记录：首轮隔离 Linux 全量 1823 passed、67 skipped；补齐上述边界与专项后，
+最终版本的 177 个测试文件分四个隔离 pytest 进程完整复验，合计 **1832 passed、67 skipped**，
+四组均以 0 退出。63 个跳过项需要未构建的可选 Monty worker，4 个需要 PowerShell；
+未移除断言或新增跳过。参考客户端的 6 个集成场景及 SDK／Work／入口／文件的
+45 个专项均通过。ruff、macOS／Linux 目标 mypy（602 source files）、
+`yuki client --help` 和 diff 检查通过。
+
+全量复验运行在本地隔离 Linux 容器，以 Python 3.12、`uv sync --frozen --all-extras`
+安装锁定依赖；不挂载生产数据、设备凭据或 Docker socket。上述结果是本地验证，
+不是远端 CI、生产迁移或上线结果。
+
+P1–P11 的本地实现与本阶段验收完成，交付分支为 `codex/issue-299-implementation`。
+保留任务书中明确后置的 ACP、个人 UI、设备执行器及生产验收范围；未合并、未部署。

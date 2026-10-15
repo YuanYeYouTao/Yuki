@@ -249,6 +249,7 @@ class TurnExecution:
             self.runtime = replace(
                 self.runtime,
                 script_api=manifest.app_script_api if entry == "app" else manifest.script_api,
+                manifest_revision=manifest.app_revision if entry == "app" else manifest.revision,
             )
             if not self.runtime.dynamic_context_prepared:
                 raise LLMError("main_agent_composition_required")
@@ -263,6 +264,7 @@ class TurnExecution:
                 self.initial_messages,
                 self.state.fixed_definitions,
                 script_api=self.runtime.script_api,
+                manifest_revision=self.runtime.manifest_revision,
             )
             self.runtime.work_control.session = WorkSession(self.runtime.work_control, contract)
             public_count = (
@@ -388,6 +390,7 @@ class TurnExecution:
             self.initial_messages,
             self.state.fixed_definitions,
             script_api=self.runtime.script_api,
+            manifest_revision=self.runtime.manifest_revision,
         )
         if saved["main_contract"] != contract:
             from qq_ai_bot.runtime.work_repository import WorkConflict
@@ -1131,6 +1134,7 @@ class TurnExecution:
             self.initial_messages,
             self.state.fixed_definitions,
             script_api=self.runtime.script_api,
+            manifest_revision=self.runtime.manifest_revision,
         )
         self.state.transcript = plan.transcript
 

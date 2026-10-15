@@ -566,7 +566,14 @@ def main() -> None:
     from qq_ai_bot.admin_api.cli import add_admin_parser
 
     add_admin_parser(subparsers)
+    from qq_ai_bot.client_sdk.cli import add_client_parser
+
+    add_client_parser(subparsers)
     args = parser.parse_args()
+    if args.command == "client":
+        from qq_ai_bot.client_sdk.cli import run_client_command
+
+        raise SystemExit(run_client_command(args))
     if args.command == "setup":
         raise SystemExit(run_setup_command(args))
     if args.command == "gateway":

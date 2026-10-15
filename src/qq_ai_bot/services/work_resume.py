@@ -271,7 +271,7 @@ class WorkResumer:
                 if control.current is None or control.current["id"] != item["id"]:
                     raise WorkConflict("work_schedule_target_changed")
                 runtime = await self.services.runtime_config.snapshot(
-                    user_id=recovered.actor_user_id or None,
+                    user_id=recovered.actor_person_id,
                     group_id=recovered.external_target_id if recovered.target_space_id else None,
                 )
                 from qq_ai_bot.automation.gateway import OneBotAutomationGateway
@@ -398,7 +398,7 @@ class WorkResumer:
                 if control.current is None or control.current["id"] != item["id"]:
                     raise WorkConflict("work_schedule_target_changed")
                 runtime = await self.services.runtime_config.snapshot(
-                    user_id=recovered.actor_user_id, group_id=original.group_id
+                    user_id=recovered.actor_person_id, group_id=original.group_id
                 )
                 inbound = recovered.inbound(original, legacy_conversation_key=key)
                 result = await self.services.generate_wakeup(
@@ -420,8 +420,8 @@ class WorkResumer:
                         inbound=inbound,
                         gateway=None,
                         allow_generic_onebot=False,
-                        actor_is_superuser=recovered.actor_user_id
-                        in self.services.settings.superusers,
+                        actor_is_superuser=recovered.platform == "qq"
+                        and recovered.actor_user_id in self.services.settings.superusers,
                         conversation_key=key,
                         trigger_message_id=original.platform_message_id,
                         execution_id=item["id"],

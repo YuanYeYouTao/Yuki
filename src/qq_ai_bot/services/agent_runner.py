@@ -126,6 +126,7 @@ class AgentRuntime:
     source_event_id: int | None = None
     fixed_tools: tuple[ChatTool, ...] | None = None
     script_api: ScriptApi | None = None
+    manifest_revision: str = ""
     invocation_source: dict[str, Any] | None = None
     invocation_goal: str | None = None
     visible_event_ids: frozenset[int] = frozenset()
@@ -216,6 +217,7 @@ class AgentRunner:
         definitions: tuple[ChatTool, ...] | None,
         *,
         script_api: ScriptApi | None = None,
+        manifest_revision: str = "",
     ) -> str:
         return hashlib.sha256(
             json.dumps(
@@ -224,9 +226,8 @@ class AgentRunner:
                     repr(definitions),
                     script_api.manifest_revision
                     if script_api is not None
-                    else self.main_contract.revision
-                    if self.main_contract is not None
-                    else "",
+                    else manifest_revision
+                    or (self.main_contract.revision if self.main_contract is not None else ""),
                     asdict(runtime.llm),
                     asdict(runtime.web),
                     self._models.profile_revision(self._task),
@@ -623,9 +624,7 @@ class AgentRunner:
         control = runtime.work_control
         assert control is not None
         api = runtime.script_api or (
-            self.main_contract.script_api
-            if self.main_contract is not None
-            else None
+            self.main_contract.script_api if self.main_contract is not None else None
         )
         settings = self.code_mode_settings
         if tools is None:
@@ -928,9 +927,7 @@ class AgentRunner:
                 )
             elif call.function.name == TOOL_LOOKUP_NAME:
                 api = runtime.script_api or (
-                    self.main_contract.script_api
-                    if self.main_contract is not None
-                    else None
+                    self.main_contract.script_api if self.main_contract is not None else None
                 )
                 metadata_results[call.id] = (
                     lookup_tools(api, call.function.arguments, declared_names=declared_names)
@@ -1026,9 +1023,8 @@ class AgentRunner:
             manifest_revision=(
                 runtime.script_api.manifest_revision
                 if runtime.script_api is not None
-                else self.main_contract.revision
-                if self.main_contract
-                else ""
+                else runtime.manifest_revision
+                or (self.main_contract.revision if self.main_contract else "")
             ),
         )
         unique_results = {call.id: result for call, result, _executed in coordinated.calls}

@@ -612,3 +612,98 @@ async def test_completion_between_preparation_and_writer_creates_no_input(
     async with database.sessions() as session:
         assert await session.scalar(select(func.count(inputs.c.id))) == 0
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
+
+
+@pytest.mark.parametrize("completion_first", [False, True])
+async def test_group_cancel_and_completion_preserve_original_winner(
+    app_env, database, completion_first
+):
+    from qq_ai_bot.runtime.work_repository import WorkConflict
+
+    env = app_env
+    device, _ = await owner(env, database)
+    original = await seeded(env, database, group=True, retain_lease=True)
+    try:
+        if completion_first:
+            async with database.immediate_session() as session:
+                await original.repository.commit_state(
+                    session,
+                    original.lease,
+                    original.row["id"],
+                    "completed",
+                    revision=original.row["revision"],
+                )
+        cancelled = await env.client.post(
+            f"/client/v1/works/{original.row['id']}/cancel",
+            json={"request_id": str(uuid4()), "expected_revision": original.row["revision"]},
+            headers=bearer(device["token"]),
+        )
+        if completion_first:
+            assert (
+                cancelled.status_code == 409
+                and cancelled.json()["problem"]["code"] == "version_conflict"
+            )
+            assert (await original.repository.get(original.row["id"]))["state"] == "completed"
+        else:
+            assert cancelled.status_code == 200
+            with pytest.raises(WorkConflict):
+                async with database.immediate_session() as session:
+                    await original.repository.commit_state(
+                        session,
+                        original.lease,
+                        original.row["id"],
+                        "completed",
+                        revision=original.row["revision"],
+                    )
+            assert (await original.repository.get(original.row["id"]))["state"] == "cancelled"
+    finally:
+        await original.repository.release(original.lease)
+
+
+async def test_plain_app_reply_matches_own_waiting_entry_without_borrowing_qq_wait(
+    app_env, database
+):
+    from tests.unit.test_app_messages import drain
+
+    env = app_env
+    device, person = await owner(env, database)
+    qq = await seeded(env, database, state="waiting_user")
+    started = await env.client.post(
+        "/client/v1/messages",
+        json={"request_id": str(uuid4()), "text": "start the App task"},
+        headers=bearer(device["token"]),
+    )
+    await drain(env)
+    app_conversation = started.json()["data"]["conversation_id"]
+    lease = await qq.repository.acquire(app_conversation, 1)
+    app_work = await qq.repository.accept(
+        lease,
+        source_key="original-app-wait",
+        source={
+            "actor_person_id": person,
+            "origin": "user_message",
+            "trigger_event_id": started.json()["data"]["event_id"],
+        },
+        goal="continue here",
+    )
+    await qq.repository.transition(lease, app_work["id"], app_work["revision"], "waiting_user")
+    await qq.repository.release(lease)
+    before = len(env.calls)
+    answered = await env.client.post(
+        "/client/v1/messages",
+        json={"request_id": str(uuid4()), "text": "the actual App answer"},
+        headers=bearer(device["token"]),
+    )
+    assert answered.status_code == 200, answered.text
+    await drain(env)
+    assert len(env.calls) == before
+    assert (await qq.repository.get(app_work["id"]))["state"] == "queued"
+    assert await qq.repository.get(qq.row["id"]) == qq.row
+    async with database.sessions() as session:
+        item = (
+            (await session.execute(select(inputs).where(inputs.c.work_id == app_work["id"])))
+            .mappings()
+            .one()
+        )
+        assert item["ready"] and item["event_id"] == answered.json()["data"]["event_id"]
+        assert "the actual App answer" in json.loads(item["payload_json"])["text"]

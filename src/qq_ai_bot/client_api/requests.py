@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.client_api.db_models import ClientDeviceModel
 from qq_ai_bot.client_api.errors import ClientError
-from qq_ai_bot.client_api.identity import ClientIdentityService, ClientPrincipal
+from qq_ai_bot.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalEventReceiptModel,
     ControlCommandReceiptModel,
@@ -67,6 +67,7 @@ class ClientRequests:
             or event.author_person_id != principal.person_id
             or event.canonical_conversation_id != principal.conversation_id
             or event.direction != "inbound"
+            or event.suppression_status != "keeper"
         ):
             raise ClientError("not_found")
         return event
@@ -95,6 +96,13 @@ class ClientRequests:
                             request_id,
                             command.payload_hash,
                         )
+                problem = None
+                if command.problem_code:
+                    from qq_ai_bot.persistence.models import AdminOperationEventModel
+
+                    audit = await session.get(AdminOperationEventModel, command.audit_id)
+                    assert audit is not None
+                    problem = {"code": command.problem_code, **json.loads(audit.after_json)}
                 return {
                     "found": True,
                     "operation_kind": command.operation_kind,
@@ -102,15 +110,59 @@ class ClientRequests:
                     "status": command.status,
                     "result": result,
                     "problem_code": command.problem_code,
+                    "payload_hash": command.payload_hash,
+                    "problem": problem,
                 }
             event = await self.message(session, principal, request_id)
             if event is None:
                 return {"found": False}
             if event.origin == "work_input":
                 raise ClientError("not_found")
+            from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+            from qq_ai_bot.social.db_models import SocialOperationModel
+
+            result_ids = list(
+                await session.scalars(
+                    select(ChatEventModel.id)
+                    .join(SocialOperationModel, SocialOperationModel.event_id == ChatEventModel.id)
+                    .join(
+                        CanonicalConversationModel,
+                        CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
+                    )
+                    .where(
+                        SocialOperationModel.source_conversation_id == principal.conversation_id,
+                        SocialOperationModel.source_turn_id.in_(
+                            (
+                                f"{principal.conversation_id}:event:{event.id}",
+                                f"app:{principal.binding_id}:{request_id}",
+                            )
+                        ),
+                        SocialOperationModel.status == "succeeded",
+                        ChatEventModel.direction == "outbound",
+                        ChatEventModel.suppression_status == "keeper",
+                        CanonicalConversationModel.kind == "private",
+                        CanonicalConversationModel.person_id == principal.person_id,
+                    )
+                    .order_by(ChatEventModel.id)
+                )
+            )
             return {
                 "found": True,
                 "operation_kind": "message",
                 "event_id": event.id,
                 "conversation_id": event.canonical_conversation_id,
+                "result_event_ids": result_ids,
+                "target": principal.conversation_id,
+                "payload_hash": fingerprint(
+                    "message",
+                    principal.conversation_id,
+                    {
+                        "text": json.loads(event.segments_json)[0]["data"]["text"],
+                        "attachments": [
+                            part["data"]["media_id"]
+                            for part in json.loads(event.segments_json)
+                            if part.get("data", {}).get("media_id")
+                        ],
+                    },
+                ),
             }

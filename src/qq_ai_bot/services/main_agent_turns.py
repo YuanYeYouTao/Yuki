@@ -77,6 +77,7 @@ class MainAgentTurnService:
             self._composer.static_messages(),
             await contract.model_definitions(entry),
             script_api=contract.app_script_api if entry == "app" else contract.script_api,
+            manifest_revision=contract.app_revision if entry == "app" else contract.revision,
         )
 
     async def compose(

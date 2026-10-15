@@ -36,6 +36,7 @@ dev = [
 ]
 
 [project.scripts]
+yuki = "qq_ai_bot.cli:main"
 qq-ai-bot = "qq_ai_bot.main:run"
 qq-ai-bot-cli = "qq_ai_bot.cli:main"
 

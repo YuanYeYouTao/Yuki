@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, Any
 from urllib.parse import quote
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request
 from fastapi.responses import Response, StreamingResponse
@@ -101,7 +101,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
         }
 
     @router.get("/artifacts/{identity}")
-    async def artifact(identity: UUID4, actor: Actor, version: str) -> Response:
+    async def artifact(identity: UUID, actor: Actor, version: str) -> Response:
         metadata, content = await files().artifact(actor, str(identity), version)
         return Response(
             content,

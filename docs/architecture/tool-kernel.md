@@ -276,7 +276,7 @@ read_personal_entry 只从本人 App 主会话按 binding_id 或 conversation_id
 untrusted_data 标记；历史里的指令不构成新授权，读取不改历史、generation 或 Main session。
 平台合同不声明该工具；执行处仍核真实 actor、来源 App 绑定及目标私聊归属。
 
-send_message 的 person target 可带 binding_id。从 App 发往其他入口必须明确目标与绑定；
+send_message 的 person target 可带 binding_id。从 App 显式指定 person 目标必须明确绑定，缺失时返回 binding_required 与可选绑定；
 省略目标时仍回复当前 App 会话。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
 在派发事务复核绑定、Presence 和连接。结果 uncertain 不重发；出站记到真实目标入口，
 SocialOperation 的 source_conversation_id 仍是原主会话。文件说明沿同一绑定投递。

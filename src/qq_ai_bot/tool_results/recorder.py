@@ -116,9 +116,7 @@ class ToolInvocationRepository:
             or not execution_id
             or not execution_id.strip()
         ):
-            raise ValueError(
-                "SELF receipt requires an actorless source and call identity"
-            )
+            raise ValueError("SELF receipt requires an actorless source and call identity")
         if any(len(value) > 255 for value in (tool_call_id, execution_id) if value):
             raise ValueError("tool call identity exceeds storage bounds")
         if audit_source is not None and canonical_conversation_id != audit_source[0]:
@@ -284,6 +282,7 @@ class ToolInvocationRepository:
                         .where(
                             ChatEventModel.id == event.id,
                             ChatEventModel.canonical_event_id == event.canonical_event_id,
+                            ChatEventModel.ingress_presence_id == event.ingress_presence_id,
                             ChatEventModel.author_person_id == event.author_person_id,
                             ChatEventModel.canonical_conversation_id
                             == event.canonical_conversation_id,
@@ -327,14 +326,20 @@ class ToolInvocationRepository:
                             .where(
                                 owner_column == owner_id,
                                 external_column == external,
-                                binding.platform == "qq",
+                                binding.platform
+                                == select(PresenceModel.platform)
+                                .where(PresenceModel.id == event.ingress_presence_id)
+                                .scalar_subquery(),
                                 binding.status == "active",
                             )
                             .exists(),
                             select(func.count(func.distinct(owner_column)))
                             .where(
                                 external_column == external,
-                                binding.platform == "qq",
+                                binding.platform
+                                == select(PresenceModel.platform)
+                                .where(PresenceModel.id == event.ingress_presence_id)
+                                .scalar_subquery(),
                                 binding.status == "active",
                             )
                             .scalar_subquery()

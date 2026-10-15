@@ -110,6 +110,7 @@ async def app_env(database, admin, tmp_path):
     ) as client:
         yield SimpleNamespace(
             client=client,
+            app=app,
             gateway=gateway,
             harness=harness,
             calls=calls,

@@ -15,7 +15,7 @@
 | `GET /me` | 设备 Bearer；本人的 Person、App 会话、绑定与设备列表 |
 | `POST /link-codes {request_id?}` | 设备 Bearer；为本人签发新码，明文仅首次返回 |
 | `DELETE /devices/{id}` | 设备 Bearer；撤销本人的指定设备，其他设备继续可用 |
-| `POST /messages {request_id, text, attachments:[]}` | App 普通消息；返回内部 event_id、conversation_id 与 replay |
+| `POST /messages {request_id, text, attachments:[media_id,...]}` | App 普通消息；返回内部 event_id、conversation_id 与 replay |
 | `GET /requests/{request_id}` | 原消息／命令查询，先核本人归属，不重新派发 |
 
 每个 Person 有一个服务器生成账号的 `app` 绑定和一个主会话，多设备共用。
@@ -54,7 +54,7 @@ Memory 重建按来源事件处理提案，保留有界账号的运行选择集�
 不同 Person 互不冲突。重放先核原事件作者与 App 会话，再核规范化正文和附件，
 已有请求不构造新入站、不通知轮次。并发首次提交在原入账处遇到 receipt_conflict 时，
 回到同一授权与内容核对；同号不同操作或正文返回 request_conflict。正文是个人聊天输入，
-不在个人 API 中执行 QQ `/ai` 管理命令。当前只接收文本，附件在 P9 接入。
+不在个人 API 中执行 QQ `/ai` 管理命令。附件使用本人已登记的 media_id，经原媒体链准备。
 
 App 经过原 Processor、Main、Social 与 Memory；配置、读取与执行来源使用 canonical Person
 及真实入口平台。设备不会因同 Person 的 QQ 管理账号而取得管理权限。HTTP 只等待原入账，
@@ -62,7 +62,6 @@ Main 的生命周期由服务器持有；客户端关闭连接不会终止 Main�
 出站事件同事务提交，外部引用为空，内部消息号沿 `social-operation:<id>`。
 QQ 已派发消息也按派发时的绑定记录事实，发送途中转移不会将出站事件改记到新 Person。
 
-Work、快照、SSE、附件与参考 SDK 随 P7–P11 补充；当前收发不代表这些链路已验收。
 
 ## 原 Work 的个人访问与补充
 
@@ -83,7 +82,7 @@ WorkSourceGuard 只接纳本 Work mailbox 证明的跨入口事件；仍检查�
 
 `POST /works/{id}/cancel {request_id,expected_revision}` 沿原 manage_work 执行与保存回执。
 App 补充不会自动发往群里；群 Work 后续仍可能按任务内容向原群投递结果，投影明确显示
-结果位置。尚未完成的快照、SSE、文件与参考 SDK 见后续阶段。
+结果位置。快照、SSE、文件与参考 SDK 的合同如下。
 
 ## 快照、事件与提示
 
@@ -118,3 +117,42 @@ kind 为 file、image、video 或 record。服务器流式写设备／请求暂�
 不可变 artifact 和内容版本。App 本地 Social 投递和 QQ artifact 投递都将真实摘要写入
 原出站事件；不因工作文件后来变更而改读新版本。无引用、他人引用、版本不符或来源删除
 均为 not_found。文件读取在数据库写事务外，读取前后复核个人授权。
+
+## Python 参考客户端与 CLI
+
+主包提供 client_sdk.PersonalClient，所有操作经 HTTP；不直接访问服务器数据库、模型或工具。
+yuki client（同一入口也保留 qq-ai-bot-cli client）支持 pair、me、home、send、input、cancel、upload、artifact、request、
+retry、pending、watch、link-code、revoke。URL 取 YUKI_CLIENT_URL，设备凭据取
+YUKI_CLIENT_TOKEN；配对码取 YUKI_CLIENT_CODE，pair 的首次响应返回设备 token。
+凭据不放命令参数或 outbox。--state 选择本地 outbox 文件，文件权限为 0600。
+
+```sh
+qq-ai-bot-cli client --state ./phone.sqlite send '继续这项任务' --draft
+qq-ai-bot-cli client --state ./phone.sqlite retry <原请求UUID>
+qq-ai-bot-cli client --state ./phone.sqlite request <原请求UUID>
+qq-ai-bot-cli client --state ./phone.sqlite input <WorkID> '补充要求'
+qq-ai-bot-cli client --state ./phone.sqlite watch
+```
+
+首次提交前持久保存 UUID、目标、规范化正文及附件引用；同号修改正文／操作会拒绝。
+outbox 绑定服务器与 Person，同一 Person 的设备可重放，换 Person 不派发旧草稿。
+四态为 draft（本地草稿）、submitted（已提交待确认）、accepted（服务器已接纳）、
+result（已有可核结果）。普通消息的 result 要有原 Social 成功回执对应的结果事件；
+Work 是否完成仍读取自己的 state。传输异常保留 submitted，先按原 UUID 查询及核对
+操作、目标、payload_hash，再决定同号重试；已接纳的操作不会产生第二次派发资格。
+
+GET /requests 在授权后附 payload_hash：SHA-256(canonical JSON [operation, target,
+normalized payload])，JSON 按键排序、默认 ASCII 转义、无多余空白。普通消息 operation
+为 message、target 为 App 会话、payload 为 text 与 attachments；其他命令沿原回执。
+结果事件 ID 只取原 Social 来源和本人可读出站，不从平台消息号重建关联。
+
+watch 每次连接先消费 sync，再用公开 GET／事件 keyset 重建本人全部入口与 Work 快照；
+提示不作为事实。结束、超时或 unavailable 会重连，即使丢的是最终提示也会重新核对。
+历史删除或变化会重读投影；身份／权限错误停止并交给调用者处理。上传保留文件摘要，
+重传前检查本地原件，下载核对收到字节的原版本摘要。
+
+本地验收使用假模型、假 QQ 与临时服务；生产迁移、真实 QQ／模型和部署另行执行。
+ACP 适配器、个人 UI、设备执行器与真机阶段按原任务书的后续边界保留。
+
+App 主会话直接回复时，沿原 mailbox 匹配本会话、本人最近的 waiting_user Work；
+其他入口的等待不会因此被匹配，跨入口接续仍使用明确的 Work inputs 接口。

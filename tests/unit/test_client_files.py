@@ -3,7 +3,7 @@
 import hashlib
 import io
 import json
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 from PIL import Image
@@ -204,11 +204,19 @@ async def app_context(env, device):
     )
 
 
-async def test_local_artifact_pins_original_snapshot_and_download_authorization(app_env, database):
+@pytest.mark.parametrize("named", [False, True])
+async def test_local_artifact_pins_original_snapshot_and_download_authorization(
+    app_env, database, named
+):
     env = app_env
     device, _ = await owner(env, database)
     context = await app_context(env, device)
-    original = snapshot_bytes(env.store, "result.txt", b"original version")
+    original = snapshot_bytes(
+        env.store,
+        "result.txt",
+        b"original version",
+        artifact_id=str(uuid5(NAMESPACE_URL, "yuki:published:original-version")) if named else None,
+    )
     result = await env.social.execute(
         "send_message",
         {"artifact_id": original["artifact_id"], "attachment_kind": "file", "text": "result"},

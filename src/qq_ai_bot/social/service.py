@@ -220,6 +220,49 @@ class SocialService:
         SocialMessage.model_validate(SocialService._message_arguments(canonical))
         return canonical
 
+    async def _binding_choice(
+        self, args: dict[str, Any], context: SocialContext
+    ) -> dict[str, Any] | None:
+        selected = args.get("target")
+        if (
+            not isinstance(selected, dict)
+            or selected.get("kind") != "person"
+            or selected.get("binding_id")
+        ):
+            return None
+        async with self.database.sessions() as session:
+            platform = await session.scalar(
+                select(IdentityBindingModel.platform)
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.identity_binding_id == IdentityBindingModel.id,
+                )
+                .where(CanonicalConversationModel.id == context.conversation_id)
+            )
+        if platform != "app":
+            return None
+        target = await self.target("person", selected, context)
+        await self.check_target(target)
+        async with self.database.sessions() as session:
+            bindings = list(
+                await session.scalars(
+                    select(IdentityBindingModel)
+                    .where(
+                        IdentityBindingModel.person_id == str(target.id),
+                        IdentityBindingModel.status == "active",
+                    )
+                    .order_by(IdentityBindingModel.id)
+                )
+            )
+        return {
+            "error": "binding_required",
+            "target": target.model_dump(mode="json"),
+            "bindings": [
+                {"binding_id": row.id, "platform": row.platform, "display_name": row.display_name}
+                for row in bindings
+            ],
+        }
+
     @staticmethod
     async def _call(route: ResolvedSend, action: str, params: dict[str, Any]) -> Any:
         return await OneBotSocialOperations().social_action(route.connection.bot, action, params)
@@ -851,6 +894,12 @@ class SocialService:
         await self._validate_self_context(context)
         if name == "send_message":
             args = self._canonical_send_arguments(args)
+            replay = await self._replay_send(args, context)
+            if replay is not None:
+                return replay
+            choice = await self._binding_choice(args, context)
+            if choice is not None:
+                return choice
         if name == "send_message" and context.sequence_part_index is None:
             return await self._send_message_sequence(args, context)
         if name == "read_conversation_history":

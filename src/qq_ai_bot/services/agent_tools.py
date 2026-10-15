@@ -984,7 +984,9 @@ class AgentToolService:
                                     or ("delivery_uncertain" if uncertain else "delivery_failed")
                                 ),
                                 detail=(
-                                    "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
+                                    "从 bindings 选择明确的 binding_id 后再调用；未派发消息"
+                                    if social_result.get("error") == "binding_required"
+                                    else "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
                                     if social_result.get("error") == "presence_ambiguous"
                                     else "网关读取失败，保留已取得的分组状态"
                                     if name == "read_conversation_history"

@@ -107,6 +107,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "也可以主动多次调用，发送后仍可继续工作。"
             "省略 target 默认当前群或当前私聊；发给其他人或群时用 canonical 目标，"
             "由后端选择私聊或群聊及发送账号。结果 uncertain 时不要重发。"
+            "App 主会话显式指定 person 目标时需带 binding_id；省略 target 只回复本入口。"
             "群内真正 @某人使用 mentions，正文中的 @名字不会产生提醒。",
             {
                 "target": {
