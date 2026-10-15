@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from sqlalchemy import Select, and_, case, or_, select, text
+from sqlalchemy import and_, literal, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
@@ -21,9 +21,6 @@ from qq_ai_bot.persistence.unit_of_work import optional_session
 if TYPE_CHECKING:
     from qq_ai_bot.memory.models import MemoryFact
     from qq_ai_bot.persistence.database import Database
-    from qq_ai_bot.persistence.models import (
-        MemoryFactModel,
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,153 +206,54 @@ def sql_self_receipt_evidence_predicate(
     )
 
 
-async def _seed_space_id(session: AsyncSession, conversation_id: str) -> str | None:
-    conversation = await session.get(CanonicalConversationModel, conversation_id)
-    if (
-        conversation is None
-        or conversation.kind != "space"
-        or not conversation.space_id
-        or conversation.person_id is not None
-    ):
-        return None
-    return conversation.space_id
-
-
-def _seed_query(
-    space_id: str, *, now: datetime | None = None
-) -> Select[tuple[MemoryFactModel, Any]]:
-    from qq_ai_bot.memory.repository import readable_evidence_count_expression
-    from qq_ai_bot.persistence.models import MemoryFactModel as f
-
-    now = now or datetime.now(UTC)
-    current_group = and_(
-        f.scope_type == "group",
-        f.canonical_subject_space_id == space_id,
-        f.canonical_subject_person_id.is_(None),
-    )
-    visible_self = and_(
-        f.scope_type == "self",
-        f.canonical_subject_person_id.is_(None),
-        f.canonical_subject_space_id.is_(None),
-        f.canonical_visibility_person_id.is_(None),
-        or_(
-            and_(f.visibility_type == "global", f.canonical_visibility_space_id.is_(None)),
-            and_(f.visibility_type == "group", f.canonical_visibility_space_id == space_id),
-        ),
-    )
-    return select(f, readable_evidence_count_expression()).where(
-        f.status == "active",
-        f.review_state == "verified",
-        or_(current_group, visible_self),
-        or_(f.valid_from.is_(None), f.valid_from <= now),
-        or_(f.valid_until.is_(None), f.valid_until > now),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class SelfSeedPage:
-    facts: tuple[MemoryFact, ...]
-    next_cursor: tuple[str, int]
-    scanned: int
-
-
-async def read_self_seed_page(
+async def read_self_initiative_facts(
     database: Database,
     *,
     canonical_conversation_id: str,
-    cursor: tuple[str, int] | None = None,
-    limit: int = 4,
-    scan_limit: int = 32,
-) -> SelfSeedPage:
-    """Forward-only change stream over authorized facts, with SQL lineage checks.
-
-    The Host persists ``next_cursor`` even for empty pages. The requested scan limit
-    bounds each page; SQL checks all source evidence. The UTC (change_time, id) cursor
-    never wraps, where change_time=max(updated_at, valid_from). Thus previously
-    future-dated facts are discovered when they become valid, without replaying
-    unchanged old facts. This call's fixed now is the scan ceiling; concurrent
-    writes are seen later. New evidence updates fact.updated_at atomically.
-    """
-    from qq_ai_bot.persistence.models import MemoryFactModel as f
-
-    cursor = cursor or (datetime(1970, 1, 1, tzinfo=UTC).isoformat(), 0)
-    cursor_at = datetime.fromisoformat(cursor[0])
-    if cursor_at.tzinfo is None or cursor[1] < 0:
-        raise ValueError("seed_cursor_requires_utc_time_and_nonnegative_id")
-    cursor_at = cursor_at.astimezone(UTC)
-    cursor = (cursor_at.isoformat(), cursor[1])
-    ceiling = datetime.now(UTC)
-    bound = max(1, limit)
-    scan_bound = max(1, scan_limit)
-    change_time = case((f.valid_from > f.updated_at, f.valid_from), else_=f.updated_at)
-    async with database.sessions() as session:
-        space_id = await _seed_space_id(session, canonical_conversation_id)
-        if space_id is None:
-            return SelfSeedPage((), cursor, 0)
-        query = (
-            _seed_query(space_id, now=ceiling)
-            .where(
-                or_(change_time > cursor_at, and_(change_time == cursor_at, f.id > cursor[1])),
-                change_time <= ceiling,
-            )
-            .order_by(change_time, f.id)
-            .limit(scan_bound)
-        )
-        rows = (await session.execute(query)).all()
-        selected: list[tuple[MemoryFactModel, Any]] = []
-        scanned = 0
-        for row, evidence_count in rows:
-            updated_at = row.updated_at
-            if updated_at.tzinfo is None:
-                updated_at = updated_at.replace(tzinfo=UTC)
-            if row.valid_from is not None:
-                valid_from = row.valid_from
-                if valid_from.tzinfo is None:
-                    valid_from = valid_from.replace(tzinfo=UTC)
-                updated_at = max(updated_at, valid_from)
-            cursor = (updated_at.astimezone(UTC).isoformat(), row.id)
-            scanned += 1
-            if evidence_count:
-                selected.append((row, evidence_count))
-            if len(selected) >= bound:
-                break
-        from qq_ai_bot.memory.projections import project_memory_fact_rows
-
-        return SelfSeedPage(await project_memory_fact_rows(session, selected), cursor, scanned)
-
-
-async def read_self_seed_candidates(
-    database: Database,
-    *,
-    canonical_conversation_id: str,
-    limit: int = 8,
-    fact_ids: tuple[int, ...] | None = None,
+    fact_ids: tuple[int, ...],
     session: AsyncSession | None = None,
 ) -> tuple[MemoryFact, ...]:
-    """Bounded priority/exact-ID lookup for source verification, not polling fairness.
+    """Read exact saved Memory sources under their original SELF visibility.
 
-    Pollers use ``read_self_seed_page`` and persist its cursor. Both paths share
-    the exact scope, lifecycle and readable-lineage checks; neither grants Person
-    access from a proposed contact target.
+    This reader verifies existing run/admission dependencies. It never scans for
+    new initiative candidates or grants private Person access from a target.
     """
+    from qq_ai_bot.memory.projections import project_memory_fact_rows
+    from qq_ai_bot.memory.repository import (
+        readable_evidence_count_expression,
+        readable_evidence_predicate,
+    )
+    from qq_ai_bot.persistence.models import MemoryEvidenceModel as e
     from qq_ai_bot.persistence.models import MemoryFactModel as f
 
-    bound = max(1, limit)
+    if not fact_ids:
+        return ()
+    now = datetime.now(UTC)
     async with optional_session(database, session, write=False) as session:
-        space_id = await _seed_space_id(session, canonical_conversation_id)
-        if space_id is None:
+        conversation = await session.get(CanonicalConversationModel, canonical_conversation_id)
+        if (
+            conversation is None
+            or conversation.kind != "space"
+            or not conversation.space_id
+            or conversation.person_id is not None
+        ):
             return ()
-        query = _seed_query(space_id)
-        if fact_ids is not None:
-            if not fact_ids:
-                return ()
-            query = query.where(f.id.in_(fact_ids))
-        from sqlalchemy import literal
-
-        from qq_ai_bot.memory.projections import project_memory_fact_rows
-        from qq_ai_bot.memory.repository import readable_evidence_predicate
-        from qq_ai_bot.persistence.models import MemoryEvidenceModel as e
-
+        space_id = conversation.space_id
+        current_group = and_(
+            f.scope_type == "group",
+            f.canonical_subject_space_id == space_id,
+            f.canonical_subject_person_id.is_(None),
+        )
+        visible_self = and_(
+            f.scope_type == "self",
+            f.canonical_subject_person_id.is_(None),
+            f.canonical_subject_space_id.is_(None),
+            f.canonical_visibility_person_id.is_(None),
+            or_(
+                and_(f.visibility_type == "global", f.canonical_visibility_space_id.is_(None)),
+                and_(f.visibility_type == "group", f.canonical_visibility_space_id == space_id),
+            ),
+        )
         readable = (
             select(literal(1))
             .select_from(e)
@@ -365,9 +263,17 @@ async def read_self_seed_candidates(
         )
         rows = (
             await session.execute(
-                query.where(readable)
-                .order_by(f.importance.desc(), f.updated_at.desc(), f.id.desc())
-                .limit(bound)
+                select(f, readable_evidence_count_expression())
+                .where(
+                    f.id.in_(fact_ids),
+                    f.status == "active",
+                    f.review_state == "verified",
+                    or_(current_group, visible_self),
+                    or_(f.valid_from.is_(None), f.valid_from <= now),
+                    or_(f.valid_until.is_(None), f.valid_until > now),
+                    readable,
+                )
+                .order_by(f.id)
             )
         ).all()
-        return await project_memory_fact_rows(session, rows)
+        return await project_memory_fact_rows(session, ((fact, count) for fact, count in rows))

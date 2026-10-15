@@ -508,6 +508,7 @@ async def test_legacy_self_report_uses_real_charged_run_without_semantic_proposa
         )
     await reconcile_page(service, (run,))
     assert item.controller.state.engagement_report.run_ref == run.run_id
+    assert item.controller.state.engagement_report.delta.model_dump() == {"engage": "quiet"}
     assert item.controller._willingness(time.time()) < 0
     assert not item.controller.state.proposals
     assert not item.controller.state.feedback

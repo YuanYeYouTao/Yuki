@@ -13,7 +13,7 @@ from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
 from qq_ai_bot.memory.models import MemoryScopeType
-from qq_ai_bot.memory.self_origin import read_self_seed_candidates
+from qq_ai_bot.memory.self_origin import read_self_initiative_facts
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
     MemoryMutationReceiptModel,
@@ -190,8 +190,10 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
     assert evidence[0].event_id is None
     assert [
         item.id
-        for item in await read_self_seed_candidates(
-            database, canonical_conversation_id=case.env.context.conversation_id
+        for item in await read_self_initiative_facts(
+            database,
+            canonical_conversation_id=case.env.context.conversation_id,
+            fact_ids=(fact.id,),
         )
     ] == [fact.id]
     requests = len(case.provider.requests)
@@ -523,8 +525,10 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
         assert receipt.initiative_run_id is None and receipt.trigger_event_id is None
     assert [
         item.id
-        for item in await read_self_seed_candidates(
-            database, canonical_conversation_id=case.env.context.conversation_id
+        for item in await read_self_initiative_facts(
+            database,
+            canonical_conversation_id=case.env.context.conversation_id,
+            fact_ids=(mutation.new_fact_id,),
         )
     ] == [mutation.new_fact_id]
     before = len(case.provider.requests)
@@ -556,8 +560,10 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
     assert [fact.id for fact in visible] == [mutation.new_fact_id]
     assert [
         fact.id
-        for fact in await read_self_seed_candidates(
-            database, canonical_conversation_id=case.env.context.conversation_id
+        for fact in await read_self_initiative_facts(
+            database,
+            canonical_conversation_id=case.env.context.conversation_id,
+            fact_ids=(mutation.new_fact_id,),
         )
     ] == [mutation.new_fact_id]
     async with database.sessions() as session:

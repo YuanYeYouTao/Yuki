@@ -266,6 +266,8 @@ async def test_actual_host_observes_no_send_hint_and_only_quiet_rechecks_origina
         )
         unit = next(iter(checkpoint.units.values()))
         assert unit.hint.delta.engage == engage
+        assert unit.hint.source == item.controller.state.events[f"event:{event.id}"].ref
+        assert item.controller.state.events[f"event:{event.id}"].source_order == event.id
         assert unit.hint_basis == (item.controller.state.events[f"event:{event.id}"].ref,)
         assert not checkpoint.expressions and not item.controller.state.effects
         assert not item.controller.state.proposals and not item.controller.state.feedback

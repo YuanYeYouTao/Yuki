@@ -229,10 +229,14 @@ class OrdinaryParticipationService(Protocol):
     async def binding_for_event(self, event_id: int) -> OrdinaryParticipationBinding | None: ...
 
     async def continuation_for_event(
-        self, event_id: int
+        self, event_id: int, *, check_budget: bool = True
     ) -> (
         tuple[OrdinaryParticipationBinding, Literal["semantic_invitation", "continuation"]] | None
     ): ...
+
+    def continuation_current(
+        self, binding: OrdinaryParticipationBinding, *, check_budget: bool = True
+    ) -> bool: ...
 
     async def on_ordinary_admitted(
         self, binding: OrdinaryParticipationBinding | None, admission: OrdinaryAdmission
@@ -553,6 +557,15 @@ class MessageProcessor:
                     return ProcessResult(False, reason="group_open_closed")
                 if binding is None and self._participation is not None:
                     binding = await self._participation.binding_for_event(event_id)
+            elif reason == "continuation":
+                found = (
+                    await self._participation.continuation_for_event(event_id)
+                    if self._participation is not None
+                    else None
+                )
+                if found is None:
+                    return ProcessResult(False, reason="ordinary_continuation_closed")
+                binding, reason = found
             elif binding is None:
                 return ProcessResult(False, reason="ordinary_binding_unavailable")
             elif not runtime.conversation_policy().semantic_participation_enabled:
@@ -1048,7 +1061,11 @@ class MessageProcessor:
                 if deferred_open:
                     return await self._defer_ordinary(observed, None, "group_open")
                 if self._participation is not None:
-                    found = await self._participation.continuation_for_event(record.id)
+                    # Registration can feed the existing ordinary activation;
+                    # a new worker activation checks the span again at promotion.
+                    found = await self._participation.continuation_for_event(
+                        record.id, check_budget=False
+                    )
                     if found is not None:
                         implicit_binding, implicit = found
                         if implicit == "semantic_invitation":
@@ -1183,7 +1200,12 @@ class MessageProcessor:
         return result
 
     async def _ordinary_admission_allowed(
-        self, prepared: PreparedOrdinaryAdmission, reason: str, session: AsyncSession
+        self,
+        prepared: PreparedOrdinaryAdmission,
+        reason: str,
+        session: AsyncSession,
+        *,
+        check_continuation: bool = True,
     ) -> bool:
         if reason not in {"group_open", "semantic_invitation", "continuation"}:
             return True
@@ -1205,8 +1227,18 @@ class MessageProcessor:
         values = await self._runtime_config.inspect_configs(
             keys, scope=MemoryConfigScope(space_id=space.id), session=session
         )
-        return all(value.effective.value for value in values) and (
-            reason != "group_open" or not space.require_mention
+        return (
+            all(value.effective.value for value in values)
+            and (reason != "group_open" or not space.require_mention)
+            and (
+                reason != "continuation"
+                or not check_continuation
+                or (
+                    prepared.admission.binding is not None
+                    and self._participation is not None
+                    and self._participation.continuation_current(prepared.admission.binding)
+                )
+            )
         )
 
     async def _ordinary_context_inputs(
@@ -1217,7 +1249,7 @@ class MessageProcessor:
             observed = self._observed_human_turns.get(event_id)
             if observed is None or observed.ordinary_reason is None:
                 continue
-            reason = observed.ordinary_reason
+            reason: OrdinaryReason = observed.ordinary_reason
             # The original Work/wait owns the first offer, including a Work
             # accepted by A since C was put in the ordinary quiet window.
             offered = await self.promote_committed_event(
@@ -1261,7 +1293,18 @@ class MessageProcessor:
                 ):
                     continue
                 binding = observed.binding
-                if binding is not None and binding.source_revision != str(
+                if reason == "continuation":
+                    found = (
+                        await self._participation.continuation_for_event(
+                            event_id, check_budget=False
+                        )
+                        if self._participation is not None
+                        else None
+                    )
+                    if found is None:
+                        continue
+                    binding, reason = found
+                elif binding is not None and binding.source_revision != str(
                     source_revision(complete.record)
                 ):
                     binding = (
@@ -1277,11 +1320,14 @@ class MessageProcessor:
                         observed.snapshot.generation,
                         observed.token.version,
                         binding,
+                        reason=reason,
                     )
                 except OrdinaryAdmissionConflict:
                     continue
                 async with self.ordinary_admissions.database.sessions() as reader:
-                    if not await self._ordinary_admission_allowed(prepared, reason, reader):
+                    if not await self._ordinary_admission_allowed(
+                        prepared, reason, reader, check_continuation=False
+                    ):
                         continue
 
                 async def allowed(
@@ -1289,7 +1335,12 @@ class MessageProcessor:
                     source: PreparedOrdinaryAdmission = prepared,
                     original_reason: str = reason,
                 ) -> bool:
-                    return await self._ordinary_admission_allowed(source, original_reason, session)
+                    # This input is selected for the current Main publication.
+                    # Later participation feedback controls later selections;
+                    # source, identity and authorization still use the original checks.
+                    return await self._ordinary_admission_allowed(
+                        source, original_reason, session, check_continuation=False
+                    )
 
                 async def committed(
                     original_id: int = event_id,
@@ -1457,13 +1508,13 @@ class MessageProcessor:
                 prepared = None
                 return None
             prepared = self.ordinary_admissions.prepare(
-                record, turn_snapshot.generation, turn_token.version
+                record, turn_snapshot.generation, turn_token.version, reason=decision.reason
             )
             return prepared
 
         try:
             prepared = self.ordinary_admissions.prepare(
-                record, turn_snapshot.generation, turn_token.version
+                record, turn_snapshot.generation, turn_token.version, reason=decision.reason
             )
             if is_overlong and (not defer_new_main or input_only):
                 await prepare_source(existing_work=input_only)
@@ -1582,17 +1633,30 @@ class MessageProcessor:
             if decision.reason == "semantic_invitation":
                 await self._chat.discard_work_input(work_input_id)
                 return ProcessResult(False, reason="ordinary_source_changed")
-            binding = (
-                await self._participation.binding_for_event(record.id)
-                if self._participation is not None
-                else None
-            )
+            if decision.reason == "continuation":
+                found = (
+                    await self._participation.continuation_for_event(record.id)
+                    if self._participation is not None
+                    else None
+                )
+                if found is None:
+                    await self._chat.discard_work_input(work_input_id)
+                    return ProcessResult(False, reason="ordinary_continuation_closed")
+                binding, current_reason = found
+                decision = replace(decision, reason=current_reason)
+            else:
+                binding = (
+                    await self._participation.binding_for_event(record.id)
+                    if self._participation is not None
+                    else None
+                )
         try:
             prepared = self.ordinary_admissions.prepare(
                 record,
                 turn_snapshot.generation,
                 turn_token.version,
                 binding,
+                reason=decision.reason,
             )
         except OrdinaryAdmissionConflict:
             await self._chat.discard_work_input(work_input_id)
@@ -1642,7 +1706,11 @@ class MessageProcessor:
             turn_token = promoted
             turn_snapshot = replace(turn_snapshot, coordinator_version=promoted.version)
             prepared = self.ordinary_admissions.prepare(
-                record, turn_snapshot.generation, promoted.version, binding
+                record,
+                turn_snapshot.generation,
+                promoted.version,
+                binding,
+                reason=decision.reason,
             )
 
         async def admission_allowed(session: AsyncSession) -> bool:

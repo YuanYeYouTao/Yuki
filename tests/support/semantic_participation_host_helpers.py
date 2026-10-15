@@ -8,11 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
-from yuki_participation.models import (
-    CandidateKind,
-    Choice,
-    Observation,
-)
+from yuki_participation.models import Choice, Observation
 from yuki_participation.rubric import CRITERIA, REVISION
 
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -43,8 +39,6 @@ def _observation(snapshot, *, unknown=False, act="invite_yuki", unit=None):
         "floor_state": _choice("floor_state", "unknown" if unknown else "yuki"),
         "boundary_scope": _choice("boundary_scope", "unknown" if unknown else "target_thread"),
     }
-    if snapshot.kind != CandidateKind.CONVERSATION:
-        answers["seed_fit"] = _choice("seed_fit", "unknown" if unknown else "appropriate")
     resolved = None
     if snapshot.focus.unit_ambiguous:
         selected = "unknown" if unknown else unit or snapshot.focus.unit_options[0].key
