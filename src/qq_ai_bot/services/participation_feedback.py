@@ -32,6 +32,13 @@ _ACTIVE = {"accepted", "running"}
 _SEND_ACTIONS = {"send_message", "send_file_caption"}
 
 
+def admission_continuation(admission: OrdinaryAdmission) -> bool | None:
+    """Old unknown origins and Work inputs do not confirm a new ordinary relation."""
+    if admission.reason is None or admission.route != "ordinary":
+        return None
+    return admission.reason == "continuation"
+
+
 def admission_unit_binding(admission: OrdinaryAdmission) -> UnitBinding | None:
     """Convert only the unit/source mapping frozen by the original admission."""
     from yuki_participation.participation import ParticipationUnit, UnitBinding
@@ -646,6 +653,13 @@ def _replay(item: _Session, fact: _RunFacts) -> None:
         if isinstance(reports, (list, tuple)):
             for raw in reports[-32:]:
                 try:
+                    if isinstance(raw, dict) and isinstance(raw.get("delta"), dict):
+                        raw = {
+                            **raw,
+                            "delta": {
+                                key: value for key, value in raw["delta"].items() if key != "mood"
+                            },
+                        }
                     report = SelfReport.model_validate(raw)
                 except (ValidationError, TypeError):
                     continue

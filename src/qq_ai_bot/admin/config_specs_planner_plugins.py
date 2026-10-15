@@ -38,7 +38,7 @@ def planner_plugin_config_specs() -> tuple[ConfigSpec, ...]:
         _spec(
             "conversation.proactive_wakeup_enabled",
             "主动唤醒",
-            "允许 SELF 新的回忆、联系及无消息苏醒；原 run、Work 和定时安排不受此开关影响。",
+            "允许 SELF 新的无消息苏醒；原 run、Work 和定时安排不受此开关影响。",
             value_type="boolean",
             scopes=_GG,
             env_alias="CONVERSATION_PROACTIVE_WAKEUP_ENABLED",

@@ -98,7 +98,7 @@ def _controller_facts(states: Sequence[State], *, now: float) -> dict[str, objec
         "pending_observations": pending,
         "in_flight_observations": inflight,
         "pending_proposals": sum(state.pending is not None for state in states[:32]),
-        "candidates": {key: candidates[key] for key in ("conversation", "recall", "contact")},
+        "candidates": {"conversation": candidates["conversation"]},
         "support": {
             key: support[key]
             for key in ("observed", "predicted", "observed_valid", "predicted_valid")

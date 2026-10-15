@@ -127,13 +127,14 @@ async def _scene(
                 "group",
             )
 
-        async def continuation_for_event(event_id):
+        async def continuation_for_event(event_id, *, check_budget=True):
             return await binding_for_event(event_id), reason
 
         harness.processor.set_participation(
             SimpleNamespace(
                 continuation_for_event=continuation_for_event,
                 binding_for_event=binding_for_event,
+                continuation_current=lambda binding, *, check_budget=True: True,
                 on_ordinary_admitted=AsyncMock(),
             )
         )
@@ -531,11 +532,11 @@ async def test_late_classification_does_not_claim_old_observation_or_replace_new
     original = service.continuation_for_event
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def classify(event_id):
+    async def classify(event_id, *, check_budget=True):
         if (await harness.ledger.get_event(event_id)).content == C:
             entered.set()
             await release.wait()
-        return await original(event_id)
+        return await original(event_id, check_budget=check_budget)
 
     monkeypatch.setattr(service, "continuation_for_event", classify)
     pending = None
@@ -700,8 +701,8 @@ async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_origina
         service = harness.processor._participation
         classify = service.continuation_for_event
 
-        async def invitation(event_id):
-            binding, reason = await classify(event_id)
+        async def invitation(event_id, *, check_budget=True):
+            binding, reason = await classify(event_id, check_budget=check_budget)
             if (await harness.ledger.get_event(event_id)).content == "D：明确的新请求":
                 return binding, "semantic_invitation"
             return binding, reason

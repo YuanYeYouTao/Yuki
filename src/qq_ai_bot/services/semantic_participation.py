@@ -57,8 +57,8 @@ from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.execution_trace.recorder import TraceRecorder, trace_span
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
-from qq_ai_bot.memory.self_origin import read_self_seed_candidates, read_self_seed_page
-from qq_ai_bot.persistence.models import ChatEventModel, MemoryEvidenceModel
+from qq_ai_bot.memory.self_origin import read_self_initiative_facts
+from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_helpers import keeper_event_clause
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.work_repository import WorkRepository
@@ -108,7 +108,6 @@ class _Session:
     observation: ObservationSession | None
     revision: int
     saved: str
-    seed_checked_at: float = 0
     pins: int = 0
 
 
@@ -227,11 +226,18 @@ class SemanticParticipationService:
         return await binding_for_event(self, event_id)
 
     async def continuation_for_event(
-        self, event_id: int
+        self, event_id: int, *, check_budget: bool = True
     ) -> tuple[OrdinaryParticipationBinding, Literal["semantic_invitation", "continuation"]] | None:
         from qq_ai_bot.services.participation_ordinary import continuation_for_event
 
-        return await continuation_for_event(self, event_id)
+        return await continuation_for_event(self, event_id, check_budget=check_budget)
+
+    def continuation_current(
+        self, binding: OrdinaryParticipationBinding, *, check_budget: bool = True
+    ) -> bool:
+        from qq_ai_bot.services.participation_ordinary import continuation_current
+
+        return continuation_current(self, binding, check_budget=check_budget)
 
     async def on_ordinary_admitted(
         self, binding: OrdinaryParticipationBinding | None, admission: OrdinaryAdmission
@@ -584,6 +590,7 @@ class SemanticParticipationService:
             target=target,
             text=row.perceived_content,
             at=timestamp(row.occurred_at),
+            source_order=row.id,
             kind="human" if row.author_is_human() else "self",
             unit_ambiguous=row.author_is_human() and len(options) > 1,
             unit_options=tuple(options) if len(options) > 1 else (),
@@ -694,7 +701,10 @@ class SemanticParticipationService:
                 item.scene.conversation_id, item.scene.generation, admission_ids
             )
         }
-        from qq_ai_bot.services.participation_feedback import admission_unit_binding
+        from qq_ai_bot.services.participation_feedback import (
+            admission_continuation,
+            admission_unit_binding,
+        )
 
         runtime = cast(
             RuntimeConfigSnapshot,
@@ -738,7 +748,11 @@ class SemanticParticipationService:
             fresh = item.controller.observe_committed_event(event)
             unit = units.get(row.id)
             if unit is not None and all(basis_valid[ref] for ref in unit.basis):
-                item.controller.observe_unit_input(unit, event.ref)
+                item.controller.observe_unit_input(
+                    unit,
+                    event.ref,
+                    continuation=admission_continuation(current_admissions[row.id]),
+                )
             if row.id in recovered:
                 item.controller.state.consumed[event.ref.event_id] = event.ref.revision
             if (
@@ -746,7 +760,13 @@ class SemanticParticipationService:
                 and event.kind == "human"
                 and observe_enabled
                 and item.observation is not None
-                and row.id not in recovered
+                and (
+                    row.id not in recovered
+                    or (
+                        row.id in current_admissions
+                        and current_admissions[row.id].reason in {"continuation", "group_open"}
+                    )
+                )
                 and not (direct and direct.get(row.id))
                 and item.controller.participation_view(event, now).needs_observation
             ):
@@ -789,10 +809,9 @@ class SemanticParticipationService:
             digests.update({f"event:{row.id}": str(source_revision(row)) for row in rows})
         fact_ids = tuple(identities["memory"])
         for start in range(0, len(fact_ids) if current_generation else 0, 32):
-            facts = await read_self_seed_candidates(
+            facts = await read_self_initiative_facts(
                 self.database,
                 canonical_conversation_id=item.scene.conversation_id,
-                limit=32,
                 fact_ids=fact_ids[start : start + 32],
                 session=session,
             )
@@ -811,91 +830,16 @@ class SemanticParticipationService:
         return valid
 
     async def _validate_boundaries(self, item: _Session) -> None:
+        """Recheck the actual sources behind retained discussion and stop facts."""
         refs: set[SourceRef] = set()
         for boundary in tuple(item.controller.state.boundaries.values()):
             refs.update((boundary.source, *boundary.dependencies, *boundary.release_dependencies))
             if boundary.released_by is not None:
                 refs.add(boundary.released_by)
+        refs.update(
+            item.controller._participation_refs(item.controller._participation_checkpoint())
+        )
         await self._sources_current(item, tuple(refs))
-
-    async def _seeds(self, item: _Session) -> None:
-        if item.observation is None or time.time() - item.seed_checked_at < 60:
-            return
-        item.seed_checked_at = time.time()
-        # Durable group memory can seed a quiet scene without implying anyone is online.
-        people = {
-            e.author
-            for e in item.controller.state.events.values()
-            if e.kind == "human" and e.at >= time.time() - 600
-        }
-        state = item.controller.state
-        offered = cast(dict[str, Any], state.host_checkpoint.setdefault("seed_versions", {}))
-        versions = cast(dict[str, Any], state.host_checkpoint.setdefault("source_versions", {}))
-        saved_cursor = state.host_checkpoint.get("seed_cursor")
-        cursor = (
-            (str(saved_cursor[0]), int(saved_cursor[1]))
-            if isinstance(saved_cursor, (list, tuple))
-            else None
-        )
-        page = await read_self_seed_page(
-            self.database,
-            canonical_conversation_id=item.scene.conversation_id,
-            cursor=cursor,
-            limit=4,
-        )
-        state.host_checkpoint["seed_cursor"] = list(page.next_cursor)
-        for fact in page.facts:
-            key, digest = f"memory:{fact.id}", memory_revision(fact)
-            if offered.get(key) == digest:
-                continue
-            # A contact hint comes only from readable group evidence authored by that Person.
-            async with self.database.sessions() as session:
-                authors = set(
-                    await session.scalars(
-                        select(ChatEventModel.author_person_id)
-                        .join(
-                            MemoryEvidenceModel,
-                            MemoryEvidenceModel.event_id == ChatEventModel.id,
-                        )
-                        .where(
-                            MemoryEvidenceModel.fact_id == fact.id,
-                            ChatEventModel.canonical_conversation_id == item.scene.conversation_id,
-                            ChatEventModel.author_person_id.in_(people),
-                            ChatEventModel.suppression_status == "keeper",
-                        )
-                    )
-                )
-            target = next(iter(authors)) if len(authors) == 1 else "group"
-            prior = versions.get(key)
-            revision = prior[0] + 1 if prior and prior[1] != digest else prior[0] if prior else 1
-            versions[key] = [revision, digest]
-            event = ScopedEvent(
-                scope=item.scene.scope,
-                ref=SourceRef(event_id=key, revision=revision),
-                thread=key,
-                author="SELF",
-                target=target,
-                text=f"合法记忆候选（不是新消息，不代表任何人在线）：{fact.content}",
-                at=time.time(),
-                kind="seed",
-            )
-            item.observation.observe(
-                event,
-                CandidateKind.CONTACT if target != "group" else CandidateKind.RECALL,
-            )
-            item.observation.request_observation(
-                event.ref,
-                CandidateKind.CONTACT if target != "group" else CandidateKind.RECALL,
-            )
-            offered.pop(key, None)
-            offered[key] = digest
-        # The forward change cursor prevents old unchanged facts being offered after eviction.
-        # Durable Host source claims remain the final fence for previously accepted bases.
-        for old_key in tuple(offered):
-            if len(offered) <= 1024:
-                break
-            if old_key not in state.events:
-                offered.pop(old_key)
 
     async def _admit(self, item: _Session, binding: AutonomyBinding, proposal: Proposal) -> None:
         async with trace_span(
@@ -939,7 +883,8 @@ class SemanticParticipationService:
     ) -> dict[str, object]:
         now = time.time()
         valid = (
-            proposal.scope == item.scene.scope
+            proposal.kind in {CandidateKind.CONVERSATION, CandidateKind.INTRINSIC}
+            and proposal.scope == item.scene.scope
             and proposal.controller_epoch == binding.controller_epoch
             and binding.effective_owner is AutonomyOwner.SEMANTIC
         )
@@ -1189,7 +1134,7 @@ class SemanticParticipationService:
                     )
                     return
             else:
-                facts = await read_self_seed_candidates(
+                facts = await read_self_initiative_facts(
                     self.database,
                     canonical_conversation_id=run.conversation_id,
                     fact_ids=(int(source_ref.source_id),),
@@ -1363,10 +1308,12 @@ class SemanticParticipationService:
         # After observer/external work below, _binding reads current policy again.
         binding = await self._binding(item, runtime=runtime)
         if item.observation is not None and scene.enabled and binding.external_enabled:
-            if binding.master_enabled and runtime.conversation_policy().proactive_wakeup_enabled:
-                await self._seeds(item)
             await item.observation.evaluate_due(
-                time.time(), active=bool(item.controller.participating_units(time.time()))
+                time.time(),
+                active=any(
+                    not unit.closed and unit.engage != "quiet"
+                    for unit in item.controller.participating_units(time.time())
+                ),
             )
             # A real source may change while Jev is in flight. Stops have no
             # remaining candidate, so invalidate their original dependencies
@@ -1383,11 +1330,7 @@ class SemanticParticipationService:
         policy = runtime.conversation_policy()
         allowed_kinds = frozenset(
             kind
-            for kind, allowed in (
-                (CandidateKind.CONVERSATION, policy.auto_reply_enabled),
-                (CandidateKind.RECALL, policy.proactive_wakeup_enabled),
-                (CandidateKind.CONTACT, policy.proactive_wakeup_enabled),
-            )
+            for kind, allowed in ((CandidateKind.CONVERSATION, policy.auto_reply_enabled),)
             if allowed
         )
         from qq_ai_bot.services.participation_ordinary import invitation_unit, promote_invitations

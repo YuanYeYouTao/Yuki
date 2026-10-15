@@ -1,6 +1,6 @@
 # 语义参与 V6：宿主接入与验证边界
 
-2026-10-13。独立仓库：
+2026-10-15。独立仓库：
 [Yuki-Semantic-Participation](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation)。
 本文描述 SELF 接入与普通持续接话的合同。实现、验证和生产启用状态分别由交付记录证明；
 历史 T20 真实 QQ 集成验收不是本轮持续接话的验收结果。
@@ -11,8 +11,10 @@
 权限、接纳、Main Agent、steer、工具、工作恢复和发送。Jev 使用自己的观测协议，
 不生成聊天回复，也不构成第二个 Agent Runner。
 
-`SemanticParticipationService` 读取已提交的 canonical 群事件和获准的记忆候选，按
-Conversation/generation 保存控制器快照。来源是带版本的内部 event 或 memory ID；
+`SemanticParticipationService` 读取已提交的 canonical 群事件，按
+Conversation/generation 保存控制器快照。新观察只以真实人类事件为焦点，context 可包含真实人类和 SELF 发言；
+来源沿带版本的内部 event ID 传递。后台 Memory 扫描、seed 事件及 recall/contact 新候选已退出，
+Memory 仍由主 Agent 按需查询；
 目标人物只是交流对象，不是执行主体。来源正文和资料包均是不可信上下文，不能授予权限。
 观测和历史读取完成后才进入短接纳事务，事务中不等待 Jev、主模型或 QQ 网关。
 启动和运行期间会主动发现当前获准的群会话代次；即使 `/ai new` 后还没有新的群消息、
@@ -41,10 +43,10 @@ Controller 可采用 Host 提供并核验的该作者新讨论单元。真人邀
 原 Work/wait 的获准输入先于新机会分类尝试，逐条发布，不经过此去抖窗口；
 部分匹配保持原 wait，不开第二个普通 Main。新 ordinary writer 核当时的 require_mention，
 原输入 publisher 不因此增加 veto。
-非请求式加入、回忆、联系和无来源参与按[连续概率模型](autonomous-participation-model.md)
+非请求式加入和无来源参与按[连续概率模型](autonomous-participation-model.md)
 决定时机；Host 继续核验来源、真实停聊边界、代际、权限和发送链。
 活跃/非活跃观察去抖、调用间隔、最长等待分别为 2/8/15 秒和 3/12/20 秒；
-conversation 观测在源事件后 90 秒内完成才有资格，支持最多到源事件后 150 秒，
+待评 conversation 在源事件后 75 秒到期，已完成观测在源事件后 90 秒内具备候选资格；支持最多到源事件后 150 秒，
 且评分完成后最多再保留 75 秒。这是来源新鲜度边界，不是整个会话的统一有效期。
 
 接纳在数据库内 CAS 核对 owner/epoch 和 proposal 身份；同一 proposal 重放返回原 run。
@@ -54,8 +56,10 @@ controller_epoch 不是已接纳 Work 的执行授权版本。
 普通真人入场使用 `ordinary_turn_admissions` 冻结原事件、actor/Presence、激活及单元来源，
 与自主 proposal 分开；自主开关关闭不拦截原确定性入口。语义开关开启时，获准群中的真实
 邀请和唯一持续互动也不借 SELF owner 取得普通回复资格。接纳记录不表示 Main 已完成，
-不能用它恢复整轮普通闲聊。Input 只表明真人入场，不证明 Yuki 已发言；快速续接还需
-原单元的真实 message 表达回执（存在时保留真实锚点），或明确的局部 `join/stay` 意愿。仅入场后 `NO_REPLY` 不自证持续互动。
+不能用它恢复整轮普通闲聊。Input 只表明真人入场，不证明 Yuki 已发言；快速续接仍需
+原单元的真实表达或局部 `join/stay` 意愿，并同时保有未被后续语义否定的关系依据。
+自身意愿与语义关系不能互相替代：更新的 quiet 收起该单元快路，其他人交流、转题或真实停止也能收起原借用关系；
+stay 或自身发送不能推翻纠正。仅入场后 `NO_REPLY` 不自证持续互动。
 运行中普通 Main 明确接纳的补充与原事件共用 activation；原排队 attempt 通过同一接纳记录
 退出，不按观察水位、最大事件号或发送正文消费其他机会。仅被看到的群史仍是观察。
 每个补充按自己的 binding 记录真人 input；原 Main 的发送和自报不广播给同 activation
@@ -66,7 +70,7 @@ controller_epoch 不是已接纳 Work 的执行授权版本。
 
 原始观测记录的裁剪不等于结束持续交流。已核验单元可保留有限来源指纹、明确的退休证明
 及一条原真实发送回执，用于验证原人物与讨论；不保留整段正文，也不扩大通用来源有效期。
-指纹本身不能补出参与关系。来源撤销、unknown 或不同单元的重新解释会使派生关系退出；
+指纹本身不能补出参与关系。来源撤销或重新解释否定原单元时，派生关系退出；未知评分不补确认进度，也不伪造用户停止。
 晚到自报不重建它，真实晚到回执仍按原身份入账。资源压力优先清理旧派生关系，新的真人
 输入仍可接纳。旧读取器折叠后缺少必要证明时保持未知，不猜回持续互动。
 
@@ -76,7 +80,23 @@ controller_epoch 不是已接纳 Work 的执行授权版本。
 宿主按 semantic owner、有效群授权、来源事实和真实停止边界接纳；
 不叠加 proposal 经验到期、支持强度、全集覆盖、较新发言或等待他人评分门槛。
 已接纳 run 仍按原执行身份恢复。
-获准群记忆可在没有近期真人消息时形成 recall 候选；无来源机会由主 SELF 决定行动或沉默。
+无来源机会由主 SELF 决定行动或沉默，不通过读取 Memory 人造新观察。
+
+### 普通快路与后台复核
+
+同作者与已有有效讨论仍可及时续聊，Main 不等待 Jev。快接的真实新输入可以进入原观察队列，
+保留原去抖、调用间隔、新鲜度与来源核验；admission 已存在不代表该输入已经获得语义确认。
+观察结果先更新原单元关系、回应与停止事实，再由原 admission/consumed 防止同一输入二次激活 Main。
+
+`continuation_review_span` 是同一讨论/对象允许连续借用旧关系的未核验快捷接纳跨度，
+计真人输入而非发送条数。原输入只计一次，hydrate、steer/排队竞争及重启回放不重复增加；
+真实语义确认只推进对应焦点的确认位置，不能将其后未评的输入因出现在 context 中而一并清零。
+达到跨度后，新输入回到原语义入口；unknown、缺维度和观察失败不续额，也不伪造用户拒绝。
+明确请求、直接入口和原 Work/wait 不受该跨度限制。
+
+迟到反馈关联原来源、单元与快接进度，仍可否定未核验输入借用的旧关系，但不能覆盖较新已确认邀请。
+尚未接纳的队列在原 promotion 边界重新核对当前资格；不要求正文 revision 改变才能退出过时快路。
+已接纳 Main、累计预算与真实效果不因纠正倒退，不撤回、重跑或补发已确认回复。
 
 ## SELF 主体与同一执行链
 
@@ -95,8 +115,8 @@ WorkScheduler 调用 `generate_self_initiative`，随后仍经过 `MainAgentTurn
   拒绝继续执行。终态迟到的真实效果可以入账，不能把终态改回运行或触发重新发送。
 
 工作区、终端、沙箱与子 Agent 复用原执行 ID、租约、回执和根预算。子 Agent 仍由既有
-SubagentScheduler 和 Runner 运行，身份保持 SELF，内部结果交给父 Work；它不获得 QQ
-发送权，也不继承主 SELF 的“发送正文或沉默”反馈。没有另起一套工作执行循环。
+SubagentScheduler 和 Runner 运行，身份保持 SELF，内部结果交给父 Work；Social 仍按其原来源和真实授权执行，
+不因委派增加发送权限。它不继承主 SELF 的“发送正文或沉默”反馈，也不代报参与意愿。没有另起一套工作执行循环。
 
 SELF 使用共同 Social 目标解析、通讯录、历史、发送、结构化 @、戳人和原发送撤回。
 默认当前群仍使用原场景与 Presence；显式目标沿共同路由和真实授权核验。
@@ -126,7 +146,7 @@ Jev 保留 Host 已提供的快照，实际请求容量错误沿原 Provider 失
 确认发送的内部事件 ID 关联原 run 或真人入场记录冻结的讨论单元；平台实际群目标仍为
 Space，不能为语义关联改成某个人。普通发送通过原回执和入场来源对账，没有原绑定就
 保持未知，不按后来变化的当前讨论猜回。已有唯一互动的无引用输入可以续接普通 Main，
-这不制造 Jev observation 或 observed 概率；歧义和需要纠正的原焦点仍请求原语义观察。
+不把快捷匹配冒充 Jev observation 或 observed 概率；原焦点仍可并行进入语义复核。
 工具效果、模型请求消耗、取消、暂停与无回复分开反馈。Host 先持久登记反馈，再回放给
 控制器；已结束 run 仍对账迟到效果，反馈序列和效果 ID 防止重入重复累计。
 保留型 `suspended`/`waiting_user` Work 不终结 run：反馈保持 running，原 run 仍可经管理 resume
@@ -160,10 +180,22 @@ continuation；未决协议按原检查点精确恢复，正常业务续跑使�
 请求序号和 response ID 记录；普通主轮按原持久入场绑定、激活和请求顺序归属局部单元。
 `quiet` 收起自己的参与，不制造用户停止边界，不广播关闭全群；原焦点可选择性请求 Jev
 纠正。无 hint 不清空原参与，迟到旧响应不能覆盖新意愿，保存失败不重跑或重发。
+Host 在内部事件保留原账本 row.id 作为 source_order，普通自报沿 source 保存原事件引用；同时间输入仍按原来源顺序裁决。
+不以 event_id 字符串大小或响应到达时间推断新旧，缺顺序证明保持未知；这些字段不伪装成真人发言。
 可见发送和最终正文会剥离该控制尾段；格式错误不靠额外模型请求修复。
 自报不能作为其他人的语义证据，也不允许工作者冒充主 Yuki 自报。
 普通轮允许空正文、仅状态尾段或内部 `NO_REPLY` 安静结束；它们不发送文字，也不触发
 未发送正文的补答。普通入场记录不是 Main journal，进程退出后不自动补跑未完成普通轮。
+
+已有真人焦点的 Jev Snapshot 附带当时合法的局部 engage 和可选 SELF 整体意愿，
+分别限定讨论/对象与 scope；歧义 unit_options 各自映射，不靠同作者或 quiet 强选单元。
+请求明确说明这是 Yuki 自身意愿，不是真人停止、邀请或授权；相对时间沿原报告时间，不伪造历史发言。
+状态仅在原请求取出时冻结，在途报告变化不改写请求、拒绝旧结果或新开评分。
+缺报告保持未知，旧 Snapshot 缺字段仍可读；mood 没有消费者，已从新报告退出，旧报告窄读取保留 engage 与原身份。
+quiet/closed 单元继续保留查询事实，但不能单独令 Host 选择活跃观察档。
+
+固定系统合同的【发言节奏】约束日常简短表达、连续多次调用与换行分条，任务仍及时报告真实进展、阻塞与结果。
+这是模型表达指导，未新增发送次数配额或中途停止工作的执行条件；仓库示例不代表生产挂载提示已加载。
 
 ## 配置与验证方式
 
@@ -177,7 +209,7 @@ Jev 密钥不得写入公开配置、提示词或验收记录。
 | 配置 | 默认值 / 含义 |
 | --- | --- |
 | `conversation.auto_reply_enabled` / `CONVERSATION_AUTO_REPLY_ENABLED` | 默认 true；只控制新 group_open、语义邀请/续聊及 conversation SELF/legacy 机会 |
-| `conversation.proactive_wakeup_enabled` / `CONVERSATION_PROACTIVE_WAKEUP_ENABLED` | 默认 true；只控制新 recall/contact/intrinsic SELF 机会 |
+| `conversation.proactive_wakeup_enabled` / `CONVERSATION_PROACTIVE_WAKEUP_ENABLED` | 默认 true；只控制新 intrinsic SELF 机会 |
 | `conversation.autonomous_enabled` / `CONVERSATION_AUTONOMOUS_ENABLED` | 保留 SELF 总开关及群 Space 的 enabled/autonomous_enabled；普通真人接话独立 |
 | `conversation.semantic_participation_enabled` / `CONVERSATION_SEMANTIC_PARTICIPATION_ENABLED` | 默认 false；开启使用 semantic，显式关闭使用 legacy；观测故障不自动回退 |
 | `SEMANTIC_PARTICIPATION_API_KEY` | 默认空；Jev 观测凭据；未配置时不产生新语义观测，不改变 proposer 归属 |
@@ -194,13 +226,13 @@ canonical inspect_configs 沿传入 session 定键读取 global 与指定 owner�
 前缀/命令、定时工作或既有工具。新 ordinary 与 SELF 的接纳 writer 读取当前产品键；
 prior/payload 对账先于新接纳 predicate。SELF 仍受原 master/semantic/Space/Presence 约束。
 Host 在原推进边界刷新 scene/runtime，按 auto_reply 允许 conversation，按 proactive_wakeup
-允许 recall/contact 与 intrinsic，先排除候选种类再计算机会率；关 proactive 时不生成新 seed。
+允许 intrinsic，先排除候选种类再计算机会率。
 关闭期间继续推进原 last_sample_at，不累计可补采的时间，不删除原反馈或改概率公式。
 尚未接纳的 pending 沿原 discard 返回值及原 proposal/run 查询处理，已接纳身份继续对账。
 
-本分支参与库固定到已发布的 `9e60cb8d59fbab4cacee9af2fbe1ed2932d68c80`；
-上游 [PR #18](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/pull/18) 尚未合并。来源、正式 pin 与验证见
-[#268 实施记录](../operations/issue-268-implementation-20261013.md)。当前没有名为 `shadow` 的运行配置开关；
+参与库的确切版本以 `pyproject.toml`、`uv.lock` 与实际安装一致的修订为准。
+早期接入与当时 pin 见 [#268 实施记录](../operations/issue-268-implementation-20261013.md)，不作为当前依赖声明。
+当前没有名为 `shadow` 的运行配置开关；
 关闭 semantic 表示恢复 legacy，**不等于影子 Jev 仍在后台评分**。影子对照应使用隔离的
 事件重放和观测流程，不提交 proposal、不调用 QQ 发送，不能把它描述成现网已启用模式。
 
@@ -212,6 +244,11 @@ Host 在原推进边界刷新 scene/runtime，按 auto_reply 允许 conversation
 没有修改已发布迁移来加入新行为；
 当前升级清退辅助 `autonomy_source_claims`，保原 run、来源和反馈回执。
 新增表默认不会开启 semantic，也不会恢复被用户关闭的自主总开关。
+
+旧控制器读取在严格校验前清退 seed 正文、未接纳候选及其派生游标/claim，不清空整个控制器，
+不把旧 seed 搬入后续 Jev context。旧已接纳 recall/contact run 及普通 binding 保留原执行身份与来源，
+Memory 依赖只按明确 fact ID 核验 active、verified、有效时间、原群/可见 SELF 范围及至少一条当前可读证据；
+没有候选扫描、重新提议或新种子执行入口。原 Work 密度、真实发送、计算与回应回执仍可按原 run 对账，预算不重置。
 
 本地定向验证覆盖接纳并发与重复、模式切换、代际失效、原 Work/沙箱/子任务恢复、当前群
 发送权限、独立自省回执水位。真实 Provider 序列化对照覆盖 Responses、Chat Completions
