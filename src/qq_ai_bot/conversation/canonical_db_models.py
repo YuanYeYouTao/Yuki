@@ -52,6 +52,8 @@ CANONICAL_CONVERSATION_CREATE_ORDER: tuple[str, ...] = (
     "control_command_receipts",
 )
 CANONICAL_EVENT_TABLES: tuple[str, ...] = ("canonical_event_receipts",)
+
+
 def sha256_hex_sql(column: str) -> str:
     """SQLite CHECK for a lowercase SHA-256 hex digest."""
 
@@ -125,7 +127,7 @@ def _install_parent_route_guards_if_ready(connection: Connection) -> None:
 
 
 class CanonicalConversationModel(Base):
-    """One canonical private conversation per Person, or one space conversation per Space."""
+    """One private conversation per account binding, or one per shared Space."""
 
     __tablename__ = "canonical_conversations"
     __table_args__ = (
@@ -133,6 +135,12 @@ class CanonicalConversationModel(Base):
             ["person_id"],
             ["persons.id"],
             name="fk_canonical_conversations_person",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["identity_binding_id"],
+            ["identity_bindings.id"],
+            name="fk_canonical_conversations_binding",
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
@@ -161,9 +169,11 @@ class CanonicalConversationModel(Base):
         ),
         CheckConstraint(
             "("
-            "kind = 'private' AND person_id IS NOT NULL AND space_id IS NULL"
+            "kind = 'private' AND person_id IS NOT NULL AND space_id IS NULL "
+            "AND identity_binding_id IS NOT NULL"
             ") OR ("
-            "kind = 'space' AND space_id IS NOT NULL AND person_id IS NULL"
+            "kind = 'space' AND space_id IS NOT NULL AND person_id IS NULL "
+            "AND identity_binding_id IS NULL"
             ")",
             name="ck_canonical_conversations_owner_xor",
         ),
@@ -190,8 +200,8 @@ class CanonicalConversationModel(Base):
             name="ck_canonical_conversations_watermarks",
         ),
         Index(
-            "uq_canonical_conversations_person",
-            "person_id",
+            "uq_canonical_conversations_binding",
+            "identity_binding_id",
             unique=True,
             sqlite_where=text("kind = 'private'"),
         ),
@@ -206,6 +216,7 @@ class CanonicalConversationModel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     person_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    identity_binding_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     space_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     primary_alias_id: Mapped[str] = mapped_column(String(36), nullable=False)
     primary_marker: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))

@@ -14,6 +14,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
     PersonActiveRouteModel,
     SpaceActiveRouteModel,
 )
+from qq_ai_bot.conversation.hydrate import conversation_for_binding
 from qq_ai_bot.domain.identity import ConversationId, PersonId
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
@@ -59,11 +60,9 @@ async def resolve_control_context(
     if conversation_id is None:
         if person is None:
             raise ValueError("self_automation_scene_required")
-        conversation = await session.scalar(
-            select(CanonicalConversationModel).where(
-                CanonicalConversationModel.person_id == owner_id,
-                CanonicalConversationModel.kind == "private",
-            )
+        route = await session.get(PersonActiveRouteModel, owner_id)
+        conversation = (
+            await conversation_for_binding(session, route.identity_binding_id) if route else None
         )
     else:
         ConversationId.parse(conversation_id)
@@ -78,7 +77,7 @@ async def resolve_control_context(
         person_route = await session.get(PersonActiveRouteModel, owner_id)
         if person_route is None:
             raise PermissionError("automation_route_unavailable")
-        owner_binding = await session.get(IdentityBindingModel, person_route.identity_binding_id)
+        owner_binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
         presence_id = person_route.presence_id
     else:
         space = await session.get(CanonicalSpaceModel, conversation.space_id)
@@ -146,7 +145,11 @@ async def resolve_control_context(
 
 
 async def resolve_execution_identity(
-    session: AsyncSession, settings: Settings, *, owner_id: str
+    session: AsyncSession,
+    settings: Settings,
+    *,
+    owner_id: str,
+    conversation_id: str | None = None,
 ) -> tuple[str, PermissionLevel]:
     """Resolve a current account for the permanent owner, independent of the send target."""
     person = await session.get(CanonicalPersonModel, owner_id)
@@ -164,7 +167,14 @@ async def resolve_execution_identity(
         ).all()
     )
     route = await session.get(PersonActiveRouteModel, owner_id)
-    if route is not None:
+    conversation = (
+        await session.get(CanonicalConversationModel, conversation_id) if conversation_id else None
+    )
+    if conversation is not None and conversation.kind == "private":
+        binding = next(
+            (item for item in bindings if item.id == conversation.identity_binding_id), None
+        )
+    elif route is not None:
         binding = next((item for item in bindings if item.id == route.identity_binding_id), None)
     else:
         binding = bindings[0] if len(bindings) == 1 else None

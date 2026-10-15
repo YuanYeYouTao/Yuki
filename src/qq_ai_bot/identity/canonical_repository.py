@@ -497,6 +497,7 @@ async def apply_event_identity(
     event: ChatEventModel,
     *,
     sender_is_bot: bool,
+    ingress: PresenceModel,
 ) -> None:
     """Fill canonical event author and ingress fields without legacy lookup."""
 
@@ -504,17 +505,17 @@ async def apply_event_identity(
     from qq_ai_bot.identity.event_author import project_event_author
 
     trip("before_event_shadow")
-    ingress = await find_presence(session, external_id(event.bot_user_id))
     event.utterance_fingerprint = None
     event.ingress_provider = None
     event.ingress_gateway_instance_id = None
-    event.ingress_presence_id = None if ingress is None else ingress.id
+    event.ingress_presence_id = ingress.id
     author = await project_event_author(
         session,
         sender_user_id=event.sender_user_id,
         sender_is_bot=sender_is_bot,
         event_kind=event.event_kind,
         direction=event.direction,
+        platform=ingress.platform,
     )
     if author.author_kind == AuthorKind.PERSON.value and author.author_person_id is None:
         raise CanonicalIdentityError("unclassified")
@@ -539,15 +540,13 @@ async def forget_person_for_external_account(session: AsyncSession, user_id: str
     route = await session.get(PersonActiveRouteModel, person_id)
     if route is not None:
         await session.delete(route)
-    for item in bindings:
-        await session.delete(item)
-    conversation = await session.scalar(
+    conversations = await session.scalars(
         select(CanonicalConversationModel).where(
             CanonicalConversationModel.kind == "private",
             CanonicalConversationModel.person_id == person_id,
         )
     )
-    if conversation is not None:
+    for conversation in conversations:
         aliases = list(
             await session.scalars(
                 select(ConversationLegacyAliasModel).where(
@@ -558,6 +557,9 @@ async def forget_person_for_external_account(session: AsyncSession, user_id: str
         for alias in aliases:
             await session.delete(alias)
         await session.delete(conversation)
+    await session.flush()
+    for item in bindings:
+        await session.delete(item)
     person = await session.get(CanonicalPersonModel, person_id)
     if person is not None:
         await session.delete(person)

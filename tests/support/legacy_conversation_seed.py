@@ -9,6 +9,40 @@ from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_space
 from qq_ai_bot.persistence.database import Database
 
 
+async def enable_binding_column_for_legacy_seed(database: Database) -> None:
+    """Let current runtime build old test facts, then restore the frozen schema.
+
+    These tests seed pre-0120 databases using the real current Work machinery.
+    The nullable seed-only column carries the old single private owner's binding;
+    closing the seed connection removes it before Alembic tests the real upgrade.
+    No production compatibility path or historical migration is changed.
+    """
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            text("ALTER TABLE canonical_conversations ADD COLUMN identity_binding_id VARCHAR(36)")
+        )
+        await writer.execute(
+            text(
+                "UPDATE canonical_conversations SET identity_binding_id=("
+                "SELECT b.id FROM identity_bindings b "
+                "WHERE b.person_id=canonical_conversations.person_id) "
+                "WHERE kind='private'"
+            )
+        )
+    original_close = database.close
+
+    async def close_seed() -> None:
+        try:
+            async with database.immediate_session() as writer:
+                await writer.execute(
+                    text("ALTER TABLE canonical_conversations DROP COLUMN identity_binding_id")
+                )
+        finally:
+            await original_close()
+
+    database.close = close_seed
+
+
 async def seed_pre_0119_social_conversations(database: Database, *, private: bool = False) -> None:
     """Seed the frozen NOT NULL layout used by the 0104–0118 upgrade tests."""
     async with database.immediate_session() as writer:
@@ -48,3 +82,4 @@ async def seed_pre_0119_social_conversations(database: Database, *, private: boo
                 ),
                 values,
             )
+    await enable_binding_column_for_legacy_seed(database)

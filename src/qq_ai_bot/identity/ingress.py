@@ -11,7 +11,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.adapters.onebot.normalizer import reproject_inbound_mentions
-from qq_ai_bot.conversation.hydrate import HydratedConversation, ensure_canonical_conversation
+from qq_ai_bot.conversation.hydrate import (
+    HydratedConversation,
+    binding_for_scope,
+    ensure_canonical_conversation,
+)
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage
@@ -189,7 +193,9 @@ class CanonicalIngressResolver:
             return _drop("ingress_connection_changed", message)
         if connection.snapshot.presence_id is None:
             presence = await find_presence(
-                session, external_id(connection.snapshot.external_account_id)
+                session,
+                external_id(connection.snapshot.external_account_id),
+                platform=connection.snapshot.platform,
             )
             if presence is None or not presence.enabled:
                 return _drop("no_presence", message)
@@ -222,8 +228,7 @@ class CanonicalIngressResolver:
         author_kind, author_person_id, author_presence_id = await _author_for(
             session,
             overlay,
-            yuki_ids=yuki_ids,
-            ingress_presence_id=presence_id,
+            platform=presence.platform,
         )
         space_id: str | None = None
         space_binding_id: str | None = None
@@ -273,13 +278,19 @@ class CanonicalIngressResolver:
         else:
             if author_kind == AuthorKind.PERSON.value and person_id is None:
                 person_id = await _ensure_person_id(
-                    session, overlay.sender.user_id, display_name=overlay.sender.nickname
+                    session,
+                    overlay.sender.user_id,
+                    display_name=overlay.sender.nickname,
+                    platform=presence.platform,
                 )
             if person_id is None and author_kind == AuthorKind.PERSON.value:
                 return _drop("no_person", overlay)
         if author_kind == AuthorKind.PERSON.value and person_id is None:
             person_id = await _ensure_person_id(
-                session, overlay.sender.user_id, display_name=overlay.sender.nickname
+                session,
+                overlay.sender.user_id,
+                display_name=overlay.sender.nickname,
+                platform=presence.platform,
             )
         author_person_id = person_id if author_kind == AuthorKind.PERSON.value else None
         if author_kind != AuthorKind.PERSON.value and overlay.scope_type is ScopeType.PRIVATE:
@@ -398,23 +409,24 @@ async def _author_for(
     session: AsyncSession,
     message: InboundMessage,
     *,
-    yuki_ids: frozenset[str],
-    ingress_presence_id: str,
+    platform: str,
 ) -> tuple[str, str | None, str | None]:
     from qq_ai_bot.identity.event_author import project_event_author
 
-    del yuki_ids, ingress_presence_id
     author = await project_event_author(
         session,
         sender_user_id=message.sender.user_id,
         sender_is_bot=message.sender.is_bot,
+        platform=platform,
     )
     return author.as_tuple()
 
 
-async def _ensure_person_id(session: AsyncSession, user_id: str, *, display_name: str = "") -> str:
+async def _ensure_person_id(
+    session: AsyncSession, user_id: str, *, platform: str, display_name: str = ""
+) -> str:
     account_id = external_id(user_id)
-    binding = await find_identity_binding(session, account_id)
+    binding = await find_identity_binding(session, account_id, platform=platform)
     if binding is not None:
         if binding.status != "active":
             raise CanonicalIdentityError("canonical_owner_disabled")
@@ -424,6 +436,7 @@ async def _ensure_person_id(session: AsyncSession, user_id: str, *, display_name
         external_account_id=account_id,
         display_name=display_name,
         now=message_now(),
+        platform=platform,
     )
     return created.person_id
 
@@ -444,11 +457,15 @@ async def _hydrate_for_message(
         if person_id is None:
             raise CanonicalIdentityError("unclassified")
         scope = ConversationScope.private(ingress_bot_user_id, message.sender.user_id)
+        binding = await binding_for_scope(session, scope)
+        if binding is None or binding.person_id != person_id:
+            raise CanonicalIdentityError("no_person")
         return await ensure_canonical_conversation(
             session,
             kind="private",
             primary_scope_key=scope.key,
             person_id=person_id,
+            identity_binding_id=binding.id,
         )
     if space_id is None or message.group_id is None:
         raise CanonicalIdentityError("unclassified")

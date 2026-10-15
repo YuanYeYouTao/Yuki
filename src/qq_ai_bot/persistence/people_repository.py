@@ -241,14 +241,9 @@ async def _canonical_conversation_for_privacy_scope(
     session: AsyncSession,
     scope: ConversationScope,
 ) -> CanonicalConversationModel | None:
-    alias = await session.scalar(
-        select(ConversationLegacyAliasModel).where(
-            ConversationLegacyAliasModel.scope_key == scope.key
-        )
-    )
-    if alias is None:
-        return None
-    return await session.get(CanonicalConversationModel, alias.conversation_id)
+    from qq_ai_bot.conversation.hydrate import conversation_for_scope
+
+    return await conversation_for_scope(session, scope)
 
 
 class PeopleRepository:
@@ -714,6 +709,18 @@ class PeopleRepository:
             )
         await session.execute(delete(WebSearchRunModel).where(or_(*web_cleanup_conditions)))
         now = datetime.now(UTC)
+        private_conversation_ids = set(
+            await session.scalars(
+                select(CanonicalConversationModel.id).where(
+                    CanonicalConversationModel.kind == "private",
+                    CanonicalConversationModel.person_id == person_id,
+                )
+            )
+        )
+        from qq_ai_bot.runtime.work_repository import WorkRepository
+
+        for conversation_id in private_conversation_ids:
+            await WorkRepository.purge_scope(session, conversation_id)
         for scope in affected_scopes:
             conversation = await _canonical_conversation_for_privacy_scope(session, scope)
             is_private_target = (
@@ -721,9 +728,8 @@ class PeopleRepository:
                 and scope.private_peer_user_id in owner_externals
             )
             if conversation is not None:
-                from qq_ai_bot.runtime.work_repository import WorkRepository
-
-                await WorkRepository.purge_scope(session, conversation.id)
+                if conversation.id not in private_conversation_ids:
+                    await WorkRepository.purge_scope(session, conversation.id)
                 if not is_private_target:
                     conversation.generation += 1
                     conversation.starts_after_event_id = conversation.last_event_id

@@ -223,6 +223,7 @@ async def test_conversation_uuid_cannot_be_used_as_memory_owner(database: Databa
                 id=person_id,
                 kind="private",
                 person_id=person_id,
+                identity_binding_id=binding_id,
                 space_id=None,
                 primary_alias_id=alias_id,
                 primary_marker=1,

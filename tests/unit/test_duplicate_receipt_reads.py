@@ -14,7 +14,11 @@ from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
 from qq_ai_bot.conversation.canonical_db_models import SpaceBindingIngestRouteModel
 from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
 from qq_ai_bot.identity import canonical_uow
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
+from qq_ai_bot.identity.canonical_repository import (
+    ensure_person,
+    ensure_presence,
+    find_identity_binding,
+)
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialTarget
@@ -25,7 +29,11 @@ async def social(database):
     async with database.immediate_session() as writer:
         person = await ensure_person(writer, "1001")
         conversation = await ensure_canonical_conversation(
-            writer, kind="private", primary_scope_key="private:8000:1001", person_id=person
+            writer,
+            kind="private",
+            primary_scope_key="private:8000:1001",
+            person_id=person,
+            identity_binding_id=(await find_identity_binding(writer, "1001")).id,
         )
     repository = SocialOperationRepository(database)
     args = dict(

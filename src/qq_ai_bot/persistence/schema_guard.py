@@ -211,7 +211,9 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
         }
     ),
     "presences": frozenset({"id", "platform", "external_account_id", "enabled"}),
-    "canonical_conversations": frozenset({"id", "kind", "generation", "prompt_source_revision"}),
+    "canonical_conversations": frozenset(
+        {"id", "kind", "identity_binding_id", "generation", "prompt_source_revision"}
+    ),
     "conversation_legacy_aliases": frozenset({"id", "conversation_id", "scope_key", "is_primary"}),
     "chat_events": frozenset(
         {

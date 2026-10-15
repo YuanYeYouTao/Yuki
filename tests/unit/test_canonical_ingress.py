@@ -18,6 +18,7 @@ from qq_ai_bot.gateway.provider import GatewayConnectionProfile, GatewayProvider
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.identity.canonical_repository import (
     ensure_person,
+    find_identity_binding,
     set_identity_failpoint,
 )
 from qq_ai_bot.identity.canonical_repository import (
@@ -534,6 +535,7 @@ async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
             kind="private",
             primary_scope_key="bot:8000:private:1099",
             person_id=other_person,
+            identity_binding_id=(await find_identity_binding(session, "1099")).id,
         )
         row.canonical_conversation_id = other.conversation_id
     with pytest.raises(CanonicalIdentityError) as forged:

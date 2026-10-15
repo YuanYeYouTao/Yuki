@@ -38,6 +38,7 @@ async def project_event_author(
     sender_is_bot: bool = False,
     event_kind: str = "message",
     direction: str = "inbound",
+    platform: str = IDENTITY_PLATFORM,
 ) -> EventAuthorProjection:
     """Classify a sender from existing same-platform Presence/Binding rows.
 
@@ -51,7 +52,7 @@ async def project_event_author(
     sender_id = external_id(sender_user_id)
     return (
         await project_event_authors(
-            session, sender_user_ids=(sender_id,), sender_is_bot=sender_is_bot
+            session, sender_user_ids=(sender_id,), sender_is_bot=sender_is_bot, platform=platform
         )
     )[sender_id]
 
@@ -61,6 +62,7 @@ async def project_event_authors(
     *,
     sender_user_ids: tuple[str, ...],
     sender_is_bot: bool = False,
+    platform: str = IDENTITY_PLATFORM,
 ) -> dict[str, EventAuthorProjection]:
     """Project the requested accounts together using the same canonical rules."""
 
@@ -74,7 +76,7 @@ async def project_event_authors(
         for account, presence_id in (
             await session.execute(
                 select(PresenceModel.external_account_id, PresenceModel.id).where(
-                    PresenceModel.platform == IDENTITY_PLATFORM,
+                    PresenceModel.platform == platform,
                     PresenceModel.external_account_id.in_(selected),
                 )
             )
@@ -94,7 +96,7 @@ async def project_event_authors(
                     CanonicalPersonModel, CanonicalPersonModel.id == IdentityBindingModel.person_id
                 )
                 .where(
-                    IdentityBindingModel.platform == IDENTITY_PLATFORM,
+                    IdentityBindingModel.platform == platform,
                     IdentityBindingModel.external_account_id.in_(selected),
                 )
             )

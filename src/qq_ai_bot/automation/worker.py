@@ -149,7 +149,10 @@ class AutomationWorker:
                 if automation.creator_kind != "self":
                     assert automation.canonical_creator_person_id is not None
                     actor_user_id, _ = await resolve_execution_identity(
-                        session, self._settings, owner_id=automation.canonical_creator_person_id
+                        session,
+                        self._settings,
+                        owner_id=automation.canonical_creator_person_id,
+                        conversation_id=conversation_id,
                     )
             group_id = (
                 automation.authority_snapshot["current_group_id"]

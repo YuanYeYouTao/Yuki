@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import select, update
 from tests.unit.test_rebuild_receipt_finalization import _seed
 
 from qq_ai_bot.domain.conversations import ScopeType
@@ -187,7 +187,9 @@ async def test_trusted_reference_change_after_hydration_rejects_old_receipt(
                     )
                 else:
                     await writer.execute(
-                        delete(IdentityBindingModel).where(IdentityBindingModel.id == binding_id)
+                        update(IdentityBindingModel)
+                        .where(IdentityBindingModel.id == binding_id)
+                        .values(external_account_id="retired-3003", status="disabled")
                     )
                     now = datetime.now(UTC)
                     writer.add(

@@ -20,6 +20,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import Column, DateTime, Integer, String, Text, select, text
 from sqlalchemy.orm import declarative_base
+from tests.support.legacy_conversation_seed import enable_binding_column_for_legacy_seed
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.conversation.canonical_db_models import (
@@ -148,6 +149,7 @@ async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=
                 ),
                 {"id": conversation, "alias": alias, "now": now},
             )
+        await enable_binding_column_for_legacy_seed(database)
         env = await social_env(database, tmp_path)
         identities = [str(uuid4()) for _ in range(3)]
         summary = str(uuid4())

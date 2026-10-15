@@ -737,7 +737,7 @@ class ContextAssembler:
     ) -> None:
         """Check the original canonical identity before selecting source bodies."""
 
-        state = await self._scopes.get(scope)
+        state = await self._scopes.get(scope, expected_turn=turn)
         if state is None:
             raise ConversationCoverageError("conversation scope does not exist")
         if not turn_matches_hydrated_scope(

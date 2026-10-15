@@ -22,6 +22,9 @@ from qq_ai_bot.identity.canonical_repository import (
 from qq_ai_bot.identity.canonical_repository import (
     ensure_space as ensure_v2_space,
 )
+from qq_ai_bot.identity.canonical_repository import (
+    find_identity_binding,
+)
 from qq_ai_bot.identity.routing import PresenceRouter, RouteMonitor, RouteSendError
 from qq_ai_bot.identity.write_settings import (
     IdentityWriteSettings,
@@ -55,7 +58,7 @@ async def test_takeover_zero_one_many_and_route_pause(database: Database) -> Non
     bot_b = _Bot("8001")
     async with database.sessions() as session, session.begin():
         presence_a = await ensure_v2_presence(session, "8000")
-        person_id = await _ensure_person_id(session, "1001")
+        person_id = await _ensure_person_id(session, "1001", platform="qq")
     empty = await router.cas_takeover_person(person_id)
     assert empty == "none"
     registry.connect(bot_a)
@@ -109,7 +112,7 @@ async def test_transient_disconnect_preserves_routes_until_same_presence_reconne
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
-        person_id = await _ensure_person_id(session, "1001")
+        person_id = await _ensure_person_id(session, "1001", platform="qq")
         space_id = await ensure_v2_space(session, "2001")
         binding = await session.scalar(
             select(SpaceBindingModel).where(SpaceBindingModel.space_id == space_id)
@@ -121,6 +124,7 @@ async def test_transient_disconnect_preserves_routes_until_same_presence_reconne
             kind="private",
             primary_scope_key="bot:8000:private:1001",
             person_id=person_id,
+            identity_binding_id=(await find_identity_binding(session, "1001")).id,
         )
         space_conversation = await ensure_canonical_conversation(
             session,
@@ -355,7 +359,7 @@ async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
     other = _Bot("8002")
     async with database.sessions() as session, session.begin():
         presence_a = await ensure_v2_presence(session, "8000")
-        person_id = await _ensure_person_id(session, "1001")
+        person_id = await _ensure_person_id(session, "1001", platform="qq")
     registry.connect(bot)
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     assert await router.cas_takeover_person(person_id) == "taken"
@@ -417,7 +421,7 @@ async def test_ingest_eligible_does_not_block_person_or_space_send(
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
-        person_id = await _ensure_person_id(session, "1001")
+        person_id = await _ensure_person_id(session, "1001", platform="qq")
         space_id = await ensure_v2_space(session, "2001")
         row = await session.get(PresenceModel, presence)
         assert row is not None
@@ -459,7 +463,7 @@ async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
         presence_a = await ensure_v2_presence(session, "8000")
         presence_b = await ensure_v2_presence(session, "8001")
         presence_c = await ensure_v2_presence(session, "8002")
-        person_id = await _ensure_person_id(session, "1001")
+        person_id = await _ensure_person_id(session, "1001", platform="qq")
         assert (
             await session.scalar(
                 select(IdentityBindingModel).where(IdentityBindingModel.person_id == person_id)

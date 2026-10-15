@@ -17,8 +17,9 @@
 - `Space`：永久共享空间；QQ 群只是它的一种外部表现。
 - `SpaceBinding`：Space 与外部群号的绑定。
 - `Presence`：Yuki 自己的平台账号。Presence 不是 Person。
-- `CanonicalConversation`：私聊按 Person 唯一，群聊按 Space 唯一。显式 `/ai new` 或隐私遗忘
-  等上下文边界操作会推进 Conversation generation；更换账号本身不推进它。
+- `CanonicalConversation`：私聊按 IdentityBinding 唯一，群聊按 Space 唯一。同一 Person 的
+  多个账号分别保有自己的历史、generation、检查点与模型 session；Memory 仍归 Person。
+  `/ai new` 只推进命令所在会话的 generation。
 
 第三方机器人使用 `external_bot` 作者类型，不创建 Person 或人物记忆。事件作者只有
 `person`、`yuki`、`external_bot`、`system` 四类；命令、插件和自动化属于 event origin，
@@ -35,8 +36,14 @@ Presence 与 canonical Conversation。事件账本保留平台 message ID、send
 `canonical_event_id` 是另一种关联标识，不能与整数账本主键混用。
 
 历史 alias 只用于稳定兼容键。多个 alias 可以指向一个 canonical Conversation，当前插件 SDK
-读取固化的 primary alias。换 QQ、换 Provider、连接重建或路由接管都不得更改 Conversation
-generation。
+读取固化的 primary alias。新私聊使用 `binding:<id>` 作为 primary alias；私聊解析统一经过
+Presence 的平台和对方账号所对应的有效绑定，旧 transport alias 只作历史定位。
+已有 turn 或读版本直接使用其 Conversation ID。连接重建、Provider 更换或路由接管
+不推进 generation；自动化优先使用原创建会话，缺失时才使用主动路由绑定。
+
+迁移 0120 保留旧会话及全部事件、Work、回执与检查点 ID，把旧会话归到 primary alias
+对应的绑定；不能唯一确定时中止。其他绑定下次入站建立新会话，旧 alias 不搬迁。
+Person 隐私遗忘覆盖其所有入口会话。
 
 公共历史由该 Conversation 的已选 compact 检查点和覆盖点后的原消息组成；原始
 `chat_events` 始终是证据源。检查点是不可信输入，不进入 Memory，也不授予权限。

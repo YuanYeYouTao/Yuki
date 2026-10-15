@@ -50,7 +50,7 @@
   正向重试与已发送／未知拒绝场景通过。未放宽原领域重试条件。
 
 未运行真实 QQ、付费模型、生产迁移或部署；本阶段不需要外接模型 API。
-P3 记录见下；P4–P11 尚未完成。
+P3、P4 记录见下；P5–P11 尚未完成。
 
 ## P3：旧 WebUI 与旧控制面退役
 
@@ -78,3 +78,32 @@ Manager 删除 `workspace_upload`；原终端完成结果读取暂留，等待�
 
 生产退出核验尚未执行：没有检查生产库的 running 控制回执，也没有更新宿主 Manager。
 本记录只说明代码退役与本地验证，不表示生产退出条件已满足或已经部署。
+
+## P4：私聊会话按绑定拆分
+
+新增迁移 0120 与私聊所属绑定列，私聊唯一索引改为绑定。旧会话按原 primary alias
+回填，事件、Work、原预算、回执、检查点和 primary alias 不迁移；不能确定的会话
+列出 ID 并中止。新私聊以 `binding:<id>` 为 primary，冲突的旧 transport alias 留在旧会话。
+未拆分的 schema 可降回 0119 并重新升级；出现多个入口会话后拒绝降级，不合并历史。
+
+入站、出站、提示词快照、账本窗口／搜索／读版本与隐私范围共用绑定解析；
+已有 turn／读版本按原 Conversation ID 读。作者解析使用入口 Presence 的平台。
+自动化优先沿原创建会话，缺失时沿主动路由绑定；插件后台完成恢复从原事件取传输身份，
+不把新的 primary alias 当传输地址解析。Self Reflection 与工具结果原已按会话 ID 关联，保持。
+Person 遗忘遍历全部私聊，包含停用绑定，并在删除绑定前清理原 Work 与会话。
+
+验证（本地）：
+
+- 新增契约测试：6 passed，覆盖四绑定共用 Person 但历史与 generation 独立、
+  旧 alias 冲突后的连续收发／搜索／快照、另一入口重建不改变原 Work、
+  停用绑定的隐私清退、原迁移事实保留、无法定位时回滚与 schema 往返／拒绝合并。
+- 首轮全量暴露的历史 alias 假设和旧迁移夹具问题，修正后相关模块：72 passed。
+  旧迁移夹具构造事实时临时提供当前 ORM 所需的绑定列，关闭种子库前删除；
+  实际 Alembic 升级仍从原结构开始，不在生产代码加入旧 schema 分支。
+- 最终 Linux 完整回归（四组均退出 0）：1742 passed、67 skipped。
+  skipped 为可选 Monty worker 未构建与未安装 PowerShell；未新增跳过条件。
+- `ruff check .`、`mypy src`、`mypy --platform linux src`、`git diff --check` 通过。
+  随后把“另一入口原 Work 不变”断言加强为完整持久行相等，该专项 3 passed。
+
+未在生产副本运行迁移或统计多绑定／alias 冲突；未部署。App Provider、个人 API、
+完整模型请求与跨设备验收继续由 P5–P11 实现和验证。

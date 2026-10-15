@@ -25,7 +25,7 @@ from qq_ai_bot.automation.models import (
     Schedule,
 )
 from qq_ai_bot.automation.task_spec import TaskSpec, canonical_task_hash
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+from qq_ai_bot.conversation.hydrate import binding_for_scope, ensure_canonical_conversation
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.canonical_repository import (
     IDENTITY_PLATFORM,
@@ -1103,6 +1103,11 @@ async def _bind_canonical_send_targets(
         target_person = await active_person_id_for(session, authority.creator_user_id)
         if target_person is None:
             raise ValueError("发送目标没有对应的永久主体")
+        binding = await binding_for_scope(
+            session, ConversationScope.private(authority.bot_user_id, authority.creator_user_id)
+        )
+        if binding is None:
+            raise ValueError("发送目标没有对应的账号绑定")
         await ensure_canonical_conversation(
             session,
             kind="private",
@@ -1110,6 +1115,7 @@ async def _bind_canonical_send_targets(
                 authority.bot_user_id, authority.creator_user_id
             ).key,
             person_id=target_person,
+            identity_binding_id=binding.id,
         )
         return target_person, None
     return await _default_canonical_target(session, authority)

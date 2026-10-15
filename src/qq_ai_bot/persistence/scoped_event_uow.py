@@ -25,10 +25,9 @@ from qq_ai_bot.identity.canonical_repository import (
     apply_event_identity,
     external_id,
     find_identity_binding,
-    find_presence,
     find_space_binding,
 )
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
+from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, PresenceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.receipt_compat import (
     load_claimed_keeper,
@@ -675,14 +674,22 @@ class ScopedEventLedgerUnitOfWork:
 
         from sqlalchemy.exc import IntegrityError
 
-        presence = await find_presence(session, external_id(scope.bot_user_id))
+        presence = (
+            await session.execute(
+                select(PresenceModel).where(
+                    PresenceModel.external_account_id == external_id(scope.bot_user_id)
+                )
+            )
+        ).scalar_one_or_none()
         if presence is None:
             raise CanonicalIdentityError("no_presence")
         presence_id = presence.id
         if scope.scope_type is ScopeType.GROUP:
             if scope.group_id is None:
                 raise CanonicalIdentityError("no_space_binding")
-            space_binding = await find_space_binding(session, external_id(scope.group_id))
+            space_binding = await find_space_binding(
+                session, external_id(scope.group_id), platform=presence.platform
+            )
             space = (
                 None
                 if space_binding is None or space_binding.status != "active"
@@ -698,7 +705,9 @@ class ScopedEventLedgerUnitOfWork:
             )
         else:
             person_binding = await find_identity_binding(
-                session, external_id(scope.private_peer_user_id or sender_user_id)
+                session,
+                external_id(scope.private_peer_user_id or sender_user_id),
+                platform=presence.platform,
             )
             person = (
                 None
@@ -707,11 +716,13 @@ class ScopedEventLedgerUnitOfWork:
             )
             if person is None or not person.enabled:
                 raise CanonicalIdentityError("no_person")
+            assert person_binding is not None
             hydrated = await ensure_canonical_conversation(
                 session,
                 kind="private",
                 primary_scope_key=scope.key,
                 person_id=person.id,
+                identity_binding_id=person_binding.id,
             )
         receipt_event_type = (external_event_type or "message")[:64]
         existing, receipt = await self._find_existing_live(
@@ -848,7 +859,7 @@ class ScopedEventLedgerUnitOfWork:
             occurred_at=timestamp,
             observed_at=observed_at,
         )
-        await apply_event_identity(session, row, sender_is_bot=sender_is_bot)
+        await apply_event_identity(session, row, sender_is_bot=sender_is_bot, ingress=presence)
         row.canonical_event_id = canonical_event_id
         row.canonical_conversation_id = hydrated.conversation_id
         row.suppression_status = "keeper"

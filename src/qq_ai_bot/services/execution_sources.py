@@ -173,7 +173,6 @@ class BackgroundTaskSource:
 async def recover_background_source(
     database: Database, conversation_id: str, source: dict[str, Any], *, request_id: str
 ) -> BackgroundTaskSource:
-    from qq_ai_bot.conversation.scope import ConversationScope
     from qq_ai_bot.plugin_host.db_models import PluginBackgroundTurnJobModel
     from qq_ai_bot.plugin_host.notification_repository import (
         PluginNotificationRepository,
@@ -194,7 +193,6 @@ async def recover_background_source(
     context = await PluginNotificationRepository(database).load_background_context(
         record, work_id=request_id
     )
-    scope = ConversationScope.parse(context.primary_alias)
     async with database.sessions() as session:
         presence = await session.get(PresenceModel, source.get("presence_id"))
         event = await session.get(ChatEventModel, record.source_event_id)
@@ -203,7 +201,7 @@ async def recover_background_source(
             or presence is None
             or not presence.enabled
             or presence.platform != "qq"
-            or presence.external_account_id != scope.bot_user_id
+            or presence.external_account_id != event.bot_user_id
         ):
             raise ValueError("task_presence_disabled")
     return BackgroundTaskSource(
@@ -217,7 +215,7 @@ async def recover_background_source(
         context.space_id,
         presence.id,
         presence.external_account_id,
-        scope.group_id or scope.private_peer_user_id or "",
+        event.group_id or event.private_peer_user_id or "",
         event.content,
     )
 

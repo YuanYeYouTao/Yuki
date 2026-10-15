@@ -5,7 +5,12 @@ from __future__ import annotations
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.automation.models import AutomationRecord
+from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
+    PersonActiveRouteModel,
+)
 from qq_ai_bot.conversation.hydrate import (
+    conversation_for_binding,
     conversation_for_owner,
     require_primary_alias_for_conversation,
 )
@@ -41,7 +46,17 @@ async def bind_automation_conversation(
     if not person_id and not space_id:
         raise AutomationBindError("target_missing")
     if person_id:
-        existing = await conversation_for_owner(session, kind="private", person_id=person_id)
+        original_id = automation.authority_snapshot.get("canonical_conversation_id")
+        existing = (
+            await session.get(CanonicalConversationModel, original_id) if original_id else None
+        )
+        if existing is None or existing.person_id != person_id:
+            route = await session.get(PersonActiveRouteModel, person_id)
+            existing = (
+                await conversation_for_binding(session, route.identity_binding_id)
+                if route
+                else None
+            )
         if existing is None:
             return f"person:{person_id}", None
         return await _require_primary_alias(session, existing.id), existing.id
