@@ -297,6 +297,7 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
             elif item_type == "web_search_call":
                 event = self._parse_native_event(raw_item)
                 native_events.append(event)
+                citations.extend(self._parse_native_sources(raw_item, event.call_id))
                 logger.info(
                     "responses_native_tool_event tool_type=%s status=%s action_type=%s "
                     "provider_request_id=%s",
@@ -394,6 +395,8 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
             if not isinstance(annotation, dict):
                 continue
             nested = annotation.get("url_citation")
+            if annotation.get("type") != "url_citation" and not isinstance(nested, dict):
+                continue
             source = nested if isinstance(nested, dict) else annotation
             raw_url = source.get("url") or source.get("source_url")
             if not isinstance(raw_url, str) or not raw_url:
@@ -404,6 +407,30 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
                     url=raw_url,
                     title=raw_title if isinstance(raw_title, str) else "",
                     origin=CitationOrigin.ANNOTATION,
+                )
+            )
+        return citations
+
+    @staticmethod
+    def _parse_native_sources(item: dict[str, Any], call_id: str) -> list[ResponseCitation]:
+        action = item.get("action")
+        if not isinstance(action, dict):
+            return []
+        sources = action.get("sources")
+        citations: list[ResponseCitation] = []
+        for source in sources if isinstance(sources, list) else ():
+            if not isinstance(source, dict):
+                continue
+            url = source.get("url")
+            if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+                continue
+            title = source.get("title")
+            citations.append(
+                ResponseCitation(
+                    url=url,
+                    title=title if isinstance(title, str) else "",
+                    origin=CitationOrigin.NATIVE_RESULT,
+                    call_id=call_id,
                 )
             )
         return citations

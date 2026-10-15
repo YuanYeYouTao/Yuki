@@ -450,8 +450,8 @@ def _page_web(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     environment["WEB_ENABLED"] = _bool_text(web_mode != "disabled")
     if draft.initial and web_mode == "native":
         if provider == "deepseek":
-            environment["WEB_SEARCH_BACKEND"] = "deepseek_anthropic"
-            ui.info("将明确使用主连接的密钥请求官方 DeepSeek 独立搜索；主对话仍用原协议。")
+            environment["WEB_SEARCH_BACKEND"] = "model"
+            ui.info("将生成独立 DeepSeek Messages 搜索连接，共用已填写密钥；主对话仍用原协议。")
         elif draft.protocol == "gemini":
             environment["WEB_SEARCH_BACKEND"] = "tavily"
             ui.info("Gemini 将使用独立搜索桥，不把 Google Search 和函数声明混入同一个请求。")

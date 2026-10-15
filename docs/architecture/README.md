@@ -27,7 +27,7 @@
 | [插件架构](../plugin-development/architecture.md) | Plugin API 3.5、Host、SDK 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager 与交付 |
 | [Code Mode 运维](../operations/pi-codemode-operations.md) | 可选构建、隔离、原数据和切换 |
-| [搜索适配](../deepseek-search-bridge.md) | 显式独立连接、协议适配与真实失败兜底 |
+| [独立原生搜索](../deepseek-search-bridge.md) | 独立搜索连接、三种原生协议、网页提取与升级 |
 
 ## 设计报告与后续计划
 

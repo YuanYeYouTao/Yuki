@@ -216,6 +216,7 @@ class ConfigFileService:
                     if type(raw.get("schema_version", 3)) is int
                     else 3,
                     "profiles": profiles,
+                    "search_backend": raw.get("search_backend"),
                     "search_connection": raw.get("search_connection"),
                     "routes": {
                         task.value: routes.get(task.value)
@@ -290,8 +291,9 @@ class ConfigFileService:
                     ):
                         raise ValueError("invalid document")
                     document = _plain(spec["document"])
-                    if document.get("search_connection") is None:
-                        document.pop("search_connection", None)
+                    for optional in ("search_backend", "search_connection"):
+                        if document.get(optional) is None:
+                            document.pop(optional, None)
                     profiles = document.get("profiles")
                     if not isinstance(profiles, dict):
                         raise ValueError("invalid profiles")

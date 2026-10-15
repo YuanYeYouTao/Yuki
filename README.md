@@ -91,7 +91,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 - **图片与视频**：当前、引用和历史附件，以及 Agent 选取的工作区或获准工具图片，共用原主模型的原生图片输入。历史附件按内部事件索引、会话和缓存有效期核验；缺少图片能力时明确报告未读，不隐式换模型或调用独立 Qwen 视觉摘要。MP4/MOV 视频通过 FFmpeg 抽帧进入同一个主 Agent，不分析音轨，也不保证覆盖所有瞬间。后台表情分类和插件显式视觉能力仍可使用独立视觉连接。
 - **接收语音**：私聊、符合回复策略的群聊及引用语音经 Qwen ASR 转写，进入聊天历史、搜索和公共 compact。按附件顺序保留已识别全文与来源，部分失败保留已完成转写。可复用千问连接，不依赖本地合成服务；语音合成与发送已退役。见[语音识别说明](docs/speech/recognition.md)。
 - **文件阅读**：支持文本、代码、CSV/JSON、PDF 文字、DOCX 和 XLSX 的有界提取。扫描 PDF 不做 OCR，表格公式不重算，宏和附件中的代码不会因阅读而执行。在同一会话中，后续提问可不引用原附件；Yuki 按需读取 24 小时临时缓存。
-- **联网**：新安装未设置联网开关时默认 `WEB_MODE=native`；显式 `disabled` 继续禁用，既有连接的搜索选择不被改写。开启不代表任意模型支持搜索：原生搜索需要连接声明实际能力，Gemini 可显式使用独立搜索桥；外部 `web_search` 需要配置后端。外部搜索默认使用 Tavily，也可设置 `WEB_MODE=tavily`、`WEB_SEARCH_BACKEND=deepseek_anthropic` 使用 [DeepSeek 搜索桥](docs/deepseek-search-bridge.md)，Tavily 密钥仅用于可选失败兜底。DeepSeek 主 Agent 当前不声明原生搜索。协议和配置边界见[模型供应商说明](docs/architecture/model-providers.md)。
+- **联网**：新安装未设置联网开关时默认 `WEB_MODE=native`，显式 `disabled` 继续禁用。主模型与独立搜索连接可分别选择：顶层 `search_backend="model"` 配合 `search_connection` 支持 Gemini、Anthropic Messages 和 Responses 原生搜索，Chat 主 Agent 保留完整函数合同。显式选择 Tavily 后端仍可搜索，模型搜索失败不会转为 Tavily；Tavily 也可单独用于网页提取。旧 `deepseek_anthropic` 配置保留原来源，DeepSeek Responses 原生搜索不自动开放。配置及真实能力边界见[独立原生搜索](docs/deepseek-search-bridge.md)与[模型供应商说明](docs/architecture/model-providers.md)。
 
 聊天、插件唤醒、自动化和任务续跑使用统一主 Agent 与固定完整工具合同。工具结构在部署内保持固定，执行时再检查权限与预算；这减少请求前缀变化，但不保证 Provider 的缓存命中率。
 
