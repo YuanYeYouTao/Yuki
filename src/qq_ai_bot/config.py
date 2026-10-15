@@ -57,6 +57,7 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
+    admin_api_url: str = "http://127.0.0.1:8080"
     webui_enabled: bool = False
     webui_origin: str = "http://127.0.0.1:18765"
     webui_session_seconds: int = Field(default=21600, ge=300, le=86400)

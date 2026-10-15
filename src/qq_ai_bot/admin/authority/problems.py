@@ -49,3 +49,14 @@ class Problem:
             raise TypeError("code must be ProblemCode")
         object.__setattr__(self, "code", code)
         object.__setattr__(self, "details", freeze_json_object({} if details is None else details))
+
+
+@final
+class ControlQueryError(Exception):
+    """Controlled query failure. Callers must not treat this as an empty page."""
+
+    def __init__(self, problem: Problem) -> None:
+        if type(problem) is not Problem:
+            raise TypeError("problem must be Problem")
+        self.problem = problem
+        super().__init__(problem.code.value)

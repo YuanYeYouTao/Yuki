@@ -22,6 +22,7 @@
 | [语义参与宿主](semantic-participation.md) | 普通持续接话、SELF 自主行动、Jev 与真实反馈 |
 | [自主参与模型](autonomous-participation-model.md) | 连续状态、回执与机会参数 |
 | [Control Plane](control-plane-foundation.md) | 管理主体、装配、执行回执与业务服务 |
+| [管理 API](admin-api.md) | Bearer operator、管理 CLI、原回执与领域服务 |
 | [WebUI](webui-console.md) | 3.9.0 临时管理界面、认证、业务页面和实际覆盖 |
 | [执行过程](execution-trace.md) | 实际模型请求、工具、消息与投递的限期查询 |
 | [插件架构](../plugin-development/architecture.md) | Plugin API 3.5、Host、SDK 与隔离插件会话 |

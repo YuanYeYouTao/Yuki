@@ -15,8 +15,8 @@ from tests.support.social_identity_cases import social_env
 from tests.support.workspace_snapshots import snapshot_bytes
 from tests.unit.test_control_operator_access import operator_file
 
+from qq_ai_bot.admin.authority.operators import ControlOperatorAccess
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.application.control_access import ControlOperatorAccess
 from qq_ai_bot.application.modules.control_plane import ControlPlaneBundle
 from qq_ai_bot.control_plane.command_service import ControlCommandService
 from qq_ai_bot.control_plane.query_service import ControlQueryService

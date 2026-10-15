@@ -505,8 +505,18 @@ class ApplicationContainer:
         self.plugin_direct_commands = plugins.direct_commands
         self.plugin_commands = plugins.commands
         self.plugin_admission_signals = plugins.admission_signals
+        from qq_ai_bot.admin.config_files import ConfigFileService
+
+        self.config_files = ConfigFileService(
+            settings,
+            self.model_profiles,
+            model_executor=self.models,
+            web_module=self.web_module,
+            autonomy_parameters=lambda: self.semantic_participation.control_model_parameters(),
+        )
         self.control_plane = ControlPlaneModule.build(
             settings=settings,
+            config_files=self.config_files,
             database=self.database,
             runtime_config=self.runtime_config,
             connections=self.gateway_registry,
@@ -527,6 +537,9 @@ class ApplicationContainer:
             runtime_health=lambda: control_runtime_health(self),
             trace_recorder=self.models.traces,
         )
+        from qq_ai_bot.application.modules.admin_api import build_admin_api
+
+        self.admin_api = build_admin_api(self)
         self.emoji_collector.set_event_publisher(self.plugin_events)
         self.emoji_lifecycle.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_event_publisher(self.plugin_events)

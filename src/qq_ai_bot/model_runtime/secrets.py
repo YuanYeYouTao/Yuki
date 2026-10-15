@@ -9,7 +9,7 @@ import stat
 from pathlib import Path
 
 MAX_SECRET_FILE_BYTES = 256 * 1024
-KEY_ALIAS = re.compile(r"^YUKI_WEBUI_KEY_[A-F0-9]{32}$")
+KEY_ALIAS = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 
 
 def model_secrets_path(profile_path: Path) -> Path:

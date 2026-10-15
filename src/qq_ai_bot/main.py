@@ -135,6 +135,9 @@ def bootstrap(settings: Settings | None = None) -> None:
     if not isinstance(driver, FastAPIDriver):
         raise RuntimeError("FastAPI driver is required")
     register_health_routes(driver.server_app)
+    from qq_ai_bot.admin_api.http import attach_admin_api
+
+    attach_admin_api(driver.server_app, lambda: get_container().admin_api)
     from qq_ai_bot.webui.http import attach_webui
 
     attach_webui(driver.server_app, app_settings, lambda: get_container().control_plane)

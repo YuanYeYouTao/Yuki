@@ -276,6 +276,18 @@ CONTROL_CAPABILITY_DESCRIPTORS: Final[tuple[ControlCapabilityDescriptor, ...]] =
         mutating=False,
     ),
     _descriptor(
+        "identity.person.create",
+        CapabilityFamily.IDENTITY,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
+        "identity.binding.disable",
+        CapabilityFamily.IDENTITY,
+        CapabilitySensitivity.MUTATE,
+        mutating=True,
+    ),
+    _descriptor(
         "identity.person.read",
         CapabilityFamily.IDENTITY,
         CapabilitySensitivity.METADATA_READ,

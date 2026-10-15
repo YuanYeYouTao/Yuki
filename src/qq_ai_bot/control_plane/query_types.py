@@ -11,6 +11,7 @@ from typing import Final, Literal, final
 
 from qq_ai_bot.admin.authority.json_types import JsonObject, freeze_json_object
 from qq_ai_bot.admin.authority.operations import OperationRef, StateEpoch
+from qq_ai_bot.admin.authority.problems import ControlQueryError as ControlQueryError
 from qq_ai_bot.admin.authority.problems import Problem
 from qq_ai_bot.admin.authority.routes import (
     RouteKind as RouteKind,
@@ -38,17 +39,6 @@ from qq_ai_bot.domain.identity import (
 QUERY_CURSOR_VERSION: Final[str] = "c10v1"
 LAST4_MIN_SOURCE_LENGTH: Final[int] = 8
 REDACTED_DISPLAY: Final[str] = "redacted"
-
-
-@final
-class ControlQueryError(Exception):
-    """Controlled query failure. Callers must not treat this as an empty page."""
-
-    def __init__(self, problem: Problem) -> None:
-        if type(problem) is not Problem:
-            raise TypeError("problem must be Problem")
-        self.problem = problem
-        super().__init__(problem.code.value)
 
 
 @final

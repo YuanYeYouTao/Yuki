@@ -85,6 +85,8 @@ _MANAGEMENT_STATE_KEYS: Final[frozenset[str]] = frozenset({"resource", "revision
 # Executable operations are declared by CommandOperation and the Control surface.
 _MANAGEMENT_RESULT_OPERATIONS: Final[frozenset[str]] = frozenset(
     {
+        "identity.person.create",
+        "identity.binding.disable",
         "control.config.file.save",
         "control.plugin.configure",
         "control.workspace.mutate",
@@ -164,6 +166,8 @@ class ControlCommandError(Exception):
 
 @final
 class CommandOperation(StrEnum):
+    PERSON_CREATE = "identity.person.create"
+    BINDING_DISABLE = "identity.binding.disable"
     PERSON_ENABLE = "identity.person.enable"
     PERSON_DISABLE = "identity.person.disable"
     BINDING_ATTACH = "identity.binding.attach"
@@ -1072,6 +1076,16 @@ def _require_management_semantics(
     status = state["status"]
     if type(status) is not str:
         raise _mismatch()
+    if operation == CommandOperation.PERSON_CREATE.value:
+        _require_state_uuid(resource_id, PersonId)
+        if status != "created" or semantic_target_id != YUKI_TARGET_TOKEN:
+            raise _mismatch()
+        return
+    if operation == CommandOperation.BINDING_DISABLE.value:
+        _require_state_uuid(resource_id, IdentityBindingId)
+        if status != "disabled" or resource_id != semantic_target_id:
+            raise _mismatch()
+        return
     if operation == CommandOperation.CONFIG_SET.value:
         if (
             status != "applied"
@@ -1569,6 +1583,8 @@ def failure_audit_target_type(operation: str) -> str:
         or operation == CommandOperation.BINDING_ATTACH.value
     ):
         return "person"
+    if operation == CommandOperation.BINDING_DISABLE.value:
+        return "identity_binding"
     if operation.startswith("identity.space."):
         return "space"
     if operation in {

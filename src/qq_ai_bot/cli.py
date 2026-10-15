@@ -130,6 +130,23 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentP
     docs.add_argument("path", type=Path)
     test = commands.add_parser("test")
     test.add_argument("path", type=Path)
+    configuration = commands.add_parser("configuration")
+    configuration.add_argument("plugin_id")
+    configuration.add_argument("--scope", choices=("global", "user", "group"), default="global")
+    configuration.add_argument("--owner")
+    configure = commands.add_parser("configure")
+    configure.add_argument("plugin_id")
+    configure.add_argument("file", type=Path, help="含 scope_type、owner_id 与 values 的 JSON 文件")
+    configure.add_argument("--revision", type=int, required=True)
+    configure.add_argument("--request-id")
+    observe = commands.add_parser("observe")
+    observe.add_argument("plugin_id")
+    observe.add_argument("--cursor")
+    observe.add_argument("--limit", type=int, default=10)
+    retry = commands.add_parser("retry-outbox")
+    retry.add_argument("id", type=int)
+    retry.add_argument("--revision", type=int, required=True)
+    retry.add_argument("--request-id")
 
 
 _PROMPT_SCENARIOS = (
@@ -425,19 +442,45 @@ async def _plugin_command(settings: Settings, args: argparse.Namespace) -> int:
         print(target)
         return 0
 
-    from qq_ai_bot.plugin_host.control_client import plugin_control, plugin_mutation, plugin_query
+    from qq_ai_bot.admin_api.client import admin_client, mutate, plugin_mutation, read
 
-    async with plugin_control(settings) as client:
+    async with admin_client(settings) as client:
         if action == "list":
-            result = await plugin_query(client, "list_plugins", {})
+            result = await read(client, "plugins")
         elif action in {"inspect", "permissions"}:
-            result = await plugin_query(
-                client, "read_plugin_approval", {"plugin_id": args.plugin_id}
+            result = await read(client, f"plugins/{args.plugin_id}")
+        elif action == "configuration":
+            result = await read(
+                client,
+                f"plugins/{args.plugin_id}/configuration",
+                **{"scope_type": args.scope, **({"owner_id": args.owner} if args.owner else {})},
+            )
+        elif action == "configure":
+            result = await mutate(
+                client,
+                f"plugins/{args.plugin_id}/configuration",
+                args.revision,
+                request_id=args.request_id,
+                **json.loads(args.file.read_text(encoding="utf-8")),
+            )
+        elif action == "observe":
+            result = await read(
+                client,
+                f"plugins/{args.plugin_id}/observe",
+                **{"limit": args.limit, **({"cursor": args.cursor} if args.cursor else {})},
+            )
+        elif action == "retry-outbox":
+            result = await mutate(
+                client,
+                f"plugin-outbox/{args.id}/retry",
+                args.revision,
+                request_id=args.request_id,
             )
         else:
+            identity = "yuki" if action == "discover" else str(args.plugin_id)
             result = await plugin_mutation(
                 client,
-                "yuki" if action == "discover" else str(args.plugin_id),
+                identity,
                 action,
                 permissions=list(args.permission) if action == "approve" else None,
             )
@@ -520,6 +563,9 @@ def main() -> None:
     _add_diagnostics_parsers(subparsers)
     _add_work_parser(subparsers)
     _add_memory_parser(subparsers)
+    from qq_ai_bot.admin_api.cli import add_admin_parser
+
+    add_admin_parser(subparsers)
     args = parser.parse_args()
     if args.command == "setup":
         raise SystemExit(run_setup_command(args))
@@ -533,6 +579,10 @@ def main() -> None:
         _render_snowluma_config(settings, args.output)
     elif args.command == "plugin":
         raise SystemExit(asyncio.run(_plugin_command(settings, args)))
+    elif args.command == "admin":
+        from qq_ai_bot.admin_api.cli import admin_command
+
+        raise SystemExit(asyncio.run(admin_command(settings, args)))
     elif args.command == "prompt":
         if args.prompt_command == "inspect":
             result = _prompt_diagnostic(settings, str(args.scenario))

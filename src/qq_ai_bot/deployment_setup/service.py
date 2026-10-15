@@ -452,11 +452,11 @@ def _validate_gateway_configuration(environment: Mapping[str, str]) -> None:
 
 
 async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
+    from qq_ai_bot.admin_api.client import admin_client, plugin_mutation, read
     from qq_ai_bot.persistence.instance_lock import (
         ApplicationAlreadyActiveError,
         SQLiteApplicationLock,
     )
-    from qq_ai_bot.plugin_host.control_client import plugin_control, plugin_mutation, plugin_query
 
     if not paths.pending.is_file():
         return 0
@@ -470,28 +470,16 @@ async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
         ):
             raise SetupValidationError("待应用插件配置无效") from None
         selected = set(payload["selected_plugins"])
-        async with plugin_control(settings) as client:
+        async with admin_client(settings) as client:
             await plugin_mutation(client, "yuki", "discover")
-            rows = []
-            cursor = None
-            while True:
-                listing = await plugin_query(
-                    client, "list_plugins", {"page": {"limit": 100, "cursor": cursor}}
-                )
-                rows.extend(listing["items"])
-                cursor = listing.get("next_cursor")
-                if cursor is None:
-                    break
+            rows = await read(client, "plugins")
             if selected - {row["plugin_id"] for row in rows}:
                 raise SetupValidationError("选择的插件已不存在或 Manifest 无效") from None
             changed = 0
             for row in rows:
                 plugin_id = row["plugin_id"]
                 if plugin_id in selected:
-                    approval = await plugin_query(
-                        client, "read_plugin_approval", {"plugin_id": plugin_id}
-                    )
-                    fields = approval["fields"]
+                    fields = await read(client, f"plugins/{plugin_id}")
                     if (
                         fields["status"] == "pending_approval"
                         or not fields["manifest_hash_matches"]

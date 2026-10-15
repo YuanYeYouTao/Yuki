@@ -12,8 +12,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
-from qq_ai_bot.control_plane.query_types import ControlQueryError
+from qq_ai_bot.admin.authority.problems import ControlQueryError, Problem, ProblemCode
 from qq_ai_bot.domain.identity import PersonId, PrincipalId
 from qq_ai_bot.identity.db_models import CanonicalPersonModel
 from qq_ai_bot.persistence.database import Database

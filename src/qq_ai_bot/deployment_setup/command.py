@@ -304,7 +304,7 @@ def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
         default=_real_value(environment.get("SUPERUSERS", "")),
     )
     if not draft.initial:
-        ui.info("模型连接与任务路由请在 WebUI 的模型档案中修改。")
+        ui.info("模型连接与任务路由请编辑模型配置文件，再通过 admin model apply 应用。")
         return
     draft.protocol = ui.choose(
         "主模型接入类型",

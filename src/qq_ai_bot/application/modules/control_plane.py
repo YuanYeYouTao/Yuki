@@ -5,9 +5,9 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from qq_ai_bot.admin.authority.operators import ControlOperatorAccess
 from qq_ai_bot.admin.config_files import ConfigFileService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.application.control_access import ControlOperatorAccess
 from qq_ai_bot.application.modules.web import WebModule
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
@@ -45,6 +45,7 @@ class ControlPlaneModule:
     def build(
         *,
         settings: Settings,
+        config_files: ConfigFileService | None = None,
         workspace_service: WorkspaceService | None = None,
         rebuild_service: MemoryRebuildService | None = None,
         database: Database,
@@ -65,13 +66,14 @@ class ControlPlaneModule:
         runtime_health: Callable[[], Awaitable[tuple[ComponentHealthView, ...]]] | None = None,
         trace_recorder: TraceRecorder | None = None,
     ) -> ControlPlaneBundle:
-        config_files = ConfigFileService(
-            settings,
-            model_catalog,
-            autonomy_parameters=autonomy_parameters,
-            model_executor=model_executor,
-            web_module=web_module,
-        )
+        if config_files is None:
+            config_files = ConfigFileService(
+                settings,
+                model_catalog,
+                autonomy_parameters=autonomy_parameters,
+                model_executor=model_executor,
+                web_module=web_module,
+            )
         writer = ControlCommandAdapter(
             database,
             settings=settings,
