@@ -270,6 +270,16 @@ read version 或原 Work source guard 并提交 projection；reset/privacy 不�
 普通聊天先只读检查同一内部 source key、actor 与交接边界是否有可选 Work；没有候选时
 上下文准备不领取再释放空租约。只读结果仅用于安排准备，正式激活仍重新读取候选、
 取得租约并执行原来源与状态核验，准备期间新增、取消或改向的 Work 不复用旧预检授权。
+运行中的普通 Main 可在原业务续请求接纳已分类的普通补充：复用原音频、引用与媒体准备，
+仅对最终请求确实保留的输入，将其 ordinary admission 与公共 projection 同事务提交。
+补充沿原 activation，保各事件的真实作者、Presence 和 binding；原 ToolActor、Memory、
+预算与效果回执不改绑。准备材料留在业务私有尾部，纯文本沿原公开片段，不重复注入。
+排队入口读同一 admission，不再为已接纳事件新开 Main；仅观察、晚就绪或被 compact
+替换掉的输入保留原合法机会。历史曝光和公共/私有 compact 请求不取得 ordinary 归属，
+接纳也不证明已经回复；空 final、NO_REPLY、取消或失败均不授予重放资格。
+关闭 Work 运行时仍核验原公共来源及已采用补充，不创建 Work 或空租约。新输入的
+ASR 使公共投影失效时，只有原来源核验仍有效才用原冻结字节追加新材料并重建投影
+epoch；模型原请求链不变。准备期间正文、附件或身份变化，不给旧载荷换新来源。
 已占用或过时代际的作用域领取、失效租约的续期和释放可只读拒绝；真实变更仍使用原
 writer 与执行时的 owner/fence/generation/期限条件，不以锁外读取代替 CAS。
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from uuid import uuid4
 
 from sqlalchemy import and_, or_, select, text
@@ -24,6 +24,7 @@ from qq_ai_bot.identity.db_models import (
 )
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
+from qq_ai_bot.persistence.repository_helpers import _event_record
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.persistence.unit_of_work import optional_session
 
@@ -295,6 +296,37 @@ class OrdinaryAdmissionRepository:
 
         return publish
 
+    async def commit_to_activation(
+        self,
+        prepared: PreparedOrdinaryAdmission,
+        activation: OrdinaryAdmission,
+        *,
+        session: AsyncSession,
+        admission_allowed: Callable[[AsyncSession], Awaitable[bool]] | None = None,
+    ) -> bool:
+        source = prepared.admission
+        if (source.conversation_id, source.generation) != (
+            activation.conversation_id,
+            activation.generation,
+        ):
+            raise OrdinaryAdmissionConflict("ordinary_activation_source_mismatch")
+        selected = replace(
+            prepared,
+            admission=replace(
+                source,
+                activation_id=activation.activation_id,
+                coordinator_version=activation.coordinator_version,
+            ),
+        )
+        if await self.commit(selected, session=session, admission_allowed=admission_allowed):
+            return True
+        existing = await session.get(OrdinaryTurnAdmissionModel, source.event_id)
+        if existing is not None and _dto(existing) == selected.admission:
+            return False
+        if existing is not None:
+            raise OrdinaryAdmissionDuplicate("ordinary_already_admitted")
+        raise OrdinaryAdmissionConflict("ordinary_admission_disallowed")
+
     async def commit(
         self,
         prepared: PreparedOrdinaryAdmission,
@@ -343,6 +375,7 @@ class OrdinaryAdmissionRepository:
             or e.id <= conversation.starts_after_event_id
             or current.suppression_status != "keeper"
             or any(getattr(current, name) != getattr(e, name) for name in fields)
+            or _event_record(current).segments != e.segments
             or not await _identity_allowed(session, current, conversation)
         ):
             raise OrdinaryAdmissionConflict("ordinary_source_changed")

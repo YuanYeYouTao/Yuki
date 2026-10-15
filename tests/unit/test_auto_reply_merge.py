@@ -134,7 +134,7 @@ async def test_worker_window_zero_runs_ordinary_even_without_autonomy() -> None:
     await service.close()
 
 
-async def _open_group_scene(database, tmp_path, provider, *, debounce: float):
+async def _open_group_scene(database, tmp_path, provider, *, debounce: float, **settings):
     env = await social_env(database, tmp_path)
     async with database.sessions() as session, session.begin():
         await session.execute(
@@ -148,6 +148,7 @@ async def _open_group_scene(database, tmp_path, provider, *, debounce: float):
             database.url,
             enabled_groups_csv="20001",
             conversation_autonomous_debounce_seconds=debounce,
+            **settings,
         ),
         provider,
     )
