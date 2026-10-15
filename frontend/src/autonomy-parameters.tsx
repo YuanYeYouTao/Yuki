@@ -40,7 +40,12 @@ const groups: [string, Record<string, string>][] = [
       source_social_weight: "社交反馈权重",
       source_opening_seconds: "开场时标（秒）",
       source_opening_floor: "开场底值",
-      independent_source_factor: "独立来源系数",
+    },
+  ],
+  [
+    "普通续聊复核",
+    {
+      continuation_review_span: "未核验快接跨度（条真人输入）",
     },
   ],
   [
@@ -74,8 +79,6 @@ const groups: [string, Record<string, string>][] = [
       willingness_decay_seconds: "SELF 意愿衰减（秒）",
       willingness_magnitude: "SELF 意愿幅度",
       conversation_source_decay_seconds: "聊天来源支持衰减（秒）",
-      recall_source_decay_seconds: "回忆来源支持衰减（秒）",
-      contact_source_decay_seconds: "联系来源支持衰减（秒）",
     },
   ],
 ];
@@ -107,7 +110,8 @@ export function AutonomyParameterFields({
     <>
       <p className="small">
         所有数值边界来自正在使用的独立库
-        schema。基率分母是机会率的倒数，不是固定等待时间；这份配置全局应用于当前控制器。
+        schema。基率分母是机会率的倒数，不是固定等待时间。复核跨度计的是尚未语义确认的快捷接纳，
+        达到跨度后回到语义入口，不是消息发送配额；这份配置全局应用于当前控制器。
       </p>
       {sections.map(([title, entries], index) => (
         <details className="json-note" key={title} open={index === 0}>

@@ -54,6 +54,7 @@ class OrdinaryAdmission:
     route: str
     work_id: str | None
     input_id: int | None
+    reason: str | None = None
 
 
 class OrdinaryAdmissionConflict(RuntimeError):
@@ -65,6 +66,9 @@ class OrdinaryAdmissionDuplicate(OrdinaryAdmissionConflict):
 
 
 def _dto(row: OrdinaryTurnAdmissionModel) -> OrdinaryAdmission:
+    saved = json.loads(row.basis_json)
+    basis = saved["basis"] if isinstance(saved, dict) else saved
+    reason = saved.get("reason") if isinstance(saved, dict) else None
     binding = None
     if row.unit_key is not None and row.target_hint is not None:
         binding = OrdinaryParticipationBinding(
@@ -74,7 +78,7 @@ def _dto(row: OrdinaryTurnAdmissionModel) -> OrdinaryAdmission:
             row.source_revision,
             row.unit_key,
             row.target_hint,
-            tuple((str(ref[0]), int(ref[1])) for ref in json.loads(row.basis_json)),
+            tuple((str(ref[0]), int(ref[1])) for ref in basis),
         )
     return OrdinaryAdmission(
         row.event_id,
@@ -89,6 +93,7 @@ def _dto(row: OrdinaryTurnAdmissionModel) -> OrdinaryAdmission:
         row.route,
         row.work_id,
         row.input_id,
+        reason,
     )
 
 
@@ -212,6 +217,8 @@ class OrdinaryAdmissionRepository:
         generation: int,
         coordinator_version: int,
         binding: OrdinaryParticipationBinding | None = None,
+        *,
+        reason: str | None = None,
     ) -> PreparedOrdinaryAdmission:
         if (
             not event.author_is_human()
@@ -229,7 +236,11 @@ class OrdinaryAdmissionRepository:
             or binding.source_revision != revision
         ):
             raise OrdinaryAdmissionConflict("ordinary_binding_source_changed")
-        basis_json = json.dumps(binding.basis if binding else (), separators=(",", ":"))
+        basis = binding.basis if binding else ()
+        basis_json = json.dumps(
+            {"basis": basis, "reason": reason} if reason is not None else basis,
+            separators=(",", ":"),
+        )
         return PreparedOrdinaryAdmission(
             OrdinaryAdmission(
                 event.id,
@@ -244,6 +255,7 @@ class OrdinaryAdmissionRepository:
                 "ordinary",
                 None,
                 None,
+                reason,
             ),
             event,
             basis_json,

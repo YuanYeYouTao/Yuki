@@ -90,8 +90,10 @@ Control Plane 仍要求 capability。
 
 - 证据明细及 readable evidence count 共用同一 SQL 来源谓词，按 canonical event、普通
   tool receipt 或无事件 SELF 执行的原回执核验来源、owner、隐藏状态及 SELF 可见范围。
-  明细、证据新增与 SELF seed 共用同一 SQL 来源条件，分页应用请求的 limit，不逐 evidence 查来源。
-  SELF seed 检查全部来源，不以最新 32 条证据或 32 个 fact ID 判定可读性；变化游标仍按请求的 scan limit 前进。
+  明细、证据新增与既有 SELF 运行的 Memory 依赖核验共用同一 SQL 来源条件，不逐 evidence 查来源。
+  `read_self_initiative_facts` 只接受明确 fact ID，核验 active、verified、有效时间、当前群或可见 SELF 范围，
+  并要求至少一条当前可读证据；不以最新 32 条证据或 32 个 fact ID 判断可读性。
+  后台 Memory 种子扫描、分页游标和无 ID 候选枚举已删除，主 Agent 的按需查询、自省、Dream 与真实 SELF 来源解析保留。
   内部证据聚合读取全部可读来源，不以固定条数截断历史尾部；原始 confidence/authority
   和来源资格保留。无消费者的完整 lineage 装配入口已删除，原 operation/result/source 账本保留。
   Memory mutation、Dream 与维护批次在同连接显式只读 BEGIN 中先准备完整证据、

@@ -23,7 +23,7 @@
   "source_social_weight": 2.0,
   "source_opening_seconds": 4.0,
   "source_opening_floor": 0.1,
-  "independent_source_factor": 0.35,
+  "continuation_review_span": 4,
   "activity_decay_seconds": 60.0,
   "activity_increment": 0.1,
   "social_context_decay_seconds": 14400.0,
@@ -40,8 +40,6 @@
   "willingness_decay_seconds": 1800.0,
   "willingness_magnitude": 0.7,
   "conversation_source_decay_seconds": 90.0,
-  "recall_source_decay_seconds": 3600.0,
-  "contact_source_decay_seconds": 1800.0,
   "unanchored_reception_weight": 0.02,
   "unanchored_reception_decay_seconds": 1800.0
 }

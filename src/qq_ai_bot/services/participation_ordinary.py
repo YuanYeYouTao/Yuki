@@ -7,10 +7,10 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from yuki_participation.models import CandidateKind, ScopedEvent, SourceRef
-from yuki_participation.participation import ParticipationUnit
+from yuki_participation.participation import ParticipationUnit, UnitBinding
 from yuki_participation.self_report import SelfDelta, SelfReport
 
 from qq_ai_bot.conversation.initiative_sources import source_revision
@@ -21,7 +21,11 @@ from qq_ai_bot.conversation.ordinary_admission import (
 from qq_ai_bot.domain.messages import ChatResponse
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.participation_feedback import admission_unit_binding, sync_scope_effects
+from qq_ai_bot.services.participation_feedback import (
+    admission_continuation,
+    admission_unit_binding,
+    sync_scope_effects,
+)
 
 if TYPE_CHECKING:
     from qq_ai_bot.services.semantic_participation import SemanticParticipationService, _Session
@@ -147,14 +151,14 @@ async def binding_for_event(
 
 
 async def continuation_for_event(
-    service: SemanticParticipationService, event_id: int
+    service: SemanticParticipationService, event_id: int, *, check_budget: bool = True
 ) -> tuple[OrdinaryParticipationBinding, ImplicitReason] | None:
     """Classify an implicit source: a verified invitation first, then a matched unit."""
     async with service._lock, event_scope(service, event_id) as found:
         if found is None:
             return None
         row, item, event = found
-        view = item.controller.participation_view(event, time.time())
+        view = item.controller.participation_view(event, time.time(), check_budget=check_budget)
         if not view.source_valid:
             return None
         invited = invitation_unit(item, event)
@@ -168,6 +172,40 @@ async def continuation_for_event(
             if all((await service._sources_current(item, basis)).values()):
                 return host_binding(row, item, matched.unit, basis), "continuation"
         return None
+
+
+def continuation_current(
+    service: SemanticParticipationService,
+    binding: OrdinaryParticipationBinding,
+    *,
+    check_budget: bool = True,
+) -> bool:
+    """Read the current derived eligibility at the original admission boundary."""
+    item = service._sessions.get((binding.conversation_id, binding.generation))
+    if item is None:
+        return False
+    event = item.controller.state.events.get(f"event:{binding.event_id}")
+    versions = cast(
+        dict[str, Any], item.controller.state.host_checkpoint.get("source_versions", {})
+    )
+    if event is None or versions.get(event.ref.event_id) != [
+        event.ref.revision,
+        binding.source_revision,
+    ]:
+        return False
+    return item.controller.continuation_current(
+        event.ref,
+        UnitBinding(
+            scope=event.scope,
+            unit=ParticipationUnit(thread=binding.unit_key, target=binding.target_hint),
+            actor=event.author,
+            basis=tuple(
+                SourceRef(event_id=key, revision=revision) for key, revision in binding.basis
+            ),
+        ),
+        time.time(),
+        check_budget=check_budget,
+    )
 
 
 async def on_ordinary_admitted(
@@ -187,8 +225,16 @@ async def on_ordinary_admitted(
             generation=binding.generation,
         )
         unit = admission_unit_binding(current) if current is not None else None
-        if unit is not None and all((await service._sources_current(item, unit.basis)).values()):
-            item.controller.observe_unit_input(unit, event.ref)
+        if (
+            current is not None
+            and unit is not None
+            and all((await service._sources_current(item, unit.basis)).values())
+        ):
+            item.controller.observe_unit_input(
+                unit,
+                event.ref,
+                continuation=admission_continuation(current),
+            )
             await service._save(item)
 
 
@@ -224,6 +270,7 @@ async def observe_main_response(
             response_id=response.provider_request_id
             or f"{admission.activation_id}:{request_sequence}",
             at=event.at,
+            source=event.ref,
             delta=delta,
         )
         prior = next(
