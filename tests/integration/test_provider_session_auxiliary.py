@@ -14,10 +14,17 @@ from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
 from qq_ai_bot.conversation.projections import PromptProjectionRepository
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatMessage
+from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.llm.gemini import GeminiProvider
+from qq_ai_bot.llm.openai_responses import OpenAICompatibleResponsesProvider
 from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
 from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority, ModelTask, StructuredOutputMode
+from qq_ai_bot.model_runtime.models import (
+    ModelExecutionPriority,
+    ModelProtocol,
+    ModelTask,
+    StructuredOutputMode,
+)
 from qq_ai_bot.model_runtime.pool import ModelClientPool
 from qq_ai_bot.model_runtime.routes import ModelRouter
 from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
@@ -26,9 +33,8 @@ from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.services.context_compaction import PublicCompactContext, render_context_checkpoint
 from qq_ai_bot.services.turn_execution import TurnExecution
 from qq_ai_bot.web.bridge_state import BridgeState
-from qq_ai_bot.web.deepseek_bridge import DeepSeekSearchBridge
-from qq_ai_bot.web.gemini_bridge import GeminiSearchBridge
 from qq_ai_bot.web.models import WebMode, WebSearchRequest
+from qq_ai_bot.web.native_bridge import NativeSearchBridge
 
 
 class _StructuredResult(BaseModel):
@@ -246,7 +252,7 @@ async def test_auxiliary_session_header_keeps_original_body(database, tmp_path, 
             await models.close()
 
 
-@pytest.mark.parametrize("kind", ["gemini", "deepseek"])
+@pytest.mark.parametrize("kind", ["gemini", "anthropic", "responses"])
 async def test_native_search_uses_actual_work_owner_without_changing_body(database, tmp_path, kind):
     control, _session_state, _initial = await _session(database, tmp_path)
     owner = (
@@ -271,6 +277,29 @@ async def test_native_search_uses_actual_work_owner_without_changing_body(databa
                         },
                     }
                 ]
+            }
+        elif kind == "responses":
+            body = {
+                "id": "native-search-original",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "web_search_call",
+                        "id": "original-search",
+                        "status": "completed",
+                        "action": {
+                            "type": "search",
+                            "query": "核对原事实",
+                            "sources": [{"url": "https://example.com/original", "title": "原来源"}],
+                        },
+                    },
+                    {
+                        "type": "message",
+                        "id": "result",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": "实际检索原文"}],
+                    },
+                ],
             }
         else:
             body = {
@@ -302,24 +331,34 @@ async def test_native_search_uses_actual_work_owner_without_changing_body(databa
     async with httpx.AsyncClient(
         base_url="https://wire.invalid/", transport=httpx.MockTransport(transport)
     ) as client:
-        if kind == "gemini":
-            provider = ObservedGemini(
-                base_url="https://wire.invalid/",
-                api_key="synthetic",
-                timeout_seconds=2,
-                max_retries=0,
-                client=client,
-            )
-            bridge = GeminiSearchBridge(
-                profile=_profile(),
-                credential="synthetic",
-                provider=provider,
-                state=BridgeState(tmp_path / "search.sqlite3"),
-            )
-        else:
-            bridge = DeepSeekSearchBridge(
-                api_key="synthetic", state_path=tmp_path / "search.sqlite3", client=client
-            )
+        provider_type = {
+            "gemini": ObservedGemini,
+            "anthropic": AnthropicMessagesProvider,
+            "responses": OpenAICompatibleResponsesProvider,
+        }[kind]
+        provider = provider_type(
+            base_url="https://wire.invalid/",
+            api_key="synthetic",
+            timeout_seconds=2,
+            max_retries=0,
+            client=client,
+        )
+        profile = _profile().model_copy(
+            update={
+                "provider": "fake" if kind == "gemini" else kind,
+                "protocol": {
+                    "gemini": ModelProtocol.GEMINI,
+                    "anthropic": ModelProtocol.ANTHROPIC_MESSAGES,
+                    "responses": ModelProtocol.RESPONSES,
+                }[kind],
+            }
+        )
+        bridge = NativeSearchBridge(
+            profile=profile,
+            credential="synthetic",
+            provider=provider,
+            state=BridgeState(tmp_path / "search.sqlite3"),
+        )
         try:
             token = current_work_control.set(control)
             try:

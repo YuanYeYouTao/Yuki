@@ -73,7 +73,7 @@
 - **本轮资料配置**：撤去 `CONTEXT_METADATA_BUDGET_RATIO`、`PLUGIN_MAX_PROMPT_FRAGMENT_CHARACTERS`、`PLUGIN_MAX_PROMPT_CHARACTERS_PER_PLUGIN` 和 `PLUGIN_MAX_TOTAL_PROMPT_CHARACTERS`；0108 清退三项插件字符配置对应的 override，不以其他字符阈值替代。完整模型请求仍沿原容量检查。
 - **本轮 Work 状态**：`WorkControl.runtime_state()` 的状态 JSON 使用 `<runtime_context>` / `</runtime_context>`，固定系统约束说明其中是程序提供的本轮系统运行资料，不是任何人的发言。保留原 user role，首次请求放在当前触发正文之前并用双换行分隔；空状态不生成标签。该块只用于当前激活，不进入公共历史、自动观察或公共 compact 检查点；short_state、插件资料仍沿各自原入口。
 - **参与配置**：当前新安装的 `conversation.auto_reply_enabled`、`conversation.proactive_wakeup_enabled`、`conversation.autonomous_enabled` 默认均为 true。旧 3.8.4 的默认关闭说明不适用于这份源码；已有显式环境设置和群级覆写继续生效，升级不把原停用群改成启用。`0114` 将旧停用状态迁入同一配置入口。
-- **联网**：新安装未设联网开关时默认 native，显式 disabled 与既有搜索连接保持有效。原生搜索、Gemini 搜索桥及外部后端按[Provider 合同](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/architecture/model-providers.md)配置；默认开启不能补出模型缺少的能力。
+- **联网**：新安装未设联网开关时默认 native，显式 disabled 继续禁用。顶层 `search_backend="model"` 与 `search_connection` 可独立指定 Gemini、Anthropic Messages 或 Responses 搜索连接，主模型继续使用自己的协议；仅预选连接不改写旧部署行为。旧 `deepseek_anthropic` 配置由升级 reader 保持原搜索来源。模型搜索失败不会降级为 Tavily，Tavily 仅在明确选为搜索后端时搜索，也可单独用于网页提取。DeepSeek Responses 搜索仍未验证，不自动启用。配置与验收边界见[独立原生搜索](deepseek-search-bridge.md)。
 - **持久环境 / WebUI**：保留原 Manager、共享 volume 和执行回执；普通包不会安装新 Manager 或 gVisor。WebUI 默认关闭，认证与管理授权见[WebUI 合同](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/architecture/webui-console.md)。
 
 ### 旧 NapCat 部署配置

@@ -1,4 +1,4 @@
-"""A search-only Gemini request behind the stable local web_search function."""
+"""An independent native-search request behind the stable local web_search function."""
 
 from __future__ import annotations
 
@@ -9,8 +9,6 @@ import logging
 import time
 from dataclasses import asdict, replace
 from urllib.parse import urlsplit
-
-import httpx
 
 from qq_ai_bot.domain.messages import (
     ChatMessage,
@@ -31,17 +29,18 @@ from qq_ai_bot.model_runtime.request_accounting import (
     current_provider_attempts,
 )
 from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
+from qq_ai_bot.web.base import WebPageExtractor, WebSearchError, normalize_public_url
 from qq_ai_bot.web.bridge_state import BridgeState
 from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
+from qq_ai_bot.web.page_extractor import DirectPageExtractor
 
 logger = logging.getLogger(__name__)
 
 
-class GeminiSearchBridge:
-    """Never passes Main Agent history or function declarations to Google Search."""
+class NativeSearchBridge:
+    """Use one selected Profile without Main history, client functions or search fallback."""
 
-    name = "gemini_native_bridge"
+    name = "native_search_bridge"
 
     def __init__(
         self,
@@ -50,7 +49,7 @@ class GeminiSearchBridge:
         credential: str,
         provider: LLMProvider,
         state: BridgeState,
-        fallback: WebSearchProvider | None = None,
+        extractor: WebPageExtractor | None = None,
         invocations: ModelInvocationRepository | None = None,
     ) -> None:
         if (
@@ -61,18 +60,15 @@ class GeminiSearchBridge:
         self.profile = profile
         self.provider = provider
         self.state = state
-        self.fallback = fallback
+        self.extractor = extractor or DirectPageExtractor(
+            state=state, timeout_seconds=profile.timeout_seconds
+        )
         self.invocations = invocations
         self._namespace = hashlib.sha256(
             json.dumps(
                 {
-                    "version": 3,
-                    "profile": profile.id,
-                    "model": profile.model,
-                    "base_url": profile.base_url,
-                    "max_output": profile.default_max_output_tokens,
-                    "reasoning_effort": profile.reasoning_effort,
-                    "wire_options": str(profile.wire_options),
+                    "version": "independent-native-search-v1",
+                    "profile": profile.model_dump(mode="json"),
                     "credential": credential,
                 },
                 sort_keys=True,
@@ -96,14 +92,7 @@ class GeminiSearchBridge:
             and not cached.partial_failure
         ):
             return cached
-        try:
-            result = await self._search(normalized_request)
-        except WebSearchError as exc:
-            if self.fallback is None:
-                raise
-            logger.info("gemini_search_fallback category=%s", exc.code)
-            # A fallback receipt is never cached under the primary search key.
-            return await self.fallback.search(request)
+        result = await self._search(normalized_request)
         # A failed extraction or incomplete native response may recover on
         # the next request; do not pin that partial receipt for ten minutes.
         if not result.partial_failure:
@@ -126,7 +115,7 @@ class GeminiSearchBridge:
             await check_model_dispatch()
         constraints = {key: value for key, value in asdict(request).items() if value is not None}
         prompt = (
-            "请使用 Google 搜索查找以下问题的公开来源。只依据实际搜索到的来源回答；"
+            "请使用已声明的原生网页搜索查找以下问题的公开来源。只依据实际搜索到的来源回答；"
             "不要编造 URL、来源或发布日期。日期无法核实时请说明。\n"
             + json.dumps(constraints, ensure_ascii=False, default=str)
         )
@@ -134,6 +123,7 @@ class GeminiSearchBridge:
             provider_session_id=provider_session_id,
             messages=(ChatMessage(role="user", content=prompt),),
             model=self.profile.model,
+            temperature=self.profile.default_temperature,
             max_output_tokens=self.profile.default_max_output_tokens,
             thinking_enabled=self.profile.thinking_enabled,
             reasoning_effort=self.profile.reasoning_effort,
@@ -145,6 +135,9 @@ class GeminiSearchBridge:
         try:
             try:
                 response = await self.provider.complete(model_request)
+            except asyncio.CancelledError:
+                await self._record(None, attempts, started=started, error_category="CancelledError")
+                raise
             except LLMError as exc:
                 await self._record(
                     None,
@@ -153,7 +146,7 @@ class GeminiSearchBridge:
                     error_category=type(exc).__name__,
                     failure=exc,
                 )
-                raise WebSearchError("search_failed", "Gemini 搜索请求失败") from exc
+                raise WebSearchError("search_failed", "原生搜索请求失败") from exc
             except Exception as exc:
                 await self._record(
                     None,
@@ -161,7 +154,7 @@ class GeminiSearchBridge:
                     started=started,
                     error_category=type(exc).__name__,
                 )
-                raise WebSearchError("search_failed", "Gemini 搜索请求失败") from exc
+                raise WebSearchError("search_failed", "原生搜索请求失败") from exc
         finally:
             current_provider_attempts.reset(token)
         if response.tool_calls:
@@ -170,44 +163,64 @@ class GeminiSearchBridge:
             )
             raise WebSearchError("invalid_response", "搜索请求返回了非预期的函数调用")
         found: dict[str, WebSearchSource] = {}
+        search_events = {
+            event.call_id: event
+            for event in response.native_tool_events
+            if event.tool_type is NativeToolType.WEB_SEARCH
+        }
         for citation in response.citations:
-            if citation.origin is not CitationOrigin.ANNOTATION:
+            if citation.origin not in {CitationOrigin.ANNOTATION, CitationOrigin.NATIVE_RESULT}:
+                continue
+            if citation.call_id is not None:
+                event = search_events.get(citation.call_id)
+                if event is None or event.status is not NativeToolStatus.COMPLETED:
+                    continue
+            elif citation.origin is CitationOrigin.NATIVE_RESULT:
                 continue
             try:
                 url = normalize_public_url(citation.url)
             except WebSearchError:
                 continue
-            found.setdefault(
-                url,
-                WebSearchSource(
+            snippet = citation.snippet or ""
+            if url in found:
+                original = found[url]
+                found[url] = replace(
+                    original,
+                    title=citation.title
+                    if original.title == url and citation.title
+                    else original.title,
+                    snippet=original.snippet or snippet,
+                    relevant_content=original.relevant_content or snippet,
+                )
+            else:
+                found[url] = WebSearchSource(
                     source_id=hashlib.sha256(f"{url}\x1f{request.query}".encode()).hexdigest()[:24],
                     title=citation.title or url,
                     url=url,
                     domain=urlsplit(url).hostname or "",
-                    snippet="",
-                    relevant_content="",
+                    snippet=snippet,
+                    relevant_content=snippet,
                     provider=self.name,
-                ),
-            )
+                )
         if not found:
             await self._record(response, attempts, started=started, error_category="no_grounding")
-            raise WebSearchError("no_search_evidence", "Gemini 没有返回可信的搜索来源")
+            raise WebSearchError("no_search_evidence", "原生搜索没有返回可信的搜索来源")
         await self._record(response, attempts, started=started)
         logger.info(
-            "gemini_search_usage input_tokens=%s output_tokens=%s cached_input_tokens=%s",
+            "native_search_usage input_tokens=%s output_tokens=%s cached_input_tokens=%s",
             response.prompt_tokens,
             response.completion_tokens,
             response.cached_prompt_tokens,
         )
         sources = list(found.values())
         extract_failed = False
-        if self.fallback is not None:
-            fallback = self.fallback
+        if request.extract_max_results:
+            extractor = self.extractor
 
             async def extract_source(index: int) -> None:
                 nonlocal extract_failed
                 try:
-                    page = await fallback.extract(sources[index].url, request.query)
+                    page = await extractor.extract(sources[index].url, request.query)
                     sources[index] = replace(
                         sources[index],
                         snippet=page.snippet,
@@ -250,7 +263,9 @@ class GeminiSearchBridge:
             partial_failure=(
                 response.status is not ModelResponseStatus.COMPLETED
                 or any(
-                    event.status is NativeToolStatus.FAILED for event in response.native_tool_events
+                    event.tool_type is NativeToolType.WEB_SEARCH
+                    and event.status is not NativeToolStatus.COMPLETED
+                    for event in response.native_tool_events
                 )
                 or request.start_date is not None
                 or request.end_date is not None
@@ -301,6 +316,21 @@ class GeminiSearchBridge:
                     if response
                     else reported_tokens("cached_prompt_tokens")
                 ),
+                cache_creation_input_tokens=(
+                    response.cache_creation_input_tokens
+                    if response
+                    else reported_tokens("cache_creation_input_tokens")
+                ),
+                cache_creation_5m_input_tokens=(
+                    response.cache_creation_5m_input_tokens
+                    if response
+                    else reported_tokens("cache_creation_5m_input_tokens")
+                ),
+                cache_creation_1h_input_tokens=(
+                    response.cache_creation_1h_input_tokens
+                    if response
+                    else reported_tokens("cache_creation_1h_input_tokens")
+                ),
                 latency_seconds=time.perf_counter() - started,
                 error_category=error_category,
                 physical_request_count=attempts.requests,
@@ -308,26 +338,21 @@ class GeminiSearchBridge:
                 native_search_requested=True,
             )
         except Exception:
-            logger.exception("gemini_search_usage_record_failed")
+            logger.exception("native_search_usage_record_failed")
 
     async def extract(self, url: str, query: str) -> WebSearchSource:
         normalized = normalize_public_url(url)
-        if self.fallback is None:
-            raise WebSearchError("extract_unavailable", "当前搜索桥没有配置网页读取后端")
-        return await self.fallback.extract(normalized, query)
+        return await self.extractor.extract(normalized, query)
 
     async def close(self) -> None:
         errors: list[BaseException] = []
         closed: set[int] = set()
-        for resource in (self.provider, self.fallback):
+        for resource in (self.provider, self.extractor):
             if resource is None or id(resource) in closed:
                 continue
             closed.add(id(resource))
             try:
-                if isinstance(resource, httpx.AsyncClient):
-                    await resource.aclose()
-                else:
-                    await resource.close()
+                await resource.close()
             except BaseException as exc:
                 errors.append(exc)
         if errors:

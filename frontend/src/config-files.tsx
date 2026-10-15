@@ -41,6 +41,12 @@ export const taskNames: Record<string, string> = {
 };
 const providerPresets = [
   {
+    id: "agm",
+    label: "AGM",
+    protocol: "gemini",
+    url: "",
+  },
+  {
     id: "deepseek",
     label: "DeepSeek",
     protocol: "responses",
@@ -107,7 +113,7 @@ const connectionLabel = (profile: Row) => {
   const provider = String(profile.provider || "");
   const name =
     providerPresets.find((item) => item.id === provider)?.label || provider;
-  return `${name || "未选供应商"} · ${String(profile.model || "未选模型")}`;
+  return `${name || "未选供应商"} · ${protocolLabels[String(profile.protocol)] || String(profile.protocol || "未选协议")} · ${String(profile.model || "未选模型")}`;
 };
 const protocolLabels: Record<string, string> = {
   chat_completions: "Chat Completions",
@@ -117,13 +123,13 @@ const protocolLabels: Record<string, string> = {
 };
 const presetValues = (provider: string): Row => {
   const preset = providerPresets.find((item) => item.id === provider);
-  const gemini = provider === "gemini";
+  const gemini = preset?.protocol === "gemini";
   const nativeSearch = provider === "openai" || provider === "anthropic";
   return {
     provider,
     protocol: preset?.protocol || "chat_completions",
     base_url: preset?.url || "",
-    model: gemini ? "gemini-3.8-flash" : "",
+    model: provider === "gemini" ? "gemini-3.8-flash" : "",
     api_key_env: "",
     reasoning_effort: "medium",
     search_mode: gemini ? "bridge" : nativeSearch ? "native" : "external",
@@ -180,12 +186,7 @@ function ModelDocument({
     const uses = Object.entries(routes)
       .filter(([, connection]) => connection === id)
       .map(([task]) => taskNames[task] || task);
-    if (document.search_connection === id)
-      uses.push(
-        fields.search_backend === "deepseek_anthropic"
-          ? "联网搜索"
-          : "预选搜索连接",
-      );
+    if (document.search_connection === id) uses.push("搜索连接");
     const purpose = uses.length
       ? `${uses[0]}${uses.length > 1 ? `等 ${uses.length} 项` : ""}`
       : "未分配用途";
@@ -200,6 +201,17 @@ function ModelDocument({
   );
   const [showLegacy, setShowLegacy] = useState(activeConnections.length === 0);
   const [newProvider, setNewProvider] = useState("");
+  const searchConnections = Object.entries(profiles).filter(
+    ([, item]) =>
+      ["gemini", "anthropic_messages", "responses"].includes(
+        String(item.protocol),
+      ) &&
+      !(
+        item.protocol === "responses" &&
+        String(item.provider).toLowerCase() === "deepseek"
+      ),
+  );
+  const searchId = String(document.search_connection || "");
   const schema = fields.profile_schema as Row;
   function choose(id: string) {
     select(id);
@@ -230,11 +242,7 @@ function ModelDocument({
           <small>
             {Object.values(routes).filter((route) => route === id).length}{" "}
             个任务用途
-            {document.search_connection === id
-              ? fields.search_backend === "deepseek_anthropic"
-                ? " · 联网搜索"
-                : " · 预选搜索连接"
-              : ""}
+            {document.search_connection === id ? " · 搜索连接" : ""}
           </small>
         </button>
       );
@@ -268,6 +276,40 @@ function ModelDocument({
     choose(id);
     setShowLegacy(true);
     setNewProvider("");
+  }
+  function addGeminiSearch() {
+    const source = profiles[selected];
+    const id = `connection_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`;
+    const base = String(
+      source.base_url || resolvedProfiles[selected]?.base_url || "",
+    );
+    const search: Row = {
+      ...source,
+      protocol: "gemini",
+      base_url: base.replace(/\/v1\/?$/, "/v1beta"),
+      model: source.model || resolvedProfiles[selected]?.model || "",
+      search_mode: "bridge",
+      wire_options:
+        source.protocol === "gemini"
+          ? source.wire_options
+          : { reasoning: "gemini" },
+      capabilities: Array.from(
+        new Set([
+          ...(Array.isArray(source.capabilities) ? source.capabilities : []),
+          "native_web_search",
+        ]),
+      ),
+    };
+    delete search.base_url_env;
+    delete search.model_env;
+    change({
+      ...document,
+      profiles: { ...profiles, [id]: search },
+      search_backend: "model",
+      search_connection: id,
+    });
+    choose(id);
+    setShowLegacy(true);
   }
   const profile = profiles[selected];
   const resolved = resolvedProfiles[selected];
@@ -344,6 +386,7 @@ function ModelDocument({
               <input
                 className="form-control"
                 list="model-provider-presets"
+                aria-label="供应商"
                 value={String(profile.provider || "")}
                 onChange={(event) =>
                   update({ ...profile, provider: event.target.value })
@@ -449,36 +492,43 @@ function ModelDocument({
                 <option value="inherit">沿用部署搜索设置（旧连接）</option>
               )}
               <option value="external">仅外部搜索</option>
-              {profile.protocol === "gemini" && (
-                <option value="bridge">Gemini 独立原生搜索桥（推荐）</option>
-              )}
-              {profile.protocol === "gemini" &&
-                profile.search_mode === "native" && (
-                  <option value="native">旧直接原生模式（可能不兼容）</option>
-                )}
-              {profile.protocol === "gemini" &&
-                profile.search_mode === "both" && (
-                  <option value="both">旧组合模式（可能不兼容）</option>
-                )}
+              <option value="bridge">独立原生搜索连接</option>
               {(profile.protocol === "anthropic_messages" ||
+                profile.protocol === "gemini" ||
                 (profile.protocol === "responses" &&
                   profile.provider !== "deepseek")) && (
                 <option value="native">仅供应商原生搜索</option>
               )}
-              {profile.protocol === "responses" &&
-                profile.provider !== "deepseek" && (
-                  <option value="both">原生搜索与外部搜索</option>
-                )}
+              {(profile.protocol === "gemini" ||
+                (profile.protocol === "responses" &&
+                  profile.provider !== "deepseek")) && (
+                <option value="both">原生搜索与外部搜索</option>
+              )}
             </select>
             <small>
-              {profile.protocol === "gemini"
-                ? "独立搜索桥会让主模型保留稳定的 web_search/read_webpage 函数，仅在调用 web_search 时另发只含 Google 搜索的 Gemini 请求；需要部署配置 Tavily 用于网页读取和失败降级。原有直接原生模式可能与函数声明不兼容。"
-                : profile.protocol === "anthropic_messages"
-                  ? "Claude 原生搜索与外部 web_search 同名，因此只能二选一。"
-                  : "外部搜索需在部署中配置；原生搜索需供应商和模型实际支持。"}
-              原生搜索由供应商执行，可能产生额外费用。
+              独立搜索保留 web_search/read_webpage
+              函数，使用下方指定的搜索连接；
+              未指定时，仅支持原生搜索的当前连接可沿用自身。
+              内联原生搜索由当前模型直接执行；协议兼容不证明端点实际支持。
+              模型搜索失败不会转为 Tavily 搜索；Tavily
+              可独立提取网页。原生搜索可能产生额外费用。
             </small>
           </label>
+          {profile.provider === "agm" && !!profile.api_key_env && (
+            <>
+              <button
+                className="btn-secondary"
+                type="button"
+                onClick={addGeminiSearch}
+              >
+                从此 AGM 连接创建 Gemini 搜索连接
+              </button>
+              <p className="small">
+                沿用同一密钥引用和模型；标准 /v1 地址改为 /v1beta。
+                请核对实际原生地址、模型与搜索能力，保存不会发起模型测试。
+              </p>
+            </>
+          )}
           <details className="json-note">
             <summary>高级参数与能力声明</summary>
             <SchemaFields
@@ -569,10 +619,28 @@ function ModelDocument({
       <div className="provider-intro">
         <strong>2. 联网搜索使用的模型连接</strong>
         <span>
-          若部署使用 DeepSeek 搜索桥，请独立选择一条官方 DeepSeek
-          连接；切换主对话模型不会改动此选择。
+          独立搜索连接与主对话协议分开选择；只发送查询，不携带主对话历史。
         </span>
       </div>
+      <label className="form-group">
+        本地 web_search 后端
+        <select
+          className="form-control"
+          aria-label="本地 web_search 后端"
+          value={String(document.search_backend || "inherit")}
+          onChange={(event) =>
+            change({
+              ...document,
+              search_backend:
+                event.target.value === "inherit" ? null : event.target.value,
+            })
+          }
+        >
+          <option value="inherit">沿用部署设置</option>
+          <option value="model">独立原生搜索模型</option>
+          <option value="tavily">Tavily 外部搜索</option>
+        </select>
+      </label>
       <label className="form-group">
         搜索连接
         <select
@@ -587,18 +655,24 @@ function ModelDocument({
           }
         >
           <option value="">未选择</option>
-          {Object.entries(profiles)
-            .filter(([, item]) => item.provider === "deepseek")
-            .map(([id]) => (
-              <option key={id} value={id}>
-                {labelOf(id)}
+          {profiles[searchId] &&
+            !searchConnections.some(([id]) => id === searchId) && (
+              <option value={searchId} disabled>
+                {labelOf(searchId)}（旧部署搜索引用）
               </option>
-            ))}
+            )}
+          {searchConnections.map(([id]) => (
+            <option key={id} value={id}>
+              {labelOf(id)}
+            </option>
+          ))}
         </select>
         <small>
-          {fields.search_backend === "deepseek_anthropic"
-            ? "当前部署使用 DeepSeek 搜索桥，保存时必须选一条官方 DeepSeek 连接。搜索桥固定调用 deepseek-flash；此处取用连接的 API Key。"
-            : "当前部署使用其他搜索后端；此选择会保留，供以后切换搜索后端使用。"}
+          支持 Gemini、Anthropic Messages 和 Responses 的原生搜索协议。
+          连接显示真实供应商、协议和模型，兼容接口不代表搜索已验证。 DeepSeek
+          Responses
+          原生搜索未验证，不能新选为搜索连接；旧部署引用按升级合同保留。
+          只预选连接不会接管沿用部署的搜索；选择模型后端或为主连接选择独立搜索后才使用。
         </small>
       </label>
       <div className="provider-intro">
@@ -675,26 +749,8 @@ function Draft({ fields, props }: { fields: Row; props: PageProps }) {
   function saveModelDocument() {
     const next = structuredClone(document);
     const profiles = next.profiles as Record<string, Row>;
-    if (fields.search_backend === "deepseek_anthropic") {
-      const searchId = String(next.search_connection || "");
-      if (!searchId)
-        throw new Error("当前使用 DeepSeek 搜索桥，请先选择独立的搜索连接。");
-      const searchProfile = profiles[searchId];
-      const resolved = (fields.resolved_profiles || {}) as Record<string, Row>;
-      let official = false;
-      try {
-        const endpoint = new URL(
-          String(searchProfile?.base_url || resolved[searchId]?.base_url || ""),
-        );
-        official =
-          endpoint.protocol === "https:" &&
-          endpoint.hostname === "api.deepseek.com";
-      } catch {
-        official = false;
-      }
-      if (searchProfile?.provider !== "deepseek" || !official)
-        throw new Error("搜索连接必须是官方 DeepSeek 连接。");
-    }
+    if (next.search_backend === "model" && !next.search_connection)
+      throw new Error("请选择独立的原生搜索连接。");
     const apiKeys: Record<string, string> = {};
     for (const [id, profile] of Object.entries(profiles)) {
       if (!profile.model && !profile.model_env)

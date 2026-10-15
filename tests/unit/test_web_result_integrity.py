@@ -7,12 +7,12 @@ import httpx
 import pytest
 
 from qq_ai_bot.domain.messages import ChatResponse, CitationOrigin, ResponseCitation
+from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.models import ModelProfile
+from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
 from qq_ai_bot.web.bridge_state import BridgeState
-from qq_ai_bot.web.deepseek_bridge import DeepSeekSearchBridge
-from qq_ai_bot.web.gemini_bridge import GeminiSearchBridge
 from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
+from qq_ai_bot.web.native_bridge import NativeSearchBridge
 from qq_ai_bot.web.tavily import TavilyWebSearchProvider
 
 
@@ -74,7 +74,7 @@ async def test_tavily_passes_requested_counts_and_preserves_all_returned_evidenc
     ]
 
 
-async def test_deepseek_native_search_keeps_wire_evidence_without_local_response_caps(tmp_path):
+async def test_anthropic_native_search_keeps_wire_evidence_without_local_response_caps(tmp_path):
     urls = [f"https://example.com/page/{i}" for i in range(7)]
     title = "title" * 70
     content = "native search evidence " * 1000
@@ -102,10 +102,32 @@ async def test_deepseek_native_search_keeps_wire_evidence_without_local_response
             },
         )
 
-    provider = DeepSeekSearchBridge(
-        api_key="synthetic",
-        state_path=tmp_path / "search.sqlite3",
-        client=httpx.AsyncClient(transport=httpx.MockTransport(transport)),
+    client = httpx.AsyncClient(
+        base_url="https://wire.invalid/", transport=httpx.MockTransport(transport)
+    )
+    provider = NativeSearchBridge(
+        profile=ModelProfile(
+            id="native-search",
+            provider="deepseek",
+            protocol=ModelProtocol.ANTHROPIC_MESSAGES,
+            base_url="https://wire.invalid/",
+            api_key_env="TEST_NATIVE_SEARCH_KEY",
+            model="selected-flash",
+            timeout_seconds=2,
+            max_retries=0,
+            default_temperature=0.5,
+            default_max_output_tokens=8192,
+            thinking_enabled=False,
+        ),
+        credential="synthetic",
+        state=BridgeState(tmp_path / "search.sqlite3"),
+        provider=AnthropicMessagesProvider(
+            base_url="https://wire.invalid/",
+            api_key="synthetic",
+            timeout_seconds=2,
+            max_retries=0,
+            client=client,
+        ),
     )
     try:
         result = await provider.search(
@@ -113,7 +135,10 @@ async def test_deepseek_native_search_keeps_wire_evidence_without_local_response
         )
     finally:
         await provider.close()
-    assert captured[0]["tools"] == [{"type": "web_search_20250305", "name": "web_search"}]
+        await client.aclose()
+    assert len(captured[0]["tools"]) == 1
+    assert captured[0]["tools"][0]["type"] == "web_search_20250305"
+    assert captured[0]["tools"][0]["name"] == "web_search"
     assert [source.url for source in result.sources] == urls
     assert all(
         source.title == title and source.relevant_content == content for source in result.sources
@@ -134,7 +159,7 @@ async def test_gemini_keeps_original_grounding_and_full_summary(tmp_path):
             ),
         )
     )
-    bridge = GeminiSearchBridge(
+    bridge = NativeSearchBridge(
         profile=ModelProfile(
             id="fake-search",
             provider="fake",
@@ -221,25 +246,28 @@ async def test_main_history_search_archives_original_requested_page(
     assert not [action for action, _ in case.env.bot.calls if action.startswith("send_")]
 
 
-@pytest.mark.parametrize("kind", ["deepseek", "gemini", "deepseek-extract"])
+@pytest.mark.parametrize("kind", ["search", "extract"])
 async def test_search_bridge_independent_requests_do_not_queue(tmp_path, monkeypatch, kind):
-    if kind.startswith("deepseek"):
-        bridge = DeepSeekSearchBridge(api_key="synthetic", state_path=tmp_path / "cache.sqlite3")
-    else:
-        bridge = GeminiSearchBridge(
-            profile=ModelProfile(
-                id="fake",
-                provider="fake",
-                model="fake",
-                timeout_seconds=1,
-                max_retries=0,
-                default_temperature=0.5,
-                default_max_output_tokens=4096,
-            ),
-            credential="synthetic",
-            provider=FakeLLMProvider(),
-            state=BridgeState(tmp_path / "cache.sqlite3"),
-        )
+    from qq_ai_bot.web.page_extractor import DirectPageExtractor
+
+    extractor = DirectPageExtractor(
+        state=BridgeState(tmp_path / "cache.sqlite3"), timeout_seconds=1
+    )
+    bridge = NativeSearchBridge(
+        profile=ModelProfile(
+            id="fake",
+            provider="fake",
+            model="fake",
+            timeout_seconds=1,
+            max_retries=0,
+            default_temperature=0.5,
+            default_max_output_tokens=4096,
+        ),
+        credential="synthetic",
+        provider=FakeLLMProvider(),
+        extractor=extractor,
+        state=BridgeState(tmp_path / "cache.sqlite3"),
+    )
     entered, release = asyncio.Event(), asyncio.Event()
     calls = []
     source = WebSearchSource(
@@ -267,8 +295,8 @@ async def test_search_bridge_independent_requests_do_not_queue(tmp_path, monkeyp
         return source
 
     monkeypatch.setattr(bridge, "_search", search)
-    if kind == "deepseek-extract":
-        monkeypatch.setattr(bridge, "_extract", extract)
+    if kind == "extract":
+        monkeypatch.setattr(extractor, "_extract", extract)
         other = bridge.extract(source.url, "page")
     else:
         other = bridge.search(WebSearchRequest("second"))

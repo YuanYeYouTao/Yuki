@@ -24,17 +24,21 @@ class WebSearchValidationError(WebSearchError):
     """The model supplied an invalid or disallowed query/URL."""
 
 
-class WebSearchProvider(Protocol):
-    """Provider-neutral web search and extraction contract."""
-
-    async def search(self, request: WebSearchRequest) -> WebSearchResponse:
-        """Search and extract a bounded set of relevant public pages."""
+class WebPageExtractor(Protocol):
+    """Read one public page without granting a search fallback."""
 
     async def extract(self, url: str, query: str) -> WebSearchSource:
         """Extract content from one validated public page."""
 
     async def close(self) -> None:
-        """Release provider-owned resources."""
+        """Release extractor-owned resources."""
+
+
+class WebSearchProvider(WebPageExtractor, Protocol):
+    """Provider-neutral web search and extraction contract."""
+
+    async def search(self, request: WebSearchRequest) -> WebSearchResponse:
+        """Search and extract a bounded set of relevant public pages."""
 
 
 def normalize_public_url(url: str) -> str:

@@ -49,6 +49,7 @@ class _ProfileDocument(BaseModel):
     schema_version: Literal[3]
     profiles: dict[str, dict[str, Any]]
     routes: dict[str, str]
+    search_backend: Literal["tavily", "model"] | None = None
     search_connection: str | None = None
 
 
@@ -59,6 +60,7 @@ class ModelProfileCatalog(BaseModel):
 
     profiles: dict[str, ModelProfile]
     routes: dict[ModelTask, ModelRoute]
+    search_backend: Literal["tavily", "model"] | None = None
     search_connection: str | None = None
 
     @model_validator(mode="after")
@@ -144,6 +146,7 @@ def parse_model_profile_catalog(
         return ModelProfileCatalog(
             profiles=profiles,
             routes=routes,
+            search_backend=document.search_backend,
             search_connection=document.search_connection,
         )
     except ModelRuntimeConfigurationError:
