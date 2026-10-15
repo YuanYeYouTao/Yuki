@@ -463,9 +463,15 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
                     select(effects.c.receipt_json).where(effects.c.work_id == original["id"])
                 )
             ]
-            assert len(saved_calls) == 3 and {
-                call["manifest_revision"] for call in saved_calls
-            } == {expected_manifest}
+            assert {call["provider_call_id"] for call in saved_calls} == {
+                "accept",
+                "question",
+                "waiting",
+                "after-input-read",
+                "result",
+                "complete",
+            }
+            assert {call["manifest_revision"] for call in saved_calls} == {expected_manifest}
             sent = (
                 await session.scalars(
                     select(ChatEventModel).where(

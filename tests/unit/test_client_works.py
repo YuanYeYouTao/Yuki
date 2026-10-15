@@ -492,6 +492,9 @@ async def test_guard_accepts_only_mailbox_proof_and_retains_original_work_after_
     )
     assert response.status_code == 200, response.text
     result = response.json()["data"]
+    assert not await guard.check(
+        None, database=database, event_ids=frozenset({result["event_id"]})
+    )
     control.session.event_ids.append(result["event_id"])
     assert await guard.check(control)
     restored = WorkSourceGuard.restore(guard.snapshot())

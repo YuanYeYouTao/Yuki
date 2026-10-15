@@ -1,4 +1,4 @@
-"""Controlled web search with an explicit per-task Gemini bridge option."""
+"""Controlled web search with explicit, independent native search connections."""
 
 from __future__ import annotations
 
@@ -8,21 +8,24 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
-from urllib.parse import urlsplit
 
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol, ModelSearchMode, ModelTask
-from qq_ai_bot.model_runtime.pool import ModelClientPool
+from qq_ai_bot.model_runtime.models import (
+    ModelCapability,
+    ModelProfile,
+    ModelSearchMode,
+    ModelTask,
+)
+from qq_ai_bot.model_runtime.pool import ModelClientPool, create_model_provider
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.settings_domains import WebSettings
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider
 from qq_ai_bot.web.bridge_state import BridgeState
-from qq_ai_bot.web.deepseek_bridge import DeepSeekSearchBridge
-from qq_ai_bot.web.gemini_bridge import GeminiSearchBridge
 from qq_ai_bot.web.models import WebMode, WebSearchRequest, WebSearchResponse, WebSearchSource
+from qq_ai_bot.web.native_bridge import NativeSearchBridge
 from qq_ai_bot.web.route_context import current_web_model_task
+from qq_ai_bot.web.search_config import effective_search_profile
 from qq_ai_bot.web.tavily import TavilyWebSearchProvider
 
 logger = logging.getLogger(__name__)
@@ -205,104 +208,72 @@ class WebModule:
         settings = self._settings
         if settings.mode is WebMode.DISABLED:
             return None
+        backend = (
+            catalog.search_backend or settings.web_search_backend
+            if catalog
+            else settings.web_search_backend
+        )
         bridge_profiles: dict[ModelTask, ModelProfile] = {}
+        needs_default = catalog is None and settings.mode is not WebMode.NATIVE
         if catalog is not None:
             for task, route in catalog.routes.items():
-                profile = catalog.profiles.get(route.profile_id)
-                if (
-                    profile is not None
-                    and getattr(profile, "search_mode", None) is ModelSearchMode.BRIDGE
+                if ModelCapability.TOOLS not in route.required_capabilities:
+                    continue
+                profile = catalog.profiles[route.profile_id]
+                if profile.search_mode is ModelSearchMode.BRIDGE:
+                    bridge_profiles[task] = effective_search_profile(catalog, backend, profile)
+                elif profile.search_mode in {ModelSearchMode.EXTERNAL, ModelSearchMode.BOTH} or (
+                    profile.search_mode is None and settings.mode in {WebMode.TAVILY, WebMode.BOTH}
                 ):
-                    bridge_profiles[task] = profile
-        if bridge_profiles:
+                    needs_default = True
+        selected_default = None
+        if backend != "tavily":
+            if catalog is None:
+                raise ValueError("Native search requires a configured model connection")
+            selected_default = effective_search_profile(catalog, backend)
+        selected_profiles = [*bridge_profiles.values()]
+        if selected_default is not None:
+            selected_profiles.append(selected_default)
+        if selected_profiles:
             if clients is None:
-                raise ValueError("Gemini bridge requires a configured model connection")
-            for profile in bridge_profiles.values():
-                if profile.protocol is not ModelProtocol.GEMINI:
-                    raise ValueError("the separate native search bridge requires Gemini protocol")
-                if (
-                    profile.max_output_tokens_limit is not None
-                    and profile.default_max_output_tokens > profile.max_output_tokens_limit
-                ):
-                    raise ValueError("search default exceeds configured provider output limit")
-                if not clients.api_key_for(profile):
-                    raise ValueError("Selected Gemini connection has no API key")
-        default = self._default_provider(catalog, clients)
-        if not bridge_profiles and settings.mode is not WebMode.NATIVE:
+                raise ValueError("Native search requires a configured model connection")
+            for profile in selected_profiles:
+                if not clients.api_key_for(profile) and profile.provider.casefold() != "fake":
+                    raise ValueError("Selected native search connection has no API key")
+        if backend == "tavily" and needs_default and not settings.tavily_api_key:
+            raise ValueError("Tavily search credentials are required")
+        by_profile: dict[str, NativeSearchBridge] = {}
+
+        def bridge(profile: ModelProfile) -> NativeSearchBridge:
+            assert clients is not None
+            existing = by_profile.get(profile.id)
+            if existing is None:
+                existing = self._native_bridge(profile, clients)
+                by_profile[profile.id] = existing
+            return existing
+
+        default: WebSearchProvider | None = (
+            bridge(selected_default)
+            if selected_default is not None
+            else self._tavily()
+            if settings.tavily_api_key
+            else None
+        )
+        bridges = {task: bridge(profile) for task, profile in bridge_profiles.items()}
+        if not bridges and settings.mode is not WebMode.NATIVE:
             return default
-        if bridge_profiles:
-            assert clients is not None
-        by_profile: dict[str, GeminiSearchBridge] = {}
-        bridges: dict[ModelTask, GeminiSearchBridge] = {}
-        for task, profile in bridge_profiles.items():
-            assert clients is not None
-            bridge = by_profile.get(profile.id)
-            if bridge is None:
-                bridge = self._gemini_bridge(profile, clients)
-                by_profile[profile.id] = bridge
-            bridges[task] = bridge
         return TaskRoutedWebSearchProvider(default, bridges)
 
-    def _gemini_bridge(self, profile: ModelProfile, clients: ModelClientPool) -> GeminiSearchBridge:
+    def _native_bridge(self, profile: ModelProfile, clients: ModelClientPool) -> NativeSearchBridge:
         settings = self._settings
         key = clients.api_key_for(profile)
-        return GeminiSearchBridge(
+        return NativeSearchBridge(
             profile=profile,
             credential=key,
-            provider=GeminiProvider(
-                base_url=profile.base_url,
-                api_key=key,
-                timeout_seconds=profile.timeout_seconds,
-                max_retries=0,
-                options=profile.wire_options,
-                headers=profile.headers,
-            ),
+            provider=create_model_provider(profile.model_copy(update={"max_retries": 0}), key),
             state=BridgeState(settings.web_search_bridge_state_path),
-            fallback=self._tavily() if settings.tavily_api_key else None,
+            extractor=self._tavily() if settings.tavily_api_key else None,
             invocations=self._invocations,
-        )
-
-    def _default_provider(
-        self,
-        catalog: ModelProfileCatalog | None,
-        clients: ModelClientPool | None,
-    ) -> WebSearchProvider | None:
-        settings = self._settings
-        if settings.web_search_backend == "tavily":
-            if not settings.tavily_api_key:
-                if settings.mode is WebMode.NATIVE:
-                    return None
-                raise ValueError("Tavily search credentials are required")
-            return self._tavily()
-        if catalog is None or clients is None:
-            raise ValueError("DeepSeek search requires a configured model connection")
-        connection = catalog.search_connection
-        if connection is None:
-            raise ValueError("Select a DeepSeek search_connection in the model profile file")
-        profile = catalog.profiles.get(connection)
-        if (
-            profile is None
-            or profile.provider.casefold() != "deepseek"
-            or urlsplit(profile.base_url).scheme != "https"
-            or urlsplit(profile.base_url).hostname != "api.deepseek.com"
-        ):
-            raise ValueError("DeepSeek search requires an official DeepSeek connection")
-        api_key = clients.api_key_for(profile)
-        if not api_key:
-            raise ValueError("Selected DeepSeek search connection has no API key")
-        if (
-            profile.max_output_tokens_limit is not None
-            and profile.default_max_output_tokens > profile.max_output_tokens_limit
-        ):
-            raise ValueError("search default exceeds configured provider output limit")
-        fallback = self._tavily() if settings.tavily_api_key else None
-        return DeepSeekSearchBridge(
-            api_key=api_key,
-            state_path=settings.web_search_bridge_state_path,
-            fallback=fallback,
-            timeout_seconds=profile.timeout_seconds,
-            max_output_tokens=profile.default_max_output_tokens,
-            extract_max_results=settings.web_extract_max_results,
         )
 
     def _tavily(self) -> TavilyWebSearchProvider:

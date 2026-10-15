@@ -65,6 +65,7 @@ class CitationOrigin(StrEnum):
     """Where a provider-neutral source URL was recovered."""
 
     ANNOTATION = "annotation"
+    NATIVE_RESULT = "native_result"
     OPEN_PAGE_ACTION = "open_page_action"
     ANSWER_TEXT = "answer_text"
 
@@ -351,6 +352,7 @@ class ResponseCitation:
     title: str = ""
     origin: CitationOrigin = CitationOrigin.ANNOTATION
     call_id: str | None = None
+    snippet: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

@@ -48,42 +48,47 @@ Gemini/DeepSeek API 图片验收与生产速度验收尚未完成。插件自有
 且借用不依赖 `vision_enabled`。保留这些消费者期间不能删除共享密钥或声称可整体关闭
 独立视觉配置。详见[聊天媒体](chat-media-workspace.md)。
 
-原生搜索不能假装为客户端函数；Claude 搜索结果以 server tool 回执和引用记录，Gemini
-Google Search 的工具调用、结果和 thought signature 按原样保存在私有续跑状态中。
-Gemini 的 Google Search 与函数工具同请求在当前 Cloud Code 代理路由上返回 400，
-因此 Gemini 主 Agent 应选 `search_mode="bridge"`：保留固定 `web_search` 与
-`read_webpage` 函数声明，只有执行 `web_search` 时另发一条只含 `googleSearch`
-的 Gemini 请求。桥只采纳上游 `groundingMetadata.groundingChunks[].web` 来源；
-模型正文里的 URL 不算来源。无可信来源或请求失败时显式退到已配置的 Tavily，
-回退结果不进桥缓存。部署 WebMode 为 native/tavily/both 时均可使用显式 bridge；
-Tavily 是可选的网页读取与失败降级后端。没有 Tavily 时仍可取得真实 grounding 来源 URL/标题，
-并保留同一搜索响应已有的 `provider_summary`（明确标为上游模型生成的不可信总结，非网页
-原文或逐来源摘录）。仅在已有真实 grounding 时输出总结，其正文 URL 不参与来源认定。
-来源、已返网页正文和总结保留原件，再交既有结果预算器整理展示或保存artifact；
-Provider和调用入口不提前缩减来源、正文或总结。明确请求的数量原样交真实上游，
-Tavily extract不再带用于选择相关chunks的query；不会为保已有来源额外抓页。
-不虚构网页正文，`read_webpage` 明确返回 `extract_unavailable`。模型配置保存时按发起工具
-调用的任务连接热切换桥。
-已开始的 Runner 将搜索后端与模型连接一起固定至该轮结束；热保存只影响后续 Runner。
-Gemini 搜索桥使用原连接的 `timeout_seconds` 和 `default_max_output_tokens`，不额外
-施加 Web 超时或 2048 token 输出上限；DeepSeek 桥同样沿所选搜索 Profile 配置，
-保留显式输出限额核验。Tavily/网页请求的 `WEB_TIMEOUT_SECONDS` 默认 180 秒；
-部署中显式配置的旧值需单独调整。
-每个模型连接的 `search_mode` 可选 `external`、`bridge`（Gemini）、`native` 或在协议允许时选 `both`；
-旧文件未填写时沿用部署搜索模式。直接 `native/both` 须声明 `native_web_search` 能力；
-`bridge` 在独立请求中使用 Google Search，不向主请求声明该能力或内联原生工具。
-Claude 原生工具与本地 `web_search` 同名，原生模式不向 Claude 声明外部搜索函数。
-全局搜索禁用仍会关闭所有联网工具；外部模式还需要部署中确实配置外部搜索后端。
-新安装未提供 `WEB_MODE` 或旧 `WEB_ENABLED` 时默认开启模型搜索（native），不要求额外
-Tavily 密钥，不自动声明任何模型能力。显式 `WEB_MODE` 优先；只有旧 `WEB_ENABLED=true`
-则保留 Tavily 模式和凭据校验，`false` 继续禁用。既有 Profile 的搜索选择不被默认值改写。
-Gemini 使用显式 bridge；支持原生搜索的连接仍须声明实际能力和获得当次 Web 授权。
-独立 DeepSeek 搜索仅在已配置 `deepseek_anthropic` 后端和明确 `search_connection` 时使用
-已有适配器；native 模式不猜测主模型作为搜索连接，也不改变主任务 Provider。
-未配置可用外部后端的本地搜索调用返回 `search_unavailable`；全局开启不证明任意模型
-具备搜索或网页全文读取能力。启用后的模型配置热切换保持原 Runner 的已固定搜索后端。
-主 Agent 使用完整函数合同，Chat 搜索专用模型不能混用该合同；它们也不能通过 `tool_choice=none`
-保证禁用服务端搜索。需要联网的主 Agent 可配置现有外部搜索工具。
+原生搜索仍由供应商执行。内联方式将原生工具放入主模型请求；独立方式保留主 Agent 的
+`web_search` / `read_webpage` 函数合同，仅在执行 `web_search` 时另发搜索专用请求，
+不传主聊天历史或函数清单。两个入口复用原协议适配器，不按查询内容或供应商品牌改路由。
+Gemini 的 Google Search 与函数工具混用曾在 Cloud Code 代理上返回 400，独立搜索可避免
+这一组合；兼容协议或能力声明都不证明当前端点真实可用。
+
+顶层 `search_backend="model"` 与 `search_connection="连接ID"` 明确选择本地搜索的独立模型；
+`search_backend="tavily"` 则选择 Tavily 外部搜索。旧文件未填写 `search_backend` 时沿部署设置，
+仅预选 `search_connection` 不接管旧搜索。全局 `WEB_MODE=disabled` 仍关闭联网工具。
+每个主连接的 `search_mode` 可选 `external`、`bridge`、`native` 或在协议允许时选 `both`：
+
+- `external` 使用顶层选定的本地搜索后端；该后端可以是独立原生搜索模型，也可以是 Tavily。
+- `bridge` 强制使用指定的独立原生搜索连接，主协议可为 Chat、Gemini、Anthropic 或 Responses。
+  未指定连接时，仅自身支持原生搜索的 Profile 可沿用自身；普通 Chat 主连接必须明确选择搜索连接。
+- `native` 将搜索内联到当前模型请求，`both` 在协议允许时保留内联搜索和本地搜索函数。
+  内联须声明 `native_web_search` 能力。Claude 原生工具与本地 `web_search` 同名，不能同时声明。
+
+独立搜索连接支持 Gemini GenerateContent、Anthropic Messages 与 Responses，不要求主模型
+切换协议。选择该连接即是明确的搜索配置，不要求为了独立搜索向主请求增加原生工具。
+Responses 既能内联搜索，也能作为独立搜索连接；Chat 主 Agent 继续使用完整函数合同，
+不把 Chat 搜索专用模型或 `web_search_options` 当作通用函数与搜索混用接口。
+DeepSeek 的 Responses 原生搜索仍未验证，不自动开放；其既有搜索沿显式 Anthropic 搜索
+Profile 配置，旧 `deepseek_anthropic` 部署由升级 reader 保留原地址、模型与密钥来源。
+
+真实搜索来源只来自上游结构化证据：Gemini 的
+`groundingMetadata.groundingChunks[].web`，Anthropic 中与 `server_tool_use` 关联的
+`web_search_tool_result`，以及 Responses 的 `web_search_call.action.sources` 和引用 annotations。
+正文 URL 或“已搜索”的陈述不生成来源。没有真实来源或搜索请求失败时直接返回错误，
+**独立模型搜索绝不退到 Tavily 搜索**；显式选择 Tavily 后端仍正常执行 Tavily 搜索。
+`provider_summary` 只作为外部不可信的模型总结，不冒充网页原文或逐来源摘录。
+
+搜索和网页读取分开。`read_webpage` 提取用户明确提供或本轮真实搜索返回的 URL；
+Tavily 可作为提取后端；未配置时复用经过公共地址、DNS 与重定向检查的 HTTP 下载器，
+不因提取失败改变搜索供应商。提取失败明确报错，
+不将搜索总结充当网页正文。来源、上游已返回内容和总结保留原件，再由既有结果预算器
+整理展示或保存 artifact，不为保有来源额外抓页。
+
+搜索请求沿搜索 Profile 的超时、输出预算与显式限额，沿原 Work 计入辅助请求预算；
+超时或未知付费结果不盲目重试。Tavily/网页请求的 `WEB_TIMEOUT_SECONDS` 默认 180 秒，
+显式旧值继续生效。模型配置热保存同时切换独立搜索连接，已开始的 Runner 保持原固定连接
+至该轮结束。配置示例、协议边界和升级方法见[独立原生搜索](../deepseek-search-bridge.md)。
 
 ## Chat 供应商预设
 
@@ -229,9 +234,9 @@ LLM/LLM_FLASH 设置可作为 TOML 引用值，其他变量须先导出，不扫
 
 原生搜索是否启用以当次请求合同记录；Google/Claude 的原生搜索可能另有工具费用，当前账本
 没有供应商账单或可靠的原生工具价格，费用显示为未知，不从 Token 用量推算为零。
-Gemini 独立搜索桥另记一条 `model_invocations.task=web_search`，归入当前连接与模型，
+独立原生搜索另记一条 `model_invocations.task=web_search`，归入搜索连接与模型，
 记录上游返回的输入、输出、缓存 Token 和实际 HTTP 请求数；无可信 grounding 记失败，
-随后 Tavily 降级不伪装成 Gemini 命中。
+失败不会转为 Tavily 搜索；没有上游用量时保留未知。
 
 应用层 `provider_cache_shape_diagnostics` 只覆盖归一 messages/tools，明确排除 native
 continuation 正文。缓存前缀与首差异以各适配器最终 HTTP body 的 `WireRequestObserver`

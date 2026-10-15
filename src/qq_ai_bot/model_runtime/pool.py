@@ -20,6 +20,68 @@ from qq_ai_bot.llm.openai_responses import (
 from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
 
 
+def create_model_provider(
+    profile: ModelProfile, api_key: str, *, client: httpx.AsyncClient | None = None
+) -> LLMProvider:
+    """Construct an adapter; the caller owns its client lifetime."""
+    if profile.provider.casefold() == "fake":
+        return FakeLLMProvider()
+    provider: LLMProvider
+    if profile.protocol is ModelProtocol.CHAT_COMPLETIONS:
+        provider = OpenAICompatibleProvider(
+            base_url=profile.base_url,
+            api_key=api_key,
+            timeout_seconds=profile.timeout_seconds,
+            max_retries=profile.max_retries,
+            client=client,
+            options=profile.wire_options,
+            headers=profile.headers,
+            provider_name=profile.provider.casefold(),
+        )
+    elif profile.protocol in {ModelProtocol.ANTHROPIC_MESSAGES, ModelProtocol.GEMINI}:
+        native_provider = (
+            AnthropicMessagesProvider
+            if profile.protocol is ModelProtocol.ANTHROPIC_MESSAGES
+            else GeminiProvider
+        )
+        provider = native_provider(
+            base_url=profile.base_url,
+            api_key=api_key,
+            timeout_seconds=profile.timeout_seconds,
+            max_retries=profile.max_retries,
+            client=client,
+            options=profile.wire_options,
+            headers=profile.headers,
+            provider_name=profile.provider.casefold(),
+        )
+    elif profile.provider.casefold() == "deepseek":
+        provider = DeepSeekResponsesProvider(
+            base_url=profile.base_url,
+            api_key=api_key,
+            timeout_seconds=profile.timeout_seconds,
+            max_retries=profile.max_retries,
+            client=client,
+            headers=profile.headers,
+            provider_name=profile.provider.casefold(),
+        )
+    else:
+        response_provider = (
+            OpenAIResponsesProvider
+            if profile.provider.casefold() == "openai"
+            else OpenAICompatibleResponsesProvider
+        )
+        provider = response_provider(
+            base_url=profile.base_url,
+            api_key=api_key,
+            timeout_seconds=profile.timeout_seconds,
+            max_retries=profile.max_retries,
+            client=client,
+            headers=profile.headers,
+            provider_name=profile.provider.casefold(),
+        )
+    return provider
+
+
 class ModelClientPool:
     """Own provider clients independently from business services."""
 
@@ -69,58 +131,7 @@ class ModelClientPool:
                     limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
                 )
                 self._connection_pools[connection_key] = connection_pool
-            if profile.protocol is ModelProtocol.CHAT_COMPLETIONS:
-                provider = OpenAICompatibleProvider(
-                    base_url=profile.base_url,
-                    api_key=api_key,
-                    timeout_seconds=profile.timeout_seconds,
-                    max_retries=profile.max_retries,
-                    client=connection_pool,
-                    options=profile.wire_options,
-                    headers=profile.headers,
-                    provider_name=profile.provider.casefold(),
-                )
-            elif profile.protocol in {ModelProtocol.ANTHROPIC_MESSAGES, ModelProtocol.GEMINI}:
-                native_provider = (
-                    AnthropicMessagesProvider
-                    if profile.protocol is ModelProtocol.ANTHROPIC_MESSAGES
-                    else GeminiProvider
-                )
-                provider = native_provider(
-                    base_url=profile.base_url,
-                    api_key=api_key,
-                    timeout_seconds=profile.timeout_seconds,
-                    max_retries=profile.max_retries,
-                    client=connection_pool,
-                    options=profile.wire_options,
-                    headers=profile.headers,
-                    provider_name=profile.provider.casefold(),
-                )
-            elif profile.provider.casefold() == "deepseek":
-                provider = DeepSeekResponsesProvider(
-                    base_url=profile.base_url,
-                    api_key=api_key,
-                    timeout_seconds=profile.timeout_seconds,
-                    max_retries=profile.max_retries,
-                    client=connection_pool,
-                    headers=profile.headers,
-                    provider_name=profile.provider.casefold(),
-                )
-            else:
-                response_provider = (
-                    OpenAIResponsesProvider
-                    if profile.provider.casefold() == "openai"
-                    else OpenAICompatibleResponsesProvider
-                )
-                provider = response_provider(
-                    base_url=profile.base_url,
-                    api_key=api_key,
-                    timeout_seconds=profile.timeout_seconds,
-                    max_retries=profile.max_retries,
-                    client=connection_pool,
-                    headers=profile.headers,
-                    provider_name=profile.provider.casefold(),
-                )
+            provider = create_model_provider(profile, api_key, client=connection_pool)
         self._clients[key] = provider
         return provider
 

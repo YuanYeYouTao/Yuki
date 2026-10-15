@@ -140,7 +140,9 @@ async def recover_failure(control: WorkControl, exc: BaseException) -> Activatio
             else None
         )
         proposed = ACCEPTED_ENDINGS.get(str(accepted.get("action"))) if accepted else None
-        if proposed is not None:
+        if proposed is not None and (
+            reason != ExitReason.SEGMENT or proposed in {"failed", "cancelled"}
+        ):
             state, reason, not_before = proposed, ACCEPTED_REASONS[proposed], 0
         values = dict(
             activation_id=control.lease.owner,
@@ -209,15 +211,18 @@ async def settle(control: WorkControl, *, pending_inputs: bool) -> None:
     if await control.retire_fulfilled_wait():
         pending_inputs = bool(await control.pending())
     proposed = control.accepted_ending()
-    if control.handoff_work_id is not None:
+    state: str | None
+    if proposed in {"failed", "cancelled"}:
+        state, reason = proposed, ACCEPTED_REASONS[proposed]
+    elif control.yield_segment:
+        state, reason = "queued", ExitReason.SEGMENT
+    elif control.handoff_work_id is not None:
         state = "queued" if pending_inputs else await control.background_state()
         if state is None:
             state = "waiting_external" if await control.has_owned_execution() else "suspended"
         reason = ExitReason.INPUT
     elif proposed is not None:
         state, reason = proposed, ACCEPTED_REASONS[proposed]
-    elif control.yield_segment:
-        state, reason = "queued", ExitReason.SEGMENT
     elif pending_inputs:
         pending = await control.pending()
         ready = bool(pending and pending[0]["ready"])

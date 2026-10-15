@@ -482,7 +482,7 @@ async def test_file_sent_caption_unknown_can_explain_and_complete_without_reuplo
 
 
 @pytest.mark.parametrize("send_status", ["succeeded", "failed", "uncertain"])
-async def test_direct_send_then_complete_pairs_later_calls_without_executing_them(
+async def test_direct_send_then_complete_executes_remaining_original_calls(
     database, tmp_path, send_status
 ):
     calls = (
@@ -495,7 +495,7 @@ async def test_direct_send_then_complete_pairs_later_calls_without_executing_the
     )
     result = await run(test_case)
     assert result.work_state == "completed" and result.text == "部分成果保留"
-    assert test_case.observed == ["send_message"]
+    assert test_case.observed == ["send_message", "write_fixture"]
     assert len(test_case.provider.requests) == 1
     await test_case.control.settle(pending_inputs=False)
     persisted = await test_case.repository.get(test_case.control.current["id"])
@@ -507,9 +507,10 @@ async def test_direct_send_then_complete_pairs_later_calls_without_executing_the
         if message.role == "tool"
     }
     assert set(pairs) == {call.id for call in calls}
-    assert pairs["after-complete"]["executed"] is False
+    assert pairs["after-complete"]["ok"] is True
     facts = await test_case.control.effect_evidence()
-    assert facts[0]["uncertain"] is (send_status == "uncertain")
+    send_fact = next(fact for fact in facts if fact["tool"] == "send_message")
+    assert send_fact["uncertain"] is (send_status == "uncertain")
 
 
 @pytest.mark.parametrize("mode", ["active", "neutral", "disabled"])

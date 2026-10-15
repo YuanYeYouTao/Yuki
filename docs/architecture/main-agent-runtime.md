@@ -6,7 +6,7 @@
 
 普通聊天、主动群聊、自动化、插件通知自主轮和 SDK 的 Yuki 生成使用
 `MainAgentTurnService`、`AgentRunner` 和 `MainAgentBackend`。自动化不再拥有第二套
-模型工具后端、名称映射或参数转换。独立 agent_sessions、子 Agent 合同和辅助模型不属于主合同。
+模型工具后端、名称映射或参数转换。独立 agent_sessions 与辅助模型不属于主合同，持久子 Agent 复用 Main 的完整工具合同。
 应用装配采用同一个 `YukiRuntime`，持有共享的主 TurnService、Runner、固定工具合同及
 Work/子任务调度器生命周期。Chat、SELF、定时和插件主调用使用这个实例；定时与SELF
 通过共同的真实来源入口装配本轮材料，再调用共享 TurnService、Runner 与固定合同。
@@ -61,7 +61,7 @@ Provider 会话元数据沿真实 canonical conversation、generation 和已有 
 查已完成、失败或取消的工作用 `terminal`，同时看活动与终态用 `all`。
 `limit` 默认 8、允许 1–50，`cursor` 用于续页，不把这个简表宣称为完整任务存档。
 全局投影只提供安全任务元数据和创建者标识，不提供 journal、工具正文或跨会话聊天内容。
-子 Agent 使用固定工作工具子集，其 `get` / `list` 查看自身及实际后代的安全事实；指定节点
+子 Agent 使用 Main 的固定完整工具合同，其 `get` / `list` 查看自身及实际后代的安全事实；指定节点
 管理也限于该子树，原祖先和兄弟不因此开放。`parent_work_id` 可分页查询直接子目标。
 两个查询不要求先接纳 Work，不获取执行租约，不追加输入、恢复工作或发放预算。
 进度、用途、结束时间和已有结果的追问先查询原 Work，不因此另行 `accept`。
@@ -157,12 +157,12 @@ scene/include_memories/history_limit/context_profile 读取预设或 creator_pri
 检查点、真实预算和效果回执接续。模型最终文字只作内部结束，QQ 可见内容必须显式发送。
 delivery.target 是任务要求与原目标，不裁剪工具或制造另一套静默 Agent。
 
-`task_control(complete)` 可在同一次调用中携带真实内部 `result`（当前主合同 18、
-worker 合同 4）。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
+`task_control(complete)` 可在同一次调用中携带真实内部 `result`。当前主合同版本 19，工作者沿 Main 同一完整声明与 revision；Code 控制 API 为 `yuki.codemode.api.v2`。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
 `accepted_control`（complete/fail/need_input/wait 各一份，wait(conditions) 与原 wait
-绑定同事务）。配对保存后本次 activation 立即结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。need_input/fail 的 reason、context_note 和 reporting 是可选资料，不作为结束审批。
+绑定同事务）。普通 complete、wait、need_input 与交接只登记决定，同一份原响应及 Code 程序中仍获准的调用按原顺序收拢；不要求模型把控制放在最后，也不因普通结束提案裁剪工具。原批次、程序和配对保存后，本次 activation 沿共同出口结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。need_input/fail 的 reason、context_note 和 reporting 是可选资料，不作为结束审批。
 合法无工具 final（包括空正文）走同一结束路径；正文供内部结果，QQ 仍须显式发送。旧 unknown、暂停子目标、产物标签与辅助通知不否决业务完成，查询仍保存实际失败和未知事实。
 恢复先读 accepted_control，配齐原调用后由同一 writer 收尾，不再购买模型确认完成；没有持久响应的丢进程请求不自动重购。真实输入和目标修改沿原边界接续。
+已有 Work 的 direct 控制使用原 InvocationService 的 T1/T2/T3 保存调用与回执，不扣业务工具预算。原响应中明确未派发的尾部沿原调用键接续；已派发未知调用、旧未执行终结回执与已关闭程序不因升级取得重派资格。合同变更在合法新链应用，旧已付请求、公共历史和固定前缀原件保持不变。
 
 0110 一次升级将有真实高层要求的旧定义发布为干净 Main 任务，固定提醒原文和目标完整
 保留。不能恢复真实目标的多步骤、插件或模板定义停止未来安排并作为原件存档。
@@ -270,6 +270,16 @@ read version 或原 Work source guard 并提交 projection；reset/privacy 不�
 普通聊天先只读检查同一内部 source key、actor 与交接边界是否有可选 Work；没有候选时
 上下文准备不领取再释放空租约。只读结果仅用于安排准备，正式激活仍重新读取候选、
 取得租约并执行原来源与状态核验，准备期间新增、取消或改向的 Work 不复用旧预检授权。
+运行中的普通 Main 可在原业务续请求接纳已分类的普通补充：复用原音频、引用与媒体准备，
+仅对最终请求确实保留的输入，将其 ordinary admission 与公共 projection 同事务提交。
+补充沿原 activation，保各事件的真实作者、Presence 和 binding；原 ToolActor、Memory、
+预算与效果回执不改绑。准备材料留在业务私有尾部，纯文本沿原公开片段，不重复注入。
+排队入口读同一 admission，不再为已接纳事件新开 Main；仅观察、晚就绪或被 compact
+替换掉的输入保留原合法机会。历史曝光和公共/私有 compact 请求不取得 ordinary 归属，
+接纳也不证明已经回复；空 final、NO_REPLY、取消或失败均不授予重放资格。
+关闭 Work 运行时仍核验原公共来源及已采用补充，不创建 Work 或空租约。新输入的
+ASR 使公共投影失效时，只有原来源核验仍有效才用原冻结字节追加新材料并重建投影
+epoch；模型原请求链不变。准备期间正文、附件或身份变化，不给旧载荷换新来源。
 已占用或过时代际的作用域领取、失效租约的续期和释放可只读拒绝；真实变更仍使用原
 writer 与执行时的 owner/fence/generation/期限条件，不以锁外读取代替 CAS。
 
@@ -391,7 +401,7 @@ work_id 或 usage 不授予恢复、控制或预算权。查询不重计旧累�
 有界 `communication` 子路径，原 wait/need_input/fail 检查点不会擦除它。
 
 沟通由 Agent 在原循环决定，send_message 是有原领域权限和回执的显式工具。开始、实质进展、阻塞和追问需要说明时直接发送；没有必须先通报的门槛，不再分类汇报、保存答复水位或哈希批次，也不补固定暂停模板。
-同批 send→complete 依原调用顺序执行并配对；结束接纳后的业务调用明确未执行，前面发送不回滚或重发。记忆修改不再迫使整批发送或脚本停止。
+同批 send→complete 与 complete→send 均依原调用顺序、来源及授权执行并配对；已确认发送不回滚或重发，未确认不补造成功。当前目标的真实 failed/cancelled 撤销、来源失效、撤权或预算拒绝按原事实阻止新效果；取消另一个目标不撤销当前执行权。记忆修改与普通生命周期决定不迫使整批发送或脚本停止。
 `task_control.derive` 沿已有 Work 派生普通业务子目标；get/list 可查父子与祖先，指定 work_id 的 cancel/fail/resume 使用原管理 writer。直接父与预算根不同，子任务继续保留来源和预算，不重开已完成祖先。
 
 `task_control.wait(run_id)` 是已有 owned_run conditions 的简写，已结束或未知的执行也可提供真实完成信号。也可登记一次性 `conditions`：

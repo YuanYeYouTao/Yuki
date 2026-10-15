@@ -284,6 +284,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                 if (
                     not isinstance(prior_block, dict)
                     or prior_block.get("type") != "server_tool_use"
+                    or prior_block.get("name") != "web_search"
                 ):
                     continue
                 call_id = prior_block.get("id")
@@ -300,7 +301,10 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                 texts.append(block["text"])
                 raw_citations = block.get("citations")
                 for cited in raw_citations if isinstance(raw_citations, list) else ():
-                    if not isinstance(cited, dict):
+                    if (
+                        not isinstance(cited, dict)
+                        or cited.get("type") != "web_search_result_location"
+                    ):
                         continue
                     url = cited.get("url")
                     if isinstance(url, str) and url.startswith(("https://", "http://")):
@@ -310,6 +314,11 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                                 url=url,
                                 title=title if isinstance(title, str) else "",
                                 origin=CitationOrigin.ANNOTATION,
+                                snippet=(
+                                    cited["cited_text"]
+                                    if isinstance(cited.get("cited_text"), str)
+                                    else None
+                                ),
                             )
                         )
             elif kind == "thinking" and isinstance(block.get("thinking"), str):
@@ -344,14 +353,39 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
                     NativeToolEvent(
                         tool_type=NativeToolType.WEB_SEARCH,
                         call_id=call_id,
-                        status=(NativeToolStatus.FAILED if failure else NativeToolStatus.COMPLETED),
+                        status=(
+                            NativeToolStatus.FAILED
+                            if failure is not None
+                            else NativeToolStatus.COMPLETED
+                            if isinstance(result, list)
+                            else NativeToolStatus.IN_PROGRESS
+                        ),
                         action_type="search",
                         query=search_calls[call_id],
                         error_category=(
-                            str(failure.get("error_code", "unknown")) if failure else None
+                            str(failure.get("error_code", "unknown"))
+                            if failure is not None
+                            else None
                         ),
                     )
                 )
+                for source in result if isinstance(result, list) else ():
+                    if not isinstance(source, dict) or source.get("type") != "web_search_result":
+                        continue
+                    url = source.get("url")
+                    if not isinstance(url, str) or not url.startswith(("https://", "http://")):
+                        continue
+                    title = source.get("title")
+                    snippet = source.get("content")
+                    citations.append(
+                        ResponseCitation(
+                            url=url,
+                            title=title if isinstance(title, str) else "",
+                            origin=CitationOrigin.NATIVE_RESULT,
+                            call_id=call_id,
+                            snippet=snippet if isinstance(snippet, str) else None,
+                        )
+                    )
             elif kind != "redacted_thinking":
                 raise LLMInvalidResponseError("unsupported Claude content block")
         completed_searches = {event.call_id for event in native_events}

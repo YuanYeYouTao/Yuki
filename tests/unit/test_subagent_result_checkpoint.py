@@ -559,7 +559,7 @@ async def test_neutral_resume_cannot_borrow_another_persons_child(database, tmp_
     root_before = await repo.get(parent["id"])
     async with database.sessions() as reader:
         original_inputs = list((await reader.execute(select(inputs))).mappings())
-    with pytest.raises(ValueError, match="subagent_archived_or_unknown"):
+    with pytest.raises(ValueError, match="subagent_not_owned"):
         await execute_subagent(
             control,
             "subagent_control",

@@ -9,6 +9,7 @@ from qq_ai_bot.domain.messages import (
     CitationOrigin,
     NativeToolEvent,
     NativeToolStatus,
+    NativeToolType,
     ResponseCitation,
 )
 from qq_ai_bot.web.base import WebSearchError, normalize_public_url
@@ -26,10 +27,20 @@ def recover_native_web_response(
     # A model can write a plausible URL without searching. Keep the answer
     # visible, but never promote its text to a provider search source.
     del answer_text
+    completed_searches = {
+        event.call_id
+        for event in events
+        if event.tool_type is NativeToolType.WEB_SEARCH
+        and event.status is NativeToolStatus.COMPLETED
+    }
     candidates = [
         citation
         for citation in citations
         if citation.origin in {CitationOrigin.ANNOTATION, CitationOrigin.OPEN_PAGE_ACTION}
+        or (
+            citation.origin is CitationOrigin.NATIVE_RESULT
+            and citation.call_id in completed_searches
+        )
     ]
     candidates.extend(
         ResponseCitation(

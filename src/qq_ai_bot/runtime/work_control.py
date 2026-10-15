@@ -15,6 +15,7 @@ from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepos
 from qq_ai_bot.tool_results.access import ArtifactAccess
 
 if TYPE_CHECKING:
+    from qq_ai_bot.capabilities.invocation import Invocation
     from qq_ai_bot.runtime.work_session import WorkSession
 
 
@@ -65,7 +66,8 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "wait_status 查询，cancel_wait 撤销。need_input 说明缺失信息；"
                 "complete 提交结束；可在 result 中给出真实内部结果（调用方或父工作读取它，"
                 "不会自动外发）；fail/cancel 终止指定工作及其所属执行。"
-                "接受结束后本次执行立即收尾；get/list/wait_status 是只读查询。"
+                "complete/wait/need_input 不截断本批后续获准调用；"
+                "原批次或程序收拢后结算。get/list/wait_status 是只读查询。"
             ),
             parameters={
                 "type": "object",
@@ -578,7 +580,14 @@ class WorkControl:
         self.known_effects.append(entry)
         self.known_effects[:] = self.known_effects[-64:]
 
-    async def execute(self, name: str, args: dict[str, Any], call_key: str) -> str:
+    async def execute(
+        self,
+        name: str,
+        args: dict[str, Any],
+        call_key: str,
+        *,
+        invocation: Invocation | None = None,
+    ) -> str:
         from qq_ai_bot.capabilities.results import ToolExecutionResult
         from qq_ai_bot.runtime.effect_outcomes import current_result_capture
 
@@ -587,7 +596,7 @@ class WorkControl:
             if not await self.repository.valid(self.lease):
                 raise WorkConflict("work_activation_obsolete")
             if name == "task_control":
-                result = await self._control(args, call_key)
+                result = await self._control(args, call_key, invocation=invocation)
             elif name.startswith("subagent_"):
                 from qq_ai_bot.runtime.subagent_tools import execute_subagent
 
@@ -659,7 +668,9 @@ class WorkControl:
                 self.lease, refreshed["id"], expected, note
             )
 
-    async def _control(self, args: dict[str, Any], call_key: str) -> dict[str, Any]:
+    async def _control(
+        self, args: dict[str, Any], call_key: str, *, invocation: Invocation | None = None
+    ) -> dict[str, Any]:
         action = args.get("action")
         if not isinstance(action, str):
             raise ValueError("work_action_required")
@@ -806,21 +817,77 @@ class WorkControl:
             goal = args.get("goal")
             if not isinstance(goal, str) or not goal.strip():
                 raise ValueError("work_goal_required")
-            self.current = await self.repository.accept(
-                self.lease,
-                source_key=self.source_key,
-                source=self.source,
-                goal=goal,
-                reporting=args.get("reporting"),
-            )
-            if self.requests_started and self.current["model_requests"] == 0:
-                await self.repository.checkpoint(
+            from sqlalchemy import update
+            from sqlalchemy.dialects.sqlite import insert
+
+            from qq_ai_bot.capabilities.results import ToolExecutionResult
+            from qq_ai_bot.runtime.effect_outcomes import effect_evidence
+            from qq_ai_bot.runtime.work_budget import charge
+            from qq_ai_bot.runtime.work_schema_v1 import effects, work
+
+            metadata = invocation.durable_metadata() if invocation is not None else {}
+            async with self.repository.database.immediate_session() as writer:
+                admitted = await self.repository.accept_in_session(
+                    writer,
                     self.lease,
-                    self.current["id"],
-                    None,
-                    models=self.requests_started,
+                    source_key=self.source_key,
+                    source=self.source,
+                    goal=goal,
+                    reporting=args.get("reporting"),
                 )
-                self.current["model_requests"] = self.requests_started
+                if self.requests_started and admitted["model_requests"] == 0:
+                    await charge(writer, admitted["id"], models=self.requests_started, tools=0)
+                    await writer.execute(
+                        update(work)
+                        .where(work.c.id == admitted["id"])
+                        .values(model_requests=self.requests_started)
+                    )
+                    admitted["model_requests"] = self.requests_started
+                if invocation is not None:
+                    admission_result = {
+                        "work_id": admitted["id"],
+                        "state": admitted["state"],
+                        "revision": admitted["revision"],
+                        "ending_proposed": self.ending,
+                    }
+                    outcome = ToolExecutionResult(
+                        ok=True,
+                        data=admission_result,
+                        tool_name="task_control",
+                        provider_id="work_control",
+                    )
+                    await writer.execute(
+                        insert(effects).values(
+                            effect_key=call_key,
+                            work_id=admitted["id"],
+                            kind="tool",
+                            state="accepted",
+                            receipt_json=json.dumps(
+                                {
+                                    "result": json.dumps(
+                                        {"ok": True, **admission_result}, ensure_ascii=False
+                                    ),
+                                    "outcome": effect_evidence(
+                                        outcome,
+                                        tool="task_control",
+                                        side_effecting=True,
+                                        arguments="{}",
+                                    ),
+                                    "invocation": {
+                                        **metadata,
+                                        "owner_execution_id": admitted["id"],
+                                        "dispatch_started": True,
+                                        "budget_admitted": False,
+                                        "revision": 1,
+                                    },
+                                },
+                                ensure_ascii=False,
+                            ),
+                            created=admitted["created"],
+                            updated=admitted["updated"],
+                        )
+                    )
+            self.current = admitted
         elif self.current is None:
             raise ValueError("no_active_work")
         elif action == "wait_status":
@@ -1009,7 +1076,7 @@ class WorkControl:
             "state": queued["state"],
             "current_work_id": self.current["id"],
             "instruction": (
-                "新工作已交给 queued_work_id，本轮立即让出执行位置。"
+                "新工作已交给 queued_work_id，原批次或程序收拢后让出执行位置。"
                 "后续由新工作的原始请求开始执行和交付；当前工作不得代做、代发。"
             ),
         }

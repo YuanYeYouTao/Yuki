@@ -258,16 +258,16 @@ async def test_recovery_origin_does_not_invalidate_a_new_composition(database, t
         assert saved.invalidated_reason is None
 
 
-async def test_recovery_origin_still_checks_source_authority(database, tmp_path, monkeypatch):
+async def test_recovery_origin_still_checks_source_authority(database, tmp_path):
     chat, composition = await _pending_composition(database, tmp_path)
-    validate_source = AsyncMock(return_value=False)
     commit = AsyncMock()
-    monkeypatch.setattr(chat._ledger, "read_version_matches", validate_source)
     validator = chat._context_validator(composition.read_version, commit_projection=commit)
+    async with database.immediate_session() as writer:
+        event = await writer.get(ChatEventModel, min(composition.visible_event_ids))
+        event.content = "原有授权来源已经真实修订"
     sequence = TranscriptRequest((), None, (), origin=DispatchOrigin.WORK_RECOVERY)
     with validating_request(sequence), pytest.raises(HistorySourceChangedError):
         await validator()
-    validate_source.assert_awaited_once()
     commit.assert_not_awaited()
 
 

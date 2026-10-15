@@ -1,23 +1,40 @@
 # 更新日志
 
-## 3.9.0 - Unreleased
+## 3.9.0 - 2026-10-15
 
-- 退役全部 `admin_*` 聊天工具与专属 action 适配；WebUI、`/ai`、配置覆写、审计和记忆重建保留。迁移 `0114` 将旧群自主参与停用状态移入可编辑配置，原回执与审计不删。
+从 `v3.8.4` 到产品截点 `030917b1`（PR #437）的 **257 个已合并 PR**、逐项贡献者与升级说明见 [3.9.0 发布说明](docs/releases/v3.9.0.md)。[下载 3.9.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0) · [升级指南](docs/upgrade-3.9.0.md)。
 
-以正式 `v3.8.4` 为起点，截至 main `0ddd7eee`（2026-10-09）的 **109 个已合并 PR** 与最终行为见 [3.9.0 发布说明草案](docs/releases/v3.9.0.md)。正式下载仍为 3.8.4，开发提交部署与正式发行分开记录。
+### 新功能与修复
 
-- 完整管理 WebUI 与共享 Runtime；Code Mode/Pi 执行已合主线，默认 direct 镜像不包含 Monty，Code 编排显式可选。
-- Work 使用一次接纳的控制结果与唯一 settlement writer；模型可以完成、等待、取消或交接。保留原 ID、累计预算和效果回执，删除相同工具结果自动挂起及压缩必须全覆盖/更短的策略。
-- 记忆按需检索，同 key 的独立事实可共存；删除自动注入、归因/强化/意图评分、治理队列、容量腾位和经验过时。提取、SELF、Dream 独立配置；Rebuild 允许批准子集提交。
-- 修复 issue #270 的人物占位和提及错配，复用姓名还原；SELF 多条来源真实保存。删除产量/篇幅硬帽与伪 checkpoint，保留授权、真实来源和已提交效果。
-- 结构化模式和思考沿显式 Profile；退役 Gemini responseSchema projector、强制 thinking/最低档位、Claude 内部付费续跑及正文 DSML 转工具。
-- 当前/历史/工作区/获准工具图片共用主模型原生输入；群聊持续接话复用普通路径；新安装默认开启真实可用的模型搜索。
-- 缩短 SQLite writer 和回复准备路径；Dream 恢复先取 writer 再查执行回执，修复启动竞争。
-- MCP、Genie 输出、专属 SDK/配置/服务及 AOCI 集成退役；ASR、共享媒体、原调用/发送回执保留。Plugin API 3.3、数据库单一 head `0102`。
-- 大幅裁剪冻结策略的测试、夹具、质量维护链与重复 CI；保留源码检查、真实回归、单 direct 镜像与部署包 smoke。
-- [升级草案](docs/upgrade-3.9.0.md)说明实际迁移链、旧配置/授权清退和原数据保全；现存 SELF 旧代次领取与禁用语义 scope 问题见[残留核查](docs/operations/documentation-residual-audit-20261009.md)。
+- 聊天、SELF、插件、自动化和 Work 续跑共用 Main 与完整工具合同；新增手帐式管理 WebUI，可查看聊天、轨迹、用量和工作区，管理模型连接与任务路由，默认关闭。
+- 会话 Compact 由当前 Main 按真实输入容量整理公共历史或私有执行尾部，支持 `/ai compact [重点]`。旧独立 Rollup 与 Work/ordinary 摘要链退役；公共检查点、原事件、私有协议、预算和已付请求沿原来源保留。
+- 修复完成、等待和请求输入截断原工具批次或 Code 程序的问题。原批次先收拢，再统一结算；首次接纳与原回执原子保存，恢复不重购已付响应、不重发已确认效果，媒体仍在整批工具结果配对后交给模型。当前任务的真实取消、失败与授权撤销继续生效。
+- 子 Agent 使用 Main 的完整工具能力和原根预算；真实提问可唤醒可接续的父任务，独立暂停保留。终态父任务不再产生无法兑现的等待承诺；前台可管理获准的旧子任务，无需接纳新父任务，也不复活已结束祖先。
+- 统一 Conversation 公共历史，运行资料改用尖括号标记系统来源，仅用于当前激活；任务笔记保持原 Work 私有。修复 Gemini 续接、旧空摘要投影、上下文恢复与 SQLite 写事务中的准备等待。
+- 简化 Memory：按需检索、按事实 ID 修改和删除，同 key 的独立事实可共存。提取、SELF 与 Dream 可独立配置；旧关系评分、自动注入、升格、容量腾位和治理队列退出。
+- 当前、引用、历史、工作区和获准工具图片进入主模型原生多模态输入；新增按需读取合并转发。支持 Chat Completions、Responses、Claude Messages、Gemini GenerateContent，模型、思考、结构化输出和搜索沿显式 Profile。
+- 默认 direct 镜像提供 `linux/amd64` 和 `linux/arm64`，两套安装器识别宿主架构（[PR #431](https://github.com/YuanYeYouTao/Yuki/pull/431)）。可选 Code Mode 使用独立 `codemode` 构建；持久工作环境继续单独部署。
+- 清退 NapCat、MCP、Genie 语音输出、`admin_*` 聊天工具及无消费者诊断链；保留 SnowLuma、ASR、共享媒体和真实回执。默认发行采用 AGPL-3.0-only，历史资产以随包许可证为准。
+- 数据库 head **0119**、Plugin API **3.5**、主 manifest **19**、Code API **`yuki.codemode.api.v2`**。从旧版升级需核对配置、插件批准和随包迁移，保全数据库、引用文件与新增回执；不能只切回旧镜像回退。
 
-后续 [PR #276](https://github.com/YuanYeYouTao/Yuki/pull/276) 已合并并按开发提交部署：Yuki 不再支持 NapCat，保留 SnowLuma 与既有网关抽象；旧 Compose/环境文件逐项撤去专属配置，其他 profile、共享媒体、QQ 资料及历史来源保留。范围与实际状态见[任务书](docs/architecture/Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)，操作见[升级草案](docs/upgrade-3.9.0.md#旧-napcat-部署配置)，实际结果见[上线及清理回执](docs/operations/napcat-retirement-20261009.md)。3.9.0仍未正式发行。
+**后续计划：3.9.0 的 WebUI 是临时形态，下个大版本将以多客户端方式重构。** 历史缓存实验、缺失计量和验证范围在发布说明中分别记录，不作为新版性能或缓存命中率承诺。
+
+### English
+
+The release covers **257 merged PRs** from `v3.8.4` through product cutoff `030917b1` (PR #437). See the [release notes](docs/releases/v3.9.0.md) for individual contributions, [download 3.9.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0), and follow the [upgrade guide](docs/upgrade-3.9.0.md).
+
+- Chat, SELF, plugins, automation, and Work resumption share Main and its full tool contract. A journal-style management WebUI exposes conversations, traces, usage, workspace files, model connections, and task routes; it is disabled by default.
+- Conversation compact uses the current Main model and actual input capacity for public history and private execution context, including `/ai compact [focus]`. The independent Rollup and Work/ordinary summary pipelines are retired; original events, protocol state, budgets, and paid requests retain their provenance.
+- Completion, waiting, and input requests no longer truncate the original tool batch or Code program. Unified settlement follows that work; initial acceptance and its receipt commit together, recovery reuses paid responses and confirmed effects, and media follows the complete batch of paired tool results. Real cancellation, failure of the current task, and revoked authorization still stop new effects.
+- Subagents share Main's complete tool capabilities and their original root budget. Real questions can wake a resumable parent without clearing an independent pause. Terminal parents no longer promise an unconsumable wait. The foreground agent can manage authorized existing children without accepting a new parent or reopening completed ancestors.
+- Public history is shared by each Conversation. Angle-bracket tags identify system runtime material used only for the current activation; task notes remain private to their Work. Gemini continuation, legacy empty-summary projections, context recovery, and preparation inside SQLite write transactions are repaired.
+- Memory is retrieved on demand and changed by fact ID, allowing independent facts with the same key. Extraction, SELF, and Dream can use separate profiles. Legacy relationship scores, automatic injection, promotion, eviction, and governance queues are removed.
+- Current, quoted, historical, workspace, and authorized tool images use Main's native multimodal input; forwarded messages can be read on demand. Chat Completions, Responses, Claude Messages, and Gemini GenerateContent retain explicit profile choices for models, reasoning, structured output, and search.
+- Default direct images provide `linux/amd64` and `linux/arm64`, with host-aware installers ([PR #431](https://github.com/YuanYeYouTao/Yuki/pull/431)). Optional Code Mode uses a separate `codemode` build; the persistent workspace remains a separate deployment.
+- NapCat, MCP, Genie speech output, `admin_*` chat tools, and unused diagnostic pipelines are retired. SnowLuma, ASR, shared media, and real receipts remain. The release uses AGPL-3.0-only; historical assets retain their bundled licenses.
+- Compatibility baseline: database **0119**, Plugin API **3.5**, main manifest **19**, Code API **`yuki.codemode.api.v2`**. Review configuration, plugin approvals, and bundled migrations before upgrading; preserve the database, referenced files, and new receipts. An image-only rollback is insufficient.
+
+**Future plan: The 3.9.0 WebUI is temporary; the next major release will redesign it around multiple clients.** Historical cache experiments, missing accounting, and validation scope are reported separately; they do not promise new-version performance or cache rates.
 
 ## 3.8.4 - 2026-09-25
 

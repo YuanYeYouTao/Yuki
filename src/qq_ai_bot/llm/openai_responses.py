@@ -25,6 +25,8 @@ class OpenAIResponsesProvider(DeepSeekResponsesProvider):
         # Yuki replays its own ordered transcript, rather than a remote stored thread.
         payload["store"] = False
         payload["include"] = ["reasoning.encrypted_content"]
+        if request.native_tools:
+            payload["include"].append("web_search_call.action.sources")
         return payload
 
 

@@ -81,7 +81,7 @@ async def test_host_death_after_accepted_receipt_restores_original_boundary(
     env.audit_native = True
     code = (
         "await yuki_task_control({'action':'need_input','reason':'Which file?'})\n"
-        "await yuki_workspace_write({'path':'must-not-execute'})"
+        "await yuki_workspace_write({'path':'after-control'})"
         if stop_tool == "task_control"
         else "print('DURABLE_STDOUT_ONCE')\nawait yuki_lookup({'q':1})\nawait yuki_lookup({'q':2})"
     )
@@ -111,14 +111,15 @@ async def test_host_death_after_accepted_receipt_restores_original_boundary(
     outer = env.outer
     body = json.loads(await CodeModeDriver(env.host, outer).resume())
     if stop_tool == "task_control":
-        assert env.domain.log == [] and len(log) == 1
-        assert env.control.ending == "waiting_user" and body["stop_reason"] == "host_control"
+        assert env.domain.log == [("workspace_write", {"path": "after-control"})]
+        assert len(log) == 1
+        assert env.control.ending == "waiting_user" and body["status"] == "completed"
     else:
         assert [row for row in log if row[0] != "accepted"] == [["lookup", {"q": 1}]]
         assert env.domain.log == [("lookup", {"q": 2})]
         assert body["stdout"] == "DURABLE_STDOUT_ONCE\n" and body["status"] == "completed"
     rows, tools, root = await effect_rows(database, env.control.current["id"])
     assert rows[outer.identity.operation_id]["state"] == "accepted"
-    assert tools == (root or 0) == (2 if stop_tool == "lookup" else 0)
+    assert tools == (root or 0) == (2 if stop_tool == "lookup" else 1)
     assert json.loads(await CodeModeDriver(env.host, outer).resume())["stdout"] == body["stdout"]
-    assert len(env.domain.log) == (1 if stop_tool == "lookup" else 0)
+    assert len(env.domain.log) == 1

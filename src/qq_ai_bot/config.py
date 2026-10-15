@@ -290,7 +290,7 @@ class Settings(BaseSettings):
     web_enabled: bool = True
     web_mode: WebMode | None = None
     tavily_api_key: str = Field(default="", repr=False)
-    web_search_backend: Literal["tavily", "deepseek_anthropic"] = "tavily"
+    web_search_backend: Literal["tavily", "model", "deepseek_anthropic"] = "tavily"
     web_search_bridge_state_path: Path = Path("data/web-search-bridge.sqlite3")
     web_search_depth: str = "advanced"
     web_search_max_results: int = 5
@@ -679,17 +679,8 @@ class Settings(BaseSettings):
 
     @property
     def web_configured(self) -> bool:
-        """Whether controlled web search is enabled with provider credentials."""
-
-        mode = self.web.mode
-        return bool(
-            mode is not WebMode.DISABLED
-            and (
-                mode is WebMode.NATIVE
-                or self.web_search_backend == "deepseek_anthropic"
-                or bool(self.tavily_api_key)
-            )
-        )
+        """Whether web is enabled; WebModule validates the selected catalog backend."""
+        return self.web.mode is not WebMode.DISABLED
 
     @property
     def vision_configured(self) -> bool:

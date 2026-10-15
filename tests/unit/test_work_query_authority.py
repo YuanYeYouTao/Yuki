@@ -118,13 +118,15 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
     chat, tool_runtime = query_environment
     executed = []
 
-    async def execute(name, arguments, call_key):
+    async def execute(name, arguments, call_key, *, invocation=None):
         executed.append((name, arguments, call_key))
         return json.dumps({"ok": True})
 
     control = SimpleNamespace(
+        current=None,
         session=None,
         lease=SimpleNamespace(owner="query-owner"),
+        accepted_ending=lambda call_key=None: None,
         execute=execute,
     )
     runtime = AgentRuntime(

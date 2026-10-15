@@ -64,7 +64,6 @@ class _GroupState:
     # None keeps the original local-scoring path. It returns sent messages.
     ordinary_attempt: Callable[[], Awaitable[int]] | None = None
     revision: int = 0
-    consumed_revision: int = -1
     changed: asyncio.Event = field(default_factory=asyncio.Event)
     task: asyncio.Task[None] | None = None
 
@@ -172,8 +171,6 @@ class AutonomousGroupService:
                 # exits. Only a newer observation may request another worker.
                 revision = state.revision
                 state.changed.clear()
-                if state.consumed_revision >= revision:
-                    return
                 group_id = state.message.group_id
                 if group_id is None:
                     return
@@ -212,10 +209,6 @@ class AutonomousGroupService:
                     "autonomous_group_task_failed exception_category=%s",
                     type(exc).__name__,
                 )
-            state = self._states.get(scope_key)
-            if state is not None and state.consumed_revision >= state.revision:
-                state.changed.clear()
-                return
             if revision >= 0 and not self._is_latest(scope_key, revision):
                 continue
             return

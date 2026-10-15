@@ -132,7 +132,7 @@ PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真�
 Person 按原永久身份解析当前账号。发送由共同 Social 按明确目标和当前路由处理，
 触发群与 Presence 不构成额外的发送目标菜单。路由暂停只控制实际发送，不阻止内部 Main 工作。
 
-Plugin API 当前为 `3.4`，Host 只加载精确匹配的插件。兼容键仍使用 primary
+Plugin API 当前为 `3.5`，Host 只加载 API 与已批准 manifest 精确匹配的插件。兼容键仍使用 primary
 `conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
 插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。
 
@@ -150,8 +150,9 @@ operator CLI → Admin API ────────────────┘
 请求不能提交主体或借管理权限以 Person 发言。正文权限、短事务、事务外效果和原操作查询
 见[管理 API](admin-api.md)与[管理控制面合同](control-plane-foundation.md)。
 
-旧浏览器入口、前端与旧控制面方法表已从源码删除。个人客户端按 #299 后续阶段接入
-同一事实源，使用 Person 设备身份；本节不宣称个人接口已经交付。
+旧浏览器入口、前端与旧控制面方法表已从源码删除。个人客户端接入同一事实源，
+使用 Person 设备身份，提供消息、原 Work 接续、SSE 与文件访问；HTTP-only 参考客户端
+复用这些接口。合同见[个人客户端 API](client-api.md)，本地验收与部署状态分别记录。
 
 ## 数据库与安全边界
 
@@ -186,7 +187,7 @@ JSON 候选检查解码后的键和值，脱敏先解析再序列化，数字账
 - secret 永不回读；日志与错误不输出 token、Cookie、完整外部 ID、消息正文或本地敏感路径。
 
 部署与数据升级分别见 [SnowLuma Provider 部署](../deployment/snowluma.md) 和
-[3.9.0 升级草案](../upgrade-3.9.0.md)。
+[3.9.0 升级指南](../upgrade-3.9.0.md)。
 
 ## 后台领取的事务边界
 

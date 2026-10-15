@@ -123,7 +123,7 @@ async def test_returned_unknown_child_allows_independent_call_without_replaying_
     assert len(env.domain.log) == 2
 
 
-async def test_catching_a_closing_denial_cannot_continue_side_effects(database, tmp_path):
+async def test_single_tool_denial_allows_independently_authorized_tail(database, tmp_path):
     env = await environment(database, tmp_path)
     env.domain.denied.add("workspace_write")
     body, _ = await run_code(
@@ -132,11 +132,12 @@ async def test_catching_a_closing_denial_cannot_continue_side_effects(database, 
         "    r = await yuki_workspace_write({'path': 'p'})\n"
         "except Exception:\n"
         "    pass\n"
-        "await yuki_send_message({'text': 'sneaky'})\n",
+        "s = await yuki_send_message({'text': 'separate permitted effect'})\n"
+        "[r['ok'], r['error']['code'], s['ok']]",
     )
-    # C05: the Host closed admission; the catch never reached the send.
-    assert body["stop_reason"] == "admission_closed"
-    assert [name for name, _ in env.domain.log] == []
+    assert body["status"] == "completed"
+    assert body["result"] == [False, "capability_no_longer_authorized", True]
+    assert env.domain.log == [("send_message", {"text": "separate permitted effect"})]
 
 
 async def test_ordinary_business_failure_is_a_receipt_the_script_handles(database, tmp_path):
@@ -149,7 +150,7 @@ async def test_ordinary_business_failure_is_a_receipt_the_script_handles(databas
     assert body["result"] == [False, "failed", "not_found"]
 
 
-async def test_permission_revoked_mid_script_closes_admission(database, tmp_path):
+async def test_one_tool_permission_revoked_mid_script_keeps_other_tools(database, tmp_path):
     env = await environment(database, tmp_path)
     original = env.domain.__call__
 
@@ -162,11 +163,16 @@ async def test_permission_revoked_mid_script_closes_admission(database, tmp_path
     body, _ = await run_code(
         env,
         "await yuki_send_message({'text': 'one'})\n"
-        "await yuki_send_message({'text': 'two'})\n"
-        "await yuki_send_message({'text': 'three'})\n",
+        "a = await yuki_send_message({'text': 'two'})\n"
+        "b = await yuki_send_message({'text': 'three'})\n"
+        "r = await yuki_lookup({'q': 'still authorized'})\n"
+        "[a['ok'], b['ok'], r['ok']]",
     )
-    assert body["stop_reason"] == "admission_closed"
-    assert env.domain.log == [("send_message", {"text": "one"})]
+    assert body["status"] == "completed" and body["result"] == [False, False, True]
+    assert env.domain.log == [
+        ("send_message", {"text": "one"}),
+        ("lookup", {"q": "still authorized"}),
+    ]
 
 
 async def test_root_budget_rejection_stops_without_dispatch(database, tmp_path):

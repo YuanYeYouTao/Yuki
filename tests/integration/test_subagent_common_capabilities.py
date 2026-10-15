@@ -1,7 +1,6 @@
 """Child execution uses Main tools and the original authority and receipts."""
 
 import json
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, update
@@ -14,8 +13,9 @@ from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.subagent_tools import execute_subagent
+from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs
+from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, work
 from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
 from yuki_plugin_sdk.results import ToolResult
 
@@ -148,14 +148,89 @@ async def _plugin_result():
     return ToolResult(data={"checked": True})
 
 
+@pytest.mark.parametrize("close_parent", [False, True])
+async def test_real_worker_completion_keeps_original_tail_and_late_parent_mail(
+    database, tmp_path, close_parent
+):
+    case, repository, parent, child = await _message_child(database, tmp_path)
+    database.subagents_enabled = True
+    if close_parent:
+        lease = await repository.acquire(parent["conversation_id"], parent["generation"])
+        await repository.transition(lease, parent["id"], parent["revision"], "completed")
+        await repository.release(lease)
+    parent_before = await repository.get(parent["id"])
+    calls = (
+        ("task_control", {"action": "complete", "result": "verified child result"}),
+        ("send_message", {"text": "actual tail delivery"}),
+        ("subagent_message", {"text": "original detailed report"}),
+        ("subagent_start", {"goal": "independent nested step"}),
+    )
+    response = ChatResponse(
+        "",
+        0,
+        tool_calls=tuple(
+            ToolCall(f"original-tail:{index}", ToolFunction(name, json.dumps(arguments)))
+            for index, (name, arguments) in enumerate(calls)
+        ),
+    )
+    responses = iter([response])
+    case.provider._responder = lambda _request: next(responses)
+    executor = make_child_executor(
+        repository,
+        chat=case.chat,
+        config=case.chat._runtime_config,
+        runner=case.chat.runtime.runner,
+        load_tools=case.chat.runtime.runner.main_contract.definitions,
+        router=case.env.router,
+    )
+    assert await executor.run(child) is None
+    settled = await repository.get(child)
+    assert settled["state"] == "completed"
+    assert json.loads(settled["checkpoint_json"])["sync_result"] == "verified child result"
+    assert sum(action == "send_group_msg" for action, _ in case.env.bot.calls) == 1
+    assert await repository.get(parent["id"]) == parent_before
+    async with database.sessions() as reader:
+        nested = list(await reader.scalars(select(work.c.id).where(work.c.parent_work_id == child)))
+        mail = list(
+            (
+                await reader.execute(select(inputs).where(inputs.c.work_id == parent["id"]))
+            ).mappings()
+        )
+        owned_effects = list(
+            (await reader.execute(select(effects).where(effects.c.work_id == child))).mappings()
+        )
+    assert len(nested) == 1 and (await repository.get(nested[0]))["state"] == "queued"
+    assert len(mail) == 2
+    assert all(row["state"] == "accepted" for row in owned_effects)
+    workers = SubagentRepository(repository)
+    result = await workers.related(parent["id"], child, include_checkpoint=True)
+    assert json.loads(result["result_json"])["text"] == "verified child result"
+    # The actual executor has no paid corrective request after an accepted finish.
+    assert len(case.provider.requests) == 1
+    assert (
+        case.provider.requests[0].tools
+        == await case.chat.runtime.runner.main_contract.model_definitions()
+    )
+
+
 async def test_nested_subagent_parent_message_control_and_cancel_follow_real_tree(
     database, tmp_path
 ):
     repository, workers, root_lease, root, child = await stack(database, tmp_path)
     database.subagents_enabled = True
     child_lease = await workers.acquire(child)
-    control = SimpleNamespace(
-        repository=repository, lease=child_lease, current=await repository.get(child), ending=None
+    child_row = await repository.get(child)
+
+    async def validate_child():
+        assert await repository.valid(child_lease)
+
+    control = WorkControl(
+        repository,
+        child_lease,
+        child_row["source_key"],
+        json.loads(child_row["source_json"]),
+        validate_child,
+        current=child_row,
     )
     spawned = await execute_subagent(
         control, "subagent_start", {"goal": "grandchild"}, "spawn-grandchild"
@@ -169,11 +244,18 @@ async def test_nested_subagent_parent_message_control_and_cancel_follow_real_tre
         control, "subagent_message", {"child_id": grandchild, "text": "check fact"}, "to-grandchild"
     )
     grand_lease = await workers.acquire(grandchild)
-    grand_control = SimpleNamespace(
-        repository=repository,
-        lease=grand_lease,
-        current=await repository.get(grandchild),
-        ending=None,
+    grand_row = await repository.get(grandchild)
+
+    async def validate_grandchild():
+        assert await repository.valid(grand_lease)
+
+    grand_control = WorkControl(
+        repository,
+        grand_lease,
+        grand_row["source_key"],
+        json.loads(grand_row["source_json"]),
+        validate_grandchild,
+        current=grand_row,
     )
     result = await execute_subagent(
         grand_control, "subagent_message", {"text": "which fact?", "ask": True}, "to-child"

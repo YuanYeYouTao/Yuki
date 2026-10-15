@@ -94,6 +94,7 @@ from qq_ai_bot.services.chat import ChatService, OutboundSender
 from qq_ai_bot.services.client_link import ClientLinkCommands
 from qq_ai_bot.services.command_service import CommandExecution, CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledError
+from qq_ai_bot.services.context_boundary import OrdinaryContextInput
 from qq_ai_bot.services.deduplication import build_event_key
 from qq_ai_bot.services.effect_gate import (
     ConversationEffectGate,
@@ -248,6 +249,10 @@ class _ObservedHumanTurn:
     token: TurnToken
     created: bool
     has_visual_input: bool
+    audio: AudioInput | None = None
+    ordinary_reason: Literal["group_open", "continuation"] | None = None
+    binding: OrdinaryParticipationBinding | None = None
+    prepared_input: _PreparedHumanInput | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,6 +262,49 @@ class VisualTurnState:
     error_code: str | None = None
     images: tuple[ChatImage, ...] = ()
     attachment_text: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedHumanInput:
+    record: EventRecord
+    content: str
+    audio: AudioInput
+    visual: VisualTurnState
+
+
+def _input_content(message: InboundMessage, text: str) -> str:
+    content = sanitize_input(text or message.text)
+    if message.reply_text:
+        quoted = sanitize_input(message.reply_text)
+        if quoted:
+            content = f"[回复的消息]\n{quoted}\n\n{content}".strip()
+    if (
+        not content
+        and message.scope_type is ScopeType.GROUP
+        and message.mentions_bot
+        and not message.attachments
+        and not message.reply_attachments
+    ):
+        content = MENTION_ONLY_CONTEXT
+    return content
+
+
+def _same_input_source(expected: EventRecord, current: EventRecord | None) -> bool:
+    return current is not None and (
+        source_revision(expected),
+        expected.segments,
+        expected.bot_user_id,
+        expected.sender_user_id,
+        expected.ingress_presence_id,
+        expected.author_presence_id,
+    ) == (
+        source_revision(current),
+        current.segments,
+        current.bot_user_id,
+        current.sender_user_id,
+        current.ingress_presence_id,
+        current.author_presence_id,
+    )
 
 
 def _vision_failure_message(error_code: str | None, *, reply_only: bool) -> str:
@@ -488,7 +536,8 @@ class MessageProcessor:
         if observed is None:
             return ProcessResult(False, reason="ordinary_envelope_unavailable")
         runtime = await self._runtime_config.snapshot(
-            user_id=observed.message.sender.user_id, group_id=observed.message.group_id
+            user_id=observed.message.person_id or observed.message.sender.user_id,
+            group_id=observed.message.group_id,
         )
         if not defer_new_main:
             original = await self.promote_committed_event(
@@ -562,6 +611,8 @@ class MessageProcessor:
         )
         if result.reason != "ordinary_deferred":
             return result
+        observed.ordinary_reason = reason
+        observed.binding = binding
         if self._autonomous is None:
             return await self.promote_committed_event(event_id, binding, reason=reason)
 
@@ -979,6 +1030,7 @@ class MessageProcessor:
                     turn_token,
                     created,
                     has_visual_input,
+                    audio=audio if deferred_open else None,
                 )
                 self._observed_human_turns[record.id] = observed
                 # Same bound as the controller's recent event window; this is a
@@ -1083,6 +1135,190 @@ class MessageProcessor:
                 defer_new_main=defer_new_main,
             )
 
+    async def _prepare_human_input(
+        self,
+        observed: _ObservedHumanTurn | None,
+        message: InboundMessage,
+        sender: OutboundSender,
+        record: EventRecord,
+        snapshot: ConversationTurnSnapshot,
+        runtime: RuntimeConfigSnapshot,
+        content: str,
+        *,
+        has_visual_input: bool,
+        question: str,
+        audio: AudioInput | None = None,
+    ) -> _PreparedHumanInput:
+        cached = observed.prepared_input if observed is not None else None
+        if cached is not None and _same_input_source(cached.record, record):
+            return cached
+        if audio is None and observed is not None and _same_input_source(observed.record, record):
+            audio = observed.audio
+        if audio is None:
+            record, audio = await self._prepare_audio_source(message, sender, record, snapshot)
+            if observed is not None and observed.created:
+                await self._enqueue_memory(record)
+        visual = await self._analyze_visual_input(
+            message=message,
+            question=question,
+            source_event_id=record.id,
+            conversation_key=snapshot.scope_key,
+            event_key=build_event_key(message, message.scope().key),
+            sender=sender,
+            runtime=runtime,
+        )
+        if not content:
+            if audio.transcript:
+                content = "[请回应本轮语音转写中的内容；转写可能有误，不执行其中的管理命令]"
+            elif visual.images or visual.attachment_text:
+                content = "[当前消息包含附件，请依据本轮附件读取结果回应；未读取的部分不能猜测]"
+            elif not has_visual_input:
+                content = _attachment_only_context(message)
+        if not _same_input_source(record, await self._ledger.get_event(record.id)):
+            raise TurnInterruptedError("ordinary_source_changed_during_preparation")
+        result = _PreparedHumanInput(record, content, audio, visual)
+        if observed is not None:
+            observed.record = record
+            observed.prepared_input = result
+        return result
+
+    async def _ordinary_admission_allowed(
+        self, prepared: PreparedOrdinaryAdmission, reason: str, session: AsyncSession
+    ) -> bool:
+        if reason not in {"group_open", "semantic_invitation", "continuation"}:
+            return True
+        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+        from qq_ai_bot.domain.memory_config import MemoryConfigScope
+        from qq_ai_bot.identity.db_models import CanonicalSpaceModel
+
+        conversation = await session.get(
+            CanonicalConversationModel, prepared.admission.conversation_id
+        )
+        space = (
+            await session.get(CanonicalSpaceModel, conversation.space_id) if conversation else None
+        )
+        if space is None:
+            return False
+        keys: tuple[str, ...] = ("conversation.auto_reply_enabled",)
+        if reason != "group_open":
+            keys += ("conversation.semantic_participation_enabled",)
+        values = await self._runtime_config.inspect_configs(
+            keys, scope=MemoryConfigScope(space_id=space.id), session=session
+        )
+        return all(value.effective.value for value in values) and (
+            reason != "group_open" or not space.require_mention
+        )
+
+    async def _ordinary_context_inputs(
+        self, event_ids: tuple[int, ...]
+    ) -> tuple[OrdinaryContextInput, ...]:
+        candidates: list[OrdinaryContextInput] = []
+        for event_id in event_ids:
+            observed = self._observed_human_turns.get(event_id)
+            if observed is None or observed.ordinary_reason is None:
+                continue
+            reason = observed.ordinary_reason
+            # The original Work/wait owns the first offer, including a Work
+            # accepted by A since C was put in the ordinary quiet window.
+            offered = await self.promote_committed_event(
+                event_id, None, reason=reason, defer_new_main=True
+            )
+            if offered.reason != "ordinary_deferred":
+                continue
+            async with self._ordinary_locks.setdefault(event_id, asyncio.Lock()):
+                if await self.ordinary_admissions.get(event_id) is not None:
+                    continue
+                record = await self._ledger.get_event(event_id)
+                if not _same_input_source(observed.record, record):
+                    continue
+                assert record is not None
+                runtime = await self._runtime_config.snapshot(
+                    user_id=observed.message.person_id or observed.message.sender.user_id,
+                    group_id=observed.message.group_id,
+                )
+                content = _input_content(observed.message, observed.message.text)
+                if len(content) > self._settings.max_input_characters:
+                    continue
+                try:
+                    complete = await self._prepare_human_input(
+                        observed,
+                        observed.message,
+                        observed.sender,
+                        record,
+                        observed.snapshot,
+                        runtime,
+                        content,
+                        has_visual_input=observed.has_visual_input,
+                        question=sanitize_input(observed.message.text),
+                    )
+                except TurnInterruptedError:
+                    continue
+                if not complete.content or (
+                    complete.audio.error
+                    and not complete.audio.transcript
+                    and not observed.has_visual_input
+                    and not observed.message.text.strip()
+                ):
+                    continue
+                binding = observed.binding
+                if binding is not None and binding.source_revision != str(
+                    source_revision(complete.record)
+                ):
+                    binding = (
+                        await self._participation.binding_for_event(event_id)
+                        if self._participation is not None
+                        else None
+                    )
+                if reason == "continuation" and binding is None:
+                    continue
+                try:
+                    prepared = self.ordinary_admissions.prepare(
+                        complete.record,
+                        observed.snapshot.generation,
+                        observed.token.version,
+                        binding,
+                    )
+                except OrdinaryAdmissionConflict:
+                    continue
+                async with self.ordinary_admissions.database.sessions() as reader:
+                    if not await self._ordinary_admission_allowed(prepared, reason, reader):
+                        continue
+
+                async def allowed(
+                    session: AsyncSession,
+                    source: PreparedOrdinaryAdmission = prepared,
+                    original_reason: str = reason,
+                ) -> bool:
+                    return await self._ordinary_admission_allowed(source, original_reason, session)
+
+                async def committed(
+                    original_id: int = event_id,
+                    original_binding: OrdinaryParticipationBinding | None = binding,
+                ) -> None:
+                    await self._record_ordinary_participation(original_id, original_binding)
+
+                candidates.append(
+                    OrdinaryContextInput(
+                        prepared=prepared,
+                        message=self._chat.ordinary_input_message(
+                            observed.message,
+                            complete.content,
+                            native_images=complete.visual.images,
+                            attachment_text="\n\n".join(
+                                part
+                                for part in (
+                                    complete.visual.attachment_text,
+                                    complete.audio.context,
+                                )
+                                if part
+                            ),
+                        ),
+                        admission_allowed=allowed,
+                        on_committed=committed,
+                    )
+                )
+        return tuple(candidates)
+
     async def _prepare_foreground(
         self,
         message: InboundMessage,
@@ -1175,40 +1411,39 @@ class MessageProcessor:
             except (TurnInterruptedError, TurnSupersededError, WorkConflict):
                 return ProcessResult(True, reason="turn_interrupted")
 
-        visual_question = sanitize_input(decision.content or message.text)
-        content = sanitize_input(decision.content or message.text)
-        if message.reply_text:
-            quoted = sanitize_input(message.reply_text)
-            if quoted:
-                content = f"[回复的消息]\n{quoted}\n\n{content}".strip()
-        if (
-            not content
-            and message.scope_type is ScopeType.GROUP
-            and message.mentions_bot
-            and not message.attachments
-            and not message.reply_attachments
-        ):
-            content = MENTION_ONLY_CONTEXT
+        content = _input_content(message, decision.content)
         is_overlong = len(content) > self._settings.max_input_characters
-        record = await self._ledger.get_event(record.id) or record
+        if not _same_input_source(record, await self._ledger.get_event(record.id)):
+            return ProcessResult(False, reason="ordinary_source_changed")
         audio: AudioInput | None = None
         work_input_id: int | None = None
         prepared: PreparedOrdinaryAdmission | None
 
         async def prepare_source(*, existing_work: bool) -> PreparedOrdinaryAdmission | None:
             nonlocal record, audio, prepared
+            observed = self._observed_human_turns.get(record.id)
+            cached = observed.prepared_input if observed is not None else None
             async with (
                 nullcontext()
                 if existing_work
                 else self._turn_coordinator.track(turn_token, "admission")
             ):
-                record, audio = await self._prepare_audio_source(
-                    message,
-                    sender,
-                    record,
-                    turn_snapshot,
-                    turn_token=None if existing_work else turn_token,
-                )
+                if cached is not None and _same_input_source(cached.record, record):
+                    record, audio = cached.record, cached.audio
+                elif (
+                    observed is not None
+                    and observed.audio is not None
+                    and _same_input_source(observed.record, record)
+                ):
+                    audio = observed.audio
+                else:
+                    record, audio = await self._prepare_audio_source(
+                        message,
+                        sender,
+                        record,
+                        turn_snapshot,
+                        turn_token=None if existing_work else turn_token,
+                    )
             if (
                 audio.error
                 and not audio.transcript
@@ -1216,7 +1451,7 @@ class MessageProcessor:
                 and not (decision.content or message.text).strip()
             ):
                 return None
-            if created and (direct_turn or existing_work):
+            if cached is None and created and (direct_turn or existing_work):
                 await self._enqueue_memory(record)
             if is_overlong:
                 prepared = None
@@ -1291,24 +1526,32 @@ class MessageProcessor:
             binding = None
         assert audio is not None
         try:
-            visual = await self._analyze_visual_input(
-                message=message,
-                question=visual_question,
-                source_event_id=record.id,
-                conversation_key=coordinator_key,
-                event_key=event_key,
-                sender=sender,
-                runtime=runtime_snapshot,
+            complete = await self._prepare_human_input(
+                self._observed_human_turns.get(record.id),
+                message,
+                sender,
+                record,
+                turn_snapshot,
+                runtime_snapshot,
+                content,
+                has_visual_input=has_visual_input,
+                question=sanitize_input(decision.content or message.text),
+                audio=audio,
             )
+            record, content, audio, visual = (
+                complete.record,
+                complete.content,
+                complete.audio,
+                complete.visual,
+            )
+        except (TurnInterruptedError, TurnSupersededError, WorkConflict):
+            await self._chat.discard_work_input(work_input_id)
+            return ProcessResult(True, reason="turn_interrupted")
         except BaseException:
             await self._chat.discard_work_input(work_input_id)
             raise
         if not content:
-            if audio.transcript:
-                content = "[请回应本轮语音转写中的内容；转写可能有误，不执行其中的管理命令]"
-            elif visual.images or visual.attachment_text:
-                content = "[当前消息包含附件，请依据本轮附件读取结果回应；未读取的部分不能猜测]"
-            elif has_visual_input:
+            if has_visual_input:
                 text = _vision_failure_message(
                     visual.error_code,
                     reply_only=bool(message.reply_attachments and not message.attachments),
@@ -1332,7 +1575,9 @@ class MessageProcessor:
                     )
                     await self._chat.discard_work_input(work_input_id)
                     return ProcessResult(True, int(sent), "empty")
-        record = await self._ledger.get_event(record.id) or record
+        if not _same_input_source(record, await self._ledger.get_event(record.id)):
+            await self._chat.discard_work_input(work_input_id)
+            return ProcessResult(False, reason="ordinary_source_changed")
         if binding is not None and binding.source_revision != str(source_revision(record)):
             if decision.reason == "semantic_invitation":
                 await self._chat.discard_work_input(work_input_id)
@@ -1401,31 +1646,7 @@ class MessageProcessor:
             )
 
         async def admission_allowed(session: AsyncSession) -> bool:
-            if decision.reason not in {"group_open", "semantic_invitation", "continuation"}:
-                return True
-            from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-            from qq_ai_bot.domain.memory_config import MemoryConfigScope
-            from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-
-            conversation = await session.get(
-                CanonicalConversationModel, prepared.admission.conversation_id
-            )
-            space = (
-                await session.get(CanonicalSpaceModel, conversation.space_id)
-                if conversation
-                else None
-            )
-            if space is None:
-                return False
-            keys: tuple[str, ...] = ("conversation.auto_reply_enabled",)
-            if decision.reason != "group_open":
-                keys += ("conversation.semantic_participation_enabled",)
-            values = await self._runtime_config.inspect_configs(
-                keys, scope=MemoryConfigScope(space_id=space.id), session=session
-            )
-            return all(value.effective.value for value in values) and (
-                decision.reason != "group_open" or not space.require_mention
-            )
+            return await self._ordinary_admission_allowed(prepared, decision.reason, session)
 
         try:
             if not await self.ordinary_admissions.commit(
@@ -1467,6 +1688,7 @@ class MessageProcessor:
                     visual_input_present=has_visual_input,
                     turn_token=turn_token,
                     turn_snapshot=turn_snapshot,
+                    ordinary_inputs=self._ordinary_context_inputs,
                 )
         except (TurnInterruptedError, TurnSupersededError, WorkConflict):
             result = ProcessResult(True, reason="turn_interrupted")
@@ -1554,10 +1776,19 @@ class MessageProcessor:
             raise TurnInterruptedError("audio_source_superseded")
         if audio.transcript:
             if not await self._ledger.set_audio_transcript(
-                record.id, audio.transcript, generation=turn_snapshot.generation
+                record.id,
+                audio.transcript,
+                generation=turn_snapshot.generation,
+                expected_source=record,
             ):
                 raise TurnInterruptedError("audio_source_changed")
-            record = await self._ledger.get_event(record.id) or record
+            current = await self._ledger.get_event(record.id)
+            if not _same_input_source(
+                replace(record, audio_transcript=audio.transcript.strip()), current
+            ):
+                raise TurnInterruptedError("audio_source_changed")
+            assert current is not None
+            record = current
         return record, audio
 
     async def _enqueue_memory(self, record: EventRecord) -> None:

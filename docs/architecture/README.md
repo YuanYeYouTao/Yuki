@@ -2,13 +2,13 @@
 
 开发先读[共同开发约束](development-contract.md)，再读涉及模块。以下是当前源码合同；发现源码不符合合同，记录具体缺口，不把历史设计或验收结论当成现行实现。
 
-本入口按 2026-10-14 的 3.9.0 开发源码整理，当前迁移 head 为 `0119`、Plugin API 为 `3.5`。完整合并范围与发行状态见[3.9.0 发布草案](../releases/v3.9.0.md)，实际升级与配置变更见[升级指南](../upgrade-3.9.0.md)。文档更新不代表新的正式 Release、镜像或生产部署。
+本入口按 2026-10-15 的 3.9.0 源码整理，本分支迁移 head 为 `0121`、Plugin API 为 `3.5`、Main 固定工具合同为 `19`、Code API 为 `yuki.codemode.api.v2`。完整合并范围见[3.9.0 发布说明](../releases/v3.9.0.md)，实际升级与配置变更见[升级指南](../upgrade-3.9.0.md)。正式发行与具体生产部署分别记录。
 
 | 现行文档 | 范围 |
 | --- | --- |
 | [开发约束](development-contract.md) | 删除优先、身份/授权、恢复、事务和交付原则 |
 | [Canonical runtime](canonical-runtime.md) | Yuki、Person、Space、Presence、Conversation 与网关 |
-| [个人客户端 API](client-api.md) | 设备配对、身份绑定、转移与归属区间 |
+| [个人客户端 API](client-api.md) | 设备身份、消息、Work 接续、SSE、文件与参考客户端 |
 | [主 Agent](main-agent-runtime.md) | 统一循环、Work 控制、恢复、预算和交付 |
 | [Tool Kernel](tool-kernel.md) | 固定完整清单、direct / Code Mode、目录与执行授权 |
 | [模型供应商与协议](model-providers.md) | 显式 Profile、结构化模式、思考、方言和私有续跑状态 |
@@ -28,15 +28,17 @@
 | [插件架构](../plugin-development/architecture.md) | Plugin API 3.5、Host、SDK 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager 与交付 |
 | [Code Mode 运维](../operations/pi-codemode-operations.md) | 可选构建、隔离、原数据和切换 |
-| [搜索适配](../deepseek-search-bridge.md) | 显式独立连接、协议适配与真实失败兜底 |
+| [独立原生搜索](../deepseek-search-bridge.md) | 独立搜索连接、三种原生协议、网页提取与升级 |
 
 ## 设计报告与后续计划
 
+- [10-15 #439 普通输入 Steer 与排队接纳统一修复任务书](Yuki-439普通输入Steer与排队接纳统一修复任务书-2026-10-15.md)：复用原 admission 统一轮内补充与排队接纳，保留公共冻结前缀、真实媒体来源、Work/wait 和原执行授权；实现与验证正在收口，PR、合并和上线分别记录。
+- [10-15 Work 收尾截断删除任务书](Yuki-Work收尾截断删除任务书-2026-10-15.md)：记录 Triple Town 未发送的原回执、共同执行链、子任务与本地 Pi 对照；D01–D13 已实施，PR #437 的 Quality 通过并合并，产品提交 `030917b1` 已完成 Bot-only 部署。原问题消息未重发，生产自然投递与真实缓存 usage 另按观测记录。
 - [#417/#418 终审缺口与修复任务书](Yuki-417-418终审缺口与修复任务书-2026-10-14.md)：原终审复现、开发约束审查与 F01–F09 的修复实现；源码、CI、合并和上线分别记录。
 - [#417/#418 实施与验证](../operations/compact-417-418-delivery-2026-10-14.md)：分阶段 PR、CI 修复、冷恢复与实际 DeepSeek 调用；合并与上线分别核对。
 
 - [10-14 Work 摘要退役、会话 Compact 与任务树设计审查报告](Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md)：关联 Issue #417/#418，包含 PR #228 追溯、当前源码与 Pi durable 对照、旧摘要/Rollup 全链路删除索引、公共与私有窗口、原任务恢复、子 Agent 完整继承 Main 能力、待实施验证与成本数据表，以及真实聊天摘录。报告保留当时设计与未实施基线；现行实现见上方会话 Compact 和持久工作者合同，生产节省仍需真实测量。
-- **多客户端重构**：旧浏览器管理入口已从源码退役；管理改用 CLI、`/ai` 与文件。#299 的个人端接口按任务书继续实施，进度见[交付记录](../operations/issue-299-delivery-2026-10-15.md)。
+- **多客户端重构**：旧浏览器管理入口已从源码退役；管理改用 CLI、`/ai` 与文件。#299 的 P1–P11 已完成本地实现与验证，进度见[交付记录](../operations/issue-299-delivery-2026-10-15.md)。
 
 ## 当前查询审查
 
@@ -53,7 +55,7 @@
 
 - [旧人物评分关系系统删除任务书](Yuki-旧关系好感度系统彻底删除任务书-2026-10-09.md)：R00–R23逐项记录删除、验证、PR与上线状态；旧Work清退仅适用于本次明确授权。
 
-- [10-09 NapCat 删除与既有网关抽象保留任务书](Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)：N00–N13 已实施、验证、合并与上线，[生产及清理回执](../operations/napcat-retirement-20261009.md)独立记录；3.9.0仍未正式发行，既有Registry/Memory未决项未冒充修复。任务书不新增或替代现行合同。
+- [10-09 NapCat 删除与既有网关抽象保留任务书](Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)：N00–N13 已实施、验证、合并与上线，[生产及清理回执](../operations/napcat-retirement-20261009.md)保留当时部署基线；退役变更已纳入 3.9.0，既有 Registry/Memory 未决项按各自后续证据读取。任务书不新增或替代现行合同。
 
 - [10-10 Work 内核任务书](Yuki-Work生命周期删减与Pi-Durable重构任务书-2026-10-10.md)：删除收尾门槛、复用原冻结与持久回执、统一父子关系；完成状态逐项记录。
 - [Work 全景盘点](Yuki-Work现状全量盘点-2026-10-10.md)：固定基线和 Pi durable 对照，不以旧描述覆盖现行实现。
@@ -67,4 +69,4 @@
 - [Work 生命周期审查](work-lifecycle-audit-20261008.md)：审查基线、后续实现及仍需核对的运行问题。
 - [Pi/Code 移植来源](pi-port-provenance.md)：设计参考、实现来源与第三方许可；Code Mode 已合入主线，不是待移植实验入口。
 
-真实 Provider 测量、日期部署和自然 QQ 验收按各自证据读取。版本/迁移以实际源码或镜像为准，正式发行范围见[3.9.0 草案](../releases/v3.9.0.md)与[升级指南](../upgrade-3.9.0.md)；不改写旧 Release 或历史部署的基线。
+真实 Provider 测量、日期部署和自然 QQ 验收按各自证据读取。版本/迁移以实际源码或镜像为准，正式发行范围见[3.9.0 发布说明](../releases/v3.9.0.md)与[升级指南](../upgrade-3.9.0.md)；不改写旧 Release 或历史部署的基线。

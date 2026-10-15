@@ -94,7 +94,7 @@ from qq_ai_bot.services.chat_preparation_timings import (
 )
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.context_assembler import ContextAssembler
-from qq_ai_bot.services.context_boundary import ContextBoundaryReader
+from qq_ai_bot.services.context_boundary import ContextBoundaryReader, OrdinaryContextReader
 from qq_ai_bot.services.context_compaction import PublicCompactContext
 from qq_ai_bot.services.effect_gate import (
     ConversationEffectGate,
@@ -112,7 +112,7 @@ from qq_ai_bot.services.plugin_events import (
     publish_notification,
 )
 from qq_ai_bot.services.prompt_composer import PromptComposer
-from qq_ai_bot.services.renderer import sanitize_model_output
+from qq_ai_bot.services.renderer import sanitize_input, sanitize_model_output
 from qq_ai_bot.services.turn_coordinator import (
     ConversationTurnCoordinator,
     TurnSupersededError,
@@ -705,6 +705,7 @@ class ChatService:
         attachment_text: str = "",
         turn_token: TurnToken | None = None,
         turn_snapshot: ConversationTurnSnapshot | None = None,
+        ordinary_inputs: OrdinaryContextReader | None = None,
     ) -> int:
         """Coalesce unowned chat retries; accepted work keeps its own recovery."""
         with self.runtime.executions.track():
@@ -715,6 +716,7 @@ class ChatService:
                 attachment_text=attachment_text,
                 turn_token=turn_token,
                 turn_snapshot=turn_snapshot,
+                ordinary_inputs=ordinary_inputs,
             )
             return await self._respond(inbound, identity, profile, content, sender, **arguments)
 
@@ -732,6 +734,7 @@ class ChatService:
         attachment_text: str = "",
         turn_token: TurnToken | None = None,
         turn_snapshot: ConversationTurnSnapshot | None = None,
+        ordinary_inputs: OrdinaryContextReader | None = None,
     ) -> int:
         """Run one ordered Agent turn and return the sent message count."""
 
@@ -897,6 +900,7 @@ class ChatService:
                     native_images=native_images,
                     attachment_text=attachment_text,
                     turn_snapshot=turn_snapshot,
+                    ordinary_inputs=ordinary_inputs,
                 )
                 preparation.advance("work_activation")
                 if start_work is not None and work_control is None:
@@ -906,7 +910,9 @@ class ChatService:
                 # dispatch retains this same source guard across subsequent requests.
                 preparation.advance("context_validation")
                 validate_context = self._context_validator(
-                    read_version, commit_projection=commit_projection
+                    read_version,
+                    commit_projection=commit_projection,
+                    source_event_id=turn_snapshot.trigger_event_id if turn_snapshot else None,
                 )
                 await self.run_effect(turn_snapshot, validate_context)
                 preparation.advance("agent_setup")
@@ -1097,6 +1103,7 @@ class ChatService:
         native_images: tuple[ChatImage, ...] = (),
         attachment_text: str = "",
         turn_snapshot: ConversationTurnSnapshot | None = None,
+        ordinary_inputs: OrdinaryContextReader | None = None,
     ) -> tuple[
         tuple[ChatMessage, ...],
         frozenset[int],
@@ -1124,7 +1131,64 @@ class ChatService:
                     runtime, turn_snapshot.conversation_id
                 ),
             )
-        current = context.current_message
+        current = self._with_input_material(
+            context.current_message, native_images=native_images, attachment_text=attachment_text
+        )
+
+        async def validate_preparation() -> None:
+            if not await self.validate_turn_snapshot(turn_snapshot):
+                raise TurnSupersededError("turn changed during context preparation")
+
+        with preparation_detail("main_turn_composition"):
+            composition = await self.runtime.main_turns.compose(
+                inbound=inbound,
+                context=replace(context, current_message=current),
+                runtime=runtime,
+                allowed_capabilities=self.web_capabilities(runtime),
+                before_preparation=validate_preparation,
+                ordinary_inputs=ordinary_inputs,
+            )
+        messages = composition.messages
+        return (
+            messages,
+            composition.visible_event_ids,
+            PromptRequestDiagnostics(
+                conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
+                prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
+                static_prompt_revision=composition.metrics.stable_prefix_hash,
+                preparation_model_requests=composition.preparation_model_requests,
+            ),
+            composition.read_version,
+            composition.commit_projection,
+            composition.observation_boundary,
+            composition.public_compaction,
+        )
+
+    @staticmethod
+    def ordinary_input_message(
+        inbound: InboundMessage,
+        content: str,
+        *,
+        native_images: tuple[ChatImage, ...] = (),
+        attachment_text: str = "",
+    ) -> ChatMessage | None:
+        # Plain text is already present in its original public event fragment.
+        # Prepared quotes/media belong only to this business request's tail.
+        if not native_images and not attachment_text and content == sanitize_input(inbound.text):
+            return None
+        return ChatService._with_input_material(
+            ChatMessage("user", f"#{inbound.source_event_id}>{content}"),
+            native_images=native_images,
+            attachment_text=attachment_text,
+        )
+
+    @staticmethod
+    def _with_input_material(
+        current: ChatMessage,
+        *,
+        native_images: tuple[ChatImage, ...],
+        attachment_text: str,
+    ) -> ChatMessage:
         if attachment_text:
             current = replace(
                 current,
@@ -1157,47 +1221,28 @@ class ChatService:
                 )
             current = tail
 
-        async def validate_preparation() -> None:
-            if not await self.validate_turn_snapshot(turn_snapshot):
-                raise TurnSupersededError("turn changed during context preparation")
-
-        with preparation_detail("main_turn_composition"):
-            composition = await self.runtime.main_turns.compose(
-                inbound=inbound,
-                context=replace(context, current_message=current),
-                runtime=runtime,
-                allowed_capabilities=self.web_capabilities(runtime),
-                before_preparation=validate_preparation,
-            )
-        messages = composition.messages
-        return (
-            messages,
-            composition.visible_event_ids,
-            PromptRequestDiagnostics(
-                conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
-                prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
-                static_prompt_revision=composition.metrics.stable_prefix_hash,
-                preparation_model_requests=composition.preparation_model_requests,
-            ),
-            composition.read_version,
-            composition.commit_projection,
-            composition.observation_boundary,
-            composition.public_compaction,
-        )
+        return current
 
     def _context_validator(
         self,
         version: ConversationReadVersion | None,
         upstream: Callable[[], Awaitable[None]] | None = None,
         commit_projection: Callable[[], Awaitable[None]] | None = None,
+        source_event_id: int | None = None,
     ) -> Callable[[], Awaitable[None]]:
         from qq_ai_bot.runtime.work_activation import current_work_control
         from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
-        from qq_ai_bot.services.turn_transcript import DispatchOrigin, dispatch_request
+        from qq_ai_bot.services.turn_transcript import dispatch_request
 
         active = current_work_control.get()
-        if version is not None and active is not None:
-            trigger_id = active.source.get("trigger_event_id")
+        if version is not None:
+            trigger_id = (
+                source_event_id
+                if source_event_id is not None
+                else active.source.get("trigger_event_id")
+                if active is not None
+                else None
+            )
             if isinstance(trigger_id, int):
                 version = replace(
                     version,
@@ -1209,9 +1254,9 @@ class ChatService:
             if upstream is not None:
                 await upstream()
             control = current_work_control.get()
-            if control is not None and source_guard is not None:
+            if source_guard is not None:
                 selected_guard: WorkSourceGuard | None = source_guard
-                if control.session is not None:
+                if control is not None and control.session is not None:
                     if control.session.uses_recovery_transcript:
                         selected_guard = control.session.source_guard
                         if selected_guard is None:
@@ -1231,9 +1276,11 @@ class ChatService:
                             control.session.source_guard = selected_guard
                     else:
                         control.session.source_guard = source_guard
-                valid = selected_guard is not None and await selected_guard.check(control)
+                valid = selected_guard is not None and await selected_guard.check(
+                    control, database=self._ledger._database
+                )
             else:
-                valid = version is None or await self._ledger.read_version_matches(version)
+                valid = True
             if not valid:
                 from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
 
@@ -1241,11 +1288,7 @@ class ChatService:
                     raise HistorySourceChangedError(version)
                 raise TurnSupersededError("context source changed before model invocation")
             sequence = dispatch_request()
-            if (
-                commit_projection is not None
-                and sequence is not None
-                and sequence.origin is DispatchOrigin.COMPOSED_INITIAL
-            ):
+            if commit_projection is not None and sequence is not None:
                 await commit_projection()
 
         return validate

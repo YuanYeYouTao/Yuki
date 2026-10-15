@@ -1,4 +1,4 @@
-"""Host controls preserve original order, receipts and the original-Work yield."""
+"""Host controls preserve original order, receipts and valid program tails."""
 
 import asyncio
 import json
@@ -65,19 +65,43 @@ asyncio.run(main())
 """
 
 
-async def test_terminal_control_stops_remaining_code(database, tmp_path):
-    env = await environment(database, tmp_path)
+@pytest.mark.parametrize(
+    "args,ending",
+    [
+        ({"action": "complete", "result": "internal result"}, "completed"),
+        ({"action": "need_input", "reason": "which file?"}, "waiting_user"),
+        (
+            {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 60}]},
+            "waiting_external",
+        ),
+    ],
+)
+async def test_lifecycle_proposal_keeps_tools_calculation_and_cleanup(
+    database, tmp_path, args, ending
+):
+    from tests.integration.test_codemode_lifecycle_recovery import (
+        environment as sourced_environment,
+    )
+
+    env = await sourced_environment(database, tmp_path)
     body, _ = await run_code(
         env,
         "await yuki_lookup({'q': 1})\n"
-        "c = await yuki_task_control({'action': 'need_input', 'reason': 'which file?'})\n"
-        "await yuki_send_message({'text': 'never'})\n",
+        f"c = await yuki_task_control({args!r})\n"
+        "try:\n"
+        "    s = await yuki_send_message({'text': 'after control'})\n"
+        "    value = 6 * 7\n"
+        "finally:\n"
+        "    await yuki_workspace_write({'path': 'cleanup'})\n"
+        "    print('cleanup complete')\n"
+        "[c['ok'], s['ok'], value]",
     )
-    assert body["stop_reason"] == "host_control" and body["ok"] is True
-    assert env.control.ending == "waiting_user"
-    assert [name for name, _ in env.domain.log] == ["lookup"]
+    assert body["status"] == "completed" and body["result"] == [True, True, 42]
+    assert body["stdout"] == "cleanup complete\n"
+    assert env.control.ending == ending
+    assert [name for name, _ in env.domain.log] == ["lookup", "send_message", "workspace_write"]
     _, tools, _ = await effect_rows(database, env.control.current["id"])
-    assert tools == 1  # Lifecycle control does not use the business allowance.
+    assert tools == 3  # Lifecycle control does not use the business allowance.
 
 
 @pytest.mark.parametrize(
@@ -102,9 +126,15 @@ async def test_send_terminal_control_and_write_are_paired_in_original_order(
         f"yuki_task_control({{'action': {action!r}}}), "
         "yuki_workspace_write({'path': 'never'}))",
     )
-    assert body["stop_reason"] == "host_control" and env.control.ending == ending
-    assert [name for name, _ in env.domain.log] == ["send_message"]
-    assert body["operations"][-1]["status"] == "not_executed"
+    assert env.control.ending == ending
+    if action == "complete":
+        assert body["status"] == "completed"
+        assert [name for name, _ in env.domain.log] == ["send_message", "workspace_write"]
+        assert body["operations"][-1]["status"] == "succeeded"
+    else:
+        assert body["stop_reason"] == "admission_closed"
+        assert [name for name, _ in env.domain.log] == ["send_message"]
+        assert body["operations"][-1]["status"] == "not_executed"
     await env.control.settle(pending_inputs=False)
     assert env.control.current["state"] == ending
 
@@ -124,12 +154,12 @@ async def test_control_waits_for_peers_to_settle_then_runs_alone(database, tmp_p
         "import asyncio\n"
         "r, c = await asyncio.gather(yuki_lookup({'q': 1}),"
         " yuki_task_control({'action': 'need_input', 'reason': 'x'}))\n"
-        "await yuki_send_message({'text': 'never'})\n",
+        "await yuki_send_message({'text': 'after need_input'})\n",
     )
-    # C07/T04: the read settled before the control gate opened; nothing ran after it.
+    # The read settles before the control barrier; the valid tail then continues.
     assert order == [("control", ["lookup"])]
-    assert body["stop_reason"] == "host_control"
-    assert [name for name, _ in env.domain.log] == ["lookup"]
+    assert body["status"] == "completed"
+    assert [name for name, _ in env.domain.log] == ["lookup", "send_message"]
 
 
 async def test_query_controls_keep_original_paging_and_continue(database, tmp_path):
@@ -286,8 +316,8 @@ async def test_unknown_memory_receipt_is_preserved_and_does_not_veto_complete(da
         env,
         "await yuki_memory_change({'op': 'remember'})\n"
         "await yuki_task_control({'action': 'complete'})\n"
-        "await yuki_send_message({'text': 'never after complete'})",
+        "await yuki_send_message({'text': 'after complete'})",
     )
-    assert body["stop_reason"] == "host_control" and body["ok"] is True
+    assert body["status"] == "completed" and body["ok"] is True
     assert body["operations"][0]["status"] == "unknown"
-    assert [name for name, _ in env.domain.log] == ["memory_change"]
+    assert [name for name, _ in env.domain.log] == ["memory_change", "send_message"]

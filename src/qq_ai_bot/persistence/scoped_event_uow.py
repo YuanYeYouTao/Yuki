@@ -19,6 +19,7 @@ from qq_ai_bot.conversation.hydrate import (
     hydrate_scope_state_from_canonical,
     touch_canonical_watermarks,
 )
+from qq_ai_bot.conversation.initiative_sources import source_revision
 from qq_ai_bot.conversation.scope_models import ConversationScopeState
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.identity.canonical_repository import (
@@ -226,6 +227,7 @@ class ScopedEventLedgerUnitOfWork:
         transcript: str,
         *,
         generation: int,
+        expected_source: EventRecord | None = None,
     ) -> bool:
         """Save one bounded result only while its source generation is still live."""
         normalized = transcript.strip()
@@ -233,7 +235,9 @@ class ScopedEventLedgerUnitOfWork:
 
         if not parse_transcripts(normalized):
             raise ValueError("audio transcript must not be empty")
-        return await self._set_derived_text(event_id, normalized, audio=True, generation=generation)
+        return await self._set_derived_text(
+            event_id, normalized, audio=True, generation=generation, expected_source=expected_source
+        )
 
     async def _prepare_derived_text(
         self,
@@ -242,12 +246,18 @@ class ScopedEventLedgerUnitOfWork:
         *,
         audio: bool,
         generation: int | None,
+        expected_source: EventRecord | None = None,
     ) -> _DerivedTextUpdate | bool:
         # Keep the conditional history scan and all rendering outside the writer.
         async with self._database.sessions() as reader:
             await reader.execute(text("BEGIN"))
             row = await reader.get(ChatEventModel, event_id)
             if row is None:
+                return False
+            if expected_source is not None and (
+                source_revision(_event_record(row)) != source_revision(expected_source)
+                or _event_record(row).segments != expected_source.segments
+            ):
                 return False
             conversation = (
                 await reader.get(CanonicalConversationModel, row.canonical_conversation_id)
@@ -275,10 +285,15 @@ class ScopedEventLedgerUnitOfWork:
         *,
         audio: bool,
         generation: int | None = None,
+        expected_source: EventRecord | None = None,
     ) -> bool:
         while True:
             prepared = await self._prepare_derived_text(
-                event_id, normalized, audio=audio, generation=generation
+                event_id,
+                normalized,
+                audio=audio,
+                generation=generation,
+                expected_source=expected_source,
             )
             if isinstance(prepared, bool):
                 return prepared

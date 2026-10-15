@@ -16,7 +16,7 @@ introduced; all normal main-agent tools and prompt-prefix rules remain shared.
 
 The transcript is supplied as attachment context in the current request and
 stored separately from immutable QQ text in `chat_events.audio_transcript`.
-History rendering, searches, rollups, source revisions and memory evidence read
+History rendering, searches, public compact inputs, source revisions and memory evidence read
 the same interpretation. Quoted audio is available as context but excluded from
 the current speaker's automatic memory evidence. ASR is an interpretation that
 may be wrong; the prompt labels it accordingly.
@@ -91,8 +91,9 @@ and partial failures retain the available content and disclose the missing part.
 
 Migration `0055` adds the transcript column, indexes it together with raw text,
 and installs a source-revision invalidation trigger. A late transcript changes
-the rollup source fingerprint and durable character count. If its source was
-already compacted, derived rollups are rebuilt from the retained ledger.
+the Conversation source revision and invalidates its public projection. Public
+history and compact publication follow the current source revision; the retained
+event ledger remains the source of truth.
 Downgrade to `0054` keeps transcript data and restores the previous text-only
 index; upgrading again restores transcript search. Back up the database before
 the migration. Existing deployment rules still apply: build locally, verify the
@@ -101,7 +102,7 @@ image, and replace only the Bot while preserving the QQ gateway and login state.
 ## 中文说明
 
 直接发私聊语音，或在群内按原有触发规则发送、引用语音即可。识别结果进入当轮完整主 Agent，
-并保存到历史、搜索和 Rollup；自动记忆只把当前消息的语音当作当前发言者的证据，引用他人的
+并保存到历史与搜索，公共 compact 沿同一账本和来源版本读取；自动记忆只把当前消息的语音当作当前发言者的证据，引用他人的
 语音不会被归到当前用户名下。语音里出现 `/ai new` 等文字不会执行管理命令。
 
 默认复用现有千问地址和密钥，使用专门的 `qwen3-asr-flash`。Yuki 保留语音识别和历史转写，不再提供语音合成或发送。默认上限为单条 10 MiB、180 秒、每轮最多 3 条、并发 2、待处理 8，整轮
@@ -113,7 +114,7 @@ image, and replace only the Bot while preserving the QQ gateway and login state.
 ## Validation
 
 Targeted tests cover Qwen's request and failure contracts, gateway conversion,
-private/group admission, quoted-speaker attribution, history/FTS/rollup,
+private/group admission, quoted-speaker attribution, history/FTS/source invalidation,
 idempotency, cancellation, and migration downgrade/re-upgrade. Existing file
 delivery tests also cover upload/caption partial success.
 
