@@ -223,7 +223,7 @@ class CommandReceiptRepository:
         self._database = database
         self._after_audit_flush: Callable[[], None] | None = None
 
-    async def record_personal_success(
+    async def record_personal_command(
         self,
         session: AsyncSession,
         *,
@@ -238,6 +238,7 @@ class CommandReceiptRepository:
         result: Mapping[str, JsonValue],
         trigger_message_id: str = "",
         conversation_key: str = "",
+        problem_code: str | None = None,
     ) -> ControlCommandReceiptModel:
         """Write a personal command and its audit in the caller's short transaction.
 
@@ -258,8 +259,8 @@ class CommandReceiptRepository:
             target_id=person_id,
             before_json="{}",
             after_json=_dump_json(result),
-            success=True,
-            error_category=None,
+            success=problem_code is None,
+            error_category=problem_code,
             duration_seconds=0,
             created_at=now,
         )
@@ -269,12 +270,13 @@ class CommandReceiptRepository:
             principal_id=principal_id,
             request_id=request_id,
             payload_hash=payload_hash,
-            status="succeeded",
+            status="failed" if problem_code else "succeeded",
+            problem_code=problem_code,
             audit_id=audit.id,
             operation_kind=operation,
             operation_ref=operation_ref,
-            result_resource_id=resource_id,
-            effective_state_json=_dump_json(result),
+            result_resource_id=None if problem_code else resource_id,
+            effective_state_json=None if problem_code else _dump_json(result),
             created_at=now,
             updated_at=now,
         )

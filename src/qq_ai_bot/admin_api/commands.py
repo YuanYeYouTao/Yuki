@@ -105,7 +105,7 @@ class AdminCommands:
                         raise ClientError("not_found")
                     await self.people.apply_person_forget(session, prepared)
                     result: dict[str, JsonValue] = {"person_id": person_id, "deleted": True}
-                    await self.receipts.record_personal_success(
+                    await self.receipts.record_personal_command(
                         session,
                         principal_id=principal.principal_id.text,
                         principal_kind="control",

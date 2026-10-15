@@ -39,6 +39,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_helpers import _event_record
 from qq_ai_bot.persistence.scoped_event_uow import NewGenerationResult, ScopedAppendResult
+from qq_ai_bot.persistence.unit_of_work import optional_session
 
 
 def _utcnow() -> datetime:
@@ -70,6 +71,8 @@ class CanonicalIngressUnitOfWork:
         admitted: IngressPreAdmit,
         *,
         new_generation: bool = False,
+        session: AsyncSession | None = None,
+        origin: str = "user_message",
     ) -> ScopedAppendResult:
         if admitted.dropped or admitted.presence_id is None or admitted.conversation_id is None:
             raise CanonicalIdentityError("unclassified")
@@ -125,7 +128,7 @@ class CanonicalIngressUnitOfWork:
             segments_json=segments_json,
             reply_to_message_id=message.reply_to_message_id,
             reply_to_event_id=message.reply_to_event_id,
-            origin="user_message",
+            origin=origin,
             occurred_at=message.received_at,
             observed_at=now,
             canonical_event_id=canonical_event_id,
@@ -141,8 +144,9 @@ class CanonicalIngressUnitOfWork:
         )
         _validate_author_shape(row)
         # A duplicate needs a consistent receipt/keeper/route view, not a writer.
-        async with self._database.sessions() as reader:
-            await reader.execute(text("BEGIN"))
+        async with optional_session(self._database, session, write=False) as reader:
+            if session is None:
+                await reader.execute(text("BEGIN"))
             if message.scope_type is ScopeType.GROUP:
                 if admitted.space_binding_id is None:
                     raise CanonicalIdentityError("unclassified")
@@ -170,7 +174,12 @@ class CanonicalIngressUnitOfWork:
                     segments=segments,
                     normalized_segments=normalized_segments,
                 )
-        async with self._database.immediate_session() as session:
+        transaction = (
+            self._database.immediate_session()
+            if session is None
+            else optional_session(self._database, session, write=True)
+        )
+        async with transaction as session:
             trip("before_fence_recheck")
             if message.scope_type is ScopeType.GROUP:
                 if admitted.space_binding_id is None or admitted.presence_id is None:
@@ -266,9 +275,7 @@ class CanonicalIngressUnitOfWork:
                 )
             trip("after_canonical_append")
             state = await hydrate_scope_state_from_canonical(session, scope, conversation)
-        return ScopedAppendResult(
-            event=event, scope=state, created=created
-        )
+        return ScopedAppendResult(event=event, scope=state, created=created)
 
     async def append_new_generation(
         self,

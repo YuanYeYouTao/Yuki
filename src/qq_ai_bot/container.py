@@ -630,13 +630,16 @@ class ApplicationContainer:
         )
         self.processor.set_participation(self.semantic_participation)
         from qq_ai_bot.client_api.messages import ClientMessages
+        from qq_ai_bot.client_api.works import ClientWorks
         from qq_ai_bot.gateway.providers.app.ingress import AppGateway
 
         self.app_gateway = AppGateway(
             self.database, self.gateway_registry, self.processor, self.social_service
         )
         self.client_api = ClientApi(
-            self.client_api.identity, ClientMessages(self.client_api.identity, self.app_gateway)
+            self.client_api.identity,
+            ClientMessages(self.client_api.identity, self.app_gateway),
+            ClientWorks(self.client_api.identity, self.app_gateway),
         )
         self.semantic_participation.set_promoter(
             partial(self.processor.promote_committed_event, reason="semantic_invitation")

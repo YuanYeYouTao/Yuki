@@ -97,10 +97,11 @@ class ClientIdentityService:
         if device is not None:
             from qq_ai_bot.client_api.requests import ClientRequests, personal_command
 
-            principal = await self.require_device(session, device.id)
-            if await ClientRequests(self).message(session, principal, request_id) is not None:
-                raise ClientError("request_conflict")
             row = await personal_command(session, device.person_id, request_id)
+            if row is None:
+                principal = await self.require_device(session, device.id)
+                if await ClientRequests(self).message(session, principal, request_id) is not None:
+                    raise ClientError("request_conflict")
         else:
             row = await session.scalar(
                 select(ControlCommandReceiptModel).where(
@@ -112,6 +113,12 @@ class ClientIdentityService:
             return None
         if row.payload_hash != bound:
             raise ClientError("request_conflict")
+        if row.status == "failed":
+            from qq_ai_bot.persistence.models import AdminOperationEventModel
+
+            audit = await session.get(AdminOperationEventModel, row.audit_id)
+            assert audit is not None and row.problem_code is not None
+            raise ClientError(row.problem_code, details=json.loads(audit.after_json))
         assert row.status == "succeeded" and row.effective_state_json is not None
         return {**json.loads(row.effective_state_json), "replay": True}
 
@@ -187,7 +194,7 @@ class ClientIdentityService:
         )
         session.add(code)
         result = {"code_id": code.id, "expires_at": code.expires_at.isoformat()}
-        await self.receipts.record_personal_success(
+        await self.receipts.record_personal_command(
             session,
             principal_id=issuer_id,
             principal_kind=source if source in {"control", "device"} else "person",
@@ -271,7 +278,7 @@ class ClientIdentityService:
             )
             session.add(device)
             code.used_at = now
-            await self.receipts.record_personal_success(
+            await self.receipts.record_personal_command(
                 session,
                 principal_id=device.id,
                 principal_kind="device",
@@ -382,7 +389,7 @@ class ClientIdentityService:
         if device.revoked_at is None:
             device.revoked_at = datetime.now(UTC)
         result: dict[str, JsonValue] = {"device_id": device.id, "revoked": True}
-        await self.receipts.record_personal_success(
+        await self.receipts.record_personal_command(
             session,
             principal_id=issuer_id,
             principal_kind=source,
@@ -447,7 +454,7 @@ class ClientIdentityService:
                 "person_id": binding.person_id,
                 "conversation_id": conversation.id if conversation else None,
             }
-            await self.receipts.record_personal_success(
+            await self.receipts.record_personal_command(
                 session,
                 principal_id=principal_id,
                 principal_kind="control",
@@ -524,7 +531,7 @@ class ClientIdentityService:
             "person_id": binding.person_id,
             "transferred": old is not None and old.id != binding.id,
         }
-        await self.receipts.record_personal_success(
+        await self.receipts.record_personal_command(
             session,
             principal_id=binding.id,
             principal_kind="person",

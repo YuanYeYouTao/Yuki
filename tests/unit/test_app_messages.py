@@ -16,6 +16,7 @@ from tests.unit.test_client_api import bearer, pair, person_and_code
 from qq_ai_bot.admin_api.http import attach_admin_api
 from qq_ai_bot.client_api.http import ClientApi, attach_client_api
 from qq_ai_bot.client_api.messages import ClientMessages
+from qq_ai_bot.client_api.works import ClientWorks
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.gateway.providers import builtin_provider_catalog
 from qq_ai_bot.gateway.providers.app.ingress import AppGateway
@@ -77,7 +78,12 @@ async def app_env(database, admin, tmp_path):
     messages = ClientMessages(api.commands.identities, gateway)
     app = FastAPI()
     attach_admin_api(app, lambda: api)
-    attach_client_api(app, lambda: ClientApi(api.commands.identities, messages))
+    attach_client_api(
+        app,
+        lambda: ClientApi(
+            api.commands.identities, messages, ClientWorks(api.commands.identities, gateway)
+        ),
+    )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

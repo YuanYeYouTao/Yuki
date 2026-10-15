@@ -35,7 +35,11 @@ async def _guard(database, event):
             (event.id,),
         )
     control = SimpleNamespace(
-        repository=repo, lease=lease, session=SimpleNamespace(event_ids=[], source_revision=0)
+        repository=repo,
+        lease=lease,
+        current=None,
+        source={},
+        session=SimpleNamespace(event_ids=[], source_revision=0),
     )
     return WorkSourceGuard(version), control
 

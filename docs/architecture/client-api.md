@@ -63,3 +63,24 @@ Main 的生命周期由服务器持有；客户端关闭连接不会终止 Main�
 QQ 已派发消息也按派发时的绑定记录事实，发送途中转移不会将出站事件改记到新 Person。
 
 Work、快照、SSE、附件与参考 SDK 随 P7–P11 补充；当前收发不代表这些链路已验收。
+
+## 原 Work 的个人访问与补充
+
+`GET /home` 列出本人发起的私聊／群 Work，`GET /works/{id}` 返回来源入口、结果投递
+位置、状态、revision、目标摘要、等待类型、该 Work 已确认发送的问题／结果、子 Work 数
+与原预算。群聊其他消息、工具参数、checkpoint 和 journal 不进入个人投影。
+
+`POST /works/{id}/inputs {request_id,text}` 只接受原发起 Person。App 的 `work_input`
+事件、原 mailbox 的 ready 正文与 `client.work_input` 原回执在同一短事务写入。
+运行中只入队；等待中先取得原 scope 租约，再将同一个 Work 置为 queued。租约繁忙时
+返回 unavailable 且不写入。原会话、generation、session、合同与预算继续保留；
+输入不通知 App Main。终态返回 precondition_failed 与原状态。
+
+请求 UUID 与普通消息共享本人空间；改操作、目标 Work 或正文返回 request_conflict。
+另一台本人设备重放返回原 event_id／input_id，并复核事件、mailbox 与原请求的对应关系。
+WorkSourceGuard 只接纳本 Work mailbox 证明的跨入口事件；仍检查原来源、隐私版本、
+原租约与追加事件摘要。App 主会话重建不重建 QQ Work，输入被改写或遗忘则来源失效。
+
+`POST /works/{id}/cancel {request_id,expected_revision}` 沿原 manage_work 执行与保存回执。
+App 补充不会自动发往群里；群 Work 后续仍可能按任务内容向原群投递结果，投影明确显示
+结果位置。尚未完成的快照、SSE、文件与参考 SDK 见后续阶段。

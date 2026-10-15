@@ -18,7 +18,7 @@ async def client_error_response(_request: Any, exc: Any) -> JSONResponse:
         "validation_error": 422,
         "unavailable": 503,
     }.get(exc.code, 409)
-    return JSONResponse({"problem": {"code": exc.code}}, status_code=status)
+    return JSONResponse({"problem": {"code": exc.code, **exc.details}}, status_code=status)
 
 
 async def credential_safe_validation(request: Any, exc: Any) -> JSONResponse:

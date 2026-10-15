@@ -106,15 +106,14 @@ class AppGateway:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def receive(
+    def message(
         self,
         binding: IdentityBindingModel,
-        conversation_id: str,
         request_id: str,
         text: str,
         segments: tuple[dict[str, Any], ...],
-    ) -> ScopedAppendResult:
-        inbound = InboundMessage(
+    ) -> InboundMessage:
+        return InboundMessage(
             message_id=f"{binding.external_account_id}:{request_id}",
             event_type="message:app",
             platform="app",
@@ -128,6 +127,16 @@ class AppGateway:
             bot_user_id=self.handle.self_id,
             segments=segments,
         )
+
+    async def receive(
+        self,
+        binding: IdentityBindingModel,
+        conversation_id: str,
+        request_id: str,
+        text: str,
+        segments: tuple[dict[str, Any], ...],
+    ) -> ScopedAppendResult:
+        inbound = self.message(binding, request_id, text, segments)
         sender = AppSender(self.handle, self.social, binding, conversation_id, request_id)
         acknowledged: asyncio.Future[ScopedAppendResult] = (
             asyncio.get_running_loop().create_future()

@@ -74,23 +74,43 @@ class ClientRequests:
     async def get(self, principal: ClientPrincipal, request_id: str) -> dict[str, Any]:
         async with self.identity.database.sessions() as session:
             principal = await self.identity.require_device(session, principal.device_id)
-            event = await self.message(session, principal, request_id)
-            if event is not None:
+            command = await personal_command(session, principal.person_id, request_id)
+            if command is not None:
+                result = (
+                    json.loads(command.effective_state_json)
+                    if command.effective_state_json
+                    else None
+                )
+                if command.operation_kind in {"client.work_input", "client.work_cancel"}:
+                    from qq_ai_bot.client_api.works import input_result, personal_work
+
+                    assert command.operation_ref is not None
+                    await personal_work(session, principal.person_id, command.operation_ref)
+                    if command.operation_kind == "client.work_input" and result is not None:
+                        await input_result(
+                            session,
+                            principal,
+                            command.operation_ref,
+                            result,
+                            request_id,
+                            command.payload_hash,
+                        )
                 return {
                     "found": True,
-                    "operation_kind": "message",
-                    "event_id": event.id,
-                    "conversation_id": event.canonical_conversation_id,
+                    "operation_kind": command.operation_kind,
+                    "target": command.operation_ref,
+                    "status": command.status,
+                    "result": result,
+                    "problem_code": command.problem_code,
                 }
-            command = await personal_command(session, principal.person_id, request_id)
-            if command is None:
+            event = await self.message(session, principal, request_id)
+            if event is None:
                 return {"found": False}
+            if event.origin == "work_input":
+                raise ClientError("not_found")
             return {
                 "found": True,
-                "operation_kind": command.operation_kind,
-                "target": command.operation_ref,
-                "status": command.status,
-                "result": json.loads(command.effective_state_json)
-                if command.effective_state_json
-                else None,
+                "operation_kind": "message",
+                "event_id": event.id,
+                "conversation_id": event.canonical_conversation_id,
             }

@@ -12,12 +12,14 @@ from qq_ai_bot.client_api.errors import ClientError
 from qq_ai_bot.client_api.http_errors import install_identity_errors
 from qq_ai_bot.client_api.identity import ClientIdentityService, ClientPrincipal
 from qq_ai_bot.client_api.messages import ClientMessages
+from qq_ai_bot.client_api.works import ClientWorks
 
 
 @dataclass(frozen=True, slots=True)
 class ClientApi:
     identity: ClientIdentityService
     messages: ClientMessages | None = None
+    works: ClientWorks | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -38,6 +40,18 @@ class MessageBody(BaseModel):
     attachments: tuple[str, ...] = ()
 
 
+class WorkInputBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID4
+    text: str
+
+
+class WorkCancelBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID4
+    expected_revision: int = Field(strict=True, ge=1)
+
+
 def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
     router = APIRouter(prefix="/client/v1")
 
@@ -48,6 +62,32 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
         return await resolve().identity.authenticate(token)
 
     Actor = Annotated[ClientPrincipal, Depends(principal)]
+
+    def works() -> ClientWorks:
+        service = resolve().works
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
+    @router.get("/home")
+    async def home(actor: Actor) -> Any:
+        return {"data": await works().home(actor)}
+
+    @router.get("/works/{identity}")
+    async def work(identity: UUID4, actor: Actor) -> Any:
+        return {"data": await works().get(actor, str(identity))}
+
+    @router.post("/works/{identity}/inputs")
+    async def work_input(identity: UUID4, body: WorkInputBody, actor: Actor) -> Any:
+        return {"data": await works().submit(actor, str(identity), str(body.request_id), body.text)}
+
+    @router.post("/works/{identity}/cancel")
+    async def work_cancel(identity: UUID4, body: WorkCancelBody, actor: Actor) -> Any:
+        return {
+            "data": await works().cancel(
+                actor, str(identity), str(body.request_id), body.expected_revision
+            )
+        }
 
     @router.post("/messages")
     async def messages(body: MessageBody, actor: Actor) -> Any:

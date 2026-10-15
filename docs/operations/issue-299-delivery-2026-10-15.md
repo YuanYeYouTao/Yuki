@@ -176,3 +176,21 @@ social-operation 内部消息号，在原事务写出站事件与成功回执；
 
 未调用外部付费模型或真实 QQ、未部署。P7 的 Work 接续接口、P8 的状态／SSE、
 P9 的附件、P10 的两套声明与 P11 的进程外端到端验收尚未完成。
+
+## P7：个人 Work 投影与跨入口补充
+
+原 Work 的个人授权用于 home、详情、补充与取消；群 Work 只公开本 Work 已确认的
+出站问题／结果，不开放群记录。补充保留 App 的真实来源，事件、带正文的 ready mailbox
+和原命令回执同事务提交，失败整笔回滚。等待时取得原租约恢复同一 Work；运行中只入队，
+沿原完成写入器处理补充先到的竞争。没有新 Work、队列、预算或模型 session。
+
+WorkSourceGuard 以本 Work mailbox、原作者、来源私聊与正文核实跨入口输入，再保留
+原事件摘要、来源与隐私检查。恢复后的同一 guard 仍能验证原输入；主会话 generation
+变化不取消原 QQ Work。同 UUID 跨 Work／操作冲突，跨设备同操作重放原结果。
+取消沿原 revision 与管理领域实现，原失败状态也记录到原回执。
+
+验证（本地）：新增个人 Work 专项 16 passed，覆盖整笔回滚、两种完成／补充顺序、
+租约繁忙、终态、revision、请求号双向冲突、跨设备重放、群投影隔离与 guard 持久恢复。
+相关回归首次 294 passed／1 failed，失败为旧 guard 测试替身缺少现行 Work 的 source／current；
+补齐替身后该完整模块 10 passed。ruff、两平台目标 mypy（593 source files）与 diff 检查通过。
+未运行外部模型、真实群发送或生产部署；进程外整体恢复验收继续由 P11 完成。

@@ -8,7 +8,7 @@ from dataclasses import asdict, replace
 from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
@@ -109,6 +109,7 @@ class WorkSourceGuard:
             return False
         image_event_ids = {image.source_event_id for image in selected_images}
         event_ids = event_ids | frozenset(image_event_ids)
+        cross_ids: set[int] = set()
         # aiosqlite's legacy transaction mode does not BEGIN for SELECT. Establish
         # one real read snapshot, without reserving the writer during scans/hashing.
         with model_detail("source_guard_read"):
@@ -165,12 +166,51 @@ class WorkSourceGuard:
                         await session.execute(
                             select(ChatEventModel.__table__).where(
                                 ChatEventModel.id.in_(added_ids),
-                                ChatEventModel.canonical_conversation_id == version.conversation_id,
                             )
                         )
                     ).all()
                     if {row.id for row in extra} != added_ids:
                         return False
+                    cross_ids = {
+                        row.id
+                        for row in extra
+                        if row.canonical_conversation_id != version.conversation_id
+                    }
+                    if cross_ids:
+                        from qq_ai_bot.runtime.work_schema_v1 import inputs
+
+                        actor = control.source.get("actor_person_id")
+                        if control.current is None or not actor:
+                            return False
+                        accepted_query = (
+                            select(ChatEventModel.id)
+                            .join(inputs, inputs.c.event_id == ChatEventModel.id)
+                            .join(
+                                CanonicalConversationModel,
+                                CanonicalConversationModel.id
+                                == ChatEventModel.canonical_conversation_id,
+                            )
+                            .where(
+                                inputs.c.work_id == control.current["id"],
+                                ChatEventModel.id.in_(cross_ids),
+                                func.json_extract(inputs.c.payload_json, "$.origin")
+                                == "client_input",
+                                func.json_extract(inputs.c.payload_json, "$.text")
+                                == ChatEventModel.content,
+                                func.json_extract(inputs.c.payload_json, "$.source_conversation_id")
+                                == ChatEventModel.canonical_conversation_id,
+                                ChatEventModel.origin == "work_input",
+                                ChatEventModel.direction == "inbound",
+                                ChatEventModel.suppression_status == "keeper",
+                                ChatEventModel.author_kind == "person",
+                                ChatEventModel.author_person_id == actor,
+                                CanonicalConversationModel.kind == "private",
+                                CanonicalConversationModel.person_id == actor,
+                            )
+                        )
+                        accepted = set(await session.scalars(accepted_query))
+                        if accepted != cross_ids:
+                            return False
                     for row in extra:
                         if row.id in image_event_ids and (
                             row.suppression_status != "keeper"
@@ -275,6 +315,18 @@ class WorkSourceGuard:
                     or current_privacy != privacy
                 ):
                     return False
+                if cross_ids:
+                    fresh_extra = (
+                        await session.execute(
+                            select(ChatEventModel.__table__).where(ChatEventModel.id.in_(cross_ids))
+                        )
+                    ).all()
+                    if {row.id: _source_digest(row) for row in fresh_extra} != {
+                        identity: additional[identity] for identity in cross_ids
+                    }:
+                        return False
+                    if set(await session.scalars(accepted_query)) != cross_ids:
+                        return False
         self.version = selected_version
         self.fingerprint = fingerprint
         self.additional_events = additional
