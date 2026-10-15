@@ -142,7 +142,7 @@ Yuki 若照搬，会改变已冻结的声明、manifest、私有恢复合同及�
 
 路径是：平台入站身份与 Route → 该 Route 的 Session/Thread → 本轮 CurrentPlatform、ReplyTarget、渠道身份、模型和工作区能力 → 统一 Provider 列表 → 各 Provider.Tools(SessionContext) → 去重与子 Agent 过滤 → 模型函数定义 → 执行处的真实授权和渠道 Adapter。
 
-默认 Route 由 Bot、平台、外部会话及 thread 决定，同一个人关联多平台账号不会自动把它们合成一个 Session。Web 可以**显式接续已经授权的 IM Session**；这时历史 Thread 不变，本轮 CurrentChannel 仍是 web，工具参数和 usage 按本轮重新装配。这项产品行为与 Yuki 的原 Binding 会话隔离、原 Work 工具合同不同，不直接移植。[入站 Route 与 Thread][M30]、[Web 本轮平台][M31]、[显式 Session 授权][M40]
+默认 Route 由 Bot、平台、外部会话及 thread 决定，同一个人关联多平台账号不会自动把它们合成一个 Session。Web 可以**显式接续已经授权的 IM Session**；这时历史 Thread 不变，本轮 CurrentChannel 仍是 web，工具参数和 usage 按本轮重新装配。这项产品行为与 Yuki 的原 Binding 会话隔离、原 Work 工具合同不同，不直接移植。[入站 Route][M30]、[Route 查询键][M42]、[Route 的 Thread][M43]、[Web 本轮平台][M31]、[显式 Session 授权][M40]
 
 以下矩阵统一假设同 Bot、同模型、同 chat 模式、相同全部可选能力及交互通路，无动态外源。它只隔离平台维度，**不是四个平台的默认实装测量**：
 
@@ -152,7 +152,7 @@ Yuki 若照搬，会改变已冻结的声明、manifest、私有恢复合同及�
 | 上述共同假设下的内置名称数 | 50 | 50 | 50 | 50 |
 | 仅把共同模式改为 discuss | 49 | 49 | 49 | 49 |
 | send／react 声明 | 有 | 有 | 有 | 有 |
-| Adapter NativeUserInput | false | true | false | true |
+| Adapter NativeUserInput | [false][M44] | [true][M45] | [false][M46] | [true][M47] |
 | ask_user 呈现 | 纯文本降级 | 原生交互 | 纯文本降级 | Web 交互 |
 | 直接渠道 Reactor | 未实现 | 实现 | 实现 | 未实现；当前 live stream event 另有呈现路径 |
 
@@ -285,3 +285,9 @@ Memoh 将定义交模型和执行分开；ExecuteTools 只匹配该次可执行�
 [M39]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/mcp/http_tools.go#L138-L151
 [M40]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/handlers/local_channel.go#L2784-L2798
 [M41]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/cmd/internal/core/providers.go#L1055-L1090
+[M42]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/db/postgres/queries/channel_routes.sql#L37-L48
+[M43]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/channel/route/thread.go#L80-L92
+[M44]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/channel/adapters/qq/qq.go#L95-L105
+[M45]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/channel/adapters/telegram/telegram.go#L229-L245
+[M46]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/channel/adapters/discord/discord.go#L69-L84
+[M47]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/channel/adapters/local/web.go#L27-L40
