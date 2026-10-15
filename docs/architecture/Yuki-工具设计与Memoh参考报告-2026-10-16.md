@@ -1,8 +1,10 @@
-# Yuki 工具设计与 Memoh 参考报告
+# Yuki 与 Memoh 工具数量、多平台装配及删减参考报告
 
 日期：2026-10-16。状态：**只读调研和讨论方案，未授权、未实施任何工具删改**。
 
 本文与 #299 同步 main 的审查任务书分开：先说明现有会话和工具事实，再给出可讨论的精简方向。工具出现在声明里不代表调用者有权执行，也不代表对应网关、模型服务或沙箱已经可用。
+
+本轮重点是 **Memoh 的实际工具名、数量及多平台加载方式**。固定源码核得 50 个唯一内置工具名，由 20 种内置 Provider 提供；另有两个动态外部工具源。它统一注册 Provider，再按本次会话条件装配，不维护 QQ、Telegram、Discord、Web 四份独立清单。平台会影响默认目标、参数必填、用法和执行支持，但不能只看平台名就推算工具数。完整清单见 §4.0，多平台链和矩阵见 §4.1.1，模型与 ACP 的计数边界见 §4.1.2。
 
 ## 1. 调研基线与结论
 
@@ -74,6 +76,47 @@ App 再加 `read_personal_entry`。`get_my_capabilities` 查询真实调用主�
 
 ## 4. Memoh 真正怎样把工具交给模型
 
+### 4.0 内置 50 项从哪里来，每组何时加载
+
+统计固定 `7e40b52e` 的 `toolname.All()`、core Provider 注册和每组 `Tools`；另与仓库提交的 19 组 schema golden 对照。golden 覆盖 45 个无重名工具，缺的 5 项是 `app_manage`、`app_search`、`mcp_manage`、`search_memory`、`list_execution_locations`，补齐后与 50 项目录完全相等。golden 的 Memory 只含三个写工具，Container 用 nil Manager，不能直接把 45 当完整清单。[工具名全集][M26]、[schema 对照的构造条件][M27]、[注册入口][M01]
+
+| 内置 Provider | 最大项数 | 实际工具名 | 主要加载条件 |
+| --- | ---: | --- | --- |
+| Capability | 3 | `app_search`、`app_manage`、`mcp_manage` | 非子 Agent，Bot 与渠道身份、Access 及对应管理服务存在；执行时再核真实权限 |
+| AskUser | 1 | `ask_user` | 非子 Agent，交互模式且满足 CanRequestUserInput 或 CanListUserInput；后者供外部 Agent 预列，仍须交互模式 |
+| Message | 2 | `send`、`react` | 非子 Agent；注入 Sender/Reactor/Resolver 能力，未按当前 IM 的原生 reaction 能力裁清单 |
+| Contacts | 1 | `get_contacts` | contacts 服务存在 |
+| Schedule | 5 | `create_schedule`、`update_schedule`、`delete_schedule`、`get_schedule`、`list_schedule` | schedule 服务存在，整组五项 |
+| Workdir | 1 | `list_workdirs` | workdir 服务存在，不要求已有工作目录 |
+| ACPAgents | 1 | `list_acp_agents` | pool 和 queries 存在，不要求已有可用 Agent |
+| Memory | 4 | `search_memory`、`create_memory`、`update_memory`、`delete_memory` | 解析到该 Bot 的 Memory Provider，ListTools 成功；当前 builtin 搜索一项＋会话层写三项 |
+| Web | 1 | `web_search` | settings/searchProviders 服务存在即声明；Bot 没选搜索 Provider 时调用才报错 |
+| Container | 7 | `read`、`write`、`list`、`edit`、`apply_patch`、`exec`、`list_execution_locations` | 基础六项总是构造；clients 实现 workspaceTargetResolver 再加位置查询。core Manager 实现该接口，不要求已有远程机器 |
+| Background | 5 | `list_background`、`get_background_status`、`kill_background`、`wait`、`wait_until` | bgManager 存在，不要求已有后台任务 |
+| Browser | 5 | `browser_observe`、`browser_action`、`browser_remote_session`、`computer_observe`、`computer_action` | settings/Bot 可读且 DisplayEnabled；整组五项 |
+| WebFetch | 1 | `web_fetch` | Tools 本身无配置 gate，调用时处理配置和提取错误 |
+| Spawn | 4 | `spawn_agent`、`send_message`、`list_agents`、`list_models` | 非子 Agent且 agent 执行器已注入；整组四项 |
+| Skill | 2 | `list_skills`、`use_skill` | 实际有效 Skills 非空；无技能则不声明 |
+| TTS | 1 | `speak` | 对应服务存在且 Bot 配置 TTS 模型 |
+| Transcription | 1 | `transcribe_audio` | 对应服务存在且 Bot 配置 ASR 模型 |
+| ImageGen | 1 | `generate_image` | 对应服务存在且 Bot 配置图像模型 |
+| VideoGen | 1 | `generate_video` | 对应服务存在且 Bot 配置视频模型 |
+| History | 3 | `list_sessions`、`get_messages`、`search_messages` | 对应 sessions/messages/queries 依赖分别存在，逐项装配 |
+| **静态内置并集** | **50** | 唯一名字去重后的全集 | **不是默认部署或每轮必带数量** |
+
+总共注册 22 个 Provider 实例：上述 20 种内置 Provider，另两个 `FederationProvider` 分别接 Connector 和 MCP/Federation 源。外部目录会变化，不计进固定 50；最终还按 schema 有效性、保留名称和重复名规则处理，不能简单用“装了几个 MCP server”推函数数。[内存工具的实际组合][M10]、[外部工具源][M14]、[位置查询条件][M28]
+
+在**所有可选组条件都成立、core Manager、builtin Memory、无动态外源、模型支持函数调用**的共同假设下，可以按源码推导：
+
+| 运行条件 | 内置函数数量 | 差量 |
+| --- | ---: | --- |
+| 主 Agent，chat／空模式／acp_agent，交互输入通路可用 | 50 | 所有内置条件满足 |
+| 同配置，discuss／schedule | 49 | 非交互模式，不声明 ask_user |
+| 同配置，子 Agent | 40 | 隐藏管理 3、AskUser 1、Message 2、Spawn 4；中央 denylist 的 7 项就是后三组，不再重复扣数 |
+| native 模型不支持 tool_call | 0 个实际函数声明 | 工具可以先装配，但传给该模型的 Request.Tools 为空 |
+
+这是**固定源码的条件化推导**，本轮没有启动 Memoh 或捕获真实 Bot 请求。生产某一轮的确切数量还需实际 Bot 配置、SessionContext 和外部目录；没有给出“通常多少”或线上测量的虚构值。[交互模式][M29]、[子 Agent 过滤][M21]、[模型调用边界][M04]
+
 ### 4.1 注册、装配和查询是不同层
 
 服务启动时 `provideToolProviders` 装入领域 Provider，包括消息、联系人、计划、工作区、后台任务、Memory、Web、技能、媒体、子 Agent、MCP 等。[装配入口][M01]
@@ -94,6 +137,38 @@ Native Agent 的 `assembleTools` 随运行构造 SessionContext，把 Bot、Sess
 Memoh 还允许安装能力后在**同一次运行中**重新装配工具、替换 system usage 和下次请求的定义，同时保留原线程和 step cursor。它为新请求重做 prompt-cache 标记，但这不能证明前缀没有变化或缓存命中没有下降。[能力刷新][M17]
 
 Yuki 若照搬，会改变已冻结的声明、manifest、私有恢复合同及模型前缀。因此此项仅作差异说明，不列为本次建议实施能力。
+
+#### 4.1.1 多平台实际经过同一条装配链
+
+路径是：平台入站身份与 Route → 该 Route 的 Session/Thread → 本轮 CurrentPlatform、ReplyTarget、渠道身份、模型和工作区能力 → 统一 Provider 列表 → 各 Provider.Tools(SessionContext) → 去重与子 Agent 过滤 → 模型函数定义 → 执行处的真实授权和渠道 Adapter。
+
+默认 Route 由 Bot、平台、外部会话及 thread 决定，同一个人关联多平台账号不会自动把它们合成一个 Session。Web 可以**显式接续已经授权的 IM Session**；这时历史 Thread 不变，本轮 CurrentChannel 仍是 web，工具参数和 usage 按本轮重新装配。这项产品行为与 Yuki 的原 Binding 会话隔离、原 Work 工具合同不同，不直接移植。[入站 Route 与 Thread][M30]、[Web 本轮平台][M31]、[显式 Session 授权][M40]
+
+以下矩阵统一假设同 Bot、同模型、同 chat 模式、相同全部可选能力及交互通路，无动态外源。它只隔离平台维度，**不是四个平台的默认实装测量**：
+
+| 项目 | QQ | Telegram | Discord | Web |
+| --- | --- | --- | --- | --- |
+| 注册的 Provider 列表 | 同一组 | 同一组 | 同一组 | 同一组 |
+| 上述共同假设下的内置名称数 | 50 | 50 | 50 | 50 |
+| 仅把共同模式改为 discuss | 49 | 49 | 49 | 49 |
+| send／react 声明 | 有 | 有 | 有 | 有 |
+| Adapter NativeUserInput | false | true | false | true |
+| ask_user 呈现 | 纯文本降级 | 原生交互 | 纯文本降级 | Web 交互 |
+| 直接渠道 Reactor | 未实现 | 实现 | 实现 | 未实现；当前 live stream event 另有呈现路径 |
+
+`ask_user` 的声明看交互模式和输入交付通路，不直接看 Adapter.NativeUserInput；后者决定按钮还是纯文本。`react` 的声明只看注入的 Executor 能力，当前 QQ direct Adapter 不支持时仍可能在执行时报不支持。**因此“没原生按钮／reaction”不能换算成“少加载一个函数”。** 同样，web_search 未配搜索 Provider 也可能仍声明，声明与实际可执行能力没有完全一一对应。[AskUser 条件][M32]、[输入交付通路][M33]、[文本降级][M34]、[直接 reaction 边界][M35]
+
+工具名称相同也不代表 schema 和提示完全相同：`send/react` 的 platform/target 是否必填取决于当前真实会话是否有可省略的目标；chat 与 discuss 的正文投递和描述不同；Telegram 增加数学 Markdown 用法；web/local 增加工作区预览链接说明。工作区位置、OS、模型 Image/FileInput 会改变路径、shell、读取说明或结果，通常不删除 read/exec 等基本名字。群／私聊本身没有独立的四套工具包，仍需看实际模式、目标和读取范围。[投递参数及模式][M36]、[本轮 SessionContext][M02]、[工作区提示][M37]
+
+真正决定增减的条件集中在 §4.0：Bot 功能配置、Memory Provider、Skills、外部目录、Provider 依赖、交互模式、IsSubagent 和模型函数能力。不能把“模型 Provider/protocol”和“聊天平台”混成一个维度。
+
+#### 4.1.2 native、ACP 与上游 Agent 自带工具分别计数
+
+native 装配的函数经 `ToolDefinitionsFromTools` 进入 `sdk.Request.Tools`；审批只标注和处理执行，不因为待审批就先从模型清单隐藏。本文的 Browser 五项和 web_search 都是 Memoh 本地函数；本轮没有在 native SDK 构造链找到另加 OpenAI hosted web search／Gemini grounding 的配置，不能再给 50 加一遍“原生搜索”。Codex／Claude 独立 runtime 自带的工具属于外部 Agent，最终模型声明数不能由 Memoh 目录代算。[模型函数定义与实际请求][M03]、[M04]
+
+ACP 则可注入一个 Memoh HTTP MCP server，其中聚合 Builtin NativeToolSource、Connector 和 Federation 三类来源；NativeToolSource 排除 FederationProvider，避免同一外部来源重复叠加。ListTools 是函数目录，一个 MCP server 里可以有多项工具；调用再按原 runtime guard、allow 和批准核验。外部 Agent 还能带它自己的工具，不能把“一个 server”记为“一项工具”。[Builtin NativeToolSource][M16]、[三类源装配][M41]、[ACP 的 MCP 注入][M38]
+
+native 的能力变更可以在同 run 的 step 边界刷新工具、handler 和 system usage；ACP server 的 `ListChanged=false`，没有同等的自动列表变更通知保证。外部 Agent 会不会再取 tools/list、最终发给模型多少函数，要看该 Agent 行为，不能只凭 Memoh native 的热刷新代码推断。[native 刷新][M17]、[ACP 能力声明][M39]
 
 ### 4.2 各领域的实际设计
 
@@ -194,3 +269,19 @@ Memoh 将定义交模型和执行分开；ExecuteTools 只匹配该次可执行�
 [D04]: https://docs.memoh.ai/guides/memory.md
 [D05]: https://docs.memoh.ai/guides/schedule.md
 [D06]: https://docs.memoh.ai/integrations/providers/web-search.md
+[M26]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/agent/tool/internal/toolname/toolname.go#L26-L101
+[M27]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/agent/tool/schema_golden_test.go#L22-L91
+[M28]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/agent/tool/container.go#L295-L329
+[M29]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/agent/sessionmode/sessionmode.go#L12-L23
+[M30]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/channel/inbound/channel.go#L653-L676
+[M31]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/handlers/local_channel.go#L2420-L2440
+[M32]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/agent/tool/ask_user.go#L41-L126
+[M33]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/agent/application/service.go#L1077-L1083
+[M34]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/channel/outbound.go#L797-L803
+[M35]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/channel/manager.go#L312-L320
+[M36]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/agent/tool/message.go#L272-L329
+[M37]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/agent/tool/container.go#L145-L171
+[M38]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/agent/runtime/acp/client/session.go#L309-L360
+[M39]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/mcp/http_tools.go#L138-L151
+[M40]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/handlers/local_channel.go#L2784-L2798
+[M41]: https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/cmd/internal/core/providers.go#L1055-L1090
