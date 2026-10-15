@@ -243,7 +243,13 @@ class TurnExecution:
         if self.runtime.fixed_tools is not None:
             self.state.fixed_definitions = self.runtime.fixed_tools
         elif self.runner.main_contract is not None:
-            self.state.fixed_definitions = await self.runner.main_contract.model_definitions()
+            manifest = self.runner.main_contract
+            entry = await manifest.entry_for(self.runtime.canonical_conversation_id)
+            self.state.fixed_definitions = await manifest.model_definitions(entry)
+            self.runtime = replace(
+                self.runtime,
+                script_api=manifest.app_script_api if entry == "app" else manifest.script_api,
+            )
             if not self.runtime.dynamic_context_prepared:
                 raise LLMError("main_agent_composition_required")
             if self.tools is None:

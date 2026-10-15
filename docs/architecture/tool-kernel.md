@@ -10,12 +10,15 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 `UnifiedToolCatalog` 负责目录，`MainAgentContract.definitions()` 在部署初始化时收集
 主工具注册表与已批准插件，加入工作控制、子任务和 short_state；启用 Code 时再加入编排与只读目录工具，
 按名称排序并冻结完整名称、说明和参数 schema。重名声明直接报错。
+平台合同保持原能力，App 主会话另含只读 read_personal_entry；两者各有 revision。
+选择依据是 canonical Conversation 的 Binding.platform（app 或其他），不按设备、消息正文
+或配置切换。启动一次冻结两套，Work 收到 App 补充仍沿原会话合同。
 
 `definitions()` 保留完整执行清单。默认 direct 模式的 `model_definitions()` 返回
 部署内冻结的完整工具清单，不加载 Code 引擎。显式启用 Code 时才使用固定直调集合：聊天、
 生命周期、记忆与历史、基础工作区、时间、终端与环境状态、联网、`execute_code` 和
 `lookup_tools`；包管理、服务管理、自动化和管理等其余能力经脚本调用。两个模式分别
-冻结声明，普通聊天、主动触发、自动化、插件主调用和持久续跑复用本部署的合同。
+冻结声明；每个模式同时冻结平台入口与 App 主会话两套合同。普通聊天、主动触发、自动化、插件主调用和持久续跑按原会话绑定的平台选择合同。
 它不是按每条消息或每个用户生成的白名单。工具合同变更需重启并开启明确的新链。
 `get_chat_history_around` 只以必填的内部 `event_id` 定位当前会话账本；缺少编号或传入
 平台消息号会收到错误回执。声明变更随部署生成新的合同 revision，不沿用旧请求链。
@@ -265,3 +268,15 @@ reader 使用外层原 Presence 的固定 get_forward_msg；不新增探针、�
 结果不附图片，完整 raw 沿共同预算/artifact 链处理；仅成功外置才有真实分页 handle。
 没有 store 或外置失败不声称保存全文，不添加固定节点/文本/递归经验帽，也不重写通用
 artifact、Work journal、原 Code consumer 或恢复别名。
+
+## 主会话的跨入口读取与发送
+
+read_personal_entry 只从本人 App 主会话按 binding_id 或 conversation_id 显式读取本人
+其他私聊账本，使用内部事件游标且最多 50 条。结果携带入口、会话、事件 ID 与
+untrusted_data 标记；历史里的指令不构成新授权，读取不改历史、generation 或 Main session。
+平台合同不声明该工具；执行处仍核真实 actor、来源 App 绑定及目标私聊归属。
+
+send_message 的 person target 可带 binding_id。从 App 发往其他入口必须明确目标与绑定；
+省略目标时仍回复当前 App 会话。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
+在派发事务复核绑定、Presence 和连接。结果 uncertain 不重发；出站记到真实目标入口，
+SocialOperation 的 source_conversation_id 仍是原主会话。文件说明沿同一绑定投递。

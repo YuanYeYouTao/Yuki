@@ -6,7 +6,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -362,6 +362,31 @@ class PresenceRouter:
         if space_id is None:
             raise RouteSendError("none")
         return await self.resolve_send_for_space(space_id)
+
+    async def resolve_send_for_binding(
+        self, person_id: str, binding_id: str, preferred_presence_id: str | None = None
+    ) -> ResolvedSend:
+        candidates = [
+            item
+            for item in await self._person_candidates(person_id)
+            if item.binding_id == binding_id
+        ]
+        preferred = [item for item in candidates if item.presence_id == preferred_presence_id]
+        if preferred:
+            candidates = preferred
+        if len(candidates) != 1:
+            raise RouteSendError("ambiguous" if candidates else "binding_unavailable")
+        candidate = candidates[0]
+        route = await self.resolve_presence(candidate.presence_id)
+        require_capability(route.connection, "send_private")
+        return replace(
+            route,
+            binding_id=candidate.binding_id,
+            external_target_id=candidate.external_target_id,
+            platform=candidate.platform,
+            kind="binding",
+            route_generation=0,
+        )
 
     async def resolve_send_for_person(self, person_id: str) -> ResolvedSend:
         async with self._database.sessions() as session:

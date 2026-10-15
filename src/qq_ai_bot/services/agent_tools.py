@@ -817,10 +817,17 @@ class AgentToolService:
                 )
             )
         from qq_ai_bot.sandbox.client import sandbox_tools
+        from qq_ai_bot.services.personal_entry_tool import ENTRY_TOOL
         from qq_ai_bot.social.tools import social_tool_definitions
         from qq_ai_bot.workspace.service import workspace_tools
 
-        return (*tools, *social_tool_definitions(), *workspace_tools(), *sandbox_tools())
+        return (
+            *tools,
+            *social_tool_definitions(),
+            ENTRY_TOOL,
+            *workspace_tools(),
+            *sandbox_tools(),
+        )
 
     async def execute(
         self,
@@ -942,6 +949,18 @@ class AgentToolService:
                             else "工作区操作未完成"
                         )
                         return self._result(error=category, detail=detail)
+
+                if name == "read_personal_entry":
+                    from qq_ai_bot.services.personal_entry_tool import read_entry
+                    from qq_ai_bot.social.models import SocialError
+
+                    try:
+                        data = await read_entry(self._ledger._database, runtime, arguments)
+                        return self._result(data=data)
+                    except SocialError as exc:
+                        return self._result(
+                            error=str(exc), detail="仅 App 主会话可读取本人其他私聊入口"
+                        )
 
                 if name in {tool.name for tool in social_tool_definitions()}:
                     from qq_ai_bot.social.agent_adapter import invoke_social

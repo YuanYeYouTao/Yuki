@@ -113,6 +113,7 @@ async def app_env(database, admin, tmp_path):
             gateway=gateway,
             harness=harness,
             calls=calls,
+            provider=provider,
             identity=api.commands.identities,
             service=messages,
             social=social,

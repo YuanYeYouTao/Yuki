@@ -1120,7 +1120,9 @@ class ChatService:
                     runtime=runtime,
                 ),
                 current_work_control.get(),
-                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(
+                    runtime, turn_snapshot.conversation_id
+                ),
             )
         current = context.current_message
         if attachment_text:
@@ -1385,7 +1387,9 @@ class ChatService:
                     runtime=runtime,
                 ),
                 current_work_control.get(),
-                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(
+                    runtime, turn_snapshot.conversation_id
+                ),
             )
             composition = await self.runtime.main_turns.compose(
                 inbound=None,
@@ -1503,7 +1507,9 @@ class ChatService:
                     external_trigger=trigger,
                 ),
                 current_work_control.get(),
-                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(
+                    runtime, turn_snapshot.conversation_id
+                ),
             )
             composition = await self.runtime.main_turns.compose(
                 inbound=None,

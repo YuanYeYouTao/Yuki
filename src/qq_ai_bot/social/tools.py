@@ -41,7 +41,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
     ) -> ChatTool:
         return ChatTool(
             name=name,
-            schema_version="2" if name == "send_message" else "1",
+            schema_version="3" if name == "send_message" else "1",
             description=description,
             parameters={
                 "type": "object",
@@ -116,6 +116,14 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                     ),
                     "properties": {
                         "kind": {"type": "string", "enum": ["person", "space"]},
+                        "binding_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": (
+                                "person 的指定入口绑定；从 App 向其他入口发送必须明确指定，"
+                                "不能以主动路由猜测"
+                            ),
+                        },
                         **selector,
                     },
                     "required": ["kind"],

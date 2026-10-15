@@ -453,7 +453,28 @@ class SocialService:
                 raise SocialError("binding_unavailable")
         return result
 
-    async def send_route(self, target: SocialTarget, context: SocialContext) -> ResolvedSend:
+    async def send_route(
+        self, target: SocialTarget, context: SocialContext, binding_id: str | None = None
+    ) -> ResolvedSend:
+        if target.kind == "person":
+            async with self.database.sessions() as session:
+                source = await session.get(CanonicalConversationModel, context.conversation_id)
+                source_binding = (
+                    await session.get(IdentityBindingModel, source.identity_binding_id)
+                    if source and source.identity_binding_id
+                    else None
+                )
+            if source_binding is not None and source_binding.platform == "app":
+                if binding_id is None and source_binding.person_id != str(target.id):
+                    raise SocialError("binding_required")
+                if binding_id is None:
+                    binding_id = source_binding.id
+            if binding_id is not None:
+                return await self.router.resolve_send_for_binding(
+                    str(target.id), binding_id, context.reply_presence_id or context.presence_id
+                )
+        elif binding_id is not None:
+            raise SocialError("binding_requires_person")
         if _self_scene(context) and target.kind == "space" and str(target.id) == context.space_id:
             await self._validate_self_context(context)
             async with self.database.sessions() as session:
@@ -963,7 +984,11 @@ class SocialService:
                 except ValueError:
                     raise SocialError("invalid_space_id") from None
         await self.check_target(route_target)
-        route = await self.send_route(route_target, context)
+        route = await self.send_route(
+            route_target,
+            context,
+            (args.get("target") or {}).get("binding_id") if name == "send_message" else None,
+        )
         params: dict[str, Any]
         if route.platform == "app":
             if name != "send_message" or message is None or message.emoji:
@@ -1097,11 +1122,7 @@ class SocialService:
                             else message.text or f"[图片: {metadata['name']}]"
                         ),
                         ledger_segments=(
-                            (
-                                ({"type": "text", "data": {"text": message.text}},)
-                                if message.text
-                                else ()
-                            )
+                            tuple(part for part in params["message"] if part["type"] != "image")
                             + ledger_segments
                             if message.attachment_kind == "image"
                             else ledger_segments
@@ -1285,7 +1306,13 @@ class SocialService:
         fresh = (
             await self.router.resolve_presence(route.presence_id)
             if name == "recall_own_message"
-            else await self.send_route(route_target or target, context)
+            else await self.send_route(
+                route_target or target,
+                context,
+                (args.get("target") or {}).get("binding_id")
+                if name in {"send_message", "send_file_caption"}
+                else None,
+            )
         )
         if (
             fresh.presence_id,
@@ -1409,7 +1436,11 @@ class SocialService:
                 try:
                     await self._effect(
                         "send_file_caption",
-                        {"text": caption, "segments": caption_segments},
+                        {
+                            "text": caption,
+                            "segments": caption_segments,
+                            "target": args.get("target"),
+                        },
                         caption_context,
                         target,
                         route,

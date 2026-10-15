@@ -224,3 +224,20 @@ App 作为独立平台保留已投影的服务器附件，不再经 QQ mention �
 Social、ASR、Work 媒体恢复与个人投影回归 50 passed；App 旧专项 14 passed。
 ruff、两平台目标 mypy（597 source files）和 diff 检查通过。未调用真实 ASR／模型 API、
 未触碰生产数据或部署；进程外客户端文件流程留到 P11。
+
+## P10：按入口冻结工具与显式跨入口发送
+
+启动时冻结平台与 App 两套完整清单、revision 和可选 Code API；实际绑定的平台决定
+本会话的声明，设备及输入内容不参与选择。App 补充 QQ Work 后，恢复合同仍取原 QQ 会话。
+只读 read_personal_entry 返回本人其他私聊的公开账本与来源 ID，明确标记为不可信资料，
+不写被读会话，不把旧指令当新授权。执行授权仍在工具处核对。
+
+Social person 目标支持显式 binding_id，按原 Provider 能力与目标授权发送；App 默认回复
+当前入口，向其他人物／入口发送必须选定绑定。不改主动路由，保持源 Social 回执和真实
+目标账本。修正了定向回归发现的图片账本 mention 保留，以及跨入口文件说明沿原绑定的问题。
+
+验证：个人入口合同专项最终 7 passed，覆盖真实假模型调用只读工具、两套 direct／Code
+声明、读取不写回、群／他人拒绝、明确 App→QQ 绑定、未知回执不重发、文件说明和
+App 补充后 QQ 原合同保持。相关核心、Social、Work 与部署合同回归 59 passed／14 skipped，
+跳过均为未构建可选 Monty worker。ruff、两平台目标 mypy（598 source files）与 diff
+检查通过。未运行真实外部模型／QQ，也未重启或部署生产服务。
