@@ -61,7 +61,7 @@ async def test_takeover_zero_one_many_and_route_pause(database: Database) -> Non
         person_id = await _ensure_person_id(session, "1001", platform="qq")
     empty = await router.cas_takeover_person(person_id)
     assert empty == "none"
-    registry.connect(bot_a)
+    registry.connect(bot_a, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     taken = await router.cas_takeover_person(person_id)
     assert taken == "taken"
@@ -73,7 +73,7 @@ async def test_takeover_zero_one_many_and_route_pause(database: Database) -> Non
         conversation_generation_untouched = 1
     async with database.sessions() as session, session.begin():
         presence_b = await ensure_v2_presence(session, "8001")
-    registry.connect(bot_b)
+    registry.connect(bot_b, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
     kept = await router.cas_takeover_person(person_id)
     assert kept == "unchanged"
@@ -132,7 +132,7 @@ async def test_transient_disconnect_preserves_routes_until_same_presence_reconne
             primary_scope_key="bot:8000:group:2001",
             space_id=space_id,
         )
-    first = registry.connect(bot, presence_id=presence)
+    first = registry.connect(bot, presence_id=presence, provider_id="snowluma")
     assert await router.cas_takeover_person(person_id) == "taken"
     assert await router.cas_takeover_space(space_id) == "taken"
     assert (
@@ -187,7 +187,7 @@ async def test_transient_disconnect_preserves_routes_until_same_presence_reconne
     )
 
     reconnected = _Bot("8000")
-    second = registry.connect(reconnected, presence_id=presence)
+    second = registry.connect(reconnected, presence_id=presence, provider_id="snowluma")
     assert second.generation == first.generation + 1
     await monitor.on_connection_change()
     assert (await router.resolve_send_for_person(person_id)).presence_id == presence
@@ -250,7 +250,7 @@ async def test_space_takeover_zero_one_many_and_membership_probe(database: Datab
         space_id = await ensure_v2_space(session, "2001")
     empty = await router.cas_takeover_space(space_id)
     assert empty == "none"
-    registry.connect(bot_a)
+    registry.connect(bot_a, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     taken = await router.cas_takeover_space(space_id)
     assert taken == "taken"
@@ -261,7 +261,7 @@ async def test_space_takeover_zero_one_many_and_membership_probe(database: Datab
         first_generation = int(route.route_generation)
     async with database.sessions() as session, session.begin():
         presence_b = await ensure_v2_presence(session, "8001")
-    registry.connect(bot_b)
+    registry.connect(bot_b, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
     # bot_b fails the membership probe, so the unique live member stays bot_a.
     same = await router.cas_takeover_space(space_id)
@@ -312,7 +312,7 @@ async def test_authoritative_ingest_survives_second_presence(database: Database)
         )
         assert binding is not None
         binding_id = binding.id
-    registry.connect(bot_a)
+    registry.connect(bot_a, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     first = await router.evaluate_ingest(space_binding_id=binding_id, event_presence_id=presence_a)
     assert first == "ok"
@@ -321,7 +321,7 @@ async def test_authoritative_ingest_survives_second_presence(database: Database)
         assert route is not None
         generation = int(route.route_generation)
         revision = int(route.revision)
-    registry.connect(bot_b)
+    registry.connect(bot_b, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
     second = await router.evaluate_ingest(space_binding_id=binding_id, event_presence_id=presence_b)
     assert second == "not_ingest"
@@ -360,7 +360,7 @@ async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
     async with database.sessions() as session, session.begin():
         presence_a = await ensure_v2_presence(session, "8000")
         person_id = await _ensure_person_id(session, "1001", platform="qq")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     assert await router.cas_takeover_person(person_id) == "taken"
     async with database.sessions() as session, session.begin():
@@ -386,9 +386,9 @@ async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         route.paused = False
-    registry.connect(extra)
+    registry.connect(extra, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
-    registry.connect(other)
+    registry.connect(other, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8002", presence_id=presence_c)
     paused = await router.cas_takeover_person(person_id)
     assert paused == "ambiguous"
@@ -426,7 +426,7 @@ async def test_ingest_eligible_does_not_block_person_or_space_send(
         row = await session.get(PresenceModel, presence)
         assert row is not None
         row.ingest_eligible = False
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     person = await router.resolve_send_for_person(person_id)
     space = await router.resolve_send_for_space(space_id)
@@ -470,14 +470,14 @@ async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
             )
             is not None
         )
-    registry.connect(bot_a)
+    registry.connect(bot_a, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     assert await router.cas_takeover_person(person_id) == "taken"
     async with database.sessions() as session:
         route = await session.get(PersonActiveRouteModel, person_id)
         assert route is not None
         first_generation = int(route.route_generation)
-    registry.connect(bot_b)
+    registry.connect(bot_b, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
     registry.disconnect(bot_a)
     entered, release, hold = _hold_pair()
@@ -522,14 +522,14 @@ async def test_space_takeover_cas_does_not_overwrite_concurrent_write(
         presence_b = await ensure_v2_presence(session, "8001")
         presence_c = await ensure_v2_presence(session, "8002")
         space_id = await ensure_v2_space(session, "2001")
-    registry.connect(bot_a)
+    registry.connect(bot_a, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     assert await router.cas_takeover_space(space_id) == "taken"
     async with database.sessions() as session:
         route = await session.get(SpaceActiveRouteModel, space_id)
         assert route is not None
         first_generation = int(route.route_generation)
-    registry.connect(bot_b)
+    registry.connect(bot_b, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
     registry.disconnect(bot_a)
     entered, release, hold = _hold_pair()
@@ -580,7 +580,7 @@ async def test_ingest_provision_cas_does_not_overwrite_concurrent_write(
         )
         assert binding is not None
         binding_id = binding.id
-    registry.connect(bot_a)
+    registry.connect(bot_a, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     assert (
         await router.evaluate_ingest(space_binding_id=binding_id, event_presence_id=presence_a)
@@ -590,7 +590,7 @@ async def test_ingest_provision_cas_does_not_overwrite_concurrent_write(
         route = await session.get(SpaceBindingIngestRouteModel, binding_id)
         assert route is not None
         first_generation = int(route.route_generation)
-    registry.connect(bot_b)
+    registry.connect(bot_b, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
     registry.disconnect(bot_a)
     entered, release, hold = _hold_pair()

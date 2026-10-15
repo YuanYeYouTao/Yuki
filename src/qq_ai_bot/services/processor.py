@@ -46,6 +46,7 @@ from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import (
     ChatImage,
     InboundMessage,
+    LocalDeliveryReceipt,
     OutboundMessage,
     OutboundSendReceipt,
 )
@@ -66,6 +67,7 @@ from qq_ai_bot.persistence.repositories import (
     PrivateUserSettingsRepository,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
+from qq_ai_bot.persistence.scoped_event_uow import ScopedAppendResult
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
 from qq_ai_bot.runtime.activation_outcome import (
     WorkActivationHandled,
@@ -575,6 +577,8 @@ class MessageProcessor:
         message: InboundMessage,
         sender: OutboundSender,
         profile_resolver: UserProfileResolver | None = None,
+        *,
+        on_committed: Callable[[ScopedAppendResult], None] | None = None,
     ) -> ProcessResult:
         """Bind one opaque runtime turn correlation around real message handling.
 
@@ -598,7 +602,11 @@ class MessageProcessor:
         # hot provider switch cannot change the model between those two steps.
         with bind_runtime_turn(correlation), self._chat.pin_model_runtime():
             try:
-                if self._client_links is not None and self._client_links.is_request(message):
+                if (
+                    self._client_links is not None
+                    and message.platform == "qq"
+                    and self._client_links.is_request(message)
+                ):
                     link_response = await self._client_links.execute(
                         getattr(sender, "bot", None), message
                     )
@@ -635,6 +643,7 @@ class MessageProcessor:
                     sender,
                     profile_resolver,
                     admitted=admitted,
+                    on_committed=on_committed,
                 )
                 return result
             except BaseException as exc:
@@ -673,6 +682,7 @@ class MessageProcessor:
         profile_resolver: UserProfileResolver | None = None,
         *,
         admitted: IngressPreAdmit,
+        on_committed: Callable[[ScopedAppendResult], None] | None = None,
     ) -> ProcessResult:
         """Process one message without deriving authority from model-visible data."""
 
@@ -695,7 +705,7 @@ class MessageProcessor:
         private_policy = await self._effective_private_policy(message)
         direct_match = (
             self._direct_plugin_commands.match(message.text)
-            if self._direct_plugin_commands is not None
+            if self._direct_plugin_commands is not None and admitted.provider != "app"
             else None
         )
         decision = evaluate_message(
@@ -705,6 +715,7 @@ class MessageProcessor:
             private_policy=private_policy,
             direct_triggered=direct_match is not None,
             yuki_account_ids=yuki_account_ids,
+            commands_enabled=admitted.provider != "app",
         )
         if decision.reason == "bot_message":
             await self._publish_turn_rejected(message, decision.reason)
@@ -740,7 +751,7 @@ class MessageProcessor:
         )
         event_key = build_event_key(message, identity.key)
         runtime_snapshot = await self._runtime_config.snapshot(
-            user_id=message.sender.user_id,
+            user_id=message.person_id or message.sender.user_id,
             group_id=message.group_id,
         )
         self._turn_coordinator.configure_policy(
@@ -794,7 +805,10 @@ class MessageProcessor:
 
         # A non-explicit keeper resend must not advance the version that a
         # pending source of another real message is waiting on.
-        turn_token = await notify() if direct_turn else None
+        app_message = (
+            admitted.provider == "app" and decision.command is None and direct_match is None
+        )
+        turn_token = await notify() if direct_turn and not app_message else None
         has_visual_input = VisionService.has_visual_input(message) or (
             self._native_images is not None
             and any(
@@ -886,6 +900,8 @@ class MessageProcessor:
             record = appended.event
             created = appended.created
             scope_state = appended.scope
+        if on_committed is not None:
+            on_committed(ScopedAppendResult(event=record, created=created, scope=scope_state))
         if turn_token is None:
             if not created:
                 return ProcessResult(False, reason="group_observed")
@@ -1694,7 +1710,9 @@ class MessageProcessor:
         if message.scope_type is not ScopeType.PRIVATE:
             return None
         async with self._ledger._database.sessions() as session:
-            return await canonical_private_policy(session, message.sender.user_id)
+            return await canonical_private_policy(
+                session, message.sender.user_id, platform=message.platform
+            )
 
     async def _handle_ingress_drop(
         self, message: InboundMessage, sender: OutboundSender, reason: str
@@ -1969,7 +1987,7 @@ class MessageProcessor:
         record: bool,
     ) -> None:
         receipt = await sender.send(outbound)
-        if not isinstance(receipt, OutboundSendReceipt):
+        if not isinstance(receipt, (OutboundSendReceipt, LocalDeliveryReceipt)):
             raise TypeError("outbound sender returned no delivery receipt")
         if record:
             await self._chat.record_confirmed_outbound(inbound, outbound, receipt)
@@ -2023,7 +2041,7 @@ class MessageProcessor:
         outbound: OutboundMessage,
     ) -> None:
         receipt = await sender.send(outbound)
-        if not isinstance(receipt, OutboundSendReceipt):
+        if not isinstance(receipt, (OutboundSendReceipt, LocalDeliveryReceipt)):
             raise TypeError("outbound sender returned no delivery receipt")
         await self._chat.record_confirmed_outbound(inbound, outbound, receipt)
 

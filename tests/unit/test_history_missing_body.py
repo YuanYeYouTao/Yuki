@@ -57,7 +57,7 @@ def metadata_rows(statements):
 async def scene(database, count):
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     admitted = await resolver.pre_admit(bot, _message(message_id="missing-history-seed"))
     assert admitted is not None and not admitted.dropped
     receipt = await uow.append_inbound(admitted.message, admitted)

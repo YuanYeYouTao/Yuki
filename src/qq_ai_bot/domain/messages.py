@@ -132,6 +132,7 @@ class InboundMessage:
     sender: SenderIdentity
     text: str
     bot_user_id: str = ""
+    platform: str = "qq"
     raw_text: str = ""
     group_id: str | None = None
     mentions_bot: bool = False
@@ -230,6 +231,17 @@ class OutboundSendReceipt:
             raise ValueError("transport must not be empty")
         object.__setattr__(self, "platform_message_id", message_id)
         object.__setattr__(self, "transport", transport)
+
+
+@dataclass(frozen=True, slots=True)
+class LocalDeliveryReceipt:
+    """An original Social operation already committed this local ledger event."""
+
+    event_id: int
+
+    @property
+    def platform_message_id(self) -> None:
+        return None
 
 
 @dataclass(frozen=True, slots=True)

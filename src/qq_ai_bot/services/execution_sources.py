@@ -42,6 +42,7 @@ class MessageTaskSource:
     binding_id: str
     external_target_id: str
     content: str
+    platform: str = "qq"
 
     def inbound(self, original: Any, **extra: Any) -> InboundMessage:
         """The original ledger event as the trusted inbound; never a new message."""
@@ -50,9 +51,12 @@ class MessageTaskSource:
             source_event_id=original.id,
             event_type="message",
             scope_type=original.scope_type,
-            sender=SenderIdentity(self.actor_user_id),
+            sender=SenderIdentity(
+                self.actor_user_id, nickname=original.sender_nickname, nickname_known=True
+            ),
             text=original.content,
             bot_user_id=self.bot_user_id,
+            platform=self.platform,
             group_id=original.group_id,
             received_at=original.occurred_at,
             person_id=self.actor_person_id,
@@ -200,7 +204,6 @@ async def recover_background_source(
             event is None
             or presence is None
             or not presence.enabled
-            or presence.platform != "qq"
             or presence.external_account_id != event.bot_user_id
         ):
             raise ValueError("task_presence_disabled")
@@ -268,7 +271,6 @@ async def recover_automation_source(
         if (
             presence is None
             or not presence.enabled
-            or presence.platform != "qq"
             or presence.external_account_id != owner.bot_user_id
         ):
             raise ValueError("task_presence_disabled")
@@ -293,7 +295,7 @@ async def recover_automation_source(
 
             assert settings is not None and actor_person is not None
             actor_user, permission = await resolve_execution_identity(
-                session, settings, owner_id=actor_person
+                session, settings, owner_id=actor_person, conversation_id=conversation.id
             )
             actor_is_superuser = permission.value == "superuser"
         if conversation.space_id:
@@ -514,7 +516,6 @@ async def recover_source(
         if (
             presence is None
             or not presence.enabled
-            or presence.platform != "qq"
             or presence.external_account_id != event.bot_user_id
         ):
             raise ValueError("task_presence_disabled")
@@ -522,7 +523,7 @@ async def recover_source(
             select(IdentityBindingModel.id).where(
                 IdentityBindingModel.person_id == actor.id,
                 IdentityBindingModel.external_account_id == event.sender_user_id,
-                IdentityBindingModel.platform == "qq",
+                IdentityBindingModel.platform == presence.platform,
                 IdentityBindingModel.status == "active",
             )
         )
@@ -567,4 +568,5 @@ async def recover_source(
             binding_id,
             external_target,
             event.content,
+            platform=presence.platform,
         )

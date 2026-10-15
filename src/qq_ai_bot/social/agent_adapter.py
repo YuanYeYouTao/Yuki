@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 
 from qq_ai_bot.capabilities.invocation import current_invocation
-from qq_ai_bot.identity.db_models import IdentityBindingModel
+from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel
 from qq_ai_bot.identity.routing import RouteSendError
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.social.models import SocialError
@@ -163,10 +163,14 @@ async def invoke_social(
     if reply:
         refs["replied_message_author"] = str(reply)
     async with service.database.sessions() as session:
+        presence = (
+            await session.get(PresenceModel, actor.presence_id) if actor.presence_id else None
+        )
+        platform = presence.platform if presence is not None else "qq"
         bindings = (
             await session.scalars(
                 select(IdentityBindingModel).where(
-                    IdentityBindingModel.platform == "qq",
+                    IdentityBindingModel.platform == platform,
                     IdentityBindingModel.status == "active",
                     IdentityBindingModel.external_account_id.in_(refs.values()),
                 )

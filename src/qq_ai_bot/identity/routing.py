@@ -25,7 +25,6 @@ from qq_ai_bot.gateway.registry import (
     RegistryClosed,
     require_capability,
 )
-from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
 from qq_ai_bot.identity.db_models import (
     IdentityBindingModel,
     PresenceModel,
@@ -163,10 +162,11 @@ class PresenceRouter:
         bot_user_id: str,
         *,
         capability: str = "send_private",
+        platform: str = "qq",
     ) -> ResolvedSend:
         """Resolve one exact ingress account through Registry, never get_bots()."""
 
-        resolution = self._registry.resolve_account(IDENTITY_PLATFORM, bot_user_id)
+        resolution = self._registry.resolve_account(platform, bot_user_id)
         require_capability(resolution, capability)
         return ResolvedSend(
             presence_id=resolution.snapshot.presence_id or "",
@@ -183,7 +183,7 @@ class PresenceRouter:
         """Resolve an exact enabled account without consulting an outbound route."""
         async with self._database.sessions() as session:
             presence = await session.get(PresenceModel, presence_id)
-        if presence is None or not presence.enabled or presence.platform != "qq":
+        if presence is None or not presence.enabled:
             raise RouteSendError("original_presence_unavailable")
         return self._presence_connection(presence)
 

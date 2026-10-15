@@ -93,12 +93,21 @@ class ClientIdentityService:
     async def replay(
         self, session: AsyncSession, principal_id: str, request_id: str, bound: str
     ) -> dict[str, Any] | None:
-        row = await session.scalar(
-            select(ControlCommandReceiptModel).where(
-                ControlCommandReceiptModel.principal_id == principal_id,
-                ControlCommandReceiptModel.request_id == request_id,
+        device = await session.get(ClientDeviceModel, principal_id)
+        if device is not None:
+            from qq_ai_bot.client_api.requests import ClientRequests, personal_command
+
+            principal = await self.require_device(session, device.id)
+            if await ClientRequests(self).message(session, principal, request_id) is not None:
+                raise ClientError("request_conflict")
+            row = await personal_command(session, device.person_id, request_id)
+        else:
+            row = await session.scalar(
+                select(ControlCommandReceiptModel).where(
+                    ControlCommandReceiptModel.principal_id == principal_id,
+                    ControlCommandReceiptModel.request_id == request_id,
+                )
             )
-        )
         if row is None:
             return None
         if row.payload_hash != bound:

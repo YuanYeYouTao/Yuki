@@ -42,6 +42,7 @@ from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatTool,
     InboundMessage,
+    LocalDeliveryReceipt,
     OutboundMedia,
     OutboundMessage,
     OutboundSendReceipt,
@@ -140,7 +141,7 @@ def _core_result_character_budget(runtime: RuntimeConfigSnapshot | None) -> int:
 class OutboundSender(Protocol):
     """Adapter-provided sender used by the business layer."""
 
-    async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
+    async def send(self, message: OutboundMessage) -> OutboundSendReceipt | LocalDeliveryReceipt:
         """Send one message and return proof of platform acceptance."""
 
 
@@ -652,7 +653,7 @@ class ChatService:
         if (
             control is None
             or control.current is None
-            or control.source.get("actor_user_id") != inbound.sender.user_id
+            or control.source.get("actor_person_id") != inbound.person_id
         ):
             return matched
         from qq_ai_bot.runtime.work_repository import WorkCapacityError
@@ -707,7 +708,6 @@ class ChatService:
     ) -> int:
         """Coalesce unowned chat retries; accepted work keeps its own recovery."""
         with self.runtime.executions.track():
-
             arguments: dict[str, Any] = dict(
                 runtime_snapshot=runtime_snapshot,
                 visual_input_present=visual_input_present,
@@ -868,7 +868,7 @@ class ChatService:
                             work_control = None
                 preparation.advance("runtime_snapshot")
                 runtime_config = runtime_snapshot or await self._runtime_config.snapshot(
-                    user_id=inbound.sender.user_id,
+                    user_id=inbound.person_id or inbound.sender.user_id,
                     group_id=inbound.group_id,
                 )
                 preparation.advance("memory_and_repair")
@@ -1271,7 +1271,7 @@ class ChatService:
             if runtime.inbound is None:
                 raise RuntimeError("actorless Main Agent turn requires a runtime snapshot")
             config = await self._runtime_config.snapshot(
-                user_id=runtime.inbound.sender.user_id,
+                user_id=runtime.inbound.person_id or runtime.inbound.sender.user_id,
                 group_id=runtime.inbound.group_id,
             )
             runtime = replace(runtime, runtime_config=config)
@@ -1677,10 +1677,12 @@ class ChatService:
         self,
         inbound: InboundMessage,
         message: OutboundMessage,
-        receipt: OutboundSendReceipt,
+        receipt: OutboundSendReceipt | LocalDeliveryReceipt,
     ) -> bool:
         """Share the same ledger boundary with deterministic media commands."""
 
+        if isinstance(receipt, LocalDeliveryReceipt):
+            return True
         return await self._record_outbound_message(inbound, message, receipt)
 
     @staticmethod

@@ -629,6 +629,15 @@ class ApplicationContainer:
             turn_observations=self.turn_observations,
         )
         self.processor.set_participation(self.semantic_participation)
+        from qq_ai_bot.client_api.messages import ClientMessages
+        from qq_ai_bot.gateway.providers.app.ingress import AppGateway
+
+        self.app_gateway = AppGateway(
+            self.database, self.gateway_registry, self.processor, self.social_service
+        )
+        self.client_api = ClientApi(
+            self.client_api.identity, ClientMessages(self.client_api.identity, self.app_gateway)
+        )
         self.semantic_participation.set_promoter(
             partial(self.processor.promote_committed_event, reason="semantic_invitation")
         )
@@ -836,9 +845,9 @@ class ApplicationContainer:
             raise
 
     def onebot_connected(self) -> bool:
-        """Return whether the Registry currently has at least one active connection."""
+        """App's always-local connection is not evidence of a live QQ gateway."""
 
-        return self.gateway_registry.has_any_active()
+        return self.gateway_registry.has_any_active(platform="qq")
 
     def _register_lifecycle(self) -> None:
         self.lifecycle.register(
@@ -886,6 +895,9 @@ class ApplicationContainer:
             start=self.sandbox_continuations.start,
             close=self.sandbox_continuations.close,
             health=self.sandbox_continuations.health,
+        )
+        self.lifecycle.register(
+            "app_gateway", start=self.app_gateway.start, close=self.app_gateway.close
         )
         self.lifecycle.register(
             "yuki_runtime",

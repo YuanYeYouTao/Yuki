@@ -222,7 +222,7 @@ class CanonicalIngressResolver:
         message_account = external_id(message.bot_user_id) if message.bot_user_id else ""
         if message_account and message_account != handle_account:
             return _drop("bot_handle_mismatch", message)
-        overlay = replace(message, bot_user_id=handle_account)
+        overlay = replace(message, bot_user_id=handle_account, platform=presence.platform)
         yuki_ids = await _same_platform_yuki_accounts(session, connection.snapshot.platform)
         overlay = overlay_yuki_signals(overlay, yuki_ids)
         author_kind, author_person_id, author_presence_id = await _author_for(

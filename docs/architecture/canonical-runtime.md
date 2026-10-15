@@ -97,7 +97,7 @@ Presence ID 有界读取并在写事务前完成实时成员核验，要求唯�
 GatewayConnection 只存在于进程内 Registry。Registry 保存 Provider、Presence、连接句柄、能力、
 健康状态和 ConnectionGeneration；连接对象、token、Cookie 和 QQ 登录数据不进入数据库。
 
-Yuki 不再支持 NapCat，当前仅装配 SnowLuma QQ/OneBot v11 Provider。既有 GatewayProvider、
+Yuki 不再支持 NapCat，当前装配 SnowLuma QQ/OneBot v11 与进程内 App Provider。既有 GatewayProvider、
 GatewayConnectionProfile、Catalog、Registry 和 ProviderOneBotAdapter 继续承载可替换网关，
 provider 标识仍是通用字符串，不把业务核心改成品牌专用逻辑：
 
@@ -105,11 +105,16 @@ provider 标识仍是通用字符串，不把业务核心改成品牌专用逻�
 - 同一 QQ 只能有一条活动连接；重复连接在 Adapter 和 Registry 两层拒绝，新连接不会挤掉旧连接。
 - 同一 Provider 的重连、迟到断连和重复 socket 仍沿原连接合同处理。
 - 更换网关实现保留原 Presence 与业务 owner；连接变化不复制 Conversation、Memory 或历史。
+- App 使用迁移 0121 的 Presence 与配对生成的绑定，登记本地连接；它不表示 QQ 已连接。
+  内置目录现在有两个 Provider，连接必须显式选择 provider_id。恢复工作者启动前登记 App 连接。
+  App 普通消息先提交 canonical 事件，只有首次创建再通知原轮次协调器和 Main；HTTP 返回或
+  客户端断开不取消处理。输入文本走个人聊天，平台 `/ai` 控制命令仍在平台入口使用。
+  App 出站由原 Social 事务写账本与回执，不调用 OneBot，不伪造外部消息 ID；确认丢失时查原回执。
 
 历史账本的 `ingress_provider` 保留当时真实来源，旧 `napcat` 字段不迁移成 `snowluma`。
 读取历史不会重新装配退役 Provider，也不能据此重发或重跑旧效果。
 
-Provider 只承诺 Yuki 使用的 OneBot 核心能力。Provider 私有 action 不进入跨 Provider 合同，
+QQ Provider 只承诺 Yuki 使用的 OneBot 核心能力。Provider 私有 action 不进入跨 Provider 合同，
 不支持时必须显式失败。
 
 SnowLuma noVNC 与 WebUI 的宿主监听分别由 `SNOWLUMA_NOVNC_BIND_ADDRESS` 和

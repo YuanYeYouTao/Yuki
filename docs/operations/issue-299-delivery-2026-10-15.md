@@ -142,3 +142,37 @@ QQ `/ai link` 在普通入账与自动建 Person 前核验真实连接并处理�
 
 P5 秒级边界补验：平台历史整秒等于绑定起点时也不返回，避免起点恰好为整秒时开放该秒。
 前任仍存在／已遗忘两种场景与原 Social 契约合计 25 passed，ruff 与 mypy 通过。
+
+## P6：App 普通消息、原请求查询与本地 Social 投递
+
+内置目录加入 App Provider；生产 QQ adapter 原已显式选 snowluma，测试接线同步显式选 Provider，
+保留原自定义 Provider 的身份测试。App 连接在工作者恢复前登记，独立于 QQ 的在线状态。
+个人 API 只从设备确定 Person／App 绑定／主会话，消息号由绑定外部 ID 加请求 UUID 组成。
+跨设备共享原消息与命令请求号空间；先核原作者和会话归属，再比较正文／附件。
+并发 receipt_conflict 回到完整授权和内容核验，不把不同正文或无权请求改成成功。
+
+Processor 对 App 普通消息先完成原 canonical 入账，只有首次创建才通知原轮次协调器并进入 Main。
+HTTP 等待入账确认，后续处理由服务器持有；没有新任务表或去重队列。App 文本作为普通聊天，
+平台控制命令仍走平台入口。并发测试暴露了 legacy alias 的 ORM flush 竞争，改为原唯一键的
+原子 INSERT ON CONFLICT，再核归属；保留私聊冲突不追加、群归属冲突拒绝的合同。
+
+Social 明确区分本地提交与 QQ 外部回执：App 不调用或解析 OneBot，外部引用为空，沿原
+social-operation 内部消息号，在原事务写出站事件与成功回执；提交确认丢失时查询原事实。
+直接系统回复返回已落账的本地事件回执，不重复记账。QQ 沿原严格回执解析，已派发的私聊
+按冻结绑定记录，即使发送中途发生转移，也不误记到现任 Person。
+配置、资料、Social 主体、Memory 归属和任务恢复沿 canonical Person 与真实 Presence 平台，
+活跃 Work 输入比较 Person；App 不借用同 Person QQ 管理账号的执行权限。
+
+验证（本地）：
+
+- 相关回归 253 passed，包括 Gateway、canonical 入账、QQ／群恢复、原 Main／Compact、
+  Work 来源、Social、Memory 与个人 API。随后新增 App 文本与 Memory 细节补验 25 passed。
+- 当前 App 专项共 14 例：无 QQ 配对后完整 HTTP→Processor→假 Main→本地 Social；
+  两设备一次入账／一次通知；跨分钟并发重放与正文冲突；不同 Person 相同 UUID 隔离；
+  原事件作者被改变后拒绝重放；HTTP 响应后 Main 仍运行；本地提交确认丢失；
+  Memory 与恢复平台；QQ 发送中转移；消息／其他命令的双向请求号冲突；
+  App 不借 QQ 管理身份；本地在线不冒充 QQ 在线；App 文本不推进 QQ 控制命令的 generation。
+- ruff、macOS／Linux 目标 mypy（592 source files）与 diff 静态检查通过。
+
+未调用外部付费模型或真实 QQ、未部署。P7 的 Work 接续接口、P8 的状态／SSE、
+P9 的附件、P10 的两套声明与 P11 的进程外端到端验收尚未完成。

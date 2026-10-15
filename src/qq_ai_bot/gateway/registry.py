@@ -281,9 +281,14 @@ class GatewayConnectionRegistry:
                 capabilities=chosen.capabilities,
             )
 
-    def has_any_active(self) -> bool:
+    def has_any_active(self, *, platform: str | None = None) -> bool:
         with self._lock:
-            return any(item.healthy and item.bot is not None for item in self._by_id.values())
+            return any(
+                item.healthy
+                and item.bot is not None
+                and (platform is None or item.platform == platform)
+                for item in self._by_id.values()
+            )
 
     def connected_presence_ids(self, platform: str) -> tuple[str, ...]:
         """Finite live connection identities for route preparation, not ownership."""

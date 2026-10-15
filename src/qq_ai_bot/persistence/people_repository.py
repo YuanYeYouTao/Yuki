@@ -287,6 +287,7 @@ async def _observe_role(
     *,
     is_bot: bool,
     binding: IdentityBindingModel | None = None,
+    platform: str = "qq",
 ) -> tuple[AccountRole, IdentityBindingModel | None]:
     settings = identity_write_settings()
     if is_bot or user_id in settings.ignored_bot_users:
@@ -294,13 +295,12 @@ async def _observe_role(
     external = external_id(user_id)
     if external in settings.ignored_bot_users:
         return "external_bot", None
-    presence = await find_presence(session, external)
+    presence = await find_presence(session, external, platform=platform)
     if binding is None:
-        binding = await find_identity_binding(session, external)
+        binding = await find_identity_binding(session, external, platform=platform)
     if presence is not None and binding is None:
         return "yuki_self", None
     return "human", binding
-
 
 
 class PeopleRepository:
@@ -387,6 +387,7 @@ class PeopleRepository:
         group_card_known: bool = True,
         is_bot: bool = False,
         expected_person_id: str | None = None,
+        platform: str = "qq",
     ) -> None:
         """Update current values and retain historical aliases."""
 
@@ -394,11 +395,13 @@ class PeopleRepository:
         async with self._database.immediate_session() as session:
             current_binding = None
             if expected_person_id is not None:
-                current_binding = await find_identity_binding(session, external_id(user_id))
+                current_binding = await find_identity_binding(
+                    session, external_id(user_id), platform=platform
+                )
                 if current_binding is None or current_binding.person_id != expected_person_id:
                     raise CanonicalIdentityError("canonical_owner_mismatch")
             role, current_binding = await _observe_role(
-                session, user_id, is_bot=is_bot, binding=current_binding
+                session, user_id, is_bot=is_bot, binding=current_binding, platform=platform
             )
             if role != "human":
                 return

@@ -10,6 +10,6 @@ async def ingress(database):
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_presence(session, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     return resolver, uow, bot

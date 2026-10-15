@@ -1661,11 +1661,16 @@ class AgentToolService:
                 )
         inbound = runtime.inbound
         if owners is None or user_id not in owners:
-            owners = await self._people.person_reference_map(
-                (user_id,),
-                speaker_user_id="",
-                bot_user_id=runtime.effective_bot_user_id or "",
-                session=session,
+            actor = runtime.require_actor()
+            owners = (
+                {user_id: actor.person_id}
+                if user_id == actor.user_id and actor.person_id
+                else await self._people.person_reference_map(
+                    (user_id,),
+                    speaker_user_id="",
+                    bot_user_id=runtime.effective_bot_user_id or "",
+                    session=session,
+                )
             )
         if not runtime.effective_bot_user_id or user_id not in owners:
             return _ToolFailure(
@@ -1674,7 +1679,7 @@ class AgentToolService:
             )
         if self._social_requester(runtime) is not None:
             scope = await self._memory_reads.person(
-                runtime.require_actor().user_id,
+                self._social_requester(runtime) or runtime.require_actor().user_id,
                 user_id,
                 group_id=selected_group_id,
                 person_ids=owners,
@@ -2220,15 +2225,17 @@ class AgentToolService:
     def _social_requester(runtime: ToolRuntime) -> str | None:
         # An origin or arbitrary actor_user_id is not proof of a real user.
         if runtime.inbound is not None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
-            return runtime.inbound.sender.user_id
+            return runtime.inbound.person_id or runtime.inbound.sender.user_id
         if runtime.inbound is not None and runtime.origin is TurnOrigin.PLUGIN_SESSION:
             try:
-                return runtime.require_actor().user_id or None
+                actor = runtime.require_actor()
+                return actor.person_id or actor.user_id or None
             except PermissionError:
                 return None
         if runtime.actor_context is not None:
             try:
-                return runtime.require_actor().user_id or None
+                actor = runtime.require_actor()
+                return actor.person_id or actor.user_id or None
             except PermissionError:
                 return None
         return None

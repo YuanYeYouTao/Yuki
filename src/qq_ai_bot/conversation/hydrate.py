@@ -276,8 +276,11 @@ async def ensure_legacy_alias(
     if primary:
         raise CanonicalIdentityError("canonical_kind_mismatch")
     now = _utcnow()
-    session.add(
-        ConversationLegacyAliasModel(
+    from sqlalchemy.dialects.sqlite import insert
+
+    await session.execute(
+        insert(ConversationLegacyAliasModel)
+        .values(
             id=_new_id(),
             conversation_id=conversation_id,
             scope_key=scope_key,
@@ -285,17 +288,17 @@ async def ensure_legacy_alias(
             created_at=now,
             updated_at=now,
         )
+        .on_conflict_do_nothing(index_elements=["scope_key"])
     )
-    try:
-        await session.flush()
-    except IntegrityError:
-        raced = await session.scalar(
-            select(ConversationLegacyAliasModel).where(
-                ConversationLegacyAliasModel.scope_key == scope_key
-            )
+    owner = await session.scalar(
+        select(ConversationLegacyAliasModel.conversation_id).where(
+            ConversationLegacyAliasModel.scope_key == scope_key
         )
-        if raced is None or raced.conversation_id != conversation_id:
-            raise CanonicalIdentityError("canonical_owner_mismatch") from None
+    )
+    if owner != conversation_id:
+        conversation = await session.get(CanonicalConversationModel, conversation_id)
+        if conversation is None or conversation.kind != "private":
+            raise CanonicalIdentityError("canonical_owner_mismatch")
 
 
 async def bump_canonical_generation(

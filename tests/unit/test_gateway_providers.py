@@ -72,9 +72,9 @@ def test_provider_catalog_is_explicit_and_fail_closed() -> None:
     with pytest.raises(ValueError, match="at least one"):
         GatewayProviderCatalog(())
     builtins = builtin_provider_catalog()
-    assert builtins.describe_connection(_Bot("8000")) == SnowLumaProvider().describe_connection(
-        _Bot("8000")
-    )
+    assert builtins.describe_connection(
+        _Bot("8000"), provider_id="snowluma"
+    ) == SnowLumaProvider().describe_connection(_Bot("8000"))
 
 
 def test_registry_uses_selected_provider_profile_not_constructor_strings() -> None:

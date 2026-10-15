@@ -1688,7 +1688,18 @@ class MemoryJobRepository:
                     )
                     return False, conversation_key[:255]
                 try:
-                    owner = await resolve_active_person_id(session, event.sender_user_id)
+                    from qq_ai_bot.identity.db_models import PresenceModel
+
+                    presence = (
+                        await session.get(PresenceModel, event.ingress_presence_id)
+                        if event.ingress_presence_id
+                        else None
+                    )
+                    owner = await resolve_active_person_id(
+                        session,
+                        event.sender_user_id,
+                        platform=presence.platform if presence is not None else "qq",
+                    )
                 except MemoryPartitionResolutionError:
                     owner = None
                 if owner != event.author_person_id:

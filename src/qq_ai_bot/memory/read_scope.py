@@ -70,6 +70,9 @@ class MemoryReadScopeResolver:
 
     @staticmethod
     async def _person(session: AsyncSession, external_id: str) -> str | None:
+        canonical = await session.get(CanonicalPersonModel, external_id)
+        if canonical is not None:
+            return canonical.id
         value = await session.scalar(
             select(IdentityBindingModel.person_id).where(
                 IdentityBindingModel.platform == "qq",
@@ -164,7 +167,7 @@ class MemoryReadScopeResolver:
                 requester_id = await self._person(session, requester)
                 if requester_id is not None:
                     owners[requester] = requester_id
-        requester_id = owners.get(requester)
+        requester_id = owners.get(requester) or await self._person(session, requester)
         if requester_id is None:
             return {}
         candidate_ids = {owners[target] for target in targets if target in owners}

@@ -102,7 +102,7 @@ async def canonical(database, group=False):
     bot = _Bot("8000")
     async with database.immediate_session() as writer:
         presence = await ensure_presence(writer, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     admitted = await resolver.pre_admit(
         bot, _message(message_id="readonly-duplicate", group_id="2001" if group else None)
@@ -148,7 +148,7 @@ async def test_canonical_input_encoding_hash_and_event_dto_precede_writer(databa
     bot = _Bot("8000")
     async with database.immediate_session() as writer:
         presence = await ensure_presence(writer, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     admitted = await resolver.pre_admit(bot, _message(message_id="prepared-dto"))
     held = False

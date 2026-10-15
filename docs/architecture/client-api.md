@@ -15,6 +15,8 @@
 | `GET /me` | 设备 Bearer；本人的 Person、App 会话、绑定与设备列表 |
 | `POST /link-codes {request_id?}` | 设备 Bearer；为本人签发新码，明文仅首次返回 |
 | `DELETE /devices/{id}` | 设备 Bearer；撤销本人的指定设备，其他设备继续可用 |
+| `POST /messages {request_id, text, attachments:[]}` | App 普通消息；返回内部 event_id、conversation_id 与 replay |
+| `GET /requests/{request_id}` | 原消息／命令查询，先核本人归属，不重新派发 |
 
 每个 Person 有一个服务器生成账号的 `app` 绑定和一个主会话，多设备共用。
 设备 token 只存哈希；码、token 和密钥不写聊天账本、Main、Memory 或命令回执。
@@ -48,4 +50,16 @@ Memory 重建按来源事件处理提案，保留有界账号的运行选择集�
 `unavailable`；提交确认丢失返回 `unknown`，保留原请求号查询，不创建替代效果。
 迁移 0121 提供前向升级；已转移的库不能退回旧账号唯一约束。没有执行生产迁移或部署。
 
-消息、Work、快照、SSE、附件与参考 SDK 随 P6–P11 补充；当前配对不代表这些链路已验收。
+普通消息号由服务器生成：`<app 绑定外部 ID>:<request_id>`，多设备共享本人请求号空间，
+不同 Person 互不冲突。重放先核原事件作者与 App 会话，再核规范化正文和附件，
+已有请求不构造新入站、不通知轮次。并发首次提交在原入账处遇到 receipt_conflict 时，
+回到同一授权与内容核对；同号不同操作或正文返回 request_conflict。正文是个人聊天输入，
+不在个人 API 中执行 QQ `/ai` 管理命令。当前只接收文本，附件在 P9 接入。
+
+App 经过原 Processor、Main、Social 与 Memory；配置、读取与执行来源使用 canonical Person
+及真实入口平台。设备不会因同 Person 的 QQ 管理账号而取得管理权限。HTTP 只等待原入账，
+Main 的生命周期由服务器持有；客户端关闭连接不会终止 Main。App 本地发送的成功回执与
+出站事件同事务提交，外部引用为空，内部消息号沿 `social-operation:<id>`。
+QQ 已派发消息也按派发时的绑定记录事实，发送途中转移不会将出站事件改记到新 Person。
+
+Work、快照、SSE、附件与参考 SDK 随 P7–P11 补充；当前收发不代表这些链路已验收。

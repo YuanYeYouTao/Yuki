@@ -20,7 +20,7 @@ from qq_ai_bot.services.execution_sources import recover_source
 async def stack(database):
     registry, _, _ = await _stack(database)
     bot = _Bot("8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     identities = ClientIdentityService(database)
     async with database.sessions() as session:
         target = await find_identity_binding(session, "1001")

@@ -21,7 +21,7 @@ async def runtime_health(app: ApplicationContainer) -> list[dict[str, Any]]:
         ("work", True, app.work_scheduler.running),
         ("automation", app.settings.automation_enabled, app.automation_worker.running),
         ("plugins", app.plugin_manager.system_enabled, app.plugin_manager.running_count > 0),
-        ("gateway", None, app.onebot_connected()),
+        ("gateway", None, app.gateway_registry.has_any_active()),
         (
             "subagents",
             app.database.subagents_enabled,

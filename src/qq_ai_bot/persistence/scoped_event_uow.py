@@ -27,7 +27,12 @@ from qq_ai_bot.identity.canonical_repository import (
     find_identity_binding,
     find_space_binding,
 )
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, PresenceModel
+from qq_ai_bot.identity.db_models import (
+    CanonicalPersonModel,
+    CanonicalSpaceModel,
+    IdentityBindingModel,
+    PresenceModel,
+)
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.receipt_compat import (
     load_claimed_keeper,
@@ -144,6 +149,7 @@ class ScopedEventLedgerUnitOfWork:
         external_target_id: str | None = None,
         caused_by_event_id: int | None = None,
         session: AsyncSession | None = None,
+        identity_binding_id: str | None = None,
     ) -> ScopedAppendResult:
         timestamp = occurred_at or datetime.now(UTC)
         observed_at = datetime.now(UTC)
@@ -174,6 +180,7 @@ class ScopedEventLedgerUnitOfWork:
                 external_payload=external_payload,
                 external_target_id=external_target_id,
                 caused_by_event_id=caused_by_event_id,
+                identity_binding_id=identity_binding_id,
             )
         async with self._database.immediate_session() as session:
             result = await self._append_canonical(
@@ -202,6 +209,7 @@ class ScopedEventLedgerUnitOfWork:
                 external_payload=external_payload,
                 external_target_id=external_target_id,
                 caused_by_event_id=caused_by_event_id,
+                identity_binding_id=identity_binding_id,
             )
         return result
 
@@ -612,6 +620,7 @@ class ScopedEventLedgerUnitOfWork:
         external_payload: dict[str, Any] | None,
         external_target_id: str | None,
         caused_by_event_id: int | None,
+        identity_binding_id: str | None = None,
     ) -> ScopedAppendResult:
         return await self._append_canonical(
             session,
@@ -639,6 +648,7 @@ class ScopedEventLedgerUnitOfWork:
             external_payload=external_payload,
             external_target_id=external_target_id,
             caused_by_event_id=caused_by_event_id,
+            identity_binding_id=identity_binding_id,
         )
 
     async def _append_canonical(
@@ -669,6 +679,7 @@ class ScopedEventLedgerUnitOfWork:
         external_payload: dict[str, Any] | None,
         external_target_id: str | None,
         caused_by_event_id: int | None,
+        identity_binding_id: str | None = None,
     ) -> ScopedAppendResult:
         from uuid import uuid4
 
@@ -704,17 +715,29 @@ class ScopedEventLedgerUnitOfWork:
                 space_id=space.id,
             )
         else:
-            person_binding = await find_identity_binding(
-                session,
-                external_id(scope.private_peer_user_id or sender_user_id),
-                platform=presence.platform,
+            person_binding = (
+                await session.get(IdentityBindingModel, identity_binding_id)
+                if identity_binding_id is not None
+                else await find_identity_binding(
+                    session,
+                    external_id(scope.private_peer_user_id or sender_user_id),
+                    platform=presence.platform,
+                )
             )
+            if identity_binding_id is not None and (
+                direction != "outbound"
+                or person_binding is None
+                or person_binding.platform != presence.platform
+                or person_binding.external_account_id != scope.private_peer_user_id
+            ):
+                raise CanonicalIdentityError("canonical_owner_mismatch")
             person = (
                 None
-                if person_binding is None or person_binding.status != "active"
+                if person_binding is None
+                or (identity_binding_id is None and person_binding.status != "active")
                 else await session.get(CanonicalPersonModel, person_binding.person_id)
             )
-            if person is None or not person.enabled:
+            if person is None or (identity_binding_id is None and not person.enabled):
                 raise CanonicalIdentityError("no_person")
             assert person_binding is not None
             hydrated = await ensure_canonical_conversation(

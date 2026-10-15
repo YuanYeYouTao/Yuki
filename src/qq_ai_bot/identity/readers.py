@@ -18,8 +18,10 @@ from qq_ai_bot.services.policies import EffectiveGroupPolicy, EffectivePrivatePo
 async def canonical_private_policy(
     session: AsyncSession,
     user_id: str,
+    *,
+    platform: str = "qq",
 ) -> EffectivePrivatePolicy:
-    binding = await find_identity_binding(session, user_id)
+    binding = await find_identity_binding(session, user_id, platform=platform)
     if binding is None or binding.status != "active":
         return EffectivePrivatePolicy(enabled=False)
     person = await session.get(CanonicalPersonModel, binding.person_id)

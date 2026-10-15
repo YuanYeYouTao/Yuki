@@ -170,6 +170,7 @@ class UserProfileService:
                 group_card_known=resolved.group_card_known,
                 is_bot=message.sender.is_bot,
                 expected_person_id=message.person_id,
+                platform=message.platform,
             )
         except (OSError, RuntimeError, SQLAlchemyError) as exc:
             logger.warning(

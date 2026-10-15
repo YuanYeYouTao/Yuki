@@ -443,8 +443,6 @@ class SocialService:
             if target.kind == "person"
             else await self.router.resolve_send_for_space(str(target.id))
         )
-        if result.platform != "qq":
-            raise SocialError("capability_unavailable")
         async with self.database.sessions() as session:
             binding_model = IdentityBindingModel if target.kind == "person" else SpaceBindingModel
             binding = cast(
@@ -552,22 +550,24 @@ class SocialService:
             if event.author_person_id != str(target.id):
                 return await self.route(target)
             presence = await session.get(PresenceModel, context.reply_presence_id)
-            binding = await session.scalar(
+            if presence is None or not presence.enabled:
+                raise SocialError("reply_identity_unavailable")
+            person_binding = await session.scalar(
                 select(IdentityBindingModel).where(
                     IdentityBindingModel.person_id == str(target.id),
-                    IdentityBindingModel.platform == "qq",
+                    IdentityBindingModel.platform == presence.platform,
                     IdentityBindingModel.external_account_id == event.sender_user_id,
                     IdentityBindingModel.status == "active",
                 )
             )
-            if presence is None or not presence.enabled or binding is None:
+            if person_binding is None:
                 raise SocialError("reply_identity_unavailable")
             account, binding_id, peer = (
                 presence.external_account_id,
-                binding.id,
-                binding.external_account_id,
+                person_binding.id,
+                person_binding.external_account_id,
             )
-        route = await self.router.resolve_send_for_account(account)
+        route = await self.router.resolve_send_for_account(account, platform=presence.platform)
         if route.presence_id != context.reply_presence_id:
             raise SocialError("reply_presence_changed")
         return replace(
@@ -965,6 +965,21 @@ class SocialService:
         await self.check_target(route_target)
         route = await self.send_route(route_target, context)
         params: dict[str, Any]
+        if route.platform == "app":
+            if name != "send_message" or message is None or message.artifact_id or message.emoji:
+                raise SocialError("capability_unavailable")
+            if message.mentions:
+                raise SocialError("mentions_require_group")
+            return await self._effect(
+                name,
+                args,
+                context,
+                target,
+                route,
+                "app_deliver",
+                {"message": [{"type": "text", "data": {"text": message.text}}]},
+                content=message.text,
+            )
         if name == "poke_person":
             binding = await self.person_binding(
                 target,
@@ -1421,10 +1436,12 @@ class SocialService:
         try:
             self.router.validate_prepared_connection(route)
             dispatched = True
-            result = await self._call(route, action, params)
             reference = None
-            if action in {"send_private_msg", "send_group_msg"}:
-                reference = parse_onebot_send_receipt(result).platform_message_id
+            result = None
+            if route.platform != "app":
+                result = await self._call(route, action, params)
+                if action in {"send_private_msg", "send_group_msg"}:
+                    reference = parse_onebot_send_receipt(result).platform_message_id
             file_upload = action in {"upload_private_file", "upload_group_file"}
             if file_upload and isinstance(result, dict):
                 # Upload completion is independent of a retractable chat receipt.
@@ -1470,6 +1487,7 @@ class SocialService:
                         ),
                         reply_to_event_id=reply_to_event_id,
                         session=session,
+                        identity_binding_id=route.binding_id if target.kind == "person" else None,
                     )
                 await self.receipts.finish(
                     operation_id,
@@ -1479,6 +1497,16 @@ class SocialService:
                     session=session,
                 )
         except BaseException as exc:
+            if route.platform == "app":
+                try:
+                    confirmed = await self.receipts.get(operation_id)
+                except Exception as probe:
+                    exc.add_note(f"local receipt lookup failed: {type(probe).__name__}")
+                else:
+                    if confirmed.status is OperationStatus.SUCCEEDED:
+                        if not isinstance(exc, Exception):
+                            raise
+                        return
             try:
                 async with self.database.sessions() as session, session.begin():
                     await self.receipts.finish(

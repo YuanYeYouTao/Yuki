@@ -95,14 +95,14 @@ async def resolve_control_context(
         group_id = space_binding.external_space_id
         presence_id = space_route.presence_id
     presence = await session.get(PresenceModel, presence_id)
-    if presence is None or not presence.enabled or presence.platform != "qq":
+    if presence is None or not presence.enabled:
         raise PermissionError("automation_presence_unavailable")
     accounts = (
         (
             await session.scalars(
                 select(IdentityBindingModel).where(
                     IdentityBindingModel.person_id == owner_id,
-                    IdentityBindingModel.platform == "qq",
+                    IdentityBindingModel.platform == presence.platform,
                     IdentityBindingModel.status == "active",
                 )
             )
@@ -160,7 +160,6 @@ async def resolve_execution_identity(
             await session.scalars(
                 select(IdentityBindingModel).where(
                     IdentityBindingModel.person_id == owner_id,
-                    IdentityBindingModel.platform == "qq",
                     IdentityBindingModel.status == "active",
                 )
             )
@@ -181,5 +180,6 @@ async def resolve_execution_identity(
     if binding is None:
         raise PermissionError("automation_owner_route_ambiguous")
     return binding.external_account_id, permission_for_accounts(
-        settings, (item.external_account_id for item in bindings)
+        settings,
+        (item.external_account_id for item in bindings if item.platform == binding.platform),
     )
