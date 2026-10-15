@@ -4,6 +4,10 @@
 范围与逐项验收见[任务书](../architecture/Yuki-记忆种子全链删除与参与状态反馈任务书-2026-10-15.md)。
 本记录区分本地验证、固定依赖、CI、合并和生产部署；未发生的阶段不提前标记完成。
 
+af0770fc 的首次上线记录保留如下。后续终审发现同 Main 已选择补充的后置资格竞态，
+已以最小删除和真实 Main 回归修复；最终 CI、合并 SHA、运行镜像、新备份与自然验收统一见
+[#446 的交付回执](https://github.com/YuanYeYouTao/Yuki/pull/446)，以实际阶段为准。
+
 ## 产品变化
 
 - 后台 Memory 分页、seed 观察、recall/contact 新机会及其专用摘要、去重和参数退出。
@@ -14,9 +18,11 @@
   不把 quiet 当真人停止；不为状态本身新建评分请求，保留原真人焦点的必要补评。
   投影为 `semantic-state-v2`，rubric 为 `v6-zh-5`。
 - 普通快接不等待 JEV，同时进入原观察队列复核。有效局部 quiet 与真实语义纠正各自能
-  收起后续和未接纳 continuation，已接纳 Main、预算与已确认效果保持原事实。
+  收起未来和未选择 continuation，已接纳 Main、预算与已确认效果保持原事实。
 - `continuation_review_span` 记录未经语义确认的快捷外推跨度；明确请求、原 Work/wait
-  和同一 Main 的已选中补充接纳保持及时。新 activation 达到跨度时回到语义入口。
+  和同一 Main 的已选择补充接纳保持及时。选择前仍筛选 quiet/语义；同 Main 已选入序列的
+  补充不再因 K 或后到 quiet/语义被 writer 否决；该后置资格门槛已删除。
+  原来源与授权继续核验，新 activation 达到跨度时回到语义入口。
   Main 自己的 stay、发送、unknown 或失败不补充确认进度。
 - 普通 admission 的原 `basis_json` 兼容旧列表与含真实 reason 的新对象，原内部事件 ID
   作为本地 source_order、普通自报带原 SourceRef。同时间乱序不靠事件名或响应到达顺序判断。
@@ -50,14 +56,15 @@ Host/Main 指实际业务服务、原接纳仓库和 Main runner，不表示对�
 | Host Linux 全量 | 实施中版本 1964 passed、94 skipped，1808 个原警告，1339.37 秒；未构建的 Monty 原生运行时与缺少 PowerShell 按环境跳过，最后 metadata/来源补修另有定向回归，最终 CI 按固定版本全套验证 |
 | 固定依赖安装 | pyproject/uv.lock 固定公开归档 d85bb39a5d16e1846390489b95fc3af8bc2f5627；frozen sync 完成，已安装 12 个库模块与提交逐字节一致，29 份旧快照再次升级通过 |
 | 固定 pin 的 Host 定向回归 | 原接纳、#439、普通与 SELF 反馈、退役来源、真实并发、热配置共 154 passed，154 个原 SQLite warning，112.89 秒；使用公开归档安装，无 editable 覆盖 |
-| Host 最终 Quality | PR [#445](https://github.com/YuanYeYouTao/Yuki/pull/445) 的最终 CI 通过：[1975 passed、90 skipped、1815 warnings，1238.34 秒](https://github.com/YuanYeYouTao/Yuki/actions/runs/38748817435)。与实施中全量和固定归档定向分别记录，不相加作独立用例总数 |
+| Host #445 Quality | PR [#445](https://github.com/YuanYeYouTao/Yuki/pull/445) 的最终 CI 通过：[1975 passed、90 skipped、1815 warnings，1238.34 秒](https://github.com/YuanYeYouTao/Yuki/actions/runs/38748817435)。属于首轮历史证据；最终修复当前 CI 状态见 [#446](https://github.com/YuanYeYouTao/Yuki/pull/446)。与实施中全量和固定归档定向分别记录，不相加作独立用例总数 |
+| F09 最小竞态修复 | 73 项相关回归通过；实际 Main/发布器回归文件 4 例全过，其中 2 例先在旧源码复现失败、修复后转绿；Mypy 606 源文件与 Ruff 全绿。两组测试分别记录，不相加作独立总数 |
 
 已有 SQLite metadata 排序/反射 warning 仍按各组日志保留，不写成零告警。复核跨度默认 4，
 独立库的 192 条回放涵盖约 6 秒延迟、2 秒 tick、两种原队列档位和连续交流/unknown/换题；
 90 秒输入与 22 秒排空分开记录。活跃档 5 秒一个输入时 18/18 可快接，高密换题及真实 session
 timeout 不续确认。回放不模拟 Main 和语义邀请 promotion，不据此宣称线上最优或模型更准。
-最终固定归档的安装回归与 Host Quality 均已通过；早期 editable 联调只保留为开发过程证据，
-不代替最终安装或 CI 验证。
+#445 固定归档的安装回归与 Quality 已通过；早期 editable 联调只保留为开发过程证据，
+不代替固定安装或 CI 验证，也不代替 #446 修复后的新验证。
 
 ## 升级和回退边界
 
@@ -79,11 +86,11 @@ Host PR [#445](https://github.com/YuanYeYouTao/Yuki/pull/445) 的最终 Quality 
 并于 2026-10-15 14:31:35 UTC（台北时间 22:31:35）合并，提交为
 `af0770fcd54a5fad78771ae02004f1f483d8eaad`。公开归档的固定依赖安装回归、最终 CI 与合并分别记录。
 
-本次 D01–D25 已完成实施、合并和上线初验。生产 Bot 于
+首轮产品已完成合并和上线初验，最终修复交付见 [#446](https://github.com/YuanYeYouTao/Yuki/pull/446)。生产 Bot 于
 2026-10-15 14:57:12.583544935 UTC（台北时间 22:57:12）启动合并版本；只替换 Bot，
 四个受保护 peer 的身份未变化。后续自然流量的长期效果与缺样范围另行保留。
 
-## 镜像、备份与实际运行
+## af0770fc 首次上线记录
 
 | 项目 | 实际记录 |
 | --- | --- |
@@ -151,6 +158,24 @@ prompt 22,595、cached prompt 20,499，另一次 cached 字段缺失。仅报告
 `jev-image-package.json`、`jev-postdeploy-consistency.json`、`jev-postdeploy-frontend.json`、
 `jev-postdeploy-profile.json`、`jev-postdeploy-observation-first.json`、
 `jev-backup-ro-validation.json` 和 `jev-aborted-artifact-cleanup.json`。
+
+## 终审补充：删除已选择输入的后置资格门槛
+
+独立源码终审发现，af0770fc 的 #439 补充路径仍把 continuation 资格回调留在发布 writer：
+A 已付模型请求并选入 C 后，后到 quiet 或语义纠正可否决 C，并使 A 抛出
+`HistorySourceChangedError`。这违反了已选择输入和在途 Main 的边界。
+
+修复只删除该后置资格检查。选择前和新 activation 继续使用当前快捷资格；同一 Main 已选择的
+C 沿原序列唯一提交，K、后到 quiet 和语义纠正不再成为本轮发布门槛。原来源、身份和授权
+仍按事实核验，不新增恢复、重试、丢 C 后重装配或协调链。73 项相关回归与实际 Main/发布器
+回归文件 4 例通过，其中后到 quiet/语义两例在旧源码失败、修复后转绿。
+
+只读自然反馈补充保存在 `.cache/jev-natural-feedback-acceptance.json/.md`。其中
+245092–245094 的 `TurnSupersededError` 只有类别，没有具体 epoch/lease/source 原因；同焦点
+JEV 的开始晚于错误。该线上样本保持 unknown，不能直接归因为本竞态或 quiet 回归。
+最终修复的当前 CI、合并提交、运行镜像、新备份和自然验收由
+[#446 交付回执](https://github.com/YuanYeYouTao/Yuki/pull/446)按实际阶段记录；本节的 af0770fc
+运行记录与 #445 CI 仍是首轮历史证据。
 
 ## 独立后续
 

@@ -1178,7 +1178,7 @@ class MessageProcessor:
         reason: str,
         session: AsyncSession,
         *,
-        check_fast_budget: bool = True,
+        check_continuation: bool = True,
     ) -> bool:
         if reason not in {"group_open", "semantic_invitation", "continuation"}:
             return True
@@ -1205,12 +1205,11 @@ class MessageProcessor:
             and (reason != "group_open" or not space.require_mention)
             and (
                 reason != "continuation"
+                or not check_continuation
                 or (
                     prepared.admission.binding is not None
                     and self._participation is not None
-                    and self._participation.continuation_current(
-                        prepared.admission.binding, check_budget=check_fast_budget
-                    )
+                    and self._participation.continuation_current(prepared.admission.binding)
                 )
             )
         )
@@ -1299,7 +1298,7 @@ class MessageProcessor:
                     continue
                 async with self.ordinary_admissions.database.sessions() as reader:
                     if not await self._ordinary_admission_allowed(
-                        prepared, reason, reader, check_fast_budget=False
+                        prepared, reason, reader, check_continuation=False
                     ):
                         continue
 
@@ -1308,8 +1307,11 @@ class MessageProcessor:
                     source: PreparedOrdinaryAdmission = prepared,
                     original_reason: str = reason,
                 ) -> bool:
+                    # This input is selected for the current Main publication.
+                    # Later participation feedback controls later selections;
+                    # source, identity and authorization still use the original checks.
                     return await self._ordinary_admission_allowed(
-                        source, original_reason, session, check_fast_budget=False
+                        source, original_reason, session, check_continuation=False
                     )
 
                 async def committed(
