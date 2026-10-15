@@ -1,6 +1,6 @@
 # Yuki 使用与运维帮助
 
-当前源码为未发布的 Yuki 3.9.0，Alembic head 为 `0113`，Plugin API 为 `3.4`，只支持 canonical runtime。永久 Yuki、
+Yuki 3.9.0 的 Alembic head 为 `0119`，Plugin API 为 `3.5`，只支持 canonical runtime。永久 Yuki、
 Person、Binding、Space、Presence 和 canonical Conversation 的关系见
 [当前架构](architecture/canonical-runtime.md)。
 
@@ -19,7 +19,8 @@ Windows PowerShell：
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-两个源码安装器的默认版本为 `3.9.0`，不表示该版本已正式发布。引导配置会询问主模型、
+两个安装器默认安装 `3.9.0`，正式镜像支持 `linux/amd64` 和 `linux/arm64`；部署包见
+[3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0)。引导配置会询问主模型、
 可选 Flash/Embedding/Web/Vision、QQ Provider、Plugin 与 Automation，不再配置 Genie。
 密钥输入不回显，程序不会在线试用 API key。
 
@@ -193,9 +194,9 @@ Gateway；当前功能边界见 [WebUI 合同](architecture/webui-console.md)。
 在 QQ 中使用 `/ai help` 与 `/ai capabilities` 查看当前可用命令和能力；实际结果以当前
 Principal、会话和运行配置为准。
 
-## Plugin API 3.4
+## Plugin API 3.5
 
-当前 Host 只接受精确声明 Plugin API `3.4` 的插件，Genie 专属 facade、事件及权限，以及直接模型 LLMFacade 已移除；模型任务使用 `agent.run`。插件可以使用固定 primary `conversation_key`，也可读取可选的
+当前 Host 只接受精确声明 Plugin API `3.5` 的插件。未发布的事件、未实现的 `runtime.config.read/write` 权限、Genie 专属接口与直接模型 LLMFacade 已移除；插件自己的配置仍使用 `plugin.config.read/write`，模型任务使用 `agent.run`。插件可以使用固定 primary `conversation_key`，也可读取可选的
 person、space、conversation 和 presence ID。插件不能自报超级管理员，也不能绕过
 Control Plane、Capability 或 Gateway Registry。
 
@@ -211,7 +212,7 @@ compact 检查点、raw history、本轮资料、Prompt compiler、工具合同�
 - [Plugin 开发索引](plugin-development/index.md)
 - [架构](plugin-development/architecture.md)
 - [权限与安全](plugin-development/security.md)
-- [从旧 Plugin API 迁移](plugin-development/api-3.4-migration.md)
+- [从旧 Plugin API 迁移](plugin-development/api-3.5-migration.md)
 
 ## Emoji 与 Vision
 
@@ -222,11 +223,13 @@ compact 检查点、raw history、本轮资料、Prompt compiler、工具合同�
 
 ## 数据与升级
 
-当前完整迁移链至 `0113`。`0098` 退役 MCP 状态，`0099` 冻结已提交摘要表示；`0100` 关联插件后台任务的原 Work，`0101` 将旧效果结果归一为明确 outcome 并保留原正文；`0102` 移除同 memory_key 单 active 的唯一索引，同 key 的独立事实可以共存。`0103`移除旧人物评分存储；`0104`删除无消费者的检查点配额记账、投递死字段及主动轮唯一占用；`0105`统一 Work 父子树并退役旧完成门槛；`0106`保留自动化的完整指令与原 run 恢复版本；`0107`增加实际查询索引。`0108`的资料差量缓存由`0109`清退，普通运行资料只用于当前激活，公共历史保留原聊天；`0110`将定时定义转为共同 Main 任务，保留原版本、到期 run、Work、预算和效果回执；`0111`删除 Memory 回执只接受 event/initiative 的封闭检查，无真人事件的 SELF 定时执行沿原发生、版本与 execution 记账。`0112`统一同一Conversation的公共历史，退出个人/SELF时区配置及公共笔记/观察摘要，原私有执行与引用保全。`0113`删除generation/reset时清除原观察及DAG的旧触发器，新会话仍取消旧来源的新执行并清公共历史，原件保留。历史 `0048` bridge 的来源限制仍有效，不能用版本号或
+当前完整迁移链至 `0119`。`0098` 退役 MCP 状态，`0099` 冻结已提交摘要表示；`0100` 关联插件后台任务的原 Work，`0101` 将旧效果结果归一为明确 outcome 并保留原正文；`0102` 移除同 memory_key 单 active 的唯一索引，同 key 的独立事实可以共存。`0103`移除旧人物评分存储；`0104`删除无消费者的检查点配额记账、投递死字段及主动轮唯一占用；`0105`统一 Work 父子树并退役旧完成门槛；`0106`保留自动化的完整指令与原 run 恢复版本；`0107`增加实际查询索引。`0108`的资料差量缓存由`0109`清退，普通运行资料只用于当前激活，公共历史保留原聊天；`0110`将定时定义转为共同 Main 任务，保留原版本、到期 run、Work、预算和效果回执；`0111`删除 Memory 回执只接受 event/initiative 的封闭检查，无真人事件的 SELF 定时执行沿原发生、版本与 execution 记账。`0112`统一同一Conversation的公共历史，退出个人/SELF时区配置及公共笔记/观察摘要，原私有执行与引用保全。`0113`删除generation/reset时清除原观察及DAG的旧触发器，新会话仍取消旧来源的新执行并清公共历史，原件保留。历史 `0048` bridge 的来源限制仍有效，不能用版本号或
 手工 stamp 跳过来源校验。`0097` 退役四张 Genie 表及固定配置键，执行前必须核原
 Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当作纯缓存。
 
-升级前停止所有写入，并按同一时点备份：
+`0114` 将旧群暂停状态迁入共同配置；`0115` 删除无消费者的反思诊断列；`0116` 退役旧 detached continuation claim；`0117` 删除无消费者的 OneBot 诊断日志；`0118` 为等待中的 sandbox run 建索引；`0119` 将有效公共检查点迁入既有 projection，退役旧 Rollup 表、等待与配置。原事件、Work、预算、journal、私有协议和执行回执保留。
+
+升级前停止实际写入本次数据库与备份目录的进程，并按同一时点备份：
 
 - `qq_ai_bot.db`
 - `qq_ai_bot.db-wal`
@@ -277,5 +280,5 @@ historical 0048 bridge。pre-3.8 数据库不能通过关闭检查强行启动�
 
 ## 发布与版本
 
-发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)，当前开发草案见
+发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)，当前版本见
 [3.9.0 说明](releases/v3.9.0.md)，旧版本记录见 [3.8.1 说明](releases/v3.8.1.md)。正式镜像与 Release 由 tag 流水线核对版本身份及 main 祖先关系，构建后验证已发布镜像、部署包、release smoke 与匿名拉取；Quality 的源码、前端与测试结果另行核对。

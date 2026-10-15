@@ -62,7 +62,7 @@ SNOWLUMA_WEBUI_BIND_ADDRESS=127.0.0.1
 安装器不会替换已有的 managed Compose 文件，环境合并也会保留未知字段。仅删除源码模板、
 重新运行安装器，不会从旧部署的 Compose 或 `.env` 中清除 NapCat 支持。
 
-按[3.9.0 升级草案](../upgrade-3.9.0.md#旧-napcat-部署配置)，先确认实际项目与全部 Compose
+按[3.9.0 升级指南](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/upgrade-3.9.0.md#旧-napcat-部署配置)，先确认实际项目与全部 Compose
 覆盖文件，再用既有配置编辑方式去掉旧 `napcat` service、专属挂载、`NAPCAT_*` 环境项及
 `COMPOSE_PROFILES` 中的 `napcat`。其他扩展 profile、共享 social transfer 和 SnowLuma 配置须保留。
 旧 `data/setup/gateway-action.json` 没有执行消费者，核对目录后可以清理该遗留标记；它不是待执行
@@ -90,7 +90,7 @@ SNOWLUMA_SHM_SIZE=2gb
 - 不同 QQ 往返切换后，如果旧群没有响应，先区分群 `enabled` 设置与路由 `paused` 状态。无需按
   两账号共同群交集删除或关闭旧群；账号不在该群时保持不可达即可。历史暂停可由超管在目标群
   单独发送 `/ai on` 恢复，不能用普通聊天自动解除管理员暂停。恢复会检查当前账号确实在群内，
-  有多个候选且无法确定接入账号时拒绝抢占。不会清空 Conversation、Rollup 或 Memory。
+  有多个候选且无法确定接入账号时拒绝抢占。不会清空 Conversation、公共 compact 检查点或 Memory。
 - 查看状态：`docker compose ps --all bot snowluma`，沿用部署时的全部 Compose 参数。
 - 查看 SnowLuma 日志：`docker compose logs --tail 200 snowluma`
 - 查看 Bot 日志：`docker compose logs --tail 200 bot`

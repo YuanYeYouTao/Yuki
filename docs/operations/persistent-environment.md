@@ -149,7 +149,7 @@ Validate healthz, OneBot connection, completion/continuation workers, tool manif
 and real gVisor resources/network/file operations. Retain the prior image and latest
 consistent backup. Preserve QQ, proxy, Docker and system maintenance without changing
 unrelated service switches. MCP is retired by migration `0098`; the old image cannot
-run directly against that head. See the [upgrade guide](../upgrade-3.9.0.md).
+run directly against that head. See the [upgrade guide](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/upgrade-3.9.0.md).
 
 Rollback changes images/units, not the current database/home. Keep the persistent
 environment running if rolling back Bot alone; its label is excluded from legacy
@@ -170,5 +170,5 @@ The validation image has Docker access solely as a local trusted harness; never 
 it as the execution container. Server acceptance uses a separate named gVisor container
 and small ext4 test filesystems without Bot/QQ mounts or actual message sending.
 
-See the [2026-09-12 deployment and acceptance record](persistent-environment-validation-20260912.md)
+See the [2026-09-12 deployment and acceptance record](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/operations/persistent-environment-validation-20260912.md)
 for deployed revisions, measurements and the retained restore point.
