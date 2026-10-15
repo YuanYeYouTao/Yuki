@@ -283,9 +283,7 @@ class ConversationMediaService:
                     )
                 )
             ).all()
-            metadata = {
-                (row[0].source_event_id, row[0].attachment_index): row for row in rows
-            }
+            metadata = {(row[0].source_event_id, row[0].attachment_index): row for row in rows}
             event_ids = tuple(dict.fromkeys(key[0] for key in metadata))
             selected_events = func.json_each(json.dumps(event_ids)).table_valued("value")
             raw_segments = {
@@ -326,6 +324,8 @@ class ConversationMediaService:
     def _path(self, item: ConversationMediaItemModel) -> Path:
         if not item.cache_name or "/" in item.cache_name or "\\" in item.cache_name:
             raise ConversationMediaError("cache_missing")
+        if item.cache_name == f"upload-{item.content_sha256}.blob":
+            return self.root / "uploads" / f"{item.content_sha256}.blob"
         return self.root / item.conversation_id / str(item.source_event_id) / item.cache_name
 
     async def _cache(
@@ -334,9 +334,8 @@ class ConversationMediaService:
         index: int,
         gateway: OneBotMediaGateway | None,
         *,
-        source: tuple[
-            ConversationMediaItemModel, int | None, int | None, dict[str, Any]
-        ] | None = None,
+        source: tuple[ConversationMediaItemModel, int | None, int | None, dict[str, Any]]
+        | None = None,
     ) -> Path:
         if source is None:
             source = (await self._sources(((event_id, index),)))[(event_id, index)]
@@ -733,6 +732,33 @@ class ConversationMediaService:
                 self.root / row.conversation_id / str(row.source_event_id) / row.cache_name
                 for row in live
             }
+            from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
+
+            async with self.database.sessions() as reader:
+                hashes = await reader.scalars(
+                    select(
+                        func.json_extract(
+                            ControlCommandReceiptModel.effective_state_json, "$.sha256"
+                        )
+                    ).where(
+                        ControlCommandReceiptModel.operation_kind == "client.upload",
+                        ControlCommandReceiptModel.status == "succeeded",
+                        func.json_extract(
+                            ControlCommandReceiptModel.effective_state_json, "$.expires_at"
+                        )
+                        > now.timestamp(),
+                        func.json_extract(
+                            ControlCommandReceiptModel.effective_state_json, "$.sha256"
+                        ).in_(
+                            tuple(
+                                entry.path.stem
+                                for entry in file_entries
+                                if entry.path.parent == self.root / "uploads"
+                            )
+                        ),
+                    )
+                )
+                live_paths.update(self.root / "uploads" / f"{digest}.blob" for digest in hashes)
             deletable = tuple(
                 entry
                 for entry in entries

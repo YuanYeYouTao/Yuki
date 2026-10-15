@@ -629,20 +629,29 @@ class ApplicationContainer:
             turn_observations=self.turn_observations,
         )
         self.processor.set_participation(self.semantic_participation)
+        from qq_ai_bot.client_api.files import ClientFiles
         from qq_ai_bot.client_api.messages import ClientMessages
         from qq_ai_bot.client_api.views import ClientViews
         from qq_ai_bot.client_api.works import ClientWorks
+        from qq_ai_bot.conversation.uploads import ConversationUploads
         from qq_ai_bot.gateway.providers.app.ingress import AppGateway
 
         self.app_gateway = AppGateway(
             self.database, self.gateway_registry, self.processor, self.social_service
         )
         client_works = ClientWorks(self.client_api.identity, self.app_gateway)
+        client_views = ClientViews(self.client_api.identity, client_works, self.models.traces)
+        client_files = ClientFiles(
+            ConversationUploads(self.client_api.identity, self.conversation_media),
+            client_views,
+            self.workspace_service.store,
+        )
         self.client_api = ClientApi(
             self.client_api.identity,
-            ClientMessages(self.client_api.identity, self.app_gateway),
+            ClientMessages(self.client_api.identity, self.app_gateway, client_files),
             client_works,
-            ClientViews(self.client_api.identity, client_works, self.models.traces),
+            client_views,
+            client_files,
         )
         self.semantic_participation.set_promoter(
             partial(self.processor.promote_committed_event, reason="semantic_invitation")

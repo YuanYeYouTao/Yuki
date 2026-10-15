@@ -6,6 +6,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 
@@ -102,6 +103,7 @@ class MessageAttachment:
     emoji_package_id: str | None = None
     key: str | None = field(default=None, repr=False)
     filename: str | None = field(default=None, repr=False)
+    local_source: tuple[Path, str] | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

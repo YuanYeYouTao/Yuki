@@ -13,6 +13,7 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import (
     InboundMessage,
     LocalDeliveryReceipt,
+    MessageAttachment,
     OutboundMessage,
     SenderIdentity,
 )
@@ -112,6 +113,7 @@ class AppGateway:
         request_id: str,
         text: str,
         segments: tuple[dict[str, Any], ...],
+        attachments: tuple[MessageAttachment, ...] = (),
     ) -> InboundMessage:
         return InboundMessage(
             message_id=f"{binding.external_account_id}:{request_id}",
@@ -126,6 +128,7 @@ class AppGateway:
             text=text,
             bot_user_id=self.handle.self_id,
             segments=segments,
+            attachments=attachments,
         )
 
     async def receive(
@@ -135,8 +138,9 @@ class AppGateway:
         request_id: str,
         text: str,
         segments: tuple[dict[str, Any], ...],
+        attachments: tuple[MessageAttachment, ...] = (),
     ) -> ScopedAppendResult:
-        inbound = self.message(binding, request_id, text, segments)
+        inbound = self.message(binding, request_id, text, segments, attachments)
         sender = AppSender(self.handle, self.social, binding, conversation_id, request_id)
         acknowledged: asyncio.Future[ScopedAppendResult] = (
             asyncio.get_running_loop().create_future()

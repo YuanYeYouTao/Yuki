@@ -19,6 +19,7 @@ from qq_ai_bot.services.media_resolver import (
     MediaResolutionError,
     MediaResolver,
     OneBotMediaGateway,
+    read_local_media,
 )
 from qq_ai_bot.services.native_media import NativeMediaPreparer
 from qq_ai_bot.services.video_frames import _run as run_parser
@@ -114,7 +115,10 @@ class AttachmentInputService:
                                 else 20 * 1024 * 1024
                             )
                             await self._resolver.download_attachment(
-                                reference, path, max_download_bytes=limit
+                                reference,
+                                path,
+                                max_download_bytes=limit,
+                                local_source=attachment.local_source,
                             )
                             with path.open("rb") as stream:
                                 header = stream.read(12)
@@ -217,12 +221,17 @@ class AttachmentInputService:
                             )
                         # Never reinterpret a video ID as get_image, or open gateway-local paths.
                         location = reference.url or reference.file or ""
-                        if not location.startswith(("https://", "http://", "base64://")):
+                        if attachment.local_source is None and not location.startswith(
+                            ("https://", "http://", "base64://")
+                        ):
                             raise VisionProcessingError("video_unavailable", "视频缺少可下载地址")
                         with TemporaryDirectory(prefix="yuki-video-download-") as directory:
                             path = Path(directory) / "input.mp4"
                             await self._resolver.download_attachment(
-                                reference, path, max_download_bytes=runtime.video_max_download_bytes
+                                reference,
+                                path,
+                                max_download_bytes=runtime.video_max_download_bytes,
+                                local_source=attachment.local_source,
                             )
                             video_frames = await self._preparer.prepare_video(
                                 path,
@@ -238,7 +247,13 @@ class AttachmentInputService:
                     if not self.images_enabled:
                         documents.append("[图片未读取：当前主模型不支持图片输入]")
                         return
-                    downloaded = await self._resolver.resolve(reference, gateway)
+                    downloaded = (
+                        await asyncio.to_thread(
+                            read_local_media, attachment.local_source, 20 * 1024 * 1024
+                        )
+                        if attachment.local_source is not None
+                        else await self._resolver.resolve(reference, gateway)
+                    )
                     prepared = await asyncio.to_thread(
                         self._preparer.prepare_image,
                         downloaded,

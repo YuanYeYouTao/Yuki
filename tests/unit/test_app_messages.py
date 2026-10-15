@@ -14,9 +14,13 @@ from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_client_api import bearer, pair, person_and_code
 
 from qq_ai_bot.admin_api.http import attach_admin_api
+from qq_ai_bot.client_api.files import ClientFiles
 from qq_ai_bot.client_api.http import ClientApi, attach_client_api
 from qq_ai_bot.client_api.messages import ClientMessages
+from qq_ai_bot.client_api.views import ClientViews
 from qq_ai_bot.client_api.works import ClientWorks
+from qq_ai_bot.conversation.media_service import ConversationMediaService
+from qq_ai_bot.conversation.uploads import ConversationUploads
 from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.gateway.providers import builtin_provider_catalog
 from qq_ai_bot.gateway.providers.app.ingress import AppGateway
@@ -27,8 +31,12 @@ from qq_ai_bot.identity.ingress import CanonicalIngressResolver
 from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.models import ChatEventModel
+from qq_ai_bot.services.attachment_inputs import AttachmentInputService
+from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
+from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.social.service import SocialService
+from qq_ai_bot.social.transfer import ArtifactTransfer
 from qq_ai_bot.workspace.short_state import ShortState
 from qq_ai_bot.workspace.store import WorkspaceStore
 
@@ -70,19 +78,32 @@ async def app_env(database, admin, tmp_path):
     harness.processor._canonical_uow = CanonicalIngressUnitOfWork(database, router)
     social = SocialService(database, router, harness.scoped_events)
     harness.processor._chat._tools.social_service = social
+    store = WorkspaceStore(tmp_path / "workspace")
     harness.processor._chat.runtime.runner.main_contract = MainAgentContract(
-        harness.processor._chat, ShortState(WorkspaceStore(tmp_path / "workspace"))
+        harness.processor._chat, ShortState(store)
     )
+    resolver = MediaResolver()
+    preprocessor = ImagePreprocessor(
+        max_dimension=1024, max_pixels=16_000_000, max_prepared_bytes=6_291_456, gif_max_frames=8
+    )
+    media = ConversationMediaService(database, tmp_path / "media", resolver, preprocessor)
+    harness.processor._conversation_media = media
+    harness.processor._native_images = AttachmentInputService(
+        resolver, preprocessor, concurrency=2, pending_limit=8, timeout=30, max_bytes=6_291_456
+    )
+    social.transfer = ArtifactTransfer(store, tmp_path / "transfer", "/transfer")
     gateway = AppGateway(database, registry, harness.processor, social)
     await gateway.start()
     messages = ClientMessages(api.commands.identities, gateway)
+    works = ClientWorks(api.commands.identities, gateway)
+    views = ClientViews(api.commands.identities, works)
+    files = ClientFiles(ConversationUploads(api.commands.identities, media), views, store)
+    messages.files = files
     app = FastAPI()
     attach_admin_api(app, lambda: api)
     attach_client_api(
         app,
-        lambda: ClientApi(
-            api.commands.identities, messages, ClientWorks(api.commands.identities, gateway)
-        ),
+        lambda: ClientApi(api.commands.identities, messages, works, views, files),
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -95,8 +116,13 @@ async def app_env(database, admin, tmp_path):
             identity=api.commands.identities,
             service=messages,
             social=social,
+            files=files,
+            media=media,
+            store=store,
         )
     await gateway.close()
+    await media.close()
+    await resolver.close()
 
 
 async def drain(env):

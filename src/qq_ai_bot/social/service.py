@@ -966,10 +966,34 @@ class SocialService:
         route = await self.send_route(route_target, context)
         params: dict[str, Any]
         if route.platform == "app":
-            if name != "send_message" or message is None or message.artifact_id or message.emoji:
+            if name != "send_message" or message is None or message.emoji:
                 raise SocialError("capability_unavailable")
             if message.mentions:
                 raise SocialError("mentions_require_group")
+            local_segments: tuple[dict[str, Any], ...] = (
+                ({"type": "text", "data": {"text": message.text}},) if message.text else ()
+            )
+            content = message.text
+            if message.artifact_id:
+                if self.transfer is None:
+                    raise SocialError("artifact_transport_unavailable")
+                metadata, _ = await asyncio.to_thread(
+                    self.transfer.store.read_bytes, str(message.artifact_id)
+                )
+                if not metadata["immutable"]:
+                    raise SocialError("artifact_not_immutable")
+                local_segments += (
+                    {
+                        "type": message.attachment_kind,
+                        "data": {
+                            "artifact_id": str(message.artifact_id),
+                            "version": metadata["sha256"],
+                            "filename": metadata["name"],
+                            "size": metadata["size"],
+                        },
+                    },
+                )
+                content = content or f"[文件: {metadata['name']}]"
             return await self._effect(
                 name,
                 args,
@@ -977,8 +1001,9 @@ class SocialService:
                 target,
                 route,
                 "app_deliver",
-                {"message": [{"type": "text", "data": {"text": message.text}}]},
-                content=message.text,
+                {"message": list(local_segments)},
+                content=content,
+                ledger_segments=local_segments,
             )
         if name == "poke_person":
             binding = await self.person_binding(
@@ -1035,6 +1060,9 @@ class SocialService:
                             "data": {
                                 "artifact_id": str(message.artifact_id),
                                 "name": metadata["name"],
+                                "filename": metadata["name"],
+                                "version": metadata["sha256"],
+                                "size": metadata["size"],
                             },
                         },
                     )
@@ -1069,7 +1097,12 @@ class SocialService:
                             else message.text or f"[图片: {metadata['name']}]"
                         ),
                         ledger_segments=(
-                            tuple(params["message"])
+                            (
+                                ({"type": "text", "data": {"text": message.text}},)
+                                if message.text
+                                else ()
+                            )
+                            + ledger_segments
                             if message.attachment_kind == "image"
                             else ledger_segments
                         ),

@@ -76,7 +76,11 @@ def overlay_yuki_signals(
 ) -> InboundMessage:
     """Rewrite mention text and self using every same-platform Yuki Presence."""
 
-    projected = reproject_inbound_mentions(message, yuki_account_ids)
+    projected = (
+        replace(message, yuki_account_ids=yuki_account_ids)
+        if message.platform == "app"
+        else reproject_inbound_mentions(message, yuki_account_ids)
+    )
     is_self = projected.sender.user_id in yuki_account_ids
     if is_self == projected.is_self_message:
         return projected

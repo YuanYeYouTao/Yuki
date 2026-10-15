@@ -3,13 +3,15 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated, Any
+from urllib.parse import quote
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request
+from fastapi.responses import Response, StreamingResponse
 from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 
 from qq_ai_bot.client_api.errors import ClientError
+from qq_ai_bot.client_api.files import ClientFiles
 from qq_ai_bot.client_api.http_errors import install_identity_errors
 from qq_ai_bot.client_api.identity import ClientIdentityService, ClientPrincipal
 from qq_ai_bot.client_api.messages import ClientMessages
@@ -23,6 +25,7 @@ class ClientApi:
     messages: ClientMessages | None = None
     works: ClientWorks | None = None
     views: ClientViews | None = None
+    files: ClientFiles | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -74,6 +77,40 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
 
     def views() -> ClientViews:
         return resolve().views or ClientViews(resolve().identity, works())
+
+    def files() -> ClientFiles:
+        service = resolve().files
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
+    @router.post("/uploads")
+    async def upload(
+        request: Request,
+        actor: Actor,
+        request_id: UUID4,
+        sha256: str,
+        size: int,
+        filename: str,
+        kind: str = "file",
+    ) -> Any:
+        return {
+            "data": await files().uploads.upload(
+                actor, str(request_id), sha256, size, filename, kind, request.stream()
+            )
+        }
+
+    @router.get("/artifacts/{identity}")
+    async def artifact(identity: UUID4, actor: Actor, version: str) -> Response:
+        metadata, content = await files().artifact(actor, str(identity), version)
+        return Response(
+            content,
+            media_type="application/octet-stream",
+            headers={
+                "ETag": f'"{metadata["sha256"]}"',
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(metadata['name'])}",
+            },
+        )
 
     @router.get("/home")
     async def home(actor: Actor) -> Any:

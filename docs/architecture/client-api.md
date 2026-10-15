@@ -101,3 +101,20 @@ conversation、work、activity 变化提示。事实仍须经对应 GET 读取�
 原数据库 session 的 after_commit 只唤醒进程内订阅，不执行 I/O；回滚无提示。
 提示队列溢出会结束该订阅，包括被丢弃的是最后一条提示的情况。新连接重新登记与核对，
 客户端在重连／回前台时用持久事件 ID 和 Work revision 补读。撤销／遗忘使后续读取与流失效。
+
+## 上传与原文件下载
+
+`POST /uploads?request_id=&sha256=&size=&filename=&kind=` 使用原始文件字节作为请求体，
+kind 为 file、image、video 或 record。服务器流式写设备／请求暂存文件并计算摘要与长度，
+核验后原子发布到媒体内容寻址路径，最后在短事务登记 `client.upload` 原命令回执。
+回执同时保存媒体引用的归属与元数据，不新增上传去重表或虚构聊天事件。
+成功只返回 media_id，之后由 `POST /messages` 的 attachments 引用它，才实际发送消息。
+
+上传与原聊天媒体共用单文件／总容量限制和 24 小时期限；维护清理会在删除前核实际回执引用。
+图片、视频、文档和语音经服务器授权的临时本地来源进入原 Native／文档／ASR 链，
+账本仅保存 media_id 和元数据。媒体字节、路径及 Base64 不进入公开事件。
+
+`GET /artifacts/{id}?version=<sha256>` 只读取本人可见出站或本人 Work 结果引用的那个
+不可变 artifact 和内容版本。App 本地 Social 投递和 QQ artifact 投递都将真实摘要写入
+原出站事件；不因工作文件后来变更而改读新版本。无引用、他人引用、版本不符或来源删除
+均为 not_found。文件读取在数据库写事务外，读取前后复核个人授权。

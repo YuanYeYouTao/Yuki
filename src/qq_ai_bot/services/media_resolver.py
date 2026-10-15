@@ -155,9 +155,17 @@ class MediaResolver:
         raise gateway_error or MediaResolutionError("resource_unavailable", "语音缺少可读取资源")
 
     async def download_attachment(
-        self, reference: MediaReference, destination: Path, *, max_download_bytes: int
+        self,
+        reference: MediaReference,
+        destination: Path,
+        *,
+        max_download_bytes: int,
+        local_source: tuple[Path, str] | None = None,
     ) -> None:
         """Stream event media to a caller-owned temporary path using the same URL policy."""
+        if local_source is not None:
+            await asyncio.to_thread(read_local_media, local_source, max_download_bytes, destination)
+            return
         bounded = MediaResolver(
             max_download_bytes=max_download_bytes,
             timeout_seconds=self._timeout_seconds,
@@ -419,4 +427,34 @@ def _downloaded(content: bytes, content_type: str | None) -> DownloadedMedia:
         content_type=normalized_type,
         content_hash=hashlib.sha256(content).hexdigest(),
         byte_size=len(content),
+    )
+
+
+def read_local_media(
+    source: tuple[Path, str], maximum: int, destination: Path | None = None
+) -> DownloadedMedia:
+    """Only a server-authorized transient attachment can carry this local source."""
+    path, expected = source
+    digest = hashlib.sha256()
+    size = 0
+    content = bytearray()
+    with path.open("rb") as stream:
+        output = destination.open("wb") if destination is not None else None
+        try:
+            while chunk := stream.read(65536):
+                size += len(chunk)
+                if size > maximum:
+                    raise MediaResolutionError("too_large", "附件超过读取预算")
+                digest.update(chunk)
+                if output is None:
+                    content.extend(chunk)
+                else:
+                    output.write(chunk)
+        finally:
+            if output is not None:
+                output.close()
+    if digest.hexdigest() != expected:
+        raise MediaResolutionError("attachment_changed", "附件内容已变化")
+    return DownloadedMedia(
+        content=bytes(content), content_type=None, content_hash=expected, byte_size=size
     )

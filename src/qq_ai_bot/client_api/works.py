@@ -169,6 +169,7 @@ class ClientWorks:
                     SocialOperationModel.status == "succeeded",
                     ChatEventModel.direction == "outbound",
                     ChatEventModel.author_kind == "yuki",
+                    ChatEventModel.suppression_status == "keeper",
                     or_(
                         select(deliveries.c.id)
                         .where(
