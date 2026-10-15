@@ -12,6 +12,9 @@ Work 的私有模型协议、完整工具正文和工作区文件属于恢复证
 3. 在停止期间，用 Python `sqlite3.Connection.backup` 生成一致性数据库备份，复制同一
    数据挂载中的 `work-protocol/`、`tool_artifacts/`、工作区及其他现行证据目录；
    保存配置文件。已有备份目录使用新的时间戳，不能覆盖上次快照。
+   SQLite backup 完成后，将目标备份切为 `journal_mode=DELETE` 并关闭两端连接，
+   确保备份可独立读取；这只修改备份副本，不修改生产库的 WAL 模式。
+   在只读容器挂载中核验时，不能依赖临时 WAL/SHM 文件或由校验器创建它们。
 4. 对备份运行 `python scripts/verify_work_backup.py <备份数据库> <备份数据目录>`。
    它只读检查 SQLite 完整性、外键和数据库引用的协议对象/工具正文的大小及哈希。
    校验失败时先恢复原 Bot，不能把不完整快照记成可回滚备份。

@@ -5,20 +5,41 @@ import time
 from dataclasses import replace
 
 import pytest
+from sqlalchemy import update
+from tests.conftest import MemorySender
 from tests.support.semantic_participation_host_helpers import (
     _choice,
     _event_and_route,
+    _host,
+    _item,
     _message,
     _observation,
 )
+from tests.unit.test_auto_reply_merge import _wait_for_worker
+from tests.unit.test_ordinary_input_handoff import (
+    A,
+    C,
+    _PausedProvider,
+    _plain,
+    _scene,
+    _tool,
+    _work_count,
+)
 from tests.unit.test_participation_ordinary_feedback import ordinary_backend
 from tests.unit.test_participation_pipeline_retirement import _relationship
+from yuki_participation.models import Snapshot
 from yuki_participation.participation import ParticipationCheckpoint
+from yuki_participation.self_report import SelfDelta, SelfReport
 
+from qq_ai_bot.conversation.ordinary_admission import OrdinaryAdmissionRepository
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import ChatMessage
+from qq_ai_bot.identity.db_models import CanonicalSpaceModel
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+from qq_ai_bot.services.participation_feedback import admission_unit_binding
+from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+from qq_ai_bot.services.turn_execution import _PrimaryDispatch
 
 
 @pytest.mark.parametrize("exit_first", ["semantic", "quiet"])
@@ -162,4 +183,196 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await host.close()
+
+
+@pytest.mark.parametrize("late_exit", ["quiet", "semantic"])
+async def test_selected_same_main_input_survives_late_participation_exit(
+    database, tmp_path, monkeypatch, late_exit
+):
+    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "original-read"), "NO_REPLY"])
+    env, harness, worker, message = await _scene(
+        database, tmp_path, provider, reason="continuation"
+    )
+    host, policy = await _host(database, tmp_path)
+    policy.proactive_wakeup_enabled = False
+    harness.processor.set_participation(host)
+    host.app.chat = harness.processor._chat
+    sender = MemorySender()
+    classified = []
+    checked, late_errors = asyncio.Event(), []
+    selected_id = None
+    flipped = False
+    try:
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                update(CanonicalSpaceModel)
+                .where(CanonicalSpaceModel.id == env.space)
+                .values(autonomous_enabled=True)
+            )
+        prior = await env.service.writer.append(
+            scope=message(0, "original exchange").scope(),
+            platform_message_id="prior-participation-source",
+            sender_user_id="10001",
+            direction="inbound",
+            content="synthetic original exchange",
+        )
+        item = await _item(host, prior.event)
+        prior_binding = await host.binding_for_event(prior.event.id)
+        original = host.ordinary.prepare(
+            prior.event, item.scene.generation, 1, prior_binding, reason="mention"
+        )
+        assert await host.ordinary.commit(original)
+        await host.on_ordinary_admitted(prior_binding, original.admission)
+        unit = admission_unit_binding(original.admission)
+        assert unit is not None
+        prior_source = item.controller.state.events[f"event:{prior.event.id}"]
+        assert item.controller.observe_unit_hint(
+            unit,
+            SelfReport(
+                run_ref=original.admission.activation_id,
+                sequence=1,
+                response_id="original-stay",
+                at=prior_source.at,
+                source=prior_source.ref,
+                delta=SelfDelta(engage="stay"),
+            ),
+        )
+        await host._save(item)
+        classify = host.continuation_for_event
+
+        async def classify_real(event_id, *, check_budget=True):
+            result = await classify(event_id, check_budget=check_budget)
+            classified.append((event_id, check_budget, result))
+            return result
+
+        monkeypatch.setattr(host, "continuation_for_event", classify_real)
+        assert (await harness.processor.handle(message(1, A), sender)).reason == "ordinary_deferred"
+        await provider.wait(1)
+        key = next(iter(worker._states))
+        a_id = worker._states[key].message.source_event_id
+        admitted_a = await host.ordinary.get(a_id)
+        assert admitted_a is not None and admitted_a.route == "ordinary"
+        source_a = item.controller.state.events[f"event:{a_id}"]
+        snapshot = item.controller.freeze_observation(
+            Snapshot(
+                scope=item.scene.scope,
+                focus=source_a,
+                context=(),
+                sequence=1,
+                issued_at=time.time(),
+            )
+        )
+        assert (await harness.processor.handle(message(2, C), sender)).reason == "ordinary_deferred"
+        selected_id = worker._states[key].message.source_event_id
+        assert selected_id != a_id and await host.ordinary.get(selected_id) is None
+        publish = OrdinaryAdmissionRepository.commit_to_activation
+
+        async def late_update(repository, prepared, activation, *, session, admission_allowed=None):
+            nonlocal flipped
+            if prepared.event.id == selected_id and not flipped:
+                # This is the actual same-Main publication, after C's real reader
+                # classification and after A paid its first request/tool response.
+                assert activation.activation_id == admitted_a.activation_id
+                assert len(provider.requests) == 1 and len(provider.entered) == 1
+                assert prepared.admission.reason == "continuation"
+                assert (
+                    sum(
+                        event_id == selected_id and not budget and found is not None
+                        for event_id, budget, found in classified
+                    )
+                    >= 2
+                )
+                binding = prepared.admission.binding
+                assert binding is not None and host.continuation_current(
+                    binding, check_budget=False
+                )
+                if late_exit == "quiet":
+                    current_unit = admission_unit_binding(admitted_a)
+                    assert item.controller.observe_unit_hint(
+                        current_unit,
+                        SelfReport(
+                            run_ref=admitted_a.activation_id,
+                            sequence=2,
+                            response_id="late-original-quiet",
+                            at=source_a.at,
+                            source=source_a.ref,
+                            delta=SelfDelta(engage="quiet"),
+                        ),
+                    )
+                else:
+                    option = next(
+                        (
+                            value.key
+                            for value in snapshot.focus.unit_options
+                            if value.thread == unit.unit.thread and value.target == unit.unit.target
+                        ),
+                        None,
+                    )
+                    observation = _observation(snapshot, act="other_exchange", unit=option)
+                    observation = observation.model_copy(
+                        update={
+                            "answers": {
+                                **observation.answers,
+                                "floor_state": _choice("floor_state", "other"),
+                            }
+                        }
+                    )
+                    assert item.controller.apply_semantic_observation(observation)
+                assert not host.continuation_current(binding, check_budget=False)
+                flipped = True
+            return await publish(
+                repository,
+                prepared,
+                activation,
+                session=session,
+                admission_allowed=admission_allowed,
+            )
+
+        admit = _PrimaryDispatch.admit
+
+        async def check_dispatch(dispatch):
+            try:
+                await admit(dispatch)
+            except HistorySourceChangedError as error:
+                late_errors.append(error)
+                raise
+            finally:
+                if flipped:
+                    checked.set()
+
+        monkeypatch.setattr(OrdinaryAdmissionRepository, "commit_to_activation", late_update)
+        monkeypatch.setattr(_PrimaryDispatch, "admit", check_dispatch)
+        provider.release[1].set()
+        await asyncio.wait_for(checked.wait(), 10)
+        if late_errors:
+            # Show the real publication exception instead of a timeout waiting
+            # for the second model, which the old late predicate never reaches.
+            raise late_errors[0]
+        await provider.wait(2)
+        admitted_c = await host.ordinary.get(selected_id)
+        assert admitted_c is not None and admitted_c.activation_id == admitted_a.activation_id
+        assert C in _plain(provider.entered[1])
+        assert provider.entered[1].messages[: len(provider.entered[0].messages)] == (
+            provider.entered[0].messages
+        )
+        assert provider.entered[1].tools == provider.entered[0].tools
+        assert provider.entered[1].request_chain_id == provider.entered[0].request_chain_id
+        provider.release[2].set()
+        await asyncio.wait_for(_wait_for_worker(worker, key), 10)
+        assert len(provider.requests) == 2 and await _work_count(database) == sender.calls == 0
+        later = await env.service.writer.append(
+            scope=message(3, "later unselected input").scope(),
+            platform_message_id="later-unselected-source",
+            sender_user_id="10001",
+            direction="inbound",
+            content="synthetic later unselected input",
+        )
+        assert await host.continuation_for_event(later.event.id, check_budget=False) is None
+        assert await host.ordinary.get(later.event.id) is None
+        assert await host.ordinary.get(a_id) == admitted_a
+    finally:
+        for release in provider.release.values():
+            release.set()
+        await worker.close()
         await host.close()

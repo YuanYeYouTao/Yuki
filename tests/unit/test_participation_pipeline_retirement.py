@@ -173,7 +173,7 @@ async def test_quiet_closes_unadmitted_continuation_at_writer_without_blocking_d
 
 
 @pytest.mark.parametrize("exit_reason", ["quiet", "semantic_correction"])
-async def test_selected_original_activation_skips_span_but_keeps_both_exit_facts(
+async def test_selected_original_activation_preserves_qualification_after_review_exit(
     database, tmp_path, exit_reason
 ):
     host, item, _a, original, unit = await _relationship(database, tmp_path)
@@ -197,7 +197,7 @@ async def test_selected_original_activation_skips_span_but_keeps_both_exit_facts
 
             async def selected_allowed(writer, original_input=incoming):
                 return await processor._ordinary_admission_allowed(
-                    original_input, "continuation", writer, check_fast_budget=False
+                    original_input, "continuation", writer, check_continuation=False
                 )
 
             async with database.immediate_session() as writer:
@@ -224,7 +224,7 @@ async def test_selected_original_activation_skips_span_but_keeps_both_exit_facts
 
         async def selected_allowed(writer):
             return await processor._ordinary_admission_allowed(
-                incoming, "continuation", writer, check_fast_budget=False
+                incoming, "continuation", writer, check_continuation=False
             )
 
         if exit_reason == "quiet":
@@ -261,8 +261,20 @@ async def test_selected_original_activation_skips_span_but_keeps_both_exit_facts
             assert item.controller.apply_semantic_observation(result)
 
         async with database.immediate_session() as writer:
-            assert not await selected_allowed(writer)
-        assert await host.ordinary.get(d.id) is None
+            assert await host.ordinary.commit_to_activation(
+                incoming,
+                original.admission,
+                session=writer,
+                admission_allowed=selected_allowed,
+            )
+        selected_admission = await host.ordinary.get(d.id)
+        assert selected_admission.activation_id == original.admission.activation_id
+        await host.on_ordinary_admitted(binding, selected_admission)
+        later = await _event_and_route(
+            database, host.app.ledger, content="synthetic unselected after exit"
+        )
+        assert await host.continuation_for_event(later.id, check_budget=False) is None
+        assert await host.continuation_for_event(later.id) is None
         assert not provider.requests
     finally:
         await host.close()

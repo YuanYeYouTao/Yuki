@@ -280,6 +280,8 @@ read version 或原 Work source guard 并提交 projection；reset/privacy 不�
 仅对最终请求确实保留的输入，将其 ordinary admission 与公共 projection 同事务提交。
 补充沿原 activation，保各事件的真实作者、Presence 和 binding；原 ToolActor、Memory、
 预算与效果回执不改绑。准备材料留在业务私有尾部，纯文本沿原公开片段，不重复注入。
+普通参与资格在选择补充前判定；同 Main 已选择输入的发布不再复查后到的 K、quiet 或语义纠正。
+这些反馈收起后续选择和新 activation，不能通过否决已选择补充连带结束原 Main；真实来源与授权仍按原边界处理。
 排队入口读同一 admission，不再为已接纳事件新开 Main；仅观察、晚就绪或被 compact
 替换掉的输入保留原合法机会。历史曝光和公共/私有 compact 请求不取得 ordinary 归属，
 接纳也不证明已经回复；空 final、NO_REPLY、取消或失败均不授予重放资格。
