@@ -5,13 +5,15 @@ from dataclasses import dataclass
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, FastAPI, Header
+from fastapi import APIRouter, Depends, FastAPI, Header, Query
+from fastapi.responses import StreamingResponse
 from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 
 from qq_ai_bot.client_api.errors import ClientError
 from qq_ai_bot.client_api.http_errors import install_identity_errors
 from qq_ai_bot.client_api.identity import ClientIdentityService, ClientPrincipal
 from qq_ai_bot.client_api.messages import ClientMessages
+from qq_ai_bot.client_api.views import ClientViews
 from qq_ai_bot.client_api.works import ClientWorks
 
 
@@ -20,6 +22,7 @@ class ClientApi:
     identity: ClientIdentityService
     messages: ClientMessages | None = None
     works: ClientWorks | None = None
+    views: ClientViews | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -69,9 +72,38 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             raise ClientError("unavailable")
         return service
 
+    def views() -> ClientViews:
+        return resolve().views or ClientViews(resolve().identity, works())
+
     @router.get("/home")
     async def home(actor: Actor) -> Any:
-        return {"data": await works().home(actor)}
+        return {"data": await views().home(actor)}
+
+    @router.get("/conversations/{identity}/events")
+    async def events(
+        identity: UUID4,
+        actor: Actor,
+        after: int = Query(0, ge=0),
+        before: int | None = Query(None, ge=1),
+        limit: int = Query(50, ge=1, le=50),
+    ) -> Any:
+        return {
+            "data": await views().events(
+                actor, str(identity), after=after, before=before, limit=limit
+            )
+        }
+
+    @router.get("/activity")
+    async def activity(actor: Actor, conversation_id: UUID4) -> Any:
+        return {"data": await views().activity(actor, str(conversation_id))}
+
+    @router.get("/stream")
+    async def stream(actor: Actor) -> StreamingResponse:
+        return StreamingResponse(
+            views().stream(actor),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @router.get("/works/{identity}")
     async def work(identity: UUID4, actor: Actor) -> Any:

@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from qq_ai_bot.persistence.commit_hints import CommitHints, HintSession
 from qq_ai_bot.persistence.metadata import Base
 
 if TYPE_CHECKING:
@@ -49,7 +50,14 @@ class Database:
             from qq_ai_bot.persistence.sqlite_diagnostics import install_sqlite_diagnostics
 
             self.sqlite_diagnostics = install_sqlite_diagnostics(self.engine.sync_engine)
-        self.sessions = async_sessionmaker(self.engine, expire_on_commit=False, class_=AsyncSession)
+        self.commit_hints = CommitHints()
+        self.sessions = async_sessionmaker(
+            self.engine,
+            expire_on_commit=False,
+            class_=AsyncSession,
+            sync_session_class=HintSession,
+            info={"commit_hints": self.commit_hints},
+        )
 
     @staticmethod
     def _configure_sqlite_connection(

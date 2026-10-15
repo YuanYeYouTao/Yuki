@@ -242,27 +242,6 @@ class ClientWorks:
                 session, await personal_work(session, principal.person_id, identity)
             )
 
-    async def home(self, principal: ClientPrincipal) -> dict[str, Any]:
-        async with self.database.sessions() as session:
-            await session.execute(text("BEGIN"))
-            principal = await self.identity.require_device(session, principal.device_id)
-            rows = (
-                (
-                    await session.execute(
-                        select(work)
-                        .join(
-                            CanonicalConversationModel,
-                            CanonicalConversationModel.id == work.c.conversation_id,
-                        )
-                        .where(work_access(principal.person_id))
-                        .order_by(work.c.updated.desc(), work.c.id)
-                    )
-                )
-                .mappings()
-                .all()
-            )
-            return {"works": [await self._public(session, dict(row)) for row in rows]}
-
     async def _record(
         self,
         session: AsyncSession,

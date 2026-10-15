@@ -194,3 +194,16 @@ WorkSourceGuard 以本 Work mailbox、原作者、来源私聊与正文核实跨
 相关回归首次 294 passed／1 failed，失败为旧 guard 测试替身缺少现行 Work 的 source／current；
 补齐替身后该完整模块 10 passed。ruff、两平台目标 mypy（593 source files）与 diff 检查通过。
 未运行外部模型、真实群发送或生产部署；进程外整体恢复验收继续由 P11 完成。
+
+## P8：个人快照、事件游标与 SSE
+
+home 的主会话、本人其他入口和 Work 从同一读事务投影；事件使用内部 ID keyset，
+不向个人端开放群记录。活动只从当前实际 span 和诊断类别给出证据，不回传提示或参数。
+提交后的进程内提示覆盖原消息、Social、Work 与诊断写入；没有新的持久事件日志。
+先登记流再读 sync；队列无法交付即结束连接，确保最终提示丢失后也需重连核对。
+
+验证：快照／SSE 专项 6 passed，个人 Work／App 回归 30 passed；额外事务与恢复回归
+39 passed、1 个 macOS 平台失败（原 supervisor 读取 Linux /proc，不改原断言）。
+测试覆盖订阅前窗口、提交前不可见、回滚无提示、最终提示丢失后断开和重新核对、
+设备撤销、群／他人隔离与活动参数不外泄。ruff、两平台目标 mypy（595 source files）
+与 diff 检查通过。真实 HTTP 流与客户端自动重连在 P11 继续验收。

@@ -84,3 +84,20 @@ WorkSourceGuard 只接纳本 Work mailbox 证明的跨入口事件；仍检查�
 `POST /works/{id}/cancel {request_id,expected_revision}` 沿原 manage_work 执行与保存回执。
 App 补充不会自动发往群里；群 Work 后续仍可能按任务内容向原群投递结果，投影明确显示
 结果位置。尚未完成的快照、SSE、文件与参考 SDK 见后续阶段。
+
+## 快照、事件与提示
+
+`GET /home` 在同一读快照返回 main、其他入口 entries、本人 Work 与 snapshot_at。
+`GET /conversations/{id}/events?after=&before=&limit=` 以内部事件 ID 分页，最多 50 条，
+只读本人的私聊账本；群记录与他人的旧会话均为 not_found。公开事件只含正文、方向、
+作者类别、入口与附件引用，不返回运行提示、路径或网关凭据。
+
+`GET /activity?conversation_id=` 读取实际进入的本进程执行 span 与诊断类别，
+只报告 executing 或 insufficient，不以历史开始记录推断仍在执行；不返回提示与工具参数。
+`GET /stream` 是 SSE：登记订阅后先发 sync（各入口游标与 Work revision），随后发送
+conversation、work、activity 变化提示。事实仍须经对应 GET 读取。Last-Event-ID 不作为
+持久事实游标；每次重连都重新 sync。15 秒静默时发送 keepalive 注释。
+
+原数据库 session 的 after_commit 只唤醒进程内订阅，不执行 I/O；回滚无提示。
+提示队列溢出会结束该订阅，包括被丢弃的是最后一条提示的情况。新连接重新登记与核对，
+客户端在重连／回前台时用持久事件 ID 和 Work revision 补读。撤销／遗忘使后续读取与流失效。
