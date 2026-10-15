@@ -58,10 +58,16 @@ def test_upgrade_removes_only_agent_action_diagnostics(tmp_path, monkeypatch):
     }
     assert not retired.intersection(upgraded)
     assert "agent_actions" not in upgraded
-    assert {name: sql for name, sql in upgraded.items() if name != "canonical_conversations"} == {
-        name: sql
-        for name, sql in current.items()
-        if name not in retired and name != "canonical_conversations"
+    changed = {
+        "canonical_conversations",
+        "identity_bindings",
+        "client_devices",
+        "client_link_codes",
+    }
+    assert {"client_devices", "client_link_codes"} <= upgraded.keys()
+    assert "history_starts_at" in upgraded["identity_bindings"]
+    assert {name: sql for name, sql in upgraded.items() if name not in changed} == {
+        name: sql for name, sql in current.items() if name not in retired and name not in changed
     }
     command.upgrade(config, "head")
     assert asyncio.run(inspect()) == upgraded

@@ -77,6 +77,7 @@ class WorkQueries:
                     IdentityBindingModel.person_id == person,
                     IdentityBindingModel.platform == IDENTITY_PLATFORM,
                     IdentityBindingModel.external_account_id == creator,
+                    IdentityBindingModel.status != "transferred",
                 ),
             )
         )

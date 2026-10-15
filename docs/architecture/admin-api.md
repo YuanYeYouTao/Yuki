@@ -32,6 +32,9 @@ override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`�
 | `GET /traces/{turn\|work\|event}/{id}` | `admin trace <kind> <id>` | `control.execution.metadata.read`；`content=true` 另需 `control.execution.content.read` |
 | `POST /persons`；`GET /persons/{id}`；`POST /persons/{id}/disable` | `admin person create\|show\|disable` | 对应 `identity.person.create\|read\|disable` |
 | `POST /persons/{id}/bindings`；`GET /bindings/{id}`；`POST /bindings/{id}/disable` | `admin binding attach\|show\|disable` | 对应 `identity.binding.attach\|read\|disable` |
+| `POST /persons/{id}/client-pair`；`POST /devices/{id}/revoke` | `admin client pair --person <id>`；`admin client revoke <id>` | `identity.client.pair\|revoke` |
+| `POST /bindings/{id}/transfer` | `admin binding transfer <id> --to-person <id>` | `identity.binding.transfer` |
+| `POST /persons/{id}/forget` | `admin person forget <id>` | `identity.person.forget` |
 | `GET /plugins`、`GET /plugins/{id}` | `plugin list\|inspect\|permissions`、部署向导 | `control.plugin.read` |
 | `POST /plugins/{id}/actions/{discover\|approve\|enable\|disable\|doctor}` | 同名 `plugin` 命令、部署向导 | `control.plugin.mutate` |
 | `GET /plugins/{id}/configuration`；`POST` 同路径 | `plugin configuration\|configure` | `control.plugin.config.content.read\|mutate` |
@@ -45,8 +48,11 @@ override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`�
 续读；正文单独授权。它不读取私有恢复 journal，也不制造恢复或重新发送资格。
 
 新建 Person 的 revision 为 1；挂接绑定使用该 Person 当前 revision，仅接受从未绑定过的
-平台账号，且不能把 Yuki 自己的 Presence 挂成 Person。已出现的账号保持原归属；
-转移在 P5 实现。停用保持历史、Memory、Work 和回执归属。平台标识沿原通用字符串合同。
+平台账号，且不能把 Yuki 自己的 Presence 挂成 Person。`app` 绑定由设备配对生成，不能手动挂接。
+转移为原绑定保留旧 Person 与会话，另建目标 Person 的绑定和会话；旧主动路由暂停。
+`app` 绑定不可转移。停用保持历史、Memory、Work 和回执归属。平台标识沿原通用字符串合同。
+配对码、撤销、转移与遗忘使用 `{request_id}`，转移另需 `to_person`，不需要 revision。
+配对码明文只返回一次；相同请求重放返回原码 ID 与到期时间，不能取回明文。
 
 ## 回执与效果
 

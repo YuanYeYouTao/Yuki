@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
+from tests.support.legacy_conversation_seed import enable_history_column_for_legacy_seed
 
 from qq_ai_bot.identity.canonical_repository import ensure_person
 from qq_ai_bot.persistence.database import Database
@@ -20,6 +21,7 @@ def test_upgrade_preserves_reflection_work_state(tmp_path, monkeypatch):
     async def seed():
         db = Database(url)
         try:
+            await enable_history_column_for_legacy_seed(db)
             async with db.immediate_session() as writer:
                 person = await ensure_person(writer, "1001")
                 await writer.execute(

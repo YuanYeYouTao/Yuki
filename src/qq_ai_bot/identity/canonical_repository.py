@@ -83,6 +83,7 @@ async def find_identity_binding(
             select(IdentityBindingModel).where(
                 IdentityBindingModel.platform == platform,
                 IdentityBindingModel.external_account_id == external_account_id,
+                IdentityBindingModel.status != "transferred",
             )
         ),
     )
@@ -279,6 +280,7 @@ async def create_person_binding(
                 last_seen_at=now,
                 created_at=now,
                 updated_at=now,
+                history_starts_at=now,
             )
             session.add_all((person, binding))
             await session.flush()
@@ -524,14 +526,10 @@ async def apply_event_identity(
     event.author_presence_id = author.author_presence_id
 
 
-async def forget_person_for_external_account(session: AsyncSession, user_id: str) -> None:
-    """Delete one canonical Person aggregate selected through a Binding."""
+async def forget_person_by_id(session: AsyncSession, person_id: str) -> None:
+    """Delete exactly the selected Person aggregate, including historical bindings."""
 
     trip("before_forget_canonical")
-    binding = await find_identity_binding(session, external_id(user_id))
-    if binding is None:
-        return
-    person_id = binding.person_id
     bindings = list(
         await session.scalars(
             select(IdentityBindingModel).where(IdentityBindingModel.person_id == person_id)
@@ -584,7 +582,7 @@ __all__ = [
     "find_identity_binding",
     "find_presence",
     "find_space_binding",
-    "forget_person_for_external_account",
+    "forget_person_by_id",
     "new_identity_id",
     "optional_external_id",
     "person_id_for",

@@ -128,6 +128,7 @@ async def read_history(
         raise SocialError("invalid_history_limit")
     selection = await resolve_history_target(service, args, context)
     target = selection.target
+    history_binding: IdentityBindingModel | None = None
     if target.kind == "space":
         routes = await service.router.accessible_group_connections(
             str(target.id),
@@ -139,6 +140,7 @@ async def read_history(
         if selection.binding_id:
             binding_args["binding_id"] = selection.binding_id
         binding = await service.person_binding(target, binding_args, context)
+        history_binding = binding
         async with service.database.sessions() as session:
             query = select(PresenceModel).where(
                 PresenceModel.enabled.is_(True), PresenceModel.platform == "qq"
@@ -198,11 +200,39 @@ async def read_history(
             raw = raw.get("messages", raw.get("message_list"))
     if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
         raise SocialError("invalid_history_result")
+    window_limited = len(raw) >= limit
+    raw = raw[-limit:]
+    withheld = 0
+    if history_binding is not None:
+        async with service.database.sessions() as session:
+            current = await session.get(IdentityBindingModel, history_binding.id)
+            if current is None or current.status != "active" or current.person_id != str(target.id):
+                raise SocialError("binding_unavailable")
+        if history_binding.history_starts_at is not None:
+            from qq_ai_bot.identity.ownership_interval import BindingOwnership
+
+            interval = BindingOwnership.of(history_binding)
+            attributed = []
+            for item in raw:
+                timestamp = item.get("time")
+                try:
+                    occurred = (
+                        datetime.fromtimestamp(timestamp, UTC)
+                        if type(timestamp) in {int, float}
+                        else None
+                    )
+                except (ValueError, OverflowError, OSError):
+                    occurred = None
+                if occurred is not None and interval.contains(occurred):
+                    attributed.append(item)
+                else:
+                    withheld += 1
+            raw = attributed
     messages = [
         AgentToolService._history_item_for_model(
             {**item, "message": item.get("message", item.get("raw_message"))}
         )
-        for item in raw[-limit:]
+        for item in raw
     ]
     return {
         "source": "onebot",
@@ -217,7 +247,8 @@ async def read_history(
         "external_target_id": route.external_target_id,
         "count": len(messages),
         "requested_limit": limit,
-        "window_limited": len(raw) >= limit,
+        "withheld_unattributed": withheld,
+        "window_limited": window_limited,
         "messages": messages,
     }
 

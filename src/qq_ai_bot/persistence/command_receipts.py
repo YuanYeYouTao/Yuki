@@ -223,6 +223,65 @@ class CommandReceiptRepository:
         self._database = database
         self._after_audit_flush: Callable[[], None] | None = None
 
+    async def record_personal_success(
+        self,
+        session: AsyncSession,
+        *,
+        principal_id: str,
+        principal_kind: str,
+        person_id: str,
+        request_id: str,
+        operation: str,
+        operation_ref: str,
+        payload_hash: str,
+        resource_id: str,
+        result: Mapping[str, JsonValue],
+        trigger_message_id: str = "",
+        conversation_key: str = "",
+    ) -> ControlCommandReceiptModel:
+        """Write a personal command and its audit in the caller's short transaction.
+
+        Authority is resolved by the caller. Credentials never enter this result;
+        the original table remains the only command receipt store.
+        """
+        now = _now()
+        audit = AdminOperationEventModel(
+            actor_user_id=person_id,
+            actor_principal_kind=principal_kind,
+            actor_principal_id=principal_id,
+            control_request_id=request_id,
+            trigger_message_id=trigger_message_id,
+            conversation_key=conversation_key,
+            capability=operation,
+            operation=operation,
+            target_type="person",
+            target_id=person_id,
+            before_json="{}",
+            after_json=_dump_json(result),
+            success=True,
+            error_category=None,
+            duration_seconds=0,
+            created_at=now,
+        )
+        session.add(audit)
+        await session.flush()
+        receipt = ControlCommandReceiptModel(
+            principal_id=principal_id,
+            request_id=request_id,
+            payload_hash=payload_hash,
+            status="succeeded",
+            audit_id=audit.id,
+            operation_kind=operation,
+            operation_ref=operation_ref,
+            result_resource_id=resource_id,
+            effective_state_json=_dump_json(result),
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(receipt)
+        await session.flush()
+        return receipt
+
     async def recover_interrupted_controls(self) -> int:
         now = datetime.now(UTC)
         async with self._database.immediate_session() as session:

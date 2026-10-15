@@ -21,6 +21,17 @@ from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 
 
+@pytest.fixture(autouse=True)
+async def pre_0121_binding(database):
+    """These legacy redaction tests retain the pre-0121 unbounded semantics."""
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(IdentityBindingModel)
+            .where(IdentityBindingModel.external_account_id == "1001")
+            .values(history_starts_at=None)
+        )
+
+
 async def test_forget_redacts_numeric_json_and_keeps_other_person_event(database):
     event, _ = await EventLedgerRepository(database).append(
         bot_user_id="9999",

@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from qq_ai_bot.admin_api.client import admin_client, mutate, read
+from qq_ai_bot.admin_api.client import admin_client, identity_mutation, mutate, read
 from qq_ai_bot.config import Settings
 
 
@@ -38,6 +38,16 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     disabled = person.add_parser("disable")
     disabled.add_argument("id")
     _mutation(disabled)
+    forgotten = person.add_parser("forget")
+    forgotten.add_argument("id")
+    _mutation(forgotten, revision=False)
+    personal = commands.add_parser("client").add_subparsers(dest="client_action", required=True)
+    pair = personal.add_parser("pair")
+    pair.add_argument("--person", required=True)
+    _mutation(pair, revision=False)
+    revoke = personal.add_parser("revoke")
+    revoke.add_argument("id")
+    _mutation(revoke, revision=False)
     binding = commands.add_parser("binding").add_subparsers(dest="binding_action", required=True)
     attach = binding.add_parser("attach")
     attach.add_argument("--person", required=True)
@@ -50,6 +60,10 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     disabled = binding.add_parser("disable")
     disabled.add_argument("id")
     _mutation(disabled)
+    transfer = binding.add_parser("transfer")
+    transfer.add_argument("id")
+    transfer.add_argument("--to-person", required=True)
+    _mutation(transfer, revision=False)
     model = commands.add_parser("model").add_subparsers(dest="model_action", required=True)
     model.add_parser("show")
     apply = model.add_parser("apply")
@@ -86,6 +100,10 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
         elif kind == "person":
             if args.person_action == "show":
                 data = await read(client, f"persons/{args.id}")
+            elif args.person_action == "forget":
+                data = await identity_mutation(
+                    client, f"persons/{args.id}/forget", request_id=args.request_id
+                )
             else:
                 path = "persons" if args.person_action == "create" else f"persons/{args.id}/disable"
                 data = await mutate(
@@ -104,10 +122,24 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
                     external_account_id=args.account,
                     display_name=args.display_name,
                 )
+            elif args.binding_action == "transfer":
+                data = await identity_mutation(
+                    client,
+                    f"bindings/{args.id}/transfer",
+                    request_id=args.request_id,
+                    to_person=args.to_person,
+                )
             else:
                 data = await mutate(
                     client, f"bindings/{args.id}/disable", args.revision, request_id=args.request_id
                 )
+        elif kind == "client":
+            path = (
+                f"persons/{args.person}/client-pair"
+                if args.client_action == "pair"
+                else f"devices/{args.id}/revoke"
+            )
+            data = await identity_mutation(client, path, request_id=args.request_id)
         elif kind == "model":
             if args.model_action == "show":
                 data = await read(client, "models")

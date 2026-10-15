@@ -12,6 +12,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from qq_ai_bot.identity.ownership_interval import BindingOwnership
 from qq_ai_bot.memory.enums import (
     MemoryRebuildCommitStatus,
     MemoryRebuildItemStatus,
@@ -979,7 +980,11 @@ class MemoryRebuildRepository:
             return True
 
     async def prepare_forget_people(
-        self, aliases: tuple[str, ...], *, session: AsyncSession | None = None
+        self,
+        aliases: tuple[str, ...],
+        *,
+        session: AsyncSession | None = None,
+        ownership: tuple[BindingOwnership, ...] = (),
     ) -> PreparedRebuildForget:
         from qq_ai_bot.memory.rebuild.privacy import prepare_forget
 
@@ -988,7 +993,7 @@ class MemoryRebuildRepository:
 
             if session is None:
                 await reader.execute(text("BEGIN"))
-            return await prepare_forget(reader, aliases)
+            return await prepare_forget(reader, aliases, ownership)
 
     async def forget_people(
         self,

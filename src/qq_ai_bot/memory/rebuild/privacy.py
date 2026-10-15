@@ -8,12 +8,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import delete, exists, func, or_, select, update
+from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
+from qq_ai_bot.identity.ownership_interval import BindingOwnership
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.persistence.models import MemoryRebuildProposalModel, MemoryRebuildRunModel
+from qq_ai_bot.persistence.models import (
+    ChatEventModel,
+    MemoryRebuildProposalModel,
+    MemoryRebuildRunModel,
+)
 
 _TERMINAL = {"completed", "cancelled", "failed"}
 
@@ -24,6 +30,7 @@ class PreparedRebuildForget:
     catalogue_token: tuple[Any, ...]
     # Original identity and the fully serialized replacement; no writer JSON parsing.
     changes: tuple[tuple[int, str, datetime, str, str, str, bool], ...]
+    ownership: tuple[BindingOwnership, ...] = ()
 
 
 async def _catalogue_token(session: AsyncSession) -> tuple[Any, ...]:
@@ -36,7 +43,11 @@ async def _catalogue_token(session: AsyncSession) -> tuple[Any, ...]:
     )
 
 
-async def prepare_forget(session: AsyncSession, aliases: tuple[str, ...]) -> PreparedRebuildForget:
+async def prepare_forget(
+    session: AsyncSession,
+    aliases: tuple[str, ...],
+    ownership: tuple[BindingOwnership, ...] = (),
+) -> PreparedRebuildForget:
     aliases = tuple(sorted(set(aliases)))
     catalogue = await _catalogue_token(session)
     run = MemoryRebuildRunModel
@@ -91,7 +102,7 @@ async def prepare_forget(session: AsyncSession, aliases: tuple[str, ...]) -> Pre
         )
     if await _catalogue_token(session) != catalogue:
         raise ValueError("memory_rebuild_privacy_preparation_changed")
-    return PreparedRebuildForget(aliases, catalogue, tuple(changes))
+    return PreparedRebuildForget(aliases, catalogue, tuple(changes), ownership)
 
 
 async def apply_forget(session: AsyncSession, prepared: PreparedRebuildForget) -> int:
@@ -108,11 +119,21 @@ async def apply_forget(session: AsyncSession, prepared: PreparedRebuildForget) -
     }
     if any(rows.get(change[0]) != change[1:4] for change in prepared.changes):
         raise ValueError("memory_rebuild_privacy_preparation_changed")
-    deleted = await session.execute(
-        delete(MemoryRebuildProposalModel).where(
-            MemoryRebuildProposalModel.subject_user_id.in_(prepared.aliases)
+    proposal = MemoryRebuildProposalModel
+    conditions: list[ColumnElement[bool]] = [proposal.subject_user_id.in_(prepared.aliases)]
+    for interval in prepared.ownership:
+        source = [ChatEventModel.id == proposal.event_id]
+        if interval.starts_at is not None:
+            source.append(ChatEventModel.observed_at >= interval.starts_at)
+        if interval.ends_at is not None:
+            source.append(ChatEventModel.observed_at < interval.ends_at)
+        conditions.append(
+            and_(
+                proposal.subject_user_id == interval.account,
+                exists(select(ChatEventModel.id).where(*source)),
+            )
         )
-    )
+    deleted = await session.execute(delete(proposal).where(or_(*conditions)))
     changed = int(cast(CursorResult[Any], deleted).rowcount or 0)
     now = datetime.now(UTC)
     for run_id, old_hash, old_time, status, encoded, fingerprint, cancel in prepared.changes:

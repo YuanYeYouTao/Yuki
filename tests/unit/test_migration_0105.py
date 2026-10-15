@@ -10,7 +10,10 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Column, Integer, MetaData, Table, select, text
-from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversations
+from tests.support.legacy_conversation_seed import (
+    enable_history_column_for_legacy_seed,
+    seed_pre_0119_social_conversations,
+)
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel
@@ -53,6 +56,7 @@ def test_0106_query_migration_removes_retired_overrides_without_removing_other_c
     async def seed():
         database = Database(url)
         try:
+            await enable_history_column_for_legacy_seed(database)
             async with database.immediate_session() as writer:
                 person = await ensure_person(writer, "10001")
                 space = await ensure_space(writer, "20001")

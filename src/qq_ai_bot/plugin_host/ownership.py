@@ -79,6 +79,7 @@ async def _identity_binding(session: AsyncSession, external: str) -> IdentityBin
             select(IdentityBindingModel).where(
                 IdentityBindingModel.platform == IDENTITY_PLATFORM,
                 IdentityBindingModel.external_account_id == external,
+                IdentityBindingModel.status != "transferred",
             )
         ),
     )

@@ -89,6 +89,7 @@ from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminServ
 from qq_ai_bot.services.attachment_inputs import AttachmentInputService
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.chat import ChatService, OutboundSender
+from qq_ai_bot.services.client_link import ClientLinkCommands
 from qq_ai_bot.services.command_service import CommandExecution, CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledError
 from qq_ai_bot.services.deduplication import build_event_key
@@ -354,9 +355,11 @@ class MessageProcessor:
         turn_observations: TurnObservationRecorder | None = None,
         canonical_ingress: CanonicalIngressResolver,
         group_recovery: GroupRecoveryHandler | None = None,
+        client_links: ClientLinkCommands | None = None,
         canonical_uow: CanonicalIngressUnitOfWork,
     ) -> None:
         database = ledger._database
+        self._client_links = client_links
         self._turn_observations = turn_observations
         self._settings = settings
         self._asr = asr_service
@@ -595,6 +598,13 @@ class MessageProcessor:
         # hot provider switch cannot change the model between those two steps.
         with bind_runtime_turn(correlation), self._chat.pin_model_runtime():
             try:
+                if self._client_links is not None and self._client_links.is_request(message):
+                    link_response = await self._client_links.execute(
+                        getattr(sender, "bot", None), message
+                    )
+                    await sender.send(OutboundMessage(text=link_response))
+                    result = ProcessResult(True, sent_messages=1, reason="client_link")
+                    return result
                 if self._group_recovery is not None and self._group_recovery.is_enable_request(
                     message
                 ):

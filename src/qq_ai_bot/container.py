@@ -514,6 +514,12 @@ class ApplicationContainer:
         from qq_ai_bot.application.modules.admin_api import build_admin_api
 
         self.admin_api = build_admin_api(self)
+        from qq_ai_bot.client_api.http import ClientApi
+
+        self.client_api = ClientApi(self.admin_api.commands.identities)
+        from qq_ai_bot.services.client_link import ClientLinkCommands
+
+        self.client_links = ClientLinkCommands(self.client_api.identity, self.gateway_registry)
         self.emoji_collector.set_event_publisher(self.plugin_events)
         self.emoji_lifecycle.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_event_publisher(self.plugin_events)
@@ -593,6 +599,7 @@ class ApplicationContainer:
             concurrency=self.concurrency,
             onebot_connected=self.onebot_connected,
             canonical_ingress=self.canonical_ingress,
+            client_links=self.client_links,
             group_recovery=QQGroupRecovery(
                 settings, self.database, self.gateway_registry, self.presence_router
             ),
@@ -946,6 +953,7 @@ class ApplicationContainer:
                 if emoji_deleted:
                     logger.info("emoji_assets_cleaned count=%d", emoji_deleted)
                 plugin_state_deleted = await self.plugin_state.cleanup_expired()
+                await self.client_api.identity.cleanup_expired()
                 media_artifacts_deleted = await self.plugin_media_artifacts.cleanup()
                 if media_artifacts_deleted:
                     logger.info(

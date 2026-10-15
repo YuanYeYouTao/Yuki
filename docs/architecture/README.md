@@ -8,6 +8,7 @@
 | --- | --- |
 | [开发约束](development-contract.md) | 删除优先、身份/授权、恢复、事务和交付原则 |
 | [Canonical runtime](canonical-runtime.md) | Yuki、Person、Space、Presence、Conversation 与网关 |
+| [个人客户端 API](client-api.md) | 设备配对、身份绑定、转移与归属区间 |
 | [主 Agent](main-agent-runtime.md) | 统一循环、Work 控制、恢复、预算和交付 |
 | [Tool Kernel](tool-kernel.md) | 固定完整清单、direct / Code Mode、目录与执行授权 |
 | [模型供应商与协议](model-providers.md) | 显式 Profile、结构化模式、思考、方言和私有续跑状态 |

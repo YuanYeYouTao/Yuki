@@ -41,14 +41,35 @@ async def mutate(
     **fields: Any,
 ) -> dict[str, Any]:
     request_id = request_id or str(uuid4())
+    result = await _post_mutation(
+        client,
+        path,
+        {
+            "request_id": request_id,
+            "expected_revision": revision,
+            **fields,
+        },
+    )
+    if not result["success"]:
+        operation = result["operation"]["operation_id"]
+        raise RuntimeError(f"request remains unconfirmed; query `admin operation {operation}`")
+    return result
+
+
+async def identity_mutation(
+    client: httpx.AsyncClient, path: str, *, request_id: str | None = None, **fields: Any
+) -> dict[str, Any]:
+    return await _post_mutation(client, path, {"request_id": request_id or str(uuid4()), **fields})
+
+
+async def _post_mutation(
+    client: httpx.AsyncClient, path: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    request_id = payload["request_id"]
     try:
         response = await client.post(
             f"/admin/v1/{path}",
-            json={
-                "request_id": request_id,
-                "expected_revision": revision,
-                **fields,
-            },
+            json=payload,
         )
         if response.status_code >= 500:
             raise RuntimeError(
@@ -59,11 +80,7 @@ async def mutate(
         raise RuntimeError(
             f"request {request_id} unconfirmed; query `admin operation {request_id}`"
         ) from exc
-    result = dict(response.json()["data"])
-    if not result["success"]:
-        operation = result["operation"]["operation_id"]
-        raise RuntimeError(f"request remains unconfirmed; query `admin operation {operation}`")
-    return result
+    return dict(response.json()["data"])
 
 
 async def plugin_mutation(

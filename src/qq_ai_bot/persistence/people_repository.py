@@ -11,13 +11,15 @@ from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from heapq import nsmallest
 
-from sqlalchemy import String, case, cast, delete, func, or_, select, update
+from sqlalchemy import String, and_, case, cast, delete, false, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
+from qq_ai_bot.client_api.db_models import ClientDeviceModel
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
+    ControlCommandReceiptModel,
     ConversationLegacyAliasModel,
 )
 from qq_ai_bot.domain.audio import parse_transcripts, serialize_transcripts
@@ -30,11 +32,12 @@ from qq_ai_bot.identity.canonical_repository import (
     external_id,
     find_identity_binding,
     find_presence,
-    forget_person_for_external_account,
+    forget_person_by_id,
     trip,
 )
-from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel
+from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.ownership_interval import BindingOwnership
 from qq_ai_bot.identity.person_state import (
     load_canonical_aliases,
     load_canonical_group,
@@ -153,6 +156,68 @@ def _privacy_json_match(
     )
 
 
+@dataclass(frozen=True)
+class PersonForgetPreparation:
+    person_id: str
+    ownership: tuple[BindingOwnership, ...]
+    source_token: tuple[object, ...]
+    private_ids: tuple[str, ...]
+    affected_ids: tuple[str, ...]
+    redactions: tuple[tuple[int, dict[str, str]], ...]
+    rebuild: PreparedRebuildForget | None
+
+    @property
+    def legacy_aliases(self) -> tuple[str, ...]:
+        return tuple(sorted({item.account for item in self.ownership if not item.bounded}))
+
+
+async def _privacy_source_token(session: AsyncSession) -> tuple[object, ...]:
+    # Metadata only: message bodies are prepared in a reader, never under the writer lock.
+    conversations = tuple(
+        tuple(row)
+        for row in await session.execute(
+            select(
+                CanonicalConversationModel.id, CanonicalConversationModel.prompt_source_revision
+            ).order_by(CanonicalConversationModel.id)
+        )
+    )
+    return (await session.scalar(select(func.max(ChatEventModel.id))), conversations)
+
+
+def _privacy_owned_events(
+    person_id: str, private_ids: tuple[str, ...], aliases: tuple[str, ...]
+) -> ColumnElement[bool]:
+    return func.coalesce(
+        or_(
+            ChatEventModel.author_person_id == person_id,
+            ChatEventModel.canonical_conversation_id.in_(private_ids),
+            ChatEventModel.sender_user_id.in_(aliases),
+            ChatEventModel.private_peer_user_id.in_(aliases),
+        ),
+        false(),
+    )
+
+
+def _privacy_mentions(ownership: tuple[BindingOwnership, ...]) -> ColumnElement[bool]:
+    conditions = []
+    for item in ownership:
+        match = [
+            or_(
+                ChatEventModel.content.contains(item.account),
+                ChatEventModel.visual_summary.contains(item.account),
+                _privacy_json_match(ChatEventModel.audio_transcript, (item.account,)),
+                _privacy_json_match(ChatEventModel.segments_json, (item.account,)),
+            )
+        ]
+        # observed_at is the server's row-creation time; occurred_at is platform supplied.
+        if item.starts_at is not None:
+            match.append(ChatEventModel.observed_at >= item.starts_at)
+        if item.ends_at is not None:
+            match.append(ChatEventModel.observed_at < item.ends_at)
+        conditions.append(and_(*match))
+    return or_(false(), *conditions)
+
+
 def _score_group_member_identities(
     identities: dict[str, tuple[str, str, set[str]]],
     query: str,
@@ -237,14 +302,6 @@ async def _observe_role(
     return "human", binding
 
 
-async def _canonical_conversation_for_privacy_scope(
-    session: AsyncSession,
-    scope: ConversationScope,
-) -> CanonicalConversationModel | None:
-    from qq_ai_bot.conversation.hydrate import conversation_for_scope
-
-    return await conversation_for_scope(session, scope)
-
 
 class PeopleRepository:
     """Keep one global person and exact per-group memberships."""
@@ -270,6 +327,23 @@ class PeopleRepository:
         """Resolve every conversation whose retained projection may mention a person."""
 
         async with self._database.sessions() as session:
+            binding = await find_identity_binding(session, external_id(user_id))
+            if binding is None:
+                return ()
+            ownership = tuple(
+                BindingOwnership.of(item)
+                for item in await bindings_for_person(session, binding.person_id)
+            )
+            private_ids = tuple(
+                await session.scalars(
+                    select(CanonicalConversationModel.id).where(
+                        CanonicalConversationModel.kind == "private",
+                        CanonicalConversationModel.person_id == binding.person_id,
+                    )
+                )
+            )
+            legacy_ownership = tuple(item for item in ownership if not item.bounded)
+            legacy_aliases = tuple(item.account for item in legacy_ownership)
             rows = (
                 await session.execute(
                     select(
@@ -280,12 +354,8 @@ class PeopleRepository:
                     )
                     .where(
                         or_(
-                            ChatEventModel.sender_user_id == user_id,
-                            ChatEventModel.private_peer_user_id == user_id,
-                            ChatEventModel.content.contains(user_id),
-                            ChatEventModel.visual_summary.contains(user_id),
-                            _privacy_json_match(ChatEventModel.audio_transcript, (user_id,)),
-                            _privacy_json_match(ChatEventModel.segments_json, (user_id,)),
+                            _privacy_owned_events(binding.person_id, private_ids, legacy_aliases),
+                            _privacy_mentions(legacy_ownership),
                         )
                     )
                     .distinct()
@@ -603,214 +673,215 @@ class PeopleRepository:
         return await load_canonical_person_enabled(session, user_id)
 
     async def delete_person(self, user_id: str, *, marker: str = "[已删除用户]") -> bool:
-        """Delete all attributable data and redact exact QQ text elsewhere."""
+        """Resolve the authenticated current account once, then erase by Person ID."""
+        async with self._database.sessions() as reader:
+            binding = await find_identity_binding(reader, external_id(user_id))
+            if binding is None:
+                return False
+            person_id = binding.person_id
+        return await self.delete_person_id(person_id, marker=marker)
 
-        expected_person_id: str | None = None
+    async def delete_person_id(self, person_id: str, *, marker: str = "[已删除用户]") -> bool:
         while True:
             try:
-                async with self._database.sessions() as reader:
-                    binding = await find_identity_binding(reader, external_id(user_id))
-                    if binding is None:
-                        return False
-                    if expected_person_id is not None and binding.person_id != expected_person_id:
-                        raise CanonicalIdentityError("source_event_changed")
-                    expected_person_id = binding.person_id
-                    aliases = tuple(
-                        sorted(
-                            {
-                                item.external_account_id
-                                for item in await bindings_for_person(reader, expected_person_id)
-                            }
-                        )
-                    )
-                prepared = (
-                    await self._memory_rebuilds.prepare_forget_people(aliases)
-                    if self._memory_rebuilds is not None
-                    else None
-                )
+                prepared = await self.prepare_person_forget(person_id, marker=marker)
+                if prepared is None:
+                    return False
                 async with self._database.immediate_session() as writer:
-                    return await self._delete_person_canonical(
-                        writer,
-                        user_id,
-                        marker=marker,
-                        expected_person_id=expected_person_id,
-                        expected_aliases=aliases,
-                        prepared_rebuild=prepared,
-                    )
+                    return await self.apply_person_forget(writer, prepared, marker=marker)
             except ValueError as exc:
                 if str(exc) not in {
                     "memory_rebuild_privacy_preparation_changed",
                     "privacy_aliases_changed",
+                    "privacy_source_changed",
                 }:
                     raise
 
-    async def _delete_person_canonical(
+    async def prepare_person_forget(
+        self, person_id: str, *, marker: str = "[已删除用户]"
+    ) -> PersonForgetPreparation | None:
+        async with self._database.sessions() as reader:
+            if await reader.get(CanonicalPersonModel, person_id) is None:
+                return None
+            ownership = tuple(
+                BindingOwnership.of(item)
+                for item in sorted(
+                    await bindings_for_person(reader, person_id), key=lambda item: item.id
+                )
+            )
+            private_ids = tuple(
+                await reader.scalars(
+                    select(CanonicalConversationModel.id).where(
+                        CanonicalConversationModel.kind == "private",
+                        CanonicalConversationModel.person_id == person_id,
+                    )
+                )
+            )
+            legacy = tuple(sorted({item.account for item in ownership if not item.bounded}))
+            source_token = await _privacy_source_token(reader)
+            owned = _privacy_owned_events(person_id, private_ids, legacy)
+            mentions = _privacy_mentions(ownership)
+            affected = set(private_ids)
+            affected.update(
+                item
+                for item in await reader.scalars(
+                    select(ChatEventModel.canonical_conversation_id)
+                    .where(
+                        or_(
+                            owned,
+                            _privacy_mentions(
+                                tuple(item for item in ownership if not item.bounded)
+                            ),
+                        )
+                    )
+                    .distinct()
+                )
+                if item is not None
+            )
+            redactions = []
+            for event in await reader.scalars(select(ChatEventModel).where(mentions, ~owned)):
+                aliases = {item.account for item in ownership if item.contains(event.observed_at)}
+                pattern = re.compile(
+                    "|".join(re.escape(item) for item in sorted(aliases, key=len, reverse=True))
+                )
+                redactions.append(
+                    (
+                        event.id,
+                        dict(
+                            content=pattern.sub(lambda _: marker, event.content),
+                            visual_summary=pattern.sub(lambda _: marker, event.visual_summary),
+                            audio_transcript=serialize_transcripts(
+                                tuple(
+                                    replace(item, text=pattern.sub(lambda _: marker, item.text))
+                                    for item in parse_transcripts(event.audio_transcript)
+                                )
+                            ),
+                            segments_json=_redact_privacy_json(
+                                event.segments_json, pattern, marker
+                            ),
+                        ),
+                    )
+                )
+            if await _privacy_source_token(reader) != source_token:
+                raise ValueError("privacy_source_changed")
+        rebuild = None
+        if self._memory_rebuilds is not None:
+            bounded = tuple(item for item in ownership if item.bounded)
+            rebuild = (
+                await self._memory_rebuilds.prepare_forget_people(legacy, ownership=bounded)
+                if bounded
+                else await self._memory_rebuilds.prepare_forget_people(legacy)
+            )
+        return PersonForgetPreparation(
+            person_id,
+            ownership,
+            source_token,
+            private_ids,
+            tuple(sorted(affected)),
+            tuple(redactions),
+            rebuild,
+        )
+
+    async def apply_person_forget(
         self,
         session: AsyncSession,
-        user_id: str,
+        prepared: PersonForgetPreparation,
         *,
-        marker: str,
-        expected_person_id: str,
-        expected_aliases: tuple[str, ...],
-        prepared_rebuild: PreparedRebuildForget | None,
+        marker: str = "[已删除用户]",
     ) -> bool:
-        external = external_id(user_id)
-        binding = await find_identity_binding(session, external)
-        if binding is None:
+        person_id = prepared.person_id
+        if await session.get(CanonicalPersonModel, person_id) is None:
             return False
-        person_id = binding.person_id
-        if person_id != expected_person_id:
-            raise CanonicalIdentityError("source_event_changed")
-        owner_externals = tuple(
-            dict.fromkeys(
-                item.external_account_id for item in await bindings_for_person(session, person_id)
+        ownership = tuple(
+            BindingOwnership.of(item)
+            for item in sorted(
+                await bindings_for_person(session, person_id), key=lambda item: item.id
             )
         )
-        if not owner_externals:
-            raise CanonicalIdentityError("unclassified")
-        if tuple(sorted(owner_externals)) != expected_aliases:
+        if ownership != prepared.ownership:
             raise ValueError("privacy_aliases_changed")
+        if await _privacy_source_token(session) != prepared.source_token:
+            raise ValueError("privacy_source_changed")
+        legacy = prepared.legacy_aliases
         if self._memory_rebuilds is not None:
             await self._memory_rebuilds.forget_people(
-                owner_externals,
-                prepared=prepared_rebuild,
-                session=session,
+                legacy, prepared=prepared.rebuild, session=session
             )
-        affected_scopes = await self._affected_scopes_for_owners(session, owner_externals)
-        privacy_event_match = or_(
-            ChatEventModel.sender_user_id.in_(owner_externals),
-            ChatEventModel.private_peer_user_id.in_(owner_externals),
-            *[ChatEventModel.content.contains(item) for item in owner_externals],
-            *[ChatEventModel.visual_summary.contains(item) for item in owner_externals],
-            _privacy_json_match(ChatEventModel.audio_transcript, owner_externals),
-            _privacy_json_match(ChatEventModel.segments_json, owner_externals),
-        )
-        private_scope_keys = tuple(
-            scope.key
-            for scope in affected_scopes
-            if (
-                scope.scope_type is ScopeType.PRIVATE
-                and scope.private_peer_user_id in owner_externals
-            )
-        )
-        web_cleanup_conditions = [
-            WebSearchRunModel.trigger_event_id.in_(
-                select(ChatEventModel.id).where(privacy_event_match)
-            ),
-            *[WebSearchRunModel.conversation_key == f"private:{item}" for item in owner_externals],
-            *[
-                WebSearchRunModel.conversation_key.like(f"group:%:user:{item}")
-                for item in owner_externals
-            ],
-        ]
-        if private_scope_keys:
-            web_cleanup_conditions.append(
-                WebSearchRunModel.conversation_key.in_(private_scope_keys)
-            )
-        await session.execute(delete(WebSearchRunModel).where(or_(*web_cleanup_conditions)))
-        now = datetime.now(UTC)
-        private_conversation_ids = set(
-            await session.scalars(
-                select(CanonicalConversationModel.id).where(
-                    CanonicalConversationModel.kind == "private",
-                    CanonicalConversationModel.person_id == person_id,
+        owned = _privacy_owned_events(person_id, prepared.private_ids, legacy)
+        event_ids = select(ChatEventModel.id).where(or_(owned, _privacy_mentions(ownership)))
+        await session.execute(
+            delete(WebSearchRunModel).where(
+                or_(
+                    WebSearchRunModel.trigger_event_id.in_(event_ids),
+                    *[WebSearchRunModel.conversation_key == f"private:{item}" for item in legacy],
+                    *[
+                        WebSearchRunModel.conversation_key.like(f"group:%:user:{item}")
+                        for item in legacy
+                    ],
                 )
             )
         )
         from qq_ai_bot.runtime.work_repository import WorkRepository
 
-        for conversation_id in private_conversation_ids:
+        now = datetime.now(UTC)
+        for conversation_id in prepared.affected_ids:
             await WorkRepository.purge_scope(session, conversation_id)
-        for scope in affected_scopes:
-            conversation = await _canonical_conversation_for_privacy_scope(session, scope)
-            is_private_target = (
-                scope.scope_type is ScopeType.PRIVATE
-                and scope.private_peer_user_id in owner_externals
-            )
-            if conversation is not None:
-                if conversation.id not in private_conversation_ids:
-                    await WorkRepository.purge_scope(session, conversation.id)
-                if not is_private_target:
+            if conversation_id not in prepared.private_ids:
+                conversation = await session.get(CanonicalConversationModel, conversation_id)
+                if conversation is not None:
                     conversation.generation += 1
                     conversation.starts_after_event_id = conversation.last_event_id
                     conversation.last_generation_change_event_id = 0
                     conversation.revision += 1
                     conversation.updated_at = now
-        await self._forget_person_plugin(session, person_id, owner_externals)
+        await self._forget_person_plugin(session, person_id, legacy)
         trip("after_forget_plugin")
         await self._forget_person_automations(session, person_id)
         trip("after_forget_automations")
         await self._forget_person_memory(session, person_id)
         trip("after_forget_memory")
-        await self._forget_person_conversation(session, person_id, owner_externals)
+        await self._forget_person_conversation(session, person_id, legacy)
         trip("after_forget_conversation")
-        remaining = (
-            await session.scalars(
-                select(ChatEventModel).where(
-                    ChatEventModel.sender_user_id.notin_(owner_externals),
-                    or_(
-                        ChatEventModel.private_peer_user_id.is_(None),
-                        ChatEventModel.private_peer_user_id.notin_(owner_externals),
-                    ),
-                    or_(
-                        *[ChatEventModel.content.contains(item) for item in owner_externals],
-                        *[ChatEventModel.visual_summary.contains(item) for item in owner_externals],
-                        _privacy_json_match(ChatEventModel.audio_transcript, owner_externals),
-                        _privacy_json_match(ChatEventModel.segments_json, owner_externals),
-                    ),
-                )
+        for event_id, values in prepared.redactions:
+            await session.execute(
+                update(ChatEventModel).where(ChatEventModel.id == event_id).values(**values)
             )
-        ).all()
-        owner_pattern = re.compile(
-            "|".join(re.escape(owner) for owner in sorted(owner_externals, key=len, reverse=True))
-        )
-        for event in remaining:
-            event.content = owner_pattern.sub(lambda _match: marker, event.content)
-            event.visual_summary = owner_pattern.sub(lambda _match: marker, event.visual_summary)
-            event.audio_transcript = serialize_transcripts(
-                tuple(
-                    replace(item, text=owner_pattern.sub(lambda _match: marker, item.text))
-                    for item in parse_transcripts(event.audio_transcript)
-                )
-            )
-            event.segments_json = _redact_privacy_json(event.segments_json, owner_pattern, marker)
         await session.execute(
             delete(RuntimeConfigOverrideModel).where(
                 RuntimeConfigOverrideModel.scope_type == "user",
                 RuntimeConfigOverrideModel.canonical_person_id == person_id,
             )
         )
-        for owner in owner_externals:
-            await session.execute(
-                update(RuntimeConfigOverrideModel)
-                .where(RuntimeConfigOverrideModel.updated_by == owner)
-                .values(updated_by=marker)
+        if legacy:
+            for owner in legacy:
+                await session.execute(
+                    update(RuntimeConfigOverrideModel)
+                    .where(RuntimeConfigOverrideModel.updated_by == owner)
+                    .values(updated_by=marker)
+                )
+            pattern = re.compile(
+                "|".join(re.escape(item) for item in sorted(legacy, key=len, reverse=True))
             )
-        audit_match = or_(
-            AdminOperationEventModel.actor_user_id.in_(owner_externals),
-            AdminOperationEventModel.target_id.in_(owner_externals),
-            *[AdminOperationEventModel.conversation_key.contains(item) for item in owner_externals],
-            _privacy_json_match(AdminOperationEventModel.before_json, owner_externals),
-            _privacy_json_match(AdminOperationEventModel.after_json, owner_externals),
-        )
-        audit_rows = (
-            await session.scalars(select(AdminOperationEventModel).where(audit_match))
-        ).all()
-        for audit in audit_rows:
-            if audit.actor_user_id in owner_externals:
-                audit.actor_user_id = marker
-            if audit.target_id in owner_externals:
-                audit.target_id = marker
-            audit.conversation_key = owner_pattern.sub(
-                lambda _match: marker, audit.conversation_key
+            audit_match = or_(
+                AdminOperationEventModel.actor_user_id.in_(legacy),
+                AdminOperationEventModel.target_id.in_(legacy),
+                *[AdminOperationEventModel.conversation_key.contains(item) for item in legacy],
+                _privacy_json_match(AdminOperationEventModel.before_json, legacy),
+                _privacy_json_match(AdminOperationEventModel.after_json, legacy),
             )
-            audit.before_json = _redact_privacy_json(audit.before_json, owner_pattern, marker)
-            audit.after_json = _redact_privacy_json(audit.after_json, owner_pattern, marker)
+            for audit in await session.scalars(select(AdminOperationEventModel).where(audit_match)):
+                if audit.actor_user_id in legacy:
+                    audit.actor_user_id = marker
+                if audit.target_id in legacy:
+                    audit.target_id = marker
+                audit.conversation_key = pattern.sub(lambda _: marker, audit.conversation_key)
+                audit.before_json = _redact_privacy_json(audit.before_json, pattern, marker)
+                audit.after_json = _redact_privacy_json(audit.after_json, pattern, marker)
         await session.execute(
             delete(EmojiUsageEventModel).where(
                 or_(
                     EmojiUsageEventModel.canonical_actor_person_id == person_id,
-                    EmojiUsageEventModel.actor_user_id.in_(owner_externals),
+                    EmojiUsageEventModel.actor_user_id.in_(legacy),
                 )
             )
         )
@@ -819,33 +890,45 @@ class PeopleRepository:
             .where(
                 or_(
                     EmojiAssetModel.canonical_first_seen_person_id == person_id,
-                    EmojiAssetModel.first_seen_user_id.in_(owner_externals),
+                    EmojiAssetModel.first_seen_user_id.in_(legacy),
                 )
             )
-            .values(
-                canonical_first_seen_person_id=None,
-                first_seen_user_id=None,
+            .values(canonical_first_seen_person_id=None, first_seen_user_id=None)
+        )
+        device_ids = select(ClientDeviceModel.id).where(ClientDeviceModel.person_id == person_id)
+        audit_ids = select(AdminOperationEventModel.id).where(
+            or_(
+                AdminOperationEventModel.actor_user_id == person_id,
+                and_(
+                    AdminOperationEventModel.target_type == "person",
+                    AdminOperationEventModel.target_id == person_id,
+                ),
+                AdminOperationEventModel.actor_principal_id.in_(device_ids),
+                AdminOperationEventModel.actor_principal_id.in_(
+                    tuple(item.binding_id for item in ownership)
+                ),
             )
         )
         await session.execute(
-            delete(ChatEventModel).where(
+            delete(ControlCommandReceiptModel).where(
                 or_(
-                    ChatEventModel.sender_user_id.in_(owner_externals),
-                    ChatEventModel.private_peer_user_id.in_(owner_externals),
+                    ControlCommandReceiptModel.audit_id.in_(audit_ids),
+                    ControlCommandReceiptModel.principal_id.in_(device_ids),
+                    ControlCommandReceiptModel.principal_id == person_id,
                 )
             )
         )
         await session.execute(
-            delete(MembershipModel).where(
-                MembershipModel.canonical_person_id == person_id,
-            )
+            delete(AdminOperationEventModel).where(AdminOperationEventModel.id.in_(audit_ids))
+        )
+        await session.execute(delete(ChatEventModel).where(owned))
+        await session.execute(
+            delete(MembershipModel).where(MembershipModel.canonical_person_id == person_id)
         )
         await session.execute(
-            delete(PersonAliasModel).where(
-                PersonAliasModel.canonical_person_id == person_id,
-            )
+            delete(PersonAliasModel).where(PersonAliasModel.canonical_person_id == person_id)
         )
-        await forget_person_for_external_account(session, user_id)
+        await forget_person_by_id(session, person_id)
         return True
 
     @staticmethod
@@ -1092,59 +1175,6 @@ class PeopleRepository:
                 .where(PluginBackgroundTurnJobModel.canonical_conversation_id.in_(conversation_ids))
                 .values(canonical_conversation_id=None)
             )
-
-    @staticmethod
-    async def _affected_scopes_for_owners(
-        session: AsyncSession,
-        owner_ids: tuple[str, ...],
-    ) -> tuple[ConversationScope, ...]:
-        scopes: dict[str, ConversationScope] = {}
-        for owner in owner_ids:
-            for scope in await PeopleRepository.affected_conversation_scopes_in_session(
-                session, owner
-            ):
-                scopes[scope.key] = scope
-        return tuple(scopes[key] for key in sorted(scopes))
-
-    @staticmethod
-    async def affected_conversation_scopes_in_session(
-        session: AsyncSession,
-        user_id: str,
-    ) -> tuple[ConversationScope, ...]:
-        rows = (
-            await session.execute(
-                select(
-                    ChatEventModel.bot_user_id,
-                    ChatEventModel.scope_type,
-                    ChatEventModel.group_id,
-                    ChatEventModel.private_peer_user_id,
-                )
-                .where(
-                    or_(
-                        ChatEventModel.sender_user_id == user_id,
-                        ChatEventModel.private_peer_user_id == user_id,
-                        ChatEventModel.content.contains(user_id),
-                        ChatEventModel.visual_summary.contains(user_id),
-                        _privacy_json_match(ChatEventModel.audio_transcript, (user_id,)),
-                        _privacy_json_match(ChatEventModel.segments_json, (user_id,)),
-                    )
-                )
-                .distinct()
-            )
-        ).all()
-        scopes: dict[str, ConversationScope] = {}
-        for bot_user_id, scope_type, group_id, private_peer_user_id in rows:
-            if scope_type == ScopeType.GROUP.value and group_id is not None:
-                scope = ConversationScope.group(str(bot_user_id), str(group_id))
-            elif private_peer_user_id is not None:
-                scope = ConversationScope.private(
-                    str(bot_user_id),
-                    str(private_peer_user_id),
-                )
-            else:
-                continue
-            scopes[scope.key] = scope
-        return tuple(scopes[key] for key in sorted(scopes))
 
 
 class GroupSettingsRepository:

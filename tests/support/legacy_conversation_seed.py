@@ -9,6 +9,26 @@ from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_space
 from qq_ai_bot.persistence.database import Database
 
 
+async def enable_history_column_for_legacy_seed(database: Database) -> None:
+    """Temporarily supply the current Binding ORM column to an old seed database."""
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            text("ALTER TABLE identity_bindings ADD COLUMN history_starts_at DATETIME")
+        )
+    original_close = database.close
+
+    async def close_seed() -> None:
+        try:
+            async with database.immediate_session() as writer:
+                await writer.execute(
+                    text("ALTER TABLE identity_bindings DROP COLUMN history_starts_at")
+                )
+        finally:
+            await original_close()
+
+    database.close = close_seed
+
+
 async def enable_binding_column_for_legacy_seed(database: Database) -> None:
     """Let current runtime build old test facts, then restore the frozen schema.
 
@@ -17,6 +37,7 @@ async def enable_binding_column_for_legacy_seed(database: Database) -> None:
     closing the seed connection removes it before Alembic tests the real upgrade.
     No production compatibility path or historical migration is changed.
     """
+    await enable_history_column_for_legacy_seed(database)
     async with database.immediate_session() as writer:
         await writer.execute(
             text("ALTER TABLE canonical_conversations ADD COLUMN identity_binding_id VARCHAR(36)")
@@ -45,6 +66,7 @@ async def enable_binding_column_for_legacy_seed(database: Database) -> None:
 
 async def seed_pre_0119_social_conversations(database: Database, *, private: bool = False) -> None:
     """Seed the frozen NOT NULL layout used by the 0104–0118 upgrade tests."""
+    await enable_binding_column_for_legacy_seed(database)
     async with database.immediate_session() as writer:
         space = await ensure_space(writer, "20001")
         owners = [("space", None, space, "bot:80001:group:20001")]
@@ -82,4 +104,10 @@ async def seed_pre_0119_social_conversations(database: Database, *, private: boo
                 ),
                 values,
             )
-    await enable_binding_column_for_legacy_seed(database)
+        await writer.execute(
+            text(
+                "UPDATE canonical_conversations SET identity_binding_id=("
+                "SELECT b.id FROM identity_bindings b "
+                "WHERE b.person_id=canonical_conversations.person_id) WHERE kind='private'"
+            )
+        )

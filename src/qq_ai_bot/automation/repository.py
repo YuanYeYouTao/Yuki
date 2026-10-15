@@ -1192,6 +1192,7 @@ def _directory_statement(*, include_script: bool = False) -> Any:
             IdentityBindingModel.person_id == AutomationModel.canonical_creator_person_id,
             IdentityBindingModel.platform == IDENTITY_PLATFORM,
             IdentityBindingModel.external_account_id == AutomationModel.creator_user_id,
+            IdentityBindingModel.status != "transferred",
         ),
     )
 

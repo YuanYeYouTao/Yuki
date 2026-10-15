@@ -98,6 +98,7 @@ async def project_event_authors(
                 .where(
                     IdentityBindingModel.platform == platform,
                     IdentityBindingModel.external_account_id.in_(selected),
+                    IdentityBindingModel.status != "transferred",
                 )
             )
         ).all()

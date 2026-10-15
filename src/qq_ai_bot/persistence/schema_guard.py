@@ -197,8 +197,11 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "external_account_id",
             "first_seen_at",
             "last_seen_at",
+            "history_starts_at",
         }
     ),
+    "client_devices": frozenset({"id", "person_id", "token_hash", "revoked_at"}),
+    "client_link_codes": frozenset({"id", "person_id", "code_hash", "expires_at", "used_at"}),
     "spaces": frozenset({"id", "enabled", "autonomous_enabled", "require_mention", "revision"}),
     "space_bindings": frozenset(
         {

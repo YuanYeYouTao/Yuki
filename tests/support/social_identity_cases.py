@@ -53,6 +53,14 @@ async def social_env(database, tmp_path):
     writer = ScopedEventLedgerUnitOfWork(database)
     async with database.sessions() as session, session.begin():
         person = await ensure_person(session, "10001")
+        # This shared fixture exercises the original, pre-0121 Social contracts.
+        from sqlalchemy import update
+
+        await session.execute(
+            update(IdentityBindingModel)
+            .where(IdentityBindingModel.person_id == person)
+            .values(history_starts_at=None)
+        )
         presence = await ensure_presence(session, bot.self_id)
         space = await ensure_space(session, "20001")
     registry.connect(bot, provider_id="snowluma", presence_id=presence)

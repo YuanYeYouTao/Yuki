@@ -5,7 +5,6 @@ from dataclasses import asdict, dataclass
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, FastAPI, Header, Query
-from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 
@@ -17,6 +16,7 @@ from qq_ai_bot.admin.authority.problems import ControlQueryError, ProblemCode
 from qq_ai_bot.admin.config_files import ConfigFileError
 from qq_ai_bot.admin_api.commands import AdminCommands, authorize, fail
 from qq_ai_bot.admin_api.queries import AdminQueries
+from qq_ai_bot.client_api.http_errors import install_identity_errors
 from qq_ai_bot.domain.identity import RequestId
 from qq_ai_bot.plugin_host.configuration_service import PluginConfigurationError
 from qq_ai_bot.plugin_host.manager import PluginManagementRejected
@@ -67,6 +67,15 @@ class ModelsBody(CommandBody):
 class SecretBody(CommandBody):
     name: str
     value: SecretStr
+
+
+class IdentityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: UUID4
+
+
+class TransferBody(IdentityRequest):
+    to_person: UUID4
 
 
 def result_view(result: ControlResult) -> dict[str, Any]:
@@ -143,6 +152,41 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     @router.get("/bindings/{identity}")
     async def binding(identity: UUID4, actor: Actor) -> Any:
         return {"data": await resolve().queries.binding(actor, str(identity))}
+
+    @router.post("/persons/{identity}/client-pair")
+    async def client_pair(identity: UUID4, body: IdentityRequest, actor: Actor) -> Any:
+        authorize(actor, "identity.client.pair")
+        return {
+            "data": await resolve().commands.identities.issue_for_operator(
+                str(identity), actor.principal_id.text, str(body.request_id)
+            )
+        }
+
+    @router.post("/persons/{identity}/forget")
+    async def forget_person(identity: UUID4, body: IdentityRequest, actor: Actor) -> Any:
+        return {
+            "data": await resolve().commands.forget_person(
+                actor, str(identity), str(body.request_id)
+            )
+        }
+
+    @router.post("/devices/{identity}/revoke")
+    async def client_revoke(identity: UUID4, body: IdentityRequest, actor: Actor) -> Any:
+        authorize(actor, "identity.client.revoke")
+        return {
+            "data": await resolve().commands.identities.revoke_for_operator(
+                str(identity), actor.principal_id.text, str(body.request_id)
+            )
+        }
+
+    @router.post("/bindings/{identity}/transfer")
+    async def transfer(identity: UUID4, body: TransferBody, actor: Actor) -> Any:
+        authorize(actor, "identity.binding.transfer")
+        return {
+            "data": await resolve().commands.identities.transfer_for_operator(
+                str(identity), str(body.to_person), actor.principal_id.text, str(body.request_id)
+            )
+        }
 
     @router.post("/bindings/{identity}/disable")
     async def disable_binding(identity: UUID4, body: CommandBody, actor: Actor) -> Any:
@@ -284,14 +328,6 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         }.get(code, 409)
         return JSONResponse({"problem": {"code": code.value}}, status_code=status)
 
-    async def validation_error(_request: Any, _exc: Any) -> JSONResponse:
-        # Validation responses never echo credential or secret-bearing input.
-        if not _request.url.path.startswith("/admin/v1/"):
-            from fastapi.exception_handlers import request_validation_exception_handler
-
-            return await request_validation_exception_handler(_request, _exc)
-        return JSONResponse({"problem": {"code": "validation_error"}}, status_code=422)
-
     async def plugin_error(_request: Any, exc: Any) -> JSONResponse:
         code = (
             exc.category
@@ -305,7 +341,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
 
     app.add_exception_handler(ControlCommandError, domain_error)
     app.add_exception_handler(ControlQueryError, domain_error)
-    app.add_exception_handler(RequestValidationError, validation_error)
+    install_identity_errors(app)
     app.add_exception_handler(PluginConfigurationError, plugin_error)
     app.add_exception_handler(ConfigFileError, plugin_error)
     app.add_exception_handler(PluginManagementRejected, plugin_error)

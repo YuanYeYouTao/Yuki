@@ -138,6 +138,9 @@ def bootstrap(settings: Settings | None = None) -> None:
     from qq_ai_bot.admin_api.http import attach_admin_api
 
     attach_admin_api(driver.server_app, lambda: get_container().admin_api)
+    from qq_ai_bot.client_api.http import attach_client_api
+
+    attach_client_api(driver.server_app, lambda: get_container().client_api)
     nonebot.load_plugin("qq_ai_bot.plugins.ai_chat")
 
 
