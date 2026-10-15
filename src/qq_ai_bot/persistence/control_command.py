@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
 from uuid import uuid4
@@ -13,11 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.admin.config_files import ConfigFileService
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.automation.service import AutomationService
-from qq_ai_bot.config import Settings
-from qq_ai_bot.control_plane.command_types import (
+from qq_ai_bot.admin.authority.command_types import (
     CACHEABLE_COMMAND_FAILURES,
     YUKI_TARGET_TOKEN,
     AttachBindingPayload,
@@ -38,29 +32,25 @@ from qq_ai_bot.control_plane.command_types import (
     parse_route_action,
     parse_set_ingest,
     parse_set_route,
-    project_replayed_result,
-    require_cacheable_problem,
     require_command_target,
     require_empty_payload,
-    require_receipt_operation_pair,
     success_audit_target_type,
-    validate_failure_audit_after,
-    validate_failure_audit_before,
-    validate_success_audit_after,
-    validate_success_audit_before,
 )
-from qq_ai_bot.control_plane.commands import ControlCommand, ControlResult
-from qq_ai_bot.control_plane.json_types import JsonObject, JsonValue
-from qq_ai_bot.control_plane.operations import OperationRef
-from qq_ai_bot.control_plane.principal import ControlPrincipal
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
+from qq_ai_bot.admin.authority.commands import ControlCommand, ControlResult
+from qq_ai_bot.admin.authority.json_types import JsonObject, JsonValue
+from qq_ai_bot.admin.authority.operations import OperationRef
+from qq_ai_bot.admin.authority.principal import ControlPrincipal
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
+from qq_ai_bot.admin.config_files import ConfigFileService
+from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.query_types import (
     RouteKind,
     RouteReferenceState,
     classify_route_reference,
 )
 from qq_ai_bot.conversation.canonical_db_models import (
-    ControlCommandReceiptModel,
     PersonActiveRouteModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
@@ -70,8 +60,6 @@ from qq_ai_bot.domain.identity import (
     IdentityBindingId,
     PersonId,
     PresenceId,
-    PrincipalId,
-    RequestId,
     SpaceBindingId,
     SpaceId,
 )
@@ -86,6 +74,12 @@ from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
+from qq_ai_bot.persistence.command_receipts import (
+    CommandReceiptRepository,
+)
+from qq_ai_bot.persistence.command_receipts import (
+    CommandSuccess as _Success,
+)
 from qq_ai_bot.persistence.control_external import ExternalControlExecutor
 from qq_ai_bot.persistence.control_management import (
     ControlManagementGateway,
@@ -94,8 +88,6 @@ from qq_ai_bot.persistence.control_management import (
     ManagementUnavailable,
 )
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import AdminOperationEventModel
-from qq_ai_bot.persistence.unit_of_work import next_updated_at
 from qq_ai_bot.plugin_host.manager import PluginManager
 from qq_ai_bot.workspace.service import WorkspaceService
 
@@ -109,18 +101,6 @@ class _CachedFailure(Exception):
         self.problem = problem
         self.before = dict(before or {})
         super().__init__(problem.code.value)
-
-
-@dataclass(frozen=True, slots=True)
-class _Success:
-    resource_id: str
-    revision: int
-    target_type: str
-    target_id: str
-    before: Mapping[str, JsonValue]
-    after: Mapping[str, JsonValue]
-    effective_state: Mapping[str, JsonValue]
-    operation: OperationRef | None = None
 
 
 def _now() -> datetime:
@@ -173,10 +153,6 @@ def _canonical_text(value: object) -> str:
     if value is YukiControlTarget.PERMANENT_YUKI:
         return YUKI_TARGET_TOKEN
     return _INVALID_TARGET
-
-
-def _dump_json(value: Mapping[str, JsonValue]) -> str:
-    return json.dumps(dict(value), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
 
 
 def _require_target[T](
@@ -260,7 +236,7 @@ class ControlCommandAdapter:
             raise TypeError("database must be Database")
         self._database = database
         self._memories = memories
-        self._after_audit_flush: Callable[[], None] | None = None
+        self._receipts = CommandReceiptRepository(database)
         self._management = ControlManagementGateway(
             database,
             settings=settings,
@@ -277,7 +253,7 @@ class ControlCommandAdapter:
         self._external = ExternalControlExecutor(self)
 
     async def recover_interrupted_controls(self) -> int:
-        return await self._external.recover_interrupted()
+        return await self._receipts.recover_interrupted_controls()
 
     async def enable_person(
         self,
@@ -818,7 +794,7 @@ class ControlCommandAdapter:
             CommandOperation.MEMORY_DREAM.value,
         }:
             async with self._database.sessions() as reader:
-                existing = await self._load_receipt(reader, principal, command)
+                existing = await self._receipts.load_receipt(reader, principal, command)
             if existing is None:
                 try:
                     prepared = await self._management.prepare(operation, parsed)
@@ -925,9 +901,9 @@ class ControlCommandAdapter:
             nonlocal pending, result
             pending = None
             result = None
-            existing = await self._load_receipt(session, principal, command)
+            existing = await self._receipts.load_receipt(session, principal, command)
             if existing is not None:
-                replay = await self._replay_receipt(
+                replay = await self._receipts.replay_receipt(
                     session,
                     existing,
                     bound_hash,
@@ -944,7 +920,7 @@ class ControlCommandAdapter:
                 else:
                     pending = replay
             elif validation is not None:
-                pending = await self._record_failure(
+                pending = await self._receipts.record_failure(
                     session,
                     principal=principal,
                     command=command,
@@ -966,7 +942,7 @@ class ControlCommandAdapter:
                 except _CachedFailure as failure:
                     if failure.problem.code not in CACHEABLE_COMMAND_FAILURES:
                         raise ControlCommandError(failure.problem) from None
-                    pending = await self._record_failure(
+                    pending = await self._receipts.record_failure(
                         session,
                         principal=principal,
                         command=command,
@@ -980,7 +956,7 @@ class ControlCommandAdapter:
                         started=started,
                     )
                 else:
-                    result = await self._record_success(
+                    result = await self._receipts.record_success(
                         session,
                         principal=principal,
                         command=command,
@@ -1035,9 +1011,9 @@ class ControlCommandAdapter:
         mapped = _map_integrity(exc)
         try:
             async with self._database.immediate_session() as session:
-                existing = await self._load_receipt(session, principal, command)
+                existing = await self._receipts.load_receipt(session, principal, command)
                 if existing is not None:
-                    replay = await self._replay_receipt(
+                    replay = await self._receipts.replay_receipt(
                         session,
                         existing,
                         bound_hash,
@@ -1056,7 +1032,7 @@ class ControlCommandAdapter:
                     raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
                 if mapped not in CACHEABLE_COMMAND_FAILURES:
                     raise ControlCommandError(_problem(mapped))
-                problem = await self._record_failure(
+                problem = await self._receipts.record_failure(
                     session,
                     principal=principal,
                     command=command,
@@ -1072,477 +1048,6 @@ class ControlCommandAdapter:
         except ControlCommandError:
             raise
         raise ControlCommandError(problem)
-
-    async def _load_receipt(
-        self,
-        session: AsyncSession,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-    ) -> ControlCommandReceiptModel | None:
-        stmt = select(ControlCommandReceiptModel).where(
-            ControlCommandReceiptModel.principal_id == principal.principal_id.text,
-            ControlCommandReceiptModel.request_id == command.request_id.text,
-        )
-        rows = list(await session.scalars(stmt))
-        if len(rows) > 1:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        return rows[0] if rows else None
-
-    async def _replay_receipt(
-        self,
-        session: AsyncSession,
-        receipt: ControlCommandReceiptModel,
-        bound_hash: str,
-        *,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-        operation: str,
-        capability: str,
-        semantic_target_id: str,
-        material: Mapping[str, JsonValue],
-        failure_target_type: str,
-    ) -> ControlResult | Problem:
-        if type(receipt.payload_hash) is not str or len(receipt.payload_hash) != 64:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if receipt.payload_hash != bound_hash:
-            return _problem(ProblemCode.IDEMPOTENCY_CONFLICT)
-        self._require_receipt_lifecycle(
-            receipt,
-            principal=principal,
-            command=command,
-            operation=operation,
-            material=material,
-        )
-        audit = await session.get(AdminOperationEventModel, receipt.audit_id)
-        if audit is None:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if receipt.status == "succeeded":
-            return await self._result_from_success_receipt(
-                session,
-                receipt,
-                audit,
-                operation=operation,
-                capability=capability,
-                principal=principal,
-                command=command,
-                semantic_target_id=semantic_target_id,
-                material=material,
-            )
-        if receipt.status == "failed":
-            self._require_failure_audit_chain(
-                audit,
-                receipt,
-                principal=principal,
-                command=command,
-                operation=operation,
-                capability=capability,
-                semantic_target_id=semantic_target_id,
-                failure_target_type=failure_target_type,
-            )
-            return _problem(require_cacheable_problem(receipt.problem_code))
-        raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-
-    def _require_receipt_lifecycle(
-        self,
-        receipt: ControlCommandReceiptModel,
-        *,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-        operation: str,
-        material: Mapping[str, JsonValue],
-    ) -> None:
-        try:
-            stored_principal = PrincipalId.parse(receipt.principal_id).text
-            stored_request = RequestId.parse(receipt.request_id).text
-        except (TypeError, ValueError) as exc:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH)) from exc
-        if stored_principal != principal.principal_id.text:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if stored_request != command.request_id.text:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if receipt.audit_id is None or type(receipt.audit_id) is not int or receipt.audit_id < 1:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if receipt.status == "succeeded":
-            if receipt.problem_code is not None:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            if type(receipt.result_resource_id) is not str:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            if type(receipt.result_revision) is bool or type(receipt.result_revision) is not int:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            if receipt.result_revision < 1 or receipt.effective_state_json is None:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            try:
-                require_receipt_operation_pair(
-                    operation=operation,
-                    material=material,
-                    resource_id=receipt.result_resource_id,
-                    kind=receipt.operation_kind,
-                    ref=receipt.operation_ref,
-                )
-            except ControlCommandError as exc:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH)) from exc
-            return
-        if receipt.status == "failed":
-            if (
-                receipt.result_resource_id is not None
-                or receipt.result_revision is not None
-                or receipt.effective_state_json is not None
-                or receipt.operation_kind is not None
-                or receipt.operation_ref is not None
-            ):
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            require_cacheable_problem(receipt.problem_code)
-            return
-        raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-
-    def _require_audit_correlation(
-        self,
-        audit: AdminOperationEventModel,
-        *,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-        operation: str,
-        capability: str,
-    ) -> None:
-        if (
-            audit.actor_principal_kind != "control"
-            or audit.actor_principal_id != principal.principal_id.text
-        ):
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if audit.control_request_id != command.request_id.text:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if audit.conversation_key != "":
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if audit.capability != capability or audit.operation != operation:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-
-    def _load_audit_json(self, audit: AdminOperationEventModel) -> tuple[object, object]:
-        try:
-            return json.loads(audit.before_json), json.loads(audit.after_json)
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH)) from exc
-
-    async def _result_from_success_receipt(
-        self,
-        session: AsyncSession,
-        receipt: ControlCommandReceiptModel,
-        audit: AdminOperationEventModel,
-        *,
-        operation: str,
-        capability: str,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-        semantic_target_id: str,
-        material: Mapping[str, JsonValue],
-    ) -> ControlResult:
-        self._require_audit_correlation(
-            audit,
-            principal=principal,
-            command=command,
-            operation=operation,
-            capability=capability,
-        )
-        if audit.success is not True or audit.error_category is not None:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if audit.target_type != success_audit_target_type(operation):
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if type(receipt.result_resource_id) is not str:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if audit.target_id != receipt.result_resource_id:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if operation in {
-            CommandOperation.PERSON_ENABLE.value,
-            CommandOperation.PERSON_DISABLE.value,
-            CommandOperation.SPACE_ENABLE.value,
-            CommandOperation.SPACE_DISABLE.value,
-            CommandOperation.PRESENCE_START.value,
-            CommandOperation.PRESENCE_STOP.value,
-            CommandOperation.PRESENCE_SET_INGEST.value,
-        } or audit.target_type.endswith("_route"):
-            if receipt.result_resource_id != semantic_target_id:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            if audit.target_id != semantic_target_id:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if operation == CommandOperation.PRESENCE_REGISTER.value:
-            if semantic_target_id != YUKI_TARGET_TOKEN:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if type(receipt.result_revision) is bool or type(receipt.result_revision) is not int:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if type(receipt.effective_state_json) is not str or receipt.audit_id is None:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        before, after = self._load_audit_json(audit)
-        try:
-            validate_success_audit_before(before, operation=operation)
-            after_state = validate_success_audit_after(
-                after,
-                operation=operation,
-                resource_id=receipt.result_resource_id,
-                revision=receipt.result_revision,
-                semantic_target_id=semantic_target_id,
-                material=material,
-            )
-            state = json.loads(receipt.effective_state_json)
-            result = project_replayed_result(
-                operation=operation,
-                resource_id=receipt.result_resource_id,
-                revision=receipt.result_revision,
-                audit_id=str(receipt.audit_id),
-                raw_state=state,
-                semantic_target_id=semantic_target_id,
-                material=material,
-            )
-        except ControlCommandError:
-            raise
-        except (TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH)) from exc
-        if dict(result.effective_state) != after_state:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        try:
-            kind, ref = require_receipt_operation_pair(
-                operation=operation,
-                material=material,
-                resource_id=receipt.result_resource_id,
-                kind=receipt.operation_kind,
-                ref=receipt.operation_ref,
-            )
-        except ControlCommandError as exc:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH)) from exc
-        operation_ref = await self._hydrate_operation(
-            session, kind=kind, ref=ref, resource_id=receipt.result_resource_id
-        )
-        return ControlResult(
-            success=True,
-            resource_id=result.resource_id,
-            revision=result.revision,
-            audit_id=result.audit_id,
-            effective_state=result.effective_state,
-            operation=operation_ref,
-        )
-
-    def _require_failure_audit_chain(
-        self,
-        audit: AdminOperationEventModel,
-        receipt: ControlCommandReceiptModel,
-        *,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-        operation: str,
-        capability: str,
-        semantic_target_id: str,
-        failure_target_type: str,
-    ) -> None:
-        self._require_audit_correlation(
-            audit,
-            principal=principal,
-            command=command,
-            operation=operation,
-            capability=capability,
-        )
-        if audit.success is not False or audit.error_category != receipt.problem_code:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if audit.target_type != failure_target_type or audit.target_id != semantic_target_id:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        before, after = self._load_audit_json(audit)
-        try:
-            validate_failure_audit_before(before, operation=operation)
-            validate_failure_audit_after(after, problem_code=str(receipt.problem_code))
-        except ControlCommandError:
-            raise
-
-    async def _hydrate_operation(
-        self,
-        session: AsyncSession,
-        *,
-        kind: str | None,
-        ref: str | None,
-        resource_id: str,
-    ) -> OperationRef | None:
-        if kind is None or ref is None:
-            return None
-        from qq_ai_bot.memory.dream.repository import DreamRepository
-        from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-        from qq_ai_bot.persistence.control_operations import dream_operation, rebuild_operation
-
-        if kind == "rebuild":
-            rebuild = await MemoryRebuildRepository(self._database).get_run(
-                resource_id, session=session
-            )
-            if rebuild is None or ref != f"rebuild:{rebuild.public_id}":
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            return rebuild_operation(rebuild)
-        if kind == "dream":
-            dream = await DreamRepository(self._database).get_run(resource_id, session=session)
-            if dream is None or ref != f"dream:{dream.public_id}":
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            return dream_operation(dream)
-        raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-
-    async def _record_success(
-        self,
-        session: AsyncSession,
-        *,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-        operation: str,
-        capability: str,
-        payload_hash: str,
-        success: _Success,
-        semantic_target_id: str,
-        material: Mapping[str, JsonValue],
-        started: float,
-        existing_receipt: ControlCommandReceiptModel | None = None,
-    ) -> ControlResult:
-        validate_success_audit_before(success.before, operation=operation)
-        after_state = validate_success_audit_after(
-            success.after,
-            operation=operation,
-            resource_id=success.resource_id,
-            revision=success.revision,
-            semantic_target_id=semantic_target_id,
-            material=material,
-        )
-        projected_state = project_replayed_result(
-            operation=operation,
-            resource_id=success.resource_id,
-            revision=success.revision,
-            audit_id="0",
-            raw_state=success.effective_state,
-            semantic_target_id=semantic_target_id,
-            material=material,
-        )
-        if dict(projected_state.effective_state) != after_state:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        audit = AdminOperationEventModel(
-            actor_user_id=principal.principal_id.text,
-            actor_principal_kind="control",
-            actor_principal_id=principal.principal_id.text,
-            control_request_id=command.request_id.text,
-            trigger_message_id="",
-            conversation_key="",
-            capability=capability,
-            operation=operation,
-            target_type=success.target_type,
-            target_id=success.target_id,
-            before_json=_dump_json(success.before),
-            after_json=_dump_json(success.after),
-            success=True,
-            error_category=None,
-            duration_seconds=_duration(started),
-            created_at=_now(),
-        )
-        session.add(audit)
-        await session.flush()
-        if self._after_audit_flush is not None:
-            self._after_audit_flush()
-        if audit.id is None:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        try:
-            kind, ref = require_receipt_operation_pair(
-                operation=operation,
-                material=material,
-                resource_id=success.resource_id,
-                kind=(
-                    None
-                    if success.operation is None
-                    else success.operation.operation_id.partition(":")[0]
-                ),
-                ref=None if success.operation is None else success.operation.operation_id,
-            )
-        except ControlCommandError as exc:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH)) from exc
-        projected = ControlResult(
-            success=True,
-            resource_id=projected_state.resource_id,
-            revision=projected_state.revision,
-            audit_id=str(audit.id),
-            effective_state=projected_state.effective_state,
-            operation=success.operation,
-        )
-        stamp = _now()
-        receipt = existing_receipt or ControlCommandReceiptModel(
-            principal_id=principal.principal_id.text,
-            request_id=command.request_id.text,
-            payload_hash=payload_hash,
-            created_at=stamp,
-        )
-        receipt.status = "succeeded"
-        receipt.result_resource_id = projected.resource_id
-        receipt.effective_state_json = _dump_json(dict(projected.effective_state))
-        receipt.result_revision = projected.revision
-        receipt.problem_code = None
-        receipt.audit_id = audit.id
-        receipt.operation_kind = kind
-        receipt.operation_ref = ref
-        receipt.updated_at = (
-            next_updated_at(existing_receipt.updated_at, stamp) if existing_receipt else stamp
-        )
-        session.add(receipt)
-        return projected
-
-    async def _record_failure(
-        self,
-        session: AsyncSession,
-        *,
-        principal: ControlPrincipal,
-        command: ControlCommand,
-        operation: str,
-        capability: str,
-        target_type: str,
-        target_id: str,
-        payload_hash: str,
-        problem: Problem,
-        before: Mapping[str, JsonValue],
-        started: float,
-        existing_receipt: ControlCommandReceiptModel | None = None,
-    ) -> Problem:
-        if problem.code not in CACHEABLE_COMMAND_FAILURES:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        safe_before = validate_failure_audit_before(dict(before), operation=operation)
-        validate_failure_audit_after(
-            {"problem": problem.code.value}, problem_code=problem.code.value
-        )
-        audit = AdminOperationEventModel(
-            actor_user_id=principal.principal_id.text,
-            actor_principal_kind="control",
-            actor_principal_id=principal.principal_id.text,
-            control_request_id=command.request_id.text,
-            trigger_message_id="",
-            conversation_key="",
-            capability=capability,
-            operation=operation,
-            target_type=target_type,
-            target_id=target_id,
-            before_json=_dump_json(safe_before),
-            after_json=_dump_json({"problem": problem.code.value}),
-            success=False,
-            error_category=problem.code.value,
-            duration_seconds=_duration(started),
-            created_at=_now(),
-        )
-        session.add(audit)
-        await session.flush()
-        if self._after_audit_flush is not None:
-            self._after_audit_flush()
-        stamp = _now()
-        receipt = existing_receipt or ControlCommandReceiptModel(
-            principal_id=principal.principal_id.text,
-            request_id=command.request_id.text,
-            payload_hash=payload_hash,
-            created_at=stamp,
-        )
-        receipt.status = "failed"
-        receipt.result_resource_id = None
-        receipt.effective_state_json = None
-        receipt.result_revision = None
-        receipt.problem_code = problem.code.value
-        receipt.audit_id = audit.id
-        receipt.operation_kind = None
-        receipt.operation_ref = None
-        receipt.updated_at = (
-            next_updated_at(existing_receipt.updated_at, stamp) if existing_receipt else stamp
-        )
-        session.add(receipt)
-        return problem
 
     async def _toggle_person(
         self,
@@ -2436,13 +1941,6 @@ def _reject_populated_merge(*, other_owner_exists: bool) -> None:
 
     if other_owner_exists:
         raise _fail(ProblemCode.POPULATED_MERGE_FORBIDDEN)
-
-
-def _duration(started: float) -> float:
-    elapsed = monotonic() - started
-    if elapsed < 0:
-        return 0.0
-    return elapsed
 
 
 def _route_state(

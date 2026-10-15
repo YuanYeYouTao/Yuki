@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from qq_ai_bot.control_plane.decision import decide
-from qq_ai_bot.control_plane.json_types import JsonObject
-from qq_ai_bot.control_plane.operations import OperationKind, OperationRef
+from qq_ai_bot.admin.authority.decision import decide
+from qq_ai_bot.admin.authority.json_types import JsonObject
+from qq_ai_bot.admin.authority.operations import OperationKind, OperationRef
+from qq_ai_bot.admin.authority.principal import ControlPrincipal
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.paging import Page, PageRequest
-from qq_ai_bot.control_plane.principal import ControlPrincipal
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_port import ControlQueryPort
 from qq_ai_bot.control_plane.query_types import (
     ActivityView,

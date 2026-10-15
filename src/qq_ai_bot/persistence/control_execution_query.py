@@ -14,8 +14,8 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.paging import Page, PageRequest
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_cursors import decode_query_cursor, encode_query_cursor
 from qq_ai_bot.control_plane.query_types import (
     ChatEventView,

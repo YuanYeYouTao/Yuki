@@ -7,17 +7,17 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from enum import Enum
 
-from qq_ai_bot.control_plane.command_types import ControlCommandError
-from qq_ai_bot.control_plane.commands import ControlCommand, ControlResult
-from qq_ai_bot.control_plane.json_types import (
+from qq_ai_bot.admin.authority.command_types import ControlCommandError
+from qq_ai_bot.admin.authority.commands import ControlCommand, ControlResult
+from qq_ai_bot.admin.authority.json_types import (
     JsonObject,
     JsonValue,
     freeze_json_object,
     freeze_json_value,
 )
-from qq_ai_bot.control_plane.operations import OperationRef
+from qq_ai_bot.admin.authority.operations import OperationRef
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.paging import Cursor, Page, PageRequest
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import ControlQueryError
 from qq_ai_bot.control_plane.surface import ControlMethodView, ControlSurfaceView
 from qq_ai_bot.domain.identity import (

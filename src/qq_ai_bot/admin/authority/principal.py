@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import final
 
-from qq_ai_bot.control_plane.capabilities import (
+from qq_ai_bot.admin.authority.capabilities import (
     is_forbidden_control_capability,
     is_protocol_capability,
     normalize_capability_id,

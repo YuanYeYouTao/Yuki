@@ -11,8 +11,8 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.media_types import raster_type
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import ControlQueryError, DownloadView
 from qq_ai_bot.domain.identity import RequestId
 from qq_ai_bot.emoji.db_models import EmojiAssetModel

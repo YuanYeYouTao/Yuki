@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from qq_ai_bot.admin.authority.command_types import ControlCommandError
+from qq_ai_bot.admin.authority.commands import ControlCommand, ControlResult
+from qq_ai_bot.admin.authority.decision import decide
+from qq_ai_bot.admin.authority.principal import ControlPrincipal
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.command_port import ControlCommandPort
-from qq_ai_bot.control_plane.command_types import ControlCommandError
-from qq_ai_bot.control_plane.commands import ControlCommand, ControlResult
-from qq_ai_bot.control_plane.decision import decide
-from qq_ai_bot.control_plane.principal import ControlPrincipal
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.surface import method_capability
 from qq_ai_bot.domain.control import DecisionContext
 

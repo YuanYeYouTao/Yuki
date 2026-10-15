@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import re
 
+from qq_ai_bot.admin.authority.principal import ControlPrincipal
 from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
 from qq_ai_bot.admin.models import AdminActor, ControlAuditRef
-from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot

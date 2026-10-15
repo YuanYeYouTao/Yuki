@@ -13,10 +13,10 @@ from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.staticfiles import StaticFiles
 
+from qq_ai_bot.admin.authority.command_types import ControlCommandError
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.application.modules.control_plane import ControlPlaneBundle
 from qq_ai_bot.config import Settings
-from qq_ai_bot.control_plane.command_types import ControlCommandError
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import (
     ControlQueryError,
     DownloadView,

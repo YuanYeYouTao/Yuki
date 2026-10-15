@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from qq_ai_bot.control_plane.decision import decide
-from qq_ai_bot.control_plane.principal import ControlPrincipal
-from qq_ai_bot.control_plane.targets import PersonControlTarget
+from qq_ai_bot.admin.authority.decision import decide
+from qq_ai_bot.admin.authority.principal import ControlPrincipal
+from qq_ai_bot.admin.authority.targets import PersonControlTarget
 from qq_ai_bot.domain.control import DecisionContext
 
 SUPERUSER_ONLY_MESSAGE = "只有当前真实超级管理员可以执行该操作"

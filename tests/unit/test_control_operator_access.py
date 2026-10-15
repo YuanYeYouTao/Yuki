@@ -7,9 +7,9 @@ from uuid import uuid4
 
 import pytest
 
+from qq_ai_bot.admin.authority.capabilities import is_protocol_capability
 from qq_ai_bot.application.control_access import ControlOperatorAccess
 from qq_ai_bot.control_plane import ControlQueryError, PrincipalSource, ProblemCode
-from qq_ai_bot.control_plane.capabilities import is_protocol_capability
 
 
 def operator_file(

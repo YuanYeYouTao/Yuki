@@ -5,16 +5,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Final
 
-from qq_ai_bot.control_plane.operations import OperationKind, StateEpoch
+from qq_ai_bot.admin.authority.operations import OperationKind, StateEpoch
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
+from qq_ai_bot.admin.authority.tokens import require_aware_datetime, require_opaque_token
 from qq_ai_bot.control_plane.paging import Cursor
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import (
     QUERY_CURSOR_VERSION,
     ControlQueryError,
     QueryCursorPhase,
     QueryResourceKind,
 )
-from qq_ai_bot.control_plane.tokens import require_aware_datetime, require_opaque_token
 
 _SEPARATOR = "|"
 CANONICAL_RESOURCE_KINDS: Final[frozenset[QueryResourceKind]] = frozenset(

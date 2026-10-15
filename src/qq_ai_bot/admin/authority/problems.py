@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, final
 
-from qq_ai_bot.control_plane.json_types import JsonObject, freeze_json_object
+from qq_ai_bot.admin.authority.json_types import JsonObject, freeze_json_object
 
 
 @final

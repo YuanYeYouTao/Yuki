@@ -9,8 +9,8 @@ from datetime import datetime
 from enum import StrEnum
 from typing import final
 
-from qq_ai_bot.control_plane.problems import ProblemCode
-from qq_ai_bot.control_plane.tokens import require_aware_datetime
+from qq_ai_bot.admin.authority.problems import ProblemCode
+from qq_ai_bot.admin.authority.tokens import require_aware_datetime
 
 _ERROR_CATEGORY = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
 _OPERATION_ID = re.compile(r"\A[A-Za-z0-9._:-]{1,128}\Z")

@@ -5,9 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import final
 
-from qq_ai_bot.control_plane.json_types import JsonObject, freeze_json_object
-from qq_ai_bot.control_plane.operations import OperationRef
-from qq_ai_bot.control_plane.tokens import MAX_RESOURCE_TOKEN_LENGTH, require_opaque_token
+from qq_ai_bot.admin.authority.json_types import JsonObject, freeze_json_object
+from qq_ai_bot.admin.authority.operations import OperationRef
+from qq_ai_bot.admin.authority.tokens import MAX_RESOURCE_TOKEN_LENGTH, require_opaque_token
 from qq_ai_bot.domain.identity import RequestId
 
 

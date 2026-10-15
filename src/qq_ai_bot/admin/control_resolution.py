@@ -13,9 +13,9 @@ from typing import overload
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
+from qq_ai_bot.admin.authority.targets import PersonControlTarget, SpaceControlTarget
 from qq_ai_bot.admin.models import AdminActor, ControlAuditRef
-from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.control_plane.targets import PersonControlTarget, SpaceControlTarget
 from qq_ai_bot.domain.control import DecisionContext
 from qq_ai_bot.domain.identity import PersonId, PrincipalId, RequestId, SpaceId
 from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM

@@ -5,9 +5,9 @@ from __future__ import annotations
 import time
 
 from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
+from qq_ai_bot.admin.authority.targets import SpaceControlTarget
 from qq_ai_bot.admin.models import ControlAuditRef
-from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.control_plane.targets import SpaceControlTarget
 from qq_ai_bot.domain.control import DecisionContext
 from qq_ai_bot.persistence.repositories import GroupSetting, GroupSettingsRepository
 from qq_ai_bot.services.admin.control_auth import require_capability

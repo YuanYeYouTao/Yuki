@@ -6,14 +6,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import final
 
-from qq_ai_bot.control_plane.capabilities import (
+from qq_ai_bot.admin.authority.capabilities import (
     DENIED_CAPABILITY_ID,
     is_forbidden_control_capability,
     is_protocol_capability,
     normalize_capability_id,
 )
-from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
+from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.domain.control import DecisionContext
 
 

@@ -670,7 +670,7 @@ async def test_operation_pages_read_original_status_without_parsing_private_run_
     from sqlalchemy import insert
     from tests.support.projection_sql_counts import capture_sql
 
-    from qq_ai_bot.control_plane.operations import OperationKind, OperationStatus
+    from qq_ai_bot.admin.authority.operations import OperationKind, OperationStatus
     from qq_ai_bot.control_plane.paging import PageRequest
     from qq_ai_bot.memory.dream.db_models import MemoryDreamRunModel
     from qq_ai_bot.persistence.models import MemoryRebuildRunModel

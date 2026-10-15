@@ -10,8 +10,8 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.control_plane.json_types import JsonObject
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
+from qq_ai_bot.admin.authority.json_types import JsonObject
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import (
     REDACTED_DISPLAY,
     ActivityView,

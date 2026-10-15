@@ -10,11 +10,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, final
 
-from qq_ai_bot.control_plane.commands import ControlResult
-from qq_ai_bot.control_plane.json_types import JsonValue
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
-from qq_ai_bot.control_plane.query_types import RouteKind, RouteReferenceState
-from qq_ai_bot.control_plane.tokens import require_opaque_token
+from qq_ai_bot.admin.authority.commands import ControlResult
+from qq_ai_bot.admin.authority.json_types import JsonValue
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
+from qq_ai_bot.admin.authority.routes import RouteKind, RouteReferenceState
+from qq_ai_bot.admin.authority.tokens import require_opaque_token
 from qq_ai_bot.domain.control import YukiControlTarget
 from qq_ai_bot.domain.identity import (
     IdentityBindingId,

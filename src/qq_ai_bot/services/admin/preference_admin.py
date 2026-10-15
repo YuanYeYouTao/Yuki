@@ -5,9 +5,9 @@ from __future__ import annotations
 import time
 
 from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
+from qq_ai_bot.admin.authority.targets import PersonControlTarget
 from qq_ai_bot.admin.models import ControlAuditRef
-from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.control_plane.targets import PersonControlTarget
 from qq_ai_bot.domain.control import DecisionContext
 from qq_ai_bot.memory.models import MemoryFact
 from qq_ai_bot.memory.service import MemoryFactService

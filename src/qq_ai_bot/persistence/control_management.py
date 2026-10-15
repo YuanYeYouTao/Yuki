@@ -11,21 +11,21 @@ from typing import Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.authority.command_types import (
+    CommandOperation,
+    ConfigWritePayload,
+    ManagementActionPayload,
+)
+from qq_ai_bot.admin.authority.commands import ControlCommand
+from qq_ai_bot.admin.authority.operations import OperationRef
+from qq_ai_bot.admin.authority.principal import ControlPrincipal
+from qq_ai_bot.admin.authority.problems import ProblemCode
 from qq_ai_bot.admin.config_files import CONFIG_FILE_IDS, ConfigFileError, ConfigFileService
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import ConfigApplyMode, ConfigChangeResult, ControlAuditRef
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.service import AutomationService
 from qq_ai_bot.config import Settings
-from qq_ai_bot.control_plane.command_types import (
-    CommandOperation,
-    ConfigWritePayload,
-    ManagementActionPayload,
-)
-from qq_ai_bot.control_plane.commands import ControlCommand
-from qq_ai_bot.control_plane.operations import OperationRef
-from qq_ai_bot.control_plane.principal import ControlPrincipal
-from qq_ai_bot.control_plane.problems import ProblemCode
 from qq_ai_bot.emoji.db_models import EmojiAssetModel
 from qq_ai_bot.emoji.lifecycle import EmojiLifecycleService
 from qq_ai_bot.emoji.models import EmojiLifecycleStatus
@@ -47,7 +47,7 @@ from qq_ai_bot.memory.rebuild.service import (
     start_rebuild_core,
 )
 from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.control_operations import dream_operation, rebuild_operation
+from qq_ai_bot.persistence.command_receipts import dream_operation, rebuild_operation
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.persistence.models import AutomationModel, MemoryFactModel, MemoryRebuildRunModel

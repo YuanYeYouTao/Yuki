@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from qq_ai_bot.control_plane.commands import ControlCommand, ControlResult
-from qq_ai_bot.control_plane.principal import ControlPrincipal
+from qq_ai_bot.admin.authority.commands import ControlCommand, ControlResult
+from qq_ai_bot.admin.authority.principal import ControlPrincipal
 
 
 class ControlCommandPort(Protocol):

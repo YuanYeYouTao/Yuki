@@ -16,11 +16,11 @@ from typing import Any, cast
 
 from jsonschema import Draft202012Validator
 
-from qq_ai_bot.control_plane.command_types import ManagementActionPayload
-from qq_ai_bot.control_plane.commands import ControlCommand
-from qq_ai_bot.control_plane.json_types import JsonValue
-from qq_ai_bot.control_plane.principal import ControlPrincipal
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
+from qq_ai_bot.admin.authority.command_types import ManagementActionPayload
+from qq_ai_bot.admin.authority.commands import ControlCommand
+from qq_ai_bot.admin.authority.json_types import JsonValue
+from qq_ai_bot.admin.authority.principal import ControlPrincipal
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import ActivityView, ControlQueryError
 from qq_ai_bot.domain.identity import PrincipalId, RequestId
 from qq_ai_bot.persistence.control_management import ManagementMutation

@@ -15,20 +15,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute, load_only
 
 from qq_ai_bot import __version__
-from qq_ai_bot.admin.config_files import ConfigFileError, ConfigFileService
-from qq_ai_bot.admin.config_registry import ConfigRegistry
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.automation.service import AutomationService
-from qq_ai_bot.config import Settings
-from qq_ai_bot.control_plane.json_types import JsonObject
-from qq_ai_bot.control_plane.operations import (
+from qq_ai_bot.admin.authority.json_types import JsonObject
+from qq_ai_bot.admin.authority.operations import (
     OperationKind,
     OperationRef,
     OperationStatus,
     StateEpoch,
 )
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
+from qq_ai_bot.admin.authority.tokens import require_opaque_token
+from qq_ai_bot.admin.config_files import ConfigFileError, ConfigFileService
+from qq_ai_bot.admin.config_registry import ConfigRegistry
+from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.automation.service import AutomationService
+from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.paging import Page, PageRequest
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_cursors import (
     decode_integer_cursor_key,
     decode_operation_cursor_key,
@@ -86,7 +87,6 @@ from qq_ai_bot.control_plane.query_types import (
     mask_external_id,
     sanitize_projected_display,
 )
-from qq_ai_bot.control_plane.tokens import require_opaque_token
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ControlCommandReceiptModel,
@@ -128,8 +128,8 @@ from qq_ai_bot.memory.errors import MemoryRetrievalError
 from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
 from qq_ai_bot.memory.repository import MemoryFactRepository
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-from qq_ai_bot.persistence.control_external import control_operation
-from qq_ai_bot.persistence.control_operations import read_operation, run_operation
+from qq_ai_bot.persistence.command_receipts import control_operation, run_operation
+from qq_ai_bot.persistence.control_operations import read_operation
 from qq_ai_bot.persistence.control_paging import numbered_statement
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (

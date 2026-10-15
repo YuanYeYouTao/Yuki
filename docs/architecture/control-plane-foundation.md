@@ -22,6 +22,10 @@
 查询和命令分别经过现有 ControlPrincipal/DecisionContext 能力核验。角色仅作描述，不隐含授权。
 内部事件沿用 `chat_events.id`；管理请求没有入站聊天事件，不伪造 QQ 消息或借用平台 message_id。
 
+`/ai` 与管理入口共用的主体、授权判断、目标、问题和命令类型位于 `admin/authority/`。
+命令回执的写入、重放、审计关联与启动恢复位于 `persistence/command_receipts.py`，
+继续使用原 `control_command_receipts` 表与操作 ID；旧控制面适配器调用同一仓库。
+
 ### 可信 operator 入口
 
 `CONTROL_OPERATORS_FILE` 可选地指向 TOML，格式见 `config/control-operators.example.toml`。

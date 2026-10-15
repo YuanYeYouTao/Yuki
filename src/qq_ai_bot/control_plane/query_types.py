@@ -9,10 +9,19 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Final, Literal, final
 
-from qq_ai_bot.control_plane.json_types import JsonObject, freeze_json_object
-from qq_ai_bot.control_plane.operations import OperationRef, StateEpoch
-from qq_ai_bot.control_plane.problems import Problem
-from qq_ai_bot.control_plane.tokens import require_aware_datetime, require_opaque_token
+from qq_ai_bot.admin.authority.json_types import JsonObject, freeze_json_object
+from qq_ai_bot.admin.authority.operations import OperationRef, StateEpoch
+from qq_ai_bot.admin.authority.problems import Problem
+from qq_ai_bot.admin.authority.routes import (
+    RouteKind as RouteKind,
+)
+from qq_ai_bot.admin.authority.routes import (
+    RouteReferenceState as RouteReferenceState,
+)
+from qq_ai_bot.admin.authority.routes import (
+    classify_route_reference as classify_route_reference,
+)
+from qq_ai_bot.admin.authority.tokens import require_aware_datetime, require_opaque_token
 from qq_ai_bot.domain.identity import (
     ConversationGeneration,
     ConversationId,
@@ -62,19 +71,6 @@ class PresenceConnectionState(StrEnum):
     CONNECTED = "connected"
     DISCONNECTED = "disconnected"
     AMBIGUOUS = "ambiguous"
-
-
-@final
-class RouteKind(StrEnum):
-    PERSON_ACTIVE = "person_active"
-    SPACE_BINDING_INGEST = "space_binding_ingest"
-    SPACE_ACTIVE = "space_active"
-
-
-@final
-class RouteReferenceState(StrEnum):
-    CONSISTENT = "consistent"
-    STATE_MISMATCH = "state_mismatch"
 
 
 @final
@@ -283,30 +279,6 @@ class ConfigOwnerKind(StrEnum):
 class QueryCursorPhase(StrEnum):
     CANONICAL = "c"
     TIME_ID = "t"
-
-
-def classify_route_reference(
-    *,
-    expected_owner_id: str | None,
-    actual_owner_id: str | None,
-    binding_platform: str | None,
-    presence_platform: str | None,
-) -> RouteReferenceState:
-    """Mark incomplete or cross-platform route joins. Do not invent a match."""
-
-    if expected_owner_id is not None and type(expected_owner_id) is not str:
-        raise TypeError("expected_owner_id must be a str or None")
-    if actual_owner_id is None or binding_platform is None or presence_platform is None:
-        return RouteReferenceState.STATE_MISMATCH
-    if type(actual_owner_id) is not str or type(binding_platform) is not str:
-        raise TypeError("route reference tokens must be str")
-    if type(presence_platform) is not str:
-        raise TypeError("presence_platform must be a str")
-    if expected_owner_id is not None and actual_owner_id != expected_owner_id:
-        return RouteReferenceState.STATE_MISMATCH
-    if binding_platform != presence_platform:
-        return RouteReferenceState.STATE_MISMATCH
-    return RouteReferenceState.CONSISTENT
 
 
 def mask_external_id(value: str, *, reveal: bool) -> ExternalIdView:

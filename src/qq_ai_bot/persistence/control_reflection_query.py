@@ -14,9 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.config import Settings
 from qq_ai_bot.control_plane.paging import Page, PageRequest
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import (
     ActivityView,
     ControlQueryError,

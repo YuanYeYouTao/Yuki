@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, final
 
-from qq_ai_bot.control_plane.tokens import MAX_CAPABILITY_ID_LENGTH
+from qq_ai_bot.admin.authority.tokens import MAX_CAPABILITY_ID_LENGTH
 
 _CAPABILITY_TOKEN = re.compile(r"\A[a-z][a-z0-9_]*(?:[.:][a-z][a-z0-9_]*)*\Z")
 _SEGMENT_SPLIT = re.compile(r"[.:]+")

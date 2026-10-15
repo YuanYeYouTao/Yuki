@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final, final
 
-from qq_ai_bot.control_plane.tokens import (
+from qq_ai_bot.admin.authority.tokens import (
     MAX_CURSOR_LENGTH,
     require_aware_datetime,
     require_opaque_token,

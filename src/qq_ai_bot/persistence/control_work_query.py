@@ -13,8 +13,8 @@ from uuid import UUID
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.paging import Cursor, Page, PageRequest
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import ActivityView, ControlQueryError
 from qq_ai_bot.persistence.control_paging import numbered_statement
 from qq_ai_bot.runtime.subagent_schema import budgets, children

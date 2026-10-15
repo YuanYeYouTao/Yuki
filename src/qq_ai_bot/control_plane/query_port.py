@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from qq_ai_bot.control_plane.json_types import JsonObject
-from qq_ai_bot.control_plane.operations import OperationKind, OperationRef
+from qq_ai_bot.admin.authority.json_types import JsonObject
+from qq_ai_bot.admin.authority.operations import OperationKind, OperationRef
 from qq_ai_bot.control_plane.paging import Page, PageRequest
 from qq_ai_bot.control_plane.query_types import (
     ActivityView,

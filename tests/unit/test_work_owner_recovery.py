@@ -12,9 +12,9 @@ from tests.support.runtime_execution import make_work_resumer
 from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
+from qq_ai_bot.admin.authority.commands import ControlCommand
+from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
 from qq_ai_bot.control_plane.command_service import ControlCommandService
-from qq_ai_bot.control_plane.commands import ControlCommand
-from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
 from qq_ai_bot.domain.control import DecisionContext
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import PrincipalId, RequestId

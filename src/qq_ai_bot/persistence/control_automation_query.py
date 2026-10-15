@@ -10,8 +10,8 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.paging import Page, PageRequest
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import ActivityView, ControlQueryError, QueryResourceKind
 from qq_ai_bot.persistence.control_execution_query import _key, _page
 from qq_ai_bot.persistence.control_paging import numbered_statement

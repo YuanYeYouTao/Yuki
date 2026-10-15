@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from qq_ai_bot.control_plane.capabilities import (
+from qq_ai_bot.admin.authority.capabilities import (
     CONTROL_CAPABILITY_DESCRIPTORS,
     CONTROL_CAPABILITY_IDS,
     DENIED_CAPABILITY_ID,
@@ -14,22 +14,25 @@ from qq_ai_bot.control_plane.capabilities import (
     is_protocol_capability,
     normalize_capability_id,
 )
-from qq_ai_bot.control_plane.command_port import ControlCommandPort
-from qq_ai_bot.control_plane.command_service import ControlCommandService
-from qq_ai_bot.control_plane.command_types import (
+from qq_ai_bot.admin.authority.command_types import (
     CommandOperation,
     ControlCommandError,
     bind_command_hash,
 )
-from qq_ai_bot.control_plane.commands import ControlCommand, ControlResult
-from qq_ai_bot.control_plane.decision import PolicyDecision, PolicyEffect, decide
-from qq_ai_bot.control_plane.json_types import JsonObject, JsonScalar, JsonValue
-from qq_ai_bot.control_plane.operations import (
+from qq_ai_bot.admin.authority.commands import ControlCommand, ControlResult
+from qq_ai_bot.admin.authority.decision import PolicyDecision, PolicyEffect, decide
+from qq_ai_bot.admin.authority.json_types import JsonObject, JsonScalar, JsonValue
+from qq_ai_bot.admin.authority.operations import (
     OperationKind,
     OperationRef,
     OperationStatus,
     StateEpoch,
 )
+from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
+from qq_ai_bot.admin.authority.problems import FROZEN_PROBLEM_CODES, Problem, ProblemCode
+from qq_ai_bot.admin.authority.targets import PersonControlTarget, SpaceControlTarget
+from qq_ai_bot.control_plane.command_port import ControlCommandPort
+from qq_ai_bot.control_plane.command_service import ControlCommandService
 from qq_ai_bot.control_plane.paging import (
     DEFAULT_PAGE_LIMIT,
     MAX_PAGE_LIMIT,
@@ -38,8 +41,6 @@ from qq_ai_bot.control_plane.paging import (
     PageRequest,
     paginate,
 )
-from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.control_plane.problems import FROZEN_PROBLEM_CODES, Problem, ProblemCode
 from qq_ai_bot.control_plane.query_port import ControlQueryPort
 from qq_ai_bot.control_plane.query_service import ControlQueryService
 from qq_ai_bot.control_plane.query_types import (
@@ -86,7 +87,6 @@ from qq_ai_bot.control_plane.query_types import (
     mask_external_id,
     sanitize_projected_display,
 )
-from qq_ai_bot.control_plane.targets import PersonControlTarget, SpaceControlTarget
 from qq_ai_bot.domain.control import DecisionContext, DecisionPrincipal, YukiControlTarget
 
 __all__ = [

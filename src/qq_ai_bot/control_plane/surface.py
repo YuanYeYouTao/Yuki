@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal
 
-from qq_ai_bot.control_plane.capabilities import control_capability_descriptor
-from qq_ai_bot.control_plane.json_types import freeze_json_object
-from qq_ai_bot.control_plane.operations import OperationKind
-from qq_ai_bot.control_plane.principal import ControlPrincipal
-from qq_ai_bot.control_plane.problems import Problem, ProblemCode
+from qq_ai_bot.admin.authority.capabilities import control_capability_descriptor
+from qq_ai_bot.admin.authority.json_types import freeze_json_object
+from qq_ai_bot.admin.authority.operations import OperationKind
+from qq_ai_bot.admin.authority.principal import ControlPrincipal
+from qq_ai_bot.admin.authority.problems import Problem, ProblemCode
 from qq_ai_bot.control_plane.query_types import (
     ChatHistoryFilter,
     ConfigQueryScope,
