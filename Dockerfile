@@ -1,11 +1,4 @@
 # syntax=docker/dockerfile:1.7
-FROM --platform=$BUILDPLATFORM node:24-alpine AS webui
-WORKDIR /app/frontend
-COPY frontend/package.json frontend/package-lock.json ./
-RUN npm ci
-COPY frontend ./
-RUN npm run build
-
 FROM ghcr.io/astral-sh/uv:0.11.31 AS uv
 
 FROM rust:1.96.0-slim AS rust
@@ -34,7 +27,6 @@ COPY --from=uv /uv /uvx /bin/
 COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --frozen --no-dev --no-install-project
 COPY src ./src
-COPY --from=webui /app/src/qq_ai_bot/webui/assets ./src/qq_ai_bot/webui/assets
 RUN uv sync --frozen --no-dev --no-editable
 FROM builder AS builder-code
 # uv sync removes packages outside uv.lock. Install the wheel from the pinned

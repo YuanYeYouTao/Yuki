@@ -332,6 +332,15 @@ class AdminCommands:
 
         operation = CommandOperation.BINDING_ATTACH.value
         parsed = parse_attach_binding(command.payload)
+        command = ControlCommand(
+            request_id=command.request_id,
+            expected_revision=command.expected_revision,
+            payload={
+                "platform": parsed.platform,
+                "external_account_id": parsed.external_account_id,
+                "display_name": parsed.display_name,
+            },
+        )
 
         async def mutate(session: AsyncSession) -> CommandSuccess:
             person = await session.get(CanonicalPersonModel, identity)
@@ -504,9 +513,9 @@ class AdminCommands:
             try:
                 selected = spec
                 if "document" not in selected:
-                    current = await self.files.read("model_profiles")
+                    current = await self.files.read()
                     selected = {"document": current["document"], **spec}
-                saved = await self.files.save("model_profiles", command.expected_revision, selected)
+                saved = await self.files.save(command.expected_revision, selected)
             except ConfigFileError as exc:
                 raise fail(ProblemCode(exc.category)) from None
             return outcome(

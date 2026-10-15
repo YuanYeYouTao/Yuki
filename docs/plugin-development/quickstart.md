@@ -100,7 +100,10 @@ PLUGIN_SYSTEM_ENABLED=true
 PLUGIN_DIRECTORY=plugins
 ```
 
-启动 Host 后，使用已有 Control 操作员凭据管理在线插件。通过环境注入 `YUKI_CONTROL_CREDENTIAL`，不要将凭据写进命令行或日志；`WEBUI_ORIGIN` 必须指向可访问的 Host Control 地址并与服务配置一致。客户端登录、使用 CSRF、读取最新 revision，随后提交原请求。
+启动 Host 后，使用服务器声明的 operator 凭据管理在线插件。通过环境注入
+`YUKI_CONTROL_CREDENTIAL`，`ADMIN_API_URL` 指向运行中的 Bot HTTP 服务。
+CLI 以 Bearer 逐次认证，读取最新 revision 后提交原请求；未知结果沿原请求号查询。
+见[管理 API](../architecture/admin-api.md)。
 
 审阅 `inspect` 的权限后显式批准：
 

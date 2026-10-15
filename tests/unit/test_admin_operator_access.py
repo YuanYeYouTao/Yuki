@@ -9,7 +9,8 @@ import pytest
 
 from qq_ai_bot.admin.authority.capabilities import is_protocol_capability
 from qq_ai_bot.admin.authority.operators import ControlOperatorAccess
-from qq_ai_bot.control_plane import ControlQueryError, PrincipalSource, ProblemCode
+from qq_ai_bot.admin.authority.principal import PrincipalSource
+from qq_ai_bot.admin.authority.problems import ControlQueryError, ProblemCode
 
 
 def operator_file(
@@ -34,19 +35,19 @@ async def test_credentials_without_qq_create_only_explicit_grants(database, tmp_
     monkeypatch.setenv("YUKI_TEST_OPERATOR_TOKEN", secret)
     path, identity = operator_file(tmp_path)
     access = ControlOperatorAccess(database, path)
-    principal = await access.authenticate(secret, source=PrincipalSource.FUTURE_WEB)
+    principal = await access.authenticate(secret, source=PrincipalSource.CLI)
     assert principal.principal_id.text == identity and principal.person_id is None
     assert principal.allows("control.plugin.read")
     assert not principal.allows("control.plugin.mutate")  # role names never grant capabilities
     for invalid in (None, {"principal_id": identity, "roles": ["superuser"]}, "wrong" * 20):
         with pytest.raises(ControlQueryError) as exc:
-            await access.authenticate(invalid, source=PrincipalSource.FUTURE_WEB)
+            await access.authenticate(invalid, source=PrincipalSource.CLI)
         assert exc.value.problem.code is ProblemCode.UNAUTHENTICATED
     with pytest.raises(ValueError):
         await access.authenticate(secret, source=PrincipalSource.QQ)
     monkeypatch.setenv("YUKI_TEST_OPERATOR_TOKEN", "rotated-" + "b" * 40)
     with pytest.raises(ControlQueryError):
-        await access.authenticate(secret, source=PrincipalSource.FUTURE_WEB)
+        await access.authenticate(secret, source=PrincipalSource.CLI)
     assert secret not in repr(access) + repr(principal) + path.read_text(encoding="utf-8")
 
 

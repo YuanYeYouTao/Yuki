@@ -8,7 +8,7 @@
 `config/model_profiles.toml` 的迁移步骤见[运维说明](../operations/model-profile-path-migration.md)。
 指定的模型文件缺失会阻止启动；配置必须是完整 v3 TOML。环境变量仍可由
 `base_url_env/model_env/api_key_env` 显式引用，不再提供无 TOML 路由回退。
-WebUI 成功保存模型连接与任务路由后，新任务立即使用新配置；已经开始的模型请求固定原连接，
+管理 API 成功保存模型连接与任务路由后，新任务立即使用新配置；已经开始的模型请求固定原连接，
 持久 Work 的下次激活因 Profile revision 变化显式开启新链，保留原 Work ID、预算和执行证据，
 不重跑已完成的工具效果。
 Gemini、Claude 原生协议的连接品牌名只作展示；修订按实际原生参数预设计算，改名不改变
@@ -90,7 +90,7 @@ Gemini 使用显式 bridge；支持原生搜索的连接仍须声明实际能力
 `provider` 用于选择参数方言，不通过模型名称猜测，不在上游 400 后自动删参数重试。
 
 供应商名称和接口协议分别配置。AGM、OpenRouter 等中转连接及自定义名称使用显式
-`protocol` 的原适配器；没有 AGM 专用执行器或按品牌自动换协议的分支。WebUI 改名称时
+`protocol` 的原适配器；没有 AGM 专用执行器或按品牌自动换协议的分支。修改连接名称时
 保留原 endpoint、model、密钥引用、协议和参数，预设只用于明确创建新连接。
 
 | provider | 思考参数与差异 |
@@ -146,12 +146,12 @@ Claude 思考开启时不支持强制调用特定工具，适配为 auto；结�
 严格检查恰好一个 emit_result 及 schema，不增加隐藏模型调用。
 
 `headers` 支持 OpenRouter 的站点标识、Anthropic beta 等非鉴权 Header；不能覆盖认证字段，
-不能放换行或把密钥写入 TOML。`api_key_env` 是密钥引用；可读取进程环境变量，或由 WebUI
+不能放换行或把密钥写入 TOML。`api_key_env` 是密钥引用；可读取进程环境变量，或由管理 API
 将 operator 输入的 API Key 保存在模型文件同目录的私有 `model_profiles.secrets.json` 中。
-WebUI 查询不会回传密钥；客户端不跨供应商或密钥来源共享。
+管理查询不会回传密钥；客户端不跨供应商或密钥来源共享。
 新增供应商示例见 [多供应商配置](../../config/model_profiles.providers.example.toml)。
-Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。WebUI 的 Google Gemini 预设使用
-`https://generativelanguage.googleapis.com/v1beta` 与原生 GenerateContent，预填该 ID、
+Gemini 3.8 Flash 的官方模型 ID 是 `gemini-3.8-flash`。Google Gemini 连接示例使用
+`https://generativelanguage.googleapis.com/v1beta` 与原生 GenerateContent，采用该 ID、
 `medium` 思考强度及文字、图片、工具、结构化输出能力。Gemini 3.8 的 Yuki 连接使用
 所选思考参数；不按型号名称前缀提前禁止显式预算。代理转发仍需另行核对，不能把
 代理改写误认为 Yuki 请求。适配器保留工具回合的 thought signature，
@@ -239,8 +239,8 @@ continuation 正文。缓存前缀与首差异以各适配器最终 HTTP body �
 主 Agent 从真实 Conversation、generation 与当前 Work 分支传递 `x-session-id` 请求元数据；
 编号不写进模型正文，不使用每次激活的 chain UUID 或 prompt hash。每个请求单独建 Header，
 不修改共享连接。没有真实代次的独立调用不借其他会话编号。
-WebUI 确认缓存比例使用 `cache_reported_cached_tokens` 与已记录完整 input 的同一覆盖集合；
-原始 `cached_input_tokens` 单独展示，不截到 100% 或由 TTL 子项猜缺项。
+用量记录保留上游实际返回的 cache creation 与 cached input 字段；未返回的字段在原记录中
+保持为空，不从 TTL 子项推断缺项。`model stats` 使用原领域聚合，原记录用于核对未知覆盖。
 
 ## 验证边界与协议来源
 

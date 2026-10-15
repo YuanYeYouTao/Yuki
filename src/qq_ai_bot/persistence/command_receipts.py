@@ -17,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.authority.command_types import (
     CACHEABLE_COMMAND_FAILURES,
-    YUKI_TARGET_TOKEN,
     CommandOperation,
     ControlCommandError,
     project_replayed_result,
@@ -534,21 +533,8 @@ class CommandReceiptRepository:
             raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
         if audit.target_id != receipt.result_resource_id:
             raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if operation in {
-            CommandOperation.PERSON_ENABLE.value,
-            CommandOperation.PERSON_DISABLE.value,
-            CommandOperation.SPACE_ENABLE.value,
-            CommandOperation.SPACE_DISABLE.value,
-            CommandOperation.PRESENCE_START.value,
-            CommandOperation.PRESENCE_STOP.value,
-            CommandOperation.PRESENCE_SET_INGEST.value,
-        } or audit.target_type.endswith("_route"):
+        if operation == CommandOperation.PERSON_DISABLE.value:
             if receipt.result_resource_id != semantic_target_id:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            if audit.target_id != semantic_target_id:
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        if operation == CommandOperation.PRESENCE_REGISTER.value:
-            if semantic_target_id != YUKI_TARGET_TOKEN:
                 raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
         if type(receipt.result_revision) is bool or type(receipt.result_revision) is not int:
             raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
@@ -581,26 +567,13 @@ class CommandReceiptRepository:
             raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH)) from exc
         if dict(result.effective_state) != after_state:
             raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-        try:
-            kind, ref = require_receipt_operation_pair(
-                operation=operation,
-                material=material,
-                resource_id=receipt.result_resource_id,
-                kind=receipt.operation_kind,
-                ref=receipt.operation_ref,
-            )
-        except ControlCommandError as exc:
-            raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH)) from exc
-        operation_ref = await self._hydrate_operation(
-            session, kind=kind, ref=ref, resource_id=receipt.result_resource_id
-        )
         return ControlResult(
             success=True,
             resource_id=result.resource_id,
             revision=result.revision,
             audit_id=result.audit_id,
             effective_state=result.effective_state,
-            operation=operation_ref,
+            operation=None,
         )
 
     def _require_failure_audit_chain(
@@ -632,33 +605,6 @@ class CommandReceiptRepository:
             validate_failure_audit_after(after, problem_code=str(receipt.problem_code))
         except ControlCommandError:
             raise
-
-    async def _hydrate_operation(
-        self,
-        session: AsyncSession,
-        *,
-        kind: str | None,
-        ref: str | None,
-        resource_id: str,
-    ) -> OperationRef | None:
-        if kind is None or ref is None:
-            return None
-        from qq_ai_bot.memory.dream.repository import DreamRepository
-        from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-
-        if kind == "rebuild":
-            rebuild = await MemoryRebuildRepository(self._database).get_run(
-                resource_id, session=session
-            )
-            if rebuild is None or ref != f"rebuild:{rebuild.public_id}":
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            return rebuild_operation(rebuild)
-        if kind == "dream":
-            dream = await DreamRepository(self._database).get_run(resource_id, session=session)
-            if dream is None or ref != f"dream:{dream.public_id}":
-                raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
-            return dream_operation(dream)
-        raise ControlCommandError(_problem(ProblemCode.STATE_MISMATCH))
 
     async def record_success(
         self,

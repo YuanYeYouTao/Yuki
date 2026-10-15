@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from tests.conftest import make_settings
 from tests.integration.test_plugin_frozen_binding import write_plugin
 from tests.support.model_profiles import write_fake_profiles
-from tests.unit.test_control_operator_access import operator_file
+from tests.unit.test_admin_operator_access import operator_file
 
 from qq_ai_bot import __version__
 from qq_ai_bot.admin.authority.operators import ControlOperatorAccess
@@ -139,6 +139,13 @@ async def test_operator_permissions_rotation_and_secret_validation(admin, databa
         assert await session.scalar(select(func.count(ControlCommandReceiptModel.id))) == 0
     monkeypatch.setenv("YUKI_TEST_OPERATOR_TOKEN", "rotated-" + "c" * 48)
     assert (await client.get("/admin/v1/health")).status_code == 401
+
+
+async def test_retired_browser_routes_return_not_found(admin):
+    client, *_ = admin
+    assert (await client.get("/ui/")).status_code == 404
+    assert (await client.post("/api/control/login", json={"credential": TOKEN})).status_code == 404
+    assert (await client.get("/api/control/session")).status_code == 404
 
 
 async def test_identity_creation_binding_attach_disable_and_original_replay(admin, database):

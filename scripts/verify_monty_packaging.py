@@ -139,8 +139,6 @@ if role == "application":
             revision = db.execute("SELECT version_num FROM alembic_version").fetchone()[0]
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert not db.execute("PRAGMA foreign_key_check").fetchall()
-    assets = files("qq_ai_bot.webui").joinpath("assets")
-    assert assets.joinpath("index.html").is_file()
-    report.update(migration_head=revision, packaged_pi_license=False, built_webui=True)
+    report.update(migration_head=revision, packaged_pi_license=False)
 report["verdict"] = "packaging_passed_container_isolation_unavailable"
 print(json.dumps(report, indent=2))

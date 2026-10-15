@@ -120,7 +120,7 @@ item 回执都已收尾，run 才能进入 completed。
 只有 completed/cancelled/failed run 可 purge。purge 只删除 staging；已提交事实、证据和事件
 receipt 保留。cancel 只停止后续处理，不回滚已提交事实。
 
-重建通过 `/ai memory rebuild` 和 WebUI 调用同一领域服务，按真实授权操作并保留 review。
+重建通过 `/ai memory rebuild` 调用原领域服务，按真实授权操作并保留 review。
 
 ## 配置
 

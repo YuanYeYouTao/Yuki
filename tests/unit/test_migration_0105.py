@@ -15,11 +15,13 @@ from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel
 from qq_ai_bot.automation.repository import AutomationRepository
-from qq_ai_bot.control_plane.paging import PageRequest
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_space
-from qq_ai_bot.persistence.control_automation_query import ControlAutomationQueryAdapter
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import AutomationVersionModel, RuntimeConfigOverrideModel
+from qq_ai_bot.persistence.models import (
+    AutomationStepRunModel,
+    AutomationVersionModel,
+    RuntimeConfigOverrideModel,
+)
 from qq_ai_bot.runtime.subagent_repository import SubagentRepository
 from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.work_budget_schema import budgets
@@ -499,11 +501,14 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
                         select(automation_budgets).where(automation_budgets.c.run_id == admitted.id)
                     )
                 ).first()
-            audits = await ControlAutomationQueryAdapter(database.sessions).list_automation_steps(
-                PageRequest(), automation_id=1
-            )
-            assert [item.resource_id for item in audits.items] == ["1"]
-            assert audits.items[0].fields["run_id"] == 1
+            async with database.sessions() as reader:
+                audits = list(
+                    await reader.scalars(
+                        select(AutomationStepRunModel).where(AutomationStepRunModel.run_id == 1)
+                    )
+                )
+                assert [item.id for item in audits] == [1]
+                assert audits[0].run_id == 1
             assert (await repository.get(1)).run_count == 3
         finally:
             await database.close()

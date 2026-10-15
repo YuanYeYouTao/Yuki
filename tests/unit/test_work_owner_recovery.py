@@ -14,14 +14,12 @@ from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
 from qq_ai_bot.admin.authority.commands import ControlCommand
 from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.control_plane.command_service import ControlCommandService
-from qq_ai_bot.domain.control import DecisionContext
+from qq_ai_bot.admin_api.commands import AdminCommands
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import PrincipalId, RequestId
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_recovery_schema import recovery
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
@@ -47,14 +45,8 @@ async def public_action(database, row, action):
         expected_revision=row["revision"],
         payload={"resource_id": row["id"], "action": action},
     )
-    context = DecisionContext(
-        request_id=request,
-        principal=principal,
-        source=PrincipalSource.CLI,
-        canonical_target=row["id"],
-    )
-    return await ControlCommandService(ControlCommandAdapter(database)).mutate_work(
-        context, command
+    return await AdminCommands(database, None, None).work_action(
+        principal, row["id"], action, command
     )
 
 

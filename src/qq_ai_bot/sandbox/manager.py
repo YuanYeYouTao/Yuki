@@ -14,7 +14,6 @@ import stat
 from pathlib import Path
 from uuid import UUID
 
-from qq_ai_bot.sandbox.client import MAX_CONTROL_UPLOAD_WIRE
 from qq_ai_bot.workspace.store import WorkspaceStore
 
 TERMINAL = {"succeeded", "failed", "cancelled"}
@@ -60,7 +59,7 @@ async def main() -> None:
     serve_unix = getattr(asyncio, "start_unix_server", None)
     if serve_unix is None:
         raise RuntimeError("unix_socket_required")
-    server = await serve_unix(manager.serve, str(args.socket), limit=MAX_CONTROL_UPLOAD_WIRE)
+    server = await serve_unix(manager.serve, str(args.socket), limit=262144)
     args.socket.chmod(0o660)
     worker = asyncio.create_task(manager.worker())
     task = asyncio.current_task()

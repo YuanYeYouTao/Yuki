@@ -17,8 +17,8 @@ override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`�
 取得同一凭据，以 `Authorization: Bearer …` 逐次认证。未配置 operator 时拒绝认证；
 角色不授予能力，凭据轮换立即影响后续请求。operator 不能凭管理权限以某个 Person 发言。
 
-旧 WebUI 在 P2 期间仍提供原入口；两个入口共用同一个模型文件服务与原领域服务。
-P3 删除旧入口。新 API 不创建浏览器登录会话，也不需要 Cookie 或 CSRF token。
+旧浏览器管理入口、前端与旧控制面查询层已从源码退役。管理 API 使用同一个模型文件服务
+与原领域服务，不创建浏览器登录会话，也不需要 Cookie 或 CSRF token。
 
 ## 方法与 CLI
 
@@ -67,7 +67,7 @@ observe 只调用运行中插件的观察合同。通知只允许原领域规则
 Work 取消与续跑调用 `manage_work`，沿原 revision、执行身份、来源与效果回执处理。
 模型保存调用共享 `ConfigFileService` 原子保存并热应用，返回 `applied` 或实际的待重启状态。
 密钥写入 `model_profiles.secrets.json`，只保存新增别名；别名使用合法环境变量名称，
-原 `YUKI_WEBUI_KEY_*` 别名继续可读。配置文件中的 `api_key_env` 必须引用该别名。
+已有别名继续可读。配置文件中的 `api_key_env` 必须引用该别名。
 读取模型时只返回配置与已配置状态，响应、审计和 TOML 不包含密钥值。
 
 例如，先读取 `admin model show` 的 revision，再执行：

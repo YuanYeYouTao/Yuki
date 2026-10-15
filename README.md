@@ -24,14 +24,14 @@
 
 Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何在真实社交场景中持续存在。她当前运行在 QQ 私聊和群聊中，记住人与共同经历，也能使用工具和持久工作环境完成跨消息的任务。身份和记忆由自己的数据库保存，更换模型、QQ 账号或网关时可以继续沿用。
 
-**当前正式版为 3.8.4。** 本版将可见发言统一为主 Agent 显式 `send_message`，并加入可选的群聊语义观察、SELF 自主参与和自主自动化。Yuki 可决定发言、分条发送或沉默；3.8.4 的自主参与默认关闭，真实 QQ 群聊中的长期效果仍在验证。工作环境需要单独部署；3.8.4 正式包不包含管理 WebUI。
+**当前正式版为 3.8.4。** 本版将可见发言统一为主 Agent 显式 `send_message`，并加入可选的群聊语义观察、SELF 自主参与和自主自动化。Yuki 可决定发言、分条发送或沉默；3.8.4 的自主参与默认关闭，真实 QQ 群聊中的长期效果仍在验证。工作环境需要单独部署；3.8.4 正式包不包含管理界面。
 
 **当前开发基线为 3.9.0，尚未发布。** 源码变更和全部已合并 PR 见 [3.9.0 发布说明草案](docs/releases/v3.9.0.md)；升级准备见 [3.9.0 升级草案](docs/upgrade-3.9.0.md)。正式下载入口仍为上方的 3.8.4 Release。
 
 ## 3.9.0 的主要变化
 
 - **默认 direct 构建**：保持同一主 Agent 循环和固定完整工具声明，默认镜像不包含 Monty binding、worker 或 launcher。Code Mode 是可选的工具调用方式，使用单独构建的 `codemode` target 并显式启用；两种模式共用工具实现与执行后端。
-- **管理 WebUI 与共享执行 Runtime**：在手帐风格界面查看真实聊天、执行轨迹、工具回执、模型用量与工作区，管理模型连接和任务路由。聊天、SELF、插件、自动化及 Work 续跑共用主 Agent，WebUI 默认关闭。
+- **管理 API 与共享执行 Runtime**：管理 CLI 通过 Bearer API 调用原身份、插件、模型配置、诊断与 Work 服务；聊天、SELF、插件、自动化及 Work 续跑共用主 Agent。
 - **按群控制接话与主动唤醒**：自动接话、主动唤醒和自主参与的源码默认值为开启，可按实际配置分别控制。连续普通群消息按可配置窗口合并接话机会，明确呼叫和原 Work 输入不经过该等待；关闭新机会不取消已接纳任务或定时安排。Jev 语义控制器仍是默认关闭的可选接入。
 - **可恢复的长任务**：Work 保留目标、父子关系、累计预算、原检查点和真实回执；上下文按实际请求容量整理。Agent 可主动结束，部分失败或旧 unknown 不否决整个目标；等待与明确继续沿原任务，子任务继续不重开已结束祖先，已确认效果不重做。
 - **简化记忆策略**：同 key 的独立事实可以共存，修改与删除按 fact ID；删除归因/强化评分、自动升格、容量腾位及旧人物好感度/信任评分。提取、SELF 与 Dream 可分别选择模型，允许部分整理与未决结果；自动提取只采纳新的事实断言。
@@ -46,7 +46,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 这些是当前源码变化。各 Provider 的真实 API、自然聊天延迟和长期任务效果仍按各自验收记录核对；可选 Code Mode 的隔离验证不代表生产容量或长期内存验收。
 
-**后续计划：3.9.0 当前的 WebUI 是临时的，下个大版本会彻底以多客户端的方式重构。**
+**多客户端重构进行中：旧浏览器管理入口已从源码退役；个人端按 #299 任务书分阶段接入。**
 
 会话 [Compact](docs/architecture/conversation-compact.md)（[#417](https://github.com/YuanYeYouTao/Yuki/issues/417)、[#418](https://github.com/YuanYeYouTao/Yuki/issues/418)）由当前 Main 模型按真实容量整理公共历史或私有执行尾部。子 Agent 共用 Main 的完整工具合同，执行按自己的真实来源与授权核验；旧独立 Rollup 和 Work/ordinary 摘要链已退役。
 
@@ -109,7 +109,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 多架构支持属于当前开发源码和后续发行：Bot 与 SnowLuma 按 Docker 主机架构选择镜像，两套安装器识别 amd64/x86_64 和 arm64/aarch64。已发布的旧安装器与镜像不会由源码修改自动更新；ARM 部署应使用包含该修复的新发行，或以 `docker buildx build --platform linux/arm64 --target direct --load -t yuki:local .` 从当前源码构建，并将部署目录中 Bot 的 `image` 改为 `yuki:local`。
 
-开发主线支持 Chat Completions、Responses、Claude Messages、Gemini GenerateContent 和常见供应商参数方言。模型、思考、结构化输出及搜索按 Profile 显式配置，不按消息内容暗中换 Provider。WebUI 保存连接后，新任务采用新配置，已派发请求仍沿原连接与协议状态继续。
+开发主线支持 Chat Completions、Responses、Claude Messages、Gemini GenerateContent 和常见供应商参数方言。模型、思考、结构化输出及搜索按 Profile 显式配置，不按消息内容暗中换 Provider。管理 API 保存连接后，新任务采用新配置，已派发请求仍沿原连接与协议状态继续。
 能力与恢复边界见[模型协议说明](docs/architecture/model-providers.md)及[多供应商示例](config/model_profiles.providers.example.toml)。这些是当前源码能力；3.8.4 的网关、模型和部署配置仍以正式发布包为准。
 
 Linux：
@@ -131,7 +131,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 当前 3.9.0 源码的模型连接保存在 `webui-config/model_profiles.toml`。3.8.4 正式包沿随包路径；升级到当前源码且旧部署只有
 `config/model_profiles.toml`，先按[模型配置路径迁移](docs/operations/model-profile-path-migration.md)
-核对并迁移；向导不会自动覆盖当前 WebUI 的模型连接。选定文件缺失时启动会明确失败。
+核对并迁移；向导不会自动覆盖当前模型连接。选定文件缺失时启动会明确失败。
 
 首次部署在配置完成后，进入部署目录执行：
 
@@ -173,9 +173,9 @@ docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 
 一个数据库对应一个长期存在的 Yuki。人物、群空间、QQ 账号和网关连接分别建模，聊天历史与记忆不绑定在某一次登录连接上。工具由后端执行权限、预算、幂等和审计检查。
 
-目前提供 QQ 交互、CLI 和共享 Control Plane。当前源码的手帐管理 WebUI 与同源管理 HTTP 默认关闭，
-接入聊天、执行轨迹、配置和自动化等服务；3.8.4 正式发布不包含此管理界面。
-构建、权限及功能边界见 [WebUI 文档](docs/architecture/webui-console.md)。
+目前提供 QQ 交互与管理 CLI；旧浏览器管理界面与旧控制面实现已从源码退役。
+管理入口调用原领域服务与回执，权限及当前方法见[管理 API](docs/architecture/admin-api.md)。
+个人客户端的服务端接续按 #299 继续实施；本地验证、提交与上线状态分别记录。
 
 ```bash
 uv sync --extra dev

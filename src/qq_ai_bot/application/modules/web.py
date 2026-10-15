@@ -278,7 +278,7 @@ class WebModule:
             raise ValueError("DeepSeek search requires a configured model connection")
         connection = catalog.search_connection
         if connection is None:
-            raise ValueError("Select a DeepSeek search connection in the WebUI")
+            raise ValueError("Select a DeepSeek search_connection in the model profile file")
         profile = catalog.profiles.get(connection)
         if (
             profile is None

@@ -73,7 +73,6 @@ async def test_tool_operation_receipt(database, tool, payload, committed):
     ("tool", "uncertain"),
     [
         ("workspace_write", True),
-        ("workspace_upload", True),
         ("terminal_write", True),
         ("workspace_read", False),
         ("terminal_read", False),

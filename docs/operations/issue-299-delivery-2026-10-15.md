@@ -50,4 +50,31 @@
   正向重试与已发送／未知拒绝场景通过。未放宽原领域重试条件。
 
 未运行真实 QQ、付费模型、生产迁移或部署；本阶段不需要外接模型 API。
-P3–P11 尚未完成。
+P3 记录见下；P4–P11 尚未完成。
+
+## P3：旧 WebUI 与旧控制面退役
+
+删除前端、Cookie 会话、旧 HTTP／查询／命令适配层、旧读模型、compose overlay、
+Node 镜像构建与前端 CI。当前说明改用管理 API；日期任务书和发布证据保留。
+共有授权只保留实际能力核验和现用命令合同；模型文件服务只保留实际模型文件消费者。
+原命令回执、审计、unknown 查询与启动恢复继续使用原表、原请求号。
+Manager 删除 `workspace_upload`；原终端完成结果读取暂留，等待生产退出核验。
+
+验证（本地）：
+
+- 管理 API、operator 与旧入口 404 专项通过；旧 Work／账本断言改用现行领域读取。
+- `ruff check .`、`mypy src`、`mypy --platform linux src` 通过。
+- wheel 构建通过，包内无旧 WebUI、control_plane 或 persistence/control_* 模块。
+- macOS 全量：1730 passed、67 skipped、5 failed。5 项均为未改动的平台相关测试：
+  4 项依赖 GNU `script -c`，1 项依赖 Linux `/proc`。
+- 对上述原测试所在的两个文件，隔离 Linux 容器验证：31 passed、4 skipped
+  （缺少 PowerShell），原 5 项全部通过。
+- Linux 完整测试文件集合分四组：1735 passed、67 skipped、1 failed。
+  唯一失败为未改动的 `test_work_scope_contention` 的 expired 场景；
+  其整个模块隔离复跑为 12 passed，代码和 0.5 秒等待断言均未修改。
+  skipped 为未构建的可选 Monty worker 与未安装的 PowerShell。
+- 首次并行测试临时空间不足，属于测试环境失败；扩大空间并仅保留一轮完整测试后，
+  得到上述分组结果，不把空间不足的那轮计作源码验证通过。
+
+生产退出核验尚未执行：没有检查生产库的 running 控制回执，也没有更新宿主 Manager。
+本记录只说明代码退役与本地验证，不表示生产退出条件已满足或已经部署。

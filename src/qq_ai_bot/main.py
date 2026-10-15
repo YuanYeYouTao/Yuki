@@ -138,10 +138,6 @@ def bootstrap(settings: Settings | None = None) -> None:
     from qq_ai_bot.admin_api.http import attach_admin_api
 
     attach_admin_api(driver.server_app, lambda: get_container().admin_api)
-    from qq_ai_bot.webui.http import attach_webui
-
-    attach_webui(driver.server_app, app_settings, lambda: get_container().control_plane)
-
     nonebot.load_plugin("qq_ai_bot.plugins.ai_chat")
 
 

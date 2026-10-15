@@ -124,37 +124,22 @@ Plugin API 当前为 `3.4`，Host 只加载精确匹配的插件。兼容键仍�
 `conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
 插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。
 
-## Control Plane 与未来 WebUI
+## 管理入口与客户端接入
 
-Control Plane 是未来 WebUI 的唯一后端业务边界：
+当前管理入口沿同一个 Bot 的领域服务：
 
 ```text
-future HTTP/WebUI | current CLI | current QQ commands
-                         |
-                         v
-               transport adapters
-                         |
-                         v
-        ControlPlaneBundle / application services
-                         |
-                         v
-          repositories + runtime registries
+QQ Gateway → MessageProcessor → Main / Work / Social / Memory / Workspace
+operator CLI → Admin API ────────────────┘
 ```
 
-HTTP 层把已认证身份转换为 `ControlPrincipal`、`DecisionContext` 和 canonical target，
-然后调用同一 Query/Command 服务。它不得直接查询 ORM、调用 OneBot 私有 API、读取 secret 或把
-QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使用 request ID、expected revision、
-同步审计和幂等回执。
+管理身份从服务器 operator 声明与 Bearer 凭据得到。`ApplicationContainer.admin_api`
+复用运行中的领域服务、模型文件服务和原命令回执；QQ `/ai` 仍调用原领域入口。
+请求不能提交主体或借管理权限以 Person 发言。正文权限、短事务、事务外效果和原操作查询
+见[管理 API](admin-api.md)与[管理控制面合同](control-plane-foundation.md)。
 
-正式 HTTP、登录与前端已接入同一控制面，认证、CSRF 和内容权限见
-[WebUI 合同](webui-console.md)。页面不复制领域服务。
-
-`ApplicationContainer.control_plane` 已装配共享 Query/Command 服务及运行中的配置、连接、
-自动化、插件和 Memory 依赖；access 从服务器配置认证 CLI/Web operator，
-公开 wire 合同仅转换已核验的 DTO；HTTP transport 复用这套转换。现有 QQ/CLI 仍有直接调用共享领域服务的入口，图中边界是
-统一接入方向，不表示所有入口已经迁入 ControlPlaneBundle。
-配置、revision、分页、事务外执行、原操作查询和管理 HTTP 边界见
-[Control Plane 地基](control-plane-foundation.md)。
+旧浏览器入口、前端与旧控制面方法表已从源码删除。个人客户端按 #299 后续阶段接入
+同一事实源，使用 Person 设备身份；本节不宣称个人接口已经交付。
 
 ## 数据库与安全边界
 

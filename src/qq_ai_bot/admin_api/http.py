@@ -229,7 +229,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     @router.get("/models")
     async def models(actor: Actor) -> Any:
         authorize(actor, "control.config.file.content.read")
-        return {"data": await resolve().commands.files.read("model_profiles")}
+        return {"data": await resolve().commands.files.read()}
 
     @router.post("/models/apply")
     async def apply_models(body: ModelsBody, actor: Actor) -> Any:

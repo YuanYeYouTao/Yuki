@@ -58,42 +58,6 @@ class Settings(BaseSettings):
     )
 
     admin_api_url: str = "http://127.0.0.1:8080"
-    webui_enabled: bool = False
-    webui_origin: str = "http://127.0.0.1:18765"
-    webui_session_seconds: int = Field(default=21600, ge=300, le=86400)
-    webui_max_body_bytes: int = Field(default=1048576, ge=1024, le=16777216)
-
-    @field_validator("webui_origin")
-    @classmethod
-    def valid_webui_origin(cls, value: str) -> str:
-        from urllib.parse import urlsplit
-
-        if any(char.isspace() or ord(char) < 32 for char in value) or "\\" in value:
-            raise ValueError("WEBUI_ORIGIN must be an HTTP(S) origin")
-        parsed = urlsplit(value)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
-            or parsed.path not in {"", "/"}
-        ):
-            raise ValueError("WEBUI_ORIGIN must be an HTTP(S) origin")
-        if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
-            raise ValueError("non-local WebUI origins require HTTPS")
-        port = parsed.port
-        if port is not None and not 1 <= port <= 65535:
-            raise ValueError("WEBUI_ORIGIN has an invalid port")
-        host = parsed.hostname.encode("idna").decode("ascii").lower()
-        if "%" in host:
-            raise ValueError("WEBUI_ORIGIN has an invalid host")
-        authority = f"[{host}]" if ":" in host else host
-        if port is not None and port != (443 if parsed.scheme == "https" else 80):
-            authority += f":{port}"
-        return f"{parsed.scheme}://{authority}"
-
     app_host: str = "0.0.0.0"
     app_port: int = 8080
     log_level: str = "INFO"
@@ -395,9 +359,6 @@ class Settings(BaseSettings):
     emoji_worker_retry_delay_seconds: float = 30.0
     emoji_analysis_version: str = "emoji-v1"
     emoji_storage_root: Path = Path("data/emoji")
-    # Optional read-only mount of the existing Manager's /workspace, for WebUI
-    # binary preview. This never creates a second writable workspace.
-    webui_workspace_directory: Path | None = None
     emoji_preview_max_dimension: int = 512
 
     # Incoming speech recognition remains independent of outgoing media delivery.

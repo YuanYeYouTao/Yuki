@@ -9,7 +9,6 @@ from enum import StrEnum
 from typing import final
 
 from qq_ai_bot.admin.authority.capabilities import (
-    is_forbidden_control_capability,
     is_protocol_capability,
     normalize_capability_id,
 )
@@ -22,7 +21,6 @@ _ROLE_TOKEN = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
 class PrincipalSource(StrEnum):
     QQ = "qq"
     CLI = "cli"
-    FUTURE_WEB = "future_web"
     SYSTEM = "system"
 
 
@@ -50,7 +48,7 @@ def _normalize_capabilities(values: object) -> frozenset[str]:
     normalized: set[str] = set()
     for item in values:
         token = normalize_capability_id(item)
-        if is_forbidden_control_capability(token) or not is_protocol_capability(token):
+        if not is_protocol_capability(token):
             raise ValueError("forbidden capability")
         normalized.add(token)
     return frozenset(normalized)
@@ -115,6 +113,6 @@ class ControlPrincipal:
             token = normalize_capability_id(capability)
         except (TypeError, ValueError):
             return False
-        if is_forbidden_control_capability(token) or not is_protocol_capability(token):
+        if not is_protocol_capability(token):
             return False
         return token in self.granted_capabilities

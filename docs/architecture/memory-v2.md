@@ -127,8 +127,7 @@ Control Plane 仍要求 capability。
     没有候选且没有原 running run 的空轮询只读返回，不创建空 run；既存 run 继续按原
     ID 恢复和结束，没有 processing item 时不执行空的恢复 UPDATE。
 - 不用 /ai new、清空事实或重建 embedding 掩盖队列/召回问题。
-- 未来 WebUI 复用 Control Plane，不直接查询 ORM；读取、content、mutation、destructive
-  能力边界继续分离，secret 永不返回。
+- 管理入口按真实消费者调用领域服务；元数据、正文与修改分别授权，secret 不返回。
 - [第三方事实写入](memory-v2-third-party-facts.md)、
   [质量架构](memory-v2-quality.md)仍是对应领域合同。
   历史验收记录不覆盖本页。

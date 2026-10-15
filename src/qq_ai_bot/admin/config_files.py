@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import os
 import stat
 import tempfile
 import tomllib
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -32,17 +31,12 @@ from qq_ai_bot.model_runtime.secrets import (
     model_secrets_path,
     read_model_secrets,
 )
-from qq_ai_bot.services.participation_parameters import (
-    DEFAULT_AUTONOMY_PARAMETERS,
-    AutonomyParameters,
-)
 from qq_ai_bot.web.base import WebSearchProvider
 
 if TYPE_CHECKING:
     from qq_ai_bot.application.modules.web import WebModule
 
 MAX_CONFIG_BYTES = 256 * 1024
-CONFIG_FILE_IDS = frozenset({"model_profiles", "system_prompt", "bot_persona", "autonomous_model"})
 _PUBLIC_PROFILE_FIELDS: dict[str, TypeAdapter[Any]] = {
     name: TypeAdapter(field.annotation)
     for name, field in ModelProfile.model_fields.items()
@@ -92,20 +86,18 @@ def _plain(value: Any) -> Any:
 
 
 class ConfigFileService:
-    """Versioned startup files, with atomic activation of model connections."""
+    """Versioned model connections with atomic activation and separate secret storage."""
 
     def __init__(
         self,
         settings: Settings,
         catalog: ModelProfileCatalog | None = None,
         *,
-        autonomy_parameters: Callable[[], AutonomyParameters] | None = None,
         model_executor: TaskModelExecutor | None = None,
         web_module: WebModule | None = None,
     ) -> None:
         self._settings = settings
         self._catalog = catalog
-        self._autonomy_parameters = autonomy_parameters
         self._model_executor = model_executor
         self._web_module = web_module
         self._lock = asyncio.Lock()
@@ -118,20 +110,6 @@ class ConfigFileService:
     def model_hot_reload_enabled(self) -> bool:
         return self._model_executor is not None
 
-    def _path(self, file_id: str) -> Path:
-        paths = {
-            "model_profiles": self._settings.model_profiles_file,
-            "system_prompt": self._settings.system_prompt_file,
-            "bot_persona": self._settings.resolved_bot_persona_file,
-            "autonomous_model": self._settings.semantic_participation_model_config_file,
-        }
-        if type(file_id) is not str or file_id not in paths:
-            raise ConfigFileError("validation_error")
-        path = paths[file_id]
-        if path is None:
-            raise ConfigFileError("operation_unavailable")
-        return path.absolute()
-
     def _catalog_from(self, content: str) -> ModelProfileCatalog:
         settings = self._settings
         return parse_model_profile_catalog(
@@ -139,138 +117,99 @@ class ConfigFileService:
             environment=model_profile_environment(settings),
         )
 
-    async def read(self, file_id: str) -> dict[str, Any]:
-        path = self._path(file_id)
+    async def read(self) -> dict[str, Any]:
+        path = self._settings.model_profiles_file.absolute()
         content = await asyncio.to_thread(_read, path)
         result: dict[str, Any] = {
-            "file_id": file_id,
+            "file_id": "model_profiles",
             "exists": content is not None,
             "revision": _revision(content),
-            "apply_mode": (
-                "hot_reload"
-                if file_id == "autonomous_model"
-                or (file_id == "model_profiles" and self._model_executor)
-                else "restart"
-            ),
+            "apply_mode": "hot_reload" if self._model_executor else "restart",
             "valid": True,
             "matches_loaded": None,
             "writable_directory": await asyncio.to_thread(os.access, path.parent, os.W_OK),
         }
         try:
             text = "" if content is None else content.decode("utf-8")
-            if file_id == "autonomous_model":
-                result["parameter_schema"] = AutonomyParameters.model_json_schema()
-                result["defaults"] = DEFAULT_AUTONOMY_PARAMETERS.model_dump(mode="json")
-                loaded = self._autonomy_parameters() if self._autonomy_parameters else None
-                result["loaded_document"] = loaded.model_dump(mode="json") if loaded else None
-                parameters = (
-                    AutonomyParameters.model_validate_json(content)
-                    if content is not None
-                    else DEFAULT_AUTONOMY_PARAMETERS
-                )
-                result["document"] = parameters.model_dump(mode="json")
-                result["matches_loaded"] = parameters == loaded if loaded else None
-            elif file_id == "model_profiles":
-                result["search_backend"] = self._settings.web_search_backend
-                _secret_bytes, saved_keys = await asyncio.to_thread(read_model_secrets, path)
-                # Headers are kept server-side even for content-authorized readers.
-                raw: dict[str, Any] = (
-                    tomllib.loads(text)
-                    if text
-                    else {"schema_version": 3, "profiles": {}, "routes": {}}
-                )
-                if not isinstance(raw.get("profiles"), dict):
-                    raise ValueError("invalid profiles")
-                raw_profiles = raw["profiles"]
-                routes = raw.get("routes", {})
-                if not isinstance(routes, dict):
-                    raise ValueError("invalid routes")
-                profiles: dict[str, Any] = {}
-                permitted = set(ModelProfile.model_fields) - {"id", "headers"}
-                permitted.update(
-                    {"base_url_env", "model_env", "reasoning_effort_env", "thinking_mode"}
-                )
-                for name, profile in raw_profiles.items():
-                    if not isinstance(profile, dict):
-                        raise ValueError("invalid profile")
-                    selected = {}
-                    for key, value in profile.items():
-                        if key not in permitted:
+            result["search_backend"] = self._settings.web_search_backend
+            _secret_bytes, saved_keys = await asyncio.to_thread(read_model_secrets, path)
+            # Headers are kept server-side even for content-authorized readers.
+            raw: dict[str, Any] = (
+                tomllib.loads(text) if text else {"schema_version": 3, "profiles": {}, "routes": {}}
+            )
+            if not isinstance(raw.get("profiles"), dict):
+                raise ValueError("invalid profiles")
+            raw_profiles = raw["profiles"]
+            routes = raw.get("routes", {})
+            if not isinstance(routes, dict):
+                raise ValueError("invalid routes")
+            profiles: dict[str, Any] = {}
+            permitted = set(ModelProfile.model_fields) - {"id", "headers"}
+            permitted.update({"base_url_env", "model_env", "reasoning_effort_env", "thinking_mode"})
+            for name, profile in raw_profiles.items():
+                if not isinstance(profile, dict):
+                    raise ValueError("invalid profile")
+                selected = {}
+                for key, value in profile.items():
+                    if key not in permitted:
+                        continue
+                    adapter = _PUBLIC_PROFILE_FIELDS.get(key)
+                    if adapter is None:
+                        if type(value) is str:
+                            selected[key] = value
+                    else:
+                        try:
+                            typed = adapter.validate_python(value)
+                            selected[key] = adapter.dump_python(
+                                typed, mode="json", exclude_unset=True
+                            )
+                        except ValidationError:
+                            # Malformed typed fields cannot smuggle unreviewed objects.
                             continue
-                        adapter = _PUBLIC_PROFILE_FIELDS.get(key)
-                        if adapter is None:
-                            if type(value) is str:
-                                selected[key] = value
-                        else:
-                            try:
-                                typed = adapter.validate_python(value)
-                                selected[key] = adapter.dump_python(
-                                    typed, mode="json", exclude_unset=True
-                                )
-                            except ValidationError:
-                                # Malformed typed fields cannot smuggle unreviewed objects.
-                                continue
-                    profiles[name] = selected
-                result["document"] = {
-                    "schema_version": raw.get("schema_version", 3)
-                    if type(raw.get("schema_version", 3)) is int
-                    else 3,
-                    "profiles": profiles,
-                    "search_connection": raw.get("search_connection"),
-                    "routes": {
-                        task.value: routes.get(task.value)
-                        for task in ModelTask
-                        if isinstance(routes.get(task.value), str)
-                    },
-                }
-                result["profile_schema"] = ModelProfile.model_json_schema()
-                result["tasks"] = [task.value for task in ModelTask]
-                result["saved_api_key_profiles"] = [
-                    name
-                    for name, profile in raw_profiles.items()
-                    if isinstance(profile, dict) and profile.get("api_key_env") in saved_keys
-                ]
-                if content is not None:
-                    saved = self._catalog_from(text)
-                    result["matches_loaded"] = saved == self._catalog if self._catalog else None
-                    result["resolved_profiles"] = {
-                        name: {
-                            "base_url": profile.base_url,
-                            "model": profile.model,
-                            "reasoning_effort": (
-                                profile.reasoning_effort.value
-                                if profile.reasoning_effort is not None
-                                else None
-                            ),
-                        }
-                        for name, profile in saved.profiles.items()
+                profiles[name] = selected
+            result["document"] = {
+                "schema_version": raw.get("schema_version", 3)
+                if type(raw.get("schema_version", 3)) is int
+                else 3,
+                "profiles": profiles,
+                "search_connection": raw.get("search_connection"),
+                "routes": {
+                    task.value: routes.get(task.value)
+                    for task in ModelTask
+                    if isinstance(routes.get(task.value), str)
+                },
+            }
+            result["profile_schema"] = ModelProfile.model_json_schema()
+            result["tasks"] = [task.value for task in ModelTask]
+            result["saved_api_key_profiles"] = [
+                name
+                for name, profile in raw_profiles.items()
+                if isinstance(profile, dict) and profile.get("api_key_env") in saved_keys
+            ]
+            if content is not None:
+                saved = self._catalog_from(text)
+                result["matches_loaded"] = saved == self._catalog if self._catalog else None
+                result["resolved_profiles"] = {
+                    name: {
+                        "base_url": profile.base_url,
+                        "model": profile.model,
+                        "reasoning_effort": (
+                            profile.reasoning_effort.value
+                            if profile.reasoning_effort is not None
+                            else None
+                        ),
                     }
-            else:
-                result["content"] = text
-                if not text.strip():
-                    raise ValueError("empty persona")
-                actual = (
-                    self._settings.bot_persona
-                    if file_id == "bot_persona"
-                    else self._settings.system_prompt
-                )
-                # Settings uses Path.read_text's universal newline decoding.
-                # Preserve the editor's original text, compare the loaded semantics.
-                candidate = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-                if file_id == "system_prompt":
-                    candidate = candidate.replace(
-                        "{{YUKI_PERSONA_CORE}}", self._settings.bot_persona
-                    )
-                result["matches_loaded"] = candidate == actual
+                    for name, profile in saved.profiles.items()
+                }
         except (UnicodeError, ValueError, ModelRuntimeConfigurationError):
             # Do not reflect parser errors containing input, headers, URLs or host paths.
             result["valid"] = False
             result["error_category"] = "validation_error"
         return result
 
-    async def save(self, file_id: str, expected_revision: int, spec: Mapping[str, Any]) -> int:
+    async def save(self, expected_revision: int, spec: Mapping[str, Any]) -> int:
         async with self._lock:
-            path = self._path(file_id)
+            path = self._settings.model_profiles_file.absolute()
             original = await asyncio.to_thread(_read, path)
             if _revision(original) != expected_revision:
                 raise ConfigFileError("version_conflict")
@@ -279,97 +218,80 @@ class ConfigFileService:
             pending_pool: ModelClientPool | None = None
             pending_search: WebSearchProvider | None = None
             try:
-                if file_id == "autonomous_model":
-                    if set(spec) != {"document"} or not isinstance(spec["document"], Mapping):
-                        raise ValueError("invalid document")
-                    parameters = AutonomyParameters.model_validate(_plain(spec["document"]))
-                    text = json.dumps(parameters.model_dump(mode="json"), indent=2) + "\n"
-                elif file_id == "model_profiles":
-                    if set(spec) not in ({"document"}, {"document", "api_keys"}) or not isinstance(
-                        spec["document"], Mapping
+                if set(spec) not in ({"document"}, {"document", "api_keys"}) or not isinstance(
+                    spec["document"], Mapping
+                ):
+                    raise ValueError("invalid document")
+                document = _plain(spec["document"])
+                if document.get("search_connection") is None:
+                    document.pop("search_connection", None)
+                profiles = document.get("profiles")
+                if not isinstance(profiles, dict):
+                    raise ValueError("invalid profiles")
+                updates = spec.get("api_keys", {})
+                if not isinstance(updates, Mapping):
+                    raise ValueError("invalid key updates")
+                previous_secret_bytes, saved_keys = await asyncio.to_thread(
+                    read_model_secrets, path
+                )
+                for name, value in updates.items():
+                    if (
+                        type(name) is not str
+                        or KEY_ALIAS.fullmatch(name) is None
+                        or type(value) is not str
+                        or name in saved_keys
+                        or not any(
+                            isinstance(profile, dict) and profile.get("api_key_env") == name
+                            for profile in profiles.values()
+                        )
                     ):
-                        raise ValueError("invalid document")
-                    document = _plain(spec["document"])
-                    if document.get("search_connection") is None:
-                        document.pop("search_connection", None)
-                    profiles = document.get("profiles")
-                    if not isinstance(profiles, dict):
-                        raise ValueError("invalid profiles")
-                    updates = spec.get("api_keys", {})
-                    if not isinstance(updates, Mapping):
-                        raise ValueError("invalid key updates")
-                    previous_secret_bytes, saved_keys = await asyncio.to_thread(
-                        read_model_secrets, path
+                        raise ValueError("invalid model key update")
+                    saved_keys[name] = value
+                if updates:
+                    secret_write = (
+                        model_secrets_path(path),
+                        previous_secret_bytes,
+                        encode_model_secrets(saved_keys),
                     )
-                    for name, value in updates.items():
-                        if (
-                            type(name) is not str
-                            or KEY_ALIAS.fullmatch(name) is None
-                            or type(value) is not str
-                            or name in saved_keys
-                            or not any(
-                                isinstance(profile, dict) and profile.get("api_key_env") == name
-                                for profile in profiles.values()
-                            )
-                        ):
-                            raise ValueError("invalid model key update")
-                        saved_keys[name] = value
-                    if updates:
-                        secret_write = (
-                            model_secrets_path(path),
-                            previous_secret_bytes,
-                            encode_model_secrets(saved_keys),
-                        )
-                    existing = tomllib.loads(original.decode("utf-8")) if original else {}
-                    old_profiles = existing.get("profiles", {})
-                    if not isinstance(old_profiles, dict):
-                        raise ValueError("invalid previous profiles")
-                    for name, profile in profiles.items():
-                        if not isinstance(profile, dict) or "headers" in profile:
-                            raise ValueError("headers must stay server-side")
-                        previous = old_profiles.get(name, {})
-                        if not isinstance(previous, dict):
-                            raise ValueError("invalid previous profile")
-                        if "headers" in previous:
-                            profile["headers"] = previous["headers"]
-                    text = tomlkit.dumps(document)
-                    pending_catalog = self._catalog_from(text)
-                    content = text.encode("utf-8")
-                    if len(content) > MAX_CONFIG_BYTES:
-                        raise ValueError("file too large")
-                    if self._model_executor is not None:
-                        pending_pool = ModelClientPool(
-                            secret_overrides={
-                                "LLM_API_KEY": self._settings.llm_api_key,
-                                "LLM_FLASH_API_KEY": self._settings.llm_flash_api_key,
-                                **saved_keys,
-                            }
-                        )
-                        try:
-                            for profile in pending_catalog.profiles.values():
-                                pending_pool.get(profile)
-                        except Exception:
-                            await pending_pool.close()
-                            pending_pool = None
-                            raise ValueError("model connection unavailable") from None
-                        if self._web_module is not None:
-                            try:
-                                pending_search = self._web_module.prepare(
-                                    pending_catalog, pending_pool
-                                )
-                            except Exception:
-                                await pending_pool.close()
-                                pending_pool = None
-                                raise
-                else:
-                    if set(spec) != {"content"} or type(spec["content"]) is not str:
-                        raise ValueError("invalid content")
-                    text = spec["content"]
-                    if not text.strip() or "\x00" in text:
-                        raise ValueError("empty or invalid text")
+                existing = tomllib.loads(original.decode("utf-8")) if original else {}
+                old_profiles = existing.get("profiles", {})
+                if not isinstance(old_profiles, dict):
+                    raise ValueError("invalid previous profiles")
+                for name, profile in profiles.items():
+                    if not isinstance(profile, dict) or "headers" in profile:
+                        raise ValueError("headers must stay server-side")
+                    previous = old_profiles.get(name, {})
+                    if not isinstance(previous, dict):
+                        raise ValueError("invalid previous profile")
+                    if "headers" in previous:
+                        profile["headers"] = previous["headers"]
+                text = tomlkit.dumps(document)
+                pending_catalog = self._catalog_from(text)
                 content = text.encode("utf-8")
                 if len(content) > MAX_CONFIG_BYTES:
                     raise ValueError("file too large")
+                if self._model_executor is not None:
+                    pending_pool = ModelClientPool(
+                        secret_overrides={
+                            "LLM_API_KEY": self._settings.llm_api_key,
+                            "LLM_FLASH_API_KEY": self._settings.llm_flash_api_key,
+                            **saved_keys,
+                        }
+                    )
+                    try:
+                        for profile in pending_catalog.profiles.values():
+                            pending_pool.get(profile)
+                    except Exception:
+                        await pending_pool.close()
+                        pending_pool = None
+                        raise ValueError("model connection unavailable") from None
+                    if self._web_module is not None:
+                        try:
+                            pending_search = self._web_module.prepare(pending_catalog, pending_pool)
+                        except Exception:
+                            await pending_pool.close()
+                            pending_pool = None
+                            raise
             except BaseException as exc:
                 await asyncio.gather(
                     *(

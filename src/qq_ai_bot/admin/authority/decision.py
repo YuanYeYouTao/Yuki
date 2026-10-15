@@ -8,7 +8,6 @@ from typing import final
 
 from qq_ai_bot.admin.authority.capabilities import (
     DENIED_CAPABILITY_ID,
-    is_forbidden_control_capability,
     is_protocol_capability,
     normalize_capability_id,
 )
@@ -31,10 +30,10 @@ def _decision_capability(value: object, *, allowing: bool) -> str:
             raise
         return DENIED_CAPABILITY_ID
     if allowing:
-        if is_forbidden_control_capability(token) or not is_protocol_capability(token):
+        if not is_protocol_capability(token):
             raise ValueError("forbidden capability")
         return token
-    if is_forbidden_control_capability(token) or not is_protocol_capability(token):
+    if not is_protocol_capability(token):
         return DENIED_CAPABILITY_ID
     return token
 
@@ -104,7 +103,7 @@ def decide(context: object, capability: object) -> PolicyDecision:
         token = normalize_capability_id(capability)
     except (TypeError, ValueError):
         return PolicyDecision.deny(DENIED_CAPABILITY_ID, Problem(ProblemCode.VALIDATION_ERROR))
-    if is_forbidden_control_capability(token) or not is_protocol_capability(token):
+    if not is_protocol_capability(token):
         return PolicyDecision.deny(DENIED_CAPABILITY_ID, Problem(ProblemCode.CAPABILITY_DENIED))
     if not principal.authenticated:
         return PolicyDecision.deny(token, Problem(ProblemCode.UNAUTHENTICATED))

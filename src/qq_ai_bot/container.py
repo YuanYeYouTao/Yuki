@@ -18,12 +18,10 @@ from qq_ai_bot.adapters.onebot.group_recovery import QQGroupRecovery
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
-from qq_ai_bot.application.control_health import control_runtime_health
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.application.modules import (
     AdminModule,
     AutomationModule,
-    ControlPlaneModule,
     ConversationModule,
     EmojiModule,
     MediaModule,
@@ -512,30 +510,6 @@ class ApplicationContainer:
             self.model_profiles,
             model_executor=self.models,
             web_module=self.web_module,
-            autonomy_parameters=lambda: self.semantic_participation.control_model_parameters(),
-        )
-        self.control_plane = ControlPlaneModule.build(
-            settings=settings,
-            config_files=self.config_files,
-            database=self.database,
-            runtime_config=self.runtime_config,
-            connections=self.gateway_registry,
-            automation=self.automation,
-            memories=self.memories,
-            maintenance=self.memory_maintenance_worker,
-            embeddings=self.memory_embeddings,
-            plugins=self.plugin_manager,
-            workspace=self.workspace_service.store,
-            workspace_service=self.workspace_service,
-            rebuild_service=self.memory_rebuild_service,
-            conversation_media=self.conversation_media,
-            model_catalog=self.model_profiles,
-            model_executor=self.models,
-            web_module=self.web_module,
-            participation_snapshot=lambda: self.semantic_participation.control_snapshot(),
-            autonomy_parameters=lambda: self.semantic_participation.control_model_parameters(),
-            runtime_health=lambda: control_runtime_health(self),
-            trace_recorder=self.models.traces,
         )
         from qq_ai_bot.application.modules.admin_api import build_admin_api
 
@@ -860,7 +834,9 @@ class ApplicationContainer:
         return self.gateway_registry.has_any_active()
 
     def _register_lifecycle(self) -> None:
-        self.lifecycle.register("control_recovery", start=self.control_plane.recover_interrupted)
+        self.lifecycle.register(
+            "control_recovery", start=self.admin_api.commands.receipts.recover_interrupted_controls
+        )
         self.lifecycle.register(
             "social_recovery", start=self.social_service.receipts.recover_interrupted
         )

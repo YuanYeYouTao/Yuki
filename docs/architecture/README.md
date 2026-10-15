@@ -21,9 +21,8 @@
 | [Self Reflection](self-reflection.md) | Profile 输出、周期、工具回执、预算与原批次恢复 |
 | [语义参与宿主](semantic-participation.md) | 普通持续接话、SELF 自主行动、Jev 与真实反馈 |
 | [自主参与模型](autonomous-participation-model.md) | 连续状态、回执与机会参数 |
-| [Control Plane](control-plane-foundation.md) | 管理主体、装配、执行回执与业务服务 |
+| [管理控制面](control-plane-foundation.md) | 管理主体、装配、原回执与领域服务 |
 | [管理 API](admin-api.md) | Bearer operator、管理 CLI、原回执与领域服务 |
-| [WebUI](webui-console.md) | 3.9.0 临时管理界面、认证、业务页面和实际覆盖 |
 | [执行过程](execution-trace.md) | 实际模型请求、工具、消息与投递的限期查询 |
 | [插件架构](../plugin-development/architecture.md) | Plugin API 3.5、Host、SDK 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager 与交付 |
@@ -36,7 +35,7 @@
 - [#417/#418 实施与验证](../operations/compact-417-418-delivery-2026-10-14.md)：分阶段 PR、CI 修复、冷恢复与实际 DeepSeek 调用；合并与上线分别核对。
 
 - [10-14 Work 摘要退役、会话 Compact 与任务树设计审查报告](Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md)：关联 Issue #417/#418，包含 PR #228 追溯、当前源码与 Pi durable 对照、旧摘要/Rollup 全链路删除索引、公共与私有窗口、原任务恢复、子 Agent 完整继承 Main 能力、待实施验证与成本数据表，以及真实聊天摘录。报告保留当时设计与未实施基线；现行实现见上方会话 Compact 和持久工作者合同，生产节省仍需真实测量。
-- **下一大版本多客户端重构**：3.9.0 现有 WebUI 是临时管理界面；下一大版本将彻底重构为多客户端。当前 WebUI 与控制面仍有效，这项未来规划不表示现有实现已退役或已经提供新客户端接口。调研与分阶段方案见 [#299 控制面重构与多客户端接入任务书](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md)（未实施）。
+- **多客户端重构**：旧浏览器管理入口已从源码退役；管理改用 CLI、`/ai` 与文件。#299 的个人端接口按任务书继续实施，进度见[交付记录](../operations/issue-299-delivery-2026-10-15.md)。
 
 ## 当前查询审查
 

@@ -24,14 +24,14 @@
 
 Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She currently runs in QQ private chats and groups, remembers people and shared experiences, uses tools and a persistent workspace to carry work across messages. Her identity and memory live in Yuki's own database and can survive a change of model, QQ account, or gateway.
 
-**The current release is 3.8.4.** In this release, the main agent sends visible messages explicitly through `send_message`, and optional group semantic observation, SELF initiative, and SELF automation are available. Yuki can choose to speak, split a reply, or remain silent. Autonomous participation in 3.8.4 is disabled by default, and long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; the official 3.8.4 bundle does not include the management WebUI.
+**The current release is 3.8.4.** In this release, the main agent sends visible messages explicitly through `send_message`, and optional group semantic observation, SELF initiative, and SELF automation are available. Yuki can choose to speak, split a reply, or remain silent. Autonomous participation in 3.8.4 is disabled by default, and long-term behavior in real QQ groups is still being evaluated. The workspace is deployed separately; the official 3.8.4 bundle does not include the management interface.
 
 **The current development baseline is 3.9.0 and is not released.** See the [draft 3.9.0 release notes](docs/releases/v3.9.0.md) for every merged PR and the [draft upgrade guide](docs/upgrade-3.9.0.md) for preparation. The 3.8.4 Release above remains the official download.
 
 ## Main changes in 3.9.0
 
 - **Direct build by default:** The same main-agent loop exposes the fixed complete tool declaration. The default image contains no Monty binding, worker, or launcher. Code Mode is an optional tool-calling mode using a separately built `codemode` target and explicit opt-in; both modes share tool implementations and the execution backend.
-- **Management WebUI and a shared execution runtime:** The journal-style interface shows actual conversations, execution traces, tool receipts, model usage, and workspace files, and manages model connections and task routes. Chat, SELF, plugins, automation, and Work resumption share the main agent. WebUI is disabled by default.
+- **Management API and shared execution runtime:** The operator CLI uses Bearer HTTP to access the original identity, plugin, model configuration, diagnostics and Work services. Chat, SELF, plugins, automation and Work resumption share the main agent.
 - **Group participation controls:** Automatic replies, proactive wakeups, and autonomous participation default to enabled in current source and can be controlled separately through configuration. Ordinary message bursts are combined over a configurable wait before starting a new reply; explicit calls and original Work inputs bypass it. Disabling new opportunities does not cancel accepted tasks or schedules. The optional Jev semantic controller remains disabled by default.
 - **Recoverable long tasks:** Work retains its goals, parent/child relationships, cumulative budget, original checkpoints, and actual receipts. Context is condensed against actual request capacity. The agent can finish its goal without every historical failure or unknown result vetoing completion. Waiting and explicit continuation preserve the original task; continuing a child does not reopen a finished ancestor, and confirmed effects are not repeated.
 - **Simpler memory policy:** Independent facts can share a key; changes and deletion use fact IDs. Attribution/reinforcement scoring, automatic promotion, capacity-driven eviction, and the old affection/trust scores are removed. Extraction, SELF, and Dream can use separate model profiles, with partial and unresolved results retained. Automatic extraction accepts new factual assertions.
@@ -46,7 +46,7 @@ Yuki is an open-source, self-hosted social AI agent exploring what a persistent 
 
 These describe the current source. Real provider API behavior, natural-chat latency, and long-task outcomes require their respective acceptance evidence. Optional Code Mode isolation checks do not establish production capacity or long-term memory behavior.
 
-**Future plan: The current WebUI in 3.9.0 is temporary; the next major release will completely redesign it around multiple clients.**
+**Multi-client work is in progress:** The old browser management interface is retired in source. Personal-client access follows the staged #299 taskbook.
 
 [Conversation compact](docs/architecture/conversation-compact.md) ([#417](https://github.com/YuanYeYouTao/Yuki/issues/417), [#418](https://github.com/YuanYeYouTao/Yuki/issues/418)) uses the current Main model to condense public history or private execution context when the complete request exceeds its actual capacity. Subagents share Main's tool contract and execute under their own real source and authorization. The independent Rollup and Work/ordinary summary pipelines are retired.
 
@@ -100,7 +100,7 @@ Historical Gemini / DeepSeek samples, accounting coverage, and experiment limits
 
 Basic deployment requires Linux amd64 or arm64 (including Linux VMs on Apple Silicon), or Docker Desktop running Linux containers, Docker Engine with Compose v2, and a configured model service using one of the supported Chat Completions or Responses integrations. Current development source uses a logged-in SnowLuma QQ gateway; NapCat is retired on this branch, while the existing gateway abstraction remains available for other implementations.
 
-The development branch supports Chat Completions, Responses, Claude Messages, Gemini GenerateContent, and common vendor parameter dialects. Profiles explicitly select models, reasoning, structured output, and search; message content does not secretly select a provider. After WebUI saves a connection, new tasks use it, while dispatched requests retain their original connection and protocol state.
+The development branch supports Chat Completions, Responses, Claude Messages, Gemini GenerateContent, and common vendor parameter dialects. Profiles explicitly select models, reasoning, structured output, and search; message content does not secretly select a provider. After the management API saves a connection, new tasks use it, while dispatched requests retain their original connection and protocol state.
 See the [protocol contract](docs/architecture/model-providers.md) and [multi-provider example](config/model_profiles.providers.example.toml) for capability and recovery boundaries. These describe current source; use the official 3.8.4 bundle's instructions for its gateway, model, and deployment configuration.
 
 Download the deployment bundle from the [3.8.4 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.8.4). After extraction, fill in `.env` and model configuration manually or use the guided setup.
@@ -124,7 +124,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 **The wizard configures only.** In an empty directory it downloads and verifies the deployment bundle; for an existing deployment it preserves Compose, plugins, and data, then backs up and writes configuration after confirmation. It does not stop services, migrate the database, start services, or switch gateways.
 
-Current 3.9.0 source stores model connections in `webui-config/model_profiles.toml`; the official 3.8.4 bundle uses its bundled paths. When upgrading an older deployment with only `config/model_profiles.toml`, follow the [path migration guide](docs/operations/model-profile-path-migration.md) first. The wizard does not overwrite current WebUI connections; a missing selected file causes an explicit startup failure.
+Current 3.9.0 source stores model connections in `webui-config/model_profiles.toml`; the official 3.8.4 bundle uses its bundled paths. When upgrading an older deployment with only `config/model_profiles.toml`, follow the [path migration guide](docs/operations/model-profile-path-migration.md) first. The wizard does not overwrite current model connections; a missing selected file causes an explicit startup failure.
 
 After configuring a fresh deployment, run from its deployment directory:
 
@@ -165,7 +165,7 @@ Read the [shared development contract](docs/architecture/development-contract.md
 
 One database represents one long-lived Yuki. People, groups, QQ accounts, and gateway connections are modeled separately, so conversation history and memories are not tied to a single login. The backend checks tool permissions, budgets, idempotency, and audit records.
 
-Yuki provides QQ interaction, a CLI, and a shared Control Plane. This development branch adds a hand-journal WebUI and same-origin admin HTTP, disabled by default. The published 3.8.4 assets remain unchanged. Build instructions, authorization, and remaining scope are documented in [WebUI](docs/architecture/webui-console.md).
+Yuki provides QQ interaction and an operator CLI. The old browser interface and control implementation are retired in source. The [management API](docs/architecture/admin-api.md) uses the original domain services and receipts. Personal-client continuation follows #299; local validation, commits and production deployment are tracked separately.
 
 ```bash
 uv sync --extra dev
