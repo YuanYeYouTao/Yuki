@@ -6,8 +6,21 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.frozen_fragments import EventFragment
+from qq_ai_bot.conversation.ordinary_admission import PreparedOrdinaryAdmission
+from qq_ai_bot.domain.messages import ChatMessage
 
 Publication = Callable[[AsyncSession], Awaitable[None]]
+
+
+@dataclass(frozen=True, slots=True)
+class OrdinaryContextInput:
+    prepared: PreparedOrdinaryAdmission
+    message: ChatMessage | None = None
+    admission_allowed: Callable[[AsyncSession], Awaitable[bool]] | None = None
+    on_committed: Callable[[], Awaitable[None]] | None = None
+
+
+OrdinaryContextReader = Callable[[tuple[int, ...]], Awaitable[tuple[OrdinaryContextInput, ...]]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -21,8 +34,9 @@ class PreparedContextBoundary:
 @dataclass(frozen=True, slots=True)
 class ContextBoundary:
     fragments: tuple[EventFragment, ...]
-    commit: Callable[[], Awaitable[None]]
-    prepare: Callable[[], Awaitable[PreparedContextBoundary]] | None = None
+    commit: Callable[[bool], Awaitable[None]]
+    prepare: Callable[[bool], Awaitable[PreparedContextBoundary]] | None = None
+    current_inputs: tuple[ChatMessage, ...] = ()
 
     @property
     def event_ids(self) -> frozenset[int]:

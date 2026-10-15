@@ -910,6 +910,13 @@ class EventLedgerRepository:
         return await self._writer.set_visual_summary(event_id, summary)
 
     async def set_audio_transcript(
-        self, event_id: int, transcript: str, *, generation: int
+        self,
+        event_id: int,
+        transcript: str,
+        *,
+        generation: int,
+        expected_source: EventRecord | None = None,
     ) -> bool:
-        return await self._writer.set_audio_transcript(event_id, transcript, generation=generation)
+        return await self._writer.set_audio_transcript(
+            event_id, transcript, generation=generation, expected_source=expected_source
+        )

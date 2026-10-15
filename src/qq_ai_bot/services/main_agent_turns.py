@@ -12,6 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
+from qq_ai_bot.conversation.initiative_sources import source_revision
+from qq_ai_bot.conversation.ordinary_admission import (
+    OrdinaryAdmissionConflict,
+    OrdinaryAdmissionRepository,
+)
 from qq_ai_bot.conversation.projections import (
     ProjectionCapacityError,
     PromptProjectionRepository,
@@ -22,6 +27,7 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_tasks import ActivationTasks
 from qq_ai_bot.runtime.work_activation import current_work_control
+from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
@@ -29,7 +35,12 @@ from qq_ai_bot.services.agent_runner import (
     AgentToolBackend,
 )
 from qq_ai_bot.services.context_assembler import AssembledContext
-from qq_ai_bot.services.context_boundary import ContextBoundary, PreparedContextBoundary
+from qq_ai_bot.services.context_boundary import (
+    ContextBoundary,
+    OrdinaryContextInput,
+    OrdinaryContextReader,
+    PreparedContextBoundary,
+)
 from qq_ai_bot.services.context_compaction import PublicCompactContext
 from qq_ai_bot.services.durable_invocations import DurableInvocations
 from qq_ai_bot.services.history_projection import prepare_history
@@ -82,6 +93,7 @@ class MainAgentTurnService:
         include_plugin_context: bool = True,
         allowed_capabilities: frozenset[str] = frozenset(),
         before_preparation: Callable[[], Awaitable[None]] | None = None,
+        ordinary_inputs: OrdinaryContextReader | None = None,
     ) -> PromptComposition:
         with self.executions.track():
             contract = self._runner.main_contract
@@ -111,6 +123,18 @@ class MainAgentTurnService:
             conversation_id = version.conversation_id
             assert conversation_id is not None
             repository = self._projections
+            ordinary_repository = OrdinaryAdmissionRepository(repository.database)
+            ordinary_activation = (
+                await ordinary_repository.current(
+                    inbound.source_event_id,
+                    conversation_id=conversation_id,
+                    generation=version.generation,
+                )
+                if ordinary_inputs is not None
+                and inbound is not None
+                and inbound.source_event_id is not None
+                else None
+            )
             view_key = conversation_id
             prepared = await prepare_history(
                 self._projections,
@@ -119,6 +143,8 @@ class MainAgentTurnService:
                 context_key=_hash([version.conversation_id, version.generation]),
             )
             composition = compose_context(prepared.context)
+            assert composition.read_version is not None
+            ordinary_source_guard = WorkSourceGuard(composition.read_version)
             fragments = (
                 prepared.fragments.append_current(context.current_event_id, context.current_message)
                 if context.current_event_id is not None
@@ -135,11 +161,15 @@ class MainAgentTurnService:
             async def commit_projection() -> None:
                 nonlocal projection_closed
                 sequence = dispatch_request()
-                if (
-                    sequence is None
-                    or sequence.origin is DispatchOrigin.WORK_RECOVERY
-                    or projection_closed
-                ):
+                if sequence is None:
+                    return
+                control = current_work_control.get()
+                if control is None:
+                    from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+
+                    if not await ordinary_source_guard.check(None, database=repository.database):
+                        raise HistorySourceChangedError(ordinary_source_guard.version)
+                if sequence.origin is not DispatchOrigin.COMPOSED_INITIAL or projection_closed:
                     return
                 approved_initial = composition.messages
                 if sequence.layout_public_initial is not None:
@@ -164,20 +194,25 @@ class MainAgentTurnService:
                     publication = await prepared.prepare_commit(submitted)
                     control = current_work_control.get()
                     work_session = control.session if control is not None else None
-                    guard = work_session.source_guard if work_session is not None else None
+                    guard = (
+                        work_session.source_guard
+                        if work_session is not None
+                        else ordinary_source_guard
+                    )
                     original_guard = guard.snapshot() if guard is not None else None
                     original_revision = (
                         work_session.source_revision if work_session is not None else None
                     )
                     selected_guard = None
                     selected_revision = original_revision
-                    if control is not None and guard is not None:
-                        from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+                    if guard is not None:
                         from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
 
                         selected_guard = WorkSourceGuard.restore(guard.snapshot())
                         try:
-                            valid = await selected_guard.check(control)
+                            valid = await selected_guard.check(
+                                control, database=repository.database
+                            )
                             if work_session is not None:
                                 selected_revision = work_session.source_revision
                         finally:
@@ -260,6 +295,44 @@ class MainAgentTurnService:
                 fresh = tuple(row for row in rows if row.id not in known)
                 if not rows:
                     return None
+                ordinary_candidates: tuple[OrdinaryContextInput, ...] = ()
+                control = current_work_control.get()
+                if (
+                    ordinary_inputs is not None
+                    and ordinary_activation is not None
+                    and ordinary_activation.route == "ordinary"
+                    and (control is None or control.current is None)
+                    and fresh
+                ):
+                    candidates = await ordinary_inputs(tuple(row.id for row in fresh))
+                    # The original media preparation may persist a transcript or
+                    # attachment result. Render that same source, outside the writer.
+                    current_version, rows = await ledger.read_scope_delta(
+                        version.scope, after_event_id=observation_watermark
+                    )
+                    if (
+                        current_version.conversation_id,
+                        current_version.generation,
+                        current_version.starts_after_event_id,
+                    ) != (
+                        version.conversation_id,
+                        version.generation,
+                        version.starts_after_event_id,
+                    ):
+                        from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+
+                        raise HistorySourceChangedError(version)
+                    fresh = tuple(row for row in rows if row.id not in known)
+                    refreshed = {row.id: row for row in fresh}
+                    ordinary_candidates = tuple(
+                        candidate
+                        for candidate in candidates
+                        if candidate.prepared.event.id in refreshed
+                        and candidate.prepared.admission.source_revision
+                        == str(source_revision(refreshed[candidate.prepared.event.id]))
+                        and candidate.prepared.event.segments
+                        == refreshed[candidate.prepared.event.id].segments
+                    )
                 renderer = ChatEventPromptRenderer(
                     rows,
                     bot_display_name=context.history_bot_display_name,
@@ -273,9 +346,18 @@ class MainAgentTurnService:
                     for row in fresh
                     for _, ids, message in renderer.main_agent_history((row,))
                 )
+                rendered_event_ids = {event_id for ids, _ in delta for event_id in ids}
+                ordinary_candidates = tuple(
+                    candidate
+                    for candidate in ordinary_candidates
+                    if candidate.prepared.event.id in rendered_event_ids
+                )
                 committed = False
+                committed_inputs: list[OrdinaryContextInput] = []
 
-                async def prepare_boundary() -> PreparedContextBoundary:
+                async def prepare_boundary(
+                    business_inputs: bool = False,
+                ) -> PreparedContextBoundary:
                     nonlocal committed, observation_watermark
                     from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
 
@@ -287,29 +369,48 @@ class MainAgentTurnService:
                     old = FrozenFragments.load(previous.items())
                     selected = old.extend_history(delta, delta)
                     control = current_work_control.get()
-                    guard = control.session.source_guard if control and control.session else None
+                    if (
+                        business_inputs
+                        and ordinary_candidates
+                        and control is not None
+                        and control.current is not None
+                    ):
+                        raise HistorySourceChangedError(current_version)
+                    guard = (
+                        control.session.source_guard
+                        if control and control.session
+                        else ordinary_source_guard
+                    )
                     selected_guard = None
                     original_revision = (
                         control.session.source_revision if control and control.session else None
                     )
                     selected_revision = original_revision
-                    if control is not None and guard is not None:
-                        from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
-
+                    if guard is not None:
                         # Prove the original sources before publishing new ones.
                         # A rejected candidate must not mutate its persisted guard.
                         selected_guard = WorkSourceGuard.restore(guard.snapshot())
                         try:
                             valid = await selected_guard.check(
-                                control, event_ids=selected.event_ids
+                                control,
+                                database=repository.database,
+                                event_ids=selected.event_ids,
                             )
-                            if control.session is not None:
+                            if control is not None and control.session is not None:
                                 selected_revision = control.session.source_revision
                         finally:
-                            if control.session is not None and original_revision is not None:
+                            if (
+                                control is not None
+                                and control.session is not None
+                                and original_revision is not None
+                            ):
                                 control.session.source_revision = original_revision
                         if not valid:
                             raise HistorySourceChangedError(guard.version)
+                    rebuild = (
+                        selected_guard is not None
+                        and await repository.invalidation_reason(view_key) == "source_changed"
+                    )
                     projection_publication = await repository.prepare_commit(
                         view_key=view_key,
                         conversation_id=conversation_id,
@@ -318,19 +419,37 @@ class MainAgentTurnService:
                         starts_after_event_id=current_version.starts_after_event_id,
                         context_key=prepared.context_key,
                         items=list(selected.items),
-                        expected_epoch=previous.epoch_id,
-                        expected_revision=previous.revision,
+                        expected_epoch=None if rebuild else previous.epoch_id,
+                        expected_revision=0 if rebuild else previous.revision,
+                        rebuild_reason="source_changed" if rebuild else None,
                         selected_summary_text=previous.selected_summary_text,
                         selected_summary_coverage=previous.selected_summary_coverage,
                         selected_summary_kind=previous.selected_summary_kind,
                         selected_summary_renderer=previous.selected_summary_renderer,
                     )
                     original_guard = guard.snapshot() if guard is not None else None
-                    snapshot = None
+                    snapshot = previous if committed else None
 
                     async def publish(session: AsyncSession) -> None:
                         nonlocal snapshot
-                        snapshot = await projection_publication(session)
+                        if not committed:
+                            snapshot = await projection_publication(session)
+                        committed_inputs.clear()
+                        if business_inputs:
+                            assert ordinary_activation is not None or not ordinary_candidates
+                            for candidate in ordinary_candidates:
+                                assert ordinary_activation is not None
+                                try:
+                                    inserted = await ordinary_repository.commit_to_activation(
+                                        candidate.prepared,
+                                        ordinary_activation,
+                                        session=session,
+                                        admission_allowed=candidate.admission_allowed,
+                                    )
+                                except OrdinaryAdmissionConflict as exc:
+                                    raise HistorySourceChangedError(current_version) from exc
+                                if inserted:
+                                    committed_inputs.append(candidate)
 
                     def stage() -> None:
                         if guard is not None and selected_guard is not None:
@@ -367,10 +486,10 @@ class MainAgentTurnService:
 
                     return PreparedContextBoundary(publish, stage, rollback, finalize)
 
-                async def commit_boundary() -> None:
-                    if committed:
+                async def commit_boundary(business_inputs: bool = False) -> None:
+                    if committed and not business_inputs:
                         return
-                    candidate = await prepare_boundary()
+                    candidate = await prepare_boundary(business_inputs)
                     candidate.stage()
                     try:
                         async with repository.database.immediate_session() as writer:
@@ -379,8 +498,21 @@ class MainAgentTurnService:
                         candidate.rollback()
                         raise
                     candidate.finalize()
+                    for accepted in committed_inputs:
+                        if accepted.on_committed is not None:
+                            await accepted.on_committed()
+                    committed_inputs.clear()
 
-                return ContextBoundary(delta, commit_boundary, prepare_boundary)
+                return ContextBoundary(
+                    delta,
+                    commit_boundary,
+                    prepare_boundary,
+                    tuple(
+                        candidate.message
+                        for candidate in ordinary_candidates
+                        if candidate.message is not None
+                    ),
+                )
 
             async def adopt_compact(
                 summary: str, coverage: int, retained: FrozenFragments

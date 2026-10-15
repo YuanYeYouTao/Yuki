@@ -14,6 +14,7 @@ from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationMode
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.execution_trace.phases import model_detail
+from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.models import ChatEventModel
 
@@ -84,13 +85,17 @@ class WorkSourceGuard:
 
     async def check(
         self,
-        control: WorkControl,
+        control: WorkControl | None,
         *,
+        database: Database | None = None,
         observation_sources: tuple[tuple[str, int], ...] = (),
         event_ids: frozenset[int] = frozenset(),
     ) -> bool:
         if self.codec != 2:
             return False
+        source_database = control.repository.database if control is not None else database
+        assert source_database is not None
+        work_session = control.session if control is not None else None
         version = self.version
         from qq_ai_bot.services.turn_transcript import dispatch_request
 
@@ -112,7 +117,7 @@ class WorkSourceGuard:
         # aiosqlite's legacy transaction mode does not BEGIN for SELECT. Establish
         # one real read snapshot, without reserving the writer during scans/hashing.
         with model_detail("source_guard_read"):
-            async with control.repository.database.sessions() as session:
+            async with source_database.sessions() as session:
                 await session.execute(text("BEGIN"))
                 source = await session.get(CanonicalConversationModel, version.conversation_id)
                 if source is None or (source.generation, source.starts_after_event_id) != (
@@ -156,10 +161,8 @@ class WorkSourceGuard:
                 additional = dict(self.additional_events)
                 added_ids = set(additional)
                 added_ids.update(event_ids - set(version.visible_event_ids))
-                if control.session is not None:
-                    added_ids.update(
-                        set(control.session.event_ids) - set(version.visible_event_ids)
-                    )
+                if work_session is not None:
+                    added_ids.update(set(work_session.event_ids) - set(version.visible_event_ids))
                 if added_ids:
                     extra = (
                         await session.execute(
@@ -244,9 +247,10 @@ class WorkSourceGuard:
         # This is preparation, not mutation authority: journal/publication/effect
         # writers keep their original execution-time fences and source CAS.
         with model_detail("source_guard_final_read"):
-            async with control.repository.database.sessions() as session:
+            async with source_database.sessions() as session:
                 await session.execute(text("BEGIN"))
-                await control.repository._assert_lease_readonly(session, control.lease)
+                if control is not None:
+                    await control.repository._assert_lease_readonly(session, control.lease)
                 current = await session.get(CanonicalConversationModel, version.conversation_id)
                 current_privacy = (
                     await session.scalar(
@@ -278,6 +282,6 @@ class WorkSourceGuard:
         self.version = selected_version
         self.fingerprint = fingerprint
         self.additional_events = additional
-        if control.session is not None:
-            control.session.source_revision = revision
+        if work_session is not None:
+            work_session.source_revision = revision
         return True

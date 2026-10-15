@@ -124,6 +124,7 @@ class _PrimaryDispatch:
     selected_media: tuple[ChatImage, ...] = ()
     has_native_effects: bool = False
     on_dispatch: Callable[[], Awaitable[None]] | None = None
+    business_inputs: bool = True
     prepared: bool = field(default=False, init=False)
     selected_boundary: ContextBoundary | None = field(default=None, init=False)
 
@@ -136,6 +137,13 @@ class _PrimaryDispatch:
             and all(
                 message in (*self.sequence.messages, *self.sequence.items)
                 for _, message in self.boundary.fragments
+            )
+            and (
+                not self.business_inputs
+                or all(
+                    message in (*self.sequence.messages, *self.sequence.items)
+                    for message in self.boundary.current_inputs
+                )
             )
             else None
         )
@@ -170,14 +178,14 @@ class _PrimaryDispatch:
                     and self.runtime.work_control.current is not None
                     and self.selected_boundary.prepare is not None
                 ):
-                    candidate = await self.selected_boundary.prepare()
+                    candidate = await self.selected_boundary.prepare(self.business_inputs)
                     candidate.stage()
                     prior_event_ids = list(work_session.event_ids)
                     work_session.event_ids.extend(
                         sorted(self.selected_boundary.event_ids.difference(work_session.event_ids))
                     )
                 else:
-                    await self.selected_boundary.commit()
+                    await self.selected_boundary.commit(self.business_inputs)
             if work_session is not None:
                 try:
                     await work_session.save(
@@ -198,7 +206,7 @@ class _PrimaryDispatch:
                     work_session.public_event_ids.update(self.selected_boundary.event_ids)
         else:
             if self.selected_boundary is not None:
-                await self.selected_boundary.commit()
+                await self.selected_boundary.commit(self.business_inputs)
                 self.observed_event_ids.update(self.selected_boundary.event_ids)
         if self.has_native_effects:
             # Mark the original private task before real native dispatch. SDK
@@ -532,6 +540,8 @@ class TurnExecution:
                     self.state.transcript.append(message)
                     if message not in self.state.public_tail:
                         self.state.public_tail.append(message)
+                for message in self.state.boundary.current_inputs:
+                    self.state.transcript.append(message)
         if (
             self.state.control is not None
             and self.state.control.current is not None
@@ -1152,6 +1162,7 @@ class TurnExecution:
             self.tools,
             has_native_effects=bool(plan.request.native_tools),
             on_dispatch=persist_dispatch if receipt is not None else None,
+            business_inputs=False,
         )
         try:
             response = await self.runner._concurrency.run_llm(
