@@ -134,6 +134,10 @@ class AdminActor:
     canonical_conversation_id: str | None = None
     ingress_presence_id: str | None = None
 
+    person_id: str | None = None
+    space_id: str | None = None
+    platform: str = "qq"
+
 
 @dataclass(frozen=True, slots=True)
 class ControlAuditRef:
@@ -264,7 +268,6 @@ class VisionRuntimeConfig:
     gif_max_frames: int
     thinking_enabled: bool
     thinking_budget: int
-    low_confidence_retry_threshold: float
     per_user_requests_per_minute: int
     per_group_requests_per_minute: int
     analysis_retention_days: int

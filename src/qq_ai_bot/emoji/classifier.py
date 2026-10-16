@@ -96,7 +96,6 @@ class EmojiClassifier:
                 analysis_mode="meme",
                 thinking_enabled=thinking_enabled,
                 thinking_budget=thinking_budget,
-                low_confidence_retry_threshold=0.0,
             ),
         )
         if not observation.items:

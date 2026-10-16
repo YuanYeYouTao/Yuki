@@ -1461,9 +1461,6 @@ class RuntimeConfigService:
                 video_max_download_bytes=int(cast(int, value("vision.video_max_download_bytes"))),
                 thinking_enabled=bool(value("vision.thinking_enabled")),
                 thinking_budget=int(cast(int, value("vision.thinking_budget"))),
-                low_confidence_retry_threshold=float(
-                    cast(float | int, value("vision.low_confidence_retry_threshold"))
-                ),
                 per_user_requests_per_minute=int(
                     cast(int, value("vision.per_user_requests_per_minute"))
                 ),

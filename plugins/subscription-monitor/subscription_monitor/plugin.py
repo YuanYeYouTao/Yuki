@@ -143,6 +143,7 @@ class SubscriptionMonitorPlugin:
                     return CommandResult(text=found.model_dump_json(indent=2))
                 if action == "add" and len(parts) >= 3:
                     kind, separator, target_id = parts[2].partition(":")
+                    target_id, _, conversation_id = target_id.partition(":conversation:")
                     if not separator:
                         raise ValueError("target_missing")
                     subscription = Subscription(
@@ -150,7 +151,11 @@ class SubscriptionMonitorPlugin:
                         url=parts[1],
                         targets=(
                             NotificationTarget.model_validate(
-                                {"target_type": kind, "target_id": target_id}
+                                {
+                                    "target_type": kind,
+                                    "target_id": target_id,
+                                    "conversation_id": conversation_id or None,
+                                }
                             ),
                         ),
                         judge_prompt=" ".join(parts[3:]),
@@ -230,13 +235,16 @@ class SubscriptionMonitorPlugin:
                     error_code="monitor.source_changed",
                     text="更换订阅源请使用新 ID，已有事件与游标仍属于原来源。",
                 )
+            targets = []
+            for target in subscription.targets:
+                grant = await context.notifications.grant_target(target, bot_user_id="")
+                targets.append(target.model_copy(update={"conversation_id": grant.conversation_id}))
+            subscription = subscription.model_copy(update={"targets": tuple(targets)})
             rows = (
                 *(row for row in config.subscriptions if row.id != subscription.id),
                 subscription,
             )
             MonitorConfig(subscriptions=rows)
-            for target in subscription.targets:
-                await context.notifications.grant_target(target, bot_user_id="")
             await save_subscriptions(context, rows)
         return CommandResult(
             text=(

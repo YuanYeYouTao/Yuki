@@ -10,13 +10,16 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert
 
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.memory.enums import MemoryScopeType
 from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.job_claims import fence_memory_job_claim
 from qq_ai_bot.memory.models import MemoryJob
+from qq_ai_bot.memory.partition import resolve_canonical_memory_partition_for_event
 from qq_ai_bot.memory.validation import normalize_memory_text
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
+    ChatEventModel,
     MemoryClaimCandidateEvidenceModel,
     MemoryClaimCandidateModel,
 )
@@ -67,11 +70,13 @@ class MemoryClaimCandidateRepository:
         }
         memory_key = normalize_memory_text(claim.memory_key).casefold()
         content = normalize_memory_text(claim.content)
-        target_fingerprint = _fingerprint(target)
+        async with self._database.sessions() as reader:
+            partition = await resolve_canonical_memory_partition_for_event(reader, event)
+        target_fingerprint = _fingerprint({"partition": partition.value})
         fingerprint = _fingerprint(
             {
                 "candidate_type": candidate_type,
-                "target": target,
+                "partition": partition.value,
                 "memory_key": memory_key,
                 "content": content.casefold(),
             }
@@ -170,6 +175,8 @@ class MemoryClaimCandidateRepository:
         group_id: str | None,
         private_user_id: str | None = None,
         limit: int = 20,
+        person_id: str | None = None,
+        space_id: str | None = None,
     ) -> tuple[MemoryClaimCandidate, ...]:
         now = datetime.now(UTC)
         conditions = [
@@ -177,7 +184,25 @@ class MemoryClaimCandidateRepository:
             MemoryClaimCandidateModel.status == "pending",
             MemoryClaimCandidateModel.expires_at > now,
         ]
-        if group_id is not None:
+        if person_id is not None or space_id is not None:
+            conditions.append(
+                select(MemoryClaimCandidateEvidenceModel.id)
+                .join(
+                    ChatEventModel, ChatEventModel.id == MemoryClaimCandidateEvidenceModel.event_id
+                )
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
+                )
+                .where(
+                    MemoryClaimCandidateEvidenceModel.candidate_id == MemoryClaimCandidateModel.id,
+                    CanonicalConversationModel.space_id == space_id
+                    if space_id is not None
+                    else CanonicalConversationModel.person_id == person_id,
+                )
+                .exists()
+            )
+        elif group_id is not None:
             conditions.append(MemoryClaimCandidateModel.group_id == group_id)
         else:
             conditions.extend(

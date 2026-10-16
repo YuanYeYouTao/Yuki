@@ -41,3 +41,5 @@ registrar.register_background_service(
 - 不在内存后台任务中实现持久提醒、定时发送或跨重启业务流程。
 - `stop()` 必须让任务在声明的关闭超时内结束。
 
+
+通知 `NotificationTarget.target_id` 为内部 Person/Space，`conversation_id` 为原授权入口；同 Space 的不同 topic、同 Person 的不同平台/私聊入口分别保存授权与去重身份。授权不从裸平台号推断。已有事件、Job、outbox 和 receipt 沿原 ID 读取；迁移前 target_id 的原传输出处只参与精确旧请求回执比对，不据此重新建立所有者或重发。

@@ -72,8 +72,6 @@ async def active_work(database, tmp_path, *, reporting=None):
         source = await session.scalar(select(ChatEventModel))
     runtime = ToolRuntime(
         inbound=None,
-        gateway=None,
-        allow_generic_onebot=False,
         conversation_key="audit",
         trigger_event_id=source.id,
         actor_context=ToolActor(
@@ -136,7 +134,7 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
         conversation_key=runtime.conversation_key,
         current_group_id=actor.group_id,
         bot_user_id=actor.bot_user_id,
-        gateway=runtime.gateway,
+        gateway=None,
         runtime_config=runtime.runtime_config,
         allowed_capabilities=frozenset(),
         max_tool_calls=runtime.runtime_config.agent.max_tool_calls,
@@ -253,7 +251,7 @@ async def test_social_success_and_original_work_call_survive_telemetry_failure(
         conversation_key=runtime.conversation_key,
         current_group_id=actor.group_id,
         bot_user_id=actor.bot_user_id,
-        gateway=runtime.gateway,
+        gateway=None,
         runtime_config=runtime.runtime_config,
         allowed_capabilities=frozenset(),
         max_tool_calls=runtime.runtime_config.agent.max_tool_calls,

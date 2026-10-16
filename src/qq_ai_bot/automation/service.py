@@ -15,7 +15,6 @@ from qq_ai_bot.admin.models import ControlAuditRef
 from qq_ai_bot.automation.authority import (
     DelegatedAuthority,
     PermissionLevel,
-    permission_for_accounts,
 )
 from qq_ai_bot.automation.control_context import (
     ControlAutomationContext,
@@ -127,7 +126,7 @@ class AutomationService:
                 capability="automation",
                 operation="create_task",
                 target_type="automation_draft",
-                target_id=actor.platform_message_id,
+                target_id=str(actor.event_id) if actor.event_id is not None else actor.execution_id,
                 after={"phase": "validate_or_commit"},
                 success=False,
                 error_category=type(error).__name__,
@@ -141,7 +140,7 @@ class AutomationService:
         if self._audit is None:
             return ()
         events = await self._audit.history(
-            actor_user_id=creator_user_id,
+            actor_principal_id=creator_user_id,
             capability="automation",
             limit=20,
         )
@@ -345,6 +344,7 @@ class AutomationService:
             permission_level=owner_permission,
             current_group_id=provenance.current_group_id,
             principal_kind=existing.creator_kind,
+            canonical_creator_person_id=None if owner_person_id == "self" else owner_person_id,
             **(
                 {
                     key: existing.authority_snapshot.get(key)
@@ -572,6 +572,7 @@ class AutomationService:
             permission_level=context.provenance.permission,
             current_group_id=context.provenance.current_group_id,
             principal_kind="self" if context.owner_id == "self" else "person",
+            canonical_creator_person_id=None if context.owner_id == "self" else context.owner_id,
             canonical_conversation_id=context.conversation_id,
             conversation_generation=context.generation,
             canonical_presence_id=context.presence_id,
@@ -739,17 +740,17 @@ class AutomationService:
 
     async def _resolve_creator_person(
         self,
-        external_account_id: str,
+        person_id: str,
         *,
         session: AsyncSession | None = None,
     ) -> str:
-        person_id = await self._repository.resolve_active_creator_person(
-            external_account_id,
-            session=session,
-        )
-        if person_id is None:
-            raise PermissionError("当前 QQ 账号没有活动的永久主体绑定")
-        return person_id
+        from qq_ai_bot.identity.db_models import CanonicalPersonModel
+
+        async with optional_session(self._repository._database, session, write=False) as reader:
+            person = await reader.get(CanonicalPersonModel, person_id)
+            if person is None or not person.enabled:
+                raise PermissionError("automation_owner_unavailable")
+            return person.id
 
     async def _creator_context(
         self,
@@ -762,15 +763,17 @@ class AutomationService:
                 raise PermissionError("self_automation_scene_required")
             permission = PermissionLevel.SELF
             return "self", permission, self._creation_provenance(actor, permission=permission)
-        creator_person_id = await self._resolve_creator_person(actor.user_id, session=session)
-        if actor.person_id is not None and actor.person_id != creator_person_id:
-            raise PermissionError("actor_identity_changed")
-        accounts = await self._repository.active_creator_accounts(
-            creator_person_id, session=session
-        )
-        if not accounts:
-            raise PermissionError("当前永久主体没有活动 QQ 绑定")
-        permission = permission_for_accounts(self._settings, accounts)
+        if actor.person_id is None:
+            raise PermissionError("automation_owner_unavailable")
+        creator_person_id = await self._resolve_creator_person(actor.person_id, session=session)
+        from qq_ai_bot.identity.authority import person_is_superuser
+
+        async with optional_session(self._repository._database, session, write=False) as reader:
+            permission = (
+                PermissionLevel.SUPERUSER
+                if await person_is_superuser(reader, creator_person_id, self._settings.superusers)
+                else PermissionLevel.USER
+            )
         return (
             creator_person_id,
             permission,
@@ -820,7 +823,7 @@ class AutomationService:
             binding = await session.scalar(
                 select(SpaceBindingModel).where(
                     SpaceBindingModel.space_id == conversation.space_id,
-                    SpaceBindingModel.platform == "qq",
+                    SpaceBindingModel.platform == actor.platform,
                     SpaceBindingModel.status == "active",
                     SpaceBindingModel.external_space_id == actor.group_id,
                 )
@@ -828,7 +831,7 @@ class AutomationService:
             if (
                 presence is None
                 or not presence.enabled
-                or presence.platform != "qq"
+                or presence.platform != actor.platform
                 or presence.external_account_id != actor.bot_user_id
                 or binding is None
             ):
@@ -862,7 +865,11 @@ class AutomationService:
             if conversation_id is None:
                 _, conversation_id = await bind_automation_conversation(session, row)
             context = await resolve_control_context(
-                session, self._settings, owner_id=owner_person_id, conversation_id=conversation_id
+                session,
+                self._settings,
+                owner_id=owner_person_id,
+                conversation_id=conversation_id,
+                presence_id=row.canonical_presence_id,
             )
         owner_permission = context.provenance.permission
         provenance = context.provenance

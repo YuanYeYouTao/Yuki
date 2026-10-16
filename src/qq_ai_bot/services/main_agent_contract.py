@@ -66,8 +66,6 @@ class MainAgentContract:
             config = await self.chat._runtime_config.snapshot()
             declaration = ToolRuntime(
                 inbound=None,
-                gateway=None,
-                allow_generic_onebot=False,
                 declaration_only=True,
                 runtime_config=config,
             )
@@ -104,7 +102,7 @@ class MainAgentContract:
                     {
                         # 14: retired MCP and fixed direct view, discovery and full execution API.
                         # 19: lifecycle decisions settle after the original tool round.
-                        "version": 19,
+                        "version": 20,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

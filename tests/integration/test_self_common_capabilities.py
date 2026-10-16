@@ -48,17 +48,13 @@ async def self_actor(database, env, *, proposal_id="local-self-opportunity"):
         presence_id=env.presence,
         principal_kind="self",
         initiative_run_id=accepted.run.run_id,
+        space_id=env.space,
     )
 
 
 def runtime(actor, env):
-    async def call_api(action, params):
-        return await env.bot.call_api(action, **params)
-
     return ToolRuntime(
         inbound=None,
-        gateway=SimpleNamespace(call_api=call_api),
-        allow_generic_onebot=False,
         actor_context=actor,
         origin=actor.origin,
         initiative_run_id=actor.initiative_run_id,
@@ -73,7 +69,7 @@ def runtime(actor, env):
 
 
 @pytest.mark.asyncio
-async def test_self_mentions_poke_recall_and_receipt_history_use_original_social_backend(
+async def test_self_mentions_recall_and_receipt_history_use_original_social_backend(
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
@@ -96,10 +92,6 @@ async def test_self_mentions_poke_recall_and_receipt_history_use_original_social
     assert await env.service.execute("send_message", arguments, context) == sent
     sends = [params for action, params in env.bot.calls if action == "send_group_msg"]
     assert len(sends) == 1 and sends[0]["message"][0]["type"] == "at"
-    await env.service.execute(
-        "poke_person", {"subject_ref": "known_person"}, replace(context, call_id="poke")
-    )
-    assert env.bot.calls[-1] == ("send_poke", {"user_id": 10001, "group_id": 20001})
     operation = sent["operation_id"]
     receipt = await env.service.receipts.get(operation)
     assert receipt.event_id is not None
@@ -152,6 +144,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
         ),
         services=PluginFacadeServices(
             ledger=SimpleNamespace(_database=database, _writer=env.service.writer),
+            social=env.service,
             automation=automation,
         ),
     )
@@ -164,7 +157,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
             assert invocation.inbound is None and invocation.actor is actor
             assert invocation.origin.value == SdkTurnOrigin.SELF_INITIATIVE.value
             assert invocation.actor_user_id == ""
-            assert not host._is_real_superuser(invocation)
+            assert not await host._is_real_superuser(invocation)
             music = await host.onebot.send_music_card(provider="netease", resource_id="123")
             assert music.ok
             await host.automation.create_task(

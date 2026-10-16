@@ -159,8 +159,15 @@ class MemoryClaimValidator:
         if not key or not category or not content:
             raise _MemoryClaimRejected("incomplete_claim_fields")
         kind = claim.kind
-        subject_is_speaker = resolved.subject_user_id == event.sender_user_id
-        is_third_party = bool(resolved.subject_user_id) and not subject_is_speaker
+        subject_is_speaker = (
+            resolved.canonical_subject_person_id == event.author_person_id
+            if resolved.canonical_subject_person_id is not None
+            else resolved.subject_user_id == event.sender_user_id
+        )
+        is_third_party = (
+            bool(resolved.canonical_subject_person_id or resolved.subject_user_id)
+            and not subject_is_speaker
+        )
         if is_third_party and resolved.scope_type is not MemoryScopeType.PERSON_GROUP:
             raise _MemoryClaimRejected("third_party_scope_not_person_group")
         source_type = claim.source_type
@@ -187,6 +194,10 @@ class MemoryClaimValidator:
             scope_type=resolved.scope_type,
             subject_user_id=resolved.subject_user_id,
             group_id=resolved.group_id,
+            canonical_subject_person_id=resolved.canonical_subject_person_id,
+            canonical_subject_space_id=resolved.canonical_subject_space_id,
+            canonical_visibility_person_id=resolved.canonical_visibility_person_id,
+            canonical_visibility_space_id=resolved.canonical_visibility_space_id,
             kind=kind,
             memory_key=key,
             category=category,

@@ -27,7 +27,6 @@ class CapabilityKind(StrEnum):
 
     COMMAND = "command"
     CONFIGURATION = "configuration"
-    ONEBOT = "onebot"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,10 +102,6 @@ class CapabilityReport:
             for descriptor in self.capabilities
         )
 
-    @property
-    def onebot_gateway_count(self) -> int:
-        return sum(descriptor.kind is CapabilityKind.ONEBOT for descriptor in self.capabilities)
-
     def to_dict(self) -> dict[str, object]:
         """Return stable grouped lists plus exact summary counts."""
 
@@ -144,7 +139,6 @@ class CapabilityReport:
                 "protected_configurations": self.protected_config_count,
                 "self_service_operations": self.self_service_operation_count,
                 "self_service_mutations": self.self_service_mutation_count,
-                "onebot_api_gateways": self.onebot_gateway_count,
             },
             "groups": groups,
             "available_scopes": scopes,
@@ -229,7 +223,6 @@ class CapabilityReport:
                     "total": 0,
                     "commands": 0,
                     "configurations": 0,
-                    "onebot_gateways": 0,
                     "mutating": 0,
                 },
             )
@@ -238,20 +231,11 @@ class CapabilityReport:
                 {
                     CapabilityKind.COMMAND: "commands",
                     CapabilityKind.CONFIGURATION: "configurations",
-                    CapabilityKind.ONEBOT: "onebot_gateways",
                 }[descriptor.kind]
             ] += 1
             if descriptor.mutating:
                 counts["mutating"] += 1
         base["categories"] = category_counts
-        if self.onebot_gateway_count:
-            base["onebot_scope"] = {
-                "tool": "call_onebot_api(action, params)",
-                "all_public_actions": True,
-                "action_allowlist": None,
-                "second_confirmation_required": False,
-                "availability": "direct_superuser_non_autonomous_turn_before_web_tools",
-            }
         if mode == "summary":
             return base
         if mode == "full":
@@ -303,7 +287,6 @@ class CapabilityReport:
                 f"{self.self_service_operation_count} 项，其中修改型 "
                 f"{self.self_service_mutation_count} 项"
             ),
-            f"QQ/OneBot Provider 通用全接口网关：{self.onebot_gateway_count} 项",
         ]
 
         configurations = tuple(
@@ -319,24 +302,10 @@ class CapabilityReport:
         self_service = tuple(
             item for item in self.capabilities if item.kind is CapabilityKind.COMMAND
         )
-        onebot = tuple(item for item in self.capabilities if item.kind is CapabilityKind.ONEBOT)
         if configurations:
             lines.extend(self._group_lines("可修改配置", configurations, id_prefix="config:"))
         if self_service:
             lines.extend(self._group_lines("本人自助接口", self_service, id_prefix="command:"))
-        if onebot:
-            lines.extend(
-                self._group_lines(
-                    "QQ/OneBot Provider 全接口权限（action 不设 denylist）",
-                    onebot,
-                    id_prefix="onebot:",
-                )
-            )
-            lines.append(
-                "- 权限说明：超级管理员在当前真实消息触发的普通聊天轮中，可通过 "
-                "call_onebot_api(action, params) 调用当前 QQ/OneBot Provider 提供的全部公开 "
-                "action，无 action 白名单或 denylist，也不需要二次确认。"
-            )
         if protected:
             lines.extend(
                 self._group_lines(
@@ -374,28 +343,6 @@ class CapabilityReport:
         lines = [title + "："]
         lines.extend(f"- {category}：{', '.join(items)}" for category, items in grouped.items())
         return lines
-
-
-class PermissionResolver:
-    """Resolve only USER or SUPERUSER from the current transport event sender QQ."""
-
-    def __init__(self, settings: Settings) -> None:
-        self._superusers = settings.superusers
-
-    def resolve(self, message: InboundMessage) -> PermissionLevel:
-        """Ignore model claims and derive authority from the real inbound sender."""
-
-        user_id = message.sender.user_id.strip()
-        if not user_id:
-            raise ValueError("current event sender QQ is required")
-        if user_id in self._superusers:
-            return PermissionLevel.SUPERUSER
-        return PermissionLevel.USER
-
-    def source(self, message: InboundMessage) -> str:
-        return (
-            "SUPERUSERS" if self.resolve(message) is PermissionLevel.SUPERUSER else "default_user"
-        )
 
 
 _BASE_SELF_SERVICE_CAPABILITIES = (
@@ -639,7 +586,6 @@ class PermissionCatalogService:
         settings: Settings,
         config_registry: ConfigRegistry | None = None,
     ) -> None:
-        self._resolver = PermissionResolver(settings)
         self._bot_display_name = settings.bot_display_name
         self._config_registry = config_registry or ConfigRegistry()
         self._descriptors = self._build_descriptors()
@@ -653,21 +599,26 @@ class PermissionCatalogService:
         *,
         category: str | None = None,
         query: str | None = None,
+        actor_is_superuser: bool = False,
     ) -> CapabilityReport:
-        """Query the sender's catalog without accepting a caller-supplied QQ or role."""
+        """Render the current canonical source's resolved capabilities."""
 
         return self.report_for_actor(
-            ToolActor.from_inbound(message), category=category, query=query
+            ToolActor.from_inbound(message),
+            category=category,
+            query=query,
+            actor_is_superuser=actor_is_superuser,
         )
 
     def report_for_actor(
-        self, actor: ToolActor, *, category: str | None = None, query: str | None = None
+        self,
+        actor: ToolActor,
+        *,
+        category: str | None = None,
+        query: str | None = None,
+        actor_is_superuser: bool = False,
     ) -> CapabilityReport:
-        level = (
-            PermissionLevel.SUPERUSER
-            if actor.user_id in self._resolver._superusers
-            else PermissionLevel.USER
-        )
+        level = PermissionLevel.SUPERUSER if actor_is_superuser else PermissionLevel.USER
         normalized_category = category.strip().casefold() if category else None
         normalized_query = query.strip().casefold() if query else None
         if normalized_query is not None and len(normalized_query) > 64:
@@ -694,7 +645,7 @@ class PermissionCatalogService:
             )
         )
         return CapabilityReport(
-            actor_user_id=actor.user_id,
+            actor_user_id="SELF" if actor.principal_kind == "self" else actor.person_id or "",
             permission_level=level,
             permission_source="SUPERUSERS"
             if level is PermissionLevel.SUPERUSER
@@ -717,22 +668,6 @@ class PermissionCatalogService:
         descriptors.extend(self._self_service_descriptors())
         descriptors.extend(
             self._configuration_descriptor(spec) for spec in self._config_registry.list()
-        )
-        descriptors.append(
-            CapabilityDescriptor(
-                id="onebot:call_onebot_api:any_public_action",
-                kind=CapabilityKind.ONEBOT,
-                category="onebot",
-                display_name="调用全部 QQ/OneBot Provider 公开接口",
-                description=(
-                    "当前执行主体属于 SUPERUSERS 的普通聊天或定时任务可使用 "
-                    "call_onebot_api(action, params)，action 不设 denylist，也不需要二次确认。"
-                    "自主群聊轮不开放；使用网页工具后本轮会撤销该网关。"
-                ),
-                minimum_level=PermissionLevel.SUPERUSER,
-                mutating=True,
-                target_scopes=("current_superuser_execution",),
-            )
         )
         return tuple(
             sorted(
@@ -809,5 +744,4 @@ __all__ = [
     "CapabilityReport",
     "PermissionCatalogService",
     "PermissionLevel",
-    "PermissionResolver",
 ]

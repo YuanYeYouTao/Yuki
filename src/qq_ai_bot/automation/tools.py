@@ -350,7 +350,7 @@ class AutomationToolService:
                 maximum = arguments.get("limit", 50)
                 if isinstance(maximum, bool) or not isinstance(maximum, int):
                     raise ValueError("limit 必须是整数")
-                completed = await self._service.list_completed(actor.user_id)
+                completed = await self._service.list_completed(actor.person_id or "")
                 return _result(
                     data={
                         "completed_history": [_record(row) for row in completed[:maximum]],
@@ -362,7 +362,7 @@ class AutomationToolService:
                 return _result(
                     data={
                         "recent_creation_outcomes": await self._service.diagnose_creation(
-                            actor.user_id
+                            actor.person_id or ""
                         )
                     }
                 )

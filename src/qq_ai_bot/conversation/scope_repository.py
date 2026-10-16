@@ -119,7 +119,6 @@ class ConversationScopeRepository:
                 expected_turn,
                 conversation_id=state.id,
                 generation=state.generation,
-                transport_key=scope.key,
                 runtime_key=state.runtime_scope_key,
             ):
                 raise ConversationCoverageError("turn identity changed before prompt snapshot")

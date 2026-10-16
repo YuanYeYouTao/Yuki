@@ -20,7 +20,7 @@ from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_outcome import ContextBoundaryChanged
 from qq_ai_bot.runtime.context_preparation import prepare_context
 from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime, AgentToolBackend
-from qq_ai_bot.services.agent_tools import OneBotToolGateway, ToolRuntime
+from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.durable_invocations import project_committed_result
 from qq_ai_bot.services.invocation_context import InvocationContextFactory
 from qq_ai_bot.services.main_agent_backend import MainAgentBackend
@@ -180,9 +180,21 @@ async def _execute_plugin_main_turn(
 
         actor = _invocation_actor(invocation)
         scope = (
-            ConversationScope.group(actor.bot_user_id, actor.group_id)
+            ConversationScope.group(
+                actor.bot_user_id,
+                actor.group_id,
+                platform=actor.platform,
+                conversation_id=actor.conversation_id,
+                presence_id=actor.presence_id,
+            )
             if actor.group_id is not None
-            else ConversationScope.private(actor.bot_user_id, actor.user_id)
+            else ConversationScope.private(
+                actor.bot_user_id,
+                actor.user_id,
+                platform=actor.platform,
+                conversation_id=actor.conversation_id,
+                presence_id=actor.presence_id,
+            )
         )
         can_read_history = PluginPermission.MESSAGE_HISTORY_READ in host._approved_permissions
         version, _ = await ledger.read_scope_context(scope, limit=0)
@@ -208,8 +220,13 @@ async def _execute_plugin_main_turn(
         async def validate() -> None:
             if host._require(permission) is not invocation:
                 raise LLMInvalidRequestError("plugin invocation changed before model request")
-            from qq_ai_bot.identity.canonical_repository import active_person_id_for
-            from qq_ai_bot.identity.db_models import CanonicalPersonModel, PresenceModel
+            from sqlalchemy import select
+
+            from qq_ai_bot.identity.db_models import (
+                CanonicalPersonModel,
+                IdentityBindingModel,
+                PresenceModel,
+            )
 
             async with ledger._database.sessions() as session:
                 person = (
@@ -219,11 +236,21 @@ async def _execute_plugin_main_turn(
                 )
                 presence = await session.get(PresenceModel, invocation.presence_id)
                 active_person = (
-                    await active_person_id_for(session, actor.user_id) if actor.user_id else None
+                    await session.scalar(
+                        select(IdentityBindingModel.person_id).where(
+                            IdentityBindingModel.person_id == actor.person_id,
+                            IdentityBindingModel.platform == actor.platform,
+                            IdentityBindingModel.external_account_id == actor.user_id,
+                            IdentityBindingModel.status == "active",
+                        )
+                    )
+                    if actor.user_id
+                    else None
                 )
             if (
                 presence is None
                 or not presence.enabled
+                or presence.platform != actor.platform
                 or presence.external_account_id != invocation.bot_user_id
                 or (
                     actor.principal_kind == "person"
@@ -401,8 +428,6 @@ async def _execute_plugin_main_turn(
                     if inbound is None
                     else None
                 ),
-                gateway=cast(OneBotToolGateway | None, runtime.gateway),
-                allow_generic_onebot=False,
                 conversation_key=invocation.conversation_key,
                 execution_id=execution_id,
                 read_scope=scope,
@@ -523,6 +548,13 @@ async def resume_plugin_work(
         event = await ledger.get_event(source["trigger_event_id"])
         if event is None or event.canonical_conversation_id != work["conversation_id"]:
             raise PluginPermissionError("plugin work source is unavailable")
+        from qq_ai_bot.identity.db_models import PresenceModel
+
+        async with ledger._database.sessions() as session:
+            presence = await session.get(PresenceModel, event.ingress_presence_id)
+        if presence is None:
+            raise PluginPermissionError("plugin work source is unavailable")
+
         inbound = InboundMessage(
             message_id=event.platform_message_id,
             source_event_id=event.id,
@@ -531,6 +563,9 @@ async def resume_plugin_work(
             sender=SenderIdentity(source["actor_user_id"]),
             text=event.content,
             bot_user_id=source["bot_user_id"],
+            platform=presence.platform,
+            mentioned_person_ids=event.mentioned_person_ids,
+            thread_id=event.thread_id,
             group_id=event.group_id,
             received_at=event.occurred_at,
             person_id=source.get("person_id"),
@@ -546,6 +581,12 @@ async def resume_plugin_work(
                 **saved_actor,
                 "origin": TurnOrigin(saved_actor["origin"]),
                 "mentioned_user_ids": tuple(saved_actor["mentioned_user_ids"]),
+                "mentioned_person_ids": tuple(saved_actor.get("mentioned_person_ids", ())),
+                **(
+                    {"platform": inbound.platform, "space_id": inbound.space_id}
+                    if inbound is not None
+                    else {}
+                ),
             }
         )
         if saved_actor is not None

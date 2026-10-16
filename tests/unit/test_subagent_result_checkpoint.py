@@ -1039,6 +1039,7 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
         group_id="20001",
         creator_user_id="10001",
     )
+    original_grant = (await notifications.list_grants(plugin_id))[0]
     legacy = {}
     for index in range(256):
         receipt = await notifications.publish(
@@ -1047,7 +1048,11 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
                 event_key=f"legacy:{index}",
                 event_type="fixture",
                 external_source="fixture",
-                target=NotificationTarget(target_type="group", target_id="20001"),
+                target=NotificationTarget(
+                    target_type="group",
+                    target_id=original_grant.target_id,
+                    conversation_id=original_grant.conversation_id,
+                ),
                 occurred_at=datetime.now(UTC),
                 summary="original background event",
                 ask_agent=True,

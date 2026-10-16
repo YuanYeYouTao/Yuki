@@ -28,12 +28,16 @@ from qq_ai_bot.social.repository import SocialOperationRepository
 class DirectDeliveryScope:
     identity: str
     ordinal: int = 0
-    unknown: SocialReceipt | None = None
+    memory_ordinal: int = 0
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def next_call(self) -> str:
         self.ordinal += 1
         return f"send:{self.ordinal}"
+
+    def next_memory_call(self) -> str:
+        self.memory_ordinal += 1
+        return f"{self.identity}:memory:{self.memory_ordinal}"
 
 
 async def prepare_delivery(

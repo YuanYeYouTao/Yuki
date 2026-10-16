@@ -8,7 +8,6 @@ import logging
 from sqlalchemy.exc import SQLAlchemyError
 
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import AttachmentKind, OutboundMedia, OutboundMessage
 from qq_ai_bot.emoji.models import (
     EmojiDeliveryRequest,
@@ -50,7 +49,8 @@ class EmojiDeliveryService:
         self,
         request: EmojiDeliveryRequest,
         *,
-        scope: ConversationScope,
+        person_id: str | None,
+        space_id: str | None,
         response_text: str,
         runtime: RuntimeConfigSnapshot,
     ) -> EmojiPreparationResult:
@@ -67,8 +67,8 @@ class EmojiDeliveryService:
         try:
             selection = await self._selector.select(
                 EmojiSelectionRequest(
-                    private_peer_user_id=scope.private_peer_user_id,
-                    group_id=scope.group_id,
+                    person_id=person_id,
+                    space_id=space_id,
                     reply_text=response_text[:4000],
                     goal=request.goal,
                     emotion=request.emotion,
@@ -226,8 +226,8 @@ class EmojiDeliveryService:
         self,
         message: OutboundMessage,
         *,
-        private_peer_user_id: str | None,
-        group_id: str | None,
+        actor_person_id: str | None,
+        space_id: str | None,
         trigger_message_id: str,
         source: str,
         ledger_recorded: bool,
@@ -238,8 +238,8 @@ class EmojiDeliveryService:
                 try:
                     await self._repository.mark_used(
                         media.emoji_id,
-                        actor_user_id=private_peer_user_id,
-                        group_id=group_id,
+                        actor_person_id=actor_person_id,
+                        space_id=space_id,
                         trigger_message_id=trigger_message_id,
                         source=source,
                     )
@@ -249,7 +249,7 @@ class EmojiDeliveryService:
                         EventName.EMOJI_USAGE_RECORDED,
                         {
                             "source": source,
-                            "scope_type": "group" if group_id is not None else "private",
+                            "scope_type": "group" if space_id is not None else "private",
                         },
                     )
                 except asyncio.CancelledError:
@@ -268,7 +268,7 @@ class EmojiDeliveryService:
                     self._event_publisher,
                     EventName.EMOJI_SENT,
                     {
-                        "scope_type": "group" if group_id is not None else "private",
+                        "scope_type": "group" if space_id is not None else "private",
                         "source": source,
                         "delivered": True,
                         "recorded": ledger_recorded and usage_recorded,

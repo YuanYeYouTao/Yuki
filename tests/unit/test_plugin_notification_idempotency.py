@@ -36,6 +36,57 @@ from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationReques
 _NOW = datetime(2026, 8, 26, 15, tzinfo=UTC)
 _PLUGIN_ID = "test.publication-idempotency"
 _TARGET = NotificationTarget(target_type="private", target_id="1001")
+_GROUP_TARGET = NotificationTarget(target_type="group", target_id="2001")
+_PRESENCE = ""
+
+
+@pytest.fixture(autouse=True)
+async def canonical_notification_targets(database, monkeypatch):
+    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+    from qq_ai_bot.identity.canonical_repository import (
+        find_identity_binding,
+        find_presence,
+        find_space_binding,
+    )
+
+    async with database.immediate_session() as session:
+        person = await find_identity_binding(session, "1001")
+        presence = await find_presence(session, "8000")
+        space = await find_space_binding(session, "2001")
+        private = await ensure_canonical_conversation(
+            session,
+            kind="private",
+            primary_scope_key="bot:8000:private:1001",
+            person_id=person.person_id,
+            identity_binding_id=person.id,
+            presence_id=presence.id,
+        )
+        group = await ensure_canonical_conversation(
+            session,
+            kind="space",
+            primary_scope_key="bot:8000:group:2001",
+            space_id=space.space_id,
+            space_binding_id=space.id,
+        )
+    import sys
+
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_TARGET",
+        NotificationTarget(
+            target_type="private",
+            target_id=person.person_id,
+            conversation_id=private.conversation_id,
+        ),
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_GROUP_TARGET",
+        NotificationTarget(
+            target_type="group", target_id=space.space_id, conversation_id=group.conversation_id
+        ),
+    )
+    monkeypatch.setattr(sys.modules[__name__], "_PRESENCE", presence.id, raising=False)
 
 
 def _sha(payload: bytes) -> str:
@@ -59,7 +110,9 @@ def _request(**overrides: Any) -> PublishNotificationRequest:
     return PublishNotificationRequest(**values)
 
 
-async def _install(database: Database) -> PluginNotificationRepository:
+async def _install(
+    database: Database, *, target: NotificationTarget | None = None, presence_id: str | None = None
+) -> PluginNotificationRepository:
     async with database.immediate_session() as session:
         session.add(
             PluginInstallationModel(
@@ -83,11 +136,13 @@ async def _install(database: Database) -> PluginNotificationRepository:
             )
         )
     repository = PluginNotificationRepository(database)
+    selected = target or _TARGET
     await repository.grant_target(
         plugin_id=_PLUGIN_ID,
-        target=_TARGET,
+        target=selected,
         bot_user_id="8000",
-        created_by_user_id="1001",
+        created_by_user_id=selected.target_id,
+        presence_id=presence_id if presence_id is not None else _PRESENCE,
     )
     return repository
 
@@ -674,12 +729,13 @@ async def test_unique_event_key_is_unchanged(database: Database) -> None:
         plugin_id=_PLUGIN_ID,
         request=_request(event_key="shared-key"),
     )
-    group = NotificationTarget(target_type="group", target_id="2001")
+    group = _GROUP_TARGET
     await repository.grant_target(
         plugin_id=_PLUGIN_ID,
         target=group,
         bot_user_id="8000",
-        created_by_user_id="1001",
+        created_by_user_id=_TARGET.target_id,
+        presence_id=_PRESENCE,
     )
     other_target = await repository.publish(
         plugin_id=_PLUGIN_ID,
@@ -690,7 +746,7 @@ async def test_unique_event_key_is_unchanged(database: Database) -> None:
         request=_request(event_key="other-key"),
     )
     event_ids, _parts, _intents = await _state(database)
-    assert PLUGIN_API_VERSION == "3.5"
+    assert PLUGIN_API_VERSION == "4.0"
     assert second.deduplicated is True
     assert second.source_event_id == first.source_event_id
     assert other_target.source_event_id != first.source_event_id
@@ -704,10 +760,10 @@ async def test_unique_event_key_is_unchanged(database: Database) -> None:
         other_row = await session.get(ChatEventModel, other_key.source_event_id)
         assert first_row is not None and group_row is not None and other_row is not None
         assert first_row.external_event_key == "shared-key"
-        assert first_row.external_target_id == "1001"
+        assert first_row.external_target_id == _TARGET.target_id
         assert first_row.scope_type == "private"
         assert group_row.external_event_key == "shared-key"
-        assert group_row.external_target_id == "2001"
+        assert group_row.external_target_id == _GROUP_TARGET.target_id
         assert group_row.scope_type == "group"
         assert other_row.external_event_key == "other-key"
 
@@ -805,3 +861,36 @@ async def test_only_proven_presend_failures_can_retry(database: Database) -> Non
         attempt=claimed.attempts,
         error_category="bot_unavailable",
     )
+
+
+async def test_original_raw_target_publication_returns_same_receipt_after_canonical_migration(
+    database,
+):
+    repository = await _install(database)
+    request = _request()
+    receipt = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+    # This is the persisted pre-canonical target representation. It retains its
+    # real event/children/receipt; a selector migration cannot buy another send.
+    original_id = notification_repository_module._notification_id(
+        _PLUGIN_ID, request.event_key, "private", "1001"
+    )
+    async with database.immediate_session() as session:
+        stored = await session.get(ChatEventModel, receipt.source_event_id)
+        stored.external_target_id = "1001"
+        stored.platform_message_id = "external-" + original_id
+        for model in (PluginNotificationOutboxModel, PluginBackgroundTurnJobModel):
+            rows = await session.scalars(select(model).where(model.source_event_id == stored.id))
+            for row in rows:
+                row.target_id = "1001"
+                if isinstance(row, PluginNotificationOutboxModel):
+                    row.notification_id = original_id
+    before = await _state(database)
+    retry = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+    assert retry.deduplicated and retry.source_event_id == receipt.source_event_id
+    assert retry.notification_id == original_id
+    assert not retry.event_created and not retry.delivery_enqueued and not retry.agent_turn_enqueued
+    assert await _state(database) == before
+    with pytest.raises(CanonicalIdentityError) as conflict:
+        await repository.publish(plugin_id=_PLUGIN_ID, request=_request(text="different body"))
+    assert conflict.value.category == "receipt_conflict"
+    assert await _state(database) == before

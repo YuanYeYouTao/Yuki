@@ -93,16 +93,25 @@ class MemoryFactService:
 
     async def resolve_person_id(
         self,
-        user_id: str,
+        user_id: str | None = None,
         *,
         session: AsyncSession | None = None,
+        person_id: str | None = None,
     ) -> str | None:
-        """Resolve one external account to its active canonical Person, fail closed."""
+        """Use a known canonical owner, or resolve an explicit legacy account."""
 
         if session is None:
             async with self._repository.transaction() as owned:
-                return await self.resolve_person_id(user_id, session=owned)
+                return await self.resolve_person_id(user_id, session=owned, person_id=person_id)
         try:
+            if person_id is not None:
+                from qq_ai_bot.identity.errors import CanonicalIdentityError
+                from qq_ai_bot.services.canonical_owners import require_live_person
+
+                try:
+                    return await require_live_person(session, person_id)
+                except CanonicalIdentityError:
+                    return None
             return await resolve_active_person_id(session, user_id)
         except MemoryPartitionResolutionError:
             return None
@@ -111,7 +120,8 @@ class MemoryFactService:
         self,
         fact: MemoryFact,
         *,
-        actor_user_id: str,
+        actor_user_id: str | None = None,
+        actor_person_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> bool:
         """Check Person ownership by Binding, never by the provenance QQ column."""
@@ -121,11 +131,14 @@ class MemoryFactService:
                 return await self.person_owns_fact(
                     fact,
                     actor_user_id=actor_user_id,
+                    actor_person_id=actor_person_id,
                     session=owned,
                 )
         if fact.scope_type not in {MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP}:
             return False
-        actor_person_id = await self.resolve_person_id(actor_user_id, session=session)
+        actor_person_id = await self.resolve_person_id(
+            actor_user_id, session=session, person_id=actor_person_id
+        )
         return bool(
             actor_person_id
             and fact.canonical_subject_person_id
@@ -406,34 +419,45 @@ class MemoryFactService:
 
     async def list_person(
         self,
-        user_id: str,
+        user_id: str | None = None,
         *,
+        person_id: str | None = None,
         limit: int = 100,
         session: AsyncSession | None = None,
     ) -> tuple[MemoryFact, ...]:
         return await self._repository.list_facts(
-            MemoryFactQuery(scope_type=MemoryScopeType.PERSON, subject_user_id=user_id),
+            MemoryFactQuery(
+                scope_type=MemoryScopeType.PERSON,
+                subject_user_id=user_id,
+                canonical_subject_person_id=person_id,
+            ),
             limit=limit,
             session=session,
         )
 
     async def list_group(
         self,
-        group_id: str,
+        group_id: str | None = None,
         *,
+        space_id: str | None = None,
         limit: int = 100,
         session: AsyncSession | None = None,
     ) -> tuple[MemoryFact, ...]:
         return await self._repository.list_facts(
-            MemoryFactQuery(scope_type=MemoryScopeType.GROUP, group_id=group_id),
+            MemoryFactQuery(
+                scope_type=MemoryScopeType.GROUP,
+                group_id=group_id,
+                canonical_subject_space_id=space_id,
+            ),
             limit=limit,
             session=session,
         )
 
     async def list_preferences(
         self,
-        user_id: str,
+        user_id: str | None = None,
         *,
+        person_id: str | None = None,
         limit: int | None = None,
         session: AsyncSession | None = None,
     ) -> tuple[MemoryFact, ...]:
@@ -441,6 +465,7 @@ class MemoryFactService:
             MemoryFactQuery(
                 scope_type=MemoryScopeType.PERSON,
                 subject_user_id=user_id,
+                canonical_subject_person_id=person_id,
                 kind=MemoryKind.PREFERENCE,
             ),
             limit=limit,
@@ -449,12 +474,17 @@ class MemoryFactService:
 
     async def count_person(
         self,
-        user_id: str,
+        user_id: str | None = None,
         *,
+        person_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> int:
         return await self._repository.count_active(
-            MemoryFactQuery(scope_type=MemoryScopeType.PERSON, subject_user_id=user_id),
+            MemoryFactQuery(
+                scope_type=MemoryScopeType.PERSON,
+                subject_user_id=user_id,
+                canonical_subject_person_id=person_id,
+            ),
             session=session,
         )
 
@@ -463,6 +493,7 @@ class MemoryFactService:
         user_id: str,
         content: str,
         *,
+        person_id: str | None = None,
         memory_key: str | None = None,
         evidence: MemoryEvidenceCreate | None = None,
         session: AsyncSession | None = None,
@@ -471,6 +502,7 @@ class MemoryFactService:
             MemoryFactCreate(
                 scope_type=MemoryScopeType.PERSON,
                 subject_user_id=user_id,
+                canonical_subject_person_id=person_id,
                 kind=MemoryKind.FACT,
                 memory_key=memory_key or f"explicit-{uuid.uuid4()}",
                 category="explicit",
@@ -490,6 +522,7 @@ class MemoryFactService:
         *,
         user_id: str,
         content: str,
+        person_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> MemoryFact | None:
         if session is None:
@@ -498,6 +531,7 @@ class MemoryFactService:
                     fact_id,
                     user_id=user_id,
                     content=content,
+                    person_id=person_id,
                     session=owned,
                 )
             )
@@ -509,6 +543,7 @@ class MemoryFactService:
             or not await self.person_owns_fact(
                 current,
                 actor_user_id=user_id,
+                actor_person_id=person_id,
                 session=session,
             )
         ):
@@ -525,11 +560,14 @@ class MemoryFactService:
         fact_id: int,
         *,
         user_id: str,
+        person_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> bool:
         if session is None:
             return await self._repository.apply_evidence_write(
-                lambda owned: self.invalidate_person(fact_id, user_id=user_id, session=owned)
+                lambda owned: self.invalidate_person(
+                    fact_id, user_id=user_id, person_id=person_id, session=owned
+                )
             )
         fact = await self._repository.get_fact(fact_id, session=session)
         if (
@@ -538,6 +576,7 @@ class MemoryFactService:
             or not await self.person_owns_fact(
                 fact,
                 actor_user_id=user_id,
+                actor_person_id=person_id,
                 session=session,
             )
             or fact.status is MemoryStatus.INVALIDATED
@@ -699,6 +738,10 @@ class MemoryFactService:
                 visibility_type=current.visibility_type,
                 visibility_user_id=current.visibility_user_id,
                 visibility_group_id=current.visibility_group_id,
+                canonical_subject_person_id=current.canonical_subject_person_id,
+                canonical_subject_space_id=current.canonical_subject_space_id,
+                canonical_visibility_person_id=current.canonical_visibility_person_id,
+                canonical_visibility_space_id=current.canonical_visibility_space_id,
                 kind=current.kind,
                 memory_key=current.memory_key,
                 category=current.category,
@@ -1234,12 +1277,14 @@ class MemoryFactService:
         value: str,
         *,
         source_type: str = "explicit",
+        person_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> MemoryFact:
         return await self.remember(
             MemoryFactCreate(
                 scope_type=MemoryScopeType.PERSON,
                 subject_user_id=user_id,
+                canonical_subject_person_id=person_id,
                 kind=MemoryKind.PREFERENCE,
                 memory_key=key,
                 category="preference",
@@ -1261,16 +1306,20 @@ class MemoryFactService:
         user_id: str,
         key: str,
         *,
+        person_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> bool:
         if session is None:
             return await self._repository.apply_evidence_write(
-                lambda owned: self.delete_preference(user_id, key, session=owned)
+                lambda owned: self.delete_preference(
+                    user_id, key, person_id=person_id, session=owned
+                )
             )
         rows = await self._repository.list_facts(
             MemoryFactQuery(
                 scope_type=MemoryScopeType.PERSON,
                 subject_user_id=user_id,
+                canonical_subject_person_id=person_id,
                 kind=MemoryKind.PREFERENCE,
             ),
             limit=None,

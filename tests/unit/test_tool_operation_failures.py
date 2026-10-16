@@ -49,8 +49,6 @@ async def test_tool_operation_receipt(database, tool, payload, committed):
             "write a file",
             bot_user_id="8000",
         ),
-        gateway=None,
-        allow_generic_onebot=False,
         execution_id="execution-test",
         conversation_id="conversation-test",
         target_presence_id="presence-test",
@@ -89,6 +87,7 @@ async def test_lost_manager_response_preserves_unknown_effect(monkeypatch, tool,
     monkeypatch.setattr(
         "asyncio.open_unix_connection",
         AsyncMock(return_value=(reader, writer)),
+        raising=False,
     )
     result = await SandboxClient(Path("/unused.sock")).execute(
         tool,
@@ -102,7 +101,9 @@ async def test_lost_manager_response_preserves_unknown_effect(monkeypatch, tool,
 
 
 async def test_connection_failure_has_no_dispatched_effect(monkeypatch):
-    monkeypatch.setattr("asyncio.open_unix_connection", AsyncMock(side_effect=OSError("offline")))
+    monkeypatch.setattr(
+        "asyncio.open_unix_connection", AsyncMock(side_effect=OSError("offline")), raising=False
+    )
     result = await SandboxClient(Path("/unused.sock")).execute(
         "workspace_write",
         {},

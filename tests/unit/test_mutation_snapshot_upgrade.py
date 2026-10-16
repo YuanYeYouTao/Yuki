@@ -255,7 +255,9 @@ async def test_four_busy_rollbacks_reprepare_without_repeating_resolution(
 
 @pytest.mark.parametrize("entry", ["tool", "worker"])
 @pytest.mark.parametrize("change", ["binding_owner", "source_hidden"])
-async def test_retry_rejects_changed_claim_identity_or_source(database, monkeypatch, entry, change):
+async def test_retry_keeps_original_owner_and_rejects_hidden_source(
+    database, monkeypatch, entry, change
+):
     mutations, facts, ledger, processor = _service(database)
     source = await _event(
         ledger,
@@ -333,14 +335,31 @@ async def test_retry_rejects_changed_claim_identity_or_source(database, monkeypa
         )
     sqlalchemy_event.listen(database.engine.sync_engine, "handle_error", capture_error)
     try:
-        with pytest.raises(MemoryMutationRejected, match="memory_resolution_snapshot_changed"):
-            await operation
+        if change == "source_hidden":
+            with pytest.raises(MemoryMutationRejected, match="memory_resolution_snapshot_changed"):
+                await operation
+        else:
+            result = await operation
+            assert result.ok
     finally:
         sqlalchemy_event.remove(database.engine.sync_engine, "handle_error", capture_error)
     assert resolve_calls == 1
     assert 517 in sqlite_errors  # Real BUSY_SNAPSHOT, rather than a mocked retry exception.
     async with database.sessions() as reader:
-        assert await reader.scalar(select(func.count()).select_from(MemoryFactModel)) == 0
-        assert (
-            await reader.scalar(select(func.count()).select_from(MemoryMutationReceiptModel)) == 0
-        )
+        stored = list(await reader.scalars(select(MemoryFactModel)))
+        if change == "binding_owner":
+            assert len(stored) == 1
+            assert stored[0].canonical_subject_person_id == source.author_person_id
+            current_owner = await reader.scalar(
+                text(
+                    "SELECT person_id FROM identity_bindings "
+                    "WHERE platform='qq' AND external_account_id='1001'"
+                )
+            )
+            assert current_owner != source.author_person_id
+            assert stored[0].canonical_subject_person_id != current_owner
+        else:
+            assert not stored
+        assert await reader.scalar(
+            select(func.count()).select_from(MemoryMutationReceiptModel)
+        ) == (1 if change == "binding_owner" else 0)

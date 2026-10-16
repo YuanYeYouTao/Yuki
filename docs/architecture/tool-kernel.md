@@ -247,26 +247,23 @@ pause 与压缩尚未完成时不提前换链；媒体、来源与 CAS 在原派
 
 WorkspaceStore 的快照沿現行永久保留合同，不再暴露無生產者的 TTL 選項；既有 expires_at 列保留舊資料讀取與首次啟動轉換。物理儲存仍受原 512 MiB 總量、200 MiB 單檔與 1000 個物件容量限制。
 
-## 合并转发历史读取
+## 共同账本历史与原生平台操作
 
-固定 `read_conversation_history` schema_version="2"，仍 result_cacheable=false。参数有 event_id
-key 时沿事件模式，必须是真正正整数；它与 operation_id 是冲突的两种 anchor。合法未用
-selector/limit 不改变原事件账号或裁剪 raw。旧 receipt/target 模式沿原解析与文字投影。
+固定的 read_conversation_history 读取授权的 canonical 账本；默认当前入口，显式
+conversation_id 选择原内部会话，人物/空间有多个入口时返回内部候选，不猜主动路由。
+event_id 只定位当前会话原事件；operation_id 按原来源的发送回执读取真实出站会话。
+委托 read_target_id 核原 owner，读取尊重现有 starts_after 与 keeper 边界。
+结果标明 coverage=observed，不冒充完整平台历史；平台离线不阻止账本读取。
 
-执行处由 current_invocation.runtime 取得 canonical Conversation、generation 与既有读授权，
-委托 read_target_id 只允许其原 owner。get_reply_event 核当前会话 keeper/message，
-reader 使用外层原 Presence 的固定 get_forward_msg；不新增探针、换号或任意管理 API。
+默认模型已退役任意 OneBot action、戳一戳和远端/raw 转发历史展开。原始 segments、
+历史真实工具结果、已付请求和旧回执保留，不因退役重写冻结内容或重派旧调用。
+新 read call 经当前授权读取事实，不以另一 call 的同参结果代替。原 call 和历史
+readonly alias 仍读自己的真实持久回执，不增加缓存失效总线。
 
-每个外层 forward segment 按位置成组，同 invocation 的同 locator 可复用一次实际读取，
-多 locator 沿原并行调用处理。响应先核 provider status/retcode，随后选择支持 envelope 中
-首个实际 list；空列表合法，原顺序、标量、null 和未知字段保留。部分失败保成功组，
-全失败返回真实顶层 error 并保分组状态；原取消传播。内层 forward 留作 raw，绝不自动展开。
-
-实际读取的 locator/账号构成本次来源；正常文字/ASR/visual 派生及读完暂离线不清空结果。
-真正 generation/privacy/owner 授权失效沿原执行与发布围栏拒绝新正文，已发生回执保留。
-结果不附图片，完整 raw 沿共同预算/artifact 链处理；仅成功外置才有真实分页 handle。
-没有 store 或外置失败不声称保存全文，不添加固定节点/文本/递归经验帽，也不重写通用
-artifact、Work journal、原 Code consumer 或恢复别名。
+共同 Social 管内部目标、授权、预算、原操作 claim、账本与回执。GatewayProvider 的
+原生操作接口负责文字/媒体布局、参数、引用和响应。纯 plan_send 不执行网络请求，
+每项各有实际派发和持久回执；平台适配器不能内部多次发送却只返回一个成功。
+详见[平台适配与升级](platform-adapters.md)。
 
 ## 主会话的跨入口读取与发送
 

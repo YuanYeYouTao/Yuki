@@ -367,6 +367,7 @@ def _require_delivery_progress(
         if (
             old_item.target_type != new_item.target_type
             or old_item.target_id != new_item.target_id
+            or old_item.conversation_id != new_item.conversation_id
             or old_item.send_text != new_item.send_text
             or old_item.send_card != new_item.send_card
             or old_item.ask_agent != new_item.ask_agent

@@ -7,9 +7,9 @@ from datetime import UTC, datetime
 
 import pytest
 
+from qq_ai_bot.adapters.onebot.legacy_event import project_legacy_segments
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.memory.subjects import SubjectResolver
 from qq_ai_bot.persistence.repository_records import EventRecord
 
 
@@ -38,6 +38,12 @@ def test_history_reprojects_ordered_mentions_from_persisted_segments() -> None:
         reply_sender_user_id="1002",
     )
 
+    projection = project_legacy_segments(event.segments, event.bot_user_id)
+    assert projection is not None
+    event = replace(
+        event, projected_content=projection.text, mentioned_user_ids=projection.mentioned_user_ids
+    )
+
     member = replace(
         event,
         id=8,
@@ -51,14 +57,7 @@ def test_history_reprojects_ordered_mentions_from_persisted_segments() -> None:
         yuki_account_ids=frozenset({"9999", "8001"}),
     ).render_reference_event(event)
 
-    assert rendered.endswith(
-        ">[提及Yuki]和[提及远野/QQ:1001][提及小明/QQ:1002][提及小明/QQ:1002][提及全体成员]"
-    )
-    # Sender mentions, ordinary mentions and replies resolve the same real people.
-    subjects = SubjectResolver.context(event)
-    assert subjects.resolve("speaker:person").subject_user_id == "1001"
-    assert subjects.resolve("member_1002:person_group").subject_user_id == "1002"
-    assert subjects.resolve("reply_author:person_group").subject_user_id == "1002"
+    assert rendered.endswith(">[提及Yuki]和[提及远野][提及小明][提及小明][提及全体成员]")
     assert event.content == "旧的丢失提及正文"
     assert "8001" not in rendered
 
@@ -103,7 +102,9 @@ def test_history_segment_fallback_log_never_contains_content_or_ids(
         group_id="2001",
     )
 
-    with caplog.at_level("WARNING", logger="qq_ai_bot.event_prompt"):
+    with caplog.at_level("WARNING", logger="qq_ai_bot.adapters.onebot.legacy_event"):
+        projection = project_legacy_segments(event.segments, event.bot_user_id)
+        assert projection is None
         rendered = ChatEventPromptRenderer((event,)).render_reference_event(event)
 
     assert rendered.endswith(">可信回退正文")

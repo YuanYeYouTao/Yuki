@@ -51,6 +51,11 @@ class _Bot:
 
 
 class _LagrangeProvider:
+    def project_inbound(self, message, yuki_ids):
+        from qq_ai_bot.adapters.onebot.normalizer import reproject_inbound_mentions
+
+        return reproject_inbound_mentions(message, yuki_ids)
+
     provider_id = "lagrange"
 
     def describe_connection(self, handle: object) -> GatewayConnectionProfile:
@@ -141,8 +146,8 @@ async def test_v2_private_and_group_dual_presence_same_person_space(database: Da
     )
     assert other is not None and not other.dropped
     assert other.person_id == private.person_id
-    assert other.conversation_id == private.conversation_id
-    assert other.primary_alias == private.primary_alias
+    assert other.conversation_id != private.conversation_id
+    assert other.primary_alias != private.primary_alias
     again = await resolver.pre_admit(
         bot_b, _message(message_id="g2", user_id="1001", group_id="2001", bot_user_id="8001")
     )
@@ -924,7 +929,7 @@ async def test_person_references_keep_all_people_and_the_first_mentioned_binding
     from qq_ai_bot.identity.event_author import project_event_author, project_event_authors
 
     user_ids = tuple(str(61001 + index) for index in range(8))
-    people = await observe_members(database, user_ids)
+    await observe_members(database, user_ids)
     async with database.immediate_session() as session:
         owner = await session.scalar(
             select(IdentityBindingModel).where(
@@ -953,10 +958,23 @@ async def test_person_references_keep_all_people_and_the_first_mentioned_binding
         assert disabled is not None
         disabled.status = "disabled"
     inputs = ("61999", "8000", "7777", "404", *user_ids, "1001", user_ids[1])
-    references = await people.person_reference_ids(
-        inputs, speaker_user_id="1001", bot_user_id="8000"
+    registry, resolver, uow = await _stack(database)
+    bot = _Bot("8000")
+    registry.connect(bot, provider_id="snowluma")
+    admitted = await resolver.pre_admit(
+        bot, _message(message_id="canonical-reference-input", mentioned_user_ids=inputs)
     )
-    assert references == ("61999", *user_ids[1:-1])
+    stored = await uow.append_inbound(admitted.message, admitted)
+    async with database.sessions() as session:
+        bindings = {
+            row.external_account_id: row.person_id
+            for row in await session.scalars(
+                select(IdentityBindingModel).where(IdentityBindingModel.platform == "qq")
+            )
+        }
+    expected = tuple(bindings[item] for item in ("61999", *user_ids[1:-1], "1001"))
+    assert admitted.message.mentioned_person_ids == expected
+    assert stored.event.mentioned_person_ids == expected
     async with database.sessions() as session:
         batch = await project_event_authors(session, sender_user_ids=inputs)
         for account in dict.fromkeys(inputs):

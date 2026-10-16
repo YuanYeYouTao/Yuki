@@ -1,4 +1,4 @@
-"""Resolve trusted OneBot image references with configurable SSRF and size controls."""
+"""Resolve trusted platform media references with configurable SSRF and size controls."""
 
 from __future__ import annotations
 
@@ -12,32 +12,21 @@ import socket
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext
 from pathlib import Path
-from typing import Any, Protocol
 from urllib.parse import SplitResult, urljoin, urlsplit, urlunsplit
 
 import httpx
 
+from qq_ai_bot.gateway.media import (
+    MediaKind,
+    PlatformMediaFile,
+    PlatformMediaGateway,
+)
+from qq_ai_bot.gateway.media import MediaResolutionError as MediaResolutionError
 from qq_ai_bot.vision.models import DownloadedMedia, MediaReference
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".docker")
 HostResolver = Callable[[str, int], Awaitable[Sequence[str]] | Sequence[str]]
-
-
-class OneBotMediaGateway(Protocol):
-    """Small gateway surface needed to resolve a OneBot file identifier."""
-
-    async def call_api(self, action: str, params: dict[str, Any]) -> Any:
-        """Call one OneBot action."""
-
-
-class MediaResolutionError(RuntimeError):
-    """A sanitized media error that never includes credentials or signed URLs."""
-
-    def __init__(self, code: str, detail: str) -> None:
-        super().__init__(detail)
-        self.code = code
-        self.detail = detail
 
 
 class MediaResolver:
@@ -46,7 +35,7 @@ class MediaResolver:
     def __init__(
         self,
         *,
-        gateway: OneBotMediaGateway | None = None,
+        gateway: PlatformMediaGateway | None = None,
         max_download_bytes: int = 10 * 1024 * 1024,
         timeout_seconds: float = 10,
         max_redirects: int = 3,
@@ -79,43 +68,54 @@ class MediaResolver:
     async def resolve(
         self,
         reference: MediaReference,
-        gateway: OneBotMediaGateway | None = None,
+        gateway: PlatformMediaGateway | None = None,
     ) -> DownloadedMedia:
-        """Resolve in the required URL, inline-data, then ``get_image`` order."""
-
+        """Resolve public URL, inline data, then the original platform file."""
         if reference.url and _looks_like_http(reference.url):
             return await self._download(reference.url)
-
         file_value = (reference.file or "").strip()
         if _looks_like_http(file_value):
             return await self._download(file_value)
-        if file_value.startswith("base64://") or file_value.startswith("data:image/"):
+        if file_value.startswith(("base64://", "data:image/")):
             return self._decode_inline(file_value)
-        if not file_value:
-            raise MediaResolutionError("resource_unavailable", "图片资源缺少可读取的引用")
         active_gateway = gateway or self._gateway
-        if active_gateway is None:
-            raise MediaResolutionError("resource_unavailable", "图片文件引用当前不可读取")
+        if not file_value or active_gateway is None:
+            raise MediaResolutionError("resource_unavailable", "图片资源缺少可读取的引用")
+        location = await self._platform_file(active_gateway, file_value, "image")
+        return await self._read_platform_file(location)
 
+    async def _platform_file(
+        self, gateway: PlatformMediaGateway, file: str, kind: MediaKind
+    ) -> PlatformMediaFile:
         try:
             async with asyncio.timeout(self._timeout_seconds):
-                payload = await active_gateway.call_api("get_image", {"file": file_value})
+                return await gateway.resolve_media_file(
+                    file, kind, max_download_bytes=self._max_download_bytes
+                )
+        except MediaResolutionError:
+            raise
         except TimeoutError as exc:
-            raise MediaResolutionError("get_image_failed", "图片资源查询超时") from exc
+            raise MediaResolutionError("resource_lookup_timeout", "平台媒体查询超时") from exc
         except Exception as exc:
-            raise MediaResolutionError("get_image_failed", "图片资源查询失败") from exc
-        return await self._resolve_get_image_payload(payload)
+            raise MediaResolutionError("resource_lookup_failed", "平台媒体查询失败") from exc
+
+    async def _read_platform_file(self, location: PlatformMediaFile) -> DownloadedMedia:
+        if location.content is not None:
+            if not location.content:
+                raise MediaResolutionError("empty_media", "平台媒体为空")
+            if len(location.content) > self._max_download_bytes:
+                raise MediaResolutionError("too_large", "平台媒体超过下载预算")
+            return _downloaded(location.content, location.content_type)
+        if location.url is not None:
+            return await self._download(location.url)
+        raise MediaResolutionError("resource_unavailable", "平台媒体当前不可读取")
 
     async def resolve_audio(
         self,
         reference: MediaReference,
-        gateway: OneBotMediaGateway | None = None,
+        gateway: PlatformMediaGateway | None = None,
     ) -> DownloadedMedia:
-        """Convert QQ SILK through the ingress gateway, preferring returned bytes.
-
-        get_record paths belong to the gateway container and are never opened by
-        the Bot. The ingress gateway may return base64 or a downloadable URL.
-        """
+        """Use platform audio conversion without exposing its protocol or private URLs."""
         file_value = (reference.file or "").strip()
         if file_value.startswith(("base64://", "data:audio/")):
             return self._decode_inline(file_value, media_prefix="audio/")
@@ -123,30 +123,11 @@ class MediaResolver:
         gateway_error: MediaResolutionError | None = None
         if file_value and active_gateway is not None:
             try:
-                async with asyncio.timeout(self._timeout_seconds):
-                    payload = await active_gateway.call_api(
-                        "get_record", {"file": file_value, "out_format": "mp3"}
-                    )
-                if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
-                    payload = payload["data"]
-                if isinstance(payload, dict):
-                    for key in ("base64", "file"):
-                        value = payload.get(key)
-                        if not isinstance(value, str) or not value:
-                            continue
-                        if key == "base64" and not value.startswith(("base64://", "data:")):
-                            value = "base64://" + value
-                        if value.startswith(("base64://", "data:audio/")):
-                            return self._decode_inline(value, media_prefix="audio/")
-                    for key in ("url", "file"):
-                        value = payload.get(key)
-                        if isinstance(value, str) and _looks_like_http(value):
-                            return await self._download(value)
-            except MediaResolutionError:
-                raise
-            except Exception as exc:
-                gateway_error = MediaResolutionError("get_record_failed", "语音资源查询失败")
-                gateway_error.__cause__ = exc
+                location = await self._platform_file(active_gateway, file_value, "audio")
+            except MediaResolutionError as exc:
+                gateway_error = exc
+            else:
+                return await self._read_platform_file(location)
         for value in (reference.url, reference.file):
             if value and _looks_like_http(value):
                 return await self._download(value)
@@ -161,6 +142,8 @@ class MediaResolver:
         *,
         max_download_bytes: int,
         local_source: tuple[Path, str] | None = None,
+        gateway: PlatformMediaGateway | None = None,
+        kind: MediaKind = "file",
     ) -> None:
         """Stream event media to a caller-owned temporary path using the same URL policy."""
         if local_source is not None:
@@ -181,28 +164,19 @@ class MediaResolver:
         elif location.startswith("base64://"):
             with destination.open("wb") as output:
                 output.write(bounded._decode_inline(location).content)
+        elif location and (gateway is not None or self._gateway is not None):
+            active = gateway or self._gateway
+            assert active is not None
+            item = await bounded._platform_file(active, location, kind)
+            if item.content is not None:
+                media = await bounded._read_platform_file(item)
+                await asyncio.to_thread(destination.write_bytes, media.content)
+            elif item.url is not None:
+                await bounded._download_with_redirects(item.url, destination=destination)
+            else:
+                raise MediaResolutionError("resource_unavailable", "附件缺少可下载资源")
         else:
-            raise MediaResolutionError("resource_unavailable", "视频缺少可下载地址")
-
-    async def _resolve_get_image_payload(self, payload: Any) -> DownloadedMedia:
-        if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
-            payload = payload["data"]
-        if not isinstance(payload, dict):
-            raise MediaResolutionError("resource_unavailable", "图片资源查询结果无效")
-        for key in ("url", "file"):
-            candidate = payload.get(key)
-            if isinstance(candidate, str) and _looks_like_http(candidate):
-                return await self._download(candidate)
-        for key in ("base64", "file"):
-            candidate = payload.get(key)
-            if not isinstance(candidate, str):
-                continue
-            if key == "base64" and not candidate.startswith(("base64://", "data:image/")):
-                candidate = f"base64://{candidate}"
-            if candidate.startswith(("base64://", "data:image/")):
-                return self._decode_inline(candidate)
-        # A container-local path is intentionally not opened here.
-        raise MediaResolutionError("resource_unavailable", "图片资源已失效或当前不可读取")
+            raise MediaResolutionError("resource_unavailable", "附件缺少可下载地址")
 
     async def _download(self, raw_url: str) -> DownloadedMedia:
         try:

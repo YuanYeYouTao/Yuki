@@ -59,7 +59,7 @@ class EmojiSelector:
         await publish_notification(
             self._event_publisher,
             EventName.EMOJI_BEFORE_SELECT,
-            {"scope_type": "group" if request.group_id else "private", "mode": request.mode.value},
+            {"scope_type": "group" if request.space_id else "private", "mode": request.mode.value},
         )
         candidates = await self._retriever.retrieve(request, runtime=runtime)
         if self._plugin_signals is not None:
@@ -101,9 +101,8 @@ class EmojiSelector:
                     prompt,
                     options=VisionAnalysisOptions(
                         analysis_mode="meme",
-                        thinking_enabled=True,
+                        thinking_enabled=vision_runtime.thinking_enabled,
                         thinking_budget=vision_runtime.thinking_budget,
-                        low_confidence_retry_threshold=0,
                     ),
                 ),
                 timeout=runtime.selector_timeout_seconds,

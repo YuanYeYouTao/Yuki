@@ -96,17 +96,14 @@ def turn_matches_hydrated_scope(
     *,
     conversation_id: str,
     generation: int,
-    transport_key: str,
     runtime_key: str | None,
 ) -> bool:
-    """Strict fence: conversation_id, generation, runtime key, and transport key."""
+    """Match the original internal conversation, generation and frozen primary alias."""
 
-    resolved_runtime = runtime_key or transport_key
     return (
         turn.conversation_id == conversation_id
         and turn.generation == generation
-        and turn.scope_key == resolved_runtime
-        and transport_key == snapshot_transport_key(turn)
+        and turn.scope_key == runtime_key
     )
 
 

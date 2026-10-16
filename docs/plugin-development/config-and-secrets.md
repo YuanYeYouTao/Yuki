@@ -29,7 +29,7 @@ await ctx.config.set("units", "imperial", scope_type="group", scope_id=group_id)
 ```
 
 - `global` 的 `scope_id` 必须为空。
-- `user`/`group` 必须给出真实可访问的 QQ/群号。
+- `user`/`group` 必须给出真实可访问的内部 Person/Space ID。
 - Facade 会绑定当前真实上下文，插件不能借参数跨作用域。
 - 值必须能表示为 `JsonValue` 并通过注册 Schema。
 

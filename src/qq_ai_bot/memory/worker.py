@@ -288,7 +288,6 @@ class MemoryWorker:
                     job.event_id,
                     type(exc).__name__,
                 )
-                await self._fail_job(job, exc)
                 continue
             completed += 1
         logger.info(

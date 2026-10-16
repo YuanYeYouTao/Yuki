@@ -1,4 +1,4 @@
-"""Stable Plugin API v3 permission names."""
+"""Stable Plugin API permission names."""
 
 from __future__ import annotations
 

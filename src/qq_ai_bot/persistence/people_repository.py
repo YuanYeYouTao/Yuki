@@ -99,6 +99,7 @@ class GroupMemberNameMatch:
     matched_alias: str
     score: float
     exact: bool
+    person_id: str | None = None
 
     @property
     def display_name(self) -> str:
@@ -168,7 +169,15 @@ class PersonForgetPreparation:
 
     @property
     def legacy_aliases(self) -> tuple[str, ...]:
-        return tuple(sorted({item.account for item in self.ownership if not item.bounded}))
+        return tuple(
+            sorted(
+                {
+                    item.account
+                    for item in self.ownership
+                    if not item.bounded and item.platform == "qq"
+                }
+            )
+        )
 
 
 async def _privacy_source_token(session: AsyncSession) -> tuple[object, ...]:
@@ -185,36 +194,73 @@ async def _privacy_source_token(session: AsyncSession) -> tuple[object, ...]:
 
 
 def _privacy_owned_events(
-    person_id: str, private_ids: tuple[str, ...], aliases: tuple[str, ...]
+    person_id: str, private_ids: tuple[str, ...], ownership: tuple[BindingOwnership, ...]
 ) -> ColumnElement[bool]:
+    legacy = [
+        and_(
+            ChatEventModel.author_person_id.is_(None),
+            or_(ChatEventModel.author_kind.is_(None), ChatEventModel.author_kind == "person"),
+            _ownership_window(item),
+            or_(
+                ChatEventModel.sender_user_id == item.account,
+                and_(
+                    ChatEventModel.canonical_conversation_id.is_(None),
+                    ChatEventModel.private_peer_user_id == item.account,
+                ),
+            ),
+        )
+        for item in ownership
+    ]
     return func.coalesce(
         or_(
             ChatEventModel.author_person_id == person_id,
             ChatEventModel.canonical_conversation_id.in_(private_ids),
-            ChatEventModel.sender_user_id.in_(aliases),
-            ChatEventModel.private_peer_user_id.in_(aliases),
+            *legacy,
         ),
         false(),
     )
 
 
-def _privacy_mentions(ownership: tuple[BindingOwnership, ...]) -> ColumnElement[bool]:
-    conditions = []
+def _ownership_window(item: BindingOwnership) -> ColumnElement[bool]:
+    source: ColumnElement[bool] = ChatEventModel.ingress_presence_id.in_(
+        select(PresenceModel.id).where(PresenceModel.platform == item.platform)
+    )
+    if item.platform == "qq":
+        source = or_(source, ChatEventModel.ingress_presence_id.is_(None))
+    conditions: list[ColumnElement[bool]] = [source]
+    if item.starts_at is not None:
+        conditions.append(ChatEventModel.observed_at >= item.starts_at)
+    if item.ends_at is not None:
+        conditions.append(ChatEventModel.observed_at < item.ends_at)
+    return and_(*conditions)
+
+
+def _privacy_mentions(
+    person_id: str, ownership: tuple[BindingOwnership, ...]
+) -> ColumnElement[bool]:
+    conditions = [_privacy_json_match(ChatEventModel.segments_json, (person_id,))]
+    segments = func.json_each(
+        case(
+            (func.json_valid(ChatEventModel.segments_json) == 1, ChatEventModel.segments_json),
+            else_="[]",
+        )
+    ).table_valued("value")
     for item in ownership:
-        match = [
-            or_(
-                ChatEventModel.content.contains(item.account),
-                ChatEventModel.visual_summary.contains(item.account),
-                _privacy_json_match(ChatEventModel.audio_transcript, (item.account,)),
-                _privacy_json_match(ChatEventModel.segments_json, (item.account,)),
+        if item.platform != "qq":
+            continue
+        actual_mention = (
+            select(segments.c.value)
+            .where(
+                func.json_extract(segments.c.value, "$.type") == "at",
+                cast(func.json_extract(segments.c.value, "$.data.qq"), String) == item.account,
             )
-        ]
-        # observed_at is the server's row-creation time; occurred_at is platform supplied.
-        if item.starts_at is not None:
-            match.append(ChatEventModel.observed_at >= item.starts_at)
-        if item.ends_at is not None:
-            match.append(ChatEventModel.observed_at < item.ends_at)
-        conditions.append(and_(*match))
+            .exists()
+        )
+        damaged_source = and_(
+            func.json_valid(ChatEventModel.segments_json) == 0,
+            ChatEventModel.segments_json.contains(item.account),
+        )
+        conditions.append(and_(_ownership_window(item), or_(actual_mention, damaged_source)))
     return or_(false(), *conditions)
 
 
@@ -322,28 +368,22 @@ class PeopleRepository:
 
     async def affected_conversation_scopes(
         self,
-        user_id: str,
+        person_id: str,
     ) -> tuple[ConversationScope, ...]:
         """Resolve every conversation whose retained projection may mention a person."""
 
         async with self._database.sessions() as session:
-            binding = await find_identity_binding(session, external_id(user_id))
-            if binding is None:
-                return ()
             ownership = tuple(
-                BindingOwnership.of(item)
-                for item in await bindings_for_person(session, binding.person_id)
+                BindingOwnership.of(item) for item in await bindings_for_person(session, person_id)
             )
             private_ids = tuple(
                 await session.scalars(
                     select(CanonicalConversationModel.id).where(
                         CanonicalConversationModel.kind == "private",
-                        CanonicalConversationModel.person_id == binding.person_id,
+                        CanonicalConversationModel.person_id == person_id,
                     )
                 )
             )
-            legacy_ownership = tuple(item for item in ownership if not item.bounded)
-            legacy_aliases = tuple(item.account for item in legacy_ownership)
             rows = (
                 await session.execute(
                     select(
@@ -351,24 +391,51 @@ class PeopleRepository:
                         ChatEventModel.scope_type,
                         ChatEventModel.group_id,
                         ChatEventModel.private_peer_user_id,
+                        ChatEventModel.canonical_conversation_id,
+                        ChatEventModel.ingress_presence_id,
+                        PresenceModel.platform,
+                        CanonicalConversationModel.thread_id,
+                    )
+                    .outerjoin(
+                        PresenceModel, PresenceModel.id == ChatEventModel.ingress_presence_id
+                    )
+                    .outerjoin(
+                        CanonicalConversationModel,
+                        CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
                     )
                     .where(
                         or_(
-                            _privacy_owned_events(binding.person_id, private_ids, legacy_aliases),
-                            _privacy_mentions(legacy_ownership),
+                            _privacy_owned_events(person_id, private_ids, ownership),
+                            _privacy_mentions(person_id, ownership),
                         )
                     )
                     .distinct()
                 )
             ).all()
         scopes: dict[str, ConversationScope] = {}
-        for bot_user_id, scope_type, group_id, private_peer_user_id in rows:
+        for (
+            bot_user_id,
+            scope_type,
+            group_id,
+            private_peer_user_id,
+            conversation_id,
+            presence_id,
+            platform,
+            thread_id,
+        ) in rows:
+            entry = dict(
+                platform=platform or "qq",
+                conversation_id=conversation_id,
+                presence_id=presence_id,
+                thread_id=thread_id,
+            )
             if scope_type == ScopeType.GROUP.value and group_id is not None:
-                scope = ConversationScope.group(str(bot_user_id), str(group_id))
+                scope = ConversationScope.group(str(bot_user_id), str(group_id), **entry)
             elif private_peer_user_id is not None:
                 scope = ConversationScope.private(
                     str(bot_user_id),
                     str(private_peer_user_id),
+                    **entry,
                 )
             else:
                 continue
@@ -388,6 +455,7 @@ class PeopleRepository:
         is_bot: bool = False,
         expected_person_id: str | None = None,
         platform: str = "qq",
+        space_id: str | None = None,
     ) -> None:
         """Update current values and retain historical aliases."""
 
@@ -417,27 +485,39 @@ class PeopleRepository:
                 nickname_known=nickname_known,
                 group_card_known=group_card_known,
                 now=now,
+                space_id=space_id,
             )
 
     async def get(
         self,
         *,
-        user_id: str,
+        user_id: str | None = None,
         group_id: str | None = None,
         include_nickname: bool = True,
+        person_id: str | None = None,
+        space_id: str | None = None,
+        platform: str = "qq",
     ) -> UserProfileSnapshot | None:
         async with self._database.sessions() as session:
             loaded = await load_canonical_profile(
-                session, user_id=user_id, group_id=group_id, include_nickname=include_nickname
+                session,
+                user_id=user_id,
+                group_id=group_id,
+                include_nickname=include_nickname,
+                person_id=person_id,
+                space_id=space_id,
+                platform=platform,
             )
             if loaded is None:
                 return None
             nickname, card = loaded
+            identity = user_id if user_id is not None else person_id
+            assert identity is not None
             return UserProfileSnapshot(
-                user_id=user_id,
-                scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,
+                user_id=identity,
+                scope_type=ScopeType.GROUP if space_id or group_id else ScopeType.PRIVATE,
                 nickname=nickname,
-                group_id=group_id,
+                group_id=group_id if user_id is not None else space_id,
                 group_card=card,
             )
 
@@ -449,6 +529,8 @@ class PeopleRepository:
         person_ids: Mapping[str, str] | None = None,
         members_only: bool = False,
         session: AsyncSession | None = None,
+        platform: str = "qq",
+        space_id: str | None = None,
     ) -> dict[str, UserProfileSnapshot]:
         """Batch the requested people and current-group cards without per-person reads."""
 
@@ -463,6 +545,8 @@ class PeopleRepository:
                     person_ids=person_ids,
                     members_only=members_only,
                     session=owned_session,
+                    platform=platform,
+                    space_id=space_id,
                 )
         profiles = await load_canonical_profiles(
             session,
@@ -470,6 +554,8 @@ class PeopleRepository:
             group_id=group_id,
             person_ids=person_ids,
             members_only=members_only,
+            platform=platform,
+            space_id=space_id,
         )
         return {
             item: UserProfileSnapshot(
@@ -483,13 +569,13 @@ class PeopleRepository:
             if item in profiles
         }
 
-    async def aliases(self, user_id: str, *, limit: int = 20) -> tuple[str, ...]:
+    async def aliases(self, person_id: str | None, *, limit: int = 20) -> tuple[str, ...]:
         async with self._database.sessions() as session:
-            return await load_canonical_aliases(session, user_id, limit=limit)
+            return await load_canonical_aliases(session, person_id, limit=limit)
 
-    async def membership_count(self, user_id: str) -> int:
+    async def membership_count(self, person_id: str | None) -> int:
         async with self._database.sessions() as session:
-            return await load_canonical_membership_count(session, user_id)
+            return await load_canonical_membership_count(session, person_id)
 
     async def members_in_group(
         self,
@@ -513,58 +599,6 @@ class PeopleRepository:
             session, unique_ids, group_id, person_ids=person_ids
         )
 
-    async def person_reference_ids(
-        self,
-        user_ids: tuple[str, ...],
-        *,
-        speaker_user_id: str,
-        bot_user_id: str,
-    ) -> tuple[str, ...]:
-        """Person mention/reply targets only. Yuki/external never reach membership."""
-
-        unique_ids = tuple(dict.fromkeys(user_ids))
-        if not unique_ids:
-            return ()
-        async with self._database.sessions() as session:
-            from qq_ai_bot.identity.event_author import canonical_person_reference_ids
-
-            return await canonical_person_reference_ids(
-                session, unique_ids, speaker_user_id=speaker_user_id
-            )
-
-    async def person_reference_map(
-        self,
-        user_ids: tuple[str, ...],
-        *,
-        speaker_user_id: str,
-        bot_user_id: str,
-        session: AsyncSession | None = None,
-    ) -> dict[str, str]:
-        """Resolve actual account-to-Person references for one preparation."""
-        if session is None:
-            async with self._database.sessions() as owned_session:
-                return await self.person_reference_map(
-                    user_ids,
-                    speaker_user_id=speaker_user_id,
-                    bot_user_id=bot_user_id,
-                    session=owned_session,
-                )
-        from qq_ai_bot.identity.event_author import project_event_authors
-
-        accounts = tuple(
-            dict.fromkeys(
-                str(raw).strip()
-                for raw in user_ids
-                if str(raw).strip() and str(raw).strip() != speaker_user_id
-            )
-        )
-        authors = await project_event_authors(session, sender_user_ids=accounts)
-        return {
-            account: author.author_person_id
-            for account, author in authors.items()
-            if author.author_kind == "person" and author.author_person_id is not None
-        }
-
     async def find_group_members_by_exact_name(
         self,
         name: str,
@@ -585,6 +619,8 @@ class PeopleRepository:
         *,
         limit: int = 5,
         minimum_score: float = 0.35,
+        platform: str = "qq",
+        space_id: str | None = None,
     ) -> tuple[GroupMemberNameMatch, ...]:
         """Return deterministic current-group identity candidates for a model-supplied name."""
 
@@ -592,29 +628,38 @@ class PeopleRepository:
         if not query or limit <= 0:
             return ()
         async with self._database.sessions() as session:
-            projections = await load_canonical_group_member_name_projections(session, group_id)
+            projections = await load_canonical_group_member_name_projections(
+                session, group_id, platform=platform, space_id=space_id
+            )
             projected = {
                 item.user_id: (item.nickname, item.group_card, set(item.aliases))
                 for item in projections
             }
-            return _score_group_member_identities(
+            matches = _score_group_member_identities(
                 projected,
                 query,
                 limit=limit,
                 minimum_score=minimum_score,
             )
+            people = {item.user_id: item.person_id for item in projections}
+            return tuple(replace(item, person_id=people[item.user_id]) for item in matches)
 
     async def find_group_members_by_normalized_names(
         self,
         names: tuple[str, ...],
         group_id: str,
+        *,
+        platform: str = "qq",
+        space_id: str | None = None,
     ) -> dict[str, tuple[GroupMemberNameMatch, ...]]:
         """Resolve all declared normalized exact names from one complete group projection."""
         queries = {name: normalize_person_name(name) for name in dict.fromkeys(names)}
         if not queries:
             return {}
         async with self._database.sessions() as session:
-            projections = await load_canonical_group_member_name_projections(session, group_id)
+            projections = await load_canonical_group_member_name_projections(
+                session, group_id, platform=platform, space_id=space_id
+            )
         wanted = {query for query in queries.values() if query}
         labels: dict[str, str] = {}
         matches: dict[str, dict[str, GroupMemberNameMatch]] = {}
@@ -635,6 +680,7 @@ class PeopleRepository:
                         matched_alias=label,
                         score=1.0,
                         exact=True,
+                        person_id=item.person_id,
                     )
         ranked = {
             query: tuple(
@@ -720,10 +766,18 @@ class PeopleRepository:
                     )
                 )
             )
-            legacy = tuple(sorted({item.account for item in ownership if not item.bounded}))
+            legacy = tuple(
+                sorted(
+                    {
+                        item.account
+                        for item in ownership
+                        if not item.bounded and item.platform == "qq"
+                    }
+                )
+            )
             source_token = await _privacy_source_token(reader)
-            owned = _privacy_owned_events(person_id, private_ids, legacy)
-            mentions = _privacy_mentions(ownership)
+            owned = _privacy_owned_events(person_id, private_ids, ownership)
+            mentions = _privacy_mentions(person_id, ownership)
             affected = set(private_ids)
             affected.update(
                 item
@@ -733,7 +787,7 @@ class PeopleRepository:
                         or_(
                             owned,
                             _privacy_mentions(
-                                tuple(item for item in ownership if not item.bounded)
+                                person_id, tuple(item for item in ownership if not item.bounded)
                             ),
                         )
                     )
@@ -743,9 +797,24 @@ class PeopleRepository:
             )
             redactions = []
             for event in await reader.scalars(select(ChatEventModel).where(mentions, ~owned)):
-                aliases = {item.account for item in ownership if item.contains(event.observed_at)}
+                presence = (
+                    await reader.get(PresenceModel, event.ingress_presence_id)
+                    if event.ingress_presence_id
+                    else None
+                )
+                platform = presence.platform if presence is not None else "qq"
+                aliases = {
+                    person_id,
+                    *(
+                        item.account
+                        for item in ownership
+                        if item.platform == platform and item.contains(event.observed_at)
+                    ),
+                }
                 pattern = re.compile(
-                    "|".join(re.escape(item) for item in sorted(aliases, key=len, reverse=True))
+                    r"(?<![A-Za-z0-9_-])(?:"
+                    + "|".join(re.escape(item) for item in sorted(aliases, key=len, reverse=True))
+                    + r")(?![A-Za-z0-9_-])"
                 )
                 redactions.append(
                     (
@@ -810,8 +879,10 @@ class PeopleRepository:
             await self._memory_rebuilds.forget_people(
                 legacy, prepared=prepared.rebuild, session=session
             )
-        owned = _privacy_owned_events(person_id, prepared.private_ids, legacy)
-        event_ids = select(ChatEventModel.id).where(or_(owned, _privacy_mentions(ownership)))
+        owned = _privacy_owned_events(person_id, prepared.private_ids, ownership)
+        event_ids = select(ChatEventModel.id).where(
+            or_(owned, _privacy_mentions(person_id, ownership))
+        )
         await session.execute(
             delete(WebSearchRunModel).where(
                 or_(

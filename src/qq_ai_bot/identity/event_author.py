@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
@@ -112,7 +111,7 @@ async def project_event_authors(
             raise CanonicalIdentityError("canonical_kind_mismatch")
         if presence_id is not None:
             author = EventAuthorProjection(AuthorKind.YUKI.value, None, presence_id)
-        elif sender_is_bot or sender_id in settings.ignored_bot_users:
+        elif sender_is_bot or (platform == "qq" and sender_id in settings.ignored_bot_users):
             author = EventAuthorProjection(AuthorKind.EXTERNAL_BOT.value, None, None)
         elif binding is not None and binding.status == "active":
             if binding.enabled is None:
@@ -126,58 +125,8 @@ async def project_event_authors(
     return authors
 
 
-async def same_platform_presence_external_ids(session: AsyncSession) -> frozenset[str]:
-    """Existing same-platform Presence external accounts. Never auto-registers."""
-
-    rows = list(
-        await session.scalars(
-            select(PresenceModel).where(PresenceModel.platform == IDENTITY_PLATFORM)
-        )
-    )
-    return frozenset(item.external_account_id for item in rows)
-
-
-async def canonical_person_reference_ids(
-    session: AsyncSession,
-    user_ids: tuple[str, ...],
-    *,
-    speaker_user_id: str,
-    authors: Mapping[str, EventAuthorProjection] | None = None,
-) -> tuple[str, ...]:
-    """Keep one Binding representative per Person. Drop Yuki/external/unbound."""
-
-    candidates = tuple(
-        dict.fromkeys(
-            str(raw).strip()
-            for raw in user_ids
-            if str(raw).strip() and str(raw).strip() != speaker_user_id
-        )
-    )
-    if authors is None:
-        authors = await project_event_authors(session, sender_user_ids=candidates)
-    seen_persons: set[str] = set()
-    kept: list[str] = []
-    for user_id in candidates:
-        author = authors[user_id]
-        if author.author_kind != AuthorKind.PERSON.value or author.author_person_id is None:
-            continue
-        if author.author_person_id in seen_persons:
-            continue
-        seen_persons.add(author.author_person_id)
-        kept.append(user_id)
-    return tuple(kept)
-
-
-async def canonical_account_is_person(session: AsyncSession, user_id: str) -> bool:
-    author = await project_event_author(session, sender_user_id=user_id)
-    return author.author_kind == AuthorKind.PERSON.value and author.author_person_id is not None
-
-
 __all__ = [
     "EventAuthorProjection",
-    "canonical_account_is_person",
-    "canonical_person_reference_ids",
     "project_event_author",
     "project_event_authors",
-    "same_platform_presence_external_ids",
 ]

@@ -23,6 +23,7 @@ class AuthorizedMemoryScope(BaseModel):
     current_private_person_id: str | None = None
     current_group_only: bool = False
     allowed_scopes: tuple[MemoryScopeType, ...] = ()
+    resolved_targets: tuple[MemoryEntityTarget, ...] = ()
 
 
 def authorized_fact_condition(scope: AuthorizedMemoryScope) -> Any:
@@ -136,7 +137,40 @@ def authorized_fact_condition(scope: AuthorizedMemoryScope) -> Any:
                 or_(*visibility),
             )
         )
-    return or_(*clauses) if clauses else false()
+    permitted = or_(*clauses) if clauses else false()
+    if not scope.resolved_targets:
+        return permitted
+    selected: list[Any] = []
+    for target in scope.resolved_targets:
+        if target.scope_type is MemoryScopeType.SELF:
+            selected.append(
+                and_(
+                    fact.scope_type == MemoryScopeType.SELF.value,
+                    or_(
+                        and_(
+                            fact.visibility_type == SelfMemoryVisibility.GLOBAL.value,
+                            fact.canonical_visibility_person_id.is_(None),
+                            fact.canonical_visibility_space_id.is_(None),
+                        ),
+                        and_(
+                            fact.visibility_type == target.visibility_type,
+                            fact.canonical_visibility_person_id
+                            == target.canonical_visibility_person_id,
+                            fact.canonical_visibility_space_id
+                            == target.canonical_visibility_space_id,
+                        ),
+                    ),
+                )
+            )
+        else:
+            selected.append(
+                and_(
+                    fact.scope_type == target.scope_type.value,
+                    fact.canonical_subject_person_id == target.canonical_subject_person_id,
+                    fact.canonical_subject_space_id == target.canonical_subject_space_id,
+                )
+            )
+    return and_(permitted, or_(*selected))
 
 
 def target_for_authorized_fact(

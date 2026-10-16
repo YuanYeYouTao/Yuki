@@ -319,7 +319,7 @@ name = "Configuration fixture"
 description = "Synthetic configuration and observation fixture"
 version = "1.0.0"
 entrypoint = "configuration:Fixture"
-plugin_api = "3.5"
+plugin_api = "4.0"
 yuki_requires = ">=3.8"
 permissions = ["plugin.config.read"]
 """)
@@ -403,13 +403,33 @@ async def test_cli_client_uses_new_api_and_stops_on_unknown_result(admin, monkey
 async def test_notification_retry_preserves_original_delivery_evidence(admin, database, status):
     from tests.unit.test_plugin_notification_idempotency import _install, _request
 
+    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+    from qq_ai_bot.identity.canonical_repository import find_identity_binding, find_presence
     from qq_ai_bot.persistence.unit_of_work import state_revision
     from qq_ai_bot.plugin_host.db_models import PluginNotificationOutboxModel
+    from yuki_plugin_sdk.models import NotificationTarget
 
     client, *_ = admin
-    repository = await _install(database)
+    async with database.immediate_session() as writer:
+        binding = await find_identity_binding(writer, "1001", platform="qq")
+        presence = await find_presence(writer, "8000", platform="qq")
+        conversation = await ensure_canonical_conversation(
+            writer,
+            kind="private",
+            primary_scope_key="bot:8000:private:1001",
+            person_id=binding.person_id,
+            identity_binding_id=binding.id,
+            presence_id=presence.id,
+        )
+    target = NotificationTarget(
+        target_type="private",
+        target_id=binding.person_id,
+        conversation_id=conversation.conversation_id,
+    )
+    repository = await _install(database, target=target, presence_id=presence.id)
     await repository.publish(
-        plugin_id="test.publication-idempotency", request=_request(ask_agent=False, agent_intent="")
+        plugin_id="test.publication-idempotency",
+        request=_request(ask_agent=False, agent_intent="", target=target),
     )
     claimed = await repository.claim_outbox()
     assert claimed is not None

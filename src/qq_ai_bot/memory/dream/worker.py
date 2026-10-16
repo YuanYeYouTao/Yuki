@@ -171,10 +171,6 @@ class DreamWorker:
             if refreshed is None or refreshed.status.value != "running":
                 return
             run = refreshed
-            if run.model_calls >= self._settings.memory_dream_max_model_calls_per_run:
-                await self._repository.defer_pending(run.public_id)
-                await self._repository.finalize_run(run.public_id)
-                return
             cluster = await self._repository.claim_next_cluster(run.public_id)
             if cluster is None:
                 await self._repository.finalize_run(run.public_id)

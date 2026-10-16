@@ -10,8 +10,9 @@ from qq_ai_bot.client_api.db_models import ClientDeviceModel, ClientLinkCodeMode
 from qq_ai_bot.client_api.errors import ClientError
 from qq_ai_bot.client_api.identity import ClientIdentityService
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
+from qq_ai_bot.identity.canonical_repository import find_identity_binding, find_presence
 from qq_ai_bot.identity.db_models import IdentityBindingModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
@@ -116,8 +117,21 @@ async def test_account_transfer_keeps_old_owner_and_history_and_creates_new_inte
                     )
                 )
             )
-            == 1
+            == 0
         )
+    new_event = (
+        await writer.append(
+            scope=ConversationScope.private("8000", "1001"),
+            platform_message_id="new-owner",
+            sender_user_id="1001",
+            direction="inbound",
+            content="new person's private history",
+        )
+    ).event
+    async with database.sessions() as session:
+        entry = await session.get(CanonicalConversationModel, new_event.canonical_conversation_id)
+        assert entry.person_id == target and entry.identity_binding_id == current.id
+        assert entry.id != old_event.canonical_conversation_id
     with pytest.raises(ClientError, match="unauthenticated"):
         await service.claim_account(
             issued["code"],
@@ -126,3 +140,35 @@ async def test_account_transfer_keeps_old_owner_and_history_and_creates_new_inte
             display_name="",
             message_id="second-exchange",
         )
+
+
+async def test_same_owner_transfer_does_not_choose_one_of_multiple_presence_entries(database):
+    service, person_id, _issued = await code_for(database)
+    async with database.immediate_session() as session:
+        binding = await find_identity_binding(session, "1001")
+        originals = []
+        for account in ("8000", "8001"):
+            presence = await find_presence(session, account)
+            entry = await ensure_canonical_conversation(
+                session,
+                kind="private",
+                primary_scope_key=f"bot:{account}:private:1001",
+                identity_binding_id=binding.id,
+                person_id=person_id,
+                presence_id=presence.id,
+            )
+            originals.append(entry.conversation_id)
+    issuer, request = str(uuid4()), str(uuid4())
+    changed = await service.transfer_for_operator(binding.id, person_id, issuer, request)
+    assert changed["binding_id"] == changed["old_binding_id"] == binding.id
+    assert "conversation_id" not in changed
+    assert (await service.transfer_for_operator(binding.id, person_id, issuer, request))["replay"]
+    async with database.sessions() as session:
+        rows = list(
+            await session.scalars(
+                select(CanonicalConversationModel).where(
+                    CanonicalConversationModel.identity_binding_id == binding.id
+                )
+            )
+        )
+        assert sorted(row.id for row in rows) == sorted(originals)

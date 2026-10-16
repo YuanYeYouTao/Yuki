@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, text
 from tests.conftest import make_settings
+from tests.support.canonical_ingress import fixture_ingress
 from tests.support.user_profiles_helpers import inbound, observe_members
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ConversationLegacyAliasModel,
 )
-from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM, ensure_person, ensure_space
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
@@ -29,17 +30,59 @@ from qq_ai_bot.memory.partition import (
     format_canonical_memory_partition,
     parse_canonical_memory_partition,
     resolve_memory_partition_for_event,
-    resolve_memory_partition_from_scope,
 )
 from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
-from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
-from qq_ai_bot.memory.subjects import SubjectContextBuilder, SubjectResolver
+from qq_ai_bot.memory.subjects import SubjectContextBuilder
 from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel, MembershipModel
-from qq_ai_bot.persistence.repository_records import EventRecord
 
 _NOW = datetime(2026, 8, 24, tzinfo=UTC)
+
+
+async def _canonical_message(database, message):
+    ingress = fixture_ingress(database)
+    if message.reply_sender_user_id is not None and message.reply_to_event_id is None:
+        quoted = replace(
+            message,
+            message_id=f"{message.message_id}:reply",
+            sender=replace(message.sender, user_id=message.reply_sender_user_id),
+            text="original reply source",
+            mentioned_user_ids=(),
+            reply_sender_user_id=None,
+            reply_to_event_id=None,
+        )
+        admitted_reply = await ingress.pre_admit(None, quoted)
+        reply = await ingress.uow.append_inbound(admitted_reply.message, admitted_reply)
+        message = replace(
+            message, reply_to_event_id=reply.event.id, reply_to_message_id=quoted.message_id
+        )
+    admitted = await ingress.pre_admit(None, message)
+    result = await ingress.uow.append_inbound(admitted.message, admitted)
+    return replace(admitted.message, source_event_id=result.event.id)
+
+
+async def _owners(database):
+    async with database.sessions() as session:
+        people = dict(
+            (
+                await session.execute(
+                    select(
+                        IdentityBindingModel.external_account_id, IdentityBindingModel.person_id
+                    ).where(IdentityBindingModel.platform == "qq")
+                )
+            ).all()
+        )
+        spaces = dict(
+            (
+                await session.execute(
+                    select(SpaceBindingModel.external_space_id, SpaceBindingModel.space_id).where(
+                        SpaceBindingModel.platform == "qq"
+                    )
+                )
+            ).all()
+        )
+    return people, spaces
 
 
 def _event(*, message_id: str, peer: str | None = None, group: str | None = None) -> ChatEventModel:
@@ -156,38 +199,6 @@ async def test_space_partition_requires_enabled_active_binding(
 
 
 @pytest.mark.asyncio
-async def test_scope_lookup_is_canonical_and_fails_closed(database: Database) -> None:
-    async with database.sessions() as session, session.begin():
-        person_id = await ensure_person(session, "1001", now=_NOW)
-        space_id = await ensure_space(session, "2001", now=_NOW)
-    lookup = DatabaseMemoryPartitionLookup(database)
-    assert (
-        await lookup.resolve_from_scope(group_id=None, private_peer_user_id="1001")
-        == f"person:{person_id}"
-    )
-    assert (
-        await lookup.resolve_from_scope(group_id="2001", private_peer_user_id=None)
-        == f"space:{space_id}"
-    )
-
-    async with database.sessions() as session:
-        for group_id, peer, reason in (
-            ("2001", "1001", "owner_shape"),
-            (None, None, "owner_shape"),
-            (None, "1999", "missing_owner"),
-        ):
-            with pytest.raises(MemoryPartitionResolutionError) as exc:
-                await resolve_memory_partition_from_scope(
-                    session,
-                    group_id=group_id,
-                    private_peer_user_id=peer,
-                )
-            assert exc.value.reason == reason
-            assert "1001" not in str(exc.value)
-            assert "2001" not in str(exc.value)
-
-
-@pytest.mark.asyncio
 async def test_conversation_uuid_cannot_be_used_as_memory_owner(database: Database) -> None:
     person_id = str(uuid4())
     binding_id = str(uuid4())
@@ -266,6 +277,8 @@ async def test_targets_keep_sixth_mention_and_reply_after_five_people(database: 
         ),
         reply_sender_user_id=user_ids[-1],
     )
+    message = await _canonical_message(database, message)
+    people_ids, space_ids = await _owners(database)
     targets = await MemoryTargetResolver(people).resolve(message, include_self=True)
     assert targets[0].role is MemoryTargetRole.CURRENT_SELF
     person_targets = tuple(
@@ -274,9 +287,13 @@ async def test_targets_keep_sixth_mention_and_reply_after_five_people(database: 
     local_targets = tuple(
         target for target in targets if target.scope_type is MemoryScopeType.PERSON_GROUP
     )
-    assert tuple(target.subject_user_id for target in person_targets) == ("1001", *user_ids)
-    assert tuple(target.subject_user_id for target in local_targets) == ("1001", *user_ids)
-    assert all(target.group_id == "2001" for target in local_targets)
+    assert tuple(target.canonical_subject_person_id for target in person_targets) == tuple(
+        people_ids[item] for item in ("1001", *user_ids)
+    )
+    assert tuple(target.canonical_subject_person_id for target in local_targets) == tuple(
+        people_ids[item] for item in ("1001", *user_ids)
+    )
+    assert all(target.canonical_subject_space_id == space_ids["2001"] for target in local_targets)
     assert sum(target.scope_type is MemoryScopeType.GROUP for target in targets) == 1
 
 
@@ -313,12 +330,16 @@ async def test_targets_share_one_canonical_person_across_mention_and_reply_bindi
         inbound("refs", message_id="bound-refs", group_id="2001", mentioned_user_ids=user_ids),
         reply_sender_user_id="62999",
     )
+    message = await _canonical_message(database, message)
+    people_ids, _space_ids = await _owners(database)
     targets = await MemoryTargetResolver(people).resolve(message)
     for scope in (MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP):
         assert tuple(
-            target.subject_user_id for target in targets if target.scope_type is scope
-        ) == ("1001", *user_ids[:6])
-    assert not any(target.subject_user_id in {"62999", user_ids[-1]} for target in targets)
+            target.canonical_subject_person_id for target in targets if target.scope_type is scope
+        ) == tuple(people_ids[item] for item in ("1001", *user_ids[:6]))
+    assert not any(
+        target.canonical_subject_person_id == people_ids[user_ids[-1]] for target in targets
+    )
 
 
 @pytest.mark.asyncio
@@ -329,27 +350,40 @@ async def test_batch_person_scopes_use_direct_membership_and_forgetting_takes_ef
     await observe_members(database, ("62041", "62042"), group_id="2002")
     await observe_members(database, ("1001",), group_id="2999")
     resolver = MemoryReadScopeResolver(database)
-    batch = await resolver.people("1001", ("1001", "62041", "62042", "404"))
-    assert set(batch) == {"1001", "62041"}
-    assert {target.group_id for target in batch["62041"].targets if target.group_id} == {"2001"}
-    assert (await resolver.person("1001", "62041", group_id="2999")).targets == ()
+    people_ids, space_ids = await _owners(database)
+    batch = await resolver.people(
+        people_ids["1001"],
+        tuple(people_ids.get(item, item) for item in ("1001", "62041", "62042", "404")),
+    )
+    assert set(batch) == {people_ids["1001"], people_ids["62041"]}
+    assert {
+        target.canonical_subject_space_id
+        for target in batch[people_ids["62041"]].targets
+        if target.canonical_subject_space_id
+    } == {space_ids["2001"]}
+    assert not (
+        await resolver.person(people_ids["1001"], people_ids["62041"], group_id=space_ids["2999"])
+    ).targets
     message = inbound(
         "other group",
         message_id="other-group",
         group_id="2999",
         mentioned_user_ids=("62041", "62042"),
     )
+    message = await _canonical_message(database, message)
+    people_ids, space_ids = await _owners(database)
     targets = await MemoryTargetResolver(people).resolve(message)
     assert any(
-        target.subject_user_id == "62041" and target.scope_type is MemoryScopeType.PERSON
+        target.canonical_subject_person_id == people_ids["62041"]
+        and target.scope_type is MemoryScopeType.PERSON
         for target in targets
     )
     assert not any(
-        target.subject_user_id in {"62041", "62042"}
+        target.canonical_subject_person_id in {people_ids["62041"], people_ids["62042"]}
         and target.scope_type is MemoryScopeType.PERSON_GROUP
         for target in targets
     )
-    assert not any(target.subject_user_id == "62042" for target in targets)
+    assert not any(target.canonical_subject_person_id == people_ids["62042"] for target in targets)
     async with database.immediate_session() as session:
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "62041")
@@ -361,7 +395,7 @@ async def test_batch_person_scopes_use_direct_membership_and_forgetting_takes_ef
         membership = await session.get(MembershipModel, (binding.person_id, group.space_id))
         assert membership is not None
         await session.delete(membership)
-    assert (await resolver.person("1001", "62041")).targets == ()
+    assert (await resolver.person(people_ids["1001"], people_ids["62041"])).targets == ()
 
 
 @pytest.mark.asyncio
@@ -384,20 +418,14 @@ async def test_normalized_claim_names_resolve_complete_exact_candidates_without_
     fuzzy = await people.search_group_member_names("同名", "2001", limit=len(repeated))
     assert tuple(item.user_id for item in fuzzy) == repeated
     assert all(item.exact for item in fuzzy)
-    event = EventRecord(
-        id=1,
-        bot_user_id="9999",
-        platform_message_id="claims",
-        scope_type=ScopeType.GROUP,
-        sender_user_id="1001",
-        direction="inbound",
-        content="declarations",
-        visual_summary="",
-        segments=(),
-        occurred_at=_NOW,
-        group_id="2001",
-        sender_nickname="event nickname",
+    message = await _canonical_message(
+        database,
+        inbound("declarations", message_id="claims", group_id="2001", nickname="event nickname"),
     )
+    from qq_ai_bot.persistence.repositories import EventLedgerRepository
+
+    event = await EventLedgerRepository(database).get_event(message.source_event_id)
+    assert event is not None
     claims = tuple(
         MemoryClaim(
             subject_ref="named_member",
@@ -411,15 +439,16 @@ async def test_normalized_claim_names_resolve_complete_exact_candidates_without_
         for index, name in enumerate(("alpha", "A lp-ha", "同名", "alph"))
     )
     builder = SubjectContextBuilder(people)
-    resolved, context = await builder.resolve_claim_names(
-        event, claims, SubjectResolver.context(event)
-    )
+    resolved, context = await builder.resolve_claim_names(event, claims, await builder.build(event))
     assert resolved[0].subject_ref == resolved[1].subject_ref != "named_member"
     assert resolved[2:] == claims[2:]
     subject = context.resolve(f"{resolved[0].subject_ref}:person_group")
     assert subject is not None and subject.subject_user_id == "62060"
     displayed = await builder.build(event)
-    assert displayed.available_subjects[0].display_label == "event nickname（ID 1001）"
+    assert (
+        displayed.available_subjects[0].display_label
+        == f"event nickname（Person {event.author_person_id}）"
+    )
 
 
 @pytest.mark.asyncio
@@ -453,17 +482,22 @@ async def test_exact_tool_ambiguity_reports_all_authorized_people_and_groups(
         memories=MemoryFactService(MemoryFactRepository(database)),
     )
     runtime = ToolRuntime(
-        inbound=inbound("choose target", message_id="ambiguity", group_id="2001"),
-        gateway=None,
-        allow_generic_onebot=False,
+        inbound=await _canonical_message(
+            database, inbound("choose target", message_id="ambiguity", group_id="2001")
+        ),
     )
     people_failure = await tools._resolve_person_memory_selection(
         {"display_name": "共同名字"}, runtime
     )
     group_failure = await tools._read_group_selector(
-        {"group_name": "共同群名"}, runtime, default_current=False
+        {"space_name": "共同群名"}, runtime, default_current=False
     )
     assert isinstance(people_failure, _ToolFailure) and people_failure.code == "ambiguous_person"
-    assert {item["user_id"] for item in people_failure.data["candidates"]} == set(user_ids)
+    people_ids, space_ids = await _owners(database)
+    assert {item["person_id"] for item in people_failure.data["candidates"]} == {
+        people_ids[item] for item in user_ids
+    }
     assert isinstance(group_failure, _ToolFailure) and group_failure.code == "ambiguous_group"
-    assert {item["group_id"] for item in group_failure.data["candidates"]} == set(groups)
+    assert {item["space_id"] for item in group_failure.data["candidates"]} == {
+        space_ids[item] for item in groups
+    }

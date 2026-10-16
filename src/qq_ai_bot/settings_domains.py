@@ -195,8 +195,6 @@ class MemorySettings(DomainSettings):
     memory_dream_max_output_tokens: int = Field(gt=0)
     memory_dream_evidence_per_fact: int = Field(ge=1)
     memory_dream_evidence_excerpt_characters: int = Field(gt=0)
-    memory_evidence_compaction_enabled: bool
-    memory_evidence_compaction_batch_size: int = Field(ge=1)
     memory_maintenance_enabled: bool
     memory_maintenance_interval_seconds: float = Field(gt=0)
     memory_maintenance_batch_limit: int = Field(gt=0)
@@ -276,7 +274,6 @@ class VisionSettings(DomainSettings):
     vision_max_output_tokens: int = Field(gt=0)
     vision_thinking_enabled: bool
     vision_thinking_budget: int = Field(gt=0)
-    vision_low_confidence_retry_threshold: float = Field(ge=0, le=1)
     vision_max_images_per_turn: int = Field(gt=0)
     vision_max_frames_per_turn: int = Field(gt=0)
     vision_gif_max_frames: int = Field(gt=0)

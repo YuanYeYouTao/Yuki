@@ -61,11 +61,15 @@ class MemoryAuditService:
         *,
         subject_user_id: str | None = None,
         group_id: str | None = None,
+        person_id: str | None = None,
+        space_id: str | None = None,
         limit: int = 100,
     ) -> tuple[MemoryFact, ...]:
         return await self._repository.list_conflicts(
             subject_user_id=subject_user_id,
             group_id=group_id,
+            person_id=person_id,
+            space_id=space_id,
             limit=limit,
         )
 

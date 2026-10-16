@@ -80,19 +80,16 @@ class CanonicalIngressUnitOfWork:
             raise CanonicalIdentityError("unclassified")
         if message.bot_user_id and message.bot_user_id != admitted.handle_external_account_id:
             raise CanonicalIdentityError("bot_handle_mismatch")
-        scope = (
-            ConversationScope.private(admitted.handle_external_account_id, message.sender.user_id)
-            if message.scope_type is ScopeType.PRIVATE
-            else ConversationScope.group(
-                admitted.handle_external_account_id, message.group_id or ""
-            )
-        )
+        scope = admitted.message.scope(bot_user_id=admitted.handle_external_account_id)
         segments = list(message.segments)
         segments.append(
             {
                 "type": "yuki_context",
                 "data": {
+                    "platform": message.platform,
+                    "thread_id": message.thread_id,
                     "mentioned_user_ids": list(message.mentioned_user_ids),
+                    "mentioned_person_ids": list(message.mentioned_person_ids),
                     "reply_sender_user_id": message.reply_sender_user_id,
                 },
             }
@@ -209,6 +206,15 @@ class CanonicalIngressUnitOfWork:
                     segments=segments,
                     normalized_segments=normalized_segments,
                 )
+            if message.platform == "app" and admitted.author_person_id is not None:
+                from qq_ai_bot.client_api.requests import personal_command
+
+                request_id = message.message_id.rsplit(":", 1)[-1]
+                if (
+                    await personal_command(session, admitted.author_person_id, request_id)
+                    is not None
+                ):
+                    raise CanonicalIdentityError("receipt_conflict")
             try:
                 async with session.begin_nested():
                     session.add(

@@ -10,10 +10,10 @@ from qq_ai_bot.asr.audio import prepare_audio
 from qq_ai_bot.asr.provider import ASRError, ASRProvider
 from qq_ai_bot.domain.audio import AudioTranscript, serialize_transcripts, transcript_context
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage
+from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.services.media_resolver import (
     MediaResolutionError,
     MediaResolver,
-    OneBotMediaGateway,
     read_local_media,
 )
 from qq_ai_bot.settings_domains import ASRSettings
@@ -85,7 +85,7 @@ class ASRService:
         }
 
     async def prepare(
-        self, message: InboundMessage, gateway: OneBotMediaGateway | None
+        self, message: InboundMessage, gateway: PlatformMediaGateway | None
     ) -> AudioInput:
         if not self.has_audio(message):
             return AudioInput()
@@ -110,7 +110,7 @@ class ASRService:
     async def _prepare(
         self,
         message: InboundMessage,
-        gateway: OneBotMediaGateway | None,
+        gateway: PlatformMediaGateway | None,
         parts: list[AudioTranscript],
     ) -> AudioInput:
         assert self._provider is not None

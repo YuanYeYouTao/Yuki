@@ -73,9 +73,9 @@ class UserProfileService:
     ) -> None:
         self._repository = repository
         # Only successful empty values: no names, ownership or route authority.
-        self._empty_profiles: OrderedDict[tuple[str, str, str | None], tuple[float, bool, bool]] = (
-            OrderedDict()
-        )
+        self._empty_profiles: OrderedDict[
+            tuple[str, str | None, str | None, str, str | None], tuple[float, bool, bool]
+        ] = OrderedDict()
 
     async def capture(
         self,
@@ -84,7 +84,13 @@ class UserProfileService:
     ) -> UserProfileSnapshot:
         """Capture one triggered caller and return an identity safe for this scope."""
 
-        cache_key = (message.bot_user_id, message.sender.user_id, message.group_id)
+        cache_key = (
+            message.platform,
+            message.presence_id,
+            message.person_id,
+            message.sender.user_id,
+            message.space_id or message.group_id,
+        )
         cached = self._empty_profiles.get(cache_key)
         lookup_message = message
         if cached is not None:
@@ -139,6 +145,9 @@ class UserProfileService:
                     user_id=message.sender.user_id,
                     group_id=message.group_id,
                     include_nickname=message.scope_type is ScopeType.PRIVATE,
+                    person_id=message.person_id,
+                    space_id=message.space_id,
+                    platform=message.platform,
                 )
             except (OSError, RuntimeError, SQLAlchemyError) as exc:
                 logger.warning(
@@ -171,6 +180,7 @@ class UserProfileService:
                 is_bot=message.sender.is_bot,
                 expected_person_id=message.person_id,
                 platform=message.platform,
+                space_id=message.space_id,
             )
         except (OSError, RuntimeError, SQLAlchemyError) as exc:
             logger.warning(

@@ -226,46 +226,6 @@ async def resolve_memory_partition_for_event(
     return await resolve_canonical_memory_partition_for_event(session, event)
 
 
-async def resolve_canonical_memory_partition_from_scope(
-    session: AsyncSession,
-    *,
-    group_id: str | None,
-    private_peer_user_id: str | None,
-) -> MemoryPartition:
-    group_id, private_peer_user_id = require_xor_scope_owner(
-        group_id=group_id,
-        private_peer_user_id=private_peer_user_id,
-    )
-    if group_id:
-        space_id = await resolve_active_space_id(session, group_id)
-        await _reject_conversation_uuid(session, space_id)
-        return MemoryPartition(
-            value=format_canonical_memory_partition(space_id=space_id),
-            person_id=None,
-            space_id=space_id,
-        )
-    person_id = await resolve_active_person_id(session, private_peer_user_id)
-    await _reject_conversation_uuid(session, person_id)
-    return MemoryPartition(
-        value=format_canonical_memory_partition(person_id=person_id),
-        person_id=person_id,
-        space_id=None,
-    )
-
-
-async def resolve_memory_partition_from_scope(
-    session: AsyncSession,
-    *,
-    group_id: str | None,
-    private_peer_user_id: str | None,
-) -> MemoryPartition:
-    return await resolve_canonical_memory_partition_from_scope(
-        session,
-        group_id=group_id,
-        private_peer_user_id=private_peer_user_id,
-    )
-
-
 async def resolve_fact_canonical_owners(
     session: AsyncSession,
     fact: Any,

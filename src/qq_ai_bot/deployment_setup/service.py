@@ -804,7 +804,7 @@ def _validate_credentials_and_endpoints(
     *,
     flash_enabled: bool,
 ) -> None:
-    required = ("SUPERUSERS", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+    required = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
     missing = [name for name in required if not _configured_value(environment.get(name, ""))]
     if missing:
         raise SetupValidationError("基础配置本地验证失败，缺少：" + ", ".join(missing))

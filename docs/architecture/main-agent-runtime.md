@@ -116,9 +116,9 @@ Work 时返回内部结果。自动化沿原 Work 终态收尾，完成不强制
 正文的完整 `NO_REPLY` 仍在发送和回执前拒绝；子 Agent 可沿真实来源与授权发送，内部结果与实际发送回执分别记录。
 
 工具执行、pending、retryable 和 committed 判据只来自类型化执行事实或原持久回执，
-不从模型可见展示文本反推。只读复用在同一轮保留展示与原事实，并沿原 effect key 配对；
-仅明确成功、非 pending、非 uncertain、非 retryable 的结果可缓存。副作用已提交或不能
-证明未修改时使旧只读缓存失效；恢复不会因此增加新执行或重置预算。历史格式解码只留在
+不从模型可见展示文本反推。新 call 每次核当前授权并读取当前事实，不以另一 call 的同参
+业务结果代替执行。原 call 与旧 readonly alias 沿自己的持久回执恢复，保原展示与执行事实；
+纯 query-vector、不可变内容及 Provider 的真实缓存各沿原合同。恢复不增加新执行或重置预算。历史格式解码只留在
 原回执 reader，来源标题和摘要等展示材料不作为执行权威。
 单次 `send_message` 的纯文本复用原回复分条规则（换行、结构与字数上限），
 逐条持久化发送回执；模型主动多次调用仍是独立的发送。部分发送未知时停止后续
@@ -424,7 +424,7 @@ AutomationWorker 只扫描未来安排、接纳唯一发生并结算真实结果
 和信号由 WorkWaitRepository 与 WorkScheduler 沿原 Work ID 处理，不唤醒第二个步骤机，
 也不因停放或迟到信号创建另一份 run。
 信号到达不解锁 `suspended`：容量和来源失效等独立暂停原因不被信号覆盖，信号作为待处理
-输入保留在原邮箱。Work 详情（控制面 `read_work.management`）与等待详情（`wait_status` 的 `work`）
+输入保留在原邮箱。控制面的原 Work 详情与等待详情（`wait_status` 的 `work`）
 同时给出暂停原因、已到达信号及其输入状态、可用的原 resume/cancel 动作；显式 resume 消费原信号，
 不创建新事件或新状态。
 明确 resume 或修改目标在同一 writer 撤销被替代的一次性等待，旧 timer 不再唤醒新执行。

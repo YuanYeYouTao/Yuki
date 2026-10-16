@@ -8,7 +8,7 @@
 
 <h1>Yuki</h1>
 
-<p>A persistent social AI agent in real QQ conversations</p>
+<p>A persistent social AI agent in real conversations</p>
 
 <p>
   <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0"><img src="https://img.shields.io/badge/Release-3.9.0-blue" alt="Yuki 3.9.0"></a>
@@ -47,7 +47,9 @@ See the [3.9.0 release notes](docs/releases/v3.9.0.md) for features, fixes, cont
 
 The release notes cover migration steps, compatibility changes, and the scope of validation. Actual experience still depends on model responses, tool requests, and host resources; the version does not promise fixed latency, cost, or cache rates.
 
-**Multi-client work is in progress:** The old browser management interface is retired in source. Personal-client access follows the staged #299 taskbook.
+**Current development branch:** Personal clients, QQ and Telegram share one runtime through native platform adapters. Private entries use Binding + Presence; groups use SpaceBinding + topic. Person memory remains shared through internal identities. Default model tools retire arbitrary OneBot actions, pokes and remote forward expansion; history and member directories report observed ledger coverage. Plugin API is **4.0**, Main contract **20**, and migration head **0126**. See [platform adapters and upgrades](docs/architecture/platform-adapters.md) and the [implementation record](docs/architecture/Yuki-299与多平台解耦实施记录-2026-10-16.md). This is separate from the historical 3.9.0 release described above.
+
+The Kun game now lives in the independent [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game) repository. Game source and dedicated migrations are no longer bundled here. The independent plugin requires a Plugin API 4.0 Host; installation and offline save migration are documented in that repository.
 
 [Conversation compact](docs/architecture/conversation-compact.md) ([#417](https://github.com/YuanYeYouTao/Yuki/issues/417), [#418](https://github.com/YuanYeYouTao/Yuki/issues/418)) uses the current Main model to condense public history or private execution context when the complete request exceeds its actual capacity. Subagents share Main's tool contract and execute under their own real source and authorization. The independent Rollup and Work/ordinary summary pipelines are retired.
 
@@ -56,8 +58,8 @@ The release notes cover migration steps, compatibility changes, and the scope of
 | Capability | How it is used |
 | --- | --- |
 | Conversation and long-term memory | Chat in groups or privately, look up past events, and explicitly ask Yuki to remember, correct, or delete facts |
-| Images, voice, and attachments | Receive images, voice, video, or documents, ask follow-up questions without quoting the attachment, and read forwarded messages on demand |
-| QQ social actions | Look up members, use structured mentions and pokes, send group/private messages, and recall Yuki's own messages; the backend checks targets and permissions |
+| Images, voice, and attachments | Receive images, voice, video, or documents, ask follow-up questions without quoting the attachment, with observed ledger history |
+| Cross-platform social actions | Read observed members, use structured mentions, send group/private messages, and recall Yuki's own messages; shared internal targets and permissions route through native adapters |
 | Search and plugins | Use configured online tools and approved plugins |
 | Persistent workspace | Save projects and files, run Python, Node.js, or Shell, install dependencies, and deliver results |
 | Background work and automation | Start work while continuing the conversation, check progress later, and run scheduled work within granted permissions |
@@ -72,7 +74,7 @@ When enabled, Yuki gets a shared Linux working directory across conversations. D
 - Bash, Python, Node.js, Git, and basic build tools are preinstalled. The workspace supports pip and npm, plus Manager-controlled apt installation and environment checkpoints.
 - Terminals support interactive input, incremental output, cancellation, and background execution. Yuki can start a task, continue chatting, and return to its result.
 - Processes can continue while Bot or Manager restarts. A workspace restart interrupts ordinary tasks; registered services recover according to policy.
-- Selected files are delivered to QQ as immutable snapshots. Legacy `artifact_id` references remain compatible.
+- Selected files are delivered through the matching platform as immutable snapshots. Legacy `artifact_id` references remain compatible.
 
 The default home-directory quota is 2 GiB and container memory limit is 512 MiB, with at most one primary execution task, four terminal sessions, and two internal services. The workspace has no browser or desktop and does not mount the Bot database, QQ credentials, or host Docker control interface.
 
@@ -166,7 +168,7 @@ Read the [shared development contract](docs/architecture/development-contract.md
 
 One database represents one long-lived Yuki. People, groups, QQ accounts, and gateway connections are modeled separately, so conversation history and memories are not tied to a single login. The backend checks tool permissions, budgets, idempotency, and audit records.
 
-Yuki provides QQ interaction and an operator CLI. The old browser interface and control implementation are retired in source. The [management API](docs/architecture/admin-api.md) uses the original domain services and receipts. The personal-client API and reference CLI have completed local implementation and validation under #299; see the [delivery record](docs/operations/issue-299-delivery-2026-10-15.md). Merge and production deployment are tracked separately.
+The current development branch provides QQ, Telegram, personal clients and an operator CLI. The old browser interface and control implementation are retired in source. The [management API](docs/architecture/admin-api.md) uses the original domain services and receipts. The personal-client API and reference CLI have completed local implementation and validation under #299; see the [delivery record](docs/operations/issue-299-delivery-2026-10-15.md). Merge and production deployment are tracked separately.
 
 ```bash
 uv sync --extra dev
@@ -176,7 +178,7 @@ uv run mypy --platform linux src
 uv run pytest
 ```
 
-Use checks matching the change. Quality runs source checks, frontend tests/build, and retained regressions. Release validates identity, amd64/arm64 direct images, and the source-free deployment bundle; retired Memory quality gates and parallel release paths are removed.
+Use checks matching the change. Quality runs source checks and retained regressions. Release validates identity, amd64/arm64 direct images, and the source-free deployment bundle; retired frontend checks, Memory quality gates, and parallel release paths are removed.
 Routine regressions use fake providers and isolated databases. Paid Gemini and DeepSeek cache comparisons run separately, with cold rounds, warm rounds, and missing accounting reported explicitly; they are not ordinary tests or fixed cache-hit thresholds.
 
 | Document | Topic |
@@ -186,7 +188,7 @@ Routine regressions use fake providers and isolated databases. Paid Gemini and D
 | [Development contract](docs/architecture/development-contract.md) | Event IDs, boundaries, fixed tools, resumption, and transactions |
 | [Conversation compact](docs/architecture/conversation-compact.md) | Long-conversation condensation |
 | [Memory](docs/architecture/memory-v2.md) | Extraction, retrieval, and permissions |
-| [Plugin API 3.5](docs/plugin-development/index.md) | Plugin development and capability boundaries |
+| [Plugin API 4.0](docs/plugin-development/index.md) | Plugin development and capability boundaries |
 | [Persistent subagents](docs/architecture/persistent-subagents.md) | Task trees, parent-child questions, full tool capabilities, and recovery |
 | [Tool results](docs/architecture/tool-results.md) | Result budgets, media, and durable receipts |
 | [Versioned releases](docs/operations/versioned-docker-release.md) | Images, bundles, and the release process |

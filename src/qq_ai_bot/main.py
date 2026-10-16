@@ -73,7 +73,8 @@ def bootstrap(settings: Settings | None = None) -> None:
         )
     configure_logging(app_settings.log_level)
     driver = nonebot.get_driver()
-    driver.register_adapter(SnowLumaOneBotAdapter)
+    if app_settings.onebot_access_token:
+        driver.register_adapter(SnowLumaOneBotAdapter)
     application_lock = SQLiteApplicationLock(app_settings.sqlite_path)
 
     @driver.on_bot_connect
@@ -141,7 +142,8 @@ def bootstrap(settings: Settings | None = None) -> None:
     from qq_ai_bot.client_api.http import attach_client_api
 
     attach_client_api(driver.server_app, lambda: get_container().client_api)
-    nonebot.load_plugin("qq_ai_bot.plugins.ai_chat")
+    if app_settings.onebot_access_token:
+        nonebot.load_plugin("qq_ai_bot.plugins.ai_chat")
 
 
 def run() -> None:

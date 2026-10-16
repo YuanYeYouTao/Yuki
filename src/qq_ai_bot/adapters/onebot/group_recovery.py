@@ -33,7 +33,8 @@ class QQGroupRecovery:
 
     def _command(self, message: InboundMessage) -> tuple[CommandName | None, str]:
         if (
-            message.scope_type is not ScopeType.GROUP
+            message.platform != "qq"
+            or message.scope_type is not ScopeType.GROUP
             or not message.group_id
             or message.sender.user_id not in self._settings.superusers
             or message.is_self_message
@@ -66,8 +67,8 @@ class QQGroupRecovery:
             connection = self._connection(bot, message)
             if message.attachments or message.reply_attachments:
                 return "恢复群路由不接受图片或附件，请单独发送 /ai on。"
-            principal = await self._access.principal_for_qq(message.sender.user_id)
-            target = await self._access.space_target(message.group_id or "")
+            principal = await self._access.qq_recovery_principal(message.sender.user_id)
+            target = await self._access.qq_recovery_space_target(message.group_id or "")
             changed = await self._service.enable(
                 self._access.context(principal, target),
                 presence_id=connection.snapshot.presence_id or "",
@@ -104,7 +105,7 @@ class QQGroupRecovery:
             return None
         try:
             self._connection(bot, message)
-            await self._access.principal_for_qq(message.sender.user_id)
+            await self._access.qq_recovery_principal(message.sender.user_id)
         except (RegistryClosed, PermissionError):
             return None
         return "当前群接入路由已暂停，命令未执行。请超级管理员在本群单独发送 /ai on 恢复。"

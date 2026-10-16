@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -15,9 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
+    SpaceActiveRouteModel,
+    SpaceBindingIngestRouteModel,
 )
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.identity import AuthorKind
+from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
@@ -164,6 +168,7 @@ class PluginNotificationRepository:
         target: NotificationTarget,
         bot_user_id: str,
         created_by_user_id: str,
+        presence_id: str | None = None,
     ) -> BackgroundTargetGrantView:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
@@ -172,19 +177,22 @@ class PluginNotificationRepository:
                 created_by_user_id=created_by_user_id,
                 target=target,
             )
+            conversation = await _target_conversation(session, target)
+            presence = await _grant_presence(session, conversation, presence_id)
             row = await find_grant_lineage(
                 session,
                 plugin_id=plugin_id,
                 target_type=target.target_type,
                 person_id=person_id,
                 space_id=space_id,
+                conversation_id=conversation.id,
             )
             if row is None:
                 row = PluginBackgroundTargetGrantModel(
                     plugin_id=plugin_id,
                     target_type=target.target_type,
                     target_id=target.target_id,
-                    bot_user_id=bot_user_id,
+                    bot_user_id=presence.external_account_id,
                     enabled=True,
                     created_by_user_id=created_by_user_id,
                     created_at=now,
@@ -192,7 +200,7 @@ class PluginNotificationRepository:
                 )
             else:
                 row.target_id = target.target_id
-                row.bot_user_id = bot_user_id
+                row.bot_user_id = presence.external_account_id
                 row.enabled = True
                 row.created_by_user_id = created_by_user_id
                 row.updated_at = now
@@ -202,7 +210,8 @@ class PluginNotificationRepository:
                 created_by_user_id=created_by_user_id,
                 target_type=target.target_type,
                 target_id=target.target_id,
-                bot_user_id=bot_user_id,
+                presence_id=presence.id,
+                conversation_id=conversation.id,
             )
             session.add(row)
             await session.flush()
@@ -227,6 +236,7 @@ class PluginNotificationRepository:
                 target_type=target.target_type,
                 person_id=person_id,
                 space_id=space_id,
+                conversation_id=target.conversation_id,
             )
             if row is None:
                 return False
@@ -252,6 +262,8 @@ class PluginNotificationRepository:
                 .where(
                     PluginNotificationOutboxModel.plugin_id == plugin_id,
                     outbox_match,
+                    PluginNotificationOutboxModel.canonical_conversation_id
+                    == row.canonical_conversation_id,
                     PluginNotificationOutboxModel.status.in_(("pending", "processing")),
                 )
                 .values(status="cancelled", lease_until=None, updated_at=now)
@@ -261,6 +273,8 @@ class PluginNotificationRepository:
                 .where(
                     PluginBackgroundTurnJobModel.plugin_id == plugin_id,
                     turn_match,
+                    PluginBackgroundTurnJobModel.canonical_conversation_id
+                    == row.canonical_conversation_id,
                     PluginBackgroundTurnJobModel.status.in_(("pending", "processing")),
                 )
                 .values(status="cancelled", lease_until=None, updated_at=now)
@@ -277,7 +291,11 @@ class PluginNotificationRepository:
                         CanonicalConversationModel,
                         CanonicalConversationModel.id == waits.c.conversation_id,
                     )
-                    .where(waits.c.status == "active", target_filter)
+                    .where(
+                        waits.c.status == "active",
+                        target_filter,
+                        waits.c.conversation_id == row.canonical_conversation_id,
+                    )
                 )
             ).all()
             for binding_id, encoded_conditions in bindings:
@@ -344,32 +362,52 @@ class PluginNotificationRepository:
     ) -> NotificationPublishReceipt:
         now = datetime.now(UTC)
         target = request.target
+        async with self._database.sessions() as preparation:
+            grant = await _load_enabled_grant(preparation, plugin_id=plugin_id, target=target)
+            if grant is None:
+                raise PluginPermissionError("notification target is not granted")
+            await require_grant_readable(preparation, grant)
+            identity = await _publication_scope(preparation, grant)
+            grant_id = grant.id
+            grant_facts = (
+                grant.canonical_target_person_id,
+                grant.canonical_target_space_id,
+                grant.canonical_conversation_id,
+                grant.canonical_presence_id,
+            )
+            existing = await _load_existing_external_event(
+                preparation,
+                plugin_id=plugin_id,
+                event_key=request.event_key,
+                scope_type=identity.scope_type.value,
+                conversation_id=identity.conversation_id,
+            )
+            existing_id = existing.id if existing is not None else None
         async with self._database.immediate_session() as session:
             installation = await session.get(PluginInstallationModel, plugin_id)
             if installation is None or not installation.enabled or installation.status != "running":
                 raise PluginPermissionError("plugin is not running")
-            grant = await _load_enabled_grant(
-                session,
-                plugin_id=plugin_id,
-                target=target,
-            )
-            if grant is None:
+            grant = await session.get(PluginBackgroundTargetGrantModel, grant_id)
+            if (
+                grant is None
+                or not grant.enabled
+                or grant_facts
+                != (
+                    grant.canonical_target_person_id,
+                    grant.canonical_target_space_id,
+                    grant.canonical_conversation_id,
+                    grant.canonical_presence_id,
+                )
+            ):
                 raise PluginPermissionError("notification target is not granted")
             await require_grant_readable(session, grant)
-            if target.target_type == "group":
-                scope = ConversationScope.group(grant.bot_user_id, target.target_id)
-            else:
-                scope = ConversationScope.private(grant.bot_user_id, target.target_id)
+            scope = await _publication_scope(session, grant)
+            if scope != identity:
+                raise PluginPermissionError("notification entry changed")
             notification_id = _notification_id(
-                plugin_id, request.event_key, target.target_type, target.target_id
+                plugin_id, request.event_key, target.target_type, scope.conversation_id or ""
             )
-            existing = await _load_existing_external_event(
-                session,
-                plugin_id=plugin_id,
-                event_key=request.event_key,
-                scope_type=scope.scope_type.value,
-                target_id=target.target_id,
-            )
+            existing = await session.get(ChatEventModel, existing_id) if existing_id else None
             media = await _resolve_request_media(
                 session,
                 plugin_id=plugin_id,
@@ -384,6 +422,22 @@ class PluginNotificationRepository:
                 ),
             )
             if existing is not None:
+                original_id = await session.scalar(
+                    select(PluginNotificationOutboxModel.notification_id)
+                    .where(PluginNotificationOutboxModel.source_event_id == existing.id)
+                    .limit(1)
+                )
+                notification_id = original_id or _notification_id(
+                    plugin_id,
+                    request.event_key,
+                    target.target_type,
+                    existing.canonical_conversation_id
+                    if existing.platform_message_id.startswith("external2-")
+                    else existing.external_target_id or "",
+                )
+                incoming = dataclass_replace(
+                    incoming, target_id=existing.external_target_id or target.target_id
+                )
                 receipt = await _existing_event_receipt(
                     session,
                     plugin_id=plugin_id,
@@ -395,9 +449,7 @@ class PluginNotificationRepository:
                 try:
                     appended = await self._scoped_events.append_external(
                         scope=scope,
-                        platform_message_id=_external_platform_id(
-                            plugin_id, request.event_key, target
-                        ),
+                        platform_message_id=f"external2-{notification_id}",
                         source_plugin_id=plugin_id,
                         external_source=request.external_source,
                         external_event_key=request.event_key,
@@ -1034,6 +1086,7 @@ class PluginNotificationRepository:
         plugin_id: str,
         person_id: str | None,
         space_id: str | None,
+        conversation_id: str | None = None,
     ) -> str | None:
         """Read a grant by persisted Person XOR Space. No raw QQ/group key."""
 
@@ -1044,6 +1097,7 @@ class PluginNotificationRepository:
                     plugin_id=plugin_id,
                     person_id=person_id,
                     space_id=space_id,
+                    conversation_id=conversation_id,
                 )
             except PluginOwnershipError:
                 return None
@@ -1104,6 +1158,7 @@ class PluginNotificationRepository:
                     plugin_id=stored.plugin_id,
                     person_id=stored.canonical_target_person_id,
                     space_id=stored.canonical_target_space_id,
+                    conversation_id=stored.canonical_conversation_id,
                 )
                 if grant is None:
                     raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
@@ -1412,6 +1467,7 @@ async def _turn_fence_category(
         plugin_id=job.plugin_id,
         person_id=job.canonical_target_person_id,
         space_id=job.canonical_target_space_id,
+        conversation_id=job.canonical_conversation_id,
     ):
         return "plugin_authority_revoked"
     conversation = await session.get(
@@ -1487,6 +1543,7 @@ async def background_authority_live(
     plugin_id: str,
     person_id: str | None,
     space_id: str | None,
+    conversation_id: str | None = None,
 ) -> bool:
     """Read current installation and the original canonical target grant."""
     installation = await session.get(PluginInstallationModel, plugin_id)
@@ -1494,7 +1551,11 @@ async def background_authority_live(
         return False
     try:
         grant = await _canonical_enabled_grant(
-            session, plugin_id=plugin_id, person_id=person_id, space_id=space_id
+            session,
+            plugin_id=plugin_id,
+            person_id=person_id,
+            space_id=space_id,
+            conversation_id=conversation_id,
         )
     except PluginOwnershipError:
         return False
@@ -1507,41 +1568,22 @@ async def _canonical_enabled_grant(
     plugin_id: str,
     person_id: str | None,
     space_id: str | None,
+    conversation_id: str | None = None,
 ) -> PluginBackgroundTargetGrantModel | None:
-    if person_id and space_id:
+    if bool(person_id) == bool(space_id):
         raise PluginOwnershipError(STATE_MISMATCH)
-    if not person_id and not space_id:
-        raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
-    if person_id:
-        rows = list(
-            (
-                await session.scalars(
-                    select(PluginBackgroundTargetGrantModel).where(
-                        PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
-                        PluginBackgroundTargetGrantModel.canonical_target_person_id == person_id,
-                        PluginBackgroundTargetGrantModel.enabled.is_(True),
-                    )
-                )
-            ).all()
-        )
-    else:
-        rows = list(
-            (
-                await session.scalars(
-                    select(PluginBackgroundTargetGrantModel).where(
-                        PluginBackgroundTargetGrantModel.plugin_id == plugin_id,
-                        PluginBackgroundTargetGrantModel.canonical_target_space_id == space_id,
-                        PluginBackgroundTargetGrantModel.enabled.is_(True),
-                    )
-                )
-            ).all()
-        )
-    if len(rows) > 1:
-        raise PluginOwnershipError(STATE_MISMATCH)
-    if not rows:
+    row = await find_grant_lineage(
+        session,
+        plugin_id=plugin_id,
+        target_type="private" if person_id else "group",
+        person_id=person_id,
+        space_id=space_id,
+        conversation_id=conversation_id,
+    )
+    if row is None or not row.enabled:
         return None
-    await require_grant_readable(session, rows[0])
-    return rows[0]
+    await require_grant_readable(session, row)
+    return row
 
 
 def _require_system_external(event: ChatEventModel) -> None:
@@ -1566,7 +1608,7 @@ async def _load_existing_external_event(
     plugin_id: str,
     event_key: str,
     scope_type: str,
-    target_id: str,
+    conversation_id: str | None,
 ) -> ChatEventModel | None:
     rows = list(
         (
@@ -1576,7 +1618,7 @@ async def _load_existing_external_event(
                     ChatEventModel.source_plugin_id == plugin_id,
                     ChatEventModel.external_event_key == event_key,
                     ChatEventModel.scope_type == scope_type,
-                    ChatEventModel.external_target_id == target_id,
+                    ChatEventModel.canonical_conversation_id == conversation_id,
                 )
             )
         ).all()
@@ -1905,6 +1947,96 @@ def _grant_api_error(
     return PluginPermissionError("notification private target is unknown")
 
 
+async def _target_conversation(
+    session: AsyncSession, target: NotificationTarget
+) -> CanonicalConversationModel:
+    if target.conversation_id is not None:
+        conversation = await require_live_conversation(session, target.conversation_id)
+        owner = conversation.person_id if target.target_type == "private" else conversation.space_id
+        if owner != target.target_id:
+            raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+        return conversation
+    query = (
+        select(CanonicalConversationModel)
+        .where(
+            CanonicalConversationModel.person_id == target.target_id
+            if target.target_type == "private"
+            else CanonicalConversationModel.space_id == target.target_id
+        )
+        .limit(2)
+    )
+    rows = list(await session.scalars(query))
+    if len(rows) != 1:
+        raise PluginPermissionError(
+            "specify an existing conversation_id for this notification target"
+        )
+    return rows[0]
+
+
+async def _grant_presence(
+    session: AsyncSession, conversation: CanonicalConversationModel, presence_id: str | None
+) -> PresenceModel:
+    if conversation.kind == "private":
+        if conversation.entry_presence_id is not None:
+            if presence_id is not None and presence_id != conversation.entry_presence_id:
+                raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+            presence_id = conversation.entry_presence_id
+        binding: IdentityBindingModel | SpaceBindingModel | None = await session.get(
+            IdentityBindingModel, conversation.identity_binding_id
+        )
+    else:
+        binding = (
+            await session.get(SpaceBindingModel, conversation.space_binding_id)
+            if conversation.space_binding_id
+            else None
+        )
+        if presence_id is None and binding is not None:
+            route = await session.get(SpaceActiveRouteModel, conversation.space_id)
+            if route is not None and route.space_binding_id == binding.id:
+                presence_id = route.presence_id
+            else:
+                ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
+                if ingest is not None:
+                    presence_id = ingest.ingest_presence_id
+    presence = await session.get(PresenceModel, presence_id) if presence_id else None
+    if presence is None or binding is None or binding.platform != presence.platform:
+        raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+    return presence
+
+
+async def _publication_scope(
+    session: AsyncSession, grant: PluginBackgroundTargetGrantModel
+) -> ConversationScope:
+    conversation = await require_live_conversation(session, grant.canonical_conversation_id)
+    presence = await _grant_presence(session, conversation, grant.canonical_presence_id)
+    if (
+        conversation.person_id != grant.canonical_target_person_id
+        or conversation.space_id != grant.canonical_target_space_id
+    ):
+        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+    if conversation.kind == "private":
+        binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+        assert binding is not None
+        return ConversationScope.private(
+            presence.external_account_id,
+            binding.external_account_id,
+            platform=presence.platform,
+            presence_id=presence.id,
+            conversation_id=conversation.id,
+            thread_id=conversation.thread_id,
+        )
+    space_binding = await session.get(SpaceBindingModel, conversation.space_binding_id)
+    assert space_binding is not None
+    return ConversationScope.group(
+        presence.external_account_id,
+        space_binding.external_space_id,
+        platform=presence.platform,
+        presence_id=presence.id,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    )
+
+
 async def _load_enabled_grant(
     session: AsyncSession,
     *,
@@ -1922,6 +2054,7 @@ async def _load_enabled_grant(
         target_type=target.target_type,
         person_id=person_id,
         space_id=space_id,
+        conversation_id=target.conversation_id,
     )
     if row is None or not row.enabled:
         return None
@@ -1931,10 +2064,11 @@ async def _load_enabled_grant(
 def _grant_view(row: PluginBackgroundTargetGrantModel) -> BackgroundTargetGrantView:
     return BackgroundTargetGrantView(
         target_type=row.target_type,
-        target_id=row.target_id,
+        target_id=row.canonical_target_person_id or row.canonical_target_space_id or row.target_id,
         bot_user_id=row.bot_user_id,
         enabled=row.enabled,
-        created_by_user_id=row.created_by_user_id,
+        created_by_user_id=row.canonical_created_by_person_id or row.created_by_user_id,
+        conversation_id=row.canonical_conversation_id,
     )
 
 
@@ -1984,11 +2118,6 @@ def _turn_record(
 def _notification_id(plugin_id: str, event_key: str, target_type: str, target_id: str) -> str:
     raw = f"{plugin_id}\0{event_key}\0{target_type}\0{target_id}".encode()
     return hashlib.sha256(raw).hexdigest()
-
-
-def _external_platform_id(plugin_id: str, event_key: str, target: NotificationTarget) -> str:
-    digest = _notification_id(plugin_id, event_key, target.target_type, target.target_id)
-    return f"external-{digest}"[:128]
 
 
 def _aware(value: datetime) -> datetime:

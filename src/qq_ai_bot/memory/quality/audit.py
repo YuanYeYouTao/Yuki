@@ -10,6 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.exc import DatabaseError
 
 from qq_ai_bot.memory.eligibility import (
+    sql_current_audio_evidence_predicate,
     sql_fact_tool_evidence_predicate,
     sql_human_evidence_predicate,
 )
@@ -390,7 +391,8 @@ class MemoryProductionQualityAudit:
                 "error",
                 _query(
                     "memory_jobs j JOIN chat_events c ON c.id=j.event_id",
-                    "c.direction!='inbound' OR trim(c.content)='' "
+                    "c.direction!='inbound' OR (trim(c.content)='' AND "
+                    f"NOT ({sql_current_audio_evidence_predicate('c')})) "
                     f"OR NOT ({sql_human_evidence_predicate('c')})",
                     id_expression="j.id",
                 ),
@@ -416,18 +418,6 @@ class MemoryProductionQualityAudit:
                     "(SELECT 1 FROM memory_jobs j WHERE j.event_id=p.event_id "
                     "AND j.rebuild_run_id=p.run_id AND j.status='done')",
                     id_expression="p.id",
-                ),
-            ),
-            (
-                "rebuild_receipt_without_proposal",
-                "error",
-                _query(
-                    "memory_jobs j",
-                    "j.processing_source='rebuild' AND j.rebuild_run_id IS NOT NULL "
-                    "AND j.status='done' AND j.outcome='claims_applied' AND NOT EXISTS "
-                    "(SELECT 1 FROM memory_rebuild_proposals p WHERE p.event_id=j.event_id "
-                    "AND p.run_id=j.rebuild_run_id)",
-                    id_expression="j.id",
                 ),
             ),
         )

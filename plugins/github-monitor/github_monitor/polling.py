@@ -335,7 +335,9 @@ class GitHubPoller:
         """
 
         snapshot = await load_queue_state(self._context, subscription.repository)
-        target_key = delivery_target_key(target.target_type, target.target_id)
+        target_key = delivery_target_key(
+            target.target_type, target.target_id, target.conversation_id
+        )
         activation_delivery = (
             self._find_optional_delivery(snapshot.state.activation.deliveries, target_key)
             if snapshot.state.activation is not None
@@ -371,7 +373,8 @@ class GitHubPoller:
         remaining_targets = tuple(
             item
             for item in subscription.targets
-            if (item.target_type, item.target_id) != (target.target_type, target.target_id)
+            if (item.target_type, item.target_id, item.conversation_id)
+            != (target.target_type, target.target_id, target.conversation_id)
         )
         without_target = subscription.model_copy(update={"targets": remaining_targets})
         snapshot = await self._retire_activation_target(
@@ -836,6 +839,7 @@ class GitHubPoller:
                 event_type=BATCH_EVENT_TYPE,
                 target_type=target.target_type,
                 target_id=target.target_id,
+                conversation_id=target.conversation_id,
                 occurred_at=projection.occurred_at,
                 summary=projection.summary,
                 payload=projection.payload,
@@ -864,7 +868,7 @@ class GitHubPoller:
         delivery = self._find_delivery(unit.deliveries, target_key)
         if delivery.status in {"pending", "prepared"}:
             current_target = self._find_target(
-                subscription, delivery.target_type, delivery.target_id
+                subscription, delivery.target_type, delivery.target_id, delivery.conversation_id
             )
             if self._target_was_disabled(delivery, current_target):
                 skipped = delivery.model_copy(
@@ -943,7 +947,9 @@ class GitHubPoller:
                 continue
             current = self._find_delivery(snapshot.state.activation.deliveries, delivery.target_key)  # type: ignore[union-attr]
             if current.status in {"pending", "prepared"}:
-                target = self._find_target(subscription, current.target_type, current.target_id)
+                target = self._find_target(
+                    subscription, current.target_type, current.target_id, current.conversation_id
+                )
                 if self._target_was_disabled(current, target):
                     current = current.model_copy(
                         update={"status": "skipped", "skipped_reason": "target_disabled"}
@@ -960,6 +966,7 @@ class GitHubPoller:
                                 event_type="monitor_enabled",
                                 target_type=current.target_type,
                                 target_id=current.target_id,
+                                conversation_id=current.conversation_id,
                                 occurred_at=activation.occurred_at,
                                 summary=f"已启用 {subscription.repository} 的 GitHub 监控",
                                 payload={
@@ -1120,6 +1127,7 @@ class GitHubPoller:
             event_type=keyed.event_type,
             target_type=target.target_type,
             target_id=target.target_id,
+            conversation_id=target.conversation_id,
             occurred_at=keyed.created_at,
             summary=keyed.summary,
             payload=external_payload(keyed),
@@ -1279,9 +1287,12 @@ class GitHubPoller:
         target: NotificationTargetConfig | TargetPolicySnapshot,
     ) -> TargetDelivery:
         return TargetDelivery(
-            target_key=delivery_target_key(target.target_type, target.target_id),
+            target_key=delivery_target_key(
+                target.target_type, target.target_id, target.conversation_id
+            ),
             target_type=target.target_type,
             target_id=target.target_id,
+            conversation_id=target.conversation_id,
             send_text=target.send_text,
             send_card=target.send_card,
             ask_agent=target.ask_agent,
@@ -1292,6 +1303,7 @@ class GitHubPoller:
         return TargetPolicySnapshot(
             target_type=target.target_type,
             target_id=target.target_id,
+            conversation_id=target.conversation_id,
             send_text=target.send_text,
             send_card=target.send_card,
             ask_agent=target.ask_agent,
@@ -1302,6 +1314,7 @@ class GitHubPoller:
         return NotificationTargetConfig(
             target_type=delivery.target_type,
             target_id=delivery.target_id,
+            conversation_id=delivery.conversation_id,
             send_text=delivery.send_text,
             send_card=delivery.send_card,
             ask_agent=delivery.ask_agent,
@@ -1356,12 +1369,14 @@ class GitHubPoller:
         subscription: RepositorySubscription,
         target_type: str,
         target_id: str,
+        conversation_id: str | None = None,
     ) -> NotificationTargetConfig | None:
         return next(
             (
                 item
                 for item in subscription.targets
-                if item.target_type == target_type and item.target_id == target_id
+                if (item.target_type, item.target_id, item.conversation_id)
+                == (target_type, target_id, conversation_id)
             ),
             None,
         )
@@ -1388,6 +1403,7 @@ class GitHubPoller:
             target=NotificationTarget(
                 target_type=prepared.target_type,
                 target_id=prepared.target_id,
+                conversation_id=prepared.conversation_id,
             ),
             occurred_at=prepared.occurred_at,
             summary=prepared.summary,

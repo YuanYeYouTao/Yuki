@@ -320,7 +320,6 @@ def _scenario_tools(scenario: str) -> tuple[tuple[ChatTool, ...], dict[str, str]
     }[scenario]
     group_by_name = {
         "search_memory": "memory",
-        "call_onebot_api": "onebot",
         "web_search": "web",
         "read_webpage": "web",
         "plugin_example": "plugin",
@@ -429,7 +428,7 @@ async def _plugin_command(settings: Settings, args: argparse.Namespace) -> int:
             print(report.model_dump_json(indent=2))
             return 0 if report.passed else 1
         await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)
-        target = path / "plugin-api-v2-reference.md"
+        target = path / "plugin-api-reference.md"
         await asyncio.to_thread(
             target.write_text,
             (

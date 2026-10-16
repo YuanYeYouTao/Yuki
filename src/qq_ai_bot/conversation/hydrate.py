@@ -75,15 +75,7 @@ async def binding_for_scope(
     session: AsyncSession, scope: ConversationScope
 ) -> IdentityBindingModel | None:
     """Resolve the account in its ingress Presence's platform, never an old alias."""
-    platform = (
-        await session.execute(
-            select(PresenceModel.platform).where(
-                PresenceModel.external_account_id == scope.bot_user_id
-            )
-        )
-    ).scalar_one_or_none()
-    if platform is None:
-        return None
+    platform = scope.platform
     return cast(
         IdentityBindingModel | None,
         await session.scalar(
@@ -97,25 +89,37 @@ async def binding_for_scope(
 
 
 async def conversation_for_binding(
-    session: AsyncSession, identity_binding_id: str
+    session: AsyncSession, identity_binding_id: str, *, presence_id: str | None = None
 ) -> CanonicalConversationModel | None:
-    return cast(
-        CanonicalConversationModel | None,
-        await session.scalar(
-            select(CanonicalConversationModel).where(
-                CanonicalConversationModel.kind == "private",
-                CanonicalConversationModel.identity_binding_id == identity_binding_id,
-            )
-        ),
+    query = select(CanonicalConversationModel).where(
+        CanonicalConversationModel.kind == "private",
+        CanonicalConversationModel.identity_binding_id == identity_binding_id,
     )
+    if presence_id is not None:
+        query = query.where(CanonicalConversationModel.entry_presence_id == presence_id)
+    return (await session.execute(query)).scalar_one_or_none()
 
 
 async def conversation_for_scope(
     session: AsyncSession, scope: ConversationScope
 ) -> CanonicalConversationModel | None:
+    if scope.conversation_id is not None:
+        return await session.get(CanonicalConversationModel, scope.conversation_id)
     if scope.scope_type is ScopeType.PRIVATE:
         binding = await binding_for_scope(session, scope)
-        return await conversation_for_binding(session, binding.id) if binding else None
+        presence_id = scope.presence_id
+        if presence_id is None:
+            presence_id = await session.scalar(
+                select(PresenceModel.id).where(
+                    PresenceModel.platform == scope.platform,
+                    PresenceModel.external_account_id == scope.bot_user_id,
+                )
+            )
+        return (
+            await conversation_for_binding(session, binding.id, presence_id=presence_id)
+            if binding
+            else None
+        )
     return cast(
         CanonicalConversationModel | None,
         await session.scalar(
@@ -135,21 +139,28 @@ async def conversation_for_owner(
     kind: str,
     identity_binding_id: str | None = None,
     space_id: str | None = None,
+    presence_id: str | None = None,
+    space_binding_id: str | None = None,
+    thread_id: str | None = None,
 ) -> CanonicalConversationModel | None:
     if kind == "private":
         if not identity_binding_id:
             raise CanonicalIdentityError("unclassified")
-        return await conversation_for_binding(session, identity_binding_id)
+        return await conversation_for_binding(session, identity_binding_id, presence_id=presence_id)
     if not space_id:
         raise CanonicalIdentityError("unclassified")
+    query = select(CanonicalConversationModel).where(
+        CanonicalConversationModel.kind == "space",
+        CanonicalConversationModel.space_id == space_id,
+        CanonicalConversationModel.thread_id == thread_id,
+    )
+    if space_binding_id is not None:
+        query = query.where(CanonicalConversationModel.space_binding_id == space_binding_id)
+    else:
+        query = query.where(CanonicalConversationModel.space_binding_id.is_(None))
     return cast(
         CanonicalConversationModel | None,
-        await session.scalar(
-            select(CanonicalConversationModel).where(
-                CanonicalConversationModel.kind == "space",
-                CanonicalConversationModel.space_id == space_id,
-            )
-        ),
+        await session.scalar(query),
     )
 
 
@@ -161,6 +172,9 @@ async def ensure_canonical_conversation(
     person_id: str | None = None,
     identity_binding_id: str | None = None,
     space_id: str | None = None,
+    presence_id: str | None = None,
+    space_binding_id: str | None = None,
+    thread_id: str | None = None,
 ) -> HydratedConversation:
     """Create or reuse one Conversation. Primary alias is immutable after first write."""
 
@@ -171,13 +185,47 @@ async def ensure_canonical_conversation(
         kind=kind,
         identity_binding_id=identity_binding_id,
         space_id=space_id,
+        presence_id=presence_id,
+        space_binding_id=space_binding_id,
+        thread_id=thread_id,
     )
+    if existing is None and (presence_id is not None or space_binding_id is not None):
+        # Real pre-entry records retain their original alias and history.
+        legacy = await session.scalar(
+            select(CanonicalConversationModel)
+            .join(
+                ConversationLegacyAliasModel,
+                ConversationLegacyAliasModel.conversation_id == CanonicalConversationModel.id,
+            )
+            .where(
+                ConversationLegacyAliasModel.scope_key == primary_scope_key,
+                CanonicalConversationModel.kind == kind,
+            )
+        )
+        if legacy is not None and (
+            (
+                kind == "private"
+                and legacy.identity_binding_id == identity_binding_id
+                and legacy.entry_presence_id is None
+            )
+            or (
+                kind == "space"
+                and legacy.space_id == space_id
+                and legacy.space_binding_id is None
+                and thread_id is None
+            )
+        ):
+            existing = legacy
+            existing.entry_presence_id = presence_id if kind == "private" else None
+            existing.space_binding_id = space_binding_id if kind == "space" else None
     transport_key = primary_scope_key
-    if kind == "private":
+    if kind == "private" and presence_id is None:
         primary_scope_key = f"binding:{identity_binding_id}"
     now = _utcnow()
     if existing is None:
         conversation_id = _new_id()
+        if presence_id is not None or space_binding_id is not None:
+            primary_scope_key = f"conversation:{conversation_id}"
         alias_id = _new_id()
         try:
             async with session.begin_nested():
@@ -188,6 +236,9 @@ async def ensure_canonical_conversation(
                         person_id=person_id if kind == "private" else None,
                         identity_binding_id=identity_binding_id if kind == "private" else None,
                         space_id=space_id if kind == "space" else None,
+                        entry_presence_id=presence_id if kind == "private" else None,
+                        space_binding_id=space_binding_id if kind == "space" else None,
+                        thread_id=thread_id,
                         primary_alias_id=alias_id,
                         primary_marker=1,
                         generation=1,
@@ -216,6 +267,9 @@ async def ensure_canonical_conversation(
                 kind=kind,
                 identity_binding_id=identity_binding_id,
                 space_id=space_id,
+                presence_id=presence_id,
+                space_binding_id=space_binding_id,
+                thread_id=thread_id,
             )
             if raced is None:
                 raise CanonicalIdentityError("canonical_kind_mismatch") from exc

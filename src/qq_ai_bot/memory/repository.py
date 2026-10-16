@@ -1432,6 +1432,8 @@ class MemoryFactRepository:
         scope_type: str | None = None,
         subject_user_id: str | None = None,
         group_id: str | None = None,
+        person_id: str | None = None,
+        space_id: str | None = None,
         limit: int = 100,
     ) -> tuple[MemoryFact, ...]:
         conditions = [
@@ -1442,6 +1444,10 @@ class MemoryFactRepository:
         ]
         if scope_type is not None:
             conditions.append(MemoryFactModel.scope_type == scope_type)
+        if person_id is not None:
+            conditions.append(MemoryFactModel.canonical_subject_person_id == person_id)
+        if space_id is not None:
+            conditions.append(MemoryFactModel.canonical_subject_space_id == space_id)
         async with self._database.sessions() as session:
             try:
                 if subject_user_id is not None:
@@ -2130,7 +2136,8 @@ class MemoryJobRepository:
         result_category: str | None = None,
     ) -> None:
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+
+        async def finish(session: AsyncSession) -> None:
             result = await session.execute(
                 update(MemoryJobModel)
                 .where(*memory_job_claim_conditions(job))
@@ -2144,6 +2151,22 @@ class MemoryJobRepository:
             )
             if not getattr(result, "rowcount", 0):
                 raise MemoryJobClaimLost(f"memory job {job.id} claim lost")
+
+        try:
+            await MemoryFactRepository(self._database).apply_evidence_write(finish)
+        except MemoryJobClaimLost:
+            raise
+        except Exception:
+            async with self._database.sessions() as reader:
+                current = await reader.get(MemoryJobModel, job.id)
+                if (
+                    current is not None
+                    and current.event_id == job.event_id
+                    and current.status == MemoryJobStatus.DONE.value
+                    and current.outcome == outcome.value
+                ):
+                    return
+            raise
 
     async def fail(self, job: MemoryJob, error_category: str) -> None:
         now = datetime.now(UTC)

@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     code_mode_max_worker_processes: int = Field(default=1, ge=1, le=32)
     code_mode_foreground_reserved_processes: int = Field(default=0, ge=0, le=31)
 
+    telegram_bot_token: SecretStr = SecretStr("")
+    telegram_poll_interval_seconds: float = Field(default=1.0, gt=0)
+
     onebot_access_token: str = ""
     superusers_csv: str = Field(default="", validation_alias="SUPERUSERS")
     enabled_groups_csv: str = Field(default="", validation_alias="ENABLED_GROUPS")
@@ -201,8 +204,6 @@ class Settings(BaseSettings):
     memory_dream_max_output_tokens: int = Field(default=4096, gt=0)
     memory_dream_evidence_per_fact: int = Field(default=2, ge=1)
     memory_dream_evidence_excerpt_characters: int = Field(default=300, gt=0)
-    memory_evidence_compaction_enabled: bool = True
-    memory_evidence_compaction_batch_size: int = Field(default=20, ge=1)
     memory_maintenance_enabled: bool = True
     memory_maintenance_interval_seconds: float = 300.0
     memory_maintenance_batch_limit: int = 100
@@ -316,7 +317,6 @@ class Settings(BaseSettings):
     vision_max_output_tokens: int = 8192
     vision_thinking_enabled: bool = True
     vision_thinking_budget: int = 6144
-    vision_low_confidence_retry_threshold: float = 0.65
     vision_max_images_per_turn: int = 5
     vision_max_frames_per_turn: int = 16
     vision_gif_max_frames: int = 8

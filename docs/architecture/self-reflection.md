@@ -3,8 +3,11 @@
 Self Reflection 使用 canonical owner、内部事件范围与持久 run ID；不使用平台消息 ID
 登记工作。schema 0061 增加 cycle、实际请求账本、源批次重试和恢复检查点。
 schema 0067 扩展可信 SELF 工具来源；完整迁移按当前 Alembic 链执行。
-真实 QQ 社交效果单独验收，不由请求成功或队列排空推定。
+真实平台社交效果单独验收，不由请求成功或队列排空推定。
 实际线上版本以当前容器镜像与数据库迁移记录为准。
+
+人物和空间分别使用原内部 Person/Space，输入携原 Conversation、事件或执行身份；
+App/TG 来源不依赖 QQ Binding。账号换绑和新入口不会重写既有 batch 的归属。
 
 ## 结构化生成
 
@@ -13,8 +16,9 @@ schema 0067 扩展可信 SELF 工具来源；完整迁移按当前 Alembic 链�
 复用通用 Provider 格式转换和原有请求预算；见[模型供应商合同](model-providers.md)。
 
 返回值通过 Pydantic、引用、范围、所有权与 mutation 校验。源证据必须来自输入中提供的
-真实事件或工具回执；同一 proposal 选择的多个来源都会保存，不只使用第一条。原事件正文
-仍是聊天引用的校验依据，人物名片和 ID 展示不会改写原凭据。Provider 明确报告输出截断时返回
+真实事件或工具回执；同一 proposal 选择的多个来源都会保存，不只使用第一条。
+引用按该输入的实际事件渲染或证据正文核验，包含已持久化的语音转写；人物名片和 ID 展示不会改写原凭据。
+Provider 明确报告输出截断时返回
 `output_budget_exhausted`，不凭 token 数达到配置值推断失败，不自动加预算。
 类别名称、importance、confidence 与解释文案
 不再构成后台价值准入门槛，不要求 subject_basis、retention 或 source_style 分类。
@@ -46,6 +50,9 @@ schema 0067 扩展可信 SELF 工具来源；完整迁移按当前 Alembic 链�
 
 mutation 的正常拒绝、重复与 no_change 是已处理终态；实际数据库、事务、检查点或
 未预期代码错误保留失败记录。恢复不重复调用已完成模型，也不重复执行已提交操作。
+保存的 ReflectionCheckpoint 先按原引用与来源核验，再完成尚未提交的 mutation；
+每日额度只限制新的实际 HTTP 请求，额度耗尽不封住原检查点的纯数据库收尾。
+原输出未持久化时不能由请求计数还原，也不能将其他提取任务描述成已有相同的输出检查点。
 
 到期的真实来源不要求先有自身回复或工具回执；模型可以返回空结果，原始事件账本不变。
 
@@ -62,6 +69,7 @@ tool 和真实 tool call ID 去重；没有聊天发言也保留实际成功或�
 cycle、每日请求预算、检查点和原 run 恢复机制；管理输出以 receipt 范围显示，不将它们
 统计成聊天事件。已领取未完成窗口保护其源回执，完成后仍被 Memory evidence 引用的
 回执不会过期删除。未讲话的失败也可以参与判断，但仅能支持真实失败或尝试的经历。
+完整持久 evidence 不按输入样本数缩减，当前运行链不再启动 Evidence compaction 删源任务。
 
 回执清理每次先只读发现最多 500 个过期且未引用的候选，空页不取得写锁。
 短 DELETE 再核验过期时间、全部 Memory evidence 引用及未完成 initiative reflection 窗口，

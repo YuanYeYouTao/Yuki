@@ -3,21 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import json
 import logging
 import random
-import time
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.adapters.onebot.sender import parse_onebot_send_receipt
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -25,7 +20,12 @@ from qq_ai_bot.conversation.canonical_db_models import (
     SpaceActiveRouteModel,
 )
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.gateway.providers.social import OneBotSocialOperations
+from qq_ai_bot.gateway.social import (
+    TransportMedia,
+    TransportMention,
+    TransportMessage,
+    TransportTarget,
+)
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -48,8 +48,12 @@ from qq_ai_bot.social.models import (
     SocialReceipt,
     SocialTarget,
 )
-from qq_ai_bot.social.repository import SocialOperationRepository
-from qq_ai_bot.social.transfer import ArtifactTransfer
+from qq_ai_bot.social.repository import (
+    SocialOperationRepository,
+    payload_hash,
+    sequence_prefix,
+)
+from qq_ai_bot.workspace.store import WorkspaceStore
 
 
 @dataclass(frozen=True)
@@ -95,10 +99,8 @@ class SocialService:
         self.router = router
         self.writer = writer
         self.receipts = SocialOperationRepository(database)
-        self._directory_lock = asyncio.Lock()
-        self._directory_checked_at = float("-inf")
         self.runtime_config: RuntimeConfigService | None = None
-        self.transfer: ArtifactTransfer | None = None
+        self.workspace: WorkspaceStore | None = None
         self.emoji_delivery: Any = None
 
     async def _validate_self_context(
@@ -263,90 +265,8 @@ class SocialService:
             ],
         }
 
-    @staticmethod
-    async def _call(route: ResolvedSend, action: str, params: dict[str, Any]) -> Any:
-        return await OneBotSocialOperations().social_action(route.connection.bot, action, params)
-
-    async def refresh_space_names(self) -> None:
-        """Refresh known bindings through live gateways, without changing grants/routes."""
-        async with self._directory_lock:
-            if time.monotonic() - self._directory_checked_at < 30:
-                return
-            self._directory_checked_at = time.monotonic()
-            async with self.database.sessions() as session:
-                presences = list(
-                    await session.scalars(
-                        select(PresenceModel.id).where(
-                            PresenceModel.platform == "qq", PresenceModel.enabled.is_(True)
-                        )
-                    )
-                )
-
-            async def names_for(presence_id: str) -> dict[str, str]:
-                try:
-                    async with asyncio.timeout(3):
-                        route = await self.router.resolve_presence(presence_id)
-                        payload = await self._call(route, "get_group_list", {"no_cache": True})
-                    if isinstance(payload, dict):
-                        payload = payload.get("data", [])
-                    if not isinstance(payload, list):
-                        return {}
-                    from qq_ai_bot.services.user_profiles import sanitize_profile_name
-
-                    return {
-                        str(item["group_id"]): sanitize_profile_name(item["group_name"])
-                        for item in payload
-                        if isinstance(item, dict)
-                        and item.get("group_id") is not None
-                        and isinstance(item.get("group_name"), str)
-                        and item["group_name"].strip()
-                    }
-                except Exception as exc:
-                    logging.getLogger(__name__).warning(
-                        "group_directory_refresh_failed category=%s", type(exc).__name__
-                    )
-                    return {}
-
-            observed: dict[str, set[str]] = {}
-            for names in await asyncio.gather(*(names_for(pid) for pid in presences)):
-                for external_id, name in names.items():
-                    if name:
-                        observed.setdefault(external_id, set()).add(name)
-            names = {
-                key: next(iter(values)) for key, values in observed.items() if len(values) == 1
-            }
-            if not names:
-                return
-            now = datetime.now(UTC)
-            async with self.database.sessions.begin() as session:
-                rows = (
-                    await session.execute(
-                        select(SpaceBindingModel, CanonicalSpaceModel)
-                        .join(
-                            CanonicalSpaceModel,
-                            CanonicalSpaceModel.id == SpaceBindingModel.space_id,
-                        )
-                        .where(
-                            SpaceBindingModel.platform == "qq",
-                            SpaceBindingModel.status == "active",
-                            SpaceBindingModel.external_space_id.in_(names),
-                        )
-                    )
-                ).all()
-                # All reads are complete before staging writes. Never invent memberships.
-                for binding, space in rows:
-                    name = names[binding.external_space_id][:128]
-                    if binding.display_name != name:
-                        binding.display_name = name
-                        binding.updated_at = now
-                        binding.revision += 1
-                    if space.name != name:
-                        space.name = name
-                        space.updated_at = now
-                        space.revision += 1
-
     async def contacts(
-        self, kind: str, query: str = "", *, exact: bool = False, _refresh: bool = True
+        self, kind: str, query: str = "", *, exact: bool = False
     ) -> list[dict[str, str]]:
         async with self.database.sessions() as session:
             if kind == "person":
@@ -372,7 +292,6 @@ class SocialService:
                         CanonicalPersonModel.enabled.is_(True),
                         known,
                         IdentityBindingModel.status == "active",
-                        IdentityBindingModel.platform == "qq",
                         IdentityBindingModel.display_name == query
                         if exact
                         else IdentityBindingModel.display_name.contains(query, autoescape=True),
@@ -408,9 +327,6 @@ class SocialService:
                 rows = (await session.execute(statement)).all()
             else:
                 raise SocialError("invalid_target_kind")
-        if kind == "space" and query and not rows and _refresh:
-            await self.refresh_space_names()
-            return await self.contacts(kind, query, exact=exact, _refresh=False)
         return [
             {"target_id": str(row[0]), "display_name": str(row[1]), "kind": kind} for row in rows
         ]
@@ -499,148 +415,37 @@ class SocialService:
     async def send_route(
         self, target: SocialTarget, context: SocialContext, binding_id: str | None = None
     ) -> ResolvedSend:
-        if target.kind == "person":
-            async with self.database.sessions() as session:
-                source = await session.get(CanonicalConversationModel, context.conversation_id)
-                source_binding = (
-                    await session.get(IdentityBindingModel, source.identity_binding_id)
-                    if source and source.identity_binding_id
-                    else None
-                )
-            if source_binding is not None and source_binding.platform == "app":
-                if binding_id is None and source_binding.person_id != str(target.id):
-                    raise SocialError("binding_required")
-                if binding_id is None:
-                    binding_id = source_binding.id
-            if binding_id is not None:
-                return await self.router.resolve_send_for_binding(
-                    str(target.id), binding_id, context.reply_presence_id or context.presence_id
-                )
-        elif binding_id is not None:
-            raise SocialError("binding_requires_person")
-        if _self_scene(context) and target.kind == "space" and str(target.id) == context.space_id:
-            await self._validate_self_context(context)
-            async with self.database.sessions() as session:
-                bindings = list(
-                    await session.scalars(
-                        select(SpaceBindingModel)
-                        .where(
-                            SpaceBindingModel.space_id == context.space_id,
-                            SpaceBindingModel.platform == "qq",
-                            SpaceBindingModel.status == "active",
-                        )
-                        .limit(2)
-                    )
-                )
-                presence = await session.get(PresenceModel, context.presence_id)
-                if (
-                    len(bindings) != 1
-                    or presence is None
-                    or not presence.enabled
-                    or bindings[0].external_space_id != context.actor.group_id
-                    or presence.external_account_id != context.actor.bot_user_id
-                ):
-                    raise SocialError("self_scene_binding_changed")
-                binding_id, group = bindings[0].id, bindings[0].external_space_id
-                account = presence.external_account_id
-            route = await self.router.resolve_send_for_account(account, capability="send_group")
-            if route.presence_id != context.presence_id:
-                raise SocialError("self_presence_changed")
-            return replace(
-                route,
-                binding_id=binding_id,
-                external_target_id=group,
-                kind="group",
-                route_generation=0,
-            )
-        if (
-            target.kind == "space"
-            and context.trigger_event_id is not None
-            and str(target.id) == context.space_id
-        ):
-            async with self.database.sessions() as session:
-                event = await session.get(ChatEventModel, context.trigger_event_id)
-                if (
-                    event is None
-                    or event.canonical_conversation_id != context.conversation_id
-                    or event.scope_type != "group"
-                    or event.direction != "inbound"
-                    or event.ingress_presence_id is None
-                ):
-                    raise SocialError("invalid_reply_context")
-                binding = await session.scalar(
-                    select(SpaceBindingModel).where(
-                        SpaceBindingModel.space_id == str(target.id),
-                        SpaceBindingModel.platform == "qq",
-                        SpaceBindingModel.external_space_id == event.group_id,
-                        SpaceBindingModel.status == "active",
-                    )
-                )
-                presence = await session.get(PresenceModel, event.ingress_presence_id)
-                if binding is None or presence is None or not presence.enabled:
-                    raise SocialError("reply_identity_unavailable")
-                account, binding_id, group = (
-                    presence.external_account_id,
-                    binding.id,
-                    binding.external_space_id,
-                )
-            route = await self.router.resolve_send_for_account(account, capability="send_group")
-            if route.presence_id != event.ingress_presence_id:
-                raise SocialError("reply_presence_changed")
-            return replace(
-                route,
-                binding_id=binding_id,
-                external_target_id=group,
-                kind="group",
-                route_generation=0,
-            )
-        if (
-            target.kind != "person"
-            or context.trigger_event_id is None
-            or context.reply_presence_id is None
-        ):
-            return await self.route(target)
         async with self.database.sessions() as session:
-            event = await session.get(ChatEventModel, context.trigger_event_id)
-            if (
-                event is None
-                or event.canonical_conversation_id != context.conversation_id
-                or event.ingress_presence_id != context.reply_presence_id
-                or event.scope_type != "private"
-                or event.direction != "inbound"
-                or event.author_kind != "person"
+            source = await session.get(CanonicalConversationModel, context.conversation_id)
+            event = (
+                await session.get(ChatEventModel, context.trigger_event_id)
+                if context.trigger_event_id
+                else None
+            )
+            if context.trigger_event_id and (
+                event is None or event.canonical_conversation_id != context.conversation_id
             ):
                 raise SocialError("invalid_reply_context")
-            if event.author_person_id != str(target.id):
-                return await self.route(target)
-            presence = await session.get(PresenceModel, context.reply_presence_id)
-            if presence is None or not presence.enabled:
-                raise SocialError("reply_identity_unavailable")
-            person_binding = await session.scalar(
-                select(IdentityBindingModel).where(
-                    IdentityBindingModel.person_id == str(target.id),
-                    IdentityBindingModel.platform == presence.platform,
-                    IdentityBindingModel.external_account_id == event.sender_user_id,
-                    IdentityBindingModel.status == "active",
-                )
+        same_entry = source is not None and (
+            source.person_id if target.kind == "person" else source.space_id
+        ) == str(target.id)
+        if (
+            source is not None
+            and same_entry
+            and (binding_id is None or source.identity_binding_id == binding_id)
+        ):
+            return await self.router.resolve_send_for_conversation(
+                source.id,
+                source_event_id=context.trigger_event_id or context.caused_by_event_id,
+                presence_id=context.reply_presence_id
+                or context.presence_id
+                or (event.ingress_presence_id if event is not None else None),
             )
-            if person_binding is None:
-                raise SocialError("reply_identity_unavailable")
-            account, binding_id, peer = (
-                presence.external_account_id,
-                person_binding.id,
-                person_binding.external_account_id,
-            )
-        route = await self.router.resolve_send_for_account(account, platform=presence.platform)
-        if route.presence_id != context.reply_presence_id:
-            raise SocialError("reply_presence_changed")
-        return replace(
-            route,
-            binding_id=binding_id,
-            external_target_id=peer,
-            kind="private",
-            route_generation=0,
-        )
+        if binding_id is not None:
+            if target.kind != "person":
+                raise SocialError("binding_requires_person")
+            return await self.router.resolve_send_for_binding(str(target.id), binding_id)
+        return await self.route(target)
 
     async def _validate_reply_route(
         self,
@@ -650,7 +455,7 @@ class SocialService:
         route: ResolvedSend,
     ) -> None:
         """Recheck the same internal inbound proof used during reply preparation."""
-        if route.kind not in {"private", "group"} or _self_scene(context):
+        if route.kind != "conversation" or context.trigger_event_id is None or _self_scene(context):
             return
         event = (
             await session.execute(
@@ -663,6 +468,7 @@ class SocialService:
                     ChatEventModel.group_id,
                     ChatEventModel.author_kind,
                     ChatEventModel.author_person_id,
+                    ChatEventModel.suppression_status,
                     CanonicalConversationModel.kind.label("conversation_kind"),
                     CanonicalConversationModel.person_id,
                     CanonicalConversationModel.space_id,
@@ -677,13 +483,12 @@ class SocialService:
         if (
             event is None
             or event.direction != "inbound"
+            or event.suppression_status != "keeper"
             or event.canonical_conversation_id != context.conversation_id
             or event.ingress_presence_id != route.presence_id
             or event.scope_type != ("private" if target.kind == "person" else "group")
             or event.conversation_kind != ("private" if target.kind == "person" else "space")
             or (event.person_id if target.kind == "person" else event.space_id) != str(target.id)
-            or (event.sender_user_id if target.kind == "person" else event.group_id)
-            != route.external_target_id
             or (
                 target.kind == "person"
                 and (event.author_kind != "person" or event.author_person_id != str(target.id))
@@ -702,18 +507,17 @@ class SocialService:
             event is None
             or event.event_kind != "message"
             or event.canonical_conversation_id != context.conversation_id
-            or event.bot_user_id != route.sender_account_id
+            or (
+                route.conversation_id is not None
+                and event.canonical_conversation_id != route.conversation_id
+            )
             or event.scope_type != ("group" if target.kind == "space" else "private")
-            or (event.group_id if target.kind == "space" else event.private_peer_user_id)
-            != route.external_target_id
         ):
             raise SocialError("reply_event_unavailable")
-        from qq_ai_bot.adapters.onebot.message_id import parse_message_id
-
-        try:
-            parse_message_id(event.platform_message_id)
-        except ValueError as exc:
-            raise SocialError("reply_event_unavailable") from exc
+        async with self.database.sessions() as session:
+            presence = await session.get(PresenceModel, event.ingress_presence_id)
+        if presence is None or presence.platform != route.platform:
+            raise SocialError("reply_event_unavailable")
         return event.platform_message_id
 
     async def person_binding(
@@ -722,151 +526,193 @@ class SocialService:
         args: dict[str, Any],
         context: SocialContext,
         *,
-        private_route: ResolvedSend | None = None,
+        platform: str,
     ) -> IdentityBindingModel:
         async with self.database.sessions() as session:
-            bindings = list(
-                await session.scalars(
-                    select(IdentityBindingModel).where(
-                        IdentityBindingModel.person_id == str(target.id),
-                        IdentityBindingModel.platform == "qq",
-                        IdentityBindingModel.status == "active",
-                    )
-                )
+            query = select(IdentityBindingModel).where(
+                IdentityBindingModel.person_id == str(target.id),
+                IdentityBindingModel.status == "active",
+                IdentityBindingModel.platform == platform,
             )
+            bindings = list(await session.scalars(query))
         if args.get("binding_id"):
             bindings = [b for b in bindings if b.id == str(args["binding_id"])]
         account = context.account_refs.get(str(args.get("subject_ref", "")))
         if account is not None:
             bindings = [b for b in bindings if b.external_account_id == account]
-        if private_route is not None:
-            bindings = [b for b in bindings if b.id == private_route.binding_id]
         if len(bindings) != 1:
             raise SocialError("binding_ambiguous" if bindings else "binding_unavailable")
         return bindings[0]
 
     async def require_member(self, route: ResolvedSend, account: str) -> None:
         try:
-            result = await self._call(
-                route,
-                "get_group_member_info",
-                {
-                    "group_id": int(route.external_target_id),
-                    "user_id": int(account),
-                    "no_cache": True,
-                },
+            member = await self.router.operations(route).is_member(
+                route.connection.bot, route.external_target_id, account
             )
         except Exception as exc:
             raise SocialError("group_member_unavailable") from exc
-        if not isinstance(result, dict) or str(result.get("user_id")) != account:
+        if not member:
             raise SocialError("group_member_unavailable")
 
     async def _send_message_sequence(
-        self, args: dict[str, Any], context: SocialContext
+        self,
+        args: dict[str, Any],
+        context: SocialContext,
+        target: SocialTarget,
+        route: ResolvedSend,
+        message: TransportMessage,
+        ledger: tuple[dict[str, Any], ...],
     ) -> dict[str, Any]:
-        """Reuse the former reply layout, with one durable receipt per actual send."""
+        """Plan protocol parts before dispatch; every actual send owns its receipt."""
         prior = await self.receipts.find(context.turn_id, context.call_id)
-        if prior is not None and prior.action == "send_message":
-            # Calls created before sequence support retain their original receipt.
-            return await self.execute("send_message", args, replace(context, sequence_part_index=0))
-        message = SocialMessage.model_validate(self._message_arguments(args))
-        if not message.text or any((message.artifact_id, message.emoji)):
-            return await self.execute("send_message", args, replace(context, sequence_part_index=0))
         snapshot = context.runtime_snapshot
         if snapshot is None and self.runtime_config is not None:
             snapshot = await self.runtime_config.snapshot()
-        if snapshot is None:
-            return await self.execute("send_message", args, replace(context, sequence_part_index=0))
-        chunks = OutboundMessageSplitter.render(
-            message.text,
-            runtime=snapshot,
-        )
-        if len(chunks) <= 1 and prior is None:
-            return await self.execute("send_message", args, replace(context, sequence_part_index=0))
-        selected = args.get("target") or {}
-        if not isinstance(selected, dict):
-            raise SocialError("invalid_message_arguments")
-        kind = selected.get("kind") or ("space" if context.space_id else "person")
-        if kind not in {"person", "space"}:
-            raise SocialError("invalid_target_kind")
-        if args.get("target") and not any(
-            selected.get(key) for key in ("target_id", "display_name", "subject_ref")
+        layout: tuple[TransportMessage, ...] = (message,)
+        if message.media is None and message.text and snapshot is not None:
+            layout = tuple(
+                replace(
+                    message,
+                    text=chunk,
+                    mentions=message.mentions if index == 0 else (),
+                    reply_reference=message.reply_reference if index == 0 else None,
+                )
+                for index, chunk in enumerate(
+                    OutboundMessageSplitter.render(message.text, runtime=snapshot)
+                )
+            )
+        operations = self.router.operations(route)
+        planned = tuple(part for item in layout for part in operations.plan_send(item))
+
+        def arguments(part: TransportMessage, index: int) -> dict[str, Any]:
+            value = dict(args, text=part.text)
+            if part.media is None:
+                for field in ("artifact_id", "attachment_kind", "emoji"):
+                    value.pop(field, None)
+            if index and not part.mentions:
+                value.pop("mentions", None)
+            if index and part.reply_reference is None:
+                value.pop("reply_to_event_id", None)
+            return value
+
+        def segments(part: TransportMessage) -> tuple[dict[str, Any], ...]:
+            result = []
+            for item in ledger:
+                if item["type"] == "text":
+                    if part.text:
+                        result.append({"type": "text", "data": {"text": part.text}})
+                elif item["type"] == "mention":
+                    if part.mentions:
+                        result.append(item)
+                elif item["type"] not in {"image", "file"} or part.media is not None:
+                    result.append(item)
+            return tuple(result)
+
+        async def send(
+            part: TransportMessage, part_context: SocialContext, payload: dict[str, Any]
+        ) -> dict[str, Any]:
+            content = part.text
+            if not content and part.media is not None and part.media.kind == "file":
+                content = f"[文件: {part.media.filename}]"
+            return await self._effect(
+                "send_message",
+                payload,
+                part_context,
+                target,
+                route,
+                "send",
+                {"message": part},
+                content=content,
+                ledger_segments=segments(part),
+            )
+
+        if len(planned) == 1 and (prior is None or prior.action == "send_message"):
+            return await send(planned[0], context, args)
+        if (
+            prior is not None
+            and prior.action == "send_message"
+            and prior.status is not OperationStatus.PREPARED
         ):
-            raise SocialError("target_selector_conflict")
-        target = prior.target if prior is not None else await self.target(kind, selected, context)
-        # A content-free manifest freezes the split plan before any gateway call.
-        # It remains PREPARED because it is not itself a transport effect.
-        await self._validate_self_context(context)
+            # An original direct receipt cannot acquire a different physical plan.
+            return await self._receipt_result(prior, context)
         from qq_ai_bot.runtime.effect_outcomes import current_result_capture
 
         capture = current_result_capture.get()
         if capture is not None and not (capture.work_id and capture.effect_key):
             capture = None
-        parent = await self.receipts.prepare(
+        parent, dispatch = await self.receipts.prepare_sequence(
             source_turn_id=context.turn_id,
             tool_call_id=context.call_id,
             source_conversation_id=context.conversation_id,
-            action="send_message_sequence",
             target=target,
-            payload={"original": args, "chunks": chunks},
-            planned_parts=len(chunks),
-            work_effect=capture,
+            payload=args,
+            parts=tuple(arguments(part, index) for index, part in enumerate(planned)),
+            legacy_payload=await self._legacy_sequence_payload(args, context),
+            work_effect=capture if context.parent_operation_id is None else None,
         )
-        prefix = hashlib.sha256(context.call_id.encode()).hexdigest()[:24]
-        planned = []
-        for index, chunk in enumerate(chunks):
-            part_args = dict(args, text=chunk)
-            if index:
-                part_args.pop("mentions", None)
-                part_args.pop("reply_to_event_id", None)
-            part_context = replace(
-                context,
-                call_id=f"seq:{prefix}:{index}",
-                sequence_part_index=index,
-                parent_operation_id=parent.operation_id,
-            )
-            planned.append((part_args, part_context))
-        parts: list[dict[str, Any]] = []
-        for index, (part_args, part_context) in enumerate(planned):
-            if index:
-                delay = random.uniform(
-                    snapshot.reply.delay_min_seconds, snapshot.reply.delay_max_seconds
+        if dispatch:
+            prefix = sequence_prefix(context.call_id)
+            for index, part in enumerate(planned):
+                if index and snapshot is not None:
+                    delay = random.uniform(
+                        snapshot.reply.delay_min_seconds, snapshot.reply.delay_max_seconds
+                    )
+                    if delay > 0:
+                        await asyncio.sleep(delay)
+                part_context = replace(
+                    context,
+                    call_id=f"{prefix}{index}",
+                    sequence_part_index=index,
+                    parent_operation_id=parent.operation_id,
                 )
-                if delay > 0:
-                    await asyncio.sleep(delay)
-            part = await self.execute("send_message", part_args, part_context)
-            parts.append(part)
-            if part.get("status") != OperationStatus.SUCCEEDED.value:
-                break
-        status = (
-            OperationStatus.SUCCEEDED.value
-            if len(parts) == len(chunks)
-            and all(part.get("status") == OperationStatus.SUCCEEDED.value for part in parts)
-            else parts[-1].get("status", OperationStatus.FAILED.value)
+                try:
+                    result = await send(part, part_context, arguments(part, index))
+                except Exception as exc:
+                    if not index:
+                        raise
+                    # A later preflight cannot erase a confirmed original part.
+                    logging.getLogger(__name__).warning(
+                        "social_sequence_preflight_failed category=%s", type(exc).__name__
+                    )
+                    break
+                if result.get("status") != OperationStatus.SUCCEEDED.value:
+                    break
+        return await self._sequence_result(
+            parent, context, file=args.get("attachment_kind") == "file"
         )
-        result = {
-            "operation_id": parent.operation_id,
-            "status": status,
-            "target": target.model_dump(mode="json"),
-            "planned_messages": len(chunks),
-            "sent_messages": sum(
-                part.get("status") == OperationStatus.SUCCEEDED.value for part in parts
-            ),
-            "parts": parts,
-        }
-        if status != OperationStatus.SUCCEEDED.value:
-            last = parts[-1]
-            result["error"] = (
-                last.get("error")
-                or last.get("error_category")
-                or (
-                    "delivery_uncertain"
-                    if status == OperationStatus.UNCERTAIN.value
-                    else "delivery_failed"
-                )
+
+    async def _sequence_result(
+        self, parent: SocialReceipt, context: SocialContext, *, file: bool = False
+    ) -> dict[str, Any]:
+        async with self.database.sessions() as session:
+            result = await self.receipts.delivery_facts(
+                session,
+                parent.operation_id,
+                conversation_id=context.conversation_id,
+                tool_call_id=context.call_id,
+                planned_file_parts=None,
             )
-            if "retry_after_seconds" in last:
-                result["retry_after_seconds"] = last["retry_after_seconds"]
+        assert result is not None
+        for part in result["parts"]:
+            if part.get("operation_id"):
+                receipt = await self.receipts.get(part["operation_id"])
+                part.update(await self._receipt_result(receipt, context))
+        if result["status"] != "succeeded":
+            last: dict[str, Any] = next(
+                (part for part in result["parts"] if part["status"] != "succeeded"), {}
+            )
+            result["error"] = last.get("error_category") or (
+                "delivery_uncertain" if result["status"] == "uncertain" else "delivery_failed"
+            )
+        if file and result.get("parts"):
+            # Aliases describe the original effects; they never dispatch another send.
+            parts = result["parts"]
+            result["file"] = parts[0]
+            result["caption"] = (
+                parts[1] if len(parts) == 2 else {"status": result["status"], "parts": parts[1:]}
+            )
+            if parts[0]["status"] == "succeeded" and result["status"] != "succeeded":
+                result["error"] = "file_sent_caption_unconfirmed"
         return result
 
     async def execute(
@@ -900,8 +746,6 @@ class SocialService:
             choice = await self._binding_choice(args, context)
             if choice is not None:
                 return choice
-        if name == "send_message" and context.sequence_part_index is None:
-            return await self._send_message_sequence(args, context)
         if name == "read_conversation_history":
             from qq_ai_bot.social.history import read_history
 
@@ -929,27 +773,21 @@ class SocialService:
                         if kind == "person"
                         else SpaceBindingModel.space_id
                     )
-                    account_column = (
-                        IdentityBindingModel.external_account_id
-                        if kind == "person"
-                        else SpaceBindingModel.external_space_id
-                    )
                     bindings = (
                         await session.execute(
-                            select(owner_column, model.id, account_column)
+                            select(owner_column, model.id, model.platform)
                             .where(
                                 owner_column.in_(selected_ids),
-                                model.platform == "qq",
                                 model.status == "active",
                             )
                             .order_by(model.id)
                         )
                     ).all()
-                    for owner_id, binding_id, account_id in bindings:
+                    for owner_id, binding_id, platform in bindings:
                         bindings_by_target[owner_id].append(
                             {
                                 "binding_id": binding_id,
-                                "user_id" if kind == "person" else "group_id": account_id,
+                                "platform": platform,
                             }
                         )
                 for item in items:
@@ -974,249 +812,113 @@ class SocialService:
             ):
                 raise SocialError("target_selector_conflict")
             target_args = selected
-        else:
-            kind = "space" if name == "get_group_members" else "person"
+        elif name == "get_group_members":
+            kind = "space"
             target_args = args
+        else:
+            raise SocialError("unknown_tool")
         target = await self.target(kind, target_args, context)
         if name == "get_group_members":
-            routes = await self.router.accessible_group_connections(
-                str(target.id), binding_id=args.get("space_binding_id")
-            )
-            rows = None
-            for route in routes:
-                try:
-                    result = await self._call(
-                        route, "get_group_member_list", {"group_id": int(route.external_target_id)}
+            # Telegram cannot enumerate every group member. The common contract
+            # exposes the actual canonical people observed in this Space.
+            async with self.database.sessions() as session:
+                rows = (
+                    await session.execute(
+                        select(
+                            CanonicalPersonModel.id,
+                            func.max(ChatEventModel.sender_group_card),
+                            func.max(ChatEventModel.sender_nickname),
+                        )
+                        .join(
+                            ChatEventModel,
+                            ChatEventModel.author_person_id == CanonicalPersonModel.id,
+                        )
+                        .join(
+                            CanonicalConversationModel,
+                            CanonicalConversationModel.id
+                            == ChatEventModel.canonical_conversation_id,
+                        )
+                        .where(
+                            CanonicalConversationModel.space_id == str(target.id),
+                            ChatEventModel.author_kind == "person",
+                            CanonicalPersonModel.enabled.is_(True),
+                        )
+                        .group_by(CanonicalPersonModel.id)
+                        .order_by(CanonicalPersonModel.id)
                     )
-                    if isinstance(result, list):
-                        rows = result
-                        break
-                except Exception:
-                    continue
-            if not isinstance(rows, list):
-                raise SocialError("invalid_provider_result")
+                ).all()
             offset = int(args.get("cursor") or 0)
             limit = max(1, min(100, int(args.get("limit", 20))))
             if offset < 0:
                 raise SocialError("invalid_cursor")
-            rows = sorted(
-                (row for row in rows if isinstance(row, dict)),
-                key=lambda row: str(row.get("user_id", "")),
-            )
-            items = [
-                {
-                    "user_id": str(row.get("user_id", "")),
-                    "display_name": str(row.get("card") or row.get("nickname") or "")[:128],
-                }
-                for row in rows[offset : offset + limit]
-            ]
             return {
-                "items": items,
+                "items": [
+                    {"person_id": row[0], "display_name": row[1] or row[2] or "成员"}
+                    for row in rows[offset : offset + limit]
+                ],
+                "coverage": "observed",
                 "next_cursor": str(offset + limit) if offset + limit < len(rows) else None,
             }
-        if name not in {"send_message", "poke_person"}:
-            raise SocialError("unknown_tool")
-        message = (
-            None
-            if name == "poke_person"
-            else SocialMessage.model_validate(self._message_arguments(args))
-        )
-        route_target = target
-        if name == "poke_person":
-            scene = args.get("scene", "current")
-            if scene not in {"current", "private"} or (scene == "private" and args.get("space_id")):
-                raise SocialError("invalid_poke_scene")
-            space_id = (args.get("space_id") or context.space_id) if scene == "current" else None
-            if space_id:
-                try:
-                    route_target = SocialTarget.model_validate({"kind": "space", "id": space_id})
-                except ValueError:
-                    raise SocialError("invalid_space_id") from None
-        await self.check_target(route_target)
+        message = SocialMessage.model_validate(self._message_arguments(args))
+        await self.check_target(target)
         route = await self.send_route(
-            route_target,
+            target,
             context,
-            (args.get("target") or {}).get("binding_id") if name == "send_message" else None,
+            (args.get("target") or {}).get("binding_id"),
         )
-        params: dict[str, Any]
-        if route.platform == "app":
-            if name != "send_message" or message is None or message.emoji:
-                raise SocialError("capability_unavailable")
-            if message.mentions:
-                raise SocialError("mentions_require_group")
-            local_segments: tuple[dict[str, Any], ...] = (
-                ({"type": "text", "data": {"text": message.text}},) if message.text else ()
+        if message.mentions and target.kind != "space":
+            raise SocialError("mentions_require_group")
+        mentions = []
+        ledger: list[dict[str, Any]] = []
+        for mention in message.mentions:
+            selectors = mention.model_dump(mode="json", exclude_none=True)
+            person = await self.target("person", selectors, context)
+            member = await self.person_binding(person, selectors, context, platform=route.platform)
+            await self.require_member(route, member.external_account_id)
+            mentions.append(
+                TransportMention(member.external_account_id, member.display_name or "成员")
             )
-            content = message.text
-            if message.artifact_id:
-                if self.transfer is None:
-                    raise SocialError("artifact_transport_unavailable")
-                metadata, _ = await asyncio.to_thread(
-                    self.transfer.store.read_bytes, str(message.artifact_id)
-                )
-                if not metadata["immutable"]:
-                    raise SocialError("artifact_not_immutable")
-                local_segments += (
-                    {
-                        "type": message.attachment_kind,
-                        "data": {
-                            "artifact_id": str(message.artifact_id),
-                            "version": metadata["sha256"],
-                            "filename": metadata["name"],
-                            "size": metadata["size"],
-                        },
-                    },
-                )
-                content = content or f"[文件: {metadata['name']}]"
-            return await self._effect(
-                name,
-                args,
-                context,
-                target,
-                route,
-                "app_deliver",
-                {"message": list(local_segments)},
-                content=content,
-                ledger_segments=local_segments,
+            ledger.append({"type": "mention", "data": {"person_id": str(person.id)}})
+        reference = None
+        if args.get("reply_to_event_id") is not None:
+            reference = await self.reply_reference(
+                args["reply_to_event_id"], target, route, context
             )
-        if name == "poke_person":
-            binding = await self.person_binding(
-                target,
-                args,
-                context,
-                private_route=route if route_target.kind == "person" else None,
-            )
-            params = {"user_id": int(binding.external_account_id)}
-            if route_target.kind == "space":
-                await self.require_member(route, binding.external_account_id)
-                params["group_id"] = int(route.external_target_id)
-            action = "send_poke"
-        else:
-            assert message is not None
-            action = "send_private_msg" if target.kind == "person" else "send_group_msg"
-            params = {
-                "user_id" if target.kind == "person" else "group_id": int(route.external_target_id),
-                "message": (
-                    [{"type": "text", "data": {"text": message.text}}] if message.text else []
-                ),
-            }
-            if args.get("reply_to_event_id") is not None:
-                if message.attachment_kind == "file":
-                    raise SocialError("file_quote_unavailable")
-                reference = await self.reply_reference(
-                    args["reply_to_event_id"], target, route, context
-                )
-                params["message"].insert(0, {"type": "reply", "data": {"id": reference}})
-            if message.mentions:
-                if target.kind != "space":
-                    raise SocialError("mentions_require_group")
-                segments = []
-                for mention in message.mentions:
-                    selectors = mention.model_dump(mode="json", exclude_none=True)
-                    person = await self.target("person", selectors, context)
-                    member = await self.person_binding(person, selectors, context)
-                    await self.require_member(route, member.external_account_id)
-                    segments.append({"type": "at", "data": {"qq": member.external_account_id}})
-                quoted = (
-                    params["message"][:1]
-                    if params["message"] and params["message"][0]["type"] == "reply"
-                    else []
-                )
-                params["message"] = quoted + segments + params["message"][len(quoted) :]
-        if message is not None and message.artifact_id is not None:
-            if self.transfer is None:
+        if message.text:
+            ledger.append({"type": "text", "data": {"text": message.text}})
+        media = None
+        content = message.text
+        prepared_emoji = None
+        if message.artifact_id is not None:
+            if self.workspace is None:
                 raise SocialError("artifact_transport_unavailable")
-            try:
-                async with self.transfer.prepare(str(message.artifact_id)) as (metadata, path):
-                    ledger_segments = (
-                        {
-                            "type": message.attachment_kind,
-                            "data": {
-                                "artifact_id": str(message.artifact_id),
-                                "name": metadata["name"],
-                                "filename": metadata["name"],
-                                "version": metadata["sha256"],
-                                "size": metadata["size"],
-                            },
-                        },
-                    )
-                    if message.attachment_kind == "image":
-                        params["message"].append(
-                            {"type": "image", "data": {"file": "file://" + path}}
-                        )
-                    else:
-                        action = (
-                            "upload_private_file"
-                            if target.kind == "person"
-                            else "upload_group_file"
-                        )
-                        params = {
-                            "user_id" if target.kind == "person" else "group_id": int(
-                                route.external_target_id
-                            ),
-                            "file": path,
-                            "name": metadata["name"],
-                        }
-                    return await self._effect(
-                        name,
-                        args,
-                        context,
-                        target,
-                        route,
-                        action,
-                        params,
-                        content=(
-                            f"[文件: {metadata['name']}]"
-                            if message.attachment_kind == "file"
-                            else message.text or f"[图片: {metadata['name']}]"
-                        ),
-                        ledger_segments=(
-                            tuple(part for part in params["message"] if part["type"] != "image")
-                            + ledger_segments
-                            if message.attachment_kind == "image"
-                            else ledger_segments
-                        ),
-                        route_target=route_target,
-                        caption=message.text if message.attachment_kind == "file" else "",
-                        caption_segments=(
-                            [*segments, {"type": "text", "data": {"text": message.text}}]
-                            if message.mentions and message.attachment_kind == "file"
-                            else None
-                        ),
-                    )
-            except (OSError, ValueError, SocialError):
-                replay = await self._replay_send(args, context)
-                if replay is not None:
-                    return replay
-                raise
-        if message is not None and message.emoji is not None:
-            prior = await self.receipts.find(context.turn_id, context.call_id)
-            if prior is not None and prior.status is not OperationStatus.PREPARED:
-                return await self._effect(
-                    name,
-                    args,
-                    context,
-                    target,
-                    route,
-                    action,
-                    params,
-                    content=message.text,
-                    route_target=route_target,
-                )
-            if context.runtime_snapshot is None:
-                raise SocialError("media_context_unavailable")
-            # Preparation needs the real resolved destination, not a human actor.
-            # Background turns have no actor and cannot manufacture one to send media.
-            media_scope = (
-                ConversationScope.private(route.sender_account_id, route.external_target_id)
-                if target.kind == "person"
-                else ConversationScope.group(route.sender_account_id, route.external_target_id)
+            metadata, data = await asyncio.to_thread(
+                self.workspace.read_bytes, str(message.artifact_id)
             )
-            assert message.emoji is not None
-            if self.emoji_delivery is None:
-                raise SocialError("emoji_unavailable")
-            if not context.runtime_snapshot.emoji.enabled:
-                raise SocialError("emoji_unavailable")
+            if not metadata["immutable"]:
+                raise SocialError("artifact_not_immutable")
+            media = TransportMedia(
+                message.attachment_kind or "file",
+                data,
+                metadata["name"],
+                metadata.get("mime_type") or "application/octet-stream",
+            )
+            ledger.append(
+                {
+                    "type": message.attachment_kind,
+                    "data": {
+                        "artifact_id": str(message.artifact_id),
+                        "name": metadata["name"],
+                        "filename": metadata["name"],
+                        "version": metadata["sha256"],
+                        "size": metadata["size"],
+                    },
+                }
+            )
+            content = content or f"[文件: {metadata['name']}]"
+        elif message.emoji is not None:
+            if context.runtime_snapshot is None or self.emoji_delivery is None:
+                raise SocialError("emoji_delivery_unavailable")
             from qq_ai_bot.emoji.models import (
                 EmojiDeliveryRequest,
                 EmojiPlacement,
@@ -1232,7 +934,8 @@ class SocialService:
                     emotion=message.emoji.emotion,
                     explicit_request=True,
                 ),
-                scope=media_scope,
+                person_id=str(target.id) if target.kind == "person" else None,
+                space_id=str(target.id) if target.kind == "space" else None,
                 response_text=message.text,
                 runtime=context.runtime_snapshot,
             )
@@ -1241,75 +944,50 @@ class SocialService:
                 or prepared_emoji.message is None
             ):
                 raise SocialError("emoji_" + prepared_emoji.reason_code)
-            media = prepared_emoji.message.media[0]
-            params["message"].append(
+            selected_media = prepared_emoji.message.media[0]
+            media = TransportMedia(
+                "image", selected_media.content, "emoji", selected_media.mime_type, True
+            )
+            ledger.append(
                 {
                     "type": "image",
                     "data": {
-                        "file": "base64://" + base64.b64encode(media.content).decode("ascii"),
-                        "sub_type": 1,
+                        "emoji_id": selected_media.emoji_id or "",
+                        "summary": selected_media.summary[:2000],
+                        "mime_type": selected_media.mime_type,
+                        "animated": selected_media.animated,
                     },
                 }
             )
-            ledger_segments = (
-                *params["message"][:-1],
-                {
-                    "type": "image",
-                    "data": {
-                        "emoji_id": media.emoji_id or "",
-                        "summary": media.summary[:2000],
-                        "mime_type": media.mime_type,
-                        "animated": media.animated,
-                    },
-                },
-            )
-            content = message.text
-            outbound = prepared_emoji.message
-            receipt = await self._effect(
-                name,
-                args,
-                context,
-                target,
-                route,
-                action,
-                params,
-                content=content,
-                ledger_segments=ledger_segments,
-                route_target=route_target,
-            )
-            if receipt.get("status") == OperationStatus.SUCCEEDED:
-                try:
-                    await self.emoji_delivery.record_send_accepted(
-                        outbound, source="agent_delivery"
-                    )
-                    await self.emoji_delivery.record_success(
-                        outbound,
-                        private_peer_user_id=route.external_target_id
-                        if target.kind == "person"
-                        else None,
-                        group_id=route.external_target_id if target.kind == "space" else None,
-                        trigger_message_id=context.inbound.message_id
-                        if context.inbound is not None
-                        else "",
-                        source="agent",
-                        ledger_recorded=True,
-                    )
-                except Exception:
-                    # A post-send metric must never turn a durable success into
-                    # an apparent failure that tempts the model to resend.
-                    logging.getLogger(__name__).exception("social_media_post_send_record_failed")
-            return receipt
-        return await self._effect(
-            name,
-            args,
-            context,
-            target,
-            route,
-            action,
-            params,
-            content=message.text if message else None,
-            route_target=route_target,
+        transport = TransportMessage(message.text, tuple(mentions), reference, media)
+        separate = (
+            media is not None
+            and media.kind == "file"
+            and self.router.operations(route).file_caption_separate
         )
+        if separate and reference:
+            raise SocialError("file_quote_unavailable")
+        receipt = await self._send_message_sequence(
+            args, context, target, route, transport, tuple(ledger)
+        )
+        if prepared_emoji is not None and receipt.get("status") == OperationStatus.SUCCEEDED:
+            try:
+                await self.emoji_delivery.record_send_accepted(
+                    prepared_emoji.message, source="agent_delivery"
+                )
+                await self.emoji_delivery.record_success(
+                    prepared_emoji.message,
+                    actor_person_id=str(target.id) if target.kind == "person" else None,
+                    space_id=str(target.id) if target.kind == "space" else None,
+                    trigger_message_id=context.inbound.message_id
+                    if context.inbound is not None
+                    else "",
+                    source="agent",
+                    ledger_recorded=True,
+                )
+            except Exception:
+                logging.getLogger(__name__).exception("social_media_post_send_record_failed")
+        return receipt
 
     async def _effect(
         self,
@@ -1323,9 +1001,6 @@ class SocialService:
         *,
         content: str | None = None,
         ledger_segments: tuple[dict[str, Any], ...] | None = None,
-        route_target: SocialTarget | None = None,
-        caption: str = "",
-        caption_segments: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         from qq_ai_bot.runtime.effect_outcomes import current_result_capture
 
@@ -1343,20 +1018,13 @@ class SocialService:
         )
         if receipt.status is not OperationStatus.PREPARED:
             await self._record_work_delivery(receipt)
-            return (
-                await self._file_result(receipt.operation_id, context)
-                if caption or caption_segments
-                else await self._receipt_result(receipt, context)
-            )
+            return await self._receipt_result(receipt, context)
         known_event_id = await self.check_target(target)
-        route_known_event_id = None
-        if route_target is not None and route_target != target:
-            route_known_event_id = await self.check_target(route_target)
         fresh = (
             await self.router.resolve_presence(route.presence_id)
             if name == "recall_own_message"
             else await self.send_route(
-                route_target or target,
+                target,
                 context,
                 (args.get("target") or {}).get("binding_id")
                 if name in {"send_message", "send_file_caption"}
@@ -1368,11 +1036,15 @@ class SocialService:
             fresh.binding_id,
             fresh.route_generation,
             fresh.connection.snapshot,
+            None if name == "recall_own_message" else fresh.conversation_id,
+            None if name == "recall_own_message" else fresh.thread_id,
         ) != (
             route.presence_id,
             route.binding_id,
             route.route_generation,
             route.connection.snapshot,
+            None if name == "recall_own_message" else route.conversation_id,
+            None if name == "recall_own_message" else route.thread_id,
         ):
             raise SocialError("route_changed")
         from qq_ai_bot.runtime.delivery_intents import reserve
@@ -1383,9 +1055,8 @@ class SocialService:
             await reserve(
                 work_control,
                 receipt.operation_id,
-                "artifact" if caption or caption_segments else "message",
+                "artifact" if args.get("artifact_id") else "message",
                 {"target": target.model_dump(mode="json"), "arguments": args},
-                count=2 if caption or caption_segments else 1,
             )
         # Probes and preparation never serialize unrelated social operations.
         # The durable prepared -> executing CAS is the sole dispatch owner.
@@ -1405,6 +1076,7 @@ class SocialService:
                     or not await background_authority_live(
                         session,
                         plugin_id=original_event.source_plugin_id,
+                        conversation_id=context.conversation_id,
                         person_id=conversation.person_id,
                         space_id=conversation.space_id,
                     )
@@ -1435,32 +1107,27 @@ class SocialService:
                 session=session,
                 known_event_id=known_event_id,
             )
-            if route_target is not None and route_target != target:
-                await self.check_target(
-                    route_target,
-                    session=session,
-                    known_event_id=route_known_event_id,
-                )
             await self.router.validate_prepared_send(
                 session,
                 route,
-                target_kind=(route_target or target).kind,
-                target_id=str((route_target or target).id),
+                target_kind=target.kind,
+                target_id=str(target.id),
             )
-            await self._validate_reply_route(session, context, route_target or target, route)
+            await self._validate_reply_route(session, context, target, route)
             claimed = await self.receipts.claim(
-                receipt.operation_id, presence_id=route.presence_id, session=session
+                receipt.operation_id,
+                presence_id=route.presence_id,
+                session=session,
+                expected_payload_hash=receipt.payload_hash,
+                parent_operation_id=context.parent_operation_id,
+                sequence_part_index=context.sequence_part_index,
             )
             if claimed:
                 self.router.validate_prepared_connection(route)
         if not claimed:
             current = await self.receipts.get(receipt.operation_id)
             await self._record_work_delivery(current)
-            return (
-                await self._file_result(receipt.operation_id, context)
-                if caption or caption_segments
-                else await self._receipt_result(current, context)
-            )
+            return await self._receipt_result(current, context)
         await self._dispatch_claimed(
             receipt.operation_id,
             route,
@@ -1471,60 +1138,10 @@ class SocialService:
             content=content,
             ledger_segments=ledger_segments,
             reply_to_event_id=args.get("reply_to_event_id"),
+            destination_kind=target.kind,
         )
         completed = await self.receipts.get(receipt.operation_id)
         await self._record_work_delivery(completed)
-        if caption or caption_segments:
-            if completed.status is OperationStatus.SUCCEEDED:
-                caption_context = replace(
-                    context,
-                    turn_id=f"social-caption:{receipt.operation_id}",
-                    call_id="caption",
-                    parent_operation_id=receipt.operation_id,
-                )
-                try:
-                    await self._effect(
-                        "send_file_caption",
-                        {
-                            "text": caption,
-                            "segments": caption_segments,
-                            "target": args.get("target"),
-                        },
-                        caption_context,
-                        target,
-                        route,
-                        "send_private_msg" if target.kind == "person" else "send_group_msg",
-                        {
-                            "user_id" if target.kind == "person" else "group_id": int(
-                                route.external_target_id
-                            ),
-                            "message": caption_segments
-                            or [{"type": "text", "data": {"text": caption}}],
-                        },
-                        content=caption,
-                        route_target=route_target,
-                    )
-                except Exception as exc:
-                    # File confirmation is immutable even if caption preflight fails.
-                    # A replay only reads the child receipt; it never resumes sending.
-                    logging.getLogger(__name__).warning(
-                        "social_caption_preflight_failed category=%s", type(exc).__name__
-                    )
-                    child = await self.receipts.find(
-                        caption_context.turn_id, caption_context.call_id
-                    )
-                    if child is not None and child.status is OperationStatus.PREPARED:
-                        if await self.receipts.claim(
-                            child.operation_id, presence_id=route.presence_id
-                        ):
-                            async with self.database.sessions() as session, session.begin():
-                                await self.receipts.finish(
-                                    child.operation_id,
-                                    status=OperationStatus.FAILED,
-                                    error_category=type(exc).__name__[:64],
-                                    session=session,
-                                )
-            return await self._file_result(receipt.operation_id, context)
         return await self._receipt_result(completed, context)
 
     async def _dispatch_claimed(
@@ -1539,6 +1156,7 @@ class SocialService:
         content: str | None,
         ledger_segments: tuple[dict[str, Any], ...] | None,
         reply_to_event_id: Any,
+        destination_kind: str,
     ) -> None:
         """The one gateway call and receipt/ledger settlement of a claimed operation.
 
@@ -1549,33 +1167,38 @@ class SocialService:
         try:
             self.router.validate_prepared_connection(route)
             dispatched = True
+            operations = self.router.operations(route)
+            destination = TransportTarget(
+                destination_kind, route.external_target_id, route.thread_id
+            )
             reference = None
-            result = None
-            if route.platform != "app":
-                result = await self._call(route, action, params)
-                if action in {"send_private_msg", "send_group_msg"}:
-                    reference = parse_onebot_send_receipt(result).platform_message_id
-            file_upload = action in {"upload_private_file", "upload_group_file"}
-            if file_upload and isinstance(result, dict):
-                # Upload completion is independent of a retractable chat receipt.
-                # Only retain genuine scalar IDs; no fabricated handles from objects.
-                for field_name, prefix in (("message_id", ""), ("file_id", "file:")):
-                    candidate = result.get(field_name)
-                    if (
-                        isinstance(candidate, (str, int))
-                        and not isinstance(candidate, bool)
-                        and str(candidate).strip()
-                    ):
-                        reference = prefix + str(candidate).strip()
-                        break
+            if action == "send":
+                reference = (
+                    await operations.send(route.connection.bot, destination, params["message"])
+                ).reference
+            elif action == "recall":
+                await operations.recall(route.connection.bot, destination, params["reference"])
+            else:
+                raise SocialError("unknown_transport_effect")
             appended = None
             async with self.database.immediate_session() as session:
                 if content is not None:
                     scope = (
-                        ConversationScope.private(route.sender_account_id, route.external_target_id)
+                        ConversationScope.private(
+                            route.sender_account_id,
+                            route.external_target_id,
+                            platform=route.platform,
+                            presence_id=route.presence_id,
+                            conversation_id=route.conversation_id,
+                        )
                         if target.kind == "person"
                         else ConversationScope.group(
-                            route.sender_account_id, route.external_target_id
+                            route.sender_account_id,
+                            route.external_target_id,
+                            platform=route.platform,
+                            presence_id=route.presence_id,
+                            conversation_id=route.conversation_id,
+                            thread_id=route.thread_id,
                         )
                     )
                     appended = await self.writer.append(
@@ -1584,19 +1207,13 @@ class SocialService:
                         sender_user_id=route.sender_account_id,
                         direction="outbound",
                         content=content,
-                        segments=ledger_segments
-                        if ledger_segments is not None
-                        else tuple(params["message"]),
+                        segments=ledger_segments if ledger_segments is not None else (),
                         sender_is_bot=True,
                         origin=context.origin,
                         caused_by_event_id=context.caused_by_event_id,
-                        reply_to_message_id=next(
-                            (
-                                str(segment["data"]["id"])
-                                for segment in params.get("message", ())
-                                if segment.get("type") == "reply"
-                            ),
-                            None,
+                        source_event_id=context.trigger_event_id or context.caused_by_event_id,
+                        reply_to_message_id=(
+                            params["message"].reply_reference if action == "send" else None
                         ),
                         reply_to_event_id=reply_to_event_id,
                         session=session,
@@ -1610,21 +1227,22 @@ class SocialService:
                     session=session,
                 )
         except BaseException as exc:
-            if route.platform == "app":
-                try:
-                    confirmed = await self.receipts.get(operation_id)
-                except Exception as probe:
-                    exc.add_note(f"local receipt lookup failed: {type(probe).__name__}")
-                else:
-                    if confirmed.status is OperationStatus.SUCCEEDED:
-                        if not isinstance(exc, Exception):
-                            raise
-                        return
+            try:
+                confirmed = await self.receipts.get(operation_id)
+            except Exception as probe:
+                exc.add_note(f"local receipt lookup failed: {type(probe).__name__}")
+            else:
+                if confirmed.status is OperationStatus.SUCCEEDED:
+                    if not isinstance(exc, Exception):
+                        raise
+                    return
             try:
                 async with self.database.sessions() as session, session.begin():
                     await self.receipts.finish(
                         operation_id,
-                        status=OperationStatus.UNCERTAIN if dispatched else OperationStatus.FAILED,
+                        status=OperationStatus.UNCERTAIN
+                        if dispatched and getattr(exc, "uncertain", True)
+                        else OperationStatus.FAILED,
                         error_category=type(exc).__name__[:64],
                         session=session,
                     )
@@ -1639,10 +1257,58 @@ class SocialService:
 
                 await record_confirmed_delivery(operation_id, appended.event.id)
 
+    async def _legacy_sequence_payload(
+        self, args: dict[str, Any], context: SocialContext
+    ) -> dict[str, Any] | None:
+        """Only old plaintext parents included their original layout in the digest."""
+        if args.get("artifact_id") or args.get("emoji"):
+            return None
+        snapshot = context.runtime_snapshot
+        if snapshot is None and self.runtime_config is not None:
+            snapshot = await self.runtime_config.snapshot()
+        chunks = (
+            OutboundMessageSplitter.render(str(args.get("text", "")), runtime=snapshot)
+            if snapshot is not None
+            else (str(args.get("text", "")),)
+        )
+        return {"original": args, "chunks": chunks}
+
     async def _replay_send(
         self, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any] | None:
         prior = await self.receipts.find(context.turn_id, context.call_id)
+        if prior is not None and prior.action == "send_message_sequence":
+            from qq_ai_bot.social.db_models import SocialOperationModel
+
+            legacy = await self._legacy_sequence_payload(args, context)
+            hashes = {payload_hash(prior.action, prior.target, args, context.conversation_id)}
+            if legacy is not None:
+                hashes.add(
+                    payload_hash(prior.action, prior.target, legacy, context.conversation_id)
+                )
+            if prior.payload_hash not in hashes:
+                raise SocialError("idempotency_conflict")
+            async with self.database.sessions() as session:
+                dispatched = await session.scalar(
+                    select(SocialOperationModel.id)
+                    .where(
+                        SocialOperationModel.source_turn_id
+                        == select(SocialOperationModel.source_turn_id)
+                        .where(SocialOperationModel.id == prior.operation_id)
+                        .scalar_subquery(),
+                        SocialOperationModel.tool_call_id.startswith(
+                            sequence_prefix(context.call_id)
+                        ),
+                        SocialOperationModel.action == "send_message",
+                        SocialOperationModel.status != "prepared",
+                    )
+                    .limit(1)
+                )
+            if dispatched is not None:
+                return await self._sequence_result(
+                    prior, context, file=args.get("attachment_kind") == "file"
+                )
+            return None
         if prior is None or prior.status is OperationStatus.PREPARED:
             return None
         await self.receipts.prepare(
@@ -1655,7 +1321,10 @@ class SocialService:
         )
         await self._record_work_delivery(prior)
         if args.get("attachment_kind") == "file" and (args.get("text") or args.get("mentions")):
-            return await self._file_result(prior.operation_id, context)
+            async with self.database.sessions() as session:
+                presence = await session.get(PresenceModel, prior.presence_id)
+            if presence is not None and presence.platform == "qq":
+                return await self._file_result(prior.operation_id, context)
         return await self._receipt_result(prior, context)
 
     @staticmethod
@@ -1664,7 +1333,7 @@ class SocialService:
         from qq_ai_bot.runtime.work_activation import current_work_control
 
         control = current_work_control.get()
-        if control is None or control.current is None:
+        if control is None or control.current is None or receipt.status is OperationStatus.PREPARED:
             return
         state = (
             "accepted"
@@ -1683,6 +1352,7 @@ class SocialService:
     ) -> dict[str, Any]:
         """Read the persisted internal event anchor; never infer it from transport data."""
         result = receipt.model_dump(mode="json")
+        result.pop("platform_reference", None)
         if receipt.status is not OperationStatus.SUCCEEDED or receipt.action not in {
             "send_message",
             "send_file_caption",
@@ -1783,12 +1453,21 @@ class SocialService:
             )
         await self.check_target(target)
         route = await self.router.resolve_presence(event.author_presence_id)
+        route = replace(
+            route,
+            external_target_id=(
+                event.private_peer_user_id if target.kind == "person" else event.group_id
+            )
+            or "",
+            conversation_id=conversation.id,
+            thread_id=conversation.thread_id,
+        )
         return await self._effect(
             "recall_own_message",
             args,
             context,
             target,
             route,
-            "delete_msg",
-            {"message_id": event.platform_message_id},
+            "recall",
+            {"reference": event.platform_message_id},
         )

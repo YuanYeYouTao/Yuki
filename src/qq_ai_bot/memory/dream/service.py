@@ -273,10 +273,7 @@ class DreamService:
         current_fingerprint = self._cluster_fingerprint(facts) if facts else ""
         if current_fingerprint != cluster.fingerprint:
             await self._repository.stale_previews(cluster.id)
-        if (
-            len(facts) != len(cluster.fact_ids)
-            or current_fingerprint != cluster.fingerprint
-        ):
+        if len(facts) != len(cluster.fact_ids) or current_fingerprint != cluster.fingerprint:
             raise RuntimeError("Dream 候选簇快照已经变化，请重新 plan")
         payload, _ref_map, input_fingerprint = await self._input(facts)
         output, calls = await self._preview_decide(
@@ -313,10 +310,7 @@ class DreamService:
 
         facts = await self._repository.cluster_facts(cluster)
         current_fingerprint = self._cluster_fingerprint(facts) if facts else ""
-        if (
-            len(facts) != len(cluster.fact_ids)
-            or current_fingerprint != cluster.fingerprint
-        ):
+        if len(facts) != len(cluster.fact_ids) or current_fingerprint != cluster.fingerprint:
             await self._repository.stale_previews(cluster.id)
             return 0, 0, False
         payload, ref_map, input_fingerprint = await self._input(facts)
@@ -868,9 +862,22 @@ class DreamService:
         return instruction
 
     def _structured_input(self, payload: DreamInput) -> dict[str, Any]:
-        """Keep cluster-specific sizes in the user input, after the reusable instruction."""
+        """The decision references one canonical cluster's local fact aliases.
 
-        return payload.model_dump(mode="json", exclude_none=True, exclude_defaults=True)
+        Transport owner labels are unnecessary model input. Keep the original
+        internal source-proof serialization so paid previews remain readable.
+        """
+        return payload.model_dump(
+            mode="json",
+            exclude_none=True,
+            exclude_defaults=True,
+            exclude={
+                "subject_user_id",
+                "group_id",
+                "visibility_user_id",
+                "visibility_group_id",
+            },
+        )
 
     async def _reserve_model_call(self, run: DreamRun, cluster: DreamCluster) -> bool:
         return await self._repository.reserve_model_call(

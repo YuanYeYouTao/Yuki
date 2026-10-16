@@ -8,7 +8,7 @@
 
 <h1>Yuki</h1>
 
-<p>一个在真实 QQ 对话中持续存在的社会化 AI Agent</p>
+<p>一个在真实对话中持续存在的社会化 AI Agent</p>
 
 <p>
   <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0"><img src="https://img.shields.io/badge/Release-3.9.0-blue" alt="Yuki 3.9.0"></a>
@@ -47,7 +47,9 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 升级步骤、兼容性变化与各项验证范围见发布说明。模型响应、工具请求与宿主资源仍会影响实际体验；版本更新不保证固定的延迟、费用或缓存命中率。
 
-**多客户端重构进行中：旧浏览器管理入口已从源码退役；个人端按 #299 任务书分阶段接入。**
+**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence、群按 SpaceBinding＋topic 隔离会话；人物记忆仍沿内部 Person。默认模型退役任意 OneBot action、戳一戳和远端转发历史展开，公共历史及成员目录只声明已观察账本。Plugin API **4.0**、Main 合同 **20**、迁移 **0126**；配置、升级及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地实施/验证进度见[实施记录](docs/architecture/Yuki-299与多平台解耦实施记录-2026-10-16.md)，正式 3.9.0 的历史说明保留如上。
+
+养鲲已移至独立仓库 [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game)，本仓库不再附带游戏源码或专用迁移。独立版需要 Plugin API 4.0 Host；安装与旧存档离线升级见插件仓库。
 
 会话 [Compact](docs/architecture/conversation-compact.md)（[#417](https://github.com/YuanYeYouTao/Yuki/issues/417)、[#418](https://github.com/YuanYeYouTao/Yuki/issues/418)）由当前 Main 模型按真实容量整理公共历史或私有执行尾部。子 Agent 共用 Main 的完整工具合同，执行按自己的真实来源与授权核验；旧独立 Rollup 和 Work/ordinary 摘要链已退役。
 
@@ -56,8 +58,8 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 | 能力 | 使用方式 |
 | --- | --- |
 | 长期聊天与记忆 | 在群聊、私聊中持续交流，查询旧事，明确要求记住、纠正或删除事实 |
-| 图片、语音和附件 | 接收图片、语音、视频或文档；同一会话内可不引用原附件继续追问，按需读取合并转发 |
-| QQ 社交操作 | 查询成员、结构化 @、戳一戳、发送群消息或私聊、撤回自己的消息；目标与权限由后端校验 |
+| 图片、语音和附件 | 接收图片、语音、视频或文档；同一会话内可不引用原附件继续追问，历史读取以已观察账本为准 |
+| 跨平台社交操作 | 查询已观察成员、结构化 @、发送群消息或私聊、撤回自己的消息；共用内部目标和权限，协议由适配器处理 |
 | 搜索与插件 | 使用配置好的联网工具和获准插件处理外部信息 |
 | 持久工作环境 | 保存项目与文件，运行 Python、Node.js 或 Shell，安装依赖并交付结果 |
 | 后台任务与自动化 | 启动作业后继续聊天，随后查询进度；按已授予的权限执行定时任务和续跑 |
@@ -72,7 +74,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 - 预装 Bash、Python、Node.js、Git 和基础编译工具，支持 pip、npm，以及由 Manager 管理的 apt 安装和环境检查点。
 - 终端支持交互输入、增量输出、取消和后台执行。可以先启动一个任务，继续处理消息，再回来看结果。
 - Bot 或 Manager 重启时，环境进程可以继续运行；环境本身重启后，普通任务标记中断，已登记服务按策略恢复。
-- 选定文件发布为不可变快照后，通过 QQ 发送链路交付；旧 `artifact_id` 保持兼容。
+- 选定文件发布为不可变快照后，通过对应平台的统一发送链路交付；旧 `artifact_id` 保持兼容。
 
 默认家目录容量 2 GiB，容器内存上限 512 MiB，最多一个主要执行任务、四个终端会话和两个内部服务。环境没有浏览器或桌面，也不挂载 Bot 数据库、QQ 凭据或宿主 Docker 控制接口。
 
@@ -174,7 +176,7 @@ docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 
 一个数据库对应一个长期存在的 Yuki。人物、群空间、QQ 账号和网关连接分别建模，聊天历史与记忆不绑定在某一次登录连接上。工具由后端执行权限、预算、幂等和审计检查。
 
-目前提供 QQ 交互与管理 CLI；旧浏览器管理界面与旧控制面实现已从源码退役。
+当前开发分支提供 QQ、Telegram、个人客户端与管理 CLI；旧浏览器管理界面与旧控制面实现已从源码退役。
 管理入口调用原领域服务与回执，权限及当前方法见[管理 API](docs/architecture/admin-api.md)。
 个人客户端 API 与参考 CLI 已按 #299 完成本地实现和验证，见[交付记录](docs/operations/issue-299-delivery-2026-10-15.md)；合并与上线状态分别记录。
 
@@ -197,7 +199,7 @@ uv run pytest
 | [开发约束](docs/architecture/development-contract.md) | 事件 ID、解耦边界、固定工具、续跑和事务原则 |
 | [会话 Compact](docs/architecture/conversation-compact.md) | 长会话的历史压缩 |
 | [Memory](docs/architecture/memory-v2.md) | 记忆提取、检索和权限 |
-| [Plugin API 3.5](docs/plugin-development/index.md) | 插件开发与能力边界 |
+| [Plugin API 4.0](docs/plugin-development/index.md) | 插件开发与能力边界 |
 | [持久子 Agent](docs/architecture/persistent-subagents.md) | 任务树、父子问答、完整工具能力与恢复 |
 | [工具结果](docs/architecture/tool-results.md) | 结果预算、媒体与持久回执 |
 | [版本化发布](docs/operations/versioned-docker-release.md) | 镜像、下载包与发布流程 |

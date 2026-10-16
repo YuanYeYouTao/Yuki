@@ -1,9 +1,4 @@
-"""Resolve ControlPrincipal and canonical admin targets at the adapter boundary.
-
-SUPERUSERS is read only here. Core group/preference/private-access
-services never see AdminActor or Settings.superusers. Missing Bindings fail
-closed; this module never invents Person or Space identities.
-"""
+"""Resolve canonical control actors and targets; QQ recovery has an explicit boundary."""
 
 from __future__ import annotations
 
@@ -18,8 +13,14 @@ from qq_ai_bot.admin.authority.targets import PersonControlTarget, SpaceControlT
 from qq_ai_bot.admin.models import AdminActor, ControlAuditRef
 from qq_ai_bot.domain.control import DecisionContext
 from qq_ai_bot.domain.identity import PersonId, PrincipalId, RequestId, SpaceId
+from qq_ai_bot.identity.authority import person_is_superuser
 from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
-from qq_ai_bot.identity.db_models import IdentityBindingModel, SpaceBindingModel
+from qq_ai_bot.identity.db_models import (
+    CanonicalPersonModel,
+    CanonicalSpaceModel,
+    IdentityBindingModel,
+    SpaceBindingModel,
+)
 from qq_ai_bot.persistence.database import Database
 
 USER_CAPABILITIES: frozenset[str] = frozenset(
@@ -58,21 +59,43 @@ PRINCIPAL_NOT_FOUND = "没有找到可用的控制主体。"
 
 
 class ControlPrincipalLookupError(PermissionError):
-    """Raised when a QQ account has no canonical Binding/Person."""
+    """Raised when the authenticated source has no active canonical owner."""
 
     def __init__(self) -> None:
         super().__init__(PRINCIPAL_NOT_FOUND)
 
 
 class ControlAccess:
-    """Adapter-only identity resolution for QQ-originated control calls."""
+    """Control authorization uses already-resolved Person and Space identities."""
 
     def __init__(self, database: Database, *, superuser_ids: Iterable[str]) -> None:
         self._database = database
         self._superuser_ids = frozenset(str(item) for item in superuser_ids)
 
-    async def principal_for_qq(self, user_id: str) -> ControlPrincipal:
-        """Resolve one QQ account to a ControlPrincipal. Fail closed if unbound."""
+    async def principal_for_person(self, person_id: str | None) -> ControlPrincipal:
+        async with self._database.sessions() as session:
+            person = await session.get(CanonicalPersonModel, person_id) if person_id else None
+            if person is None or not person.enabled:
+                raise ControlPrincipalLookupError()
+            privileged = await person_is_superuser(session, person.id, self._superuser_ids)
+        return self._principal(PersonId.parse(person.id), privileged, PrincipalSource.PLATFORM)
+
+    @staticmethod
+    def _principal(
+        person_id: PersonId, privileged: bool, source: PrincipalSource
+    ) -> ControlPrincipal:
+        return ControlPrincipal(
+            principal_id=PrincipalId.parse(person_id.text),
+            person_id=person_id,
+            source=source,
+            roles=("superuser",) if privileged else (),
+            granted_capabilities=SUPERUSER_CAPABILITIES if privileged else USER_CAPABILITIES,
+            authenticated=True,
+            active=True,
+        )
+
+    async def qq_recovery_principal(self, user_id: str) -> ControlPrincipal:
+        """Resolve the real QQ sender only for the pre-ingress group recovery lane."""
 
         token = user_id.strip()
         if not token:
@@ -82,34 +105,30 @@ class ControlAccess:
             if binding is None or binding.status != "active":
                 raise ControlPrincipalLookupError()
             person_id = PersonId.parse(binding.person_id)
-        privileged = token in self._superuser_ids
-        return ControlPrincipal(
-            principal_id=PrincipalId.parse(person_id.text),
-            person_id=person_id,
-            source=PrincipalSource.QQ,
-            roles=("superuser",) if privileged else (),
-            granted_capabilities=SUPERUSER_CAPABILITIES if privileged else USER_CAPABILITIES,
-            authenticated=True,
-            active=True,
-        )
+            privileged = await person_is_superuser(session, person_id.text, self._superuser_ids)
+        return self._principal(person_id, privileged, PrincipalSource.QQ)
 
-    async def person_target(self, user_id: str) -> PersonControlTarget:
-        """Build a person target from a proven storage id. Do not invent Person."""
-
-        token = user_id.strip()
-        if not token:
-            raise ValueError("storage_user_id is required")
+    async def person_target(self, person_id: str) -> PersonControlTarget:
         async with self._database.sessions() as session:
-            binding = await _identity_binding(session, token)
-        person_id = PersonId.parse(binding.person_id) if binding is not None else None
+            person = await session.get(CanonicalPersonModel, person_id)
+            if person is None:
+                raise ValueError("没有找到该 Person。")
+            protected = await person_is_superuser(session, person.id, self._superuser_ids)
         return PersonControlTarget(
-            person_id=person_id,
-            storage_user_id=token,
-            lockout_protected=token in self._superuser_ids,
+            person_id=PersonId.parse(person.id),
+            storage_user_id=person.id,
+            lockout_protected=protected,
         )
 
-    async def space_target(self, group_id: str) -> SpaceControlTarget:
-        """Build a space target from a proven group storage id. Do not invent Space."""
+    async def space_target(self, space_id: str) -> SpaceControlTarget:
+        async with self._database.sessions() as session:
+            space = await session.get(CanonicalSpaceModel, space_id)
+            if space is None:
+                raise ValueError("没有找到该 Space。")
+        return SpaceControlTarget(space_id=SpaceId.parse(space.id), storage_group_id=space.id)
+
+    async def qq_recovery_space_target(self, group_id: str) -> SpaceControlTarget:
+        """The recovery transport may target a QQ group before a Space is bound."""
 
         token = group_id.strip()
         if not token:
@@ -155,7 +174,7 @@ class ControlAccess:
 
 
 def audit_ref_from_actor(actor: AdminActor) -> ControlAuditRef:
-    """Copy already-proven QQ correlation fields without forging authority."""
+    """Copy external correlation fields without using them as authority."""
 
     return ControlAuditRef(
         user_id=actor.user_id,

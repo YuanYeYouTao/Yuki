@@ -23,16 +23,17 @@ from qq_ai_bot.admin.models import VisionRuntimeConfig
 from qq_ai_bot.capabilities.media import PreparedMediaData
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatImage
+from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
+from qq_ai_bot.services.media_process import MediaProcessError
+from qq_ai_bot.services.media_process import run_media_process as run_parser
 from qq_ai_bot.services.media_resolver import (
     MediaResolutionError,
     MediaResolver,
-    OneBotMediaGateway,
 )
 from qq_ai_bot.services.native_media import MAX_IMAGE_BYTES, NativeMediaPreparer
-from qq_ai_bot.services.video_frames import _run as run_parser
 from qq_ai_bot.services.vision_service import VisionProcessingError
 from qq_ai_bot.vision.models import MediaReference
 
@@ -220,7 +221,7 @@ class ConversationMediaService:
                 self._gc_iterator = None
             self._gc_pending = ()
 
-    def submit(self, event_id: int, gateway: OneBotMediaGateway | None) -> None:
+    def submit(self, event_id: int, gateway: PlatformMediaGateway | None) -> None:
         if len(self._pending) >= 32:
             return
         task = asyncio.create_task(
@@ -229,7 +230,7 @@ class ConversationMediaService:
         self._pending.add(task)
         task.add_done_callback(self._pending.discard)
 
-    async def _cache_event(self, event_id: int, gateway: OneBotMediaGateway | None) -> None:
+    async def _cache_event(self, event_id: int, gateway: PlatformMediaGateway | None) -> None:
         async with self.database.sessions() as session:
             items = (
                 await session.scalars(
@@ -332,7 +333,7 @@ class ConversationMediaService:
         self,
         event_id: int,
         index: int,
-        gateway: OneBotMediaGateway | None,
+        gateway: PlatformMediaGateway | None,
         *,
         source: tuple[ConversationMediaItemModel, int | None, int | None, dict[str, Any]]
         | None = None,
@@ -363,7 +364,11 @@ class ConversationMediaService:
                 await asyncio.to_thread(temporary.write_bytes, result.content)
             else:
                 await self.resolver.download_attachment(
-                    reference, temporary, max_download_bytes=_MAX_FILE
+                    reference,
+                    temporary,
+                    max_download_bytes=_MAX_FILE,
+                    gateway=gateway,
+                    kind="video" if item.kind == "video" else "file",
                 )
             facts = await asyncio.to_thread(_cache_file_facts, temporary, _MAX_FILE)
             if item.kind == "image":
@@ -443,7 +448,7 @@ class ConversationMediaService:
         attachment_index: int,
         conversation_id: str,
         generation: int | None,
-        gateway: OneBotMediaGateway | None,
+        gateway: PlatformMediaGateway | None,
     ) -> tuple[ConversationMediaItemModel, Path]:
         key = (event_id, attachment_index)
         source = (await self._sources((key,)))[key]
@@ -519,21 +524,24 @@ class ConversationMediaService:
         media_kind = await asyncio.to_thread(content_kind)
         if media_kind == "file":
             suffix = Path(item.display_name).suffix.lower()
-            raw = await run_parser(
-                sys.executable,
-                "-m",
-                "qq_ai_bot.services.document_reader",
-                str(path),
-                suffix,
-                "20000",
-                "20",
-                env={
-                    "PATH": os.environ.get("PATH", ""),
-                    "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
-                    "PYTHONPATH": os.pathsep.join(sys.path),
-                    "PYTHONIOENCODING": "utf-8",
-                },
-            )
+            try:
+                raw = await run_parser(
+                    sys.executable,
+                    "-m",
+                    "qq_ai_bot.services.document_reader",
+                    str(path),
+                    suffix,
+                    "20000",
+                    "20",
+                    env={
+                        "PATH": os.environ.get("PATH", ""),
+                        "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+                        "PYTHONPATH": os.pathsep.join(sys.path),
+                        "PYTHONIOENCODING": "utf-8",
+                    },
+                )
+            except MediaProcessError as exc:
+                raise ConversationMediaError("document_reader_failed") from exc
             result = json.loads(raw)
             if result.get("error"):
                 raise ConversationMediaError(str(result["error"]))

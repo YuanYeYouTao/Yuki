@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 from qq_ai_bot.admin.models import (
     AdminActor,
     ConfigApplyMode,
@@ -11,10 +9,9 @@ from qq_ai_bot.admin.models import (
     EffectiveConfigValue,
 )
 from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
+from qq_ai_bot.domain.identity import PersonId
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
-
-_NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
 
 
 class ConfigCommandHandler:
@@ -29,9 +26,11 @@ class ConfigCommandHandler:
         self._config_admin = config_admin
         self._permission_catalog = permission_catalog
 
-    def capabilities(self, message: InboundMessage, argument: str) -> str:
+    def capabilities(self, message: InboundMessage, argument: str, *, is_superuser: bool) -> str:
         category = argument.strip() or None
-        report = self._permission_catalog.report_for_message(message, category=category)
+        report = self._permission_catalog.report_for_message(
+            message, category=category, actor_is_superuser=is_superuser
+        )
         return report.render_text()
 
     async def config(self, actor: AdminActor, argument: str) -> str:
@@ -39,7 +38,7 @@ class ConfigCommandHandler:
         if not parts:
             return (
                 "格式：/ai config list|get|set|unset|history|rollback ...\n"
-                "群级后缀：group current；用户级后缀：user <QQ号>"
+                "群级后缀：group current；用户级后缀：user <Person ID>"
             )
         operation = parts.pop(0).casefold()
         if operation == "list":
@@ -55,7 +54,7 @@ class ConfigCommandHandler:
             )
         if operation == "get":
             if not parts:
-                return "格式：/ai config get <key> [group current|user <QQ号>]"
+                return "格式：/ai config get <key> [group current|user <Person ID>]"
             key = parts.pop(0)
             parsed_scope = self._parse_config_command_scope(parts, actor)
             if isinstance(parsed_scope, str):
@@ -72,7 +71,7 @@ class ConfigCommandHandler:
             return self._render_effective_config(value)
         if operation == "set":
             if len(parts) < 2:
-                return "格式：/ai config set <key> <value> [group current|user <QQ号>]"
+                return "格式：/ai config set <key> <value> [group current|user <Person ID>]"
             key, raw_value = parts.pop(0), parts.pop(0)
             parsed_scope = self._parse_config_command_scope(parts, actor)
             if isinstance(parsed_scope, str):
@@ -88,7 +87,7 @@ class ConfigCommandHandler:
             return self._render_config_change(result)
         if operation == "unset":
             if not parts:
-                return "格式：/ai config unset <key> [group current|user <QQ号>]"
+                return "格式：/ai config unset <key> [group current|user <Person ID>]"
             key = parts.pop(0)
             parsed_scope = self._parse_config_command_scope(parts, actor)
             if isinstance(parsed_scope, str):
@@ -107,7 +106,7 @@ class ConfigCommandHandler:
             try:
                 rows = await self._config_admin.history(
                     key=parts[0] if parts else None,
-                    actor_user_id=actor.user_id,
+                    actor_user_id=actor.person_id,
                     limit=20,
                 )
             except KeyError:
@@ -139,14 +138,15 @@ class ConfigCommandHandler:
         if len(parts) == 2 and parts[0].casefold() == "group":
             if parts[1].casefold() != "current":
                 return "群级作用域只接受 group current。"
-            if actor.current_group_id is None:
+            if actor.space_id is None:
                 return "当前消息不在群聊中。"
-            return "group", actor.current_group_id
+            return "group", actor.space_id
         if len(parts) == 2 and parts[0].casefold() == "user":
-            if _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None:
-                return "目标 QQ 号格式错误。"
-            return "user", parts[1]
-        return "作用域格式错误：使用 group current 或 user <QQ号>。"
+            try:
+                return "user", PersonId.parse(parts[1]).text
+            except (TypeError, ValueError):
+                return "目标 Person ID 格式错误。"
+        return "作用域格式错误：使用 group current 或 user <Person ID>。"
 
     @staticmethod
     def _render_effective_config(value: EffectiveConfigValue) -> str:

@@ -136,8 +136,6 @@ async def run(*, native_child=False):
                     event_type="message",
                     scope_type=ScopeType.PRIVATE,
                 ),
-                gateway=None,
-                allow_generic_onebot=False,
                 execution_id="offline-fixture",
                 runtime_config=await chat._runtime_config.snapshot(),
             )

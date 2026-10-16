@@ -14,7 +14,6 @@ from tests.support.automation_unified_delivery_helpers import sent, setup_run
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import Bot
 
-from qq_ai_bot.automation.gateway import OneBotAutomationGateway
 from qq_ai_bot.automation.models import AutomationStatus, RunStatus
 from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel, SpaceActiveRouteModel
 from qq_ai_bot.conversation.hydrate import bump_canonical_generation
@@ -167,7 +166,10 @@ async def test_paused_send_route_does_not_block_internal_main_read(
     assert sources[0].presence_id == case.row.canonical_presence_id
     assert sources[0].bot_user_id == case.row.bot_user_id
     assert sources[0].principal_kind == principal
-    assert sources[0].group_id == (None if delivery == "self_private" else "20001")
+    assert (
+        sources[0].group_id == "20001"
+    )  # execution keeps the original scene, independent of delivery
+    assert sources[0].space_id == case.env.space
     assert not sent(case.env)
     results = [message for message in case.provider.requests[1].messages if message.role == "tool"]
     assert len(results) == 1 and json.loads(results[0].content)["ok"]
@@ -392,7 +394,7 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
                     content=source["instruction"],
                     identity=identity,
                     runtime=await case.chat._runtime_config.snapshot(
-                        user_id="10001", group_id="20001"
+                        user_id=case.env.person, group_id=case.env.space
                     ),
                     turn_token=token,
                     turn_snapshot=ConversationTurnSnapshot(
@@ -408,13 +410,6 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
                     source_runtime=ToolRuntime(
                         inbound=None,
                         actor_context=recovered.actor(execution_id),
-                        allow_generic_onebot=False,
-                        gateway=OneBotAutomationGateway(
-                            bot_user_id="80001",
-                            automation_id=claimed.id,
-                            automation_run_id=run.id,
-                            router=case.env.router,
-                        ),
                         conversation_key=state.runtime_scope_key,
                         execution_id=execution_id,
                         origin=TurnOrigin.SCHEDULED_AUTOMATION,

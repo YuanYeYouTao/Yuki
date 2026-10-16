@@ -14,15 +14,16 @@ from urllib.parse import urlsplit
 
 from qq_ai_bot.admin.models import VisionRuntimeConfig
 from qq_ai_bot.domain.messages import AttachmentKind, ChatImage, InboundMessage, MessageAttachment
+from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
+from qq_ai_bot.services.media_process import MediaProcessError
+from qq_ai_bot.services.media_process import run_media_process as run_parser
 from qq_ai_bot.services.media_resolver import (
     MediaResolutionError,
     MediaResolver,
-    OneBotMediaGateway,
     read_local_media,
 )
 from qq_ai_bot.services.native_media import NativeMediaPreparer
-from qq_ai_bot.services.video_frames import _run as run_parser
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
 from qq_ai_bot.services.vision_service import VisionProcessingError
 from qq_ai_bot.vision.models import MediaReference
@@ -70,7 +71,7 @@ class AttachmentInputService:
         self,
         message: InboundMessage,
         runtime: VisionRuntimeConfig,
-        gateway: OneBotMediaGateway | None,
+        gateway: PlatformMediaGateway | None,
     ) -> NativeInput:
         kinds = {AttachmentKind.IMAGE, AttachmentKind.VIDEO, AttachmentKind.FILE}
         selected = tuple(
@@ -79,14 +80,7 @@ class AttachmentInputService:
         if not selected:
             return NativeInput()
         if self._pending >= self._pending_limit:
-            raise VisionProcessingError("queue_full", "图片处理队列已满")
-        if not await self._limiter.allow(
-            user_id=message.sender.user_id,
-            group_id=message.group_id,
-            per_user_per_minute=runtime.per_user_requests_per_minute,
-            per_group_per_minute=runtime.per_group_requests_per_minute,
-        ):
-            raise VisionProcessingError("rate_limited", "图片处理过于频繁")
+            raise VisionProcessingError("queue_full", "附件处理队列已满")
         self._pending += 1
         try:
             async with asyncio.timeout(self._timeout), self._semaphore:
@@ -94,6 +88,25 @@ class AttachmentInputService:
                 documents: list[str] = []
                 text_remaining = 20_000
                 size = 0
+                visual_count = 0
+                visual_allowed: bool | None = None
+
+                async def admit_visual(index: int) -> bool:
+                    nonlocal visual_count, visual_allowed
+                    if visual_count >= runtime.max_images_per_turn:
+                        documents.append(f"[视觉附件{index}未读取：超过本轮图片数量上限]")
+                        return False
+                    visual_count += 1
+                    if visual_allowed is None:
+                        visual_allowed = await self._limiter.allow(
+                            user_id=message.person_id or message.presence_id or "",
+                            group_id=message.space_id,
+                            per_user_per_minute=runtime.per_user_requests_per_minute,
+                            per_group_per_minute=runtime.per_group_requests_per_minute,
+                        )
+                    if not visual_allowed:
+                        raise VisionProcessingError("rate_limited", "图片处理过于频繁")
+                    return True
 
                 async def consume(attachment: MessageAttachment, index: int) -> None:
                     nonlocal text_remaining, size
@@ -119,12 +132,16 @@ class AttachmentInputService:
                                 path,
                                 max_download_bytes=limit,
                                 local_source=attachment.local_source,
+                                gateway=gateway,
+                                kind="file",
                             )
                             with path.open("rb") as stream:
                                 header = stream.read(12)
                             if header[4:8] != b"ftyp" and path.stat().st_size > 20 * 1024 * 1024:
                                 raise VisionProcessingError("too_large", "非视频文件超过下载预算")
                             if header[4:8] == b"ftyp":
+                                if not await admit_visual(index):
+                                    return
                                 if not self.images_enabled:
                                     raise VisionProcessingError(
                                         "image_capability_unavailable", "主模型不支持图片"
@@ -144,6 +161,8 @@ class AttachmentInputService:
                             elif header.startswith((b"\xff\xd8\xff", b"\x89PNG", b"GIF8")) or (
                                 header.startswith(b"RIFF") and header[8:12] == b"WEBP"
                             ):
+                                if not await admit_visual(index):
+                                    return
                                 if not self.images_enabled:
                                     raise VisionProcessingError(
                                         "image_capability_unavailable", "主模型不支持图片"
@@ -172,24 +191,29 @@ class AttachmentInputService:
                                     documents.append("[后续附件未读取：本轮文本预算已用完]")
                                     return
                                 async with self._document_semaphore:
-                                    raw = await run_parser(
-                                        sys.executable,
-                                        "-m",
-                                        "qq_ai_bot.services.document_reader",
-                                        str(path),
-                                        suffix,
-                                        str(text_remaining),
-                                        "20",
-                                        env={
-                                            **{
-                                                k: os.environ[k]
-                                                for k in ("PATH", "SYSTEMROOT")
-                                                if k in os.environ
+                                    try:
+                                        raw = await run_parser(
+                                            sys.executable,
+                                            "-m",
+                                            "qq_ai_bot.services.document_reader",
+                                            str(path),
+                                            suffix,
+                                            str(text_remaining),
+                                            "20",
+                                            env={
+                                                **{
+                                                    k: os.environ[k]
+                                                    for k in ("PATH", "SYSTEMROOT")
+                                                    if k in os.environ
+                                                },
+                                                "PYTHONPATH": os.pathsep.join(sys.path),
+                                                "PYTHONIOENCODING": "utf-8",
                                             },
-                                            "PYTHONPATH": os.pathsep.join(sys.path),
-                                            "PYTHONIOENCODING": "utf-8",
-                                        },
-                                    )
+                                        )
+                                    except MediaProcessError as exc:
+                                        raise VisionProcessingError(
+                                            "document_reader_failed", "文档解析进程失败"
+                                        ) from exc
                                 result = json.loads(raw)
                                 if result.get("error"):
                                     raise VisionProcessingError(
@@ -211,6 +235,8 @@ class AttachmentInputService:
                         if size > self._max_bytes:
                             raise VisionProcessingError("too_large", "附件帧超过本轮预算")
                         return
+                    if not await admit_visual(index):
+                        return
                     if remaining <= 0:
                         documents.append("[视觉附件未读取：本轮帧预算已用完]")
                         return
@@ -219,12 +245,6 @@ class AttachmentInputService:
                             raise VisionProcessingError(
                                 "image_capability_unavailable", "主模型不支持图片"
                             )
-                        # Never reinterpret a video ID as get_image, or open gateway-local paths.
-                        location = reference.url or reference.file or ""
-                        if attachment.local_source is None and not location.startswith(
-                            ("https://", "http://", "base64://")
-                        ):
-                            raise VisionProcessingError("video_unavailable", "视频缺少可下载地址")
                         with TemporaryDirectory(prefix="yuki-video-download-") as directory:
                             path = Path(directory) / "input.mp4"
                             await self._resolver.download_attachment(
@@ -232,6 +252,8 @@ class AttachmentInputService:
                                 path,
                                 max_download_bytes=runtime.video_max_download_bytes,
                                 local_source=attachment.local_source,
+                                gateway=gateway,
+                                kind="video",
                             )
                             video_frames = await self._preparer.prepare_video(
                                 path,
@@ -280,9 +302,7 @@ class AttachmentInputService:
                     "unsafe_archive",
                     "prepared_too_large",
                 }
-                for index, attachment in enumerate(
-                    selected[: runtime.max_images_per_turn], start=1
-                ):
+                for index, attachment in enumerate(selected, start=1):
                     prior_images, prior_documents = len(images), len(documents)
                     try:
                         await consume(attachment, index)
@@ -306,8 +326,6 @@ class AttachmentInputService:
                         )
                 if first_failure is not None and not had_readable_output:
                     raise first_failure
-                if len(selected) > runtime.max_images_per_turn:
-                    documents.append("[其余附件未读取：超过本轮附件数量上限]")
                 if not images and not documents:
                     raise VisionProcessingError("no_images", "没有可读取图片")
                 return NativeInput(tuple(images), "\n".join(documents))

@@ -222,7 +222,7 @@ async def test_local_artifact_pins_original_snapshot_and_download_authorization(
         {"artifact_id": original["artifact_id"], "attachment_kind": "file", "text": "result"},
         context,
     )
-    assert result["status"] == "succeeded" and result["platform_reference"] is None
+    assert result["status"] == "succeeded" and "platform_reference" not in result
     snapshot_bytes(env.store, "result.txt", b"replacement version")
     url = f"/client/v1/artifacts/{original['artifact_id']}?version={original['sha256']}"
     downloaded = await env.client.get(url, headers=bearer(device["token"]))

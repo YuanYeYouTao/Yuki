@@ -142,6 +142,7 @@ class InboundMessage:
     is_self_message: bool = False
     reply_text: str | None = None
     mentioned_user_ids: tuple[str, ...] = ()
+    mentioned_person_ids: tuple[str, ...] = ()
     attachments: tuple[MessageAttachment, ...] = ()
     segments: tuple[dict[str, object], ...] = ()
     reply_attachments: tuple[MessageAttachment, ...] = ()
@@ -157,6 +158,7 @@ class InboundMessage:
     space_id: str | None = None
     conversation_id: str | None = None
     presence_id: str | None = None
+    thread_id: str | None = None
     # Host-stamped after ledger admission; never supplied by a transport adapter.
     source_event_id: int | None = None
     source_execution_id: str | None = None
@@ -191,10 +193,24 @@ class InboundMessage:
         if not bot:
             raise ValueError("conversation scope requires bot_user_id")
         if self.scope_type is ScopeType.PRIVATE:
-            return ConversationScope.private(bot, self.sender.user_id)
+            return ConversationScope.private(
+                bot,
+                self.sender.user_id,
+                platform=self.platform,
+                presence_id=self.presence_id,
+                conversation_id=self.conversation_id,
+                thread_id=self.thread_id,
+            )
         if self.group_id is None:
             raise ValueError("group message is missing group_id")
-        return ConversationScope.group(bot, self.group_id)
+        return ConversationScope.group(
+            bot,
+            self.group_id,
+            platform=self.platform,
+            presence_id=self.presence_id,
+            conversation_id=self.conversation_id,
+            thread_id=self.thread_id,
+        )
 
 
 @dataclass(frozen=True, slots=True)

@@ -14,10 +14,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
     PersonActiveRouteModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
+from qq_ai_bot.conversation.legacy_entries import legacy_private_entry_matches
 from qq_ai_bot.gateway.models import ConnectionSnapshot
 from qq_ai_bot.gateway.registry import (
     ConnectionResolution,
@@ -25,12 +27,14 @@ from qq_ai_bot.gateway.registry import (
     RegistryClosed,
     require_capability,
 )
+from qq_ai_bot.gateway.social import PlatformSocialOperations
 from qq_ai_bot.identity.db_models import (
     IdentityBindingModel,
     PresenceModel,
     SpaceBindingModel,
 )
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.models import ChatEventModel
 
 MembershipProbe = Callable[[object, str, str], Awaitable[bool]]
 
@@ -61,6 +65,9 @@ class ResolvedSend:
     connection: ConnectionResolution
     kind: str
     sender_account_id: str
+    conversation_id: str | None = None
+    thread_id: str | None = None
+    source_event_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,24 +96,6 @@ class ObservedIngestRoute:
     paused: bool
 
 
-async def default_membership_probe(bot: object, group_id: str, user_id: str) -> bool:
-    """Realtime group membership. Fail-closed; never logs identifiers."""
-
-    call_api = getattr(bot, "call_api", None)
-    if not callable(call_api):
-        return False
-    try:
-        await call_api(
-            "get_group_member_info",
-            group_id=int(group_id),
-            user_id=int(user_id),
-            no_cache=True,
-        )
-    except Exception:
-        return False
-    return True
-
-
 class PresenceRouter:
     """Resolve send/ingest through enabled Presence + unique Registry active."""
 
@@ -119,65 +108,24 @@ class PresenceRouter:
     ) -> None:
         self._database = database
         self._registry = registry
-        self._probe = membership_probe or default_membership_probe
+        self._probe = membership_probe or self._native_membership_probe
         self._cas_hold: Callable[[], Awaitable[None]] | None = None
 
-    async def person_owns_external(
-        self,
-        person_id: str,
-        external_id: str,
-        *,
-        allow_unknown: bool = False,
-    ) -> bool:
-        async with self._database.sessions() as session:
-            from qq_ai_bot.identity.canonical_repository import person_id_for
+    def operations(self, route: ResolvedSend) -> PlatformSocialOperations:
+        return self._registry.social(route.connection)
 
-            found = await person_id_for(session, external_id)
-        if found is None:
-            return allow_unknown
-        return found == person_id
-
-    async def space_owns_external(
-        self,
-        space_id: str,
-        external_id: str,
-        *,
-        allow_unknown: bool = False,
-    ) -> bool:
-        async with self._database.sessions() as session:
-            from qq_ai_bot.identity.canonical_repository import space_id_for
-
-            found = await space_id_for(session, external_id)
-        if found is None:
-            return allow_unknown
-        return found == space_id
+    async def _native_membership_probe(self, bot: object, group_id: str, user_id: str) -> bool:
+        connection = self._registry.resolve_by_handle(bot)
+        try:
+            operations = self._registry.social(connection)
+            return await operations.is_member(bot, group_id, user_id)
+        except Exception:
+            return False
 
     async def _await_cas_hold(self) -> None:
         hold = self._cas_hold
         if hold is not None:
             await hold()
-
-    async def resolve_send_for_account(
-        self,
-        bot_user_id: str,
-        *,
-        capability: str = "send_private",
-        platform: str = "qq",
-    ) -> ResolvedSend:
-        """Resolve one exact ingress account through Registry, never get_bots()."""
-
-        resolution = self._registry.resolve_account(platform, bot_user_id)
-        require_capability(resolution, capability)
-        return ResolvedSend(
-            presence_id=resolution.snapshot.presence_id or "",
-            binding_id="",
-            platform=resolution.snapshot.platform,
-            external_target_id="",
-            route_generation=resolution.snapshot.generation,
-            connection=resolution,
-            kind="account",
-            sender_account_id=resolution.snapshot.external_account_id,
-        )
 
     async def resolve_presence(self, presence_id: str) -> ResolvedSend:
         """Resolve an exact enabled account without consulting an outbound route."""
@@ -264,6 +212,42 @@ class PresenceRouter:
                 != prepared.binding_id
             ):
                 raise RouteSendError("route_changed")
+        if prepared.kind == "conversation":
+            conversation = await session.get(CanonicalConversationModel, prepared.conversation_id)
+            legacy_entry = False
+            if (
+                conversation is not None
+                and target_kind == "person"
+                and conversation.identity_binding_id == prepared.binding_id
+            ):
+                original_binding = await session.get(IdentityBindingModel, prepared.binding_id)
+                if original_binding is not None:
+                    legacy_entry = await legacy_private_entry_matches(
+                        session, conversation, original_binding, presence, prepared.source_event_id
+                    )
+            if (
+                conversation is None
+                or conversation.thread_id != prepared.thread_id
+                or (conversation.person_id if target_kind == "person" else conversation.space_id)
+                != target_id
+                or (
+                    target_kind == "person"
+                    and (
+                        conversation.identity_binding_id != prepared.binding_id
+                        or (
+                            conversation.entry_presence_id is not None
+                            and conversation.entry_presence_id != prepared.presence_id
+                            and not legacy_entry
+                        )
+                    )
+                )
+                or (
+                    target_kind == "space"
+                    and conversation.space_binding_id is not None
+                    and conversation.space_binding_id != prepared.binding_id
+                )
+            ):
+                raise RouteSendError("route_changed")
         self.validate_prepared_connection(prepared)
 
     def validate_prepared_connection(self, prepared: ResolvedSend) -> None:
@@ -287,14 +271,12 @@ class PresenceRouter:
         async with self._database.sessions() as session:
             binding_query = select(SpaceBindingModel).where(
                 SpaceBindingModel.space_id == space_id,
-                SpaceBindingModel.platform == "qq",
                 SpaceBindingModel.status == "active",
             )
             if binding_id is not None:
                 binding_query = binding_query.where(SpaceBindingModel.id == binding_id)
             bindings = list(await session.scalars(binding_query))
             presence_query = select(PresenceModel).where(
-                PresenceModel.platform == "qq",
                 PresenceModel.enabled.is_(True),
             )
             if presence_id is not None:
@@ -305,6 +287,8 @@ class PresenceRouter:
         binding = bindings[0]
         connections = []
         for index, presence in enumerate(presences):
+            if presence.platform != binding.platform:
+                continue
             try:
                 route = (
                     self._presence_connection(presence)
@@ -320,7 +304,7 @@ class PresenceRouter:
                     ResolvedSend(
                         presence_id=route.presence_id,
                         binding_id=binding.id,
-                        platform="qq",
+                        platform=binding.platform,
                         external_target_id=binding.external_space_id,
                         route_generation=route.route_generation,
                         connection=route.connection,
@@ -332,36 +316,152 @@ class PresenceRouter:
             raise RouteSendError("group_unavailable")
         return connections
 
-    async def resolve_send_for_target(
+    async def resolve_send_for_conversation(
         self,
+        conversation_id: str,
         *,
-        bot_user_id: str,
-        target_type: str,
-        target_id: str,
+        presence_id: str | None = None,
+        source_event_id: int | None = None,
     ) -> ResolvedSend:
-        """Resolve a canonical Person/Space route at send time."""
-
-        del bot_user_id
+        """Send to the original platform entry, preserving its private bot or topic."""
         async with self._database.sessions() as session:
-            person_id = None
-            space_id = None
-            if target_type == "private":
-                from qq_ai_bot.identity.canonical_repository import person_id_for
-
-                person_id = await person_id_for(session, target_id)
-            elif target_type == "group":
-                from qq_ai_bot.identity.canonical_repository import space_id_for
-
-                space_id = await space_id_for(session, target_id)
+            conversation = await session.get(CanonicalConversationModel, conversation_id)
+            if conversation is None:
+                raise RouteSendError("conversation_unavailable")
+            if conversation.kind == "private":
+                binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+                entry_presence_id = conversation.entry_presence_id
+                if entry_presence_id is None:
+                    # The old schema did not store an entry bot. Read the actual
+                    # historical ingress, never the Person's current route.
+                    originals = list(
+                        await session.scalars(
+                            select(ChatEventModel.ingress_presence_id)
+                            .where(
+                                ChatEventModel.canonical_conversation_id == conversation.id,
+                                ChatEventModel.ingress_presence_id.is_not(None),
+                            )
+                            .distinct()
+                            .limit(2)
+                        )
+                    )
+                    if presence_id is not None:
+                        original = await session.scalar(
+                            select(ChatEventModel.id)
+                            .where(
+                                ChatEventModel.canonical_conversation_id == conversation.id,
+                                ChatEventModel.ingress_presence_id == presence_id,
+                            )
+                            .limit(1)
+                        )
+                        if original is not None:
+                            entry_presence_id = presence_id
+                    elif len(originals) == 1:
+                        entry_presence_id = originals[0]
+                if (
+                    binding is not None
+                    and presence_id is not None
+                    and entry_presence_id is not None
+                    and presence_id != entry_presence_id
+                ):
+                    old_presence = await session.get(PresenceModel, presence_id)
+                    if old_presence is not None and await legacy_private_entry_matches(
+                        session, conversation, binding, old_presence, source_event_id
+                    ):
+                        entry_presence_id = presence_id
+                if (
+                    binding is None
+                    or binding.status != "active"
+                    or binding.person_id != conversation.person_id
+                    or entry_presence_id is None
+                    or (presence_id is not None and presence_id != entry_presence_id)
+                ):
+                    raise RouteSendError("conversation_entry_unavailable")
+                presence = await session.get(PresenceModel, entry_presence_id)
+                if presence is None or presence.platform != binding.platform:
+                    raise RouteSendError("conversation_entry_unavailable")
+                target = binding.external_account_id
+                binding_id = binding.id
+                platform = binding.platform
             else:
-                raise RouteSendError("none")
-        if target_type == "private":
-            if person_id is None:
-                raise RouteSendError("none")
-            return await self.resolve_send_for_person(person_id)
-        if space_id is None:
-            raise RouteSendError("none")
-        return await self.resolve_send_for_space(space_id)
+                space_binding = (
+                    await session.get(SpaceBindingModel, conversation.space_binding_id)
+                    if conversation.space_binding_id is not None
+                    else None
+                )
+                if space_binding is None and conversation.space_binding_id is None:
+                    # Only a single original legacy Space binding is readable.
+                    original_bindings = list(
+                        await session.scalars(
+                            select(SpaceBindingModel)
+                            .where(
+                                SpaceBindingModel.space_id == conversation.space_id,
+                                SpaceBindingModel.status == "active",
+                            )
+                            .limit(2)
+                        )
+                    )
+                    space_binding = original_bindings[0] if len(original_bindings) == 1 else None
+                if (
+                    space_binding is None
+                    or space_binding.status != "active"
+                    or space_binding.space_id != conversation.space_id
+                ):
+                    raise RouteSendError("conversation_entry_unavailable")
+                if presence_id is None:
+                    route = await session.get(SpaceActiveRouteModel, space_binding.space_id)
+                    if route is not None and route.space_binding_id == space_binding.id:
+                        if route.paused:
+                            raise RouteSendError("paused")
+                        presence_id = route.presence_id
+                    else:
+                        ingest = await session.get(SpaceBindingIngestRouteModel, space_binding.id)
+                        if ingest is not None and not ingest.paused:
+                            presence_id = ingest.ingest_presence_id
+                presence = (
+                    await session.get(PresenceModel, presence_id)
+                    if presence_id is not None
+                    else None
+                )
+                if presence_id is not None and presence is None:
+                    raise RouteSendError("original_presence_unavailable")
+                target = space_binding.external_space_id
+                binding_id = space_binding.id
+                platform = space_binding.platform
+        if conversation.kind == "space" and presence is None:
+            connections = await self.accessible_group_connections(
+                conversation.space_id or "", binding_id=binding_id
+            )
+            if len(connections) != 1:
+                raise RouteSendError("ambiguous")
+            resolved = connections[0]
+        else:
+            if presence is None or not presence.enabled:
+                raise RouteSendError("original_presence_unavailable")
+            if presence.platform != platform:
+                raise RouteSendError("conversation_entry_unavailable")
+            resolved = self._presence_connection(presence)
+            try:
+                require_capability(
+                    resolved.connection,
+                    "send_private" if conversation.kind == "private" else "send_group",
+                )
+            except RegistryClosed as exc:
+                raise RouteSendError(exc.category) from exc
+            if conversation.kind == "space" and not await self._probe(
+                resolved.connection.bot, target, presence.external_account_id
+            ):
+                raise RouteSendError("group_unavailable")
+        return replace(
+            resolved,
+            kind="conversation",
+            binding_id=binding_id,
+            external_target_id=target,
+            route_generation=0,
+            conversation_id=conversation.id,
+            thread_id=conversation.thread_id,
+            source_event_id=source_event_id,
+        )
 
     async def resolve_send_for_binding(
         self, person_id: str, binding_id: str, preferred_presence_id: str | None = None

@@ -175,12 +175,6 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
     )
     draft.environment["YUKI_VERSION"] = __version__
     draft.environment["MODEL_PROFILES_FILE"] = "webui-config/model_profiles.toml"
-    draft.environment["ONEBOT_ACCESS_TOKEN"] = _token_or_existing(
-        draft.environment.get("ONEBOT_ACCESS_TOKEN", "")
-    )
-    draft.environment["SNOWLUMA_VNC_PASSWORD"] = _token_or_existing(
-        draft.environment.get("SNOWLUMA_VNC_PASSWORD", "")
-    )
 
     forced_sections: set[str] = set()
 
@@ -299,10 +293,6 @@ def _run_page_state_machine(
 def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     del paths
     environment = draft.environment
-    environment["SUPERUSERS"] = _ask_qq(
-        ui,
-        default=_real_value(environment.get("SUPERUSERS", "")),
-    )
     if not draft.initial:
         ui.info("模型连接与任务路由请编辑模型配置文件，再通过 admin model apply 应用。")
         return
@@ -552,6 +542,15 @@ def _page_gateway(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None
         gateways=gateways,
     )
     if "snowluma" in gateways:
+        environment["SUPERUSERS"] = _ask_qq(
+            ui, default=_real_value(environment.get("SUPERUSERS", ""))
+        )
+        environment["ONEBOT_ACCESS_TOKEN"] = _token_or_existing(
+            environment.get("ONEBOT_ACCESS_TOKEN", "")
+        )
+        environment["SNOWLUMA_VNC_PASSWORD"] = _token_or_existing(
+            environment.get("SNOWLUMA_VNC_PASSWORD", "")
+        )
         ui.info("SnowLuma 首次启动后，请在本机 WebUI 手动确认协议并扫码登录。")
         ui.info("同一 QQ 已连接其他 Provider 时，新连接会被 Yuki 拒绝。")
 
@@ -770,8 +769,10 @@ def _render_summary(
     *,
     pending_plugins: tuple[str, ...] | None,
 ) -> None:
-    masked_qq = environment["SUPERUSERS"][-4:].rjust(len(environment["SUPERUSERS"]), "*")
-    ui.line(f"管理员 QQ：{masked_qq}")
+    superusers = _real_value(environment.get("SUPERUSERS", ""))
+    if superusers:
+        masked_qq = superusers[-4:].rjust(len(superusers), "*")
+        ui.line(f"管理员 QQ：{masked_qq}")
     ui.line(f"主模型协议：{protocol}")
     ui.line(f"主模型：{environment['LLM_MODEL']}")
     ui.line("主模型 API Key：已配置")
@@ -850,14 +851,14 @@ def _ask_required_secret(ui: TerminalUI, label: str, existing: str) -> str:
 
 
 def _ask_qq(ui: TerminalUI, *, default: str) -> str:
-    value = ui.ask("管理员 QQ", default=default, required=True)
-    if not value.isdigit() or not 5 <= len(value) <= 20:
-        raise SetupValidationError("管理员 QQ 必须是 5 到 20 位数字")
+    value = ui.ask("管理员 QQ（可留空，operator 管理不依赖 QQ 账号）", default=default)
+    if value and not value.isdigit():
+        raise SetupValidationError("管理员 QQ 必须是数字")
     return value
 
 
 def _require_base_configuration(environment: dict[str, str]) -> None:
-    required = ("SUPERUSERS", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+    required = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
     missing = [key for key in required if not _real_value(environment.get(key, ""))]
     if missing:
         raise SetupValidationError("基础配置不完整：" + ", ".join(missing))

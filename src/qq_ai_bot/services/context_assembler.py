@@ -354,8 +354,8 @@ class ContextAssembler:
         current_event = await self._ledger.get_event(turn.trigger_event_id)
         if (
             current_event is None
-            or current_event.bot_user_id != identity.bot_user_id
-            or current_event.platform_message_id != inbound.message_id
+            or current_event.canonical_conversation_id != turn.conversation_id
+            or current_event.ingress_presence_id != inbound.presence_id
         ):
             raise ConversationCoverageError("turn trigger event does not match scope snapshot")
         recent = snapshot.recent
@@ -464,7 +464,7 @@ class ContextAssembler:
         sandbox = isinstance(trigger, (SandboxTaskTurnTrigger, WorkResumeTrigger))
         if (
             event.id != trigger.source_event_id
-            or event.canonical_conversation_id is None
+            or event.canonical_conversation_id != turn.conversation_id
             or (sandbox and (event.direction != "inbound" or event.event_kind != "message"))
             or (
                 not sandbox
@@ -475,8 +475,6 @@ class ContextAssembler:
             )
         ):
             raise ConversationCoverageError("external wakeup source does not match trigger")
-        if identity.key != turn.transport_scope_key:
-            raise ConversationCoverageError("external wakeup transport identity changed")
         snapshot = await self._load_history_snapshot(
             identity,
             turn=turn,
@@ -633,7 +631,6 @@ class ContextAssembler:
             turn,
             conversation_id=loaded.scope.id,
             generation=loaded.scope.generation,
-            transport_key=scope.key,
             runtime_key=loaded.scope.runtime_scope_key,
         ):
             raise ConversationCoverageError("prompt snapshot generation changed")
@@ -744,7 +741,6 @@ class ContextAssembler:
             turn,
             conversation_id=state.id,
             generation=state.generation,
-            transport_key=scope.key,
             runtime_key=state.runtime_scope_key,
         ):
             raise ConversationCoverageError("turn generation changed before prompt snapshot")

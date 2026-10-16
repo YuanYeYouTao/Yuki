@@ -15,7 +15,6 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.origin import TurnOrigin
@@ -43,7 +42,6 @@ class WorkResumeDependencies:
     ledger: EventLedgerRepository
     conversation_scopes: ConversationScopeRepository
     turn_coordinator: ConversationTurnCoordinator
-    presence_router: PresenceRouter
     runtime_config: RuntimeConfigService
     sandbox_tasks: SandboxTaskRepository
     active_bindings: ActiveWorkBindings
@@ -192,9 +190,22 @@ class WorkResumer:
         recovered: MessageTaskSource | SelfTaskSource | AutomationTaskSource,
     ) -> AsyncIterator[_ResumeScene | None]:
         identity = (
-            ConversationScope.group(recovered.bot_user_id, recovered.external_target_id)
+            ConversationScope.group(
+                recovered.bot_user_id,
+                recovered.external_target_id,
+                platform=recovered.platform,
+                presence_id=recovered.presence_id,
+                conversation_id=recovered.conversation_id,
+                thread_id=recovered.thread_id,
+            )
             if recovered.target_space_id
-            else ConversationScope.private(recovered.bot_user_id, recovered.external_target_id)
+            else ConversationScope.private(
+                recovered.bot_user_id,
+                recovered.external_target_id,
+                platform=recovered.platform,
+                presence_id=recovered.presence_id,
+                conversation_id=recovered.conversation_id,
+            )
         )
         state = await self.services.conversation_scopes.get(identity)
         if state is None or state.generation != recovered.generation:
@@ -218,7 +229,6 @@ class WorkResumer:
                 if isinstance(recovered, AutomationTaskSource)
                 else None,
             )
-            resolved = await self.services.presence_router.resolve_presence(recovered.presence_id)
 
             async def validate() -> None:
                 fresh_source = await recover_execution_source(
@@ -230,9 +240,6 @@ class WorkResumer:
                 )
                 if fresh_source != recovered:
                     raise ValueError("work_source_changed")
-                fresh = await self.services.presence_router.resolve_presence(recovered.presence_id)
-                if fresh.connection.snapshot != resolved.connection.snapshot:
-                    raise ValueError("work_connection_changed")
 
             yield _ResumeScene(identity, key, snapshot, token, validate)
 
@@ -272,9 +279,8 @@ class WorkResumer:
                     raise WorkConflict("work_schedule_target_changed")
                 runtime = await self.services.runtime_config.snapshot(
                     user_id=recovered.actor_person_id,
-                    group_id=recovered.external_target_id if recovered.target_space_id else None,
+                    group_id=recovered.target_space_id,
                 )
-                from qq_ai_bot.automation.gateway import OneBotAutomationGateway
 
                 await self.services.generate_origin(
                     content=recovered.content,
@@ -286,13 +292,6 @@ class WorkResumer:
                     source_runtime=ToolRuntime(
                         inbound=None,
                         actor_context=recovered.actor(item["id"]),
-                        gateway=OneBotAutomationGateway(
-                            bot_user_id=recovered.bot_user_id,
-                            automation_id=source["automation_id"],
-                            automation_run_id=recovered.automation_run_id,
-                            router=self.services.presence_router,
-                        ),
-                        allow_generic_onebot=recovered.actor_is_superuser,
                         actor_is_superuser=recovered.actor_is_superuser,
                         conversation_key=scene.key,
                         execution_id=item["id"],
@@ -336,7 +335,7 @@ class WorkResumer:
                 if control.current is None or control.current["id"] != item["id"]:
                     raise WorkConflict("work_schedule_target_changed")
                 runtime = await self.services.runtime_config.snapshot(
-                    group_id=recovered.external_target_id
+                    group_id=recovered.target_space_id
                 )
                 actor = recovered.actor(item["id"])
                 result = await self.services.generate_self(
@@ -348,8 +347,6 @@ class WorkResumer:
                     source_runtime=ToolRuntime(
                         inbound=None,
                         actor_context=actor,
-                        gateway=None,
-                        allow_generic_onebot=False,
                         actor_is_superuser=False,
                         conversation_key=key,
                         execution_id=item["id"],
@@ -398,8 +395,16 @@ class WorkResumer:
                 if control.current is None or control.current["id"] != item["id"]:
                     raise WorkConflict("work_schedule_target_changed")
                 runtime = await self.services.runtime_config.snapshot(
-                    user_id=recovered.actor_person_id, group_id=original.group_id
+                    user_id=recovered.actor_person_id, group_id=recovered.target_space_id
                 )
+                from qq_ai_bot.identity.authority import person_is_superuser
+
+                async with self.repository.database.sessions() as authority_session:
+                    actor_is_superuser = await person_is_superuser(
+                        authority_session,
+                        recovered.actor_person_id,
+                        self.services.settings.superusers,
+                    )
                 inbound = recovered.inbound(original, legacy_conversation_key=key)
                 result = await self.services.generate_wakeup(
                     event=original,
@@ -418,10 +423,7 @@ class WorkResumer:
                     before_model_request=validate,
                     source_runtime=ToolRuntime(
                         inbound=inbound,
-                        gateway=None,
-                        allow_generic_onebot=False,
-                        actor_is_superuser=recovered.platform == "qq"
-                        and recovered.actor_user_id in self.services.settings.superusers,
+                        actor_is_superuser=actor_is_superuser,
                         conversation_key=key,
                         trigger_message_id=original.platform_message_id,
                         execution_id=item["id"],

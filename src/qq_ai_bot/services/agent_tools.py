@@ -1,4 +1,4 @@
-"""Bounded model tools over the active OneBot Provider and local person memory."""
+"""Fixed model tools over authenticated runtime services and canonical memory."""
 
 from __future__ import annotations
 
@@ -8,14 +8,13 @@ import re
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime
-from typing import Any, Literal, Protocol, cast
+from typing import Any, Literal, cast
 
 from pydantic import ValidationError
-from sqlalchemy import text
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
@@ -58,6 +57,7 @@ from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.subjects import ResolvedSubject
 from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.memory.tool_intent import effective_query_summary, parse_memory_tool_intent
+from qq_ai_bot.persistence.models import MembershipModel
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -81,9 +81,6 @@ from qq_ai_bot.web.models import (
 from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
 
 _URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
-_CQ_CODE = re.compile(r"\[CQ:([a-zA-Z0-9_-]+)(?:,[^\]]*)?\]", re.IGNORECASE)
-_HISTORY_TEXT_MAX = 4000
-_HISTORY_SEGMENT_MAX = 100
 _MEMORY_CHANGE_ORIGINS = frozenset(
     {
         TurnOrigin.USER_MESSAGE,
@@ -96,14 +93,6 @@ _MEMORY_INTENT_PROPERTIES = {
     "purpose": {
         "type": "string",
         "enum": ["background", "continuation", "recall", "verify", "correct"],
-    },
-    "entities": {
-        "type": "array",
-        "items": {"type": "string"},
-    },
-    "preferred_kinds": {
-        "type": "array",
-        "items": {"type": "string", "enum": ["fact", "preference", "episode"]},
     },
     "start_at": {
         "type": "string",
@@ -127,10 +116,6 @@ _RUNTIME_SNAPSHOT: ContextVar[RuntimeConfigSnapshot | None] = ContextVar(
     "agent_tool_runtime_snapshot",
     default=None,
 )
-_MEMORY_READ_CACHE: ContextVar[dict[str, Any] | None] = ContextVar(
-    "memory_read_cache", default=None
-)
-_MEMORY_READ_DUPLICATE: ContextVar[bool] = ContextVar("memory_read_duplicate", default=False)
 _MEMORY_READ_TOOL: ContextVar[str] = ContextVar("memory_read_tool", default="")
 _OBSERVED_MEMORY_READS = frozenset(
     {
@@ -142,20 +127,11 @@ _OBSERVED_MEMORY_READS = frozenset(
 logger = logging.getLogger(__name__)
 
 
-class OneBotToolGateway(Protocol):
-    """The subset of the event-bound adapter required by Agent tools."""
-
-    async def call_api(self, action: str, params: dict[str, Any]) -> Any:
-        """Call a OneBot action over the already-connected adapter."""
-
-
 @dataclass(frozen=True, slots=True)
 class ToolRuntime:
     """Authorization and scene data that cannot be supplied by the model."""
 
     inbound: InboundMessage | None
-    gateway: OneBotToolGateway | None
-    allow_generic_onebot: bool
     declaration_only: bool = False
     conversation_key: str = ""
     trigger_message_id: str = ""
@@ -187,7 +163,6 @@ class ToolRuntime:
     space_id: str | None = None
     external_target_id: str | None = None
     target_presence_id: str | None = None
-    memory_read_cache: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
     context_plugin_id: str | None = None
     context_read_contract: str | None = None
 
@@ -347,6 +322,12 @@ class ToolRuntime:
         """Resolve the authenticated conversation without inventing a message actor."""
 
         if self.read_scope is not None:
+            if self.effective_conversation_id is not None:
+                return replace(
+                    self.read_scope,
+                    key=f"conversation:{self.effective_conversation_id}",
+                    conversation_id=self.effective_conversation_id,
+                )
             return self.read_scope
         if self.inbound is not None:
             return self.inbound.scope()
@@ -354,10 +335,23 @@ class ToolRuntime:
         target_id = (self.external_target_id or "").strip()
         if not bot_user_id or not target_id:
             raise RuntimeError("tool runtime conversation is unavailable")
+        platform = self.require_actor().platform
         if self.effective_scope_type is ScopeType.GROUP:
             group_id = (self.current_group_id or target_id).strip()
-            return ConversationScope.group(bot_user_id, group_id)
-        return ConversationScope.private(bot_user_id, target_id)
+            return ConversationScope.group(
+                bot_user_id,
+                group_id,
+                platform=platform,
+                presence_id=self.effective_presence_id,
+                conversation_id=self.effective_conversation_id,
+            )
+        return ConversationScope.private(
+            bot_user_id,
+            target_id,
+            platform=platform,
+            presence_id=self.effective_presence_id,
+            conversation_id=self.effective_conversation_id,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -470,7 +464,7 @@ class AgentToolService:
                 name="get_recent_chat_history",
                 result_cacheable=False,
                 description=(
-                    "读取当前会话近期记录；消息入口可向网关补查，后台读取授权会话账本。"
+                    "读取当前会话授权账本中的近期记录，不调用平台网关补查。"
                     "当用户问刚才说了什么、当前对话历史或人物上下文时使用。"
                 ),
                 parameters=_object_schema({}),
@@ -478,13 +472,14 @@ class AgentToolService:
             ChatTool(
                 name="search_chat_history",
                 description=(
-                    "查找旧聊天的原话、熟人线索或未写入结构化记忆的经历；可按 QQ、群号和时间约束。"
+                    "查找旧聊天的原话、熟人线索或未写入结构化记忆的经历；"
+                    "可按内部 Person、Space 编号和时间约束。"
                 ),
                 parameters=_object_schema(
                     {
                         "keyword": {"type": "string"},
-                        "user_id": {"type": "string"},
-                        "group_id": {"type": "string"},
+                        "person_id": {"type": "string"},
+                        "space_id": {"type": "string"},
                         "after": {
                             "type": "string",
                             "description": "ISO 8601 时间，可省略",
@@ -502,7 +497,7 @@ class AgentToolService:
                 name="get_chat_history_around",
                 description=(
                     "读取当前会话账本中某条消息前后的原文。"
-                    "只用内部 event_id 定位，不调用 QQ 网关。"
+                    "只用内部 event_id 定位。"
                     "默认半径很小；需要对齐摘要覆盖区间里的原话时使用。"
                 ),
                 parameters=_object_schema(
@@ -535,13 +530,13 @@ class AgentToolService:
                                     "type": "string",
                                     "description": (
                                         "本轮事件人物引用：current_speaker、"
-                                        "member_{user_id} 或 replied_message_author"
+                                        "member_{person_id} 或 replied_message_author"
                                     ),
                                 },
                                 "display_name": {"type": "string"},
-                                "user_id": {"type": "string"},
-                                "group_id": {"type": "string"},
-                                "group_name": {"type": "string"},
+                                "person_id": {"type": "string"},
+                                "space_id": {"type": "string"},
+                                "space_name": {"type": "string"},
                             },
                             "required": ["scope"],
                         },
@@ -799,23 +794,6 @@ class AgentToolService:
                     ),
                 )
             )
-        if runtime.declaration_only or runtime.allow_generic_onebot:
-            tools.append(
-                ChatTool(
-                    name="call_onebot_api",
-                    description=(
-                        "以当前超级管理员身份调用任意 QQ/OneBot Provider action。"
-                        "action 和 params 原样传递，不要编造执行结果。"
-                    ),
-                    parameters=_object_schema(
-                        {
-                            "action": {"type": "string"},
-                            "params": {"type": "object"},
-                        },
-                        required=("action", "params"),
-                    ),
-                )
-            )
         from qq_ai_bot.sandbox.client import sandbox_tools
         from qq_ai_bot.services.personal_entry_tool import ENTRY_TOOL
         from qq_ai_bot.social.tools import social_tool_definitions
@@ -838,12 +816,10 @@ class AgentToolService:
         """Execute one tool and return JSON, including safe model-readable errors."""
 
         snapshot = runtime.runtime_config or await self._runtime_config.snapshot(
-            user_id=runtime.actor_user_id,
-            group_id=runtime.current_group_id,
+            user_id=runtime.person_id,
+            group_id=runtime.space_id,
         )
         token = _RUNTIME_SNAPSHOT.set(snapshot)
-        cache_token = _MEMORY_READ_CACHE.set(runtime.memory_read_cache)
-        duplicate_token = _MEMORY_READ_DUPLICATE.set(False)
         read_tool_token = _MEMORY_READ_TOOL.set(name if name in _OBSERVED_MEMORY_READS else "")
         try:
             try:
@@ -1033,12 +1009,12 @@ class AgentToolService:
                             ),
                             "route_paused": "该操作所需路由已暂停，未执行；不会自动换路或解暂停",
                             "binding_ambiguous": (
-                                "目标有多个有效 QQ Binding；查询联系人后明确指定 Binding，未执行"
+                                "目标有多个有效平台 Binding；查询联系人后明确指定 Binding，未执行"
                             ),
-                            "binding_unavailable": "指定的 QQ Binding 无效或不属于目标，未执行",
+                            "binding_unavailable": "指定的平台 Binding 无效或不属于目标，未执行",
                             "original_presence_unavailable": "原消息发送账号当前不可用，未撤回",
                             "group_unavailable": "当前没有可访问该群的连接，未执行",
-                            "group_member_unavailable": "无法确认目标 QQ 账号属于该群，未执行",
+                            "group_member_unavailable": "无法确认目标平台账号属于该群，未执行",
                             "mentions_require_group": "结构化 @成员只支持群消息",
                             "group_target_required": (
                                 "顶层目标是群，当前群请省略；要 @ 的人放在 mentions 中，"
@@ -1052,12 +1028,7 @@ class AgentToolService:
                                 "名称未精确匹配；先 find_contacts。群发送顶层是群目标，"
                                 "人物应放在 mentions；未找到不代表账号映射损坏"
                             ),
-                            "invalid_space_id": (
-                                "space_id 必须是 canonical 群 UUID，不是 QQ 群号；当前群可省略"
-                            ),
-                            "invalid_poke_scene": (
-                                "scene 只允许 current 或 private；私聊场景不能同时指定群"
-                            ),
+                            "invalid_space_id": ("space_id 必须是内部 Space 编号；当前空间可省略"),
                         }.get(str(exc), "社交操作未执行或结果不确定，请勿盲重试")
                         return self._result(error=str(exc), detail=detail)
                 if name in {
@@ -1081,14 +1052,11 @@ class AgentToolService:
                 if name == "get_memory_evidence":
                     return await self._memory_evidence(arguments, runtime)
                 if name == "memory_change":
-                    runtime.memory_read_cache.clear()
                     return await self._memory_change(arguments, runtime)
                 if name == "web_search":
                     return await self._web_search(arguments, runtime)
                 if name == "read_webpage":
                     return await self._read_webpage(arguments, runtime)
-                if name == "call_onebot_api":
-                    return await self._call_onebot(arguments, runtime)
                 return self._result(error="unknown_tool", detail=f"未知工具：{name}")
             except WebSearchError as exc:
                 return self._web_result(error=exc.code, detail=exc.detail)
@@ -1113,8 +1081,6 @@ class AgentToolService:
                 return self._result(error=type(exc).__name__, detail="工具执行失败")
         finally:
             _MEMORY_READ_TOOL.reset(read_tool_token)
-            _MEMORY_READ_DUPLICATE.reset(duplicate_token)
-            _MEMORY_READ_CACHE.reset(cache_token)
             _RUNTIME_SNAPSHOT.reset(token)
 
     def _my_capabilities(
@@ -1164,7 +1130,12 @@ class AgentToolService:
         """Resolve the current sender after validating all event-bound fields."""
 
         actor = runtime.require_actor()
-        return self._permission_catalog.report_for_actor(actor, category=category, query=query)
+        return self._permission_catalog.report_for_actor(
+            actor,
+            category=category,
+            query=query,
+            actor_is_superuser=runtime.actor_is_superuser,
+        )
 
     async def _recent_history(self, runtime: ToolRuntime) -> ToolExecutionResult:
         rows = await self._ledger.list_scope_recent(
@@ -1176,122 +1147,17 @@ class AgentToolService:
             data={"source": "ledger", "events": [self._event_json(row) for row in rows]}
         )
 
-    @staticmethod
-    def _segments(raw: Any) -> tuple[dict[str, Any], ...]:
-        if isinstance(raw, str):
-            # Some OneBot history implementations return a raw CQ-code string instead
-            # of a segment array. Discard every CQ parameter so media URLs,
-            # paths and inline payloads cannot bypass the structured sanitizer.
-            text = _CQ_CODE.sub(lambda match: f"[{match.group(1).casefold()}]", raw)
-            return ({"type": "text", "data": {"text": text[:_HISTORY_TEXT_MAX]}},)
-        if not isinstance(raw, list):
-            return ()
-        sanitized: list[dict[str, Any]] = []
-        text_budget = _HISTORY_TEXT_MAX
-        for item in raw[:_HISTORY_SEGMENT_MAX]:
-            if not isinstance(item, dict):
-                continue
-            kind = str(item.get("type") or "unknown").strip().casefold()[:32]
-            data = item.get("data")
-            data = data if isinstance(data, dict) else {}
-            safe_data: dict[str, Any] = {}
-            if kind == "text":
-                text = str(data.get("text", ""))[:text_budget]
-                safe_data["text"] = text
-                text_budget -= len(text)
-            elif kind == "at":
-                safe_data["qq"] = str(data.get("qq", ""))[:32]
-            elif kind == "face":
-                safe_data["id"] = str(data.get("id", ""))[:32]
-            elif kind == "reply":
-                safe_data["id"] = str(data.get("id", ""))[:64]
-            elif kind == "image":
-                # History is a text-only tool. Keep only non-locating media
-                # metadata; signed URLs, file identifiers, local paths, inline
-                # Base64 and untrusted image summaries must never reach the text
-                # model or be imported into the ledger by this path.
-                for key in ("sub_type", "emoji_id", "emoji_package_id"):
-                    value = data.get(key)
-                    if value is not None:
-                        safe_data[key] = str(value)[:64]
-                size = data.get("file_size") or data.get("size")
-                if isinstance(size, int) and not isinstance(size, bool) and size >= 0:
-                    safe_data["file_size"] = size
-            sanitized.append({"type": kind or "unknown", "data": safe_data})
-        return tuple(sanitized)
-
-    @classmethod
-    def _history_item_for_model(cls, item: dict[str, Any]) -> dict[str, Any]:
-        """Return a bounded text-only view of one untrusted OneBot history item."""
-
-        segments = cls._segments(item.get("message"))
-        sender = item.get("sender")
-        sender = sender if isinstance(sender, dict) else {}
-        sender_id = item.get("user_id") or sender.get("user_id") or ""
-        safe_sender: dict[str, str] = {"user_id": str(sender_id)[:32]}
-        for key in ("nickname", "card"):
-            value = sender.get(key)
-            if isinstance(value, str) and value.strip():
-                safe_sender[key] = " ".join(value.split())[:100]
-        return {
-            "message_id": str(item.get("message_id") or item.get("id") or "")[:64],
-            "time": item.get("time") if isinstance(item.get("time"), int | float) else None,
-            "sender": safe_sender,
-            "text": cls._segments_text(segments) or "[空消息]",
-        }
-
-    @staticmethod
-    def _segments_text(segments: tuple[dict[str, Any], ...]) -> str:
-        parts: list[str] = []
-        for segment in segments:
-            kind = str(segment.get("type", "unknown"))
-            data = segment.get("data")
-            data = data if isinstance(data, dict) else {}
-            if kind == "text":
-                parts.append(str(data.get("text", "")))
-            elif kind == "at":
-                parts.append(f"[@{data.get('qq', '')}]")
-            elif kind == "face":
-                parts.append(f"[QQ表情:{data.get('id', '')}]")
-            else:
-                parts.append(f"[{kind}]")
-        return "".join(parts).strip()[:_HISTORY_TEXT_MAX]
-
     async def _search(self, arguments: dict[str, Any], runtime: ToolRuntime) -> ToolExecutionResult:
         keyword = arguments.get("keyword")
         if not isinstance(keyword, str) or not keyword.strip():
             return self._result(error="invalid_keyword", detail="keyword 必须是非空字符串")
-        after = self._parse_time(arguments.get("after"))
-        before = self._parse_time(arguments.get("before"))
-        user_id = self._optional_string(arguments.get("user_id"))
-        group_id = self._optional_string(arguments.get("group_id"))
-        if (
-            runtime.inbound is None and runtime.actor_context is None
-        ) or runtime.read_scope is not None:
-            scope = runtime.conversation_scope()
-            granted_group = scope.group_id if scope.scope_type is ScopeType.GROUP else None
-            granted_person = scope.private_peer_user_id if granted_group is None else None
-            if group_id not in {None, granted_group} or user_id not in {None, granted_person}:
-                return self._result(error="history_scope_denied", detail="只能读取获准会话")
-            group_id, user_id = granted_group, granted_person
-        if (
-            len(keyword.strip()) < 3
-            and not user_id
-            and not group_id
-            and after is None
-            and before is None
-        ):
-            if runtime.current_group_id:
-                group_id = runtime.current_group_id
-            else:
-                user_id = runtime.actor_user_id or runtime.external_target_id
         rows = await self._ledger.search(
             keyword=keyword,
-            conversation_id=runtime.effective_conversation_id,
-            user_id=user_id,
-            group_id=group_id,
-            after=after,
-            before=before,
+            scope=runtime.conversation_scope(),
+            person_id=self._optional_string(arguments.get("person_id")),
+            space_id=self._optional_string(arguments.get("space_id")),
+            after=self._parse_time(arguments.get("after")),
+            before=self._parse_time(arguments.get("before")),
             limit=int(arguments.get("limit", 20)),
             message_only=True,
         )
@@ -1362,8 +1228,6 @@ class AgentToolService:
             "target",
             "limit",
             "purpose",
-            "entities",
-            "preferred_kinds",
             "start_at",
             "end_at",
             "temporal_constraint",
@@ -1402,7 +1266,7 @@ class AgentToolService:
                 )
             authorized_scope = await self._memory_reads.authorized(
                 requester,
-                current_group_id=runtime.current_group_id,
+                current_space_id=self._runtime_space_id(runtime),
                 private_scene=runtime.effective_scope_type is ScopeType.PRIVATE,
                 self_actor=requester is None,
                 allowed_scopes=allowed_scopes,
@@ -1417,11 +1281,11 @@ class AgentToolService:
                     "scope",
                     "subject_ref",
                     "display_name",
-                    "user_id",
-                    "group_id",
-                    "group_name",
+                    "person_id",
+                    "space_id",
+                    "space_name",
                 },
-                "group": {"scope", "group_id", "group_name"},
+                "group": {"scope", "space_id", "space_name"},
                 "self": {"scope"},
             }.get(kind)
             if allowed is None or set(target) - allowed:
@@ -1450,13 +1314,13 @@ class AgentToolService:
                         error=group_id.code, detail=group_id.detail, data=group_id.data
                     )
                 if group_id is None:
-                    raise ValueError("指定 group 范围须提供 group_id 或 group_name")
+                    raise ValueError("指定 group 范围须提供 space_id 或 space_name")
                 requester = self._social_requester(runtime)
                 if requester is not None:
                     targets = (await self._memory_reads.group(requester, group_id)).targets
                 elif (
                     runtime.effective_scope_type is ScopeType.GROUP
-                    and runtime.current_group_id == group_id
+                    and self._runtime_space_id(runtime) == group_id
                     and runtime.actor_context is not None
                     and runtime.require_actor().principal_kind == "self"
                 ):
@@ -1464,7 +1328,7 @@ class AgentToolService:
                         MemoryEntityTarget(
                             role=MemoryTargetRole.CURRENT_GROUP,
                             scope_type=MemoryScopeType.GROUP,
-                            group_id=group_id,
+                            canonical_subject_space_id=group_id,
                             block_id="current_group",
                         ),
                     )
@@ -1484,6 +1348,20 @@ class AgentToolService:
                         error="self_memory_unavailable", detail="当前会话不能读取自我记忆"
                     )
                 scope = ResolvedReadScope(targets=(self_target,))
+        if target is not None and self._social_requester(runtime) is not None:
+            authorized_scope = await self._memory_reads.authorized(
+                self._social_requester(runtime),
+                current_space_id=self._runtime_space_id(runtime),
+                private_scene=runtime.effective_scope_type is ScopeType.PRIVATE,
+                allowed_scopes=(
+                    tuple(MemoryScopeType)
+                    if runtime.memory_allowed_scopes is None
+                    else runtime.memory_allowed_scopes
+                ),
+            )
+            authorized_scope = authorized_scope.model_copy(
+                update={"resolved_targets": scope.targets}
+            )
         result = await self._read_memories(
             arguments,
             runtime=runtime,
@@ -1522,52 +1400,42 @@ class AgentToolService:
         arguments: dict[str, Any],
         runtime: ToolRuntime,
     ) -> _PersonMemorySelection | _ToolFailure:
-        selector_names = tuple(
-            name
-            for name in ("subject_ref", "display_name", "user_id")
-            if name in arguments and arguments[name] is not None
-        )
-        if len(selector_names) != 1:
+        selectors = [
+            key
+            for key in ("subject_ref", "display_name", "person_id")
+            if arguments.get(key) is not None
+        ]
+        if len(selectors) != 1:
             return _ToolFailure(
-                "invalid_person_selector",
-                "subject_ref、display_name、user_id 必须且只能提供一个",
+                "invalid_person_selector", "subject_ref、display_name、person_id 必须且只能提供一个"
             )
-        group_id = await self._read_group_selector(arguments, runtime, default_current=False)
-        if isinstance(group_id, _ToolFailure):
-            return group_id
-        selector = selector_names[0]
-        if selector == "subject_ref":
-            subject_ref = arguments.get("subject_ref")
-            if not isinstance(subject_ref, str) or not subject_ref:
-                return _ToolFailure("invalid_subject_ref", "subject_ref 必须是非空字符串")
-            async with self._people.database.sessions() as session, session.begin():
-                await session.execute(text("BEGIN"))
-                owners: dict[str, str] = {}
-                resolved = await self._user_id_for_subject_ref(
-                    subject_ref, runtime, session=session, owners=owners
-                )
-                if isinstance(resolved, _ToolFailure):
-                    return resolved
-                return await self._person_memory_selection_for_user(
-                    resolved,
-                    runtime,
-                    resolved_by="subject_ref",
-                    subject_ref=subject_ref,
-                    selected_group_id=group_id,
-                    session=session,
-                    owners=owners,
-                )
-
-        if selector == "display_name":
-            display_name = arguments.get("display_name")
-            if not isinstance(display_name, str) or not display_name.strip():
-                return _ToolFailure("invalid_display_name", "display_name 必须是非空字符串")
+        space_id = await self._read_group_selector(arguments, runtime, default_current=False)
+        if isinstance(space_id, _ToolFailure):
+            return space_id
+        key = selectors[0]
+        value = arguments[key]
+        if not isinstance(value, str) or not value.strip():
+            return _ToolFailure("invalid_person_selector", "人物目标必须是非空字符串")
+        value = value.strip()
+        if key == "subject_ref":
+            person_id = await self._person_id_for_subject_ref(value, runtime)
+            if isinstance(person_id, _ToolFailure):
+                return person_id
+        elif key == "display_name":
             requester = self._social_requester(runtime)
             if requester is not None:
-                matches = await self._memory_reads.people_named(requester, display_name)
-            elif runtime.current_group_id is not None:
-                matches = await self._people.find_group_members_by_exact_name(
-                    display_name, runtime.current_group_id
+                matches = await self._memory_reads.people_named(requester, value)
+            elif self._runtime_space_id(runtime) is not None:
+                actor = runtime.require_actor()
+                matches = tuple(
+                    item.person_id
+                    for item in await self._people.search_group_member_names(
+                        value,
+                        runtime.current_group_id or "",
+                        platform=actor.platform,
+                        space_id=self._runtime_space_id(runtime),
+                    )
+                    if item.exact and item.person_id is not None
                 )
             else:
                 matches = ()
@@ -1576,200 +1444,89 @@ class AgentToolService:
             if len(matches) > 1:
                 return _ToolFailure(
                     "ambiguous_person",
-                    "存在多个同名人物，请澄清目标或提供真实 @/兼容 ID",
-                    {
-                        "candidates": [{"user_id": item} for item in matches],
-                        "has_more": False,
-                    },
+                    "存在多个同名人物，请澄清目标或提供内部 Person 编号",
+                    {"candidates": [{"person_id": item} for item in matches], "has_more": False},
                 )
-            return await self._person_memory_selection_for_user(
-                matches[0],
-                runtime,
-                resolved_by="display_name",
-                selected_group_id=group_id,
-            )
-
-        user_id = arguments.get("user_id")
-        if not isinstance(user_id, str) or not user_id.strip() or not user_id.strip().isdigit():
-            return _ToolFailure("invalid_user_id", "user_id 必须是数字 QQ 号字符串")
-        return await self._person_memory_selection_for_user(
-            user_id.strip(),
+            person_id = matches[0]
+        else:
+            person_id = value
+        return await self._person_memory_selection(
+            person_id,
             runtime,
-            resolved_by="user_id",
-            selected_group_id=group_id,
+            resolved_by=key,
+            subject_ref=value if key == "subject_ref" else None,
+            selected_space_id=space_id,
         )
 
-    async def _user_id_for_subject_ref(
-        self,
-        subject_ref: str,
-        runtime: ToolRuntime,
-        *,
-        session: AsyncSession,
-        owners: dict[str, str],
+    async def _person_id_for_subject_ref(
+        self, subject_ref: str, runtime: ToolRuntime
     ) -> str | _ToolFailure:
-        if runtime.inbound is None:
-            if (
-                subject_ref == "current_speaker"
-                and runtime.origin is TurnOrigin.SCHEDULED_AUTOMATION
-                and runtime.actor_context is not None
-            ):
-                return runtime.require_actor().user_id
-            return _ToolFailure("subject_not_found", "当前执行没有对应的真实提及或回复事件")
-        inbound = runtime.require_inbound()
         if subject_ref == "current_speaker":
-            return inbound.sender.user_id
-        if subject_ref == "replied_message_author":
-            candidate = inbound.reply_sender_user_id
-            targets = (
-                await self._people.person_reference_map(
-                    (candidate,),
-                    speaker_user_id=inbound.sender.user_id,
-                    bot_user_id=inbound.bot_user_id,
-                    session=session,
-                )
-                if candidate
-                else {}
-            )
-            if not targets:
-                return _ToolFailure(
-                    "subject_not_found",
-                    "本轮没有可查询的回复消息作者",
-                )
-            owners.update(targets)
-            return next(iter(targets))
+            person_id = self._social_requester(runtime)
+            if person_id is not None:
+                return person_id
+        inbound = runtime.inbound
+        if inbound is not None:
+            if subject_ref == "replied_message_author" and inbound.reply_to_event_id is not None:
+                reply = await self._ledger.get_event(inbound.reply_to_event_id)
+                if reply is not None and reply.author_person_id is not None:
+                    return reply.author_person_id
+            if subject_ref.startswith("member_"):
+                person_id = subject_ref.removeprefix("member_")
+                if person_id in inbound.mentioned_person_ids:
+                    return person_id
+        return _ToolFailure("subject_not_found", "该人物引用在本轮真实事件中不存在")
 
-        prefix = "member_"
-        if not subject_ref.startswith(prefix):
-            return _ToolFailure("invalid_subject_ref", "subject_ref 不是受支持的事件引用")
-        user_id = subject_ref.removeprefix(prefix)
-        references = await self._people.person_reference_map(
-            (*inbound.mentioned_user_ids, *runtime.mentioned_user_ids),
-            speaker_user_id=inbound.sender.user_id,
-            bot_user_id=inbound.bot_user_id,
-            session=session,
-        )
-        owners.update(references)
-        representatives: dict[str, str] = {}
-        for account, person_id in references.items():
-            representatives.setdefault(person_id, account)
-        mentioned = tuple(representatives.values())
-        if user_id not in mentioned:
-            return _ToolFailure("subject_not_found", "该成员引用在本轮不存在")
-        return user_id
-
-    async def _person_memory_selection_for_user(
+    async def _person_memory_selection(
         self,
-        user_id: str,
+        person_id: str,
         runtime: ToolRuntime,
         *,
         resolved_by: str,
         subject_ref: str | None = None,
-        selected_group_id: str | None = None,
-        session: AsyncSession | None = None,
-        owners: dict[str, str] | None = None,
+        selected_space_id: str | None = None,
     ) -> _PersonMemorySelection | _ToolFailure:
-        if session is None:
-            async with self._people.database.sessions() as owned_session, owned_session.begin():
-                await owned_session.execute(text("BEGIN"))
-                return await self._person_memory_selection_for_user(
-                    user_id,
-                    runtime,
+        requester = self._social_requester(runtime)
+        if requester is not None:
+            scope = await self._memory_reads.person(
+                requester, person_id, group_id=selected_space_id
+            )
+            if scope.targets:
+                return _PersonMemorySelection(
+                    user_id=person_id,
+                    targets=scope.targets,
                     resolved_by=resolved_by,
                     subject_ref=subject_ref,
-                    selected_group_id=selected_group_id,
-                    session=owned_session,
-                    owners=owners,
                 )
-        inbound = runtime.inbound
-        if owners is None or user_id not in owners:
-            actor = runtime.require_actor()
-            owners = (
-                {user_id: actor.person_id}
-                if user_id == actor.user_id and actor.person_id
-                else await self._people.person_reference_map(
-                    (user_id,),
-                    speaker_user_id="",
-                    bot_user_id=runtime.effective_bot_user_id or "",
-                    session=session,
-                )
-            )
-        if not runtime.effective_bot_user_id or user_id not in owners:
-            return _ToolFailure(
-                "permission_denied",
-                f"不能读取 {self._settings.bot_display_name} 身份的个人记忆",
-            )
-        if self._social_requester(runtime) is not None:
-            scope = await self._memory_reads.person(
-                self._social_requester(runtime) or runtime.require_actor().user_id,
-                user_id,
-                group_id=selected_group_id,
-                person_ids=owners,
-                session=session,
-            )
-            if not scope.targets:
-                if selected_group_id is not None:
-                    return _ToolFailure(
-                        "permission_denied",
-                        "指定群范围没有历史关系授权；不可自动换范围重试",
-                        {"denied_scope": "explicit_group", "query_executed": False},
-                    )
-                return _ToolFailure("permission_denied", "没有本人或历史共同群关系授权")
-            return _PersonMemorySelection(
-                user_id=user_id,
-                targets=scope.targets,
-                resolved_by=resolved_by,
-                subject_ref=subject_ref,
-            )
-
+            return _ToolFailure("permission_denied", "没有本人或历史共同空间关系授权")
+        actor = runtime.require_actor()
+        space_id = self._runtime_space_id(runtime)
         if (
-            inbound is None
-            and runtime.effective_scope_type is ScopeType.PRIVATE
-            and user_id == runtime.external_target_id
-            and selected_group_id is None
+            actor.principal_kind != "self"
+            or space_id is None
+            or (selected_space_id is not None and selected_space_id != space_id)
         ):
-            target = MemoryEntityTarget(
-                role=MemoryTargetRole.CURRENT_PERSON,
-                scope_type=MemoryScopeType.PERSON,
-                subject_user_id=user_id,
-                block_id="current_person",
+            return _ToolFailure("permission_denied", "当前执行没有该人物的读取授权")
+        async with self._people.database.sessions() as session:
+            membership = await session.scalar(
+                select(MembershipModel.canonical_person_id).where(
+                    MembershipModel.canonical_person_id == person_id,
+                    MembershipModel.canonical_space_id == space_id,
+                )
             )
-            return _PersonMemorySelection(
-                user_id=user_id,
-                targets=(target,),
-                resolved_by=resolved_by,
-                subject_ref=subject_ref,
-            )
-
-        group_id = inbound.group_id if inbound is not None else runtime.current_group_id
-        if selected_group_id is not None and selected_group_id != group_id:
-            return _ToolFailure(
-                "permission_denied",
-                "指定群范围没有历史关系授权；不可自动换范围重试",
-                {"denied_scope": "explicit_group", "query_executed": False},
-            )
-        if group_id is None:
-            return _ToolFailure(
-                "permission_denied",
-                "私聊中只能读取本人记忆",
-            )
-        members = await self._people.members_in_group(
-            (user_id,), group_id, person_ids=owners, session=session
-        )
-        if user_id not in members:
-            return _ToolFailure(
-                "permission_denied",
-                "只能读取当前群真实成员在本群的 person_group 记忆",
-            )
-        target = MemoryEntityTarget(
-            role=MemoryTargetRole.REFERENCED_PERSON_GROUP,
-            scope_type=MemoryScopeType.PERSON_GROUP,
-            subject_user_id=user_id,
-            group_id=group_id,
-            block_id=f"tool_person_group:{user_id}:{group_id}",
-        )
+        if membership is None:
+            return _ToolFailure("permission_denied", "只能读取当前空间真实成员在本空间的记忆")
         return _PersonMemorySelection(
-            user_id=user_id,
-            targets=(target,),
+            user_id=person_id,
+            targets=(
+                MemoryEntityTarget(
+                    role=MemoryTargetRole.REFERENCED_PERSON_GROUP,
+                    scope_type=MemoryScopeType.PERSON_GROUP,
+                    canonical_subject_person_id=person_id,
+                    canonical_subject_space_id=space_id,
+                    block_id=f"tool_person_group:{person_id}:{space_id}",
+                ),
+            ),
             resolved_by=resolved_by,
             subject_ref=subject_ref,
         )
@@ -1781,76 +1538,60 @@ class AgentToolService:
         *,
         default_current: bool,
     ) -> str | None | _ToolFailure:
-        selectors = [key for key in ("group_id", "group_name") if arguments.get(key) is not None]
+        selectors = [key for key in ("space_id", "space_name") if arguments.get(key) is not None]
         if not selectors:
-            return runtime.current_group_id if default_current else None
+            return self._runtime_space_id(runtime) if default_current else None
         if len(selectors) != 1:
-            return _ToolFailure("invalid_group_selector", "group_id 与 group_name 只能提供一个")
+            return _ToolFailure("invalid_group_selector", "space_id 与 space_name 只能提供一个")
         key = selectors[0]
         value = arguments[key]
         if not isinstance(value, str) or not value.strip():
-            return _ToolFailure("invalid_group_selector", "群目标必须是非空字符串")
-        if key == "group_id":
+            return _ToolFailure("invalid_group_selector", "空间目标必须是非空字符串")
+        if key == "space_id":
             return value.strip()
         requester = self._social_requester(runtime)
         if requester is None:
-            return _ToolFailure("permission_denied", "历史群名查询需要真实用户主体")
+            return _ToolFailure("permission_denied", "历史空间名查询需要真实用户主体")
         matches = await self._memory_reads.groups_named(requester, value)
-        if not matches and self.social_service is not None:
-            await self.social_service.refresh_space_names()
-            matches = await self._memory_reads.groups_named(requester, value)
         if not matches:
-            return _ToolFailure(
-                "group_not_found",
-                "授权历史群中没有精确匹配的群名；这不证明聊天记录不存在。"
-                "群记忆不是聊天记录，解析到目标群后用 read_conversation_history 读取近期记录。",
-            )
+            return _ToolFailure("group_not_found", "授权历史空间中没有精确匹配的名称")
         if len(matches) > 1:
             return _ToolFailure(
                 "ambiguous_group",
-                "存在多个同名群，请澄清目标",
-                {
-                    "candidates": [{"group_id": item} for item in matches],
-                    "has_more": False,
-                },
+                "存在多个同名空间，请澄清目标",
+                {"candidates": [{"space_id": item} for item in matches], "has_more": False},
             )
         return matches[0]
 
+    @staticmethod
+    def _runtime_space_id(runtime: ToolRuntime) -> str | None:
+        return (
+            runtime.inbound.space_id
+            if runtime.inbound is not None
+            else runtime.space_id
+            or (runtime.actor_context.space_id if runtime.actor_context is not None else None)
+        )
+
     async def _visible_self_memory_target(self, runtime: ToolRuntime) -> MemoryEntityTarget | None:
-        if runtime.inbound is not None:
-            targets = await self._memory_context.resolve_targets(
-                runtime.inbound,
-                self._runtime(),
-                self_recall=True,
-            )
-            target = next(
-                (
-                    item
-                    for item in targets
-                    if item.role is MemoryTargetRole.CURRENT_SELF
-                    and item.scope_type is MemoryScopeType.SELF
-                ),
-                None,
-            )
-        elif runtime.effective_scope_type is ScopeType.GROUP and runtime.current_group_id:
-            target = MemoryEntityTarget(
+        space_id = self._runtime_space_id(runtime)
+        person_id = self._social_requester(runtime)
+        if runtime.effective_scope_type is ScopeType.GROUP and space_id is not None:
+            return MemoryEntityTarget(
                 role=MemoryTargetRole.CURRENT_SELF,
                 scope_type=MemoryScopeType.SELF,
                 visibility_type=SelfMemoryVisibility.GROUP,
-                visibility_group_id=runtime.current_group_id,
+                canonical_visibility_space_id=space_id,
                 block_id="current_self",
             )
-        elif runtime.effective_scope_type is ScopeType.PRIVATE and runtime.external_target_id:
-            target = MemoryEntityTarget(
+        if runtime.effective_scope_type is ScopeType.PRIVATE and person_id is not None:
+            return MemoryEntityTarget(
                 role=MemoryTargetRole.CURRENT_SELF,
                 scope_type=MemoryScopeType.SELF,
                 visibility_type=SelfMemoryVisibility.PRIVATE,
-                visibility_user_id=runtime.external_target_id,
+                canonical_visibility_person_id=person_id,
                 block_id="current_self",
             )
-        else:
-            target = None
-        return target
+        return None
 
     def _memory_list_result(self, *, data: dict[str, Any]) -> ToolExecutionResult:
         """Fit ranked whole facts into the existing response budget, never fake an empty search."""
@@ -1917,22 +1658,12 @@ class AgentToolService:
             resolved_scope=ResolvedReadScope(targets=targets),
             authorized_scope=authorized_scope,
         )
-        # Scope resolution above always rechecks historical relationships; only
-        # the expensive retrieval is reused, never an enduring permission grant.
-        cache = _MEMORY_READ_CACHE.get()
         runtime_config = self._runtime()
-        key = "query:" + request.model_dump_json() + repr(runtime_config.memory)
-        if cache is not None and key in cache:
-            _MEMORY_READ_DUPLICATE.set(True)
-            return cache[key]
-        result = await MemoryQueryPlane(self._memory_context).read(
+        return await MemoryQueryPlane(self._memory_context).read(
             MemoryReadConsumer.AGENT_TOOL,
             request,
             runtime=runtime_config,
         )
-        if cache is not None:
-            cache[key] = result
-        return result
 
     @staticmethod
     def _log_memory_read_intent(arguments: dict[str, Any], intent: MemoryQueryIntent) -> None:
@@ -1941,8 +1672,7 @@ class AgentToolService:
         correlation = current_runtime_turn_correlation()
         logger.info(
             "memory_read_intent correlation_id=%s tool=%s mode=%s purpose=%s "
-            "explicit_fields=%s entities_count=%d "
-            "kinds_count=%d temporal_constraint=%s",
+            "explicit_fields=%s temporal_constraint=%s",
             correlation.turn_id if correlation else "unbound",
             _MEMORY_READ_TOOL.get(),
             intent.mode.value,
@@ -1953,8 +1683,6 @@ class AgentToolService:
                     "query",
                     "mode",
                     "purpose",
-                    "entities",
-                    "preferred_kinds",
                     "start_at",
                     "end_at",
                     "temporal_constraint",
@@ -1967,8 +1695,6 @@ class AgentToolService:
                 )
                 if name in arguments
             ),
-            len(intent.entities),
-            len(intent.preferred_kinds),
             intent.temporal.constraint.value,
         )
 
@@ -1987,11 +1713,7 @@ class AgentToolService:
         fact_id = arguments.get("fact_id")
         if isinstance(fact_id, bool) or not isinstance(fact_id, int) or fact_id <= 0:
             raise ValueError("fact_id 必须是正整数")
-        key = f"fact:{fact_id}"
-        if key in runtime.memory_read_cache:
-            _MEMORY_READ_DUPLICATE.set(True)
         fact = await self._authorized_memory_fact(fact_id, runtime)
-        runtime.memory_read_cache[key] = fact
         if fact is None:
             return self._result(error="memory_not_found", detail="没有找到可查看的事实")
         projection = (
@@ -2053,6 +1775,9 @@ class AgentToolService:
                 detail=(f"记忆变更参数无效：{location}:{first.get('type', 'validation_error')}"),
             )
         actor = runtime.require_actor()
+        from qq_ai_bot.capabilities.invocation import current_invocation
+
+        invocation = current_invocation.get()
         if actor.principal_kind == "self":
             context = MemoryMutationContext(
                 event=None,
@@ -2065,6 +1790,8 @@ class AgentToolService:
                 executed_by_bot_user_id=runtime.effective_bot_user_id or "",
                 initiative_run_id=runtime.initiative_run_id,
                 source_group_id=runtime.current_group_id,
+                operation_id=invocation.call_id if invocation is not None else None,
+                actor_person_id=None,
             )
             result = await service.mutate(request, context)
             return self._memory_change_result(result)
@@ -2104,9 +1831,9 @@ class AgentToolService:
             decision_actor_type=MemoryDecisionActorType.AGENT,
             decision_actor_id=actor.execution_id or "main_agent",
             executed_by_bot_user_id=runtime.effective_bot_user_id or "bot",
-            actor_is_superuser=(
-                runtime.actor_is_superuser and event.sender_user_id in self._settings.superusers
-            ),
+            actor_is_superuser=runtime.actor_is_superuser,
+            operation_id=invocation.call_id if invocation is not None else None,
+            actor_person_id=event.author_person_id,
         )
         named_target: ResolvedSubject | None = None
         if request.target is not None and request.target.subject_ref == "named_member":
@@ -2117,7 +1844,12 @@ class AgentToolService:
                     error="named_subject_requires_group",
                     detail="普通姓名只能在当前群成员中解析",
                 )
-            matches = await self._people.search_group_member_names(subject_name, group_id)
+            matches = await self._people.search_group_member_names(
+                subject_name,
+                group_id,
+                platform=actor.platform,
+                space_id=self._runtime_space_id(runtime),
+            )
             exact = tuple(item for item in matches if item.exact)
             chosen = exact[0] if len(exact) == 1 and request.target.candidate_ref is None else None
             if request.target.candidate_ref is not None:
@@ -2132,7 +1864,7 @@ class AgentToolService:
                         "nickname": item.nickname,
                         "group_card": item.group_card,
                         "matched_alias": item.matched_alias,
-                        "user_id": item.user_id,
+                        "person_id": item.person_id,
                         "similarity": round(item.score, 4),
                         "exact": item.exact,
                     }
@@ -2155,6 +1887,8 @@ class AgentToolService:
                 MemoryScopeType.PERSON_GROUP,
                 chosen.user_id,
                 group_id,
+                canonical_subject_person_id=chosen.person_id,
+                canonical_subject_space_id=self._runtime_space_id(runtime),
             )
         if named_target is None:
             result = await service.mutate(request, context)
@@ -2217,46 +1951,23 @@ class AgentToolService:
     async def _runtime_canonical_owners(
         self, runtime: ToolRuntime
     ) -> tuple[str | None, str | None]:
-        from qq_ai_bot.memory.partition import (
-            MemoryPartitionResolutionError,
-            resolve_active_person_id,
-            resolve_active_space_id,
-        )
-
-        person_external_id = runtime.actor_user_id
-        if not person_external_id and runtime.effective_scope_type is ScopeType.PRIVATE:
-            person_external_id = runtime.external_target_id or ""
-        async with self._memories.repository.database.sessions() as session:
-            try:
-                person_id = await resolve_active_person_id(session, person_external_id)
-            except MemoryPartitionResolutionError:
-                person_id = None
-            space_id = None
-            group_id = (
-                runtime.read_scope.group_id if runtime.read_scope else runtime.current_group_id
-            )
-            if group_id:
-                try:
-                    space_id = await resolve_active_space_id(session, group_id)
-                except MemoryPartitionResolutionError:
-                    space_id = None
-        return person_id, space_id
+        return self._social_requester(runtime), self._runtime_space_id(runtime)
 
     @staticmethod
     def _social_requester(runtime: ToolRuntime) -> str | None:
         # An origin or arbitrary actor_user_id is not proof of a real user.
         if runtime.inbound is not None and runtime.origin in _MEMORY_CHANGE_ORIGINS:
-            return runtime.inbound.person_id or runtime.inbound.sender.user_id
+            return runtime.inbound.person_id
         if runtime.inbound is not None and runtime.origin is TurnOrigin.PLUGIN_SESSION:
             try:
                 actor = runtime.require_actor()
-                return actor.person_id or actor.user_id or None
+                return actor.person_id
             except PermissionError:
                 return None
         if runtime.actor_context is not None:
             try:
                 actor = runtime.require_actor()
-                return actor.person_id or actor.user_id or None
+                return actor.person_id
             except PermissionError:
                 return None
         return None
@@ -2284,7 +1995,7 @@ class AgentToolService:
             )
         scope = await self._memory_reads.authorized(
             requester,
-            current_group_id=runtime.current_group_id,
+            current_space_id=self._runtime_space_id(runtime),
             private_scene=runtime.effective_scope_type is ScopeType.PRIVATE,
             self_actor=requester is None,
             allowed_scopes=allowed_scopes,
@@ -2303,8 +2014,8 @@ class AgentToolService:
             "memory_ref": f"M{row.id}",
             "scope": row.scope_type.value,
             "subject": {
-                "user_id": row.subject_user_id,
-                "group_id": row.group_id,
+                "person_id": row.canonical_subject_person_id,
+                "space_id": row.canonical_subject_space_id,
             },
             "kind": row.kind.value,
             "category": row.category,
@@ -2319,10 +2030,6 @@ class AgentToolService:
             "last_confirmed_at": row.last_confirmed_at.isoformat(),
             "retrieval_reason": retrieval_reason,
         }
-        if row.subject_user_id is None and row.canonical_subject_person_id is not None:
-            payload["subject"]["canonical_person_id"] = row.canonical_subject_person_id
-        if row.group_id is None and row.canonical_subject_space_id is not None:
-            payload["subject"]["canonical_space_id"] = row.canonical_subject_space_id
         payload["occurred_at"] = row.valid_from.isoformat() if row.valid_from is not None else None
         return payload
 
@@ -2372,11 +2079,7 @@ class AgentToolService:
         visit(payload)
         unique_ids = tuple(dict.fromkeys(fact_ids))
         if payload.get("ok"):
-            outcome = (
-                "duplicate"
-                if _MEMORY_READ_DUPLICATE.get()
-                else ("success" if unique_ids else "empty")
-            )
+            outcome = "success" if unique_ids else "empty"
         elif payload.get("error_code") in {
             "ambiguous_person",
             "ambiguous_subject",
@@ -2413,24 +2116,6 @@ class AgentToolService:
             outcome,
             result_count,
         )
-
-    async def _call_onebot(
-        self, arguments: dict[str, Any], runtime: ToolRuntime
-    ) -> ToolExecutionResult:
-        actor = runtime.require_actor()
-        if not runtime.allow_generic_onebot or not runtime.actor_is_superuser:
-            return self._result(error="permission_denied", detail="当前执行主体不是超级管理员")
-        if runtime.gateway is None:
-            return self._result(error="onebot_unavailable", detail="当前没有 OneBot 连接")
-        action = arguments.get("action")
-        params = arguments.get("params")
-        if not isinstance(action, str) or not action.strip() or not isinstance(params, dict):
-            return self._result(
-                error="invalid_arguments", detail="action 必须是字符串且 params 必须是对象"
-            )
-        result = await runtime.gateway.call_api(action, params)
-        await self._record_onebot_send(action, params, result, actor)
-        return self._result(data={"action": action, "result": result})
 
     async def _web_search(
         self, arguments: dict[str, Any], runtime: ToolRuntime
@@ -2641,60 +2326,6 @@ class AgentToolService:
                 continue
         return frozenset(urls)
 
-    async def _record_onebot_send(
-        self,
-        action: str,
-        params: dict[str, Any],
-        result: Any,
-        actor: ToolActor,
-    ) -> None:
-        if action not in {
-            "send_private_msg",
-            "send_group_msg",
-            "send_msg",
-            "send_private_forward_msg",
-            "send_group_forward_msg",
-            "send_forward_msg",
-        }:
-            return
-        raw_message = params.get("message", params.get("messages", ""))
-        segments = self._segments(raw_message)
-        if isinstance(raw_message, str):
-            content = raw_message
-        else:
-            content = self._segments_text(segments)
-        group_id = self._optional_string(params.get("group_id"))
-        user_id = self._optional_string(params.get("user_id"))
-        if group_id:
-            scope = ScopeType.GROUP
-            peer = None
-        elif user_id:
-            scope = ScopeType.PRIVATE
-            peer = user_id
-        else:
-            return
-        message_id: str | None = None
-        if isinstance(result, str | int):
-            message_id = str(result)
-        elif isinstance(result, dict):
-            raw_id = result.get("message_id") or result.get("id")
-            if raw_id is not None:
-                message_id = str(raw_id)
-        if not message_id or not message_id.strip():
-            return
-        await self._ledger.append(
-            bot_user_id=actor.bot_user_id or "unknown-bot",
-            platform_message_id=message_id,
-            scope_type=scope,
-            group_id=group_id,
-            private_peer_user_id=peer,
-            sender_user_id=actor.bot_user_id or "unknown-bot",
-            direction="outbound",
-            content=content,
-            segments=segments,
-            sender_is_bot=True,
-        )
-
     @staticmethod
     def _parse_time(value: Any) -> datetime | None:
         if value in (None, ""):
@@ -2741,12 +2372,13 @@ class AgentToolService:
             "author_kind": row.author_kind,
             "source": row.origin,
             "content_trust": "untrusted_conversation_message",
-            "sender_user_id": row.sender_user_id,
+            "person_id": row.author_person_id,
+            "presence_id": row.author_presence_id,
             "sender_nickname": row.sender_nickname,
             "sender_group_card": row.sender_group_card,
             "sender_display_name": display_name,
             "scope": row.scope_type.value,
-            "group_id": row.group_id,
+            "conversation_id": row.canonical_conversation_id,
             "direction": row.direction,
             "content": row.perceived_content,
             "attachments": [

@@ -274,7 +274,7 @@ class QwenVisionProvider:
             "model": self._model,
             "temperature": 0.1,
             "max_tokens": self._max_output_tokens,
-            "enable_thinking": True,
+            "enable_thinking": options.thinking_enabled,
             "thinking_budget": options.thinking_budget,
             "stream": False,
             "messages": [

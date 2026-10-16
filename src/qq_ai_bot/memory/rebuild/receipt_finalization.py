@@ -12,8 +12,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
-from qq_ai_bot.identity.db_models import IdentityBindingModel, SpaceBindingModel
+from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.enums import (
@@ -105,7 +104,7 @@ async def _read_batch(
     conversation = CanonicalConversationModel
     person_binding = exists(
         select(IdentityBindingModel.id).where(
-            IdentityBindingModel.platform == IDENTITY_PLATFORM,
+            IdentityBindingModel.platform == PresenceModel.platform,
             IdentityBindingModel.external_account_id
             == func.coalesce(
                 event.private_peer_user_id,
@@ -117,7 +116,7 @@ async def _read_batch(
     )
     space_binding = exists(
         select(SpaceBindingModel.id).where(
-            SpaceBindingModel.platform == IDENTITY_PLATFORM,
+            SpaceBindingModel.platform == PresenceModel.platform,
             SpaceBindingModel.external_space_id == event.group_id,
             SpaceBindingModel.space_id == conversation.space_id,
             SpaceBindingModel.status == "active",
@@ -148,6 +147,7 @@ async def _read_batch(
         )
         .join(event, event.id == MemoryRebuildItemModel.event_id)
         .outerjoin(conversation, conversation.id == event.canonical_conversation_id)
+        .outerjoin(PresenceModel, PresenceModel.id == event.ingress_presence_id)
         .where(MemoryRebuildItemModel.run_id == run_id, MemoryRebuildItemModel.id.in_(item_ids))
     )
     items: dict[int, _Item] = {}
@@ -257,7 +257,12 @@ async def complete_receipts(
         for event in events:
             try:
                 event = (
-                    replace(event, mentioned_user_ids=(), reply_sender_user_id=None)
+                    replace(
+                        event,
+                        mentioned_user_ids=(),
+                        mentioned_person_ids=(),
+                        reply_sender_user_id=None,
+                    )
                     if mode is MemoryRebuildThirdPartyMode.DISABLED
                     else await ledger.hydrate_rebuild_subjects(event)
                 )

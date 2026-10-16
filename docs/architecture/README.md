@@ -2,12 +2,15 @@
 
 开发先读[共同开发约束](development-contract.md)，再读涉及模块。以下是当前源码合同；发现源码不符合合同，记录具体缺口，不把历史设计或验收结论当成现行实现。
 
-本入口按 2026-10-15 的 3.9.0 源码整理，本分支迁移 head 为 `0121`、Plugin API 为 `3.5`、Main 固定工具合同为 `19`、Code API 为 `yuki.codemode.api.v2`。完整合并范围见[3.9.0 发布说明](../releases/v3.9.0.md)，实际升级与配置变更见[升级指南](../upgrade-3.9.0.md)。正式发行与具体生产部署分别记录。
+本入口跟随 #299 与多平台解耦分支；迁移 head 为 `0126`、Plugin API 为 `4.0`、Main 固定工具合同为 `20`、Code API 为 `yuki.codemode.api.v2`。本地实现与验证不等于正式发行，见[实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)。完整合并范围见[3.9.0 发布说明](../releases/v3.9.0.md)，实际升级与配置变更见[升级指南](../upgrade-3.9.0.md)。正式发行与具体生产部署分别记录。
+
+实现后[复审记录](Yuki-299与多平台解耦复审记录-2026-10-16.md)确认 11 项功能缺口、默认提示词硬编码和 TG 健康任务遗漏，当前尚未修复；综合任务状态已相应重新标记，原匹配回归通过不代表这些反例通过。
 
 | 现行文档 | 范围 |
 | --- | --- |
 | [开发约束](development-contract.md) | 删除优先、身份/授权、恢复、事务和交付原则 |
 | [Canonical runtime](canonical-runtime.md) | Yuki、Person、Space、Presence、Conversation 与网关 |
+| [平台适配与升级](platform-adapters.md) | 公共领域、原生传输、新平台入口与既有数据迁移 |
 | [个人客户端 API](client-api.md) | 设备身份、消息、Work 接续、SSE、文件与参考客户端 |
 | [主 Agent](main-agent-runtime.md) | 统一循环、Work 控制、恢复、预算和交付 |
 | [Tool Kernel](tool-kernel.md) | 固定完整清单、direct / Code Mode、目录与执行授权 |
@@ -25,7 +28,7 @@
 | [管理控制面](control-plane-foundation.md) | 管理主体、装配、原回执与领域服务 |
 | [管理 API](admin-api.md) | Bearer operator、管理 CLI、原回执与领域服务 |
 | [执行过程](execution-trace.md) | 实际模型请求、工具、消息与投递的限期查询 |
-| [插件架构](../plugin-development/architecture.md) | Plugin API 3.5、Host、SDK 与隔离插件会话 |
+| [插件架构](../plugin-development/architecture.md) | Plugin API 4.0、Host、SDK 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager 与交付 |
 | [Code Mode 运维](../operations/pi-codemode-operations.md) | 可选构建、隔离、原数据和切换 |
 | [独立原生搜索](../deepseek-search-bridge.md) | 独立搜索连接、三种原生协议、网页提取与升级 |
@@ -39,8 +42,9 @@
 - [#417/#418 实施与验证](../operations/compact-417-418-delivery-2026-10-14.md)：分阶段 PR、CI 修复、冷恢复与实际 DeepSeek 调用；合并与上线分别核对。
 
 - [10-14 Work 摘要退役、会话 Compact 与任务树设计审查报告](Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md)：关联 Issue #417/#418，包含 PR #228 追溯、当前源码与 Pi durable 对照、旧摘要/Rollup 全链路删除索引、公共与私有窗口、原任务恢复、子 Agent 完整继承 Main 能力、待实施验证与成本数据表，以及真实聊天摘录。报告保留当时设计与未实施基线；现行实现见上方会话 Compact 和持久工作者合同，生产节省仍需真实测量。
-- **多客户端重构**：旧浏览器管理入口已从源码退役；管理改用 CLI、`/ai` 与文件。#299 已有本地实现与阶段验证，历史进度见[交付记录](../operations/issue-299-delivery-2026-10-15.md)；同步 main 后仍有 App 领域身份、子 Agent 合同、请求接纳、回执和客户端同步缺口，按[10-16 同步 main 终审与修复任务书](Yuki-299同步main终审与修复任务书-2026-10-16.md)处理，尚未完成修复或上线。
+- **多客户端重构**：旧浏览器管理入口已从源码退役；管理改用 CLI、`/ai` 与文件。原阶段交付见[历史记录](../operations/issue-299-delivery-2026-10-15.md)；同步 main 后的 App 身份、子 Agent 合同、请求接纳、回执及同步缺口与多平台任务共同修复，当前本地验证见[10-16 实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)，未合并或上线。
 - [10-16 工具设计与 Memoh 参考报告](Yuki-工具设计与Memoh参考报告-2026-10-16.md)：重点核对 Memoh 的 50 项内置工具、多平台装配条件、native/ACP 差异，再对照 Yuki 平台/App 的完整清单与 direct/Code，记录删减合并候选；仅为讨论，不授权工具合同重做。
+- [10-16 多平台解耦与 Telegram 接入任务书](Yuki-多平台解耦与Telegram接入任务书-2026-10-16.md)：共用 schema、内部 ID、固定合同与各模块缺口；§11 为 Memory 全链审核，§12 为交叉终审与六个重构单元。已授权本地实施，收回 raw 第二出口，删除跨新调用业务缓存旁路和内部执行连接总闸，更新媒体、持久恢复及真实适配边界。禁止防御性编程优先，当前证据见实施记录；提交、合并与上线分别记录。
 
 ## 当前查询审查
 

@@ -19,17 +19,19 @@ Bot 在消息入账后异步预取原件，不调用视觉模型。缓存目录�
 
 主 Agent 的 `get_recent_chat_history`、`search_chat_history` 和附近查询返回真实内部事件 ID，并受当前 generation floor 约束。插件在当前会话的历史搜索也遵守同一 floor。模型可按语义、发送者和消息顺序选择候选，再调用 `inspect_conversation_attachment`。执行处从本轮运行时取得当前 canonical Conversation；入站消息使用已接纳的会话 ID，不依赖主动轮专用字段。随后核验事件为该会话的入站 keeper、generation 未变化且文件未过期；模型不能提供路径、平台消息 ID 或别的会话 ID 代替来源。图片和视频帧进入原主 Agent 的原生图片输入；文档仍由本地有界 reader 解析。历史工具不调用独立 Qwen，也不扣辅助模型请求；结果标明真实来源、hash 和处理模式。
 
-## 合并转发的显式读取
+## 已观察媒体与历史
 
-合并转发在外层原事件渲染保留一次 `[含合併轉發]` 和真实内部事件 ID。新采用的 current/
-history 表示带该标记；原选取或已付请求不追溯改写，合法新 epoch 重新采用真实事件。
-Main 可调用 `read_conversation_history(event_id=...)` 读取外层第一层 raw；完整合同见
-[工具内核](tool-kernel.md#合并转发历史读取)。入站沿 ingress_presence_id、出站沿 author_presence_id
-使用该外层事件的原 QQ 账号，不能以平台消息号、最近人物或当前路由代替来源。
+合并转发在外层原事件保留标记、原 segments 和内部事件 ID。默认模型不再请求远端
+转发节点；公共历史只读已入账事件，明确 observed 覆盖。原已付请求与历史工具结果
+不追溯改写，退役能力不据此重新派发。
 
-入场不自动展开 forward，不预处理内层媒体、人物、记忆或引用；纯 forward 在媒体 queue/
-limiter 之前返回空 NativeInput。混合消息与明确引用只处理实际外层 IMAGE/VIDEO/FILE，
-保持 current→reply 顺序。原 normalizer/ledger 的 raw segments 与 forward locator 继续保存。
+入场不展开 forward，不预处理内层媒体、人物、记忆或引用；纯 forward 在媒体 queue/
+limiter 前返回空 NativeInput。混合消息与明确引用只处理实际外层 IMAGE/VIDEO/FILE，
+保持 current→reply 顺序。原 native file locator 只由其平台适配器使用。
+
+共同媒体链消费 PlatformMediaGateway 返回的真实字节/类型。QQ get_image/get_record
+和 SILK、Telegram getFile 下载及凭据都留在适配器；共用缓存、ASR、文档/视频和
+主模型输入，不伪造 OneBot 调用，也不把平台 file_id 跨端当文件。
 
 ## Agent 选取媒体与主链输入
 

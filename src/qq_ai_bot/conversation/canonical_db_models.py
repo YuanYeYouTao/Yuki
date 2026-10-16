@@ -127,7 +127,7 @@ def _install_parent_route_guards_if_ready(connection: Connection) -> None:
 
 
 class CanonicalConversationModel(Base):
-    """One private conversation per account binding, or one per shared Space."""
+    """History belongs to the actual private or shared platform entry."""
 
     __tablename__ = "canonical_conversations"
     __table_args__ = (
@@ -147,6 +147,18 @@ class CanonicalConversationModel(Base):
             ["space_id"],
             ["spaces.id"],
             name="fk_canonical_conversations_space",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["entry_presence_id"],
+            ["presences.id"],
+            name="fk_conversations_entry_presence",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["space_binding_id"],
+            ["space_bindings.id"],
+            name="fk_conversations_space_binding",
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
@@ -202,14 +214,22 @@ class CanonicalConversationModel(Base):
         Index(
             "uq_canonical_conversations_binding",
             "identity_binding_id",
+            "entry_presence_id",
             unique=True,
             sqlite_where=text("kind = 'private'"),
         ),
         Index(
             "uq_canonical_conversations_space",
+            "space_binding_id",
+            text("coalesce(thread_id, '')"),
+            unique=True,
+            sqlite_where=text("kind = 'space' AND space_binding_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_canonical_conversations_legacy_space",
             "space_id",
             unique=True,
-            sqlite_where=text("kind = 'space'"),
+            sqlite_where=text("kind = 'space' AND space_binding_id IS NULL"),
         ),
     )
 
@@ -218,6 +238,9 @@ class CanonicalConversationModel(Base):
     person_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     identity_binding_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     space_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    entry_presence_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    space_binding_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    thread_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     primary_alias_id: Mapped[str] = mapped_column(String(36), nullable=False)
     primary_marker: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)

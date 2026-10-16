@@ -33,7 +33,7 @@ class InvocationContextFactory:
             conversation_key=source.conversation_key,
             current_group_id=source.current_group_id,
             bot_user_id=bot,
-            gateway=source.gateway,
+            gateway=None,
             runtime_config=config,
             allowed_capabilities=allowed_capabilities,
             max_tool_calls=max_tool_calls,

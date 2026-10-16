@@ -1156,10 +1156,6 @@ class SelfReflectionRepository:
         external_space_id = (
             await project_active_space_external_id(session, space_id) if space_id else None
         )
-        if person_id and external_person_id is None:
-            return None
-        if space_id and external_space_id is None:
-            return None
         return SelfReflectionState(
             id=row.id,
             conversation_key_hash=row.conversation_key_hash,

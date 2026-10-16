@@ -213,8 +213,6 @@ class ToolInvocationRepository:
                             CanonicalConversationModel.kind == "space",
                             CanonicalConversationModel.space_id == source.space_id,
                             CanonicalConversationModel.person_id.is_(None),
-                            PresenceModel.platform == "qq",
-                            PresenceModel.external_account_id == source.bot_user_id,
                             PresenceModel.enabled.is_(True),
                             CanonicalSpaceModel.enabled.is_(True),
                         )

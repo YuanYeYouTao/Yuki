@@ -49,11 +49,17 @@ async def test_history_around_keeps_original_event_across_presence_switch(
         content="other conversation",
     )
     new_scope = ConversationScope.private("8001", "10001")
+    assert (
+        await ledger.list_scope_around(
+            new_scope, event_id=old.id, before=0, after=2, message_only=True
+        )
+    )[0] is None
+    original_scope = old.scope
     center, _, later = await ledger.list_scope_around(
-        new_scope, event_id=old.id, before=0, after=2, message_only=True
+        original_scope, event_id=old.id, before=0, after=2, message_only=True
     )
     assert center is not None and center.id == old.id
-    assert [row.content for row in later] == ["new Presence"]
+    assert later == ()
     assert (
         await ledger.list_scope_around(
             new_scope, event_id=collision.id, before=0, after=0, message_only=True

@@ -230,12 +230,44 @@ class PersonalClient:
     async def refresh(self) -> dict[str, Any]:
         await self._bind()
         home = await self.get("home")
+        previous = (
+            {
+                entry["conversation_id"]: entry
+                for entry in (self.snapshot["main"], *self.snapshot["entries"])
+            }
+            if self.snapshot
+            else {}
+        )
         collected = {}
         for entry in (home["main"], *home["entries"]):
-            identity, after, rows = entry["conversation_id"], 0, []
+            identity = entry["conversation_id"]
+            original = previous.get(identity)
+            unchanged = original is not None and all(
+                original[key] == entry[key]
+                for key in ("binding_id", "status", "generation", "revision")
+            )
+            rows = list(self.events.get(identity, ())) if unchanged else []
+            if (
+                unchanged
+                and original is not None
+                and original["latest_event_id"] == entry["latest_event_id"]
+            ):
+                collected[identity] = rows
+                continue
+            after = rows[-1]["event_id"] if rows else 0
+            version = entry["generation"], entry["revision"]
             while True:
                 page = await self.get(f"conversations/{identity}/events", after=after, limit=50)
+                current = page["generation"], page["revision"]
+                if current != version:
+                    # An edit, deletion or reset also invalidates the already read prefix.
+                    rows, version = [], current
+                    if after:
+                        after = 0
+                        continue
                 rows.extend(page["items"])
+                for key in ("generation", "revision", "latest_event_id"):
+                    entry[key] = page[key]
                 if not page["has_more"]:
                     break
                 after = page["next_after"]
@@ -243,7 +275,15 @@ class PersonalClient:
         self.events, self.snapshot = collected, home
         for row in self.outbox.pending():
             if row["state"] in {"submitted", "accepted"}:
-                await self.resolve(row["request_id"])
+                try:
+                    await self.resolve(row["request_id"])
+                except ClientProblem as exc:
+                    if exc.code == "unauthenticated":
+                        raise
+                    original = self.outbox.get(row["request_id"])
+                    self.outbox.update(
+                        row["request_id"], original["state"], original["result"], exc.code
+                    )
         return home
 
     async def watch(self, *, reconnect_delay: float = 1) -> AsyncIterator[dict[str, Any]]:

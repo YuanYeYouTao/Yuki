@@ -5,10 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 from pydantic import ValidationError
-from sqlalchemy import select
 
 from qq_ai_bot.capabilities.invocation import current_invocation
-from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel
 from qq_ai_bot.identity.routing import RouteSendError
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.social.models import SocialError
@@ -154,29 +152,21 @@ async def invoke_social(
         raise SocialError("missing_call_context")
     inbound = runtime.inbound
     actor = runtime.require_actor()
-    refs = {"current_speaker": actor.user_id}
-    for index, user_id in enumerate(runtime.mentioned_user_ids, 1):
-        refs[f"mentioned_user_{index}"] = user_id
-    if runtime.mentioned_user_ids:
-        refs["mentioned_user"] = runtime.mentioned_user_ids[0]
-    reply = getattr(inbound, "reply_sender_user_id", None)
-    if reply:
-        refs["replied_message_author"] = str(reply)
-    async with service.database.sessions() as session:
-        presence = (
-            await session.get(PresenceModel, actor.presence_id) if actor.presence_id else None
-        )
-        platform = presence.platform if presence is not None else "qq"
-        bindings = (
-            await session.scalars(
-                select(IdentityBindingModel).where(
-                    IdentityBindingModel.platform == platform,
-                    IdentityBindingModel.status == "active",
-                    IdentityBindingModel.external_account_id.in_(refs.values()),
-                )
-            )
-        ).all()
-    by_account = {row.external_account_id: row.person_id for row in bindings}
+    refs = {"current_speaker": actor.person_id} if actor.person_id is not None else {}
+    for index, person_id in enumerate(actor.mentioned_person_ids, 1):
+        refs[f"mentioned_user_{index}"] = person_id
+    if actor.mentioned_person_ids:
+        refs["mentioned_user"] = actor.mentioned_person_ids[0]
+    reply_id = getattr(inbound, "reply_to_event_id", None)
+    if reply_id is not None:
+        async with service.database.sessions() as session:
+            reply = await session.get(ChatEventModel, reply_id)
+            if (
+                reply is not None
+                and reply.canonical_conversation_id == runtime.effective_conversation_id
+                and reply.author_person_id is not None
+            ):
+                refs["replied_message_author"] = reply.author_person_id
     conversation_id = runtime.effective_conversation_id
     if not conversation_id:
         raise SocialError("missing_call_context")
@@ -186,8 +176,8 @@ async def invoke_social(
         call_id=invocation.call_id,
         conversation_id=conversation_id,
         origin=runtime.origin.value,
-        person_refs={key: by_account[value] for key, value in refs.items() if value in by_account},
-        account_refs={key: value for key, value in refs.items() if value in by_account},
+        person_refs=refs,
+        account_refs={"current_speaker": actor.user_id} if actor.person_id is not None else {},
         space_id=runtime.space_id or getattr(inbound, "space_id", None),
         trigger_event_id=(
             getattr(runtime, "effective_trigger_event_id", None) if inbound is not None else None
@@ -197,6 +187,7 @@ async def invoke_social(
         else None,
         visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
         actor=actor,
+        presence_id=actor.presence_id,
         runtime_snapshot=getattr(runtime, "runtime_config", None),
         turn_token=getattr(runtime, "turn_token", None),
         conversation_key=getattr(runtime, "conversation_key", ""),

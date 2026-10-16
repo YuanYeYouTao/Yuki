@@ -9,8 +9,6 @@ from tests.support import social_identity_cases as identity
     "scenario,arguments",
     [
         (history.history_agent_loop, ()),
-        (history.history_receipt, ()),
-        (history.history_targets_and_delegation, ()),
         (identity.current_speaker_mention, ()),
         *[
             (identity.test_recall_uses_original_presence, (state,))
@@ -19,9 +17,9 @@ from tests.support import social_identity_cases as identity
         (identity.test_members_ignore_send_pause_and_try_accessible_connections, ()),
         (identity.test_multiple_space_bindings_require_explicit_selection, ()),
         (identity.test_disabled_presence_cannot_read_or_recall, ()),
-        (identity.test_private_poke_uses_pinned_binding_and_rejects_conflict, ()),
+        (identity.test_private_send_uses_explicit_binding_and_rejects_foreign_binding, ()),
         *[
-            (identity.test_group_poke_resolves_binding_without_first_item, (selector,))
+            (identity.test_group_mention_resolves_binding_without_first_item, (selector,))
             for selector in ("explicit", "subject", "ambiguous", "foreign")
         ],
         *[

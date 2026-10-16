@@ -1,6 +1,5 @@
 """Ownership intervals survive both erasure orders and a later account owner."""
 
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -25,7 +24,6 @@ from qq_ai_bot.persistence.models import (
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.social.models import SocialError
 
 
 async def append(database, message, account="1001", group=False):
@@ -38,7 +36,10 @@ async def append(database, message, account="1001", group=False):
             sender_user_id=account,
             direction="inbound",
             content=message,
-            segments=({"type": "at", "data": {"qq": 1001}},),
+            segments=(
+                {"type": "at", "data": {"qq": 1001}},
+                {"type": "text", "data": {"text": message}},
+            ),
         )
     ).event
 
@@ -185,45 +186,29 @@ async def test_live_history_uses_current_row_even_after_previous_owner_is_forgot
         {"target": {"kind": "person", "target_id": env.person}, "text": "old"},
         env.context,
     )
-    service, target, code = await code_for(database, "1002")
+    service, _target, code = await code_for(database, "1002")
     await service.claim_account(
         code["code"], platform="qq", account="10001", display_name="B", message_id=str(uuid4())
     )
-    await append(database, "new owner's message", account="10001")
-    async with database.immediate_session() as session:
-        binding = await find_identity_binding(session, "10001")
-        # Exactly on a whole-second boundary must still withhold that second.
-        binding.history_starts_at = binding.history_starts_at.replace(microsecond=0)
-        boundary = binding.history_starts_at.replace(tzinfo=UTC).timestamp()
-        new_binding = binding.id
+    new_event = await append(database, "new owner's message", account="10001")
     if forget_previous:
         assert await PeopleRepository(database).delete_person_id(env.person)
     else:
-        with pytest.raises(SocialError, match="binding_unavailable"):
-            await env.service.execute(
-                "read_conversation_history", {"operation_id": receipt["operation_id"]}, env.context
-            )
-    env.bot.history = {
-        "messages": [
-            {"message_id": 1, "time": boundary - 1, "message": "before"},
-            {"message_id": 4, "time": boundary, "message": "boundary second"},
-            {"message_id": 2, "time": boundary + 1, "message": "after"},
-            {"message_id": 3, "message": "unknown"},
-        ]
-    }
-    for context in (env.context, replace(env.context, conversation_id=str(uuid4()))):
-        result = await env.service.execute(
-            "read_conversation_history",
-            {
-                "kind": "person",
-                "target_id": target,
-                "binding_id": new_binding,
-                "presence_id": env.presence,
-            },
-            context,
+        original = await env.service.execute(
+            "read_conversation_history", {"operation_id": receipt["operation_id"]}, env.context
         )
-        assert [item["text"] for item in result["messages"]] == ["after"]
-        assert result["withheld_unattributed"] == 3
+        assert original["source"] == "canonical_ledger"
+        assert all("new owner's message" not in item["content"] for item in original["messages"])
+    env.bot.calls.clear()
+    result = await env.service.execute(
+        "read_conversation_history",
+        {"conversation_id": new_event.canonical_conversation_id},
+        env.context,
+    )
+    assert [item["event_id"] for item in result["messages"]] == [new_event.id]
+    assert "new owner's message" in result["messages"][0]["content"]
+    assert "[提及1001]" not in result["messages"][0]["content"]
+    assert env.bot.calls == []
 
 
 async def test_forget_gate_scope_does_not_cancel_previous_owner_group_work(database):
@@ -239,5 +224,9 @@ async def test_forget_gate_scope_does_not_cancel_previous_owner_group_work(datab
         code["code"], platform="qq", account="1001", display_name="B", message_id=str(uuid4())
     )
     await append(database, "current owner's private message")
-    scopes = await PeopleRepository(database).affected_conversation_scopes("1001")
+    from qq_ai_bot.identity.canonical_repository import find_identity_binding
+
+    async with database.sessions() as reader:
+        current = await find_identity_binding(reader, "1001", platform="qq")
+    scopes = await PeopleRepository(database).affected_conversation_scopes(current.person_id)
     assert all(scope.group_id != "2002" for scope in scopes)

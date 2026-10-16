@@ -1060,7 +1060,9 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
         group_id="20001",
         creator_user_id="10001",
     )
-    target = NotificationTarget(target_type="group", target_id="20001")
+    target = NotificationTarget(
+        target_type="group", target_id=env.space, conversation_id=env.context.conversation_id
+    )
     receipt = await notifications.publish(
         plugin_id=plugin_id,
         request=PublishNotificationRequest(
@@ -1095,7 +1097,6 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
         chat=chat,
         turns=chat._turn_coordinator,
         conversation_scopes=chat._conversation_scopes,
-        router=env.router,
     )
     job = await notifications.claim_turn()
     assert job and job.source_event_id == receipt.source_event_id

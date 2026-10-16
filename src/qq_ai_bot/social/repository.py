@@ -13,8 +13,10 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialReceipt, SocialTarget
@@ -39,6 +41,24 @@ def sequence_prefix(tool_call_id: str) -> str:
     return f"seq:{hashlib.sha256(tool_call_id.encode()).hexdigest()[:24]}:"
 
 
+def payload_hash(
+    action: str, target: SocialTarget, payload: dict[str, Any], conversation_id: str
+) -> str:
+    encoded = json.dumps(
+        {
+            "action": action,
+            "target": target.model_dump(mode="json"),
+            "payload": payload,
+            "source_conversation_id": conversation_id,
+        },
+        sort_keys=True,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
 class SocialOperationRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
@@ -59,25 +79,11 @@ class SocialOperationRepository:
             raise SocialError("invalid_operation")
         tool_call_id = social_call_key(tool_call_id)
         if planned_parts is not None and (
-            action != "send_message_sequence"
-            or type(planned_parts) is not int
-            or planned_parts <= 1
+            action != "send_message_sequence" or type(planned_parts) is not int or planned_parts < 1
         ):
             raise SocialError("invalid_operation")
         source_turn_id = social_source_key(source_turn_id)
-        encoded = json.dumps(
-            {
-                "action": action,
-                "target": target.model_dump(mode="json"),
-                "payload": payload,
-                "source_conversation_id": source_conversation_id,
-            },
-            sort_keys=True,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode()
-        digest = hashlib.sha256(encoded).hexdigest()
+        digest = payload_hash(action, target, payload, source_conversation_id)
         async with self.database.sessions() as reader:
             await reader.execute(text("BEGIN"))
             target_row = await reader.get(
@@ -140,17 +146,220 @@ class SocialOperationRepository:
                 )
             return self._receipt(row)
 
+    async def prepare_sequence(
+        self,
+        *,
+        source_turn_id: str,
+        tool_call_id: str,
+        source_conversation_id: str,
+        target: SocialTarget,
+        payload: dict[str, Any],
+        parts: tuple[dict[str, Any], ...],
+        legacy_payload: dict[str, Any] | None = None,
+        work_effect: ResultCapture | None = None,
+    ) -> tuple[SocialReceipt, bool]:
+        """Replan only steps with no dispatch fact; preserve original receipt IDs."""
+        from qq_ai_bot.runtime.work_recovery_schema import deliveries
+        from qq_ai_bot.runtime.work_repository import encode_json
+        from qq_ai_bot.runtime.work_schema_v1 import work
+
+        source_turn_id = social_source_key(source_turn_id)
+        tool_call_id = social_call_key(tool_call_id)
+        digest = payload_hash("send_message_sequence", target, payload, source_conversation_id)
+        legacy = (
+            payload_hash("send_message_sequence", target, legacy_payload, source_conversation_id)
+            if legacy_payload is not None
+            else None
+        )
+        prefix = sequence_prefix(tool_call_id)
+        async with self.database.immediate_session() as session:
+            row = await session.scalar(
+                select(SocialOperationModel).where(
+                    SocialOperationModel.source_turn_id == source_turn_id,
+                    SocialOperationModel.tool_call_id == tool_call_id,
+                )
+            )
+            children = list(
+                await session.scalars(
+                    select(SocialOperationModel).where(
+                        SocialOperationModel.source_turn_id == source_turn_id,
+                        SocialOperationModel.tool_call_id.startswith(prefix),
+                        SocialOperationModel.action == "send_message",
+                    )
+                )
+            )
+            if row is None:
+                now = datetime.now(UTC)
+                row = SocialOperationModel(
+                    id=str(uuid4()),
+                    source_turn_id=source_turn_id,
+                    tool_call_id=tool_call_id,
+                    source_conversation_id=source_conversation_id,
+                    action="send_message_sequence",
+                    payload_hash=digest,
+                    planned_parts=len(parts),
+                    target_kind=target.kind,
+                    target_id=str(target.id),
+                    status=OperationStatus.PREPARED.value,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(row)
+            elif (
+                row.source_conversation_id != source_conversation_id
+                or row.target_kind != target.kind
+                or row.target_id != str(target.id)
+                or not (
+                    (row.action == "send_message_sequence" and row.payload_hash in {digest, legacy})
+                    or (
+                        row.action == "send_message"
+                        and row.status == "prepared"
+                        and row.payload_hash
+                        == payload_hash("send_message", target, payload, source_conversation_id)
+                    )
+                )
+            ):
+                raise SocialError("idempotency_conflict")
+            dispatch = not any(child.status != "prepared" for child in children)
+            if dispatch:
+
+                async def replan_reservation(
+                    operation_id: str, arguments: dict[str, Any], kind: str, count: int
+                ) -> None:
+                    intent = (
+                        (
+                            await session.execute(
+                                select(deliveries).where(
+                                    deliveries.c.id == operation_id,
+                                    deliveries.c.state == "reserved",
+                                )
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if intent is None:
+                        return
+                    await session.execute(
+                        update(deliveries)
+                        .where(deliveries.c.id == operation_id)
+                        .values(
+                            payload_json=encode_json(
+                                {"target": target.model_dump(mode="json"), "arguments": arguments}
+                            ),
+                            kind=kind,
+                            message_count=count,
+                        )
+                    )
+                    difference = count - intent["message_count"]
+                    if difference:
+                        await session.execute(
+                            update(work)
+                            .where(work.c.id == intent["work_id"])
+                            .values(sent_messages=work.c.sent_messages + difference)
+                        )
+
+                if row.action == "send_message":
+                    # A direct plan reserved before its first claim has no physical
+                    # send to count; the new parts retain this original parent ID.
+                    await replan_reservation(row.id, payload, "sequence", 0)
+                row.action = "send_message_sequence"
+                row.payload_hash = digest
+                row.planned_parts = len(parts)
+                row.updated_at = datetime.now(UTC)
+                for index, part in enumerate(parts):
+                    child = next(
+                        (item for item in children if item.tool_call_id == f"{prefix}{index}"),
+                        None,
+                    )
+                    if child is None:
+                        now = datetime.now(UTC)
+                        child = SocialOperationModel(
+                            id=str(uuid4()),
+                            source_turn_id=source_turn_id,
+                            tool_call_id=f"{prefix}{index}",
+                            source_conversation_id=source_conversation_id,
+                            action="send_message",
+                            payload_hash=payload_hash(
+                                "send_message", target, part, source_conversation_id
+                            ),
+                            target_kind=target.kind,
+                            target_id=str(target.id),
+                            status=OperationStatus.PREPARED.value,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        session.add(child)
+                    else:
+                        child.payload_hash = payload_hash(
+                            "send_message", target, part, source_conversation_id
+                        )
+                        await replan_reservation(
+                            child.id, part, "artifact" if part.get("artifact_id") else "message", 1
+                        )
+                current_keys = {f"{prefix}{index}" for index in range(len(parts))}
+                for child in children:
+                    if child.tool_call_id not in current_keys:
+                        # The row stays as an original, never-dispatched receipt.
+                        # Its removed plan cannot spend a delivery reservation.
+                        intent = (
+                            (
+                                await session.execute(
+                                    select(deliveries).where(
+                                        deliveries.c.id == child.id,
+                                        deliveries.c.state == "reserved",
+                                    )
+                                )
+                            )
+                            .mappings()
+                            .first()
+                        )
+                        if intent is not None:
+                            await session.execute(
+                                update(deliveries)
+                                .where(deliveries.c.id == child.id)
+                                .values(message_count=0)
+                            )
+                            await session.execute(
+                                update(work)
+                                .where(work.c.id == intent["work_id"])
+                                .values(
+                                    sent_messages=work.c.sent_messages - intent["message_count"]
+                                )
+                            )
+            if work_effect is not None:
+                from qq_ai_bot.runtime.work_repository import WorkRepository
+
+                await WorkRepository.bind_domain_receipt(
+                    session, work_effect.work_id, work_effect.effect_key, f"social:{row.id}"
+                )
+            return self._receipt(row), dispatch
+
     async def claim(
-        self, operation_id: str, *, presence_id: str, session: AsyncSession | None = None
+        self,
+        operation_id: str,
+        *,
+        presence_id: str,
+        session: AsyncSession | None = None,
+        expected_payload_hash: str | None = None,
+        parent_operation_id: str | None = None,
+        sequence_part_index: int | None = None,
     ) -> bool:
         """Commit the send boundary before issuing any network action."""
         async with optional_session(self.database, session, write=True) as active:
+            if parent_operation_id is not None and sequence_part_index is not None:
+                parent = await active.get(SocialOperationModel, parent_operation_id)
+                if parent is None or sequence_part_index >= (parent.planned_parts or 0):
+                    return False
+            predicates = [
+                SocialOperationModel.id == operation_id,
+                SocialOperationModel.status == OperationStatus.PREPARED.value,
+            ]
+            if expected_payload_hash is not None:
+                predicates.append(SocialOperationModel.payload_hash == expected_payload_hash)
             result = await active.execute(
                 update(SocialOperationModel)
-                .where(
-                    SocialOperationModel.id == operation_id,
-                    SocialOperationModel.status == OperationStatus.PREPARED.value,
-                )
+                .where(*predicates)
                 .values(
                     status=OperationStatus.EXECUTING.value,
                     presence_id=presence_id,
@@ -278,7 +487,7 @@ class SocialOperationRepository:
         complete_plan = True
         if parent.action == "send_message_sequence":
             count = parent.planned_parts
-            if count is None or count <= 1:
+            if count is None or count < 1:
                 result["status"] = "uncertain"
                 return result
             prefix = sequence_prefix(parent.tool_call_id)
@@ -319,6 +528,58 @@ class SocialOperationRepository:
         elif parent.action == "send_message":
             # An unplanned legacy file/caption cannot prove whole-call success.
             complete_plan = False
+        for part in parts:
+            if part["status"] != "succeeded" or part.get("event_id") is None:
+                continue
+            event = await session.get(ChatEventModel, part["event_id"])
+            operation = await session.get(SocialOperationModel, part["operation_id"])
+            if (
+                event is None
+                or operation is None
+                or event.direction != "outbound"
+                or event.author_kind != "yuki"
+                or event.author_presence_id != operation.presence_id
+                or event.event_kind != "message"
+                or event.suppression_status != "keeper"
+            ):
+                continue
+            conversation = await session.get(
+                CanonicalConversationModel, event.canonical_conversation_id
+            )
+            if (
+                conversation is None
+                or (
+                    conversation.space_id
+                    if parent.target_kind == "space"
+                    else conversation.person_id
+                )
+                != parent.target_id
+            ):
+                continue
+            # This is an original confirmed ledger anchor, never arguments or
+            # a prospective media position inferred from sequence status.
+            try:
+                segments = json.loads(event.segments_json)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(segments, list):
+                continue
+            part["delivered_text_available"] = True
+            part["delivered_text"] = "".join(
+                item.get("data", {}).get("text", "")
+                for item in segments
+                if isinstance(item, dict) and item.get("type") == "text"
+            )
+            for item in segments:
+                if not isinstance(item, dict) or item.get("type") not in {"file", "image"}:
+                    continue
+                data = item.get("data", {})
+                if isinstance(data, dict) and isinstance(data.get("artifact_id"), str):
+                    part.update(artifact_id=data["artifact_id"], attachment_kind=item["type"])
+        if parent.action == "send_message":
+            result.update(parts[0])
+            if parts[0].get("artifact_id") and "file" not in result:
+                result["file"] = parts[0]
         result["status"] = (
             "succeeded"
             if complete_plan and all(p["status"] == "succeeded" for p in parts)
@@ -340,4 +601,5 @@ class SocialOperationRepository:
             platform_reference=row.platform_reference,
             event_id=row.event_id,
             error_category=row.error_category,
+            payload_hash=row.payload_hash,
         )

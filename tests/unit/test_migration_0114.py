@@ -38,7 +38,7 @@ def test_0114_moves_disabled_spaces_to_editable_config(tmp_path, monkeypatch):
                 "conversation.autonomous_enabled",
                 True,
                 scope_type="group",
-                scope_id="20002",
+                scope_id=overridden,
                 actor_user_id="10001",
                 trigger_message_id="original",
                 conversation_key="test",
@@ -63,20 +63,20 @@ def test_0114_moves_disabled_spaces_to_editable_config(tmp_path, monkeypatch):
                     for row in await reader.execute(text("SELECT * FROM admin_operation_events"))
                 ] == audits
                 assert not list(await reader.execute(text("PRAGMA foreign_key_check")))
-            assert not (await runtime.snapshot(group_id="20001")).conversation.autonomous_enabled
-            assert not (await runtime.snapshot(group_id="20002")).conversation.autonomous_enabled
-            assert (await runtime.snapshot(group_id="20003")).conversation.autonomous_enabled
+            assert not (await runtime.snapshot(group_id=off)).conversation.autonomous_enabled
+            assert not (await runtime.snapshot(group_id=overridden)).conversation.autonomous_enabled
+            assert (await runtime.snapshot(group_id=enabled)).conversation.autonomous_enabled
             # The former disabled state can now be changed through the existing store.
             await runtime.set_override(
                 "conversation.autonomous_enabled",
                 True,
                 scope_type="group",
-                scope_id="20001",
+                scope_id=off,
                 actor_user_id="10001",
                 trigger_message_id="enable",
                 conversation_key="test",
             )
-            assert (await runtime.snapshot(group_id="20001")).conversation.autonomous_enabled
+            assert (await runtime.snapshot(group_id=off)).conversation.autonomous_enabled
             assert enabled not in {row.canonical_space_id for row in rows}
         finally:
             await database.close()

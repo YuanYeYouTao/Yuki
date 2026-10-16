@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
@@ -42,10 +43,12 @@ class MessageTaskSource:
     binding_id: str
     external_target_id: str
     content: str
-    platform: str = "qq"
+    platform: str
+    thread_id: str | None = None
 
     def inbound(self, original: Any, **extra: Any) -> InboundMessage:
         """The original ledger event as the trusted inbound; never a new message."""
+
         return InboundMessage(
             message_id=original.platform_message_id,
             source_event_id=original.id,
@@ -63,6 +66,10 @@ class MessageTaskSource:
             space_id=self.target_space_id,
             conversation_id=self.conversation_id,
             presence_id=self.presence_id,
+            thread_id=self.thread_id,
+            mentioned_person_ids=original.mentioned_person_ids,
+            reply_to_event_id=original.reply_to_event_id,
+            reply_to_message_id=original.reply_to_message_id,
             **extra,
         )
 
@@ -81,6 +88,8 @@ class SelfTaskSource:
     binding_id: str
     external_target_id: str
     content: str
+    platform: str
+    thread_id: str | None = None
     origin: str = TurnOrigin.SELF_INITIATIVE.value
     actor_user_id: str = ""
     actor_person_id: None = None
@@ -100,6 +109,8 @@ class SelfTaskSource:
             presence_id=self.presence_id,
             principal_kind="self",
             initiative_run_id=self.run_id,
+            platform=self.platform,
+            space_id=self.target_space_id,
         )
 
     def trigger(self) -> SelfInitiativeTrigger:
@@ -112,6 +123,8 @@ class SelfTaskSource:
             group_id=self.external_target_id,
             bot_user_id=self.bot_user_id,
             instruction=self.content,
+            platform=self.platform,
+            thread_id=self.thread_id,
         )
 
 
@@ -132,6 +145,8 @@ class AutomationTaskSource:
     bot_user_id: str
     external_target_id: str = field(compare=False)
     content: str = field(compare=False)
+    platform: str
+    thread_id: str | None = None
     origin: str = TurnOrigin.SCHEDULED_AUTOMATION.value
     event_id: None = None
     actor_is_superuser: bool = False
@@ -149,6 +164,8 @@ class AutomationTaskSource:
             presence_id=self.presence_id,
             principal_kind=self.principal_kind,
             automation_run_id=self.automation_run_id if self.principal_kind == "self" else None,
+            platform=self.platform,
+            space_id=self.target_space_id,
         )
 
 
@@ -168,10 +185,40 @@ class BackgroundTaskSource:
     bot_user_id: str
     external_target_id: str
     content: str
+    platform: str
+    thread_id: str | None = None
     origin: str = TurnOrigin.PLUGIN_BACKGROUND.value
     actor_person_id: None = None
     actor_user_id: str = ""
     actor_is_superuser: bool = False
+
+
+async def _original_space_binding(
+    session: AsyncSession,
+    conversation: CanonicalConversationModel,
+    presence: PresenceModel,
+    legacy_external_id: str | None,
+) -> SpaceBindingModel | None:
+    if conversation.space_binding_id is not None:
+        binding = await session.get(SpaceBindingModel, conversation.space_binding_id)
+    else:
+        # Actual old Conversations can predate the entry column. Their saved
+        # transport provenance is only a reader, never a new owner lookup.
+        binding = await session.scalar(
+            select(SpaceBindingModel).where(
+                SpaceBindingModel.space_id == conversation.space_id,
+                SpaceBindingModel.platform == presence.platform,
+                SpaceBindingModel.external_space_id == legacy_external_id,
+            )
+        )
+    if (
+        binding is None
+        or binding.status != "active"
+        or binding.space_id != conversation.space_id
+        or binding.platform != presence.platform
+    ):
+        return None
+    return binding
 
 
 async def recover_background_source(
@@ -200,8 +247,10 @@ async def recover_background_source(
     async with database.sessions() as session:
         presence = await session.get(PresenceModel, source.get("presence_id"))
         event = await session.get(ChatEventModel, record.source_event_id)
+        conversation = await session.get(CanonicalConversationModel, conversation_id)
         if (
             event is None
+            or conversation is None
             or presence is None
             or not presence.enabled
             or presence.external_account_id != event.bot_user_id
@@ -220,6 +269,8 @@ async def recover_background_source(
         presence.external_account_id,
         event.group_id or event.private_peer_user_id or "",
         event.content,
+        presence.platform,
+        conversation.thread_id,
     )
 
 
@@ -263,8 +314,10 @@ async def recover_automation_source(
             or owner.canonical_creator_person_id != (source.get("actor_person_id") or None)
             or owner.canonical_presence_id != source.get("presence_id")
             or owner.bot_user_id != source.get("bot_user_id")
-            or owner.canonical_target_space_id != conversation.space_id
-            or owner.canonical_target_person_id != conversation.person_id
+            or (
+                owner.authority_snapshot.get("canonical_conversation_id") is not None
+                and owner.authority_snapshot["canonical_conversation_id"] != conversation.id
+            )
         ):
             raise ValueError("automation_task_source_changed")
         presence = await session.get(PresenceModel, owner.canonical_presence_id)
@@ -295,24 +348,21 @@ async def recover_automation_source(
 
             assert settings is not None and actor_person is not None
             actor_user, permission = await resolve_execution_identity(
-                session, settings, owner_id=actor_person, conversation_id=conversation.id
+                session,
+                settings,
+                owner_id=actor_person,
+                conversation_id=conversation.id,
+                presence_id=presence.id,
             )
             actor_is_superuser = permission.value == "superuser"
         if conversation.space_id:
             space = await session.get(CanonicalSpaceModel, conversation.space_id)
-            binding = await session.scalar(
-                select(SpaceBindingModel).where(
-                    SpaceBindingModel.space_id == conversation.space_id,
-                    SpaceBindingModel.platform == "qq",
-                    SpaceBindingModel.status == "active",
-                    SpaceBindingModel.external_space_id == source.get("current_group_id"),
-                )
+            binding = await _original_space_binding(
+                session, conversation, presence, source.get("current_group_id")
             )
             if space is None or not space.enabled or binding is None:
                 raise ValueError("task_space_binding_unavailable")
-            target = binding.external_space_id
-            if owner.creator_kind == "self" and target != scene.get("current_group_id"):
-                raise ValueError("automation_task_source_changed")
+            target = source.get("current_group_id") or ""
         else:
             target = actor_user
         content = await session.scalar(select(work.c.goal).where(work.c.id == request_id))
@@ -330,6 +380,8 @@ async def recover_automation_source(
             owner.bot_user_id,
             target,
             content or source.get("instruction", ""),
+            presence.platform,
+            conversation.thread_id,
             actor_is_superuser=actor_is_superuser,
         )
 
@@ -382,17 +434,11 @@ async def recover_self_source(
         if (
             presence is None
             or not presence.enabled
-            or presence.platform != "qq"
             or presence.external_account_id != source.get("bot_user_id")
         ):
             raise ValueError("task_presence_disabled")
-        binding = await session.scalar(
-            select(SpaceBindingModel.id).where(
-                SpaceBindingModel.space_id == space.id,
-                SpaceBindingModel.platform == "qq",
-                SpaceBindingModel.status == "active",
-                SpaceBindingModel.external_space_id == source.get("group_id"),
-            )
+        binding = await _original_space_binding(
+            session, conversation, presence, source.get("group_id")
         )
         if binding is None or not source.get("group_id"):
             raise ValueError("task_space_binding_unavailable")
@@ -404,9 +450,11 @@ async def recover_self_source(
             space.id,
             presence.id,
             presence.external_account_id,
-            binding,
+            binding.id,
             source["group_id"],
             source["instruction"],
+            presence.platform,
+            thread_id=conversation.thread_id,
         )
     from qq_ai_bot.conversation.self_initiative import validate_self_initiative
 
@@ -542,17 +590,10 @@ async def recover_source(
                 raise ValueError("task_space_disabled")
             if source["origin"] == "autonomous_group" and not space.autonomous_enabled:
                 raise ValueError("task_autonomous_disabled")
-            binding = await session.scalar(
-                select(SpaceBindingModel.id).where(
-                    SpaceBindingModel.space_id == space.id,
-                    SpaceBindingModel.platform == "qq",
-                    SpaceBindingModel.status == "active",
-                    SpaceBindingModel.external_space_id == event.group_id,
-                )
-            )
+            binding = await _original_space_binding(session, conversation, presence, event.group_id)
             if binding is None or not event.group_id:
                 raise ValueError("task_space_binding_unavailable")
-            binding_id, external_target = binding, event.group_id
+            binding_id, external_target = binding.id, event.group_id
         return MessageTaskSource(
             request_id,
             conversation.id,
@@ -569,4 +610,5 @@ async def recover_source(
             external_target,
             event.content,
             platform=presence.platform,
+            thread_id=conversation.thread_id,
         )

@@ -79,4 +79,6 @@ def _space_storage_id(context: object) -> str:
     target = getattr(context, "canonical_target", None)
     if type(target) is not SpaceControlTarget:
         raise TypeError("canonical_target must be SpaceControlTarget")
-    return target.storage_group_id
+    if target.space_id is None:
+        raise ValueError("missing_canonical_owner")
+    return target.space_id.text

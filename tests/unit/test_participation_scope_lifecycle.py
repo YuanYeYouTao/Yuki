@@ -148,7 +148,7 @@ async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_ori
         await host._hydrate(item)
         binding = await host._binding(item)
         assert binding.effective_owner is AutonomyOwner.SEMANTIC
-        assert requested_groups and all(group == "2001" for group in requested_groups)
+        assert requested_groups and all(group == item.scene.space_id for group in requested_groups)
         now = time.time()
         accepted = Proposal(
             proposal_id="original-accepted",
@@ -179,7 +179,7 @@ async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_ori
         # Live-scoped runtime reads remain forbidden; only the disabled Host's
         # control metadata read uses global policy to apply its existing OFF path.
         with pytest.raises(CanonicalIdentityError) as error:
-            await original_snapshot(group_id="2001")
+            await original_snapshot(group_id=item.scene.space_id)
         assert error.value.category == "canonical_owner_disabled"
         if restart:
             # Simulate cold cache restore using the real persisted controller state.

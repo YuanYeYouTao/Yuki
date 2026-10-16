@@ -20,6 +20,7 @@ _ROLE_TOKEN = re.compile(r"\A[a-z][a-z0-9_]{0,63}\Z")
 @final
 class PrincipalSource(StrEnum):
     QQ = "qq"
+    PLATFORM = "platform"
     CLI = "cli"
     SYSTEM = "system"
 
@@ -92,8 +93,8 @@ class ControlPrincipal:
             raise TypeError("authenticated must be a bool")
         if type(active) is not bool:
             raise TypeError("active must be a bool")
-        if source is PrincipalSource.QQ and person_id is None:
-            raise ValueError("qq principal requires a resolved person_id")
+        if source in {PrincipalSource.QQ, PrincipalSource.PLATFORM} and person_id is None:
+            raise ValueError("platform principal requires a resolved person_id")
         object.__setattr__(self, "principal_id", principal_id)
         object.__setattr__(self, "person_id", person_id)
         object.__setattr__(self, "source", source)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import exists, func, not_, or_, select
+from sqlalchemy import exists, func, not_, or_, select, text
 
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.memory.enums import MemoryJobStatus
@@ -28,6 +28,16 @@ def sql_human_evidence_predicate(alias: str = "c") -> str:
     """Raw-SQL canonical human evidence predicate."""
 
     return f"{alias}.author_kind='person' AND {sql_keeper_event_predicate(alias)}"
+
+
+def sql_current_audio_evidence_predicate(alias: str = "c") -> str:
+    """Read current-speaker evidence from the durable ASR structure."""
+
+    return (
+        f"EXISTS (SELECT 1 FROM json_each(NULLIF({alias}.audio_transcript,'')) audio "
+        "WHERE json_extract(audio.value,'$.source')='current' "
+        "AND trim(json_extract(audio.value,'$.text'))!='')"
+    )
 
 
 def sql_fact_tool_evidence_predicate() -> str:
@@ -113,7 +123,7 @@ class MemoryEventEligibilityPolicy:
             not_suppressed,
             or_(
                 func.length(func.trim(ChatEventModel.content)) > 0,
-                ChatEventModel.audio_transcript.contains('"source":"current"'),
+                text(sql_current_audio_evidence_predicate("chat_events")),
             ),
             ChatEventModel.origin.in_(tuple(self.allowed_origins)),
             ChatEventModel.scope_type.in_(("private", "group")),

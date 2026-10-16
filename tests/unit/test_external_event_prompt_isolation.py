@@ -272,7 +272,7 @@ async def _assemble_wakeup(
     )
     identity = current.scope
     turn = ConversationTurnSnapshot(
-        conversation_id="test-conversation-1",
+        conversation_id=current.canonical_conversation_id,
         scope_key=identity.key,
         generation=1,
         trigger_event_id=current.id,
@@ -409,7 +409,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     ordinary._ledger.get_event = AsyncMock(return_value=ordinary_event)
     ordinary_identity = ordinary_event.scope
     turn = ConversationTurnSnapshot(
-        conversation_id="test-conversation-1",
+        conversation_id=ordinary_event.canonical_conversation_id,
         scope_key=ordinary_identity.key,
         generation=1,
         trigger_event_id=ordinary_event.id,
@@ -589,7 +589,7 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
     chat.runtime.runner.main_contract = MainAgentContract(
         chat, SimpleNamespace(snapshot=lambda: [])
     )
-    runtime_config = await chat._runtime_config.snapshot(user_id="1001", group_id=None)
+    runtime_config = await chat._runtime_config.snapshot()
     stable_prefix = (
         ChatMessage(role="system", content="stable instructions"),
         ChatMessage(role="user", content="old user marker"),
@@ -607,8 +607,6 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
         yuki_account_ids=frozenset({"8000"}),
     )
     shared = {
-        "gateway": None,
-        "allow_generic_onebot": False,
         "conversation_key": "canonical:conv-stable:generation:1",
         "actor_is_superuser": False,
         "runtime_config": runtime_config,
@@ -744,11 +742,9 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
 ) -> None:
     harness = build_harness(database, make_settings(database.url))
     chat = harness.processor._chat
-    runtime_config = await chat._runtime_config.snapshot(user_id="1001", group_id=None)
+    runtime_config = await chat._runtime_config.snapshot()
     runtime = ToolRuntime(
         inbound=None,
-        gateway=None,
-        allow_generic_onebot=False,
         conversation_key="canonical:conv-stable:generation:1",
         trigger_message_id="external-current",
         trigger_event_id=2,
@@ -788,17 +784,12 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert contract.health()["frozen"] is True
     assert contract.revision
     tools = harness.processor._chat._tools
-    runtime_config = await harness.processor._chat._runtime_config.snapshot(
-        user_id="1001",
-        group_id=None,
-    )
+    runtime_config = await harness.processor._chat._runtime_config.snapshot()
     gateway = MagicMock()
     gateway.provider_id = "snowluma"
     gateway.call_api = AsyncMock(return_value={"messages": []})
     group_runtime = ToolRuntime(
         inbound=None,
-        gateway=gateway,
-        allow_generic_onebot=False,
         conversation_key="canonical:space-100:generation:1",
         trigger_message_id="external-current",
         trigger_event_id=2,
@@ -855,7 +846,7 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     scoped_search = (
         await tools.execute(
             "search_chat_history",
-            '{"keyword":"release","user_id":"9999","group_id":"other-group"}',
+            '{"keyword":"release","person_id":"other-person","space_id":"other-space"}',
             group_runtime,
         )
     ).model_payload()
@@ -864,7 +855,9 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert recent["data"]["source"] == "ledger"
     assert recent["data"]["events"] == []
     assert around["error_code"] == "not_found"
-    assert scoped_search["error_code"] == "history_scope_denied"
+    assert scoped_search["ok"] is True and scoped_search["data"]["events"] == []
+    assert tools._ledger.search.await_args.kwargs["scope"].conversation_id == "space-100"
+    assert tools._ledger.search.await_args.kwargs["space_id"] == "other-space"
     valid_search = (
         await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
     ).model_payload()
@@ -887,8 +880,8 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert all(row["content"] == "x" * 2000 for row in bounded_search["data"]["events"])
     assert bounded_search["data"]["returned_count"] == len(bounded_search["data"]["events"])
     gateway.call_api.assert_not_awaited()
-    assert tools._ledger.search.await_args.kwargs["group_id"] == "group-100"
-    assert tools._ledger.search.await_args.kwargs["user_id"] is None
+    assert tools._ledger.search.await_args.kwargs["scope"].conversation_id == "space-100"
+    assert tools._ledger.search.await_args.kwargs["person_id"] is None
     assert "memory_change" not in {tool.name for tool in tools.definitions(group_runtime)}
 
 
@@ -916,7 +909,7 @@ def _covered_external_turn(
         )
     )
     turn = ConversationTurnSnapshot(
-        conversation_id="test-conversation-1",
+        conversation_id=event.canonical_conversation_id,
         scope_key="bot:8000:private:1001",
         generation=1,
         trigger_event_id=event.id,

@@ -12,7 +12,6 @@ from typing import Any
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.automation.context import AutomationBindError, bind_automation_conversation
 from qq_ai_bot.automation.control_context import resolve_execution_identity
-from qq_ai_bot.automation.gateway import OneBotAutomationGateway
 from qq_ai_bot.automation.models import AutomationRecord, RunStatus
 from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.task_spec import TaskSpec
@@ -20,7 +19,6 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.lease_heartbeat import supervise_lease
 from qq_ai_bot.runtime.origin import TurnOrigin
@@ -46,7 +44,6 @@ class AutomationWorker:
         runtime_config: RuntimeConfigService,
         conversation_scopes: ConversationScopeRepository,
         turns: ConversationTurnCoordinator,
-        router: PresenceRouter,
         work_repository: WorkRepository,
         bindings: ActiveWorkBindings,
     ) -> None:
@@ -57,7 +54,6 @@ class AutomationWorker:
         self._config = runtime_config
         self._scopes = conversation_scopes
         self._turns = turns
-        self._router = router
         self._works = work_repository
         self._bindings = bindings
         self._stop = asyncio.Event()
@@ -145,6 +141,13 @@ class AutomationWorker:
         try:
             async with self._repository._database.sessions() as session:
                 key, conversation_id = await bind_automation_conversation(session, automation)
+                from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+                from qq_ai_bot.identity.db_models import PresenceModel
+
+                conversation = await session.get(CanonicalConversationModel, conversation_id)
+                presence = await session.get(PresenceModel, automation.canonical_presence_id)
+                if conversation is None or presence is None or not presence.enabled:
+                    raise ValueError("automation_scene_unavailable")
                 actor_user_id = ""
                 if automation.creator_kind != "self":
                     assert automation.canonical_creator_person_id is not None
@@ -153,16 +156,28 @@ class AutomationWorker:
                         self._settings,
                         owner_id=automation.canonical_creator_person_id,
                         conversation_id=conversation_id,
+                        presence_id=presence.id,
                     )
             group_id = (
-                automation.authority_snapshot["current_group_id"]
-                if automation.canonical_target_space_id
-                else None
+                automation.authority_snapshot["current_group_id"] if conversation.space_id else None
             )
             identity = (
-                ConversationScope.group(automation.bot_user_id, group_id)
+                ConversationScope.group(
+                    automation.bot_user_id,
+                    group_id,
+                    platform=presence.platform,
+                    presence_id=presence.id,
+                    conversation_id=conversation.id,
+                    thread_id=conversation.thread_id,
+                )
                 if group_id
-                else ConversationScope.private(automation.bot_user_id, actor_user_id)
+                else ConversationScope.private(
+                    automation.bot_user_id,
+                    actor_user_id,
+                    platform=presence.platform,
+                    presence_id=presence.id,
+                    conversation_id=conversation.id,
+                )
             )
             state = await self._scopes.get(identity)
             if state is None or state.id != conversation_id:
@@ -230,7 +245,7 @@ class AutomationWorker:
                     "actor_person_id": original.canonical_creator_person_id,
                     "actor_user_id": actor_user_id,
                     "presence_id": original.canonical_presence_id,
-                    "space_id": original.canonical_target_space_id,
+                    "space_id": conversation.space_id,
                     "bot_user_id": original.bot_user_id,
                     "current_group_id": group_id,
                     "instruction": instruction,
@@ -242,7 +257,6 @@ class AutomationWorker:
                     request_id=execution_id,
                     settings=self._settings,
                 )
-                resolved = await self._router.resolve_presence(recovered.presence_id)
 
                 async def validate() -> None:
                     fresh = await recover_automation_source(
@@ -254,9 +268,6 @@ class AutomationWorker:
                     )
                     if fresh != recovered:
                         raise ValueError("automation_source_changed")
-                    current = await self._router.resolve_presence(recovered.presence_id)
-                    if current.connection.snapshot != resolved.connection.snapshot:
-                        raise ValueError("automation_connection_changed")
 
                 snapshot = ConversationTurnSnapshot(
                     state.id,
@@ -268,8 +279,8 @@ class AutomationWorker:
                     automation_run_id=run.id,
                 )
                 runtime = await self._config.snapshot(
-                    user_id=recovered.actor_user_id or None,
-                    group_id=group_id,
+                    user_id=recovered.actor_person_id,
+                    group_id=recovered.target_space_id,
                 )
                 control = WorkControl(self._works, lease, execution_id, source, validate)
                 activation = bind_work_activation(control, bindings=self._bindings, scope_key=key)
@@ -285,14 +296,7 @@ class AutomationWorker:
                         source_runtime=ToolRuntime(
                             inbound=None,
                             actor_context=recovered.actor(execution_id),
-                            gateway=OneBotAutomationGateway(
-                                bot_user_id=recovered.bot_user_id,
-                                automation_id=automation.id,
-                                automation_run_id=run.id,
-                                router=self._router,
-                            ),
                             actor_is_superuser=recovered.actor_is_superuser,
-                            allow_generic_onebot=recovered.actor_is_superuser,
                             conversation_key=key,
                             execution_id=execution_id,
                             origin=TurnOrigin.SCHEDULED_AUTOMATION,

@@ -16,6 +16,7 @@ from qq_ai_bot.admin.models import VisionRuntimeConfig
 from qq_ai_bot.domain.messages import AttachmentKind, InboundMessage, MessageAttachment
 from qq_ai_bot.emoji.models import EmojiLifecycleStatus
 from qq_ai_bot.emoji.repository import EmojiRepository
+from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.persistence.repositories import (
     EmojiDescriptionRepository,
     MediaAnalysisRepository,
@@ -27,7 +28,6 @@ from qq_ai_bot.services.image_preprocessor import (
 from qq_ai_bot.services.media_resolver import (
     MediaResolutionError,
     MediaResolver,
-    OneBotMediaGateway,
 )
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
 from qq_ai_bot.vision.base import VisionError, VisionProvider
@@ -185,7 +185,7 @@ class VisionService:
         *,
         question: str,
         runtime: VisionRuntimeConfig,
-        gateway: OneBotMediaGateway | None,
+        gateway: PlatformMediaGateway | None,
         source_event_id: int | None,
         conversation_key: str,
     ) -> VisualObservation:
@@ -261,7 +261,7 @@ class VisionService:
         *,
         question: str,
         runtime: VisionRuntimeConfig,
-        gateway: OneBotMediaGateway | None,
+        gateway: PlatformMediaGateway | None,
         source_event_id: int | None,
         conversation_key: str,
     ) -> VisualObservation:
@@ -520,8 +520,8 @@ class VisionService:
         if is_leader:
             try:
                 allowed = await self._rate_limiter.allow(
-                    user_id=message.sender.user_id,
-                    group_id=message.group_id,
+                    user_id=message.person_id or message.presence_id or "",
+                    group_id=message.space_id,
                     per_user_per_minute=runtime.per_user_requests_per_minute,
                     per_group_per_minute=runtime.per_group_requests_per_minute,
                 )
@@ -535,7 +535,6 @@ class VisionService:
                             analysis_mode=mode,
                             thinking_enabled=runtime.thinking_enabled,
                             thinking_budget=runtime.thinking_budget,
-                            low_confidence_retry_threshold=(runtime.low_confidence_retry_threshold),
                         ),
                     )
                 except VisionError as exc:

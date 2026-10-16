@@ -25,7 +25,7 @@ from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.gateway.providers import builtin_provider_catalog
 from qq_ai_bot.gateway.providers.app.ingress import AppGateway
 from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.identity.canonical_repository import create_presence
+from qq_ai_bot.identity.canonical_repository import find_presence
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
 from qq_ai_bot.identity.ingress import CanonicalIngressResolver
 from qq_ai_bot.identity.routing import PresenceRouter
@@ -36,7 +36,6 @@ from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.main_agent_contract import MainAgentContract
 from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.social.service import SocialService
-from qq_ai_bot.social.transfer import ArtifactTransfer
 from qq_ai_bot.workspace.short_state import ShortState
 from qq_ai_bot.workspace.store import WorkspaceStore
 
@@ -65,15 +64,14 @@ async def app_env(database, admin, tmp_path):
 
     provider = FakeLLMProvider(respond)
     harness = build_harness(database, make_settings(database.url), provider)
-    registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
-    router = PresenceRouter(database, registry)
-    async with database.immediate_session() as session:
-        await create_presence(
-            session,
-            external_account_id="yuki-app",
-            platform="app",
-            now=__import__("datetime").datetime.now(__import__("datetime").UTC),
+    registry = GatewayConnectionRegistry(
+        providers=builtin_provider_catalog(
+            qq_transfer_root=tmp_path / "transfer", qq_gateway_root="/transfer"
         )
+    )
+    router = PresenceRouter(database, registry)
+    async with database.sessions() as session:
+        assert await find_presence(session, "yuki-app", platform="app") is not None
     harness.processor._canonical_ingress = CanonicalIngressResolver(database, registry, router)
     harness.processor._canonical_uow = CanonicalIngressUnitOfWork(database, router)
     social = SocialService(database, router, harness.scoped_events)
@@ -91,7 +89,7 @@ async def app_env(database, admin, tmp_path):
     harness.processor._native_images = AttachmentInputService(
         resolver, preprocessor, concurrency=2, pending_limit=8, timeout=30, max_bytes=6_291_456
     )
-    social.transfer = ArtifactTransfer(store, tmp_path / "transfer", "/transfer")
+    social.workspace = store
     gateway = AppGateway(database, registry, harness.processor, social)
     await gateway.start()
     messages = ClientMessages(api.commands.identities, gateway)
@@ -318,6 +316,7 @@ async def test_local_commit_ack_loss_reads_original_social_receipt(app_env, data
     from sqlalchemy.exc import OperationalError
     from sqlalchemy.ext.asyncio import AsyncSession
 
+    from qq_ai_bot.adapters.onebot.social import OneBotSocialOperations
     from qq_ai_bot.social.db_models import SocialOperationModel
     from qq_ai_bot.social.models import OperationStatus
 
@@ -344,7 +343,7 @@ async def test_local_commit_ack_loss_reads_original_social_receipt(app_env, data
     monkeypatch.setattr(env.social.receipts, "finish", marked)
     monkeypatch.setattr(AsyncSession, "commit", lost_ack)
     network = AsyncMock(side_effect=AssertionError("App attempted OneBot"))
-    monkeypatch.setattr(env.social, "_call", network)
+    monkeypatch.setattr(OneBotSocialOperations, "send", network)
     result = await env.client.post(
         "/client/v1/messages",
         json={"request_id": str(uuid4()), "text": "commit once"},
@@ -366,6 +365,7 @@ async def test_local_commit_ack_loss_reads_original_social_receipt(app_env, data
 
 
 async def test_app_source_recovers_original_platform_and_memory_owner(app_env, database):
+    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
     from qq_ai_bot.persistence.models import MemoryJobModel
     from qq_ai_bot.services.execution_sources import recover_source
 
@@ -395,7 +395,8 @@ async def test_app_source_recovers_original_platform_and_memory_owner(app_env, d
     recovered = await recover_source(
         database, event.canonical_conversation_id, source, request_id="original-work"
     )
-    assert recovered.platform == "app" and recovered.inbound(event).platform == "app"
+    original = await EventLedgerRepository(database).get_event(event.id)
+    assert recovered.platform == "app" and recovered.inbound(original).platform == "app"
     assert recovered.actor_person_id == person and recovered.event_id == event.id
 
 
@@ -411,15 +412,20 @@ async def test_qq_delivery_in_flight_during_transfer_keeps_original_recipient_hi
     env = await social_env(database, tmp_path)
     assert await env.router.cas_takeover_person(env.person) == "taken"
     service, target, code = await code_for(database, "1002")
-    call = env.service._call
+    call = env.bot.call_api
 
-    async def transfer_during_send(route, action, params):
-        await service.claim_account(
-            code["code"], platform="qq", account="10001", display_name="B", message_id=str(uuid4())
-        )
-        return await call(route, action, params)
+    async def transfer_during_send(action, **params):
+        if action == "send_private_msg":
+            await service.claim_account(
+                code["code"],
+                platform="qq",
+                account="10001",
+                display_name="B",
+                message_id=str(uuid4()),
+            )
+        return await call(action, **params)
 
-    monkeypatch.setattr(env.service, "_call", transfer_during_send)
+    monkeypatch.setattr(env.bot, "call_api", transfer_during_send)
     result = await env.service.execute(
         "send_message",
         {
@@ -470,8 +476,8 @@ async def test_messages_and_device_commands_share_person_request_namespace(app_e
     assert len(env.calls) == 2
 
 
-async def test_app_execution_uses_its_binding_without_borrowing_qq_admin_identity(
-    app_env, database
+async def test_app_execution_preserves_entry_and_uses_only_its_persons_real_grant(
+    app_env, database, monkeypatch
 ):
     from qq_ai_bot.automation.authority import PermissionLevel
     from qq_ai_bot.automation.control_context import resolve_execution_identity
@@ -483,6 +489,13 @@ async def test_app_execution_uses_its_binding_without_borrowing_qq_admin_identit
     principal = await env.identity.authenticate(device["token"])
     async with database.sessions() as session:
         superuser = await find_identity_binding(session, "9000")
+        account, permission = await resolve_execution_identity(
+            session,
+            env.harness.settings,
+            owner_id=person,
+            conversation_id=principal.conversation_id,
+        )
+    assert account == principal.external_account_id and permission is PermissionLevel.USER
     await env.identity.transfer_for_operator(superuser.id, person, str(uuid4()), str(uuid4()))
     async with database.sessions() as session:
         account, permission = await resolve_execution_identity(
@@ -491,7 +504,22 @@ async def test_app_execution_uses_its_binding_without_borrowing_qq_admin_identit
             owner_id=person,
             conversation_id=principal.conversation_id,
         )
-    assert account == principal.external_account_id and permission is PermissionLevel.USER
+    assert account == principal.external_account_id and permission is PermissionLevel.SUPERUSER
+    config = env.harness.processor._runtime_config
+    snapshot = AsyncMock(wraps=config.snapshot)
+    monkeypatch.setattr(config, "snapshot", snapshot)
+    response = await env.client.post(
+        "/client/v1/messages",
+        json={"request_id": str(uuid4()), "text": "use the original App entry"},
+        headers=bearer(device["token"]),
+    )
+    assert response.status_code == 200
+    await drain(env)
+    assert len(env.calls) == 2
+    owners = [
+        call.kwargs["user_id"] for call in snapshot.await_args_list if call.kwargs.get("user_id")
+    ]
+    assert owners and set(owners) == {person}
 
 
 async def test_app_memory_read_scope_uses_canonical_owner_without_qq_alias(app_env, database):

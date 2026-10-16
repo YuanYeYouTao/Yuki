@@ -12,6 +12,7 @@ class BindingOwnership:
     account: str
     starts_at: datetime | None
     ends_at: datetime | None
+    platform: str = "qq"
 
     @classmethod
     def of(cls, binding: IdentityBindingModel) -> "BindingOwnership":
@@ -20,6 +21,7 @@ class BindingOwnership:
             binding.external_account_id,
             binding.history_starts_at,
             binding.updated_at if binding.status == "transferred" else None,
+            binding.platform,
         )
 
     @property

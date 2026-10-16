@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.memory.runtime.capability_view import build_capability_view
 from qq_ai_bot.memory.runtime.contract import (
     MemoryTurnContract,
@@ -14,15 +13,10 @@ from qq_ai_bot.memory.runtime.partition_lookup import MemoryPartitionLookup
 from qq_ai_bot.memory.runtime.resolver import (
     MemoryAccessDecision,
     MemoryAccessReason,
-    resolve_inbound_scope,
     resolve_memory_access,
-)
-from qq_ai_bot.memory.runtime.state import (
-    MemorySessionState,
 )
 from qq_ai_bot.runtime.contracts import MemoryCapabilityView
 from qq_ai_bot.runtime.errors import InvalidTurnContextError
-from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 from qq_ai_bot.runtime.origin import TurnOrigin
 
 
@@ -33,35 +27,30 @@ class TurnMemorySession:
         self,
         *,
         decision: MemoryAccessDecision,
-        scope: ResolvedMemoryScope,
     ) -> None:
         self._decision = decision
-        self._state = MemorySessionState(decision.contract, scope)
 
     @classmethod
     def open(
         cls,
         *,
-        inbound: InboundMessage,
         origin: TurnOrigin,
         memory_available: bool = True,
     ) -> TurnMemorySession:
         if origin is TurnOrigin.SELF_INITIATIVE:
             # SELF continues under its own run identity via open_self_origin.
             raise InvalidTurnContextError("invalid turn principal")
-        scope = resolve_inbound_scope(inbound)
         decision = resolve_memory_access(
             origin=origin,
             memory_available=memory_available,
         )
         return cls(
             decision=decision,
-            scope=scope,
         )
 
     @property
     def contract(self) -> MemoryTurnContract:
-        return self._state.contract
+        return self._decision.contract
 
     @classmethod
     async def open_self_origin(
@@ -80,8 +69,8 @@ class TurnMemorySession:
         )
         if (
             identity.scope_type is not ScopeType.GROUP
-            or identity.group_id != source.group_id
-            or identity.bot_user_id != source.bot_user_id
+            or identity.conversation_id != source.canonical_conversation_id
+            or identity.presence_id != source.presence_id
         ):
             raise ValueError("SELF Memory scope does not match its initiative")
         decision = MemoryAccessDecision(
@@ -94,12 +83,7 @@ class TurnMemorySession:
         )
         return cls(
             decision=decision,
-            scope=ResolvedMemoryScope.for_group(source.group_id),
         )
-
-    @property
-    def scope(self) -> ResolvedMemoryScope:
-        return self._state.scope
 
     @property
     def reason(self) -> MemoryAccessReason:
@@ -107,9 +91,6 @@ class TurnMemorySession:
 
     def capability_view(self) -> MemoryCapabilityView:
         return build_capability_view(
-            self._state.contract,
+            self._decision.contract,
             transition_revision=1,
         )
-
-    async def close(self) -> None:
-        self._state.close()

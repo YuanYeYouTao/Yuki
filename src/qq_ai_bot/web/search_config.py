@@ -19,7 +19,7 @@ def effective_search_profile(
         else own_profile
     )
     if profile is None:
-        raise ValueError("Select a native search connection in the WebUI")
+        raise ValueError("Select a native search connection in model profiles via Admin or CLI")
     if catalog.search_backend is None and backend == "deepseek_anthropic":
         endpoint = urlsplit(profile.base_url)
         if (

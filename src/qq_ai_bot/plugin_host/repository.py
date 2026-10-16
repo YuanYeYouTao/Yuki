@@ -518,13 +518,13 @@ class PluginStateRepository:
             if row is None:
                 return None
             from qq_ai_bot.plugin_host.ownership import (
-                project_person_external_id,
+                require_live_person,
                 require_state_readable,
             )
 
             await require_state_readable(session, row)
             subject = (
-                await project_person_external_id(session, row.canonical_person_id)
+                await require_live_person(session, row.canonical_person_id)
                 if row.canonical_person_id
                 else None
             )
@@ -619,14 +619,12 @@ class PluginStateRepository:
             from qq_ai_bot.plugin_host.ownership import (
                 CANONICAL_OWNER_MISMATCH,
                 PluginOwnershipError,
-                project_person_external_id,
+                require_live_person,
                 resolve_state_owner,
             )
 
             owner_id = await resolve_state_owner(session, subject_user_id)
-            projected_subject = (
-                await project_person_external_id(session, owner_id) if owner_id else None
-            )
+            projected_subject = await require_live_person(session, owner_id) if owner_id else None
             if expected_version == 0:
                 await session.execute(
                     delete(PluginStateModel).where(

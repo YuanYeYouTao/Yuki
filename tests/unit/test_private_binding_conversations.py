@@ -13,7 +13,11 @@ from qq_ai_bot.conversation.hydrate import bump_canonical_generation, ensure_leg
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import create_presence, find_identity_binding
+from qq_ai_bot.identity.canonical_repository import (
+    create_presence,
+    find_identity_binding,
+    find_presence,
+)
 from qq_ai_bot.identity.db_models import IdentityBindingModel
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.persistence.people_repository import PeopleRepository
@@ -25,15 +29,20 @@ async def entries(database):
     now = datetime.now(UTC)
     async with database.immediate_session() as session:
         primary = await find_identity_binding(session, "1001")
+        primary_presence = await find_presence(session, "8000")
         bindings = [primary.id]
-        scopes = [ConversationScope.private("8000", "1001")]
+        scopes = [ConversationScope.private("8000", "1001", presence_id=primary_presence.id)]
         for platform, account, bot in (
             ("qq", "second-qq", "8000"),
             ("telegram", "1001", "telegram-bot"),
             ("app", "opaque-app-account", "app-bot"),
         ):
             if platform != "qq":
-                await create_presence(session, external_account_id=bot, now=now, platform=platform)
+                presence = await create_presence(
+                    session, external_account_id=bot, now=now, platform=platform
+                )
+            else:
+                presence = primary_presence
             binding = IdentityBindingModel(
                 id=str(uuid4()),
                 person_id=primary.person_id,
@@ -49,7 +58,9 @@ async def entries(database):
             )
             session.add(binding)
             bindings.append(binding.id)
-            scopes.append(ConversationScope.private(bot, account))
+            scopes.append(
+                ConversationScope.private(bot, account, platform=platform, presence_id=presence.id)
+            )
         return primary.person_id, bindings, scopes
 
 
@@ -70,7 +81,10 @@ async def test_four_bindings_keep_identity_but_separate_prompts_and_generation(d
         events.append(event)
         assert event.author_person_id == person
         state = await repository.get(scope)
-        assert state.runtime_scope_key == f"binding:{bindings[index]}"
+        assert state.runtime_scope_key == f"conversation:{state.id}"
+        async with database.sessions() as reader:
+            conversation = await reader.get(CanonicalConversationModel, state.id)
+            assert conversation.identity_binding_id == bindings[index]
         snapshot = await repository.load_prompt_snapshot(scope)
         assert [row.content for row in snapshot.raw_events] == [f"private-{index}"]
     assert len({event.canonical_conversation_id for event in events}) == 4
@@ -155,7 +169,7 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
 
 
 async def test_person_erasure_removes_all_private_binding_conversations(database):
-    _, bindings, scopes = await entries(database)
+    person, bindings, scopes = await entries(database)
     writer = ScopedEventLedgerUnitOfWork(database)
     ids = []
     for index, scope in enumerate(scopes):
@@ -175,7 +189,7 @@ async def test_person_erasure_removes_all_private_binding_conversations(database
     async with database.immediate_session() as session:
         binding = await session.get(IdentityBindingModel, bindings[1])
         binding.status = "disabled"
-    assert await PeopleRepository(database).delete_person("1001")
+    assert await PeopleRepository(database).delete_person_id(person)
     assert await work.get(accepted["id"]) is None
     async with database.sessions() as session:
         assert not list(

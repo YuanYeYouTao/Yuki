@@ -59,7 +59,6 @@ from qq_ai_bot.services.agent_runner import (
     AgentRunResult,
     AgentRuntime,
     AgentToolBackend,
-    ReusableToolResult,
     _RequestNotStarted,
 )
 from qq_ai_bot.services.concurrency import RequestCancelledError
@@ -90,7 +89,6 @@ class TurnState:
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
     continuation_tools: tuple[ChatTool, ...] = ()
     continuation_native_tools: tuple[NativeToolDefinition, ...] = ()
-    reusable_tool_results: dict[tuple[str, str], ReusableToolResult] = field(default_factory=dict)
     provider_pause_replay: bool = False
     observed_event_ids: set[int] = field(default_factory=set)
     public_tail: list[ChatMessage] = field(default_factory=list)
@@ -1409,8 +1407,6 @@ class TurnExecution:
                 ),
             ),
             max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
-            reusable_results=self.state.reusable_tool_results,
-            cacheable_names=frozenset(t.name for t in self.state.definitions if t.result_cacheable),
             declared_names=frozenset(t.name for t in self.state.definitions),
             chain_id=self.state.transcript.chain_id,
             request_sequence=request_index + 1,

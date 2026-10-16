@@ -72,8 +72,8 @@ observe 只调用运行中插件的观察合同。通知只允许原领域规则
 
 Work 取消与续跑调用 `manage_work`，沿原 revision、执行身份、来源与效果回执处理。
 模型保存调用共享 `ConfigFileService` 原子保存并热应用，返回 `applied` 或实际的待重启状态。
-密钥写入 `model_profiles.secrets.json`，只保存新增别名；别名使用合法环境变量名称，
-已有别名继续可读。配置文件中的 `api_key_env` 必须引用该别名。
+密钥写入 `model_profiles.secrets.json`，可新增或更新已有别名；别名使用合法环境变量名称。
+配置文件中的 `api_key_env` 必须引用该别名。
 读取模型时只返回配置与已配置状态，响应、审计和 TOML 不包含密钥值。
 
 例如，先读取 `admin model show` 的 revision，再执行：

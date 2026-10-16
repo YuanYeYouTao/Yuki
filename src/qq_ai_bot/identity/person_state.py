@@ -19,7 +19,6 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.identity.canonical_repository import (
     external_id,
-    find_identity_binding,
     find_space_binding,
 )
 from qq_ai_bot.identity.db_models import (
@@ -39,32 +38,7 @@ class CanonicalMemberNameProjection:
     nickname: str
     group_card: str
     aliases: tuple[str, ...]
-
-
-async def _live_person_binding(
-    session: AsyncSession,
-    user_id: str,
-    *,
-    allow_disabled: bool = False,
-    required: bool = False,
-) -> tuple[IdentityBindingModel, CanonicalPersonModel] | None:
-    binding = await find_identity_binding(session, external_id(user_id))
-    if binding is None:
-        if required:
-            raise CanonicalIdentityError("unclassified")
-        return None
-    if binding.status != "active":
-        if required:
-            raise CanonicalIdentityError("canonical_owner_disabled")
-        return None
-    person = await session.get(CanonicalPersonModel, binding.person_id)
-    if person is None:
-        raise CanonicalIdentityError("unclassified")
-    if not person.enabled and not allow_disabled:
-        if required:
-            raise CanonicalIdentityError("canonical_owner_disabled")
-        return None
-    return binding, person
+    person_id: str | None = None
 
 
 async def _live_space_binding(
@@ -72,8 +46,9 @@ async def _live_space_binding(
     group_id: str,
     *,
     required: bool = False,
+    platform: str = "qq",
 ) -> tuple[SpaceBindingModel, CanonicalSpaceModel] | None:
-    binding = await find_space_binding(session, external_id(group_id))
+    binding = await find_space_binding(session, external_id(group_id), platform=platform)
     if binding is None:
         if required:
             raise CanonicalIdentityError("no_space_binding")
@@ -176,6 +151,7 @@ async def observe_canonical_person(
     nickname_known: bool,
     group_card_known: bool,
     now: datetime,
+    space_id: str | None = None,
 ) -> None:
     if binding.status != "active":
         raise CanonicalIdentityError("canonical_owner_disabled")
@@ -193,17 +169,25 @@ async def observe_canonical_person(
     space = None
     membership = None
     card_alias = None
-    if group_id is not None:
-        state = await _live_space_binding(session, group_id, required=True)
+    if space_id is not None:
+        space = await session.get(CanonicalSpaceModel, space_id)
+        if space is None:
+            raise CanonicalIdentityError("unclassified")
+        if group_id is not None:
+            space_binding = await find_space_binding(session, group_id, platform=binding.platform)
+            if space_binding is not None and space_binding.space_id != space_id:
+                raise CanonicalIdentityError("canonical_owner_mismatch")
+    elif group_id is not None:
+        state = await _live_space_binding(
+            session, group_id, required=True, platform=binding.platform
+        )
         assert state is not None
         space_binding, space = state
-        membership = await session.get(MembershipModel, (binding.person_id, space_binding.space_id))
+    if space is not None:
+        membership = await session.get(MembershipModel, (binding.person_id, space.id))
         if group_card:
             card_alias = await _find_alias(
-                session,
-                person_id=binding.person_id,
-                space_id=space_binding.space_id,
-                alias=group_card,
+                session, person_id=binding.person_id, space_id=space.id, alias=group_card
             )
 
     # All owner, alias and membership reads precede staged writes.
@@ -223,23 +207,23 @@ async def observe_canonical_person(
             alias_type="nickname",
             now=now,
         )
-    if group_id is None:
+    if space is None:
         return
-    assert space_binding is not None and space is not None
-    space_binding.last_seen_at = now
+    if space_binding is not None:
+        space_binding.last_seen_at = now
     if group_name:
         if space.name != group_name[:128]:
             space.name = group_name[:128]
             space.updated_at = now
             space.revision += 1
-        if space_binding.display_name != group_name[:128]:
+        if space_binding is not None and space_binding.display_name != group_name[:128]:
             space_binding.display_name = group_name[:128]
             space_binding.updated_at = now
             space_binding.revision += 1
     if membership is None:
         membership = MembershipModel(
             canonical_person_id=binding.person_id,
-            canonical_space_id=space_binding.space_id,
+            canonical_space_id=space.id,
             group_card=group_card[:128] if group_card_known else "",
             first_seen_at=now,
             last_seen_at=now,
@@ -254,7 +238,7 @@ async def observe_canonical_person(
             session,
             card_alias,
             person_id=binding.person_id,
-            space_id=space_binding.space_id,
+            space_id=space.id,
             alias=group_card,
             alias_type="group_card",
             now=now,
@@ -264,13 +248,55 @@ async def observe_canonical_person(
 async def load_canonical_profile(
     session: AsyncSession,
     *,
-    user_id: str,
-    group_id: str | None,
+    user_id: str | None = None,
+    group_id: str | None = None,
     include_nickname: bool = True,
+    person_id: str | None = None,
+    space_id: str | None = None,
+    platform: str = "qq",
 ) -> tuple[str, str] | None:
+    if person_id is not None:
+        person = await session.get(CanonicalPersonModel, person_id)
+        if person is None:
+            return None
+        nickname = (
+            await session.scalar(
+                select(_nickname_value())
+                .where(
+                    IdentityBindingModel.person_id == person_id,
+                    IdentityBindingModel.status == "active",
+                )
+                .order_by(IdentityBindingModel.external_account_id.desc(), IdentityBindingModel.id)
+                .limit(1)
+            )
+            if include_nickname
+            else ""
+        )
+        if space_id is None and group_id is not None:
+            state = await _live_space_binding(session, group_id, platform=platform)
+            space_id = state[0].space_id if state is not None else None
+        card = (
+            await session.scalar(
+                select(MembershipModel.group_card).where(
+                    MembershipModel.canonical_person_id == person_id,
+                    MembershipModel.canonical_space_id == space_id,
+                )
+            )
+            if space_id is not None
+            else ""
+        )
+        return str(nickname or ""), str(card or "")
+    if user_id is None:
+        return None
     return (
         await load_canonical_profiles(
-            session, (user_id,), group_id=group_id, include_nickname=include_nickname
+            session,
+            (user_id,),
+            group_id=group_id,
+            include_nickname=include_nickname,
+            person_ids={user_id: person_id} if person_id is not None else None,
+            platform=platform,
+            space_id=space_id,
         )
     ).get(user_id)
 
@@ -283,6 +309,8 @@ async def load_canonical_profiles(
     include_nickname: bool = True,
     person_ids: Mapping[str, str] | None = None,
     members_only: bool = False,
+    platform: str = "qq",
+    space_id: str | None = None,
 ) -> dict[str, tuple[str, str]]:
     """Read requested profiles, reusing canonical owners from this read snapshot."""
     accounts = {raw: external_id(raw) for raw in user_ids}
@@ -296,7 +324,7 @@ async def load_canonical_profiles(
         (CanonicalPersonModel.enabled if person_ids is None else literal(True).label("enabled")),
         (_nickname_value() if include_nickname else literal("")).label("nickname"),
     ).where(
-        IdentityBindingModel.platform == "qq",
+        IdentityBindingModel.platform == platform,
         IdentityBindingModel.status == "active",
     )
     if person_ids is None:
@@ -318,14 +346,18 @@ async def load_canonical_profiles(
                 )
             )
         )
-    if group_id is not None and members_only:
-        state = await _live_space_binding(session, group_id, required=True)
-        assert state is not None
-        space_binding, _space = state
+    if space_id is None and group_id is not None:
+        state = await _live_space_binding(
+            session, group_id, required=members_only, platform=platform
+        )
+        if state is None:
+            return {}
+        space_id = state[0].space_id
+    if space_id is not None and members_only:
         query = query.join(
             MembershipModel,
             (MembershipModel.canonical_person_id == IdentityBindingModel.person_id)
-            & (MembershipModel.canonical_space_id == space_binding.space_id),
+            & (MembershipModel.canonical_space_id == space_id),
         ).add_columns(MembershipModel.group_card)
     rows = (await session.execute(query)).all()
     people = {}
@@ -337,13 +369,9 @@ async def load_canonical_profiles(
     if not people:
         return {}
     cards: dict[str, str] = {}
-    if group_id is not None and members_only:
+    if space_id is not None and members_only:
         cards = {row.person_id: row.group_card for row in people.values()}
-    elif group_id is not None:
-        state = await _live_space_binding(session, group_id)
-        if state is None:
-            return {}
-        space_binding, _space = state
+    elif space_id is not None:
         person_values = func.json_each(
             json.dumps(tuple({row.person_id for row in people.values()}))
         ).table_valued("value")
@@ -353,7 +381,7 @@ async def load_canonical_profiles(
                 await session.execute(
                     select(MembershipModel.canonical_person_id, MembershipModel.group_card).where(
                         MembershipModel.canonical_person_id.in_(select(person_values.c.value)),
-                        MembershipModel.canonical_space_id == space_binding.space_id,
+                        MembershipModel.canonical_space_id == space_id,
                     )
                 )
             ).all()
@@ -370,18 +398,17 @@ async def load_canonical_profiles(
 
 async def load_canonical_aliases(
     session: AsyncSession,
-    user_id: str,
+    person_id: str | None,
     *,
     limit: int,
 ) -> tuple[str, ...]:
-    state = await _live_person_binding(session, user_id)
-    if state is None:
+    person = await session.get(CanonicalPersonModel, person_id) if person_id else None
+    if person is None or not person.enabled:
         return ()
-    binding, _person = state
     values = (
         await session.scalars(
             select(PersonAliasModel.alias)
-            .where(PersonAliasModel.canonical_person_id == binding.person_id)
+            .where(PersonAliasModel.canonical_person_id == person.id)
             .order_by(PersonAliasModel.last_seen_at.desc(), PersonAliasModel.id.desc())
             .limit(max(1, limit))
         )
@@ -389,15 +416,14 @@ async def load_canonical_aliases(
     return tuple(dict.fromkeys(str(value) for value in values))
 
 
-async def load_canonical_membership_count(session: AsyncSession, user_id: str) -> int:
-    state = await _live_person_binding(session, user_id)
-    if state is None:
+async def load_canonical_membership_count(session: AsyncSession, person_id: str | None) -> int:
+    person = await session.get(CanonicalPersonModel, person_id) if person_id else None
+    if person is None or not person.enabled:
         return 0
-    binding, _person = state
     value = await session.scalar(
         select(func.count())
         .select_from(MembershipModel)
-        .where(MembershipModel.canonical_person_id == binding.person_id)
+        .where(MembershipModel.canonical_person_id == person.id)
     )
     return int(value or 0)
 
@@ -460,10 +486,14 @@ async def load_canonical_members_in_group(
 async def load_canonical_group_member_name_projections(
     session: AsyncSession,
     group_id: str,
+    *,
+    space_id: str | None = None,
+    platform: str = "qq",
 ) -> tuple[CanonicalMemberNameProjection, ...]:
-    state = await _live_space_binding(session, group_id, required=True)
-    assert state is not None
-    space_binding, _space = state
+    if space_id is None:
+        state = await _live_space_binding(session, group_id, required=True, platform=platform)
+        assert state is not None
+        space_id = state[0].space_id
     memberships = {
         person_id: card
         for person_id, card in (
@@ -474,7 +504,7 @@ async def load_canonical_group_member_name_projections(
                     CanonicalPersonModel.id == MembershipModel.canonical_person_id,
                 )
                 .where(
-                    MembershipModel.canonical_space_id == space_binding.space_id,
+                    MembershipModel.canonical_space_id == space_id,
                     CanonicalPersonModel.enabled.is_(True),
                 )
             )
@@ -490,6 +520,7 @@ async def load_canonical_group_member_name_projections(
                 IdentityBindingModel.person_id,
                 IdentityBindingModel.external_account_id,
                 IdentityBindingModel.display_name,
+                IdentityBindingModel.platform,
             )
             .where(
                 IdentityBindingModel.person_id.in_(selected),
@@ -504,8 +535,9 @@ async def load_canonical_group_member_name_projections(
     ).all()
     representatives: dict[str, tuple[str, str]] = {}
     fallback_names: dict[str, str] = {}
-    for person_id, account, display_name in bindings:
-        representatives.setdefault(person_id, (account, display_name))
+    for person_id, account, display_name, binding_platform in bindings:
+        if binding_platform == platform:
+            representatives.setdefault(person_id, (account, display_name))
         if display_name:
             fallback_names[person_id] = display_name
     aliases: dict[str, dict[str, None]] = {}
@@ -521,7 +553,7 @@ async def load_canonical_group_member_name_projections(
             .where(
                 PersonAliasModel.canonical_person_id.in_(selected),
                 (PersonAliasModel.canonical_space_id.is_(None))
-                | (PersonAliasModel.canonical_space_id == space_binding.space_id),
+                | (PersonAliasModel.canonical_space_id == space_id),
             )
             .order_by(
                 PersonAliasModel.canonical_person_id,
@@ -544,6 +576,7 @@ async def load_canonical_group_member_name_projections(
                 or fallback_names.get(person_id, ""),
                 group_card=memberships[person_id],
                 aliases=tuple(aliases.get(person_id, {})),
+                person_id=person_id,
             )
         )
     return tuple(sorted(result, key=lambda item: item.user_id))
@@ -587,33 +620,32 @@ async def observe_canonical_space(
 
 async def load_canonical_group(
     session: AsyncSession,
-    group_id: str,
+    space_id: str,
 ) -> GroupSetting | None:
-    state = await _live_space_binding(session, group_id)
-    if state is None:
+    space = await session.get(CanonicalSpaceModel, space_id)
+    if space is None:
         return None
-    _binding, space = state
-    return _group_setting(group_id, space)
+    return _group_setting(space.id, space)
 
 
 async def set_canonical_space_flags(
     session: AsyncSession,
-    group_id: str,
+    space_id: str,
     *,
     enabled: bool | None = None,
     autonomous_enabled: bool | None = None,
     now: datetime,
 ) -> GroupSetting:
-    state = await _live_space_binding(session, group_id, required=True)
-    assert state is not None
-    _binding, space = state
+    space = await session.get(CanonicalSpaceModel, space_id)
+    if space is None:
+        raise CanonicalIdentityError("missing_canonical_owner")
     if enabled is not None:
         space.enabled = enabled
     if autonomous_enabled is not None:
         space.autonomous_enabled = autonomous_enabled
     space.updated_at = now
     space.revision += 1
-    return _group_setting(group_id, space)
+    return _group_setting(space.id, space)
 
 
 def _group_setting(group_id: str, space: CanonicalSpaceModel) -> GroupSetting:
@@ -628,26 +660,25 @@ def _group_setting(group_id: str, space: CanonicalSpaceModel) -> GroupSetting:
 
 async def set_canonical_person_enabled(
     session: AsyncSession,
-    user_id: str,
+    person_id: str,
     enabled: bool,
     *,
     now: datetime,
 ) -> PrivateUserSetting:
-    state = await _live_person_binding(session, user_id, allow_disabled=True, required=True)
-    assert state is not None
-    _binding, person = state
+    person = await session.get(CanonicalPersonModel, person_id)
+    if person is None:
+        raise CanonicalIdentityError("missing_canonical_owner")
     person.enabled = enabled
     person.updated_at = now
     person.revision += 1
-    return PrivateUserSetting(user_id=external_id(user_id), enabled=enabled)
+    return PrivateUserSetting(user_id=person.id, enabled=enabled)
 
 
 async def load_canonical_person_enabled(
     session: AsyncSession,
-    user_id: str,
+    person_id: str,
 ) -> PrivateUserSetting | None:
-    state = await _live_person_binding(session, user_id, allow_disabled=True)
-    if state is None:
+    person = await session.get(CanonicalPersonModel, person_id)
+    if person is None:
         return None
-    _binding, person = state
-    return PrivateUserSetting(user_id=external_id(user_id), enabled=bool(person.enabled))
+    return PrivateUserSetting(user_id=person.id, enabled=bool(person.enabled))

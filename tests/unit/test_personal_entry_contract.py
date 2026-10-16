@@ -315,7 +315,7 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
     device, person = await owner(env, database)
     now = datetime.now(UTC)
     async with database.immediate_session() as session:
-        await create_presence(
+        presence = await create_presence(
             session, external_account_id="telegram-test-bot", platform="telegram", now=now
         )
         binding = IdentityBindingModel(
@@ -335,7 +335,12 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
         session.add(binding)
     event = (
         await env.harness.scoped_events.append(
-            scope=ConversationScope.private("telegram-test-bot", "telegram-test-account"),
+            scope=ConversationScope.private(
+                "telegram-test-bot",
+                "telegram-test-account",
+                platform="telegram",
+                presence_id=presence.id,
+            ),
             platform_message_id=str(uuid4()),
             sender_user_id="telegram-test-account",
             direction="inbound",

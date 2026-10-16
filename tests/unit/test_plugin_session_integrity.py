@@ -24,13 +24,13 @@ from yuki_plugin_sdk.sessions import CreateAgentSessionRequest, RunAgentSessionR
 async def test_private_session_keeps_long_history_and_complete_sdk_result(
     database, tmp_path, input_tokens
 ):
-    await social_env(database, tmp_path)
+    env = await social_env(database, tmp_path)
     plugin_id = "integrity.session"
     await PluginInstallationRepository(database).upsert_discovered(
         plugin_id=plugin_id,
         name="Integrity",
         version="1.0.0",
-        plugin_api="3.5",
+        plugin_api="4.0",
         yuki_requires=">=3.0.0,<4.0",
         manifest_hash="ab" * 32,
         entrypoint="plugin:Integrity",
@@ -60,7 +60,7 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
     facade = BoundAgentSessionFacade(
         service=service,
         plugin_id=plugin_id,
-        actor_user_id="10001",
+        actor_user_id=env.person,
         current_group_id=None,
         approved_permissions=("agent.session",),
     )
@@ -74,7 +74,7 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
             plugin_id=plugin_id,
             session_id=str(session.session_id),
             role=role,
-            sender_user_id="10001" if role == "user" else None,
+            sender_user_id=env.person if role == "user" else None,
             content=content,
         )
     middle = [f"middle chapter {index}" for index in range(598)]
@@ -83,7 +83,7 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
             plugin_id=plugin_id,
             session_id=str(session.session_id),
             role="user",
-            sender_user_id="10001",
+            sender_user_id=env.person,
             content=content,
         )
     request = RunAgentSessionRequest(session_id=session.session_id, user_input="next chapter")
@@ -113,7 +113,7 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
         ]
     # Changing the real caller does not change private ownership or manufacture
     # access to the selected history.
-    authority = PluginSessionAuthority(plugin_id, "10001", None, frozenset({"agent.session"}))
+    authority = PluginSessionAuthority(plugin_id, env.person, None, frozenset({"agent.session"}))
     from qq_ai_bot.services.plugin_sessions import PluginSessionNotFoundError
 
     with pytest.raises(PluginSessionNotFoundError):
@@ -125,3 +125,95 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
             max_tool_calls=None,
             max_model_requests=None,
         )
+
+
+@pytest.mark.parametrize("group", [False, True])
+async def test_actorless_session_keeps_real_group_or_plugin_scope(database, tmp_path, group):
+    from qq_ai_bot.services.plugin_sessions import PluginSessionPermissionError
+
+    env = await social_env(database, tmp_path)
+    plugin_id = "integrity.actorless"
+    await PluginInstallationRepository(database).upsert_discovered(
+        plugin_id=plugin_id,
+        name="Actorless",
+        version="1.0.0",
+        plugin_api="4.0",
+        yuki_requires=">=3.0.0",
+        manifest_hash="a" * 64,
+        entrypoint="fixture:Plugin",
+        requested_permissions=("agent.session", "group.current.read", "person.current.read"),
+    )
+    repository = PluginAgentSessionRepository(database)
+    provider = FakeLLMProvider(lambda _: "only the real original scope")
+    service = PluginAgentSessionService(
+        model_executor=InjectedModelExecutor(provider),
+        concurrency=ConcurrencyManager(),
+        runtime_config=RuntimeConfigService(
+            database=database, settings=make_settings(database.url)
+        ),
+        repository=repository,
+    )
+    facade = BoundAgentSessionFacade(
+        service=service,
+        plugin_id=plugin_id,
+        actor_user_id=None,
+        current_group_id=env.space if group else None,
+        approved_permissions=("agent.session", "group.current.read", "person.current.read"),
+        conversation_id=env.context.conversation_id if group else None,
+    )
+    with pytest.raises(PluginSessionPermissionError, match="real Person"):
+        await facade.create(
+            CreateAgentSessionRequest(
+                name="no fabricated human", instructions="context", context_profile="current_user"
+            )
+        )
+    session = await facade.create(
+        CreateAgentSessionRequest(
+            name="real self computation",
+            instructions="use only its actual context",
+            context_profile="current_group" if group else "none",
+        )
+    )
+    result = await facade.run(
+        RunAgentSessionRequest(session_id=session.session_id, user_input="continue")
+    )
+    assert result.text == "only the real original scope" and len(provider.requests) == 1
+    record = await repository.get(plugin_id=plugin_id, session_id=str(session.session_id))
+    assert record.owner_user_id is None and record.canonical_owner_person_id is None
+    assert record.scope_type == ("group" if group else "plugin")
+    assert record.canonical_space_id == (env.space if group else None)
+    # A fresh service has no invocation or in-memory session ownership to borrow.
+    # Its durable history and scope come from the same original internal session.
+    restored_provider = FakeLLMProvider(lambda _: "continued after service restart")
+    restored = BoundAgentSessionFacade(
+        service=PluginAgentSessionService(
+            model_executor=InjectedModelExecutor(restored_provider),
+            concurrency=ConcurrencyManager(),
+            runtime_config=RuntimeConfigService(
+                database=database, settings=make_settings(database.url)
+            ),
+            repository=PluginAgentSessionRepository(database),
+        ),
+        plugin_id=plugin_id,
+        actor_user_id=None,
+        current_group_id=env.space if group else None,
+        approved_permissions=("agent.session", "group.current.read", "person.current.read"),
+        conversation_id=env.context.conversation_id if group else None,
+    )
+    result = await restored.run(
+        RunAgentSessionRequest(session_id=session.session_id, user_input="next original step")
+    )
+    assert result.session.session_id == session.session_id
+    assert result.text == "continued after service restart"
+    assert [
+        message.content
+        for message in restored_provider.requests[0].messages
+        if message.role in {"user", "assistant"}
+    ] == [
+        "continue",
+        "only the real original scope",
+        "next original step",
+    ]
+    stored = await repository.get(plugin_id=plugin_id, session_id=str(session.session_id))
+    assert stored.canonical_owner_person_id is None and stored.scope_type == record.scope_type
+    assert stored.canonical_space_id == record.canonical_space_id

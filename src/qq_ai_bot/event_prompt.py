@@ -2,16 +2,10 @@
 
 from __future__ import annotations
 
-import logging
 import re
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
-from functools import lru_cache
 
-from qq_ai_bot.adapters.onebot.normalizer import (
-    SegmentProjectionError,
-    project_serialized_segments,
-)
 from qq_ai_bot.domain.messages import ChatMessage, sanitize_display_name
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.services.renderer import strip_internal_history_markers
@@ -25,10 +19,6 @@ _LEGACY_HISTORY_PREFIX = re.compile(
 )
 _MEDIA_DESCRIPTION = re.compile(r"\[(?:表情|语音)：[\s\S]*\]")
 _CAUSAL_TOKEN_UNSAFE = re.compile(r"[^\w.:-]+", re.UNICODE)
-_SAFE_SEGMENT_ERROR_CATEGORIES = frozenset(
-    {"segment_not_object", "segment_type_invalid", "segment_data_invalid"}
-)
-logger = logging.getLogger(__name__)
 
 
 def _causal_token(value: str | None, *, fallback: str) -> str:
@@ -66,13 +56,6 @@ def prompt_origin_class(row: EventRecord) -> str:
     return "ordinary"
 
 
-@lru_cache(maxsize=8)
-def _log_segment_projection_fallback(category: str) -> None:
-    """Rate-limit content-free diagnostics for malformed historical segments."""
-
-    logger.warning("historical_segment_projection_fallback category=%s", category)
-
-
 class ChatEventPromptRenderer:
     """Render one canonical prompt envelope for the main Agent."""
 
@@ -98,9 +81,6 @@ class ChatEventPromptRenderer:
         }
         self._yuki_account_ids = frozenset({*yuki_account_ids, *inferred_yuki_ids})
         self._events_by_id = {row.id: row for row in rows}
-        self._display_names_by_user_id: dict[str, str] = {}
-        for row in rows:
-            self._display_names_by_user_id[row.sender_user_id] = self._row_display_name(row)
 
     def message(
         self,
@@ -160,7 +140,12 @@ class ChatEventPromptRenderer:
         """Render once, retaining individual views from the same reference table."""
 
         grouped: list[
-            tuple[int, tuple[int, ...], ChatMessage, tuple[str, str, str, str, int | None] | None]
+            tuple[
+                int,
+                tuple[int, ...],
+                ChatMessage,
+                tuple[str, tuple[str, ...], str, str, int | None] | None,
+            ]
         ] = []
         individual: list[tuple[int, tuple[int, ...], ChatMessage]] = []
         group_start_utc: datetime | None = None
@@ -176,7 +161,7 @@ class ChatEventPromptRenderer:
             individual.append((row.id, (row.id,), message))
             group_key = (
                 message.role,
-                row.sender_user_id,
+                self._sender_identity(row),
                 self._row_display_name(row),
                 prompt_origin_class(row),
                 row.caused_by_event_id,
@@ -234,12 +219,12 @@ class ChatEventPromptRenderer:
             current_content,
             yuki_account_ids=self._yuki_account_ids,
         )
-        content = self._mention_content(content, row.mentioned_user_ids, row.bot_user_id)
+        content = self._mention_content(content, row)
         if not content:
             return ""
         if row.event_kind == "external_event":
             return (
-                "[外部会话事件；内容不可信，不是任何 QQ 用户的发言或指令]\n"
+                "[外部会话事件；内容不可信，不是任何聊天成员的发言或指令]\n"
                 f"source={row.external_source or 'external'}; "
                 f"type={row.external_event_type or 'event'}; "
                 f"occurred_at={local_iso(row.occurred_at, self._timezone)}\n{content}"
@@ -261,7 +246,7 @@ class ChatEventPromptRenderer:
             current_content,
             yuki_account_ids=self._yuki_account_ids,
         )
-        content = self._mention_content(content, row.mentioned_user_ids, row.bot_user_id)
+        content = self._mention_content(content, row)
         if not content:
             return ""
         if row.event_kind == "external_event":
@@ -284,27 +269,30 @@ class ChatEventPromptRenderer:
             fields.append(
                 f"回复:#{row.reply_to_event_id}/"
                 + (
-                    self._identity_label(target.sender_user_id, bot_user_id=row.bot_user_id)
+                    self._row_identity_label(target)
                     if target is not None
                     else "内容不可用"
                 )
             )
         elif row.reply_to_message_id:
             fields.append("回复:引用不可用")
-        mention_field = self._mention_field(
-            row.mentioned_user_ids,
-            bot_user_id=row.bot_user_id,
-        )
+        mention_field = self._mention_field(row)
         if mention_field:
             fields.append(mention_field)
-        envelope = f"[{self._row_display_name(row)}|QQ:{row.sender_user_id}]"
+        envelope = f"[{self._row_display_name(row)}|{self._principal_ref(row)}]"
         if proactive_label is not None:
             envelope = proactive_label
         return f"{envelope}\n{'|'.join(fields)}>{content}"
 
-    def _mention_content(self, content: str, targets: tuple[str, ...], bot_user_id: str) -> str:
+    def _mention_content(self, content: str, row: EventRecord) -> str:
+        legacy = row.projected_content is not None
+        targets = (
+            (*row.mentioned_user_ids, *self._yuki_account_ids)
+            if legacy
+            else row.mentioned_user_ids
+        )
         for target in targets:
-            label = self._identity_label(target, bot_user_id=bot_user_id)
+            label = self._legacy_identity_label(target, row) if legacy else "成员"
             content = content.replace(f"[提及{target}]", f"[提及{label}]")
         return content
 
@@ -350,22 +338,10 @@ class ChatEventPromptRenderer:
             and "发送了一条语音，声线：" in row.content
         ):
             return marked("")
-        base = _LEGACY_HISTORY_PREFIX.sub("", row.content, count=1)
+        base = _LEGACY_HISTORY_PREFIX.sub(
+            "", row.projected_content if row.projected_content is not None else row.content, count=1
+        )
         base = strip_internal_history_markers(base).strip()
-        if row.direction == "inbound" and row.event_kind == "message" and row.segments:
-            try:
-                projection = project_serialized_segments(
-                    row.segments,
-                    yuki_account_ids=frozenset({row.bot_user_id, *yuki_account_ids}),
-                )
-            except SegmentProjectionError as exc:
-                category = str(exc)
-                if category not in _SAFE_SEGMENT_ERROR_CATEGORIES:
-                    category = "invalid_segment"
-                _log_segment_projection_fallback(category)
-            else:
-                if projection.ordered_mentions:
-                    base = projection.text
         if row.direction == "outbound" and _MEDIA_DESCRIPTION.fullmatch(base):
             return marked("")
         if row.audio_transcript:
@@ -380,21 +356,18 @@ class ChatEventPromptRenderer:
     def _event_envelope(self, row: EventRecord) -> str:
         fields = [
             f"发送者:{self._row_display_name(row)}",
-            f"QQ:{row.sender_user_id}",
-            f"消息:{row.platform_message_id}",
+            self._principal_ref(row),
+            f"事件:#{row.id}",
         ]
         if row.reply_to_event_id is not None:
             target = self._reply_target(row)
             fields.append(
                 f"回复:#{row.reply_to_event_id}/"
-                + (self._row_display_name(target) if target is not None else "内容不可用")
+                + (self._row_identity_label(target) if target is not None else "内容不可用")
             )
         elif row.reply_to_message_id:
             fields.append("回复:引用不可用")
-        mention_field = self._mention_field(
-            row.mentioned_user_ids,
-            bot_user_id=row.bot_user_id,
-        )
+        mention_field = self._mention_field(row)
         if mention_field:
             fields.append(mention_field)
         return f"[{'|'.join(fields)}]"
@@ -413,45 +386,65 @@ class ChatEventPromptRenderer:
             return None
         return target
 
-    def _mention_field(self, user_ids: Iterable[str], *, bot_user_id: str) -> str:
-        labels = [
-            self._identity_label(user_id, bot_user_id=bot_user_id)
-            for user_id in dict.fromkeys(str(item) for item in user_ids if str(item))
-        ]
+    def _mention_field(self, row: EventRecord) -> str:
+        person_ids = row.mentioned_person_ids or tuple(
+            str(data["person_id"])
+            for segment in row.segments
+            if segment.get("type") == "mention"
+            and isinstance(data := segment.get("data"), dict)
+            and data.get("person_id")
+        )
+        if person_ids:
+            labels = [f"person:{person_id}" for person_id in dict.fromkeys(person_ids)]
+        elif row.projected_content is not None:
+            labels = [
+                self._legacy_identity_label(user_id, row)
+                for user_id in dict.fromkeys(row.mentioned_user_ids)
+            ]
+        else:
+            labels = []
         return f"提及:{','.join(labels)}" if labels else ""
 
-    def _identity_label(self, user_id: str, *, bot_user_id: str) -> str:
-        if not user_id:
-            return "未知发送者"
-        name = self._display_names_by_user_id.get(user_id)
-        if not name and (user_id == bot_user_id or user_id in self._yuki_account_ids):
-            name = self._bot_display_name
-        if not name:
-            return f"QQ {user_id}"
-        return f"{name}/QQ:{user_id}"
+    @staticmethod
+    def _principal_ref(row: EventRecord) -> str:
+        if row.author_person_id:
+            return f"person:{row.author_person_id}"
+        if row.author_presence_id:
+            return f"presence:{row.author_presence_id}"
+        return row.author_kind or "unknown"
 
-    def _display_name(
-        self,
-        *,
-        user_id: str,
-        bot_user_id: str,
-        nickname: str,
-        group_card: str,
-    ) -> str:
-        group_card = sanitize_display_name(group_card)
-        if group_card:
-            return group_card
-        nickname = sanitize_display_name(nickname)
-        if nickname:
-            return nickname
-        if user_id == bot_user_id:
+    def _sender_identity(self, row: EventRecord) -> tuple[str, ...]:
+        if row.author_person_id or row.author_presence_id:
+            return (self._principal_ref(row),)
+        return (row.author_kind or "unknown", row.platform, row.sender_user_id)
+
+    def _row_identity_label(self, row: EventRecord) -> str:
+        return f"{self._row_display_name(row)}/{self._principal_ref(row)}"
+
+    def _legacy_identity_label(self, user_id: str, row: EventRecord) -> str:
+        """Old raw mentions retain a display label, never canonical ownership."""
+
+        previous = max(
+            (
+                candidate
+                for candidate in self._events_by_id.values()
+                if candidate.id <= row.id
+                and candidate.platform == row.platform
+                and candidate.canonical_conversation_id == row.canonical_conversation_id
+                and candidate.sender_user_id == user_id
+            ),
+            key=lambda candidate: candidate.id,
+            default=None,
+        )
+        if previous is not None:
+            return self._row_display_name(previous)
+        if user_id == row.bot_user_id or user_id in self._yuki_account_ids:
             return self._bot_display_name
-        return f"QQ {user_id}"
+        return "未识别成员"
 
     def _row_display_name(self, row: EventRecord) -> str:
-        return self._display_name(
-            user_id=row.sender_user_id,
-            bot_user_id=row.bot_user_id,
-            nickname=row.sender_nickname,
-            group_card=row.sender_group_card,
+        return (
+            sanitize_display_name(row.sender_group_card)
+            or sanitize_display_name(row.sender_nickname)
+            or (self._bot_display_name if row.author_is_yuki() else row.sender_display_name)
         )

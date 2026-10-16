@@ -64,13 +64,27 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
         ),
         {},
     )
-    raw_mentions = context.get("mentioned_user_ids", ())
+    projected_content = None
+    legacy_mentions: tuple[str, ...] = ()
+    if "platform" not in context:
+        # Only the original pre-platform QQ format is eligible for this reader.
+        from qq_ai_bot.adapters.onebot.legacy_event import project_legacy_segments
+
+        projection = project_legacy_segments(segments, str(_row_value(row, "bot_user_id")))
+        if projection is not None:
+            projected_content = projection.text
+            legacy_mentions = projection.mentioned_user_ids
+    raw_mentions = context.get("mentioned_user_ids", legacy_mentions)
     mentioned_user_ids = (
         tuple(str(item) for item in raw_mentions if str(item))
         if isinstance(raw_mentions, list | tuple)
         else ()
     )
     raw_reply_sender = context.get("reply_sender_user_id")
+    raw_people = context.get("mentioned_person_ids", ())
+    mentioned_person_ids = (
+        tuple(str(item) for item in raw_people) if isinstance(raw_people, list | tuple) else ()
+    )
     external_payload: dict[str, object] | None = None
     raw_external = _row_value(row, "external_payload_json")
     if raw_external:
@@ -88,6 +102,9 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
     scope_type = _row_value(row, "scope_type")
     return EventRecord(
         id=int(_row_value(row, "id")),
+        projected_content=projected_content,
+        platform=str(context.get("platform") or ""),
+        thread_id=str(context["thread_id"]) if context.get("thread_id") is not None else None,
         bot_user_id=str(_row_value(row, "bot_user_id")),
         platform_message_id=str(_row_value(row, "platform_message_id")),
         scope_type=scope_type if isinstance(scope_type, ScopeType) else ScopeType(str(scope_type)),
@@ -108,6 +125,7 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
         automation_id=_row_value(row, "automation_id"),
         automation_run_id=_row_value(row, "automation_run_id"),
         mentioned_user_ids=mentioned_user_ids,
+        mentioned_person_ids=mentioned_person_ids,
         reply_sender_user_id=str(raw_reply_sender) if raw_reply_sender else None,
         event_kind=str(_row_value(row, "event_kind") or "message"),
         source_plugin_id=_row_value(row, "source_plugin_id"),

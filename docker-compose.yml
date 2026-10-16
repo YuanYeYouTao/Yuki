@@ -10,6 +10,7 @@ services:
         required: false
     environment:
       CODE_MODE_ENABLED: "false"
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
       APP_HOST: 0.0.0.0
       APP_PORT: 8080
       DATABASE_URL: sqlite+aiosqlite:////app/data/qq_ai_bot.db
@@ -23,7 +24,7 @@ services:
       SNOWLUMA_REVERSE_WS_URL: ws://bot:8080/onebot/v11/snowluma/ws
       SNOWLUMA_UID: ${SNOWLUMA_UID:-1000}
       SNOWLUMA_GID: ${SNOWLUMA_GID:-1000}
-      ONEBOT_ACCESS_TOKEN: ${ONEBOT_ACCESS_TOKEN:-replace-with-a-long-random-token}
+      ONEBOT_ACCESS_TOKEN: ${ONEBOT_ACCESS_TOKEN:-}
     expose:
       - "8080"
     volumes:

@@ -27,6 +27,8 @@ class SelfInitiativeTrigger:
     group_id: str
     bot_user_id: str
     instruction: str
+    platform: str = "qq"
+    thread_id: str | None = None
     origin: TurnOrigin = field(default=TurnOrigin.SELF_INITIATIVE, init=False)
 
     def __post_init__(self) -> None:

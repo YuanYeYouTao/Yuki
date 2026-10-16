@@ -83,7 +83,10 @@ class ClientIdentityService:
         )
         if person is None or not person.enabled or binding is None:
             raise ClientError("unauthenticated")
-        conversation = await conversation_for_binding(session, binding.id)
+        presence = await find_presence(session, "yuki-app", platform=APP_PLATFORM)
+        if presence is None:
+            raise ClientError("unavailable")
+        conversation = await conversation_for_binding(session, binding.id, presence_id=presence.id)
         if conversation is None:
             raise ClientError("unauthenticated")
         return ClientPrincipal(
@@ -154,13 +157,18 @@ class ClientIdentityService:
         )
         session.add(binding)
         await session.flush()
-        await ensure_canonical_conversation(
-            session,
-            kind="private",
-            primary_scope_key=f"binding:{binding.id}",
-            identity_binding_id=binding.id,
-            person_id=person_id,
-        )
+        if platform == APP_PLATFORM:
+            presence = await find_presence(session, "yuki-app", platform=APP_PLATFORM)
+            if presence is None:
+                raise ClientError("unavailable")
+            await ensure_canonical_conversation(
+                session,
+                kind="private",
+                primary_scope_key=f"binding:{binding.id}",
+                identity_binding_id=binding.id,
+                person_id=person_id,
+                presence_id=presence.id,
+            )
         return binding
 
     async def _issue_code(
@@ -447,12 +455,10 @@ class ClientIdentityService:
             if old is None:
                 raise ClientError("not_found")
             binding = await self.transfer_binding(session, old, to_person, now=datetime.now(UTC))
-            conversation = await conversation_for_binding(session, binding.id)
             result: dict[str, JsonValue] = {
                 "old_binding_id": old.id,
                 "binding_id": binding.id,
                 "person_id": binding.person_id,
-                "conversation_id": conversation.id if conversation else None,
             }
             await self.receipts.record_personal_command(
                 session,

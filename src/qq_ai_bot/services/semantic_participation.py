@@ -44,6 +44,7 @@ from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
+    SpaceBindingIngestRouteModel,
 )
 from qq_ai_bot.conversation.initiative_sources import memory_revision, source_revision
 from qq_ai_bot.conversation.ordinary_admission import (
@@ -91,6 +92,8 @@ class Scene:
     bot_user_id: str
     enabled: bool
     autonomous_enabled: bool
+    platform: str
+    thread_id: str | None = None
 
     @property
     def scope(self) -> Scope:
@@ -98,7 +101,14 @@ class Scene:
 
     @property
     def identity(self) -> ConversationScope:
-        return ConversationScope.group(self.bot_user_id, self.group_id)
+        return ConversationScope.group(
+            self.bot_user_id,
+            self.group_id,
+            platform=self.platform,
+            presence_id=self.presence_id,
+            conversation_id=self.conversation_id,
+            thread_id=self.thread_id,
+        )
 
 
 @dataclass
@@ -324,22 +334,27 @@ class SemanticParticipationService:
                 return None
             space = await session.get(CanonicalSpaceModel, conversation.space_id)
             route = await session.get(SpaceActiveRouteModel, conversation.space_id)
-            if space is None or route is None or route.paused:
+            if space is None:
                 return None
-            presence = await session.get(PresenceModel, route.presence_id)
-            bindings = (
-                await session.scalars(
-                    select(SpaceBindingModel).where(
-                        SpaceBindingModel.space_id == space.id,
-                        SpaceBindingModel.platform == "qq",
-                        SpaceBindingModel.status == "active",
-                    )
-                )
-            ).all()
-            if presence is None or not presence.enabled or len(bindings) != 1:
-                return None
-            binding = bindings[0]
-            if route.space_binding_id != binding.id or presence.platform != "qq":
+            binding_id = conversation.space_binding_id or (
+                route.space_binding_id if route else None
+            )
+            binding = await session.get(SpaceBindingModel, binding_id) if binding_id else None
+            ingest = (
+                await session.get(SpaceBindingIngestRouteModel, binding_id) if binding_id else None
+            )
+            presence_id = (
+                ingest.ingest_presence_id if ingest else (route.presence_id if route else None)
+            )
+            presence = await session.get(PresenceModel, presence_id) if presence_id else None
+            if (
+                presence is None
+                or not presence.enabled
+                or binding is None
+                or binding.space_id != space.id
+                or binding.status != "active"
+                or presence.platform != binding.platform
+            ):
                 return None
             return Scene(
                 conversation.id,
@@ -350,6 +365,8 @@ class SemanticParticipationService:
                 presence.external_account_id,
                 space.enabled,
                 space.autonomous_enabled,
+                presence.platform,
+                conversation.thread_id,
             )
 
     @staticmethod
@@ -459,7 +476,7 @@ class SemanticParticipationService:
         scene = item.scene
         if runtime is None:
             runtime = await self.app.runtime_config.snapshot(
-                group_id=scene.group_id if scene.enabled else None
+                group_id=scene.space_id if scene.enabled else None
             )
         policy = runtime.conversation_policy()
         prior = await self.repository.get_binding(scene.conversation_id, scene.generation)
@@ -638,7 +655,6 @@ class SemanticParticipationService:
                         )
                         .where(
                             ChatEventModel.canonical_conversation_id == version.conversation_id,
-                            ChatEventModel.group_id == item.scene.group_id,
                             ChatEventModel.id > version.starts_after_event_id,
                             ChatEventModel.event_kind == "message",
                             ChatEventModel.author_kind == "person",
@@ -709,7 +725,7 @@ class SemanticParticipationService:
         runtime = cast(
             RuntimeConfigSnapshot,
             await self.app.runtime_config.snapshot(
-                group_id=item.scene.group_id if item.scene.enabled else None
+                group_id=item.scene.space_id if item.scene.enabled else None
             ),
         )
         observe_enabled = (
@@ -1104,11 +1120,17 @@ class SemanticParticipationService:
             return
         async with self.database.sessions() as session:
             presence = await session.get(PresenceModel, run.presence_id)
+            conversation = await session.get(CanonicalConversationModel, run.conversation_id)
             bindings = (
                 await session.scalars(
                     select(SpaceBindingModel).where(
                         SpaceBindingModel.space_id == run.space_id,
-                        SpaceBindingModel.platform == "qq",
+                        SpaceBindingModel.platform == (presence.platform if presence else ""),
+                        *(
+                            [SpaceBindingModel.id == conversation.space_binding_id]
+                            if conversation and conversation.space_binding_id
+                            else []
+                        ),
                         SpaceBindingModel.status == "active",
                     )
                 )
@@ -1324,7 +1346,7 @@ class SemanticParticipationService:
             return
         item.scene = current_scene
         runtime = await self.app.runtime_config.snapshot(
-            group_id=current_scene.group_id if current_scene.enabled else None
+            group_id=current_scene.space_id if current_scene.enabled else None
         )
         binding = await self._binding(item, runtime=runtime)
         policy = runtime.conversation_policy()

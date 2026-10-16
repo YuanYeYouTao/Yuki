@@ -1,4 +1,4 @@
-"""Resolve management authority from existing canonical owners and routes."""
+"""Resolve task authority from its permanent owner and original execution scene."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.automation.authority import PermissionLevel, permission_for_accounts
+from qq_ai_bot.automation.authority import PermissionLevel
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -16,6 +16,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
 )
 from qq_ai_bot.conversation.hydrate import conversation_for_binding
 from qq_ai_bot.domain.identity import ConversationId, PersonId
+from qq_ai_bot.identity.authority import person_is_superuser
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -49,20 +50,22 @@ async def resolve_control_context(
     *,
     owner_id: str,
     conversation_id: str | None,
+    presence_id: str | None = None,
 ) -> ControlAutomationContext:
-    """An operator never supplies transport identity or gains owner privileges."""
-    person = None
+    """An operator chooses a canonical scene, never an impersonated account."""
     if owner_id != "self":
         PersonId.parse(owner_id)
         person = await session.get(CanonicalPersonModel, owner_id)
         if person is None or not person.enabled:
             raise PermissionError("automation_owner_unavailable")
     if conversation_id is None:
-        if person is None:
-            raise ValueError("self_automation_scene_required")
-        route = await session.get(PersonActiveRouteModel, owner_id)
+        route = await session.get(PersonActiveRouteModel, owner_id) if owner_id != "self" else None
         conversation = (
-            await conversation_for_binding(session, route.identity_binding_id) if route else None
+            await conversation_for_binding(
+                session, route.identity_binding_id, presence_id=route.presence_id
+            )
+            if route
+            else None
         )
     else:
         ConversationId.parse(conversation_id)
@@ -70,73 +73,50 @@ async def resolve_control_context(
     if conversation is None:
         raise PermissionError("automation_scene_unavailable")
     group_id = None
-    owner_binding = None
+    binding = None
     if conversation.kind == "private":
-        if person is None or conversation.person_id != owner_id:
+        if owner_id == "self" or conversation.person_id != owner_id:
             raise PermissionError("automation_private_scene_owner_mismatch")
-        person_route = await session.get(PersonActiveRouteModel, owner_id)
-        if person_route is None:
-            raise PermissionError("automation_route_unavailable")
-        owner_binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
-        presence_id = person_route.presence_id
+        route = await session.get(PersonActiveRouteModel, owner_id)
+        presence_id = (
+            presence_id or conversation.entry_presence_id or (route.presence_id if route else None)
+        )
     else:
         space = await session.get(CanonicalSpaceModel, conversation.space_id)
         space_route = await session.get(SpaceActiveRouteModel, conversation.space_id)
-        if space is None or not space.enabled or space_route is None:
-            raise PermissionError("automation_route_unavailable")
-        space_binding = await session.get(SpaceBindingModel, space_route.space_binding_id)
+        binding_id = conversation.space_binding_id or (
+            space_route.space_binding_id if space_route else None
+        )
+        binding = await session.get(SpaceBindingModel, binding_id) if binding_id else None
         if (
-            space_binding is None
-            or space_binding.status != "active"
-            or space_binding.platform != "qq"
-            or space_binding.space_id != conversation.space_id
+            space is None
+            or not space.enabled
+            or binding is None
+            or binding.status != "active"
+            or binding.space_id != conversation.space_id
         ):
-            raise PermissionError("automation_route_changed")
-        group_id = space_binding.external_space_id
-        presence_id = space_route.presence_id
-    presence = await session.get(PresenceModel, presence_id)
+            raise PermissionError("automation_route_unavailable")
+        group_id = binding.external_space_id
+        presence_id = presence_id or (space_route.presence_id if space_route else None)
+    presence = await session.get(PresenceModel, presence_id) if presence_id else None
     if presence is None or not presence.enabled:
         raise PermissionError("automation_presence_unavailable")
-    accounts = (
-        (
-            await session.scalars(
-                select(IdentityBindingModel).where(
-                    IdentityBindingModel.person_id == owner_id,
-                    IdentityBindingModel.platform == presence.platform,
-                    IdentityBindingModel.status == "active",
-                )
-            )
-        ).all()
-        if person is not None
-        else []
-    )
-    if person is not None:
-        if owner_binding is None:
-            route = await session.get(PersonActiveRouteModel, owner_id)
-            if route is not None:
-                owner_binding = await session.get(IdentityBindingModel, route.identity_binding_id)
-            elif len(accounts) == 1:
-                owner_binding = accounts[0]
-        if (
-            owner_binding is None
-            or owner_binding.person_id != owner_id
-            or owner_binding.status != "active"
-            or owner_binding.platform != presence.platform
-        ):
-            raise PermissionError("automation_owner_route_ambiguous")
-    permission = (
-        permission_for_accounts(settings, (binding.external_account_id for binding in accounts))
-        if person is not None
-        else PermissionLevel.SELF
+    if binding is not None and binding.platform != presence.platform:
+        raise PermissionError("automation_route_changed")
+    account, permission = (
+        await resolve_execution_identity(
+            session,
+            settings,
+            owner_id=owner_id,
+            conversation_id=conversation.id,
+            presence_id=presence.id,
+        )
+        if owner_id != "self"
+        else ("", PermissionLevel.SELF)
     )
     return ControlAutomationContext(
         owner_id=owner_id,
-        provenance=CreationProvenance(
-            creator_user_id=owner_binding.external_account_id if owner_binding else "",
-            bot_user_id=presence.external_account_id,
-            current_group_id=group_id,
-            permission=permission,
-        ),
+        provenance=CreationProvenance(account, presence.external_account_id, group_id, permission),
         conversation_id=conversation.id,
         generation=conversation.generation,
         presence_id=presence.id,
@@ -150,36 +130,49 @@ async def resolve_execution_identity(
     *,
     owner_id: str,
     conversation_id: str | None = None,
+    presence_id: str | None = None,
 ) -> tuple[str, PermissionLevel]:
-    """Resolve a current account for the permanent owner, independent of the send target."""
+    """Project the permanent owner within the original entry, not its latest send route."""
     person = await session.get(CanonicalPersonModel, owner_id)
     if person is None or not person.enabled:
         raise PermissionError("automation_owner_unavailable")
-    bindings = list(
-        (
+    conversation = (
+        await session.get(CanonicalConversationModel, conversation_id) if conversation_id else None
+    )
+    route = await session.get(PersonActiveRouteModel, owner_id)
+    presence = await session.get(PresenceModel, presence_id) if presence_id else None
+    if conversation is not None and conversation.kind == "private":
+        binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+    else:
+        bindings = list(
             await session.scalars(
                 select(IdentityBindingModel).where(
                     IdentityBindingModel.person_id == owner_id,
                     IdentityBindingModel.status == "active",
+                    *(
+                        [IdentityBindingModel.platform == presence.platform]
+                        if presence is not None
+                        else []
+                    ),
                 )
             )
-        ).all()
-    )
-    route = await session.get(PersonActiveRouteModel, owner_id)
-    conversation = (
-        await session.get(CanonicalConversationModel, conversation_id) if conversation_id else None
-    )
-    if conversation is not None and conversation.kind == "private":
-        binding = next(
-            (item for item in bindings if item.id == conversation.identity_binding_id), None
         )
-    elif route is not None:
-        binding = next((item for item in bindings if item.id == route.identity_binding_id), None)
-    else:
-        binding = bindings[0] if len(bindings) == 1 else None
-    if binding is None:
+        routed = next(
+            (item for item in bindings if route and item.id == route.identity_binding_id), None
+        )
+        binding = routed or (bindings[0] if len(bindings) == 1 else None)
+    if (
+        binding is None
+        or binding.person_id != owner_id
+        or binding.status != "active"
+        or (
+            presence is not None and (not presence.enabled or binding.platform != presence.platform)
+        )
+    ):
         raise PermissionError("automation_owner_route_ambiguous")
-    return binding.external_account_id, permission_for_accounts(
-        settings,
-        (item.external_account_id for item in bindings if item.platform == binding.platform),
+    permission = (
+        PermissionLevel.SUPERUSER
+        if await person_is_superuser(session, owner_id, settings.superusers)
+        else PermissionLevel.USER
     )
+    return binding.external_account_id, permission

@@ -257,12 +257,14 @@ class EventLedgerRepository:
         automation_run_id: int | None = None,
         caused_by_event_id: int | None = None,
     ) -> tuple[EventRecord, bool]:
-        """Insert idempotently and return the existing row on duplicate."""
+        """Append legacy QQ input; canonical ingress writes through its admitted scope."""
 
         scope = (
-            ConversationScope.group(bot_user_id, group_id or "")
+            ConversationScope.group(bot_user_id, group_id or "", platform="qq")
             if scope_type is ScopeType.GROUP
-            else ConversationScope.private(bot_user_id, private_peer_user_id or sender_user_id)
+            else ConversationScope.private(
+                bot_user_id, private_peer_user_id or sender_user_id, platform="qq"
+            )
         )
         result = await self._writer.append(
             scope=scope,
@@ -702,74 +704,62 @@ class EventLedgerRepository:
             )
 
     async def hydrate_rebuild_subjects(self, event: EventRecord) -> EventRecord:
-        """Recover deterministic mention/reply metadata in the exact Conversation."""
-
+        """Read legacy selectors in their actual platform; recorded Person IDs win."""
         if event.scope_type is not ScopeType.GROUP or not event.group_id:
-            return replace(event, mentioned_user_ids=(), reply_sender_user_id=None)
-        mentions = list(event.mentioned_user_ids)
-        if not mentions:
-            for segment in event.segments:
-                if segment.get("type") != "at" or not isinstance(segment.get("data"), dict):
-                    continue
-                raw = str(segment["data"].get("qq", "")).strip()
-                if raw.isdigit():
-                    mentions.append(raw)
-        reply_sender = event.reply_sender_user_id
-        if (
-            reply_sender is None
-            and event.reply_to_event_id is not None
-            and event.canonical_conversation_id is not None
-        ):
-            referenced = await self.get_reply_event(
-                event.reply_to_event_id,
-                conversation_id=event.canonical_conversation_id,
+            return replace(
+                event, mentioned_user_ids=(), mentioned_person_ids=(), reply_sender_user_id=None
             )
-            if (
-                referenced is not None
-                and referenced.scope_type is ScopeType.GROUP
-                and referenced.group_id == event.group_id
-                and referenced.author_is_human()
-            ):
-                reply_sender = referenced.sender_user_id
-        from qq_ai_bot.identity.event_author import (
-            canonical_person_reference_ids,
-            project_event_authors,
-            same_platform_presence_external_ids,
-        )
+        from qq_ai_bot.identity.db_models import PresenceModel
+        from qq_ai_bot.identity.event_author import project_event_authors
 
         async with self._database.sessions() as session:
-            blocked = {
-                "",
-                event.sender_user_id,
-                *await same_platform_presence_external_ids(session),
-            }
-            candidates = tuple(user_id for user_id in mentions if user_id not in blocked)
-            reply_candidates = (
-                (reply_sender,) if reply_sender is not None and reply_sender not in blocked else ()
+            presence = (
+                await session.get(PresenceModel, event.ingress_presence_id)
+                if event.ingress_presence_id
+                else None
             )
-            authors = await project_event_authors(
-                session, sender_user_ids=(*candidates, *reply_candidates)
+            mentions = list(event.mentioned_user_ids)
+            if not mentions and presence is not None and presence.platform == "qq":
+                for segment in event.segments:
+                    data = segment.get("data")
+                    if segment.get("type") == "at" and isinstance(data, dict):
+                        raw = str(data.get("qq", "")).strip()
+                        if raw.isdigit():
+                            mentions.append(raw)
+            accounts = tuple(
+                dict.fromkeys(item for item in mentions if item != event.sender_user_id)
             )
-            mention_ids = await canonical_person_reference_ids(
-                session,
-                candidates,
-                speaker_user_id=event.sender_user_id,
-                authors=authors,
-            )
-            reply_ids = (
-                await canonical_person_reference_ids(
-                    session,
-                    reply_candidates,
-                    speaker_user_id=event.sender_user_id,
-                    authors=authors,
+            authors = (
+                await project_event_authors(
+                    session, sender_user_ids=accounts, platform=presence.platform
                 )
-                if reply_sender is not None and reply_sender not in blocked
-                else ()
+                if presence is not None
+                else {}
             )
+        mention_accounts = tuple(
+            account
+            for account in accounts
+            if account in authors and authors[account].author_person_id is not None
+        )
+        mention_people = event.mentioned_person_ids or tuple(
+            dict.fromkeys(
+                person_id
+                for account in mention_accounts
+                if (person_id := authors[account].author_person_id) is not None
+            )
+        )
+        reply_sender = None
+        if event.reply_to_event_id is not None and event.canonical_conversation_id is not None:
+            reply = await self.get_reply_event(
+                event.reply_to_event_id, conversation_id=event.canonical_conversation_id
+            )
+            if reply is not None and reply.author_person_id is not None:
+                reply_sender = reply.sender_user_id
         return replace(
             event,
-            mentioned_user_ids=mention_ids,
-            reply_sender_user_id=reply_ids[0] if reply_ids else None,
+            mentioned_user_ids=mention_accounts,
+            mentioned_person_ids=mention_people,
+            reply_sender_user_id=reply_sender,
         )
 
     async def memory_job_status(self, event_id: int) -> str | None:
@@ -790,6 +780,8 @@ class EventLedgerRepository:
         limit: int = 20,
         user_id: str | None = None,
         group_id: str | None = None,
+        person_id: str | None = None,
+        space_id: str | None = None,
         after: datetime | None = None,
         before: datetime | None = None,
         message_only: bool = False,
@@ -798,7 +790,7 @@ class EventLedgerRepository:
 
         conditions: list[str] = [sql_keeper_event_predicate("ce")]
         params: dict[str, Any] = {"limit": limit}
-        has_search_bound = bool(user_id or group_id or after or before)
+        has_search_bound = bool(user_id or group_id or person_id or space_id or after or before)
         if scope is not None:
             conditions.extend(
                 (
@@ -826,6 +818,21 @@ class EventLedgerRepository:
         if group_id:
             conditions.append("ce.group_id = :group_id")
             params["group_id"] = group_id
+        if person_id is not None:
+            conditions.append(
+                "(ce.author_person_id = :person_id OR EXISTS (SELECT 1 "
+                "FROM canonical_conversations AS source_scene "
+                "WHERE source_scene.id=ce.canonical_conversation_id "
+                "AND source_scene.kind='private' AND source_scene.person_id=:person_id))"
+            )
+            params["person_id"] = person_id
+        if space_id is not None:
+            conditions.append(
+                "EXISTS (SELECT 1 FROM canonical_conversations AS source_scene "
+                "WHERE source_scene.id=ce.canonical_conversation_id "
+                "AND source_scene.space_id=:space_id)"
+            )
+            params["space_id"] = space_id
         if after:
             conditions.append("ce.occurred_at >= :after")
             params["after"] = after
@@ -863,7 +870,9 @@ class EventLedgerRepository:
             params["keyword"] = '"' + stripped.replace('"', '""') + '"'
         else:
             if not has_search_bound:
-                raise ValueError("short history searches require a QQ, group, or time bound")
+                raise ValueError(
+                    "short history searches require a conversation, owner, or time bound"
+                )
             sql = text(
                 "SELECT ce.* FROM chat_events AS ce WHERE "
                 "(ce.content LIKE :pattern OR ce.audio_transcript LIKE :pattern)"

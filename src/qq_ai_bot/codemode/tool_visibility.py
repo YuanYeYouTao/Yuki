@@ -14,7 +14,6 @@ TOOL_LOOKUP_NAME = "lookup_tools"
 DIRECT_TOOL_NAMES = frozenset(
     {
         "send_message",
-        "poke_person",
         "task_control",
         "subagent_start",
         "subagent_control",

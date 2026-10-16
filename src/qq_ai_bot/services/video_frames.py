@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import json
 import math
@@ -11,24 +10,16 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from qq_ai_bot.domain.messages import ChatImage
+from qq_ai_bot.services.media_process import MediaProcessError, run_media_process
 from qq_ai_bot.services.vision_service import VisionProcessingError
 from qq_ai_bot.vision.models import DownloadedMedia
 
 
 async def _run(*args: str, env: dict[str, str] | None = None) -> bytes:
-    process = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=env
-    )
     try:
-        async with asyncio.timeout(15):
-            output, _ = await process.communicate()
-        if process.returncode:
-            raise VisionProcessingError("invalid_video", "视频无法解析")
-        return output
-    finally:
-        if process.returncode is None:
-            process.kill()
-            await process.wait()
+        return await run_media_process(*args, env=env)
+    except MediaProcessError as exc:
+        raise VisionProcessingError("invalid_video", "视频无法解析") from exc
 
 
 async def sample_video(

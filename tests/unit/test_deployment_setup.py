@@ -52,6 +52,15 @@ def test_gateway_profile_changes_retain_extensions() -> None:
     )
 
 
+def test_snowluma_selection_prepares_only_its_real_credentials(tmp_path: Path) -> None:
+    environment = {"COMPOSE_PROFILES": "snowluma"}
+    draft = _SetupDraft(environment, "chat_completions", False)
+    ui = TerminalUI(no_color=True, input_fn=lambda _prompt: "", output=StringIO())
+    _page_gateway(SetupPaths(tmp_path), ui, draft)
+    assert not environment["SUPERUSERS"]
+    assert environment["ONEBOT_ACCESS_TOKEN"] and environment["SNOWLUMA_VNC_PASSWORD"]
+
+
 @pytest.mark.parametrize("profiles", ["", "external"])
 def test_new_setup_writes_selected_profiles_without_retired_gateway_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, profiles: str
@@ -67,7 +76,6 @@ def test_new_setup_writes_selected_profiles_without_retired_gateway_artifacts(
     monkeypatch.chdir(tmp_path)
     answers = iter(
         (
-            "12345",  # superuser
             "chat_completions",
             "openai_compatible",
             "https://api.example.com/v1",
@@ -93,7 +101,8 @@ def test_new_setup_writes_selected_profiles_without_retired_gateway_artifacts(
 
     environment = EnvironmentDocument.load(paths).values()
     assert environment["COMPOSE_PROFILES"] == profiles
-    assert environment["ONEBOT_ACCESS_TOKEN"] != template.values()["ONEBOT_ACCESS_TOKEN"]
+    assert environment["ONEBOT_ACCESS_TOKEN"] == template.values()["ONEBOT_ACCESS_TOKEN"]
+    assert environment["SNOWLUMA_VNC_PASSWORD"] == template.values()["SNOWLUMA_VNC_PASSWORD"]
     assert not any(key.startswith("NAPCAT_") for key in environment)
     assert not (paths.root / "data/setup/gateway-action.json").exists()
     assert not paths.restart_required.exists()
@@ -169,6 +178,20 @@ def _search_setup(tmp_path: Path, profiles: str, **updates: str):
     environment.update(updates)
     paths = SetupPaths(tmp_path)
     return paths, SetupConfiguration(environment, profiles, None)
+
+
+@pytest.mark.parametrize("telegram", [False, True])
+def test_personal_or_telegram_configuration_does_not_require_qq_material(
+    tmp_path: Path, telegram: bool
+) -> None:
+    profiles = build_model_profiles(main_protocol="gemini", flash_enabled=False)
+    paths, configuration = _search_setup(tmp_path, profiles, WEB_MODE="disabled")
+    configuration.environment.pop("SUPERUSERS")
+    if telegram:
+        configuration.environment["TELEGRAM_BOT_TOKEN"] = "fixture:not-a-real-token"
+    validate_configuration(paths, configuration)
+    assert "ONEBOT_ACCESS_TOKEN" not in configuration.environment
+    assert "SNOWLUMA_VNC_PASSWORD" not in configuration.environment
 
 
 @pytest.mark.parametrize("web_mode", ["native", "tavily", "both"])

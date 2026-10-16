@@ -7,9 +7,9 @@ from qq_ai_bot.config import Settings
 
 
 def require_real_superuser(actor: AdminActor, settings: Settings) -> None:
-    """Validate authority against immutable startup SUPERUSERS."""
+    """Consume the current canonical source's already-resolved authority."""
 
-    if not actor.is_superuser or actor.user_id not in settings.superusers:
+    if not actor.is_superuser or actor.person_id is None:
         raise PermissionError("只有当前真实超级管理员可以执行该操作")
 
 
@@ -20,6 +20,6 @@ def require_self_or_superuser(
 ) -> None:
     """Allow self-service, while protecting cross-person operations."""
 
-    if target_user_id == actor.user_id:
+    if target_user_id == actor.person_id:
         return
     require_real_superuser(actor, settings)
