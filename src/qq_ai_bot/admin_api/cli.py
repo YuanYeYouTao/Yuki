@@ -32,7 +32,9 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     trace.add_argument("--after", type=int, default=0)
     trace.add_argument("--limit", type=int, default=100)
     person = commands.add_parser("person").add_subparsers(dest="person_action", required=True)
-    _mutation(person.add_parser("create"), revision=False)
+    created = person.add_parser("create")
+    created.add_argument("--display-name", default="")
+    _mutation(created, revision=False)
     shown = person.add_parser("show")
     shown.add_argument("id")
     disabled = person.add_parser("disable")
@@ -41,6 +43,14 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     forgotten = person.add_parser("forget")
     forgotten.add_argument("id")
     _mutation(forgotten, revision=False)
+    merged = person.add_parser("merge")
+    merged.add_argument("id")
+    merged.add_argument("--to-person", required=True)
+    _mutation(merged, revision=False)
+    renamed = person.add_parser("rename")
+    renamed.add_argument("id")
+    renamed.add_argument("display_name")
+    _mutation(renamed, revision=False)
     personal = commands.add_parser("client").add_subparsers(dest="client_action", required=True)
     pair = personal.add_parser("pair")
     pair.add_argument("--person", required=True)
@@ -100,14 +110,35 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
         elif kind == "person":
             if args.person_action == "show":
                 data = await read(client, f"persons/{args.id}")
+            elif args.person_action in {"merge", "rename"}:
+                values = (
+                    {"to_person": args.to_person}
+                    if args.person_action == "merge"
+                    else {"display_name": args.display_name}
+                )
+                data = await identity_mutation(
+                    client,
+                    f"persons/{args.id}/{args.person_action}",
+                    request_id=args.request_id,
+                    **values,
+                )
             elif args.person_action == "forget":
                 data = await identity_mutation(
                     client, f"persons/{args.id}/forget", request_id=args.request_id
                 )
             else:
                 path = "persons" if args.person_action == "create" else f"persons/{args.id}/disable"
+                fields = (
+                    {"display_name": args.display_name}
+                    if args.person_action == "create" and args.display_name
+                    else {}
+                )
                 data = await mutate(
-                    client, path, getattr(args, "revision", 0), request_id=args.request_id
+                    client,
+                    path,
+                    getattr(args, "revision", 0),
+                    request_id=args.request_id,
+                    **fields,
                 )
         elif kind == "binding":
             if args.binding_action == "show":

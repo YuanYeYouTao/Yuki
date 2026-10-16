@@ -29,6 +29,7 @@ from qq_ai_bot.client_api.errors import ClientError
 from qq_ai_bot.client_api.identity import ClientIdentityService, fingerprint
 from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
+from qq_ai_bot.identity.person_identity import current_person_id, same_person_id
 from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
 from qq_ai_bot.persistence.command_receipts import (
     CommandReceiptRepository,
@@ -92,39 +93,84 @@ class AdminCommands:
         authorize(principal, "identity.person.forget")
         operation = "identity.person.forget"
         bound = fingerprint(operation, person_id, {})
-        while True:
-            try:
-                prepared = await self.people.prepare_person_forget(person_id)
-                async with self.database.immediate_session() as session:
-                    previous = await self.identities.replay(
-                        session, principal.principal_id.text, request_id, bound
-                    )
-                    if previous is not None:
-                        return previous
-                    if prepared is None:
-                        raise ClientError("not_found")
-                    await self.people.apply_person_forget(session, prepared)
-                    result: dict[str, JsonValue] = {"person_id": person_id, "deleted": True}
-                    await self.receipts.record_personal_command(
-                        session,
-                        principal_id=principal.principal_id.text,
-                        principal_kind="control",
-                        person_id=person_id,
-                        request_id=request_id,
-                        operation=operation,
-                        operation_ref=person_id,
-                        payload_hash=bound,
-                        resource_id=person_id,
-                        result=result,
-                    )
-                    return result
-            except ValueError as exc:
-                if str(exc) not in {
-                    "privacy_source_changed",
-                    "privacy_aliases_changed",
-                    "memory_rebuild_privacy_preparation_changed",
-                }:
-                    raise
+
+        async def erase(session: AsyncSession) -> dict[str, Any]:
+            previous = await self.identities.replay(
+                session, principal.principal_id.text, request_id, bound
+            )
+            if previous is not None:
+                return previous
+            prepared = await self.people.prepare_person_forget(person_id, session=session)
+            if prepared is None:
+                raise ClientError("not_found")
+            await self.people.apply_person_forget(session, prepared)
+            result: dict[str, JsonValue] = {"person_id": person_id, "deleted": True}
+            await self.receipts.record_personal_command(
+                session,
+                principal_id=principal.principal_id.text,
+                principal_kind="control",
+                person_id=person_id,
+                request_id=request_id,
+                operation=operation,
+                operation_ref=person_id,
+                payload_hash=bound,
+                resource_id=person_id,
+                result=result,
+            )
+            return result
+
+        return await self.database.apply_snapshot_write(erase)
+
+    async def change_person(
+        self,
+        principal: ControlPrincipal,
+        person_id: str,
+        request_id: str,
+        *,
+        to_person: str | None = None,
+        display_name: str | None = None,
+    ) -> dict[str, Any]:
+        from qq_ai_bot.identity.person_identity import merge_persons, rename_person
+
+        operation = "identity.person.merge" if to_person is not None else "identity.person.rename"
+        authorize(principal, operation)
+        bound = fingerprint(
+            operation, person_id, {"to_person": to_person, "display_name": display_name}
+        )
+
+        async def mutate(session: AsyncSession) -> dict[str, Any]:
+            previous = await self.identities.replay(
+                session, principal.principal_id.text, request_id, bound
+            )
+            if previous is not None:
+                return previous
+            if to_person is not None:
+                current = await merge_persons(
+                    session,
+                    person_id,
+                    to_person,
+                    actor_id=principal.principal_id.text,
+                )
+            else:
+                assert display_name is not None
+                row = await rename_person(session, person_id, display_name, now=datetime.now(UTC))
+                current = row.id
+            result: dict[str, JsonValue] = {"person_id": current}
+            await self.receipts.record_personal_command(
+                session,
+                principal_id=principal.principal_id.text,
+                principal_kind="control",
+                person_id=current,
+                request_id=request_id,
+                operation=operation,
+                operation_ref=current,
+                payload_hash=bound,
+                resource_id=current,
+                result=result,
+            )
+            return {**result, "replay": False}
+
+        return await self.database.apply_snapshot_write(mutate)
 
     async def _replay(
         self,
@@ -338,7 +384,12 @@ class AdminCommands:
         async def mutate(session: AsyncSession) -> CommandSuccess:
             revision(0, command.expected_revision)
             now = datetime.now(UTC)
-            person = CanonicalPersonModel(id=str(uuid4()), created_at=now, updated_at=now)
+            person = CanonicalPersonModel(
+                id=str(uuid4()),
+                display_name=str(command.payload.get("display_name", "")).strip(),
+                created_at=now,
+                updated_at=now,
+            )
             session.add(person)
             await session.flush()
             return outcome(person.id, person.revision, "created", operation)
@@ -353,9 +404,13 @@ class AdminCommands:
         operation = CommandOperation.PERSON_DISABLE.value
 
         async def mutate(session: AsyncSession) -> CommandSuccess:
-            person = await session.get(CanonicalPersonModel, identity)
-            if person is None:
+            original = await session.get(CanonicalPersonModel, identity)
+            if original is None:
                 raise fail(ProblemCode.NOT_FOUND)
+            person = await session.get(
+                CanonicalPersonModel, await current_person_id(session, identity)
+            )
+            assert person is not None
             revision(person.revision, command.expected_revision)
             before: dict[str, JsonValue] = {"enabled": person.enabled, "revision": person.revision}
             if person.enabled:
@@ -389,9 +444,13 @@ class AdminCommands:
         )
 
         async def mutate(session: AsyncSession) -> CommandSuccess:
-            person = await session.get(CanonicalPersonModel, identity)
-            if person is None:
+            original = await session.get(CanonicalPersonModel, identity)
+            if original is None:
                 raise fail(ProblemCode.NOT_FOUND)
+            person = await session.get(
+                CanonicalPersonModel, await current_person_id(session, identity)
+            )
+            assert person is not None
             revision(person.revision, command.expected_revision)
             if parsed.platform == "app":
                 # The first-party account ID is generated by device pairing.
@@ -412,7 +471,7 @@ class AdminCommands:
             if existing is not None:
                 raise fail(
                     ProblemCode.PRECONDITION_FAILED
-                    if existing.person_id == identity
+                    if await same_person_id(session, existing.person_id, person.id)
                     else ProblemCode.BINDING_AMBIGUOUS
                 )
             if presence is not None:

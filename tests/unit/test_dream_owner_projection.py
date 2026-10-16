@@ -7,7 +7,6 @@ import pytest
 from sqlalchemy import func, select
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
-from tests.unit.test_client_identity import code_for
 from tests.unit.test_memory_dream import _empty_dream_statistics, _services
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -235,14 +234,9 @@ async def test_cold_dream_reuses_original_paid_owner_proof_at_request_limit(
             original.model_calls,
         )
     if transfer:
-        api, _, issued = await code_for(database, "1002")
-        await api.claim_account(
-            issued["code"],
-            platform="qq",
-            account="1001",
-            display_name="new owner",
-            message_id=f"old-paid-proof-{owner}",
-        )
+        from tests.support.memory_identity import transfer_account
+
+        await transfer_account(database, "1001")
     await database.close()
 
     def no_new_model(_request):

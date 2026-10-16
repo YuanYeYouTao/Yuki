@@ -5,7 +5,6 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
-import pytest
 from sqlalchemy import func, select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
@@ -14,6 +13,7 @@ from qq_ai_bot.client_api.db_models import ClientLinkCodeModel
 from qq_ai_bot.client_api.identity import ClientIdentityService
 from qq_ai_bot.identity.canonical_repository import find_identity_binding
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from qq_ai_bot.identity.person_identity import current_person_id
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.services.client_link import ClientLinkCommands
 from qq_ai_bot.services.execution_sources import recover_source
@@ -52,7 +52,7 @@ async def test_first_unseen_account_links_without_new_person_ledger_or_main(data
         assert (await find_identity_binding(session, "45454545")).person_id == target
 
 
-async def test_authenticated_transfer_invalidates_old_source_and_reused_code_writes_nothing(
+async def test_authenticated_merge_preserves_old_source_and_reused_code_writes_nothing(
     database,
 ):
     registry, bot, identities, target, code = await stack(database)
@@ -77,14 +77,14 @@ async def test_authenticated_transfer_invalidates_old_source_and_reused_code_wri
     response = await handler.execute(
         bot, _message(message_id="transfer", user_id="1002", text=f"/ai link {code}")
     )
-    assert "旧会话" in response
-    with pytest.raises(ValueError, match="task_actor_binding_unavailable"):
-        await recover_source(
-            database, original.canonical_conversation_id, source, request_id="old-work"
-        )
+    assert "身份已合并" in response
+    assert await recover_source(
+        database, original.canonical_conversation_id, source, request_id="old-work"
+    )
     async with database.sessions() as session:
         current = await find_identity_binding(session, "1002")
-        assert current.person_id == target
+        assert current.person_id == original.author_person_id
+        assert await current_person_id(session, current.person_id) == target
         bindings = await session.scalar(select(func.count(IdentityBindingModel.id)))
     response = await handler.execute(
         bot, _message(message_id="reused", user_id="1002", text=f"/ai link {code}")

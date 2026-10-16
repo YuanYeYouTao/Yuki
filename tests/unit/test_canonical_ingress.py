@@ -1106,8 +1106,8 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
         assert membership is not None
         assert membership.last_seen_at == binding.last_seen_at == space_binding.last_seen_at
 
-    # With no global nickname, prefer this account's display, then the last
-    # active display across the Person's accounts, including future platforms.
+    # Removing observed aliases or adding account display names does not rename
+    # the Person. Platform metadata remains independent of the chosen main name.
     async with database.immediate_session() as session:
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "61021")
@@ -1151,15 +1151,13 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
             )
         )
     fallback = await people.get_many(("61021", "61029"))
-    assert fallback["61021"].nickname == "cross-platform fallback"
-    assert fallback["61029"].nickname == "alternate display"
-    assert await people.find_group_members_by_exact_name("cross-platform fallback", "2001") == (
-        "61021",
-    )
+    assert fallback["61021"].nickname == "name-61021"
+    assert fallback["61029"].nickname == "name-61021"
+    assert not await people.find_group_members_by_exact_name("cross-platform fallback", "2001")
     assert not await people.find_group_members_by_exact_name("disabled fallback", "2001")
     assert not await people.find_group_members_by_exact_name("foreign scoped nickname", "2001")
 
-    # Equal timestamps retain the original latest-id nickname tie rule.
+    # New observed aliases stay searchable without replacing the Person name.
     async with database.immediate_session() as session:
         for name in ("tied earlier nickname", "tied later nickname"):
             session.add(
@@ -1173,7 +1171,7 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
                 )
             )
     tied = await people.get_many(("61021", "61029"), group_id="2001")
-    assert all(profile.nickname == "tied later nickname" for profile in tied.values())
+    assert all(profile.nickname == "name-61021" for profile in tied.values())
     assert await people.find_group_members_by_exact_name("tied later nickname", "2001") == (
         "61021",
     )

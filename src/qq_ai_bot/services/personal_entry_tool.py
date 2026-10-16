@@ -8,6 +8,7 @@ from qq_ai_bot.client_api.views import public_event
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatTool
 from qq_ai_bot.identity.db_models import IdentityBindingModel
+from qq_ai_bot.identity.person_identity import person_family_condition
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.social.models import SocialError
@@ -51,7 +52,7 @@ async def read_entry(database: Database, runtime: Any, args: dict[str, Any]) -> 
                 .where(
                     CanonicalConversationModel.id == runtime.effective_conversation_id,
                     CanonicalConversationModel.kind == "private",
-                    CanonicalConversationModel.person_id == actor.person_id,
+                    person_family_condition(CanonicalConversationModel.person_id, actor.person_id),
                     IdentityBindingModel.platform == "app",
                 )
             )
@@ -66,7 +67,7 @@ async def read_entry(database: Database, runtime: Any, args: dict[str, Any]) -> 
             )
             .where(
                 CanonicalConversationModel.kind == "private",
-                CanonicalConversationModel.person_id == actor.person_id,
+                person_family_condition(CanonicalConversationModel.person_id, actor.person_id),
                 CanonicalConversationModel.id != source[0].id,
             )
         )

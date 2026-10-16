@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.automation.authority import PermissionLevel
@@ -24,6 +23,7 @@ from qq_ai_bot.identity.db_models import (
     PresenceModel,
     SpaceBindingModel,
 )
+from qq_ai_bot.identity.person_identity import current_person_id, same_person_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,7 +75,11 @@ async def resolve_control_context(
     group_id = None
     binding = None
     if conversation.kind == "private":
-        if owner_id == "self" or conversation.person_id != owner_id:
+        if (
+            owner_id == "self"
+            or not conversation.person_id
+            or not await same_person_id(session, conversation.person_id, owner_id)
+        ):
             raise PermissionError("automation_private_scene_owner_mismatch")
         route = await session.get(PersonActiveRouteModel, owner_id)
         presence_id = (
@@ -92,14 +96,13 @@ async def resolve_control_context(
             space is None
             or not space.enabled
             or binding is None
-            or binding.status != "active"
             or binding.space_id != conversation.space_id
         ):
             raise PermissionError("automation_route_unavailable")
         group_id = binding.external_space_id
         presence_id = presence_id or (space_route.presence_id if space_route else None)
     presence = await session.get(PresenceModel, presence_id) if presence_id else None
-    if presence is None or not presence.enabled:
+    if presence is None:
         raise PermissionError("automation_presence_unavailable")
     if binding is not None and binding.platform != presence.platform:
         raise PermissionError("automation_route_changed")
@@ -139,40 +142,18 @@ async def resolve_execution_identity(
     conversation = (
         await session.get(CanonicalConversationModel, conversation_id) if conversation_id else None
     )
-    route = await session.get(PersonActiveRouteModel, owner_id)
-    presence = await session.get(PresenceModel, presence_id) if presence_id else None
+    root_id = await current_person_id(session, owner_id)
+    root = await session.get(CanonicalPersonModel, root_id)
+    if root is None or not root.enabled:
+        raise PermissionError("automation_owner_unavailable")
+    account = ""
     if conversation is not None and conversation.kind == "private":
         binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
-    else:
-        bindings = list(
-            await session.scalars(
-                select(IdentityBindingModel).where(
-                    IdentityBindingModel.person_id == owner_id,
-                    IdentityBindingModel.status == "active",
-                    *(
-                        [IdentityBindingModel.platform == presence.platform]
-                        if presence is not None
-                        else []
-                    ),
-                )
-            )
-        )
-        routed = next(
-            (item for item in bindings if route and item.id == route.identity_binding_id), None
-        )
-        binding = routed or (bindings[0] if len(bindings) == 1 else None)
-    if (
-        binding is None
-        or binding.person_id != owner_id
-        or binding.status != "active"
-        or (
-            presence is not None and (not presence.enabled or binding.platform != presence.platform)
-        )
-    ):
-        raise PermissionError("automation_owner_route_ambiguous")
+        if binding is not None:
+            account = binding.external_account_id
     permission = (
         PermissionLevel.SUPERUSER
         if await person_is_superuser(session, owner_id, settings.superusers)
         else PermissionLevel.USER
     )
-    return binding.external_account_id, permission
+    return account, permission

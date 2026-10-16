@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
+from qq_ai_bot.identity.person_identity import same_person_condition
 from qq_ai_bot.runtime.activation_outcome import ActivationOutcome
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkLease, WorkRepository
 from qq_ai_bot.tool_results.access import ArtifactAccess
@@ -1048,7 +1049,9 @@ class WorkControl:
                     ChatEventModel.canonical_conversation_id == self.lease.conversation_id,
                     ChatEventModel.direction == "inbound",
                     ChatEventModel.event_kind == "message",
-                    ChatEventModel.author_person_id == self.source.get("actor_person_id"),
+                    same_person_condition(
+                        ChatEventModel.author_person_id, self.source.get("actor_person_id")
+                    ),
                 )
             )
         if event is None:

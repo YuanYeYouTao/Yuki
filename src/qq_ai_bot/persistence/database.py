@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import event, text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -205,6 +205,36 @@ class Database:
                     except BaseException as invalidation:
                         original.add_note(f"invalidation_failed:{type(invalidation).__name__}")
                 raise
+
+    async def apply_snapshot_write[T](self, operation: Callable[[AsyncSession], Awaitable[T]]) -> T:
+        """Prepare in one WAL read view, then commit a pure database operation.
+
+        A stale SQLite snapshot is retried only after rollback. External work
+        and commit failures must never enter this retry boundary.
+        """
+        while True:
+            operation_failure: OperationalError | None = None
+            try:
+                async with self.sessions() as session, session.begin():
+                    if self.url.startswith("sqlite+"):
+                        await session.execute(text("BEGIN"))
+                    try:
+                        result = await operation(session)
+                        await session.flush()
+                    except OperationalError as exc:
+                        operation_failure = exc
+                        raise
+                return result
+            except OperationalError as exc:
+                if (
+                    exc is not operation_failure
+                    or exc.orig is None
+                    or ((getattr(exc.orig, "sqlite_errorcode", 0) or 0) & 0xFF) != 5
+                ):
+                    raise
+                task = asyncio.current_task()
+                if task is not None and task.cancelling():
+                    raise asyncio.CancelledError from exc
 
     async def close(self) -> None:
         """Dispose pooled database connections."""

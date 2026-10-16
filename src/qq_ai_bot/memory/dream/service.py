@@ -137,6 +137,9 @@ async def prepare_full_core(
         prepare_clusters_from_facts(
             planner._stored_clusters(clusters),
             tuple(item.fact for group in clusters for item in group),
+            person_roots=await repository.person_roots(
+                tuple(item.fact for group in clusters for item in group)
+            ),
         ),
         max((item.fact.id for item in loaded.candidates), default=0),
     )
@@ -259,6 +262,9 @@ class DreamService:
             clusters=prepare_clusters_from_facts(
                 self._stored_clusters(clusters),
                 tuple(item.fact for group in clusters for item in group),
+                person_roots=await self._repository.person_roots(
+                    tuple(item.fact for group in clusters for item in group)
+                ),
             ),
             snapshot_max_fact_id=max((item.fact.id for item in loaded.candidates), default=0),
             actor_user_id=None,

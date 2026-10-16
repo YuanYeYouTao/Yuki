@@ -1,7 +1,7 @@
 # 个人客户端 API
 
 个人入口使用原 Bot HTTP 服务的 `/client/v1`。operator 与个人设备使用不同凭据，
-设备凭据只代表其 Person，不具有管理或设备执行器权限。公开服务沿部署提供 HTTPS。
+设备凭据解析当前 Person，但保留原设备与 App 入口，不具有管理或设备执行器权限。公开服务沿部署提供 HTTPS。
 
 ## 配对与账号绑定
 
@@ -12,13 +12,26 @@
 | 请求 | 授权与结果 |
 | --- | --- |
 | `POST /pair {code, device_label}` | 只接受码，不接受 Authorization；返回独立 `device_id` 与 token |
-| `GET /me` | 设备 Bearer；本人的 Person、App 会话、绑定与设备列表 |
+| `GET /me` | 设备 Bearer；当前 Person、凭据来源、实际 App 入口、原请求 namespace、绑定与设备列表 |
 | `POST /link-codes {request_id?}` | 设备 Bearer；为本人签发新码，明文仅首次返回 |
 | `DELETE /devices/{id}` | 设备 Bearer；撤销本人的指定设备，其他设备继续可用 |
 | `POST /messages {request_id, text, attachments:[media_id,...]}` | App 普通消息；返回内部 event_id、conversation_id 与 replay |
 | `GET /requests/{request_id}` | 原消息／命令查询，先核本人归属，不重新派发 |
 
-每个 Person 有一个服务器生成账号的 `app` 绑定和一个主会话，多设备共用。
+每个原 App 入口由服务器生成账号、Binding 和独立 Conversation；多设备进入同一入口时共用会话。
+人物归并保留各原 App Binding、Conversation 和设备所属，不自动建新 App 或切换默认会话。
+一个当前 Person 可以拥有多个原 App 入口；各入口的上下文、generation 和 session 继续独立。
+默认入口仍是设备配对时的原 App；新设备使用所兑换绑定码的原 App 来源，缺少入口时才由配对创建。
+
+所有设备鉴权请求可带 `X-Yuki-Entry: <内部 App Binding ID>`，显式选择当前本人拥有的入口；
+该选择同时用于发送、Work 输入、上传、原请求查询及快照，不按今日默认入口猜测旧请求。
+`/me.person_id` 是当前最终 Person，`source_person_id` 是原设备所属，`request_person_id` 是所选
+App 的原 Person namespace，`binding_id` 和 `conversation_id` 是实际入口。绑定列表的
+`source_person_id` 保该 Binding 原所属。主展示名来自独立 Person 名称，账号昵称仍属于各账号。
+来源 Person 显式禁用或设备撤销不会因归并到启用的 Person 而复活。
+仅停用 App Binding 不撤销设备／人物身份：资料、原回执和内部 Work 管理继续可用；
+新的普通 App 消息、Work inputs 仍由所选实际入站检查停用状态，新配对也须有可用入口。
+原 input 回执可重放；新补充可显式选择本人另一个合法 App 入口，接续原 Work，保持原来源与预算。
 设备 token 只存哈希；码、token 和密钥不写聊天账本、Main、Memory 或命令回执。
 配对响应丢失时原码已使用，重新签发码；未领取的设备可从设备列表撤销。
 未知设备与他人设备均返回 `not_found`；失效凭据统一返回 `unauthenticated`。
@@ -26,8 +39,9 @@
 新平台账号可经其认证网关私聊发送 `/ai link <code>`，在普通入账和自动建 Person 前兑换。
 持有证明核实际连接、Presence 与平台；App 聊天正文仍不执行平台控制命令，配对使用个人 API。
 这条控制命令不进入聊天、Main 或 Memory。已有同一 Person 绑定时消耗码并返回已绑定；
-属于其他 Person 时，只转移今后的账号控制，原历史、执行与 App 设备留在原 Person。
-operator 的转移与 Person 遗忘命令见[管理 API](admin-api.md)。
+已有账号属于另一 Person 时，真实持有证明确认两者为同一人，归并到绑定码所指的当前 Person。
+原账号、App、历史事件、执行和设备来源不改写；当前人物资料和权限按归并集合读取。
+这与 operator 明确转移账号给另一人的操作不同；转移与 Person 遗忘命令见[管理 API](admin-api.md)。
 
 ## 历史与隐私
 
@@ -37,10 +51,12 @@ operator 的转移与 Person 遗忘命令见[管理 API](admin-api.md)。
 账号查询排除 transferred，停用绑定仍阻止自动创建新身份。
 
 平台私聊历史只返回严格晚于起点所在秒的记录；该秒及更早、无法确定时间的记录不返回，计入
-`withheld_unattributed`。旧回执锚点失去有效绑定后返回 `binding_unavailable`。
+`withheld_unattributed`。新的平台历史读取按实际账号区间授权；已发生的发送回执仍沿原内部来源、
+调用参数与派发事实读取，不以今日 Binding 或 Presence 可用性重新裁定原效果。
 迁移前不设界的绑定保持原读取行为。前任被遗忘后，现任起点仍在，无须保存前任或墓碑。
 
-遗忘按 Person ID 删除作者事件、全部所属私聊、Work、Memory、设备、码和原命令回执。
+遗忘按当前 Person 的归并集合删除作者事件、全部所属私聊、Work、Memory、设备、码和个人命令回执；
+历史原所属用于定位删除资料，不在读取时重写。
 `/ai forgetme` 只负责从当前认证账号解析一次 Person；operator 可按 Person ID 删除没有
 可用账号的原身份。归属有界的账号不参与跨时期账号字符串清理；号码在正文、转写和
 segments 中的脱敏只覆盖其拥有区间。账本的服务器创建时间为 `observed_at`，平台提供的
@@ -49,10 +65,13 @@ Memory 重建按来源事件处理提案，保留有界账号的运行选择集�
 
 这些命令复用原审计与 `control_command_receipts`。SQLite 确认未提交的 busy 返回
 `unavailable`；提交确认丢失返回 `unknown`，保留原请求号查询，不创建替代效果。
-迁移 0121 提供前向升级；已转移的库不能退回旧账号唯一约束。没有执行生产迁移或部署。
+迁移 0121 保账号区间，0129 增加人物归并与设备请求原 scope；原 NULL scope 回执保留，
+按原设备所属证明兼容读取，不重算指纹。迁移按现行升级链前进，不将本地验证写作生产上线。
 
-普通消息号由服务器生成：`<app 绑定外部 ID>:<request_id>`，多设备共享本人请求号空间，
-不同 Person 互不冲突。重放先核原事件作者与 App 会话，再核规范化正文和附件，
+普通消息号由服务器生成：`<app 绑定外部 ID>:<request_id>`。每个原 App 来源有独立请求号空间，
+同一入口的多设备共享 UUID，不同原入口即使归并为当前同一人也不相互覆盖。
+命令回执保存原 `request_person_id`；同一原入口内消息与命令仍共享 UUID，不按操作另开空间。
+重放先核当前本人访问权与原事件作者／App 会话，再核规范化正文和附件，
 已有请求不构造新入站、不通知轮次。并发首次提交在原入账处遇到 receipt_conflict 时，
 回到同一授权与内容核对；同号不同操作或正文返回 request_conflict。正文是个人聊天输入，
 不在个人 API 中执行 QQ `/ai` 管理命令。附件使用本人已登记的 media_id，经原媒体链准备。
@@ -70,13 +89,13 @@ QQ 已派发消息也按派发时的绑定记录事实，发送途中转移不�
 位置、状态、revision、目标摘要、等待类型、该 Work 已确认发送的问题／结果、子 Work 数
 与原预算。群聊其他消息、工具参数、checkpoint 和 journal 不进入个人投影。
 
-`POST /works/{id}/inputs {request_id,text}` 只接受原发起 Person。App 的 `work_input`
+`POST /works/{id}/inputs {request_id,text}` 接受与原发起者当前为同一 Person 的设备。App 的 `work_input`
 事件、原 mailbox 的 ready 正文与 `client.work_input` 原回执在同一短事务写入。
 运行中只入队；等待中先取得原 scope 租约，再将同一个 Work 置为 queued。租约繁忙时
 返回 unavailable 且不写入。原会话、generation、session、合同与预算继续保留；
 输入不通知 App Main。终态返回 precondition_failed 与原状态。
 
-请求 UUID 与普通消息共享本人空间；改操作、目标 Work 或正文返回 request_conflict。
+请求 UUID 与普通消息共享所选原 App 空间；改操作、目标 Work 或正文返回 request_conflict。
 另一台本人设备重放返回原 event_id／input_id，并复核事件、mailbox 与原请求的对应关系。
 WorkSourceGuard 只接纳本 Work mailbox 证明的跨入口事件；仍检查原来源、隐私版本、
 原租约与追加事件摘要。App 主会话重建不重建 QQ Work，输入被改写或遗忘则来源失效。
@@ -89,7 +108,7 @@ App 补充不会自动发往群里；群 Work 后续仍可能按任务内容向�
 
 `GET /home` 在同一读快照返回 main、其他入口 entries、本人 Work 与 snapshot_at。
 `GET /conversations/{id}/events?after=&before=&limit=` 以内部事件 ID 分页，最多 50 条，
-只读本人的私聊账本；群记录与他人的旧会话均为 not_found。公开事件只含正文、方向、
+只读当前本人归并集合的原私聊账本；不同原入口各自保留，群记录与无关人物的会话均为 not_found。公开事件只含正文、方向、
 作者类别、入口与附件引用，不返回运行提示、路径或网关凭据。
 
 `GET /activity?conversation_id=` 读取实际进入的本进程执行 span 与诊断类别，
@@ -108,7 +127,10 @@ conversation、work、activity 变化提示。事实仍须经对应 GET 读取�
 kind 为 file、image、video 或 record。服务器流式写设备／请求暂存文件并计算摘要与长度，
 核验后原子发布到媒体内容寻址路径，最后在短事务登记 `client.upload` 原命令回执。
 回执同时保存媒体引用的归属与元数据，不新增上传去重表或虚构聊天事件。
-成功只返回 media_id，之后由 `POST /messages` 的 attachments 引用它，才实际发送消息。
+成功返回 media_id 与原摘要、长度、类型和期限，之后由 `POST /messages` 的 attachments 引用它，
+才实际发送消息。media UUID 和上传指纹以原 App namespace 与原 UUID 生成，人物归并不重算。
+同 UUID、原参数的上传 POST 与请求 GET 都读取原回执；临时文件到期或实际 cleanup 后仍返回原结果，
+不重读请求体、不重新登记文件。过期资源用于一条新的附件消息时仍返回 not_found。
 
 上传与原聊天媒体共用单文件／总容量限制和 24 小时期限；维护清理会在删除前核实际回执引用。
 图片、视频、文档和语音经服务器授权的临时本地来源进入原 Native／文档／ASR 链，
@@ -126,6 +148,8 @@ yuki client（同一入口也保留 qq-ai-bot-cli client）支持 pair、me、ho
 retry、pending、watch、link-code、revoke。URL 取 YUKI_CLIENT_URL，设备凭据取
 YUKI_CLIENT_TOKEN；配对码取 YUKI_CLIENT_CODE，pair 的首次响应返回设备 token。
 凭据不放命令参数或 outbox。--state 选择本地 outbox 文件，文件权限为 0600。
+`--entry-binding <内部 App Binding ID>` 或 `YUKI_CLIENT_ENTRY_BINDING` 显式选择原入口；
+Python 构造器对应 `entry_binding_id=`。每个入口使用自己的 outbox 文件。
 
 ```sh
 qq-ai-bot-cli client --state ./phone.sqlite send '继续这项任务' --draft
@@ -133,10 +157,15 @@ qq-ai-bot-cli client --state ./phone.sqlite retry <原请求UUID>
 qq-ai-bot-cli client --state ./phone.sqlite request <原请求UUID>
 qq-ai-bot-cli client --state ./phone.sqlite input <WorkID> '补充要求'
 qq-ai-bot-cli client --state ./phone.sqlite watch
+qq-ai-bot-cli client --entry-binding <AppBindingID> --state ./other-entry.sqlite home
 ```
 
 首次提交前持久保存 UUID、目标、规范化正文及附件引用；同号修改正文／操作会拒绝。
-outbox 绑定服务器与 Person，同一 Person 的设备可重放，换 Person 不派发旧草稿。
+outbox 绑定服务器和原 App 来源 Person，并保存实际 Binding／Conversation；不绑定当前 root。
+人物归并后当前本人其他设备也可恢复该原入口队列，原 UUID、正文、目标、指纹及 media UUID 不变。
+冷启动旧 outbox 依据旧 owner 和服务器返回的原 App 绑定补齐入口；同进程旧 `_me` 也刷新真实入口。
+不能证明原入口或凭据属于无关人物／服务器时保留原草稿，不派发或迁移队列。
+显式切换入口时使用对应入口的独立 outbox，已有文件不会改绑到另一原 scope。
 四态为 draft（本地草稿）、submitted（已提交待确认）、accepted（服务器已接纳）、
 result（已有可核结果）。普通消息的 result 要有原 Social 成功回执对应的结果事件；
 Work 是否完成仍读取自己的 state。传输异常保留 submitted，先按原 UUID 查询及核对
@@ -144,7 +173,8 @@ Work 是否完成仍读取自己的 state。传输异常保留 submitted，先�
 
 GET /requests 在授权后附 payload_hash：SHA-256(canonical JSON [operation, target,
 normalized payload])，JSON 按键排序、默认 ASCII 转义、无多余空白。普通消息 operation
-为 message、target 为 App 会话、payload 为 text 与 attachments；其他命令沿原回执。
+为 message、target 为原 App 会话、payload 为 text 与 attachments；上传 target 为原请求来源 Person，
+其余命令 target 沿原回执。当前 Person 只负责授权，不参与重算已有请求。
 结果事件 ID 只取原 Social 来源和本人可读出站，不从平台消息号重建关联。
 
 watch 每次连接先消费 sync，再用公开 GET／事件 keyset 重建本人全部入口与 Work 快照；

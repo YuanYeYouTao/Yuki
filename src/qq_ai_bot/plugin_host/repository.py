@@ -660,7 +660,14 @@ class PluginStateRepository:
                     )
                 )
                 if existing is not None and existing.canonical_person_id != owner_id:
-                    raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+                    from qq_ai_bot.identity.person_identity import same_person_id
+
+                    if (
+                        not existing.canonical_person_id
+                        or not owner_id
+                        or not await same_person_id(session, existing.canonical_person_id, owner_id)
+                    ):
+                        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
                 result = await session.execute(
                     update(PluginStateModel)
                     .where(
@@ -674,7 +681,7 @@ class PluginStateRepository:
                         version=expected_version + 1,
                         expires_at=expiry,
                         updated_at=timestamp,
-                        canonical_person_id=owner_id,
+                        canonical_person_id=existing.canonical_person_id if existing else owner_id,
                     )
                 )
                 if not cast(CursorResult[Any], result).rowcount:

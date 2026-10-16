@@ -27,8 +27,12 @@ from qq_ai_bot.automation.models import (
 from qq_ai_bot.automation.task_spec import TaskSpec, canonical_task_hash
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
-    IdentityBindingModel,
     PresenceModel,
+)
+from qq_ai_bot.identity.person_identity import (
+    person_family_condition,
+    person_root_id,
+    same_person_id,
 )
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
@@ -51,7 +55,7 @@ class AutomationRepository:
             return AutomationModel.creator_kind == "self"
         return and_(
             AutomationModel.creator_kind == "person",
-            AutomationModel.canonical_creator_person_id == owner_id,
+            person_family_condition(AutomationModel.canonical_creator_person_id, owner_id),
         )
 
     async def create(
@@ -99,7 +103,10 @@ class AutomationRepository:
                 if (
                     creator is None
                     or not creator.enabled
-                    or authority.canonical_creator_person_id != creator_person_id
+                    or authority.canonical_creator_person_id is None
+                    or not await same_person_id(
+                        active, authority.canonical_creator_person_id, creator_person_id
+                    )
                     or authority.principal_kind != "person"
                 ):
                     raise ValueError("创建者没有对应的永久主体")
@@ -110,7 +117,7 @@ class AutomationRepository:
                 now=timestamp,
             )
             presence = await active.get(PresenceModel, authority.canonical_presence_id)
-            if presence is None or not presence.enabled:
+            if presence is None:
                 raise ValueError("automation_presence_unavailable")
             row = AutomationModel(
                 creator_kind=authority.principal_kind,
@@ -506,7 +513,10 @@ class AutomationRepository:
                 if (
                     authority_creator is None
                     or not authority_creator.enabled
-                    or authority.canonical_creator_person_id != creator_person_id
+                    or authority.canonical_creator_person_id is None
+                    or not await same_person_id(
+                        active, authority.canonical_creator_person_id, creator_person_id
+                    )
                     or authority.principal_kind != "person"
                 ):
                     raise ValueError("更新授权与自动化永久创建者不一致")
@@ -1138,18 +1148,13 @@ def _directory_statement(*, include_script: bool = False) -> Any:
         if include_script
         else [getattr(AutomationModel, field) for field in AutomationDirectoryRecord.model_fields]
     )
-    return (
-        select(*columns, IdentityBindingModel.display_name)
-        .outerjoin(PresenceModel, PresenceModel.id == AutomationModel.canonical_presence_id)
-        .outerjoin(
-            IdentityBindingModel,
-            and_(
-                IdentityBindingModel.person_id == AutomationModel.canonical_creator_person_id,
-                IdentityBindingModel.platform == PresenceModel.platform,
-                IdentityBindingModel.external_account_id == AutomationModel.creator_user_id,
-                IdentityBindingModel.status != "transferred",
-            ),
-        )
+    return select(
+        *columns,
+        CanonicalPersonModel.display_name,
+        person_root_id(AutomationModel.canonical_creator_person_id),
+    ).outerjoin(
+        CanonicalPersonModel,
+        CanonicalPersonModel.id == person_root_id(AutomationModel.canonical_creator_person_id),
     )
 
 
@@ -1168,11 +1173,11 @@ def _automation_directory_entry(
             next_run_at=_aware_utc(row.next_run_at) if row.next_run_at else None,
         )
     )
-    display_name = row[-1]
+    display_name = row[-2]
     return AutomationDirectoryEntry(
         record=record,
         creator=AutomationCreatorIdentity(
-            person_id=record.canonical_creator_person_id,
+            person_id=row[-1],
             external_account_id=record.creator_user_id,
             display_name="Yuki / SELF" if record.creator_kind == "self" else display_name or None,
             kind=record.creator_kind,

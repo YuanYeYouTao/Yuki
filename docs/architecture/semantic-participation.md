@@ -102,6 +102,13 @@ stay 或自身发送不能推翻纠正。仅入场后 `NO_REPLY` 不自证持续
 
 ## SELF 主体与同一执行链
 
+人物归并经宿主准备的当前`actor_identity`关系参与独立库比较；库不读取Host数据库或平台账号，
+也不保存另一份人物所有权。原ScopedEvent、unit、FastInput、source revision、review覆盖和已付观察
+不改写。关系只作用于同Conversation/generation及真实讨论；quiet/stay沿原hint/source次序判定，
+迟到发送或旧stay不盖过较新quiet。未确认快路按实际source去重及各原review覆盖位置计算，
+未知进度仍为未知，不清零计数、不按根人物重建Main接纳键。准备时批读当前人物关系，
+writer沿同一会话复核真实身份，不缓存永久许可或把SELF放入人物桶。
+
 持久 `AcceptedInitiative` 是待派发事实，以 `initiative:<run_id>` 唯一关联原 Work。
 接纳后进程退出时，宿主重新核对原 Work；存在则接回，不重新创建任务、重置预算或重放发送。
 WorkScheduler 调用 `generate_self_initiative`，随后仍经过 `MainAgentTurnService`、
@@ -112,7 +119,7 @@ WorkScheduler 调用 `generate_self_initiative`，随后仍经过 `MainAgentTurn
 - `ConversationTurnSnapshot` 的内部事件 ID 与 initiative run 严格二选一。SELF 不制造
   `InboundMessage`，不使用假 QQ 消息、不借最近发言者或目标人物的权限。
 - 每次请求、工具执行和发送准备前校验原 run、Conversation generation、Space、Presence
-  及唯一有效 QQ Binding。发送使用接纳时原 Presence；主动发送路由切换不替换执行主体。
+  及其原群入口。发送使用接纳时原 Presence；主动发送路由切换不替换执行主体。
 - 控制器切换本身不取消已接纳工作；reset/generation 失效、原场景权限或 Presence 失效仍
   拒绝继续执行。终态迟到的真实效果可以入账，不能把终态改回运行或触发重新发送。
 

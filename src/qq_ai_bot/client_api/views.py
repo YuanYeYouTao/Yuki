@@ -18,6 +18,7 @@ from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationMode
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel
 from qq_ai_bot.execution_trace.recorder import TraceRecorder
 from qq_ai_bot.identity.db_models import IdentityBindingModel
+from qq_ai_bot.identity.person_identity import person_family_condition
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_schema_v1 import work
 
@@ -29,7 +30,7 @@ async def personal_conversation(
         select(CanonicalConversationModel).where(
             CanonicalConversationModel.id == identity,
             CanonicalConversationModel.kind == "private",
-            CanonicalConversationModel.person_id == person,
+            person_family_condition(CanonicalConversationModel.person_id, person),
         )
     )
     if row is None:
@@ -95,7 +96,9 @@ class ClientViews:
                 )
                 .where(
                     CanonicalConversationModel.kind == "private",
-                    CanonicalConversationModel.person_id == principal.person_id,
+                    person_family_condition(
+                        CanonicalConversationModel.person_id, principal.person_id
+                    ),
                 )
                 .order_by(IdentityBindingModel.created_at, IdentityBindingModel.id)
             )
@@ -117,7 +120,9 @@ class ClientViews:
     async def home(self, principal: ClientPrincipal) -> dict[str, Any]:
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
-            principal = await self.identity.require_device(session, principal.device_id)
+            principal = await self.identity.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
             entries = await self._entries(session, principal)
             rows = (
                 (
@@ -158,7 +163,9 @@ class ClientViews:
             raise ClientError("validation_error")
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
-            principal = await self.identity.require_device(session, principal.device_id)
+            principal = await self.identity.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
             conversation = await personal_conversation(session, principal.person_id, identity)
             binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
             assert binding is not None
@@ -187,7 +194,9 @@ class ClientViews:
 
     async def activity(self, principal: ClientPrincipal, identity: str) -> dict[str, Any]:
         async with self.database.sessions() as session:
-            principal = await self.identity.require_device(session, principal.device_id)
+            principal = await self.identity.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
             await personal_conversation(session, principal.person_id, identity)
             return await self._activity(session, identity)
 
@@ -232,7 +241,9 @@ class ClientViews:
     async def sync(self, principal: ClientPrincipal) -> dict[str, Any]:
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
-            principal = await self.identity.require_device(session, principal.device_id)
+            principal = await self.identity.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
             entries = await self._entries(session, principal)
             rows = (
                 await session.execute(

@@ -1,6 +1,7 @@
-"""Frozen C3 trigger SQL shared by ORM create_all.
+"""Current conversation and route trigger SQL for ORM-created schemas.
 
-Revision 0044 must embed identical literals and must not import this module.
+Initial conversation guards were frozen in 0044; 0129 freezes the current
+same-human Person route guards independently of these mutable ORM literals.
 """
 
 from __future__ import annotations
@@ -58,8 +59,11 @@ BEGIN
         SELECT 1
         FROM identity_bindings AS binding
         JOIN presences AS presence ON presence.id = NEW.presence_id
+        JOIN persons AS owner ON owner.id = binding.person_id
+        JOIN persons AS target ON target.id = NEW.person_id
         WHERE binding.id = NEW.identity_binding_id
-          AND binding.person_id = NEW.person_id
+          AND COALESCE(owner.merged_into_person_id, owner.id)
+              = COALESCE(target.merged_into_person_id, target.id)
           AND binding.platform = presence.platform
     );
 END
@@ -73,8 +77,11 @@ BEGIN
         SELECT 1
         FROM identity_bindings AS binding
         JOIN presences AS presence ON presence.id = NEW.presence_id
+        JOIN persons AS owner ON owner.id = binding.person_id
+        JOIN persons AS target ON target.id = NEW.person_id
         WHERE binding.id = NEW.identity_binding_id
-          AND binding.person_id = NEW.person_id
+          AND COALESCE(owner.merged_into_person_id, owner.id)
+              = COALESCE(target.merged_into_person_id, target.id)
           AND binding.platform = presence.platform
     );
 END
@@ -155,9 +162,12 @@ BEGIN
         SELECT 1
         FROM person_active_routes AS route
         JOIN presences AS presence ON presence.id = route.presence_id
+        JOIN persons AS owner ON owner.id = NEW.person_id
+        JOIN persons AS target ON target.id = route.person_id
         WHERE route.identity_binding_id = NEW.id
           AND (
-            route.person_id IS NOT NEW.person_id
+            COALESCE(target.merged_into_person_id, target.id)
+                IS NOT COALESCE(owner.merged_into_person_id, owner.id)
             OR NEW.platform IS NOT presence.platform
           )
     );

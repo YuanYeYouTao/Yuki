@@ -71,10 +71,11 @@ class ClientLinkCommands:
                 await self._require_proof(reader, snapshot, bot, message)
                 if code:
                     await self.identities._code(reader, code, datetime.now(UTC))
-            async with self.identities.database.immediate_session() as writer:
+
+            async def apply(writer: AsyncSession) -> dict[str, object]:
                 await self._require_proof(writer, snapshot, bot, message)
                 if code:
-                    result = await self.identities.claim_account(
+                    return await self.identities.claim_account(
                         code,
                         platform=snapshot.platform,
                         account=message.sender.user_id,
@@ -83,16 +84,18 @@ class ClientLinkCommands:
                         session=writer,
                     )
                 else:
-                    result = await self.identities.issue_for_account(
+                    return await self.identities.issue_for_account(
                         platform=snapshot.platform,
                         account=message.sender.user_id,
                         message_id=message.message_id,
                         session=writer,
                     )
+
+            result = await self.identities.database.apply_snapshot_write(apply)
             if not code:
                 return f"绑定码：{result['code']}（10 分钟内有效，使用一次后失效）。"
-            if result["transferred"]:
-                return "已转移账号绑定。旧会话、记忆和任务仍留在原身份。"
+            if result["merged"]:
+                return "身份已合并，原入口、会话和执行记录继续保留。"
             return "账号已绑定到目标身份。"
         except RegistryClosed:
             return "当前连接尚未完成身份认证，无法绑定。"

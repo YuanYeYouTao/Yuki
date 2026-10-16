@@ -12,8 +12,12 @@
 不重建记忆或 Conversation 所有权，也不因账号切换重置聊天 generation；
 Route 有独立的 `route_generation`，有效发送路由迁移、暂停或恢复可推进它。
 
-事实、原事件和历史成员关系保留各自原 canonical 所有者。账号换绑不把旧资料改归新 Person，
-App/TG 主体也不需要 QQ 投影才能查询、反思、重建或写入获准事实。
+事实、原事件和历史成员关系保留各自原 canonical 所有者。账号换人只影响新发生的事情，
+历史平台选择器按原平台与事件所属时段解析；现代 canonical 作者/提及原件优先，包括明确的空提及。
+同一人合并后，当前事实主体、private SELF 可见性、本人权限与共同群关系使用 Person 归并集合，
+包括没有 Binding 的来源人物；SQL 直接查同一份 Person 事实，不复制事实或维护授权缓存。
+原 subject 与 visibility 是两个独立角色，分别归并，不用证据作者替代第三方事实目标。
+App/TG 主体不需要 QQ 投影才能查询、反思、重建或写入获准事实。
 
 SELF 主入口、Work 和保留的子任务沿实际发起来源解析分区：主动轮用原 initiative，定时任务用原 occurrence、版本和 execution。原主动轮结束、任务后来被编辑不单独阻止已接纳任务继续读取。仍核对真实 run 归属、当前 generation、Space、Presence 与 Binding，执行授权由原 Work 租约和领域入口核验；不重开祖先或把目标 Person 当作私聊授权。
 
@@ -53,7 +57,7 @@ Worker、Main Agent、自省和 Dream 的新事实复用 [变更合同](memory-c
 ## 历史共同群读取
 
 所有普通用户结构化读取使用后端 `MemoryReadScopeResolver`。设请求者 R，目标人物 P，
-G(X) 为数据库记录的 X 的历史 canonical membership：
+G(X) 为数据库记录的 X 整个 Person 归并集合的历史 canonical membership（同 Space 去重）：
 
 | 目标 | 允许条件 |
 |---|---|
@@ -113,7 +117,8 @@ Embedding 请求、缓存命中、错误和已知 usage 分别记录，缺失的
   原生 SQLITE_BUSY（主码5，含517）仅在原操作整体回滚确认后，用新 session 重备同一计划，不设固定次数封口。
   重备仅执行纯数据库单元，复用原 mutation/operation/request ID，不重跑模型或外部效果；提交后的 embedding 调度不在重试范围内。Dream 模型判断所引用的事实还须
   在准备阶段比较原 fact signature 和 canonical target，拒绝已经改变的候选；请求目标与
-  操作人的 canonical owner、原内部事件和 tool receipt／SELF 来源证明也必须与原计划一致。
+  操作人的当前人物权限、原内部事件和 tool receipt／SELF 来源证明也必须与原计划一致。
+  当前人物归属按同一归并集合判断；原计划的 raw owner、来源快照和指纹仍逐字核验，不因合并、改名或换绑重编码。
   ORM flush属于该纯数据库单元；物理commit/rollback确认错误不能按BUSY授予重放资格。取消继续传播。
   Dream 操作失败先核对原 cluster 的 committed operation 回执，保留实际提交计数和累计预算。
   已保存的 ReflectionCheckpoint 与匹配来源指纹的 Dream ready preview 可继续纯数据库收尾；
@@ -148,6 +153,12 @@ Memory mutation 的来源与候选可并行准备，不使用进程全局锁跨�
 Hygiene 因缺少有效来源失效的 fact 使用 `invalid_provenance`，与状态事件一致。
 原历史原因仍可读，不回写旧事件。
 
-Rebuild 提案保存经原 Claim 校验的 canonical Person/Space 目标，第三方目标不等于来源作者。人物遗忘的默认和显式装配都经过同一份锁外准备及短事务清退；跨平台同号不扩大删除范围。迁移 `0127` 仅凭原内部作者、提及目标、同会话引用或已提交 fact 回填旧目标，不用今日账号绑定猜测旧提案归属。
+Rebuild 提案保存经原 Claim 校验的 canonical Person/Space 目标，第三方目标不等于来源作者。人物遗忘的默认和显式装配都在同一 WAL 读快照准备完整人物族、原账号时段、实际相关源和 selection，
+然后直接升级短 writer 清退；纯数据库竞争整体回滚后才重备，不以全库隐私 token 或 run 目录变化拒绝无关写入。
+删除覆盖无 Binding 的归并人物，跨平台同号或账号后来的其他真人不扩大删除范围。
+Sandbox 的原私有任务和 continuation 随实际来源清退；其他作者的引用断开但正文保留。
+主动任务的实际被擦除来源及其敏感回执清退；只有 target_person_id 命中时置空目标，保留其他群 SELF 原经历、证据与反馈。迁移 `0127` 仅凭原内部作者、提及目标、同会话引用或已提交 fact 回填旧目标，不用今日账号绑定猜测旧提案归属。
 
 Dream 新预览指纹使用实际模型输入、canonical fact 与原证据。旧已付预览的传输标签只通过原主体历史绑定重建旧编码，并精确匹配完整指纹；真实证据变化仍使原预览失效。Rebuild 已提交提案的数据库收尾核原来源和回执，不要求今日外部 Binding 继续属于原人物；两者均不重置预算或重复购买模型结果。
+
+当前检索结果按归并后的人物组织展示与排序，原 fact/evidence 对象及 ID 保留。名称只是当前查找与展示资料，不参与原已付模型输入的证明。自省仍按原 raw Person/Space 的源水位独立扫描和恢复，当前可见 Memory 读取才使用归并语义；不拼接已执行 batch、游标或回执。

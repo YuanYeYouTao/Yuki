@@ -51,16 +51,23 @@ def opaque_external_id_sql(column: str) -> str:
 
 
 class CanonicalPersonModel(Base):
-    """Permanent human subject; platform display names live on bindings."""
+    """Permanent human identity; merged IDs remain the original facts' subjects."""
 
     __tablename__ = "persons"
     __table_args__ = (
         CheckConstraint(uuid4_text36_sql("id"), name="ck_persons_id"),
         CheckConstraint("enabled IN (0, 1)", name="ck_persons_enabled"),
         CheckConstraint("revision >= 1", name="ck_persons_revision"),
+        Index("ix_persons_merged_into_person_id", "merged_into_person_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    merged_into_person_id: Mapped[str | None] = mapped_column(
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"), nullable=True
+    )
+    display_name: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="", server_default=""
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     revision: Mapped[int] = mapped_column(nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

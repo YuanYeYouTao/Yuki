@@ -14,6 +14,7 @@ from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationMode
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.execution_trace.phases import model_detail
+from qq_ai_bot.identity.person_identity import same_person_condition
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.models import ChatEventModel
@@ -208,9 +209,9 @@ class WorkSourceGuard:
                                 ChatEventModel.direction == "inbound",
                                 ChatEventModel.suppression_status == "keeper",
                                 ChatEventModel.author_kind == "person",
-                                ChatEventModel.author_person_id == actor,
+                                same_person_condition(ChatEventModel.author_person_id, actor),
                                 CanonicalConversationModel.kind == "private",
-                                CanonicalConversationModel.person_id == actor,
+                                same_person_condition(CanonicalConversationModel.person_id, actor),
                             )
                         )
                         accepted = set(await session.scalars(accepted_query))

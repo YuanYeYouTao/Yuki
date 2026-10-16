@@ -133,7 +133,7 @@ async def test_quiet_closes_unadmitted_continuation_at_writer_without_blocking_d
         )
         binding, reason = await host.continuation_for_event(b.id)
         prepared = host.ordinary.prepare(b, item.scene.generation, 2, binding, reason=reason)
-        assert host.continuation_current(binding)
+        assert await host.continuation_current(binding)
         assert item.controller.observe_unit_hint(
             unit,
             SelfReport(
@@ -219,7 +219,7 @@ async def test_selected_original_activation_preserves_qualification_after_review
         d = await _event_and_route(database, host.app.ledger, content="synthetic queued D")
         assert await host.continuation_for_event(d.id) is None
         binding, reason = await host.continuation_for_event(d.id, check_budget=False)
-        assert host.continuation_current(binding, check_budget=False)
+        assert await host.continuation_current(binding, check_budget=False)
         incoming = host.ordinary.prepare(d, item.scene.generation, 3, binding, reason=reason)
 
         async def selected_allowed(writer):
@@ -301,7 +301,7 @@ async def test_waiting_review_rechecks_its_actual_sources_after_observer_returns
         focus = item.controller.state.events[f"event:{b.id}"]
         assert item.observation.request_observation(focus.ref)
 
-        async def paused(snapshot):
+        async def paused(snapshot, **_kwargs):
             snapshots.append(snapshot)
             assert snapshot.focus.ref == focus.ref
             assert any(event.ref.event_id == f"event:{context.id}" for event in snapshot.context)

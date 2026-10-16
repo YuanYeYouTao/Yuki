@@ -710,7 +710,7 @@ class EventLedgerRepository:
                 event, mentioned_user_ids=(), mentioned_person_ids=(), reply_sender_user_id=None
             )
         from qq_ai_bot.identity.db_models import PresenceModel
-        from qq_ai_bot.identity.event_author import project_event_authors
+        from qq_ai_bot.identity.ownership_interval import historical_person_ids
 
         async with self._database.sessions() as session:
             presence = (
@@ -729,24 +729,27 @@ class EventLedgerRepository:
             accounts = tuple(
                 dict.fromkeys(item for item in mentions if item != event.sender_user_id)
             )
-            authors = (
-                await project_event_authors(
-                    session, sender_user_ids=accounts, platform=presence.platform
-                )
-                if presence is not None
+            recorded_people = bool(event.mentioned_person_ids) or any(
+                part.get("type") == "yuki_context"
+                and isinstance(data := part.get("data"), dict)
+                and "mentioned_person_ids" in data
+                for part in event.segments
+            )
+            observed_at = await session.scalar(
+                select(ChatEventModel.observed_at).where(ChatEventModel.id == event.id)
+            )
+            people = (
+                await historical_person_ids(session, presence.platform, accounts, observed_at)
+                if presence is not None and observed_at is not None and not recorded_people
                 else {}
             )
         mention_accounts = tuple(
-            account
-            for account in accounts
-            if account in authors and authors[account].author_person_id is not None
+            account for account in accounts if recorded_people or account in people
         )
-        mention_people = event.mentioned_person_ids or tuple(
-            dict.fromkeys(
-                person_id
-                for account in mention_accounts
-                if (person_id := authors[account].author_person_id) is not None
-            )
+        mention_people = (
+            event.mentioned_person_ids
+            if recorded_people
+            else tuple(dict.fromkeys(people[account] for account in mention_accounts))
         )
         reply_sender = None
         if event.reply_to_event_id is not None and event.canonical_conversation_id is not None:

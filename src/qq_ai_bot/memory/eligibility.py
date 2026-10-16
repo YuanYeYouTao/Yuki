@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from sqlalchemy import exists, func, not_, or_, select, text
+from sqlalchemy import exists, func, literal_column, not_, or_, select, text
 
 from qq_ai_bot.domain.identity import AuthorKind
+from qq_ai_bot.identity.person_identity import same_person_condition
 from qq_ai_bot.memory.enums import MemoryJobStatus
 from qq_ai_bot.memory.self_origin import sql_self_receipt_evidence_predicate
 from qq_ai_bot.persistence.models import ChatEventModel, MemoryJobModel
@@ -46,6 +47,11 @@ def sql_fact_tool_evidence_predicate() -> str:
     Expiry limits new reflection input, not evidence already committed. Failed
     tool results may document a failure; success is not an evidence requirement.
     """
+    private_visibility = str(
+        same_person_condition(
+            literal_column("f.canonical_visibility_person_id"), literal_column("v.person_id")
+        )
+    )
     event_source = (
         "(t.initiative_run_id IS NULL AND t.trigger_event_id IS NOT NULL "
         "AND e.event_id IS NULL AND f.scope_type='self' AND e.relation='agent_reflection' "
@@ -59,7 +65,7 @@ def sql_fact_tool_evidence_predicate() -> str:
         "OR (t.canonical_space_id=v.space_id AND t.canonical_person_id IS NULL)) "
         "AND ((f.visibility_type='global' AND f.canonical_visibility_person_id IS NULL "
         "AND f.canonical_visibility_space_id IS NULL) "
-        "OR (f.visibility_type='private' AND f.canonical_visibility_person_id=v.person_id "
+        f"OR (f.visibility_type='private' AND {private_visibility} "
         "AND f.canonical_visibility_space_id IS NULL) "
         "OR (f.visibility_type='group' AND f.canonical_visibility_space_id=v.space_id "
         "AND f.canonical_visibility_person_id IS NULL)))"

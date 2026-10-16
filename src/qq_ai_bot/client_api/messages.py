@@ -33,8 +33,10 @@ class ClientMessages:
         references: tuple[str, ...],
     ) -> dict[str, Any] | None:
         async with self.identity.database.sessions() as session:
-            principal = await self.identity.require_device(session, principal.device_id)
-            if await personal_command(session, principal.person_id, request_id) is not None:
+            principal = await self.identity.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
+            if await personal_command(session, principal.request_person_id, request_id) is not None:
                 raise ClientError("request_conflict")
             event = await self.requests.message(session, principal, request_id)
             if event is None:
@@ -88,7 +90,9 @@ class ClientMessages:
                 for index, part in enumerate(media_segments)
             )
         async with self.identity.database.sessions() as session:
-            principal = await self.identity.require_device(session, principal.device_id)
+            principal = await self.identity.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
             binding = await session.get(IdentityBindingModel, principal.binding_id)
             assert binding is not None
         try:

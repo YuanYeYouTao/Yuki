@@ -23,6 +23,7 @@ from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.person_identity import person_family_condition, same_person_id
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_helpers import (
@@ -280,7 +281,9 @@ class PluginNotificationRepository:
                 .values(status="cancelled", lease_until=None, updated_at=now)
             )
             target_filter = (
-                CanonicalConversationModel.person_id == row.canonical_target_person_id
+                person_family_condition(
+                    CanonicalConversationModel.person_id, row.canonical_target_person_id
+                )
                 if row.canonical_target_person_id
                 else CanonicalConversationModel.space_id == row.canonical_target_space_id
             )
@@ -1517,7 +1520,11 @@ async def require_queued_work_readable(session: AsyncSession, row: object) -> No
         session, getattr(row, "canonical_conversation_id", None)
     )
     if person_id:
-        if conversation.person_id != person_id or conversation.space_id:
+        if (
+            not conversation.person_id
+            or not await same_person_id(session, conversation.person_id, person_id)
+            or conversation.space_id
+        ):
             raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
     elif conversation.space_id != space_id or conversation.person_id:
         raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
@@ -1966,13 +1973,18 @@ async def _target_conversation(
     if target.conversation_id is not None:
         conversation = await require_live_conversation(session, target.conversation_id)
         owner = conversation.person_id if target.target_type == "private" else conversation.space_id
-        if owner != target.target_id:
+        matches = owner == target.target_id or (
+            target.target_type == "private"
+            and owner is not None
+            and await same_person_id(session, owner, target.target_id)
+        )
+        if not matches:
             raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
         return conversation
     query = (
         select(CanonicalConversationModel)
         .where(
-            CanonicalConversationModel.person_id == target.target_id
+            person_family_condition(CanonicalConversationModel.person_id, target.target_id)
             if target.target_type == "private"
             else CanonicalConversationModel.space_id == target.target_id
         )
@@ -2022,10 +2034,12 @@ async def _publication_scope(
 ) -> ConversationScope:
     conversation = await require_live_conversation(session, grant.canonical_conversation_id)
     presence = await _grant_presence(session, conversation, grant.canonical_presence_id)
-    if (
-        conversation.person_id != grant.canonical_target_person_id
-        or conversation.space_id != grant.canonical_target_space_id
-    ):
+    person_matches = conversation.person_id == grant.canonical_target_person_id or (
+        conversation.person_id is not None
+        and grant.canonical_target_person_id is not None
+        and await same_person_id(session, conversation.person_id, grant.canonical_target_person_id)
+    )
+    if not person_matches or conversation.space_id != grant.canonical_target_space_id:
         raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
     if conversation.kind == "private":
         binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)

@@ -653,12 +653,19 @@ class ChatService:
         if matched is not None and matched > 0:
             return matched
         control = self.runtime.bindings.get(conversation_key)
-        if (
-            control is None
-            or control.current is None
-            or control.source.get("actor_person_id") != inbound.person_id
-        ):
+        if control is None or control.current is None:
             return matched
+        from qq_ai_bot.identity.person_identity import same_person_id
+
+        async with self._ledger._database.sessions() as session:
+            if (
+                not inbound.person_id
+                or not control.source.get("actor_person_id")
+                or not await same_person_id(
+                    session, control.source["actor_person_id"], inbound.person_id
+                )
+            ):
+                return matched
         from qq_ai_bot.runtime.work_repository import WorkCapacityError
 
         try:
@@ -1326,6 +1333,26 @@ class ChatService:
         async def before_model_request() -> None:
             if runtime.before_model_request is not None:
                 await runtime.before_model_request()
+            actor = runtime.actor_context
+            if (
+                actor is not None
+                and actor.principal_kind == "person"
+                and actor.person_id is not None
+            ):
+                from qq_ai_bot.identity.db_models import CanonicalPersonModel
+                from qq_ai_bot.identity.person_identity import current_person_id
+
+                async with self._ledger._database.sessions() as session:
+                    original = await session.get(CanonicalPersonModel, actor.person_id)
+                    root = (
+                        await session.get(
+                            CanonicalPersonModel, await current_person_id(session, actor.person_id)
+                        )
+                        if original is not None and actor.person_id is not None
+                        else None
+                    )
+                    if original is None or not original.enabled or root is None or not root.enabled:
+                        raise PermissionError("main_person_disabled")
             snapshot = runtime.turn_snapshot
             if snapshot is not None and not await self.validate_turn_snapshot(snapshot):
                 raise TurnSupersededError("turn generation changed before model invocation")

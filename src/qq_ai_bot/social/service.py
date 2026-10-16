@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.config_service import RuntimeConfigService
@@ -33,10 +33,17 @@ from qq_ai_bot.identity.db_models import (
     PresenceModel,
     SpaceBindingModel,
 )
+from qq_ai_bot.identity.person_identity import (
+    current_person_id,
+    person_enabled_condition,
+    person_family_condition,
+    person_root_id,
+    same_person_id,
+)
 from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend
 from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel
+from qq_ai_bot.persistence.models import ChatEventModel, PersonAliasModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.services.message_splitter import OutboundMessageSplitter
@@ -102,6 +109,15 @@ class SocialService:
         self.runtime_config: RuntimeConfigService | None = None
         self.workspace: WorkspaceStore | None = None
         self.emoji_delivery: Any = None
+
+    async def _validate_person_context(
+        self, context: SocialContext, *, session: AsyncSession | None = None
+    ) -> None:
+        actor_id = getattr(context.actor, "person_id", None)
+        if actor_id is not None:
+            async with optional_session(self.database, session, write=False) as reader:
+                if not await reader.scalar(select(person_enabled_condition(actor_id))):
+                    raise SocialError("permission_denied")
 
     async def _validate_self_context(
         self, context: SocialContext, *, session: AsyncSession | None = None
@@ -250,7 +266,7 @@ class SocialService:
                 await session.scalars(
                     select(IdentityBindingModel)
                     .where(
-                        IdentityBindingModel.person_id == str(target.id),
+                        person_family_condition(IdentityBindingModel.person_id, str(target.id)),
                         IdentityBindingModel.status == "active",
                     )
                     .order_by(IdentityBindingModel.id)
@@ -273,44 +289,48 @@ class SocialService:
                 known = (
                     select(ChatEventModel.id)
                     .where(
-                        ChatEventModel.author_person_id == CanonicalPersonModel.id,
+                        person_family_condition(
+                            ChatEventModel.author_person_id, CanonicalPersonModel.id
+                        ),
                         ChatEventModel.direction == "inbound",
                         ChatEventModel.author_kind == "person",
                     )
                     .exists()
                 )
+                name_matches = (
+                    CanonicalPersonModel.display_name == query
+                    if exact
+                    else CanonicalPersonModel.display_name.contains(query, autoescape=True)
+                )
+                alias_matches = (
+                    select(PersonAliasModel.id)
+                    .where(
+                        person_family_condition(
+                            PersonAliasModel.canonical_person_id, CanonicalPersonModel.id
+                        ),
+                        PersonAliasModel.canonical_space_id.is_(None),
+                        PersonAliasModel.alias == query
+                        if exact
+                        else PersonAliasModel.alias.contains(query, autoescape=True),
+                    )
+                    .exists()
+                )
                 candidates = (
                     select(
-                        CanonicalPersonModel.id.label("person_id"),
-                        func.max(IdentityBindingModel.id).label("binding_id"),
-                    )
-                    .join(
-                        IdentityBindingModel,
-                        IdentityBindingModel.person_id == CanonicalPersonModel.id,
+                        CanonicalPersonModel.id,
+                        CanonicalPersonModel.display_name,
                     )
                     .where(
                         CanonicalPersonModel.enabled.is_(True),
+                        CanonicalPersonModel.merged_into_person_id.is_(None),
                         known,
-                        IdentityBindingModel.status == "active",
-                        IdentityBindingModel.display_name == query
-                        if exact
-                        else IdentityBindingModel.display_name.contains(query, autoescape=True),
+                        or_(name_matches, alias_matches) if query else true(),
                     )
-                    .group_by(CanonicalPersonModel.id)
                     .order_by(CanonicalPersonModel.id)
                 )
                 if not exact:
                     candidates = candidates.limit(20)
-                matching = candidates.subquery()
-                rows = (
-                    await session.execute(
-                        select(matching.c.person_id, IdentityBindingModel.display_name)
-                        .join(
-                            IdentityBindingModel, IdentityBindingModel.id == matching.c.binding_id
-                        )
-                        .order_by(matching.c.person_id)
-                    )
-                ).all()
+                rows = (await session.execute(candidates)).all()
             elif kind == "space":
                 statement = (
                     select(CanonicalSpaceModel.id, CanonicalSpaceModel.name)
@@ -347,9 +367,7 @@ class SocialService:
             raw = context.person_refs[args["subject_ref"]]
         elif selectors[0] == "display_name":
             matches = [
-                row
-                for row in await self.contacts(kind, str(args["display_name"]), exact=True)
-                if row["display_name"] == args["display_name"]
+                row for row in await self.contacts(kind, str(args["display_name"]), exact=True)
             ]
             if len(matches) != 1:
                 raise SocialError("target_ambiguous" if matches else "target_not_found")
@@ -357,6 +375,10 @@ class SocialService:
         else:
             raw = str(args["target_id"])
         target = SocialTarget.model_validate({"kind": kind, "id": raw})
+        if kind == "person":
+            async with self.database.sessions() as session:
+                raw = await current_person_id(session, str(target.id))
+            target = target.model_copy(update={"id": UUID(raw)})
         await self.check_target(target)
         return target
 
@@ -371,7 +393,7 @@ class SocialService:
             if target.kind == "person":
                 person = await session.get(CanonicalPersonModel, str(target.id))
                 known_query = select(ChatEventModel.id).where(
-                    ChatEventModel.author_person_id == str(target.id),
+                    person_family_condition(ChatEventModel.author_person_id, str(target.id)),
                     ChatEventModel.direction == "inbound",
                     ChatEventModel.author_kind == "person",
                 )
@@ -426,9 +448,14 @@ class SocialService:
                 event is None or event.canonical_conversation_id != context.conversation_id
             ):
                 raise SocialError("invalid_reply_context")
-        same_entry = source is not None and (
-            source.person_id if target.kind == "person" else source.space_id
-        ) == str(target.id)
+            same_entry = source is not None and (
+                source.space_id == str(target.id)
+                if target.kind == "space"
+                else bool(
+                    source.person_id
+                    and await same_person_id(session, source.person_id, str(target.id))
+                )
+            )
         if (
             source is not None
             and same_entry
@@ -488,10 +515,21 @@ class SocialService:
             or event.ingress_presence_id != route.presence_id
             or event.scope_type != ("private" if target.kind == "person" else "group")
             or event.conversation_kind != ("private" if target.kind == "person" else "space")
-            or (event.person_id if target.kind == "person" else event.space_id) != str(target.id)
+            or (target.kind == "space" and event.space_id != str(target.id))
             or (
                 target.kind == "person"
-                and (event.author_kind != "person" or event.author_person_id != str(target.id))
+                and (
+                    not event.person_id
+                    or not await same_person_id(session, event.person_id, str(target.id))
+                )
+            )
+            or (
+                target.kind == "person"
+                and (
+                    event.author_kind != "person"
+                    or not event.author_person_id
+                    or not await same_person_id(session, event.author_person_id, str(target.id))
+                )
             )
         ):
             raise SocialError("invalid_reply_context")
@@ -530,7 +568,7 @@ class SocialService:
     ) -> IdentityBindingModel:
         async with self.database.sessions() as session:
             query = select(IdentityBindingModel).where(
-                IdentityBindingModel.person_id == str(target.id),
+                person_family_condition(IdentityBindingModel.person_id, str(target.id)),
                 IdentityBindingModel.status == "active",
                 IdentityBindingModel.platform == platform,
             )
@@ -737,15 +775,18 @@ class SocialService:
                 await self._record_work_delivery(prior)
                 return await self._receipt_result(prior, context)
             raise SocialError("invalid_message_arguments")
-        await self._validate_self_context(context)
         if name == "send_message":
             args = self._canonical_send_arguments(args)
-            replay = await self._replay_send(args, context)
+            replay = await self.replay_send(args, context)
             if replay is not None:
                 return replay
+            await self._validate_person_context(context)
             choice = await self._binding_choice(args, context)
             if choice is not None:
                 return choice
+        await self._validate_self_context(context)
+        if name != "send_message":
+            await self._validate_person_context(context)
         if name == "read_conversation_history":
             from qq_ai_bot.social.history import read_history
 
@@ -775,9 +816,17 @@ class SocialService:
                     )
                     bindings = (
                         await session.execute(
-                            select(owner_column, model.id, model.platform)
+                            select(
+                                person_root_id(owner_column) if kind == "person" else owner_column,
+                                model.id,
+                                model.platform,
+                            )
                             .where(
-                                owner_column.in_(selected_ids),
+                                (
+                                    person_root_id(owner_column)
+                                    if kind == "person"
+                                    else owner_column
+                                ).in_(selected_ids),
                                 model.status == "active",
                             )
                             .order_by(model.id)
@@ -798,7 +847,7 @@ class SocialService:
         if name == "recall_own_message":
             return await self._recall(args, context)
         if name == "send_message":
-            replay = await self._replay_send(args, context)
+            replay = await self.replay_send(args, context)
             if replay is not None:
                 return replay
             selected = args.get("target") or {}
@@ -826,12 +875,13 @@ class SocialService:
                     await session.execute(
                         select(
                             CanonicalPersonModel.id,
-                            func.max(ChatEventModel.sender_group_card),
-                            func.max(ChatEventModel.sender_nickname),
+                            CanonicalPersonModel.display_name,
                         )
                         .join(
                             ChatEventModel,
-                            ChatEventModel.author_person_id == CanonicalPersonModel.id,
+                            person_family_condition(
+                                ChatEventModel.author_person_id, CanonicalPersonModel.id
+                            ),
                         )
                         .join(
                             CanonicalConversationModel,
@@ -842,6 +892,7 @@ class SocialService:
                             CanonicalConversationModel.space_id == str(target.id),
                             ChatEventModel.author_kind == "person",
                             CanonicalPersonModel.enabled.is_(True),
+                            CanonicalPersonModel.merged_into_person_id.is_(None),
                         )
                         .group_by(CanonicalPersonModel.id)
                         .order_by(CanonicalPersonModel.id)
@@ -853,7 +904,7 @@ class SocialService:
                 raise SocialError("invalid_cursor")
             return {
                 "items": [
-                    {"person_id": row[0], "display_name": row[1] or row[2] or "成员"}
+                    {"person_id": row[0], "display_name": row[1] or "成员"}
                     for row in rows[offset : offset + limit]
                 ],
                 "coverage": "observed",
@@ -1061,6 +1112,7 @@ class SocialService:
         # Probes and preparation never serialize unrelated social operations.
         # The durable prepared -> executing CAS is the sole dispatch owner.
         async with self.database.immediate_session() as session:
+            await self._validate_person_context(context, session=session)
             if context.origin == "plugin_background" and context.caused_by_event_id is not None:
                 from qq_ai_bot.plugin_host.notification_repository import background_authority_live
 
@@ -1164,6 +1216,8 @@ class SocialService:
         dispatches once and records success, failure or uncertainty.
         """
         dispatched = False
+        confirmed = False
+        reference = None
         try:
             self.router.validate_prepared_connection(route)
             dispatched = True
@@ -1171,7 +1225,6 @@ class SocialService:
             destination = TransportTarget(
                 destination_kind, route.external_target_id, route.thread_id
             )
-            reference = None
             if action == "send":
                 reference = (
                     await operations.send(route.connection.bot, destination, params["message"])
@@ -1180,9 +1233,22 @@ class SocialService:
                 await operations.recall(route.connection.bot, destination, params["reference"])
             else:
                 raise SocialError("unknown_transport_effect")
+            confirmed = True
             appended = None
             async with self.database.immediate_session() as session:
-                if content is not None:
+                from qq_ai_bot.social.confirmed_content import content_sources_retained
+
+                if content is not None and await content_sources_retained(
+                    session,
+                    conversation_id=context.conversation_id,
+                    target=target,
+                    event_ids=(
+                        context.trigger_event_id,
+                        context.caused_by_event_id,
+                        reply_to_event_id,
+                    ),
+                    person_id=getattr(context.actor, "person_id", None),
+                ):
                     scope = (
                         ConversationScope.private(
                             route.sender_account_id,
@@ -1228,11 +1294,11 @@ class SocialService:
                 )
         except BaseException as exc:
             try:
-                confirmed = await self.receipts.get(operation_id)
+                persisted = await self.receipts.get(operation_id)
             except Exception as probe:
                 exc.add_note(f"local receipt lookup failed: {type(probe).__name__}")
             else:
-                if confirmed.status is OperationStatus.SUCCEEDED:
+                if persisted.status is OperationStatus.SUCCEEDED:
                     if not isinstance(exc, Exception):
                         raise
                     return
@@ -1240,10 +1306,13 @@ class SocialService:
                 async with self.database.sessions() as session, session.begin():
                     await self.receipts.finish(
                         operation_id,
-                        status=OperationStatus.UNCERTAIN
+                        status=OperationStatus.SUCCEEDED
+                        if confirmed
+                        else OperationStatus.UNCERTAIN
                         if dispatched and getattr(exc, "uncertain", True)
                         else OperationStatus.FAILED,
-                        error_category=type(exc).__name__[:64],
+                        platform_reference=reference if confirmed else None,
+                        error_category=None if confirmed else type(exc).__name__[:64],
                         session=session,
                     )
             except Exception as secondary:
@@ -1273,7 +1342,7 @@ class SocialService:
         )
         return {"original": args, "chunks": chunks}
 
-    async def _replay_send(
+    async def replay_send(
         self, args: dict[str, Any], context: SocialContext
     ) -> dict[str, Any] | None:
         prior = await self.receipts.find(context.turn_id, context.call_id)

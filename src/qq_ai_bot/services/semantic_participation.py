@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from yuki_participation.controller import Controller, State
+from yuki_participation.controller import Controller, State, original_actor
 from yuki_participation.models import (
     CandidateKind,
     Feedback,
@@ -63,6 +63,7 @@ from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_helpers import keeper_event_clause
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.work_repository import WorkRepository
+from qq_ai_bot.services.participation_identity import actor_identity as prepare_actor_identity
 from qq_ai_bot.services.participation_parameters import (
     DEFAULT_AUTONOMY_PARAMETERS,
     AutonomyParameters,
@@ -242,12 +243,16 @@ class SemanticParticipationService:
 
         return await continuation_for_event(self, event_id, check_budget=check_budget)
 
-    def continuation_current(
-        self, binding: OrdinaryParticipationBinding, *, check_budget: bool = True
+    async def continuation_current(
+        self,
+        binding: OrdinaryParticipationBinding,
+        *,
+        check_budget: bool = True,
+        session: AsyncSession | None = None,
     ) -> bool:
         from qq_ai_bot.services.participation_ordinary import continuation_current
 
-        return continuation_current(self, binding, check_budget=check_budget)
+        return await continuation_current(self, binding, check_budget=check_budget, session=session)
 
     async def on_ordinary_admitted(
         self, binding: OrdinaryParticipationBinding | None, admission: OrdinaryAdmission
@@ -423,7 +428,10 @@ class SemanticParticipationService:
         from qq_ai_bot.services.participation_trace import TracedSemanticObserver
 
         observation = (
-            ObservationSession(controller, TracedSemanticObserver(self._observer, self._traces))
+            ObservationSession(
+                controller,
+                TracedSemanticObserver(self._observer, self._traces, database=self.database),
+            )
             if self._observer
             else None
         )
@@ -495,7 +503,13 @@ class SemanticParticipationService:
             external_enabled=desired.external_enabled,
         )
 
-    def _event(self, row: EventRecord, item: _Session) -> ScopedEvent | None:
+    def _event(
+        self,
+        row: EventRecord,
+        item: _Session,
+        *,
+        actor_identity: Callable[[str], str] = original_actor,
+    ) -> ScopedEvent | None:
         scene, state = item.scene, item.controller.state
         if (
             row.canonical_conversation_id != scene.conversation_id
@@ -534,7 +548,7 @@ class SemanticParticipationService:
         # Rereading an immutable source never rewrites its old unit projection.
         if old is not None and old.ref == ref:
             return old
-        author = row.author_person_id if row.author_is_human() else "SELF"
+        author = cast(str, row.author_person_id) if row.author_is_human() else "SELF"
         target = author if row.author_is_human() else "group"
         thread = f"event:{row.id}"
         quoted = (
@@ -581,7 +595,13 @@ class SemanticParticipationService:
                 ):
                     options.append(option)
         for boundary in state.boundaries.values():
-            if anchor is None and boundary.target in {target, "group"}:
+            if anchor is None and (
+                boundary.target == "group"
+                or (
+                    boundary.target is not None
+                    and actor_identity(boundary.target) == actor_identity(target)
+                )
+            ):
                 option = HostUnitOption(
                     key=f"b{len(options)}",
                     thread=boundary.thread,
@@ -625,6 +645,9 @@ class SemanticParticipationService:
             or version.conversation_id != item.scene.conversation_id
         ):
             return None
+        identity = await prepare_actor_identity(
+            self, item, (row.author_person_id for row in rows if row.author_person_id)
+        )
         if not item.controller.state.human_activity_initialized:
             # Old snapshots only retain detailed events for about ten minutes.
             # Read hourly aggregates from this generation once, outside any write transaction;
@@ -745,14 +768,14 @@ class SemanticParticipationService:
                 and key not in versions
                 and timestamp(row.occurred_at) >= now - 600
             ):
-                self._event(row, item)
+                self._event(row, item, actor_identity=identity)
         basis_valid = await self._sources_current(
             item, tuple(ref for unit in units.values() if unit is not None for ref in unit.basis)
         )
         for row in rows:
             if timestamp(row.occurred_at) < now - 600:
                 continue
-            event = self._event(row, item)
+            event = self._event(row, item, actor_identity=identity)
             if event is None:
                 continue
             fresh = item.controller.observe_committed_event(event)
@@ -778,7 +801,9 @@ class SemanticParticipationService:
                     )
                 )
                 and not (direct and direct.get(row.id))
-                and item.controller.participation_view(event, now).needs_observation
+                and item.controller.participation_view(
+                    event, now, actor_identity=identity
+                ).needs_observation
             ):
                 item.observation.request_observation(event.ref)
         return runtime
@@ -1324,12 +1349,24 @@ class SemanticParticipationService:
         # After observer/external work below, _binding reads current policy again.
         binding = await self._binding(item, runtime=runtime)
         if item.observation is not None and scene.enabled and binding.external_enabled:
+            identity = await prepare_actor_identity(
+                self,
+                item,
+                (
+                    event.author
+                    for event in item.controller.state.events.values()
+                    if event.kind == "human"
+                ),
+            )
             await item.observation.evaluate_due(
                 time.time(),
                 active=any(
                     not unit.closed and unit.engage != "quiet"
-                    for unit in item.controller.participating_units(time.time())
+                    for unit in item.controller.participating_units(
+                        time.time(), actor_identity=identity
+                    )
                 ),
+                actor_identity=identity,
             )
             # A real source may change while Jev is in flight. Stops have no
             # remaining candidate, so invalidate their original dependencies
@@ -1350,6 +1387,12 @@ class SemanticParticipationService:
             if allowed
         )
         from qq_ai_bot.services.participation_ordinary import invitation_unit, promote_invitations
+
+        identity = await prepare_actor_identity(
+            self,
+            item,
+            (candidate.event.author for candidate in item.controller.state.candidates.values()),
+        )
 
         if current_scene.enabled and binding.external_enabled and policy.auto_reply_enabled:
             await promote_invitations(self, item)
@@ -1387,7 +1430,7 @@ class SemanticParticipationService:
                     await self._admit(item, binding, pending)
             elif pending.kind == CandidateKind.CONVERSATION and any(
                 (event := item.controller.state.events.get(ref.event_id)) is not None
-                and invitation_unit(item, event) is not None
+                and invitation_unit(item, event, actor_identity=identity) is not None
                 for ref in pending.sources
             ):
                 item.controller.discard_unaccepted_proposal(pending.proposal_id)

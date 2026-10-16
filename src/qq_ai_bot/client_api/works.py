@@ -17,6 +17,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
 )
 from qq_ai_bot.gateway.providers.app.ingress import AppGateway
 from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
+from qq_ai_bot.identity.person_identity import person_family_condition, same_person_id
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_budget_schema import budgets
 from qq_ai_bot.runtime.work_management import WorkManagementError, manage_work
@@ -29,10 +30,12 @@ from qq_ai_bot.social.db_models import SocialOperationModel
 
 def work_access(person_id: str) -> Any:
     return or_(
-        func.json_extract(work.c.source_json, "$.actor_person_id") == person_id,
+        person_family_condition(
+            func.json_extract(work.c.source_json, "$.actor_person_id"), person_id
+        ),
         and_(
             CanonicalConversationModel.kind == "private",
-            CanonicalConversationModel.person_id == person_id,
+            person_family_condition(CanonicalConversationModel.person_id, person_id),
         ),
     )
 
@@ -82,7 +85,8 @@ async def input_result(
     if (
         event is None
         or mailbox is None
-        or event.author_person_id != principal.person_id
+        or not event.author_person_id
+        or not await same_person_id(session, event.author_person_id, principal.person_id)
         or event.canonical_conversation_id != principal.conversation_id
         or event.origin != "work_input"
         or event.direction != "inbound"
@@ -103,7 +107,7 @@ async def input_result(
         or payload.get("origin") != "client_input"
         or payload.get("source_conversation_id") != event.canonical_conversation_id
         or device is None
-        or device.person_id != principal.person_id
+        or not await same_person_id(session, device.person_id, principal.person_id)
     ):
         raise ClientError("not_found")
 
@@ -238,7 +242,9 @@ class ClientWorks:
     async def get(self, principal: ClientPrincipal, identity: str) -> dict[str, Any]:
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
-            principal = await self.identity.require_device(session, principal.device_id)
+            principal = await self.identity.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
             return await self._public(
                 session, await personal_work(session, principal.person_id, identity)
             )
@@ -268,6 +274,7 @@ class ClientWorks:
             resource_id=resource,
             result=result,
             problem_code=problem,
+            request_person_id=principal.request_person_id,
         )
 
     async def _replay_input(
@@ -278,7 +285,9 @@ class ClientWorks:
         request_id: str,
         bound: str,
     ) -> dict[str, Any] | None:
-        previous = await self.identity.replay(session, principal.device_id, request_id, bound)
+        previous = await self.identity.replay(
+            session, principal.device_id, request_id, bound, principal=principal
+        )
         if previous is not None:
             await input_result(session, principal, identity, previous, request_id, bound)
         return previous
@@ -295,9 +304,12 @@ class ClientWorks:
             lease = None
             try:
                 async with self.database.sessions() as reader:
-                    principal = await self.identity.require_device(reader, principal.device_id)
+                    principal = await self.identity.require_device(
+                        reader, principal.device_id, binding_id=principal.binding_id
+                    )
                     row = await personal_work(reader, principal.person_id, identity)
-                    if json.loads(row["source_json"]).get("actor_person_id") != principal.person_id:
+                    actor = json.loads(row["source_json"]).get("actor_person_id")
+                    if not actor or not await same_person_id(reader, actor, principal.person_id):
                         raise ClientError("not_found")
                     previous = await self._replay_input(
                         reader, principal, identity, request_id, bound
@@ -329,12 +341,12 @@ class ClientWorks:
                     raise ClientError("unauthenticated")
                 failure = None
                 async with self.database.immediate_session() as writer:
-                    principal = await self.identity.require_device(writer, principal.device_id)
+                    principal = await self.identity.require_device(
+                        writer, principal.device_id, binding_id=principal.binding_id
+                    )
                     current = await personal_work(writer, principal.person_id, identity)
-                    if (
-                        json.loads(current["source_json"]).get("actor_person_id")
-                        != principal.person_id
-                    ):
+                    actor = json.loads(current["source_json"]).get("actor_person_id")
+                    if not actor or not await same_person_id(writer, actor, principal.person_id):
                         raise ClientError("not_found")
                     previous = await self._replay_input(
                         writer, principal, identity, request_id, bound
@@ -412,9 +424,13 @@ class ClientWorks:
         bound = fingerprint(operation, identity, {"expected_revision": revision})
         failure = None
         async with self.database.immediate_session() as writer:
-            principal = await self.identity.require_device(writer, principal.device_id)
+            principal = await self.identity.require_device(
+                writer, principal.device_id, binding_id=principal.binding_id
+            )
             row = await personal_work(writer, principal.person_id, identity)
-            previous = await self.identity.replay(writer, principal.device_id, request_id, bound)
+            previous = await self.identity.replay(
+                writer, principal.device_id, request_id, bound, principal=principal
+            )
             if previous is not None:
                 return previous
             try:

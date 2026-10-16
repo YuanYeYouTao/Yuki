@@ -28,6 +28,7 @@ from qq_ai_bot.emoji.models import (
     StoredEmojiMedia,
 )
 from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.person_identity import person_family_condition
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.services.canonical_owners import (
@@ -523,7 +524,9 @@ class EmojiRepository:
                 else:
                     recent_scope = recent_scope.where(
                         EmojiUsageEventModel.canonical_space_id.is_(None),
-                        EmojiUsageEventModel.canonical_actor_person_id == person_id,
+                        person_family_condition(
+                            EmojiUsageEventModel.canonical_actor_person_id, person_id
+                        ),
                     )
             statement = (
                 select(EmojiAssetModel, func.max(enabled_scope.weight))

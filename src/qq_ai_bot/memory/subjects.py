@@ -8,7 +8,8 @@ from sqlalchemy import select
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel
+from qq_ai_bot.identity.db_models import PresenceModel
+from qq_ai_bot.identity.person_identity import current_person_ids, person_family_ids
 from qq_ai_bot.memory.enums import MemoryScopeType, SelfMemoryVisibility
 from qq_ai_bot.memory.extraction import AvailableSubject, MemoryClaim
 from qq_ai_bot.persistence.database import Database
@@ -39,6 +40,7 @@ class SubjectResolutionContext:
     resolved_subjects: tuple[tuple[str, ResolvedSubject], ...]
     platform: str | None = None
     space_id: str | None = None
+    speaker_person_ids: tuple[str, ...] = ()
 
     def resolve(self, subject_ref: str) -> ResolvedSubject | None:
         return next((value for key, value in self.resolved_subjects if key == subject_ref), None)
@@ -158,7 +160,11 @@ class SubjectResolver:
                         ),
                     )
                 )
-        return SubjectResolutionContext(tuple(available), tuple(resolved))
+        return SubjectResolutionContext(
+            tuple(available),
+            tuple(resolved),
+            speaker_person_ids=(event.author_person_id,) if event.author_person_id else (),
+        )
 
     @staticmethod
     def available(event: EventRecord) -> tuple[AvailableSubject, ...]:
@@ -212,14 +218,15 @@ class SubjectContextBuilder:
                     return event.author_person_id
                 if account is None or platform is None:
                     return None
-                value = await session.scalar(
-                    select(IdentityBindingModel.person_id).where(
-                        IdentityBindingModel.platform == platform,
-                        IdentityBindingModel.external_account_id == account,
-                        IdentityBindingModel.status == "active",
-                    )
+                from qq_ai_bot.identity.ownership_interval import historical_person_ids
+
+                observed_at = await session.scalar(
+                    select(ChatEventModel.observed_at).where(ChatEventModel.id == event.id)
                 )
-                return str(value) if value is not None else None
+                if observed_at is None:
+                    return None
+                people = await historical_person_ids(session, platform, (account,), observed_at)
+                return people.get(account)
 
             return replace(
                 target,
@@ -251,25 +258,28 @@ class SubjectContextBuilder:
             and not event.mentioned_person_ids
             and event.mentioned_user_ids
             and event.ingress_presence_id
+            and not any(
+                part.get("type") == "yuki_context"
+                and isinstance(data := part.get("data"), dict)
+                and "mentioned_person_ids" in data
+                for part in event.segments
+            )
         ):
             async with self._database.sessions() as session:
                 presence = await session.get(PresenceModel, event.ingress_presence_id)
                 if presence is not None:
-                    persons = {
-                        account: person_id
-                        for account, person_id in await session.execute(
-                            select(
-                                IdentityBindingModel.external_account_id,
-                                IdentityBindingModel.person_id,
-                            ).where(
-                                IdentityBindingModel.platform == presence.platform,
-                                IdentityBindingModel.external_account_id.in_(
-                                    event.mentioned_user_ids
-                                ),
-                                IdentityBindingModel.status == "active",
-                            )
+                    from qq_ai_bot.identity.ownership_interval import historical_person_ids
+
+                    observed_at = await session.scalar(
+                        select(ChatEventModel.observed_at).where(ChatEventModel.id == event.id)
+                    )
+                    persons = (
+                        await historical_person_ids(
+                            session, presence.platform, event.mentioned_user_ids, observed_at
                         )
-                    }
+                        if observed_at is not None
+                        else {}
+                    )
                     event = replace(
                         event,
                         mentioned_person_ids=tuple(
@@ -281,6 +291,14 @@ class SubjectContextBuilder:
                         ),
                     )
         context = SubjectResolver.context(event)
+        if self._database is not None and event.author_person_id:
+            async with self._database.sessions() as session:
+                roots = await current_person_ids(session, (event.author_person_id,))
+                if event.author_person_id in roots:
+                    context = replace(
+                        context,
+                        speaker_person_ids=await person_family_ids(session, event.author_person_id),
+                    )
         if self._database is not None and event.reply_to_event_id is not None:
             async with self._database.sessions() as session:
                 reply = await session.get(ChatEventModel, event.reply_to_event_id)

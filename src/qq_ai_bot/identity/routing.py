@@ -33,6 +33,12 @@ from qq_ai_bot.identity.db_models import (
     PresenceModel,
     SpaceBindingModel,
 )
+from qq_ai_bot.identity.person_identity import (
+    current_person_id,
+    person_enabled_condition,
+    person_family_condition,
+    same_person_id,
+)
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 
@@ -179,12 +185,11 @@ class PresenceRouter:
                 binding is None
                 or binding.status != "active"
                 or binding.platform != prepared.platform
-                or (
-                    binding.person_id
+                or not (
+                    await same_person_id(session, binding.person_id, target_id)
                     if isinstance(binding, IdentityBindingModel)
-                    else binding.space_id
+                    else binding.space_id == target_id
                 )
-                != target_id
                 or (
                     binding.external_account_id
                     if isinstance(binding, IdentityBindingModel)
@@ -193,9 +198,15 @@ class PresenceRouter:
                 != prepared.external_target_id
             ):
                 raise RouteSendError("route_changed")
+        if target_kind == "person" and prepared.binding_id:
+            assert isinstance(binding, IdentityBindingModel)
+            if not await session.scalar(select(person_enabled_condition(binding.person_id))):
+                raise RouteSendError("route_changed")
         if prepared.kind in {"person", "space"}:
             route = (
-                await session.get(PersonActiveRouteModel, target_id)
+                await session.get(
+                    PersonActiveRouteModel, await current_person_id(session, target_id)
+                )
                 if target_kind == "person"
                 else await session.get(SpaceActiveRouteModel, target_id)
             )
@@ -228,8 +239,12 @@ class PresenceRouter:
             if (
                 conversation is None
                 or conversation.thread_id != prepared.thread_id
-                or (conversation.person_id if target_kind == "person" else conversation.space_id)
-                != target_id
+                or not (
+                    conversation.person_id is not None
+                    and await same_person_id(session, conversation.person_id, target_id)
+                    if target_kind == "person"
+                    else conversation.space_id == target_id
+                )
                 or (
                     target_kind == "person"
                     and (
@@ -490,6 +505,7 @@ class PresenceRouter:
 
     async def resolve_send_for_person(self, person_id: str) -> ResolvedSend:
         async with self._database.sessions() as session:
+            person_id = await current_person_id(session, person_id)
             route = await session.get(PersonActiveRouteModel, person_id)
         if route is None:
             await self.cas_takeover_person(person_id)
@@ -501,9 +517,14 @@ class PresenceRouter:
                 raise RouteSendError("paused")
             binding = await session.get(IdentityBindingModel, route.identity_binding_id)
             presence = await session.get(PresenceModel, route.presence_id)
-            if binding is None or presence is None:
+            if binding is None or presence is None or binding.status != "active":
                 raise RouteSendError("none")
-            if binding.person_id != person_id or binding.platform != presence.platform:
+            if not await session.scalar(select(person_enabled_condition(binding.person_id))):
+                raise RouteSendError("paused")
+            if (
+                not await same_person_id(session, binding.person_id, person_id)
+                or binding.platform != presence.platform
+            ):
                 raise RouteSendError("none")
             if not presence.enabled:
                 raise RouteSendError("paused")
@@ -597,6 +618,8 @@ class PresenceRouter:
         *,
         expected_generation: int | None = None,
     ) -> str:
+        async with self._database.sessions() as session:
+            person_id = await current_person_id(session, person_id)
         candidates = await self._person_candidates(person_id)
         return await self._apply_person_takeover(
             person_id,
@@ -715,7 +738,10 @@ class PresenceRouter:
         async with self._database.sessions() as session:
             bindings = list(
                 await session.scalars(
-                    select(IdentityBindingModel).where(IdentityBindingModel.person_id == person_id)
+                    select(IdentityBindingModel).where(
+                        person_family_condition(IdentityBindingModel.person_id, person_id),
+                        person_enabled_condition(IdentityBindingModel.person_id),
+                    )
                 )
             )
             presences = list(await session.scalars(select(PresenceModel)))

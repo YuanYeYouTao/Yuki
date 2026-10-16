@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from sqlalchemy import case, or_, select
+from sqlalchemy import and_, case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only
 
+from qq_ai_bot.identity.person_identity import same_person_condition, same_person_id
 from qq_ai_bot.memory.enums import (
     MemoryAuthority,
     MemoryConflictState,
@@ -124,7 +125,7 @@ class MemoryFactService:
         actor_person_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> bool:
-        """Check Person ownership by Binding, never by the provenance QQ column."""
+        """Check current human ownership while preserving the original fact owner."""
 
         if session is None:
             async with self._repository.transaction() as owned:
@@ -142,7 +143,7 @@ class MemoryFactService:
         return bool(
             actor_person_id
             and fact.canonical_subject_person_id
-            and actor_person_id == fact.canonical_subject_person_id
+            and await same_person_id(session, actor_person_id, fact.canonical_subject_person_id)
         )
 
     @staticmethod
@@ -183,6 +184,38 @@ class MemoryFactService:
             owners.visibility_person_id,
             owners.visibility_space_id,
         )
+
+    async def same_targets(
+        self, targets: tuple[Any, ...], *, session: AsyncSession | None = None
+    ) -> bool:
+        """Compare current ownership without changing original target/proof encodings."""
+        if session is None:
+            async with self._repository.transaction() as reader:
+                return await self.same_targets(targets, session=reader)
+        if len(targets) < 2:
+            return True
+        first = targets[0]
+        first_owner = await self.requested_target_owners(first, session=session)
+        conditions = []
+        for target in targets[1:]:
+            owner = await self.requested_target_owners(target, session=session)
+            if (
+                target.scope_type != first.scope_type
+                or target.visibility_type != first.visibility_type
+                or owner.subject_space_id != first_owner.subject_space_id
+                or owner.visibility_space_id != first_owner.visibility_space_id
+            ):
+                return False
+            for left, right in (
+                (first_owner.subject_person_id, owner.subject_person_id),
+                (first_owner.visibility_person_id, owner.visibility_person_id),
+            ):
+                if left is None or right is None:
+                    if left != right:
+                        return False
+                elif left != right:
+                    conditions.append(same_person_condition(left, right))
+        return not conditions or bool(await session.scalar(select(and_(*conditions))))
 
     async def remember(
         self,
@@ -400,21 +433,7 @@ class MemoryFactService:
         by_id = {candidate.fact.id: candidate.fact for candidate in candidates}
         if plan.existing_fact_id is not None and plan.existing_fact_id not in by_id:
             raise ValueError("memory resolution plan references an unbounded candidate")
-        claim_owners = await self.requested_target_owners(claim.fact, session=session)
-        target = self.target_signature(
-            scope_type=claim.fact.scope_type,
-            visibility_type=claim.fact.visibility_type,
-            owners=claim_owners,
-        )
-        if any(
-            self.target_signature(
-                scope_type=row.scope_type,
-                visibility_type=row.visibility_type,
-                owners=self.persisted_target_owners(row),
-            )
-            != target
-            for row in by_id.values()
-        ):
+        if not await self.same_targets((claim.fact, *by_id.values()), session=session):
             raise ValueError("memory resolution plan crosses identity targets")
 
     async def list_person(
@@ -1142,17 +1161,7 @@ class MemoryFactService:
             return None
         if source.status not in {MemoryStatus.ACTIVE, MemoryStatus.CONTESTED}:
             raise ValueError("memory merge source must be active or contested")
-        source_target = self.target_signature(
-            scope_type=source.scope_type,
-            visibility_type=source.visibility_type,
-            owners=self.persisted_target_owners(source),
-        )
-        target_target = self.target_signature(
-            scope_type=target.scope_type,
-            visibility_type=target.visibility_type,
-            owners=self.persisted_target_owners(target),
-        )
-        if source_target != target_target:
+        if not await self.same_targets((source, target), session=session):
             raise ValueError("memory merge cannot cross identity targets")
         if target.status is not MemoryStatus.ACTIVE:
             raise ValueError("memory merge target must be active")
@@ -1212,13 +1221,6 @@ class MemoryFactService:
                 MemoryStatus.CONTESTED,
             }:
                 raise ValueError("preferred memory fact is not resolvable")
-            target = (
-                *self.target_signature(
-                    scope_type=preferred.scope_type,
-                    visibility_type=preferred.visibility_type,
-                    owners=self.persisted_target_owners(preferred),
-                ),
-            )
             alternatives: list[MemoryFact] = []
             for fact_id in unique_ids:
                 fact = await self._repository.get_fact(fact_id, session=session)
@@ -1226,15 +1228,9 @@ class MemoryFactService:
                     raise ValueError("contested memory fact does not exist")
                 if fact.status not in {MemoryStatus.ACTIVE, MemoryStatus.CONTESTED}:
                     raise ValueError("conflict alternative is not active or contested")
-                if (
-                    *self.target_signature(
-                        scope_type=fact.scope_type,
-                        visibility_type=fact.visibility_type,
-                        owners=self.persisted_target_owners(fact),
-                    ),
-                ) != target:
-                    raise ValueError("memory conflict resolution cannot cross identity targets")
                 alternatives.append(fact)
+            if not await self.same_targets((preferred, *alternatives), session=session):
+                raise ValueError("memory conflict resolution cannot cross identity targets")
             changed = 0
             for fact in alternatives:
                 if fact.status is MemoryStatus.INVALIDATED:

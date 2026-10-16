@@ -5,7 +5,6 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select, update
-from tests.unit.test_client_identity import code_for
 from tests.unit.test_dream_owner_projection import _scene
 from tests.unit.test_memory_rebuild import _admin, _service
 from tests.unit.test_rebuild_receipt_finalization import _seed
@@ -35,14 +34,9 @@ from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 async def transfer_qq(database):
-    api, _, issued = await code_for(database, "1002")
-    await api.claim_account(
-        issued["code"],
-        platform="qq",
-        account="1001",
-        display_name="new QQ owner",
-        message_id="memory-owner-transfer",
-    )
+    from tests.support.memory_identity import transfer_account
+
+    await transfer_account(database, "1001")
 
 
 async def test_qq_forget_preserves_same_number_telegram_rebuild_proposal(database):

@@ -1077,6 +1077,7 @@ class MemoryAdminService:
         *,
         person_id: str | None = None,
     ) -> str:
+        from qq_ai_bot.identity.person_identity import same_person_id
         from qq_ai_bot.services.canonical_owners import require_live_person
 
         actor_person_id = await self._actor_person_id(actor)
@@ -1084,7 +1085,10 @@ class MemoryAdminService:
             target_person_id = await require_live_person(
                 session, person_id or (actor_person_id if target == actor.user_id else None)
             )
-        if _mutation_is_superuser(actor, self._settings) or actor_person_id == target_person_id:
+            own = actor_person_id is not None and await same_person_id(
+                session, actor_person_id, target_person_id
+            )
+        if _mutation_is_superuser(actor, self._settings) or own:
             return target_person_id
         raise PermissionError("只有当前真实超级管理员可以执行该操作")
 

@@ -160,7 +160,12 @@ class MemoryClaimValidator:
             raise _MemoryClaimRejected("incomplete_claim_fields")
         kind = claim.kind
         subject_is_speaker = (
-            resolved.canonical_subject_person_id == event.author_person_id
+            resolved.canonical_subject_person_id
+            in (
+                subject_context.speaker_person_ids
+                if subject_context is not None
+                else ((event.author_person_id,) if event.author_person_id else ())
+            )
             if resolved.canonical_subject_person_id is not None
             else resolved.subject_user_id == event.sender_user_id
         )

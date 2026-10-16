@@ -70,14 +70,14 @@ class PluginConfigurationService:
 
     async def _read(
         self, session: AsyncSession, plugin_id: str, scope_type: str, owner_id: str | None
-    ) -> tuple[int, list[PluginConfigValueModel], PluginInstallationModel]:
+    ) -> tuple[int, list[PluginConfigValueModel], PluginInstallationModel, str | None]:
         self._scope(scope_type, owner_id)
         installation = await session.get(PluginInstallationModel, plugin_id)
         if installation is None:
             raise PluginConfigurationError("not_found")
         try:
             if scope_type == "user":
-                await require_live_person(session, owner_id)
+                owner_id = await require_live_person(session, owner_id)
             elif scope_type == "group":
                 await require_live_space(session, owner_id)
             stmt = select(PluginConfigValueModel).where(
@@ -104,6 +104,7 @@ class PluginConfigurationService:
             self._revision(plugin_id, scope_type, owner_id, installation, rows),
             rows,
             installation,
+            owner_id,
         )
 
     @staticmethod
@@ -147,7 +148,7 @@ class PluginConfigurationService:
         schema = self._require_schema(plugin_id)
         async with self._database.sessions() as session:
             await session.execute(text("BEGIN"))
-            revision, rows, _ = await self._read(session, plugin_id, scope_type, owner_id)
+            revision, rows, _, owner_id = await self._read(session, plugin_id, scope_type, owner_id)
             try:
                 raw = {
                     row.key: json.loads(row.value_json)
@@ -197,7 +198,7 @@ class PluginConfigurationService:
             raise PluginConfigurationError("validation_error") from exc
         async with self._database.sessions() as session, session.begin():
             await session.execute(text("BEGIN IMMEDIATE"))
-            revision, rows, installation = await self._read(
+            revision, rows, installation, owner_id = await self._read(
                 session, plugin_id, scope_type, owner_id
             )
             if revision != expected_revision or self._schema(plugin_id) is not schema:

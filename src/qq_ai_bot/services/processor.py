@@ -234,8 +234,12 @@ class OrdinaryParticipationService(Protocol):
         tuple[OrdinaryParticipationBinding, Literal["semantic_invitation", "continuation"]] | None
     ): ...
 
-    def continuation_current(
-        self, binding: OrdinaryParticipationBinding, *, check_budget: bool = True
+    async def continuation_current(
+        self,
+        binding: OrdinaryParticipationBinding,
+        *,
+        check_budget: bool = True,
+        session: AsyncSession | None = None,
     ) -> bool: ...
 
     async def on_ordinary_admitted(
@@ -1245,7 +1249,9 @@ class MessageProcessor:
                 or (
                     prepared.admission.binding is not None
                     and self._participation is not None
-                    and self._participation.continuation_current(prepared.admission.binding)
+                    and await self._participation.continuation_current(
+                        prepared.admission.binding, session=session
+                    )
                 )
             )
         )

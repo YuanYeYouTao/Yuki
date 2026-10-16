@@ -11,6 +11,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.identity.person_identity import same_person_condition
 from qq_ai_bot.memory.enums import MemoryScopeType
 from qq_ai_bot.memory.extraction import MemoryClaim
 from qq_ai_bot.memory.job_claims import fence_memory_job_claim
@@ -198,7 +199,7 @@ class MemoryClaimCandidateRepository:
                     MemoryClaimCandidateEvidenceModel.candidate_id == MemoryClaimCandidateModel.id,
                     CanonicalConversationModel.space_id == space_id
                     if space_id is not None
-                    else CanonicalConversationModel.person_id == person_id,
+                    else same_person_condition(CanonicalConversationModel.person_id, person_id),
                 )
                 .exists()
             )

@@ -6,11 +6,11 @@ import math
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Select, and_, case, func, literal_column, or_, select, text, tuple_
+from sqlalchemy import Select, case, func, literal_column, or_, select, text, tuple_
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
-from qq_ai_bot.identity.db_models import IdentityBindingModel
+from qq_ai_bot.identity.db_models import CanonicalPersonModel
+from qq_ai_bot.identity.person_identity import person_root_id, same_person_condition
 from qq_ai_bot.runtime.subagent_schema import children
 from qq_ai_bot.runtime.work_query_schema import (
     SOURCE_SCOPE_FIELDS,
@@ -58,10 +58,10 @@ class WorkQueries:
                 work.c.conversation_id,
                 work.c.generation,
                 creator.label("creator_user_id"),
-                person.label("creator_person_id"),
+                person_root_id(person).label("creator_person_id"),
                 case(
                     (principal == "self", "Yuki / SELF"),
-                    else_=IdentityBindingModel.display_name,
+                    else_=CanonicalPersonModel.display_name,
                 ).label("creator_display_name"),
                 case(
                     (principal == "self", "self"),
@@ -72,13 +72,8 @@ class WorkQueries:
             )
             .select_from(work)
             .outerjoin(
-                IdentityBindingModel,
-                and_(
-                    IdentityBindingModel.person_id == person,
-                    IdentityBindingModel.platform == IDENTITY_PLATFORM,
-                    IdentityBindingModel.external_account_id == creator,
-                    IdentityBindingModel.status != "transferred",
-                ),
+                CanonicalPersonModel,
+                CanonicalPersonModel.id == person_root_id(person),
             )
         )
         # Directory metadata uses the same read scope for Main and children.
@@ -93,7 +88,12 @@ class WorkQueries:
                     CanonicalConversationModel.generation == lease.generation,
                 )
                 .exists(),
-                *(source_scope_column(key).is_(source.get(key)) for key in SOURCE_SCOPE_FIELDS),
+                *(
+                    same_person_condition(source_scope_column(key), source[key])
+                    if key == "actor_person_id" and source.get(key)
+                    else source_scope_column(key).is_(source.get(key))
+                    for key in SOURCE_SCOPE_FIELDS
+                ),
             )
         if local and lease.work_id:
             query = query.where(work.c.id.in_(descendants(lease.work_id, include_self=True)))

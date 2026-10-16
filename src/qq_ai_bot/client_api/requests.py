@@ -3,7 +3,7 @@
 import json
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.client_api.db_models import ClientDeviceModel
@@ -14,6 +14,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
     ControlCommandReceiptModel,
 )
 from qq_ai_bot.identity.db_models import PresenceModel
+from qq_ai_bot.identity.person_identity import person_family_condition, same_person_id
 from qq_ai_bot.persistence.models import ChatEventModel
 
 
@@ -24,11 +25,17 @@ async def personal_command(
         ControlCommandReceiptModel | None,
         await session.scalar(
             select(ControlCommandReceiptModel)
-            .join(
+            .outerjoin(
                 ClientDeviceModel, ClientDeviceModel.id == ControlCommandReceiptModel.principal_id
             )
             .where(
-                ClientDeviceModel.person_id == person_id,
+                or_(
+                    ControlCommandReceiptModel.request_person_id == person_id,
+                    and_(
+                        ControlCommandReceiptModel.request_person_id.is_(None),
+                        ClientDeviceModel.person_id == person_id,
+                    ),
+                ),
                 ControlCommandReceiptModel.request_id == request_id,
             )
         ),
@@ -64,7 +71,8 @@ class ClientRequests:
         )
         if (
             event is None
-            or event.author_person_id != principal.person_id
+            or not event.author_person_id
+            or not await same_person_id(session, event.author_person_id, principal.person_id)
             or event.canonical_conversation_id != principal.conversation_id
             or event.direction != "inbound"
             or event.suppression_status != "keeper"
@@ -74,8 +82,10 @@ class ClientRequests:
 
     async def get(self, principal: ClientPrincipal, request_id: str) -> dict[str, Any]:
         async with self.identity.database.sessions() as session:
-            principal = await self.identity.require_device(session, principal.device_id)
-            command = await personal_command(session, principal.person_id, request_id)
+            principal = await self.identity.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
+            command = await personal_command(session, principal.request_person_id, request_id)
             if command is not None:
                 result = (
                     json.loads(command.effective_state_json)
@@ -141,7 +151,9 @@ class ClientRequests:
                         ChatEventModel.direction == "outbound",
                         ChatEventModel.suppression_status == "keeper",
                         CanonicalConversationModel.kind == "private",
-                        CanonicalConversationModel.person_id == principal.person_id,
+                        person_family_condition(
+                            CanonicalConversationModel.person_id, principal.person_id
+                        ),
                     )
                     .order_by(ChatEventModel.id)
                 )

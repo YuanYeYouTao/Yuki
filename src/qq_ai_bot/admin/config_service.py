@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import delete, or_, select, text
+from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.audit import AdminAuditService, AuditSubject, add_audit_event, event_from_model
@@ -46,8 +46,14 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.person_identity import (
+    current_person_id,
+    person_family_condition,
+    person_root_id,
+    same_person_id,
+)
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
+from qq_ai_bot.persistence.models import AdminOperationEventModel, RuntimeConfigOverrideModel
 from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.services.canonical_owners import (
     resolve_live_person_id,
@@ -118,9 +124,12 @@ class RuntimeConfigRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    async def list_memory_scope(
-        self, scope: MemoryConfigScope
-    ) -> tuple[RuntimeConfigOverrideRecord, ...]:
+    async def read_memory_snapshot(
+        self,
+        scope: MemoryConfigScope,
+        *,
+        session: AsyncSession | None = None,
+    ) -> tuple[tuple[RuntimeConfigOverrideRecord, ...], str | None, str | None]:
         """Read existing canonical owners, including disabled historical owners.
 
         This is configuration lookup, not task admission or mutation authorization.
@@ -128,8 +137,11 @@ class RuntimeConfigRepository:
         conditions: list[Any] = [
             RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GLOBAL.value
         ]
-        async with self._database.sessions() as session:
-            await session.execute(text("BEGIN"))
+        owned = session is None
+        async with optional_session(self._database, session, write=False) as session:
+            if owned:
+                await session.execute(text("BEGIN"))
+            person_id = None
             for owner_id, model, kind, column in (
                 (
                     scope.person_id,
@@ -148,8 +160,16 @@ class RuntimeConfigRepository:
                     continue
                 if await session.get(model, owner_id) is None:
                     raise CanonicalIdentityError("missing_or_invalid_canonical_config_owner")
+                resolved_owner = (
+                    await current_person_id(session, owner_id)
+                    if kind is ConfigScopeType.USER
+                    else owner_id
+                )
+                if kind is ConfigScopeType.USER:
+                    person_id = resolved_owner
                 conditions.append(
-                    (RuntimeConfigOverrideModel.scope_type == kind.value) & (column == owner_id)
+                    (RuntimeConfigOverrideModel.scope_type == kind.value)
+                    & (column == resolved_owner)
                 )
             rows = (
                 await session.scalars(
@@ -158,7 +178,7 @@ class RuntimeConfigRepository:
                     .order_by(RuntimeConfigOverrideModel.id)
                 )
             ).all()
-            return tuple(_record(row) for row in rows)
+            return tuple(_record(row) for row in rows), person_id, scope.space_id
 
     async def list_all(
         self,
@@ -167,7 +187,13 @@ class RuntimeConfigRepository:
         session: AsyncSession | None = None,
         scope: MemoryConfigScope | None = None,
     ) -> tuple[RuntimeConfigOverrideRecord, ...]:
-        statement = select(RuntimeConfigOverrideModel)
+        statement = select(RuntimeConfigOverrideModel).where(
+            RuntimeConfigOverrideModel.canonical_person_id.is_(None)
+            | (
+                RuntimeConfigOverrideModel.canonical_person_id
+                == person_root_id(RuntimeConfigOverrideModel.canonical_person_id)
+            )
+        )
         if keys is not None:
             statement = statement.where(RuntimeConfigOverrideModel.config_key.in_(keys))
         if scope is not None:
@@ -186,7 +212,15 @@ class RuntimeConfigRepository:
             ):
                 if owner_id is not None:
                     conditions.append(
-                        (RuntimeConfigOverrideModel.scope_type == kind.value) & (column == owner_id)
+                        (RuntimeConfigOverrideModel.scope_type == kind.value)
+                        & (
+                            column
+                            == (
+                                person_root_id(owner_id)
+                                if kind is ConfigScopeType.USER
+                                else owner_id
+                            )
+                        )
                     )
             statement = statement.where(or_(*conditions))
         async with optional_session(self._database, session, write=False) as active:
@@ -472,6 +506,7 @@ def _override_state(
         "scope_type": record.scope_type.value,
         "scope_id": record.scope_id if public_scope_id is None else public_scope_id,
         "override_exists": True,
+        "row_id": record.id,
         "value": record.value,
         "version": record.version,
     }
@@ -607,16 +642,9 @@ class RuntimeConfigService:
         """Inspect canonical owners without transport identity lookup or writes."""
         scope = scope if scope is not None else MemoryConfigScope()
         specs = tuple(self.registry.get(key) for key in keys)
-        records = await self._repository.list_all(
-            keys=tuple(spec.key for spec in specs), scope=scope, session=session
+        records, person_id, space_id = await self._repository.read_memory_snapshot(
+            scope, session=session
         )
-        async with optional_session(self._database, session, write=False) as active:
-            for owner_id, model in (
-                (scope.person_id, CanonicalPersonModel),
-                (scope.space_id, CanonicalSpaceModel),
-            ):
-                if owner_id is not None and await active.get(model, owner_id) is None:
-                    raise CanonicalIdentityError("canonical_owner_missing")
         inspections: list[ConfigInspection] = []
         for spec in specs:
             if spec.sensitive or spec.apply_mode is ConfigApplyMode.SECRET:
@@ -636,16 +664,16 @@ class RuntimeConfigService:
                 records,
                 user_id=None,
                 group_id=None,
-                person_id=scope.person_id,
-                space_id=scope.space_id,
+                person_id=person_id,
+                space_id=space_id,
             )
             saved = self._resolve(
                 spec,
                 records,
                 user_id=None,
                 group_id=None,
-                person_id=scope.person_id,
-                space_id=scope.space_id,
+                person_id=person_id,
+                space_id=space_id,
                 honor_restart_activation=False,
             )
             selected = (
@@ -656,8 +684,8 @@ class RuntimeConfigService:
                         if row.config_key == spec.key and self._valid_stored_record(row)
                     ],
                     scope=saved.scope_type,
-                    person_id=scope.person_id,
-                    space_id=scope.space_id,
+                    person_id=person_id,
+                    space_id=space_id,
                 )
                 if saved.scope_type is not None
                 else None
@@ -997,6 +1025,20 @@ class RuntimeConfigService:
         expected_version: int | None = None,
         session: AsyncSession | None = None,
     ) -> ConfigChangeResult:
+        if session is None:
+
+            async def apply(active: AsyncSession) -> ConfigChangeResult:
+                return await self.rollback(
+                    change_id,
+                    actor_user_id=actor_user_id,
+                    trigger_message_id=trigger_message_id,
+                    conversation_key=conversation_key,
+                    audit_ref=audit_ref,
+                    expected_version=expected_version,
+                    session=active,
+                )
+
+            return await self._database.apply_snapshot_write(apply)
         started = time.perf_counter()
         actor = audit_ref or self._audit_ref(
             actor_user_id,
@@ -1030,7 +1072,7 @@ class RuntimeConfigService:
                 error_category="not_rollbackable",
                 detail="该变更不存在或不属于可恢复的配置修改",
             )
-        if original.actor_user_id != actor.user_id:
+        if not await self._same_config_actor(original, actor, session=session):
             await self._audit.record(
                 actor=actor,
                 capability="runtime_config",
@@ -1111,7 +1153,12 @@ class RuntimeConfigService:
                     error_category="version_conflict",
                     detail="expected_version does not match the current override",
                 )
-            if not self._matches_state(current, after_state):
+            if not await self._matches_original_state(
+                session,
+                current,
+                after_state,
+                original_scope_id=scope_id,
+            ):
                 await self._audit.record(
                     actor=actor,
                     capability="runtime_config",
@@ -1340,8 +1387,7 @@ class RuntimeConfigService:
         if memory_scope is not None:
             if user_id is not None or group_id is not None:
                 raise ValueError("memory config scope cannot mix canonical and external owners")
-            records = await self._repository.list_memory_scope(memory_scope)
-            person_id, space_id = memory_scope.person_id, memory_scope.space_id
+            records, person_id, space_id = await self._repository.read_memory_snapshot(memory_scope)
         else:
             records, person_id, space_id = await self._repository.read_relevant_snapshot(
                 user_id=user_id, group_id=group_id
@@ -1718,6 +1764,79 @@ class RuntimeConfigService:
             conversation_key=conversation_key,
         )
 
+    async def _same_config_actor(
+        self,
+        original: AdminOperationEvent,
+        actor: ControlAuditRef,
+        *,
+        session: AsyncSession | None,
+    ) -> bool:
+        # An independent operator credential remains its original principal.
+        # A Person actor is the human, including pre-principal canonical audits.
+        if original.actor_principal_kind is None and actor.principal_kind == "control":
+            return original.actor_user_id == actor.principal_id
+        if "control" in {original.actor_principal_kind, actor.principal_kind}:
+            return bool(
+                original.actor_principal_kind == actor.principal_kind == "control"
+                and original.actor_principal_id is not None
+                and original.actor_principal_id == actor.principal_id
+            )
+        if original.actor_user_id == actor.user_id:
+            return True
+        async with optional_session(self._database, session, write=False) as active:
+            return await same_person_id(
+                active,
+                original.actor_principal_id or original.actor_user_id,
+                actor.principal_id or actor.user_id,
+            )
+
+    async def _matches_original_state(
+        self,
+        session: AsyncSession,
+        current: RuntimeConfigOverrideRecord | None,
+        state: object,
+        *,
+        original_scope_id: str,
+    ) -> bool:
+        if not self._matches_state(current, state):
+            return False
+        if current is None:
+            # A deleted source override has no revision to migrate to another scope.
+            return (
+                not original_scope_id
+                or await current_person_id(session, original_scope_id) == original_scope_id
+                if _state_value(state, "scope_type") == "user"
+                else True
+            )
+        if current.scope_id == original_scope_id:
+            return True
+        if _state_value(state, "row_id") is not None:
+            return current.id == _state_value(state, "row_id")
+        # Old audit JSON predates row_id. The actual merge audit records each moved
+        # row and revision, so equal values in a different target row prove nothing.
+        lineage = original_scope_id
+        rows = await session.scalars(
+            select(AdminOperationEventModel.after_json)
+            .where(
+                AdminOperationEventModel.capability == "identity.person.merge",
+                AdminOperationEventModel.success.is_(True),
+                person_family_condition(AdminOperationEventModel.target_id, current.scope_id),
+                func.json_type(AdminOperationEventModel.after_json, "$.configuration_moves")
+                == "array",
+            )
+            .order_by(AdminOperationEventModel.id)
+        )
+        for raw in rows:
+            for move in json.loads(raw)["configuration_moves"]:
+                if (
+                    move["table"] == "runtime_config_overrides"
+                    and move["id"] == current.id
+                    and move["version"] == current.version
+                    and move["from"] == lineage
+                ):
+                    lineage = move["to"]
+        return lineage == current.scope_id
+
     @staticmethod
     def _matches_state(
         current: RuntimeConfigOverrideRecord | None,
@@ -1728,8 +1847,12 @@ class RuntimeConfigService:
             return current is None
         if current is None:
             return False
-        return current.value == _state_value(state, "value") and current.version == _state_value(
-            state, "version"
+        return (
+            current.value == _state_value(state, "value")
+            and current.version == _state_value(state, "version")
+            and (
+                _state_value(state, "row_id") is None or current.id == _state_value(state, "row_id")
+            )
         )
 
     @staticmethod

@@ -411,17 +411,15 @@ async def test_qq_delivery_in_flight_during_transfer_keeps_original_recipient_hi
 
     env = await social_env(database, tmp_path)
     assert await env.router.cas_takeover_person(env.person) == "taken"
-    service, target, code = await code_for(database, "1002")
+    service, target, _code = await code_for(database, "1002")
+    async with database.sessions() as session:
+        original_binding = await find_identity_binding(session, "10001")
     call = env.bot.call_api
 
     async def transfer_during_send(action, **params):
         if action == "send_private_msg":
-            await service.claim_account(
-                code["code"],
-                platform="qq",
-                account="10001",
-                display_name="B",
-                message_id=str(uuid4()),
+            await service.transfer_for_operator(
+                original_binding.id, target, str(uuid4()), str(uuid4())
             )
         return await call(action, **params)
 

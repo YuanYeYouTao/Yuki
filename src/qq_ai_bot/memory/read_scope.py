@@ -18,6 +18,13 @@ from qq_ai_bot.identity.db_models import (
     IdentityBindingModel,
     SpaceBindingModel,
 )
+from qq_ai_bot.identity.person_identity import (
+    current_person_id,
+    current_person_ids,
+    person_family_ids,
+    person_root_id,
+    same_person_condition,
+)
 from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
 from qq_ai_bot.memory.enums import MemoryScopeType, MemoryTargetRole
 from qq_ai_bot.memory.models import MemoryEntityTarget
@@ -49,6 +56,7 @@ class MemoryReadScopeResolver:
         """Resolve only the caller and scene; owners are filtered by canonical SQL."""
         async with self._database.sessions() as session:
             person_id = await self._person(session, requester) if requester else None
+            family = await person_family_ids(session, person_id) if person_id else ()
             space_id = (
                 await self._space(session, current_space_id)
                 if current_space_id is not None
@@ -56,6 +64,7 @@ class MemoryReadScopeResolver:
             )
         return AuthorizedMemoryScope(
             requester_person_id=person_id,
+            requester_family_ids=family,
             current_space_id=str(space_id) if space_id is not None else None,
             current_private_person_id=person_id if private_scene else None,
             current_group_only=self_actor,
@@ -65,7 +74,7 @@ class MemoryReadScopeResolver:
     @staticmethod
     async def _person(session: AsyncSession, person_id: str) -> str | None:
         person = await session.get(CanonicalPersonModel, person_id)
-        return person.id if person is not None else None
+        return await current_person_id(session, person.id) if person is not None else None
 
     @staticmethod
     async def _space(session: AsyncSession, space_id: str) -> str | None:
@@ -79,7 +88,7 @@ class MemoryReadScopeResolver:
         return set(
             await session.scalars(
                 select(MembershipModel.canonical_space_id).where(
-                    MembershipModel.canonical_person_id == person_id
+                    same_person_condition(MembershipModel.canonical_person_id, person_id)
                 )
             )
         )
@@ -140,6 +149,8 @@ class MemoryReadScopeResolver:
             )
         ):
             owners[canonical] = canonical
+        roots = await current_person_ids(session, owners.values())
+        owners = {key: roots[value] for key, value in owners.items() if value in roots}
         requester_id = owners.get(requester) or await self._person(session, requester)
         if requester_id is None:
             return {}
@@ -152,12 +163,17 @@ class MemoryReadScopeResolver:
             memberships = (
                 await session.execute(
                     select(
-                        MembershipModel.canonical_person_id, MembershipModel.canonical_space_id
+                        person_root_id(MembershipModel.canonical_person_id),
+                        MembershipModel.canonical_space_id,
                     ).where(
-                        MembershipModel.canonical_person_id.in_(select(values.c.value)),
+                        person_root_id(MembershipModel.canonical_person_id).in_(
+                            select(values.c.value)
+                        ),
                         MembershipModel.canonical_space_id.in_(
                             select(MembershipModel.canonical_space_id).where(
-                                MembershipModel.canonical_person_id == requester_id
+                                same_person_condition(
+                                    MembershipModel.canonical_person_id, requester_id
+                                )
                             )
                         ),
                     )
@@ -234,15 +250,17 @@ class MemoryReadScopeResolver:
             if requester_id is None:
                 return ()
             groups = select(MembershipModel.canonical_space_id).where(
-                MembershipModel.canonical_person_id == requester_id
+                same_person_condition(MembershipModel.canonical_person_id, requester_id)
             )
-            related = select(MembershipModel.canonical_person_id).where(
+            related = select(person_root_id(MembershipModel.canonical_person_id)).where(
                 MembershipModel.canonical_space_id.in_(groups)
             )
             alias_match = (
                 select(PersonAliasModel.id)
                 .where(
-                    PersonAliasModel.canonical_person_id == CanonicalPersonModel.id,
+                    same_person_condition(
+                        PersonAliasModel.canonical_person_id, CanonicalPersonModel.id
+                    ),
                     PersonAliasModel.alias == name.strip(),
                     or_(
                         PersonAliasModel.canonical_space_id.is_(None),
@@ -254,7 +272,9 @@ class MemoryReadScopeResolver:
             card_match = (
                 select(MembershipModel.canonical_person_id)
                 .where(
-                    MembershipModel.canonical_person_id == CanonicalPersonModel.id,
+                    same_person_condition(
+                        MembershipModel.canonical_person_id, CanonicalPersonModel.id
+                    ),
                     MembershipModel.canonical_space_id.in_(groups),
                     MembershipModel.group_card == name.strip(),
                 )
@@ -263,7 +283,7 @@ class MemoryReadScopeResolver:
             display_match = (
                 select(IdentityBindingModel.id)
                 .where(
-                    IdentityBindingModel.person_id == CanonicalPersonModel.id,
+                    same_person_condition(IdentityBindingModel.person_id, CanonicalPersonModel.id),
                     IdentityBindingModel.status == "active",
                     IdentityBindingModel.display_name == name.strip(),
                 )
@@ -271,15 +291,21 @@ class MemoryReadScopeResolver:
             )
             return tuple(
                 await session.scalars(
-                    select(CanonicalPersonModel.id)
+                    select(person_root_id(CanonicalPersonModel.id))
                     .where(
                         or_(
-                            CanonicalPersonModel.id == requester_id,
-                            CanonicalPersonModel.id.in_(related),
+                            same_person_condition(CanonicalPersonModel.id, requester_id),
+                            person_root_id(CanonicalPersonModel.id).in_(related),
                         ),
-                        or_(display_match, alias_match, card_match),
+                        or_(
+                            CanonicalPersonModel.display_name == name.strip(),
+                            display_match,
+                            alias_match,
+                            card_match,
+                        ),
                     )
-                    .order_by(CanonicalPersonModel.id)
+                    .distinct()
+                    .order_by(person_root_id(CanonicalPersonModel.id))
                 )
             )
 
@@ -290,7 +316,7 @@ class MemoryReadScopeResolver:
             if requester_id is None:
                 return ()
             groups = select(MembershipModel.canonical_space_id).where(
-                MembershipModel.canonical_person_id == requester_id
+                same_person_condition(MembershipModel.canonical_person_id, requester_id)
             )
             display_match = (
                 select(SpaceBindingModel.id)

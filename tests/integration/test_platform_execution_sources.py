@@ -237,7 +237,8 @@ async def test_telegram_host_continuation_quiet_keeps_topics_independent(
         before_requests, before_wire = len(env.model.requests), tuple(env.wire)
         first, second = [await host.continuation_for_event(identity) for identity in next_ids]
         assert first[1] == second[1] == "continuation"
-        assert host.continuation_current(first[0]) and host.continuation_current(second[0])
+        assert await host.continuation_current(first[0])
+        assert await host.continuation_current(second[0])
         item, original, unit, focus = contexts[0]
         assert item.controller.observe_unit_hint(
             unit,
@@ -250,8 +251,8 @@ async def test_telegram_host_continuation_quiet_keeps_topics_independent(
                 delta=SelfDelta(engage="quiet"),
             ),
         )
-        assert not host.continuation_current(first[0])
-        assert host.continuation_current(second[0])
+        assert not await host.continuation_current(first[0])
+        assert await host.continuation_current(second[0])
         processor = env.harness.processor
         processor.set_participation(host)
         processor._runtime_config = RuntimeConfigService(

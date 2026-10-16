@@ -146,7 +146,7 @@ class AutomationWorker:
 
                 conversation = await session.get(CanonicalConversationModel, conversation_id)
                 presence = await session.get(PresenceModel, automation.canonical_presence_id)
-                if conversation is None or presence is None or not presence.enabled:
+                if conversation is None or presence is None:
                     raise ValueError("automation_scene_unavailable")
                 actor_user_id = ""
                 if automation.creator_kind != "self":
@@ -158,6 +158,7 @@ class AutomationWorker:
                         conversation_id=conversation_id,
                         presence_id=presence.id,
                     )
+                    actor_user_id = automation.creator_user_id or actor_user_id
             group_id = (
                 automation.authority_snapshot["current_group_id"] if conversation.space_id else None
             )

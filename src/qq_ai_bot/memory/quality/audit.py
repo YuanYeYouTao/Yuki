@@ -6,9 +6,10 @@ import hashlib
 from datetime import UTC, datetime
 from typing import Final
 
-from sqlalchemy import text
+from sqlalchemy import literal_column, text
 from sqlalchemy.exc import DatabaseError
 
+from qq_ai_bot.identity.person_identity import person_root_id
 from qq_ai_bot.memory.eligibility import (
     sql_current_audio_evidence_predicate,
     sql_fact_tool_evidence_predicate,
@@ -74,6 +75,9 @@ class MemoryProductionQualityAudit:
     @staticmethod
     def _checks() -> tuple[tuple[str, str, str], ...]:
         """Each query returns total count plus at most 20 content-free row IDs."""
+
+        def root(column: str) -> str:
+            return str(person_root_id(literal_column(column)))
 
         return (
             (
@@ -229,13 +233,13 @@ class MemoryProductionQualityAudit:
                     "memory_fact_relations r JOIN memory_facts s ON s.id=r.source_fact_id "
                     "JOIN memory_facts t ON t.id=r.target_fact_id",
                     "s.scope_type!=t.scope_type OR "
-                    "COALESCE(s.canonical_subject_person_id,'')!="
-                    "COALESCE(t.canonical_subject_person_id,'') OR "
+                    f"COALESCE({root('s.canonical_subject_person_id')},'')!="
+                    f"COALESCE({root('t.canonical_subject_person_id')},'') OR "
                     "COALESCE(s.canonical_subject_space_id,'')!="
                     "COALESCE(t.canonical_subject_space_id,'') OR "
                     "COALESCE(s.visibility_type,'')!=COALESCE(t.visibility_type,'') OR "
-                    "COALESCE(s.canonical_visibility_person_id,'')!="
-                    "COALESCE(t.canonical_visibility_person_id,'') OR "
+                    f"COALESCE({root('s.canonical_visibility_person_id')},'')!="
+                    f"COALESCE({root('t.canonical_visibility_person_id')},'') OR "
                     "COALESCE(s.canonical_visibility_space_id,'')!="
                     "COALESCE(t.canonical_visibility_space_id,'')",
                     id_expression="r.id",

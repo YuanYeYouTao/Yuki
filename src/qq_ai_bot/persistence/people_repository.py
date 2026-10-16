@@ -11,12 +11,17 @@ from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from heapq import nsmallest
 
-from sqlalchemy import String, and_, case, cast, delete, false, func, or_, select, update
+from sqlalchemy import Integer, String, and_, case, cast, delete, false, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.client_api.db_models import ClientDeviceModel
+from qq_ai_bot.conversation.autonomy_db_models import (
+    AutonomyBindingModel,
+    InitiativeFeedbackModel,
+    InitiativeRunModel,
+)
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ControlCommandReceiptModel,
@@ -38,6 +43,7 @@ from qq_ai_bot.identity.canonical_repository import (
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.ownership_interval import BindingOwnership
+from qq_ai_bot.identity.person_identity import person_family_ids
 from qq_ai_bot.identity.person_state import (
     load_canonical_aliases,
     load_canonical_group,
@@ -89,6 +95,7 @@ from qq_ai_bot.plugin_host.db_models import (
     PluginStateModel,
 )
 from qq_ai_bot.runtime.observability import hash_conversation_key
+from qq_ai_bot.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,12 +167,15 @@ def _privacy_json_match(
 @dataclass(frozen=True)
 class PersonForgetPreparation:
     person_id: str
+    person_ids: tuple[str, ...]
     ownership: tuple[BindingOwnership, ...]
-    source_token: tuple[object, ...]
     private_ids: tuple[str, ...]
     affected_ids: tuple[str, ...]
     redactions: tuple[tuple[int, dict[str, str]], ...]
-    rebuild: PreparedRebuildForget | None
+    rebuild: PreparedRebuildForget
+    audit_redactions: tuple[tuple[int, dict[str, str]], ...]
+    sandbox_request_ids: tuple[str, ...]
+    initiative_ids: tuple[str, ...]
 
     @property
     def legacy_aliases(self) -> tuple[str, ...]:
@@ -180,22 +190,12 @@ class PersonForgetPreparation:
         )
 
 
-async def _privacy_source_token(session: AsyncSession) -> tuple[object, ...]:
-    # Metadata only: message bodies are prepared in a reader, never under the writer lock.
-    conversations = tuple(
-        tuple(row)
-        for row in await session.execute(
-            select(
-                CanonicalConversationModel.id, CanonicalConversationModel.prompt_source_revision
-            ).order_by(CanonicalConversationModel.id)
-        )
-    )
-    return (await session.scalar(select(func.max(ChatEventModel.id))), conversations)
-
-
 def _privacy_owned_events(
-    person_id: str, private_ids: tuple[str, ...], ownership: tuple[BindingOwnership, ...]
+    person_id: str | tuple[str, ...],
+    private_ids: tuple[str, ...],
+    ownership: tuple[BindingOwnership, ...],
 ) -> ColumnElement[bool]:
+    person_ids = (person_id,) if isinstance(person_id, str) else person_id
     legacy = [
         and_(
             ChatEventModel.author_person_id.is_(None),
@@ -213,7 +213,7 @@ def _privacy_owned_events(
     ]
     return func.coalesce(
         or_(
-            ChatEventModel.author_person_id == person_id,
+            ChatEventModel.author_person_id.in_(person_ids),
             ChatEventModel.canonical_conversation_id.in_(private_ids),
             *legacy,
         ),
@@ -236,9 +236,10 @@ def _ownership_window(item: BindingOwnership) -> ColumnElement[bool]:
 
 
 def _privacy_mentions(
-    person_id: str, ownership: tuple[BindingOwnership, ...]
+    person_id: str | tuple[str, ...], ownership: tuple[BindingOwnership, ...]
 ) -> ColumnElement[bool]:
-    conditions = [_privacy_json_match(ChatEventModel.segments_json, (person_id,))]
+    person_ids = (person_id,) if isinstance(person_id, str) else person_id
+    conditions = [_privacy_json_match(ChatEventModel.segments_json, person_ids)]
     segments = func.json_each(
         case(
             (func.json_valid(ChatEventModel.segments_json) == 1, ChatEventModel.segments_json),
@@ -375,6 +376,9 @@ class PeopleRepository:
         """Resolve every conversation whose retained projection may mention a person."""
 
         async with self._database.sessions() as session:
+            if await session.get(CanonicalPersonModel, person_id) is None:
+                return ()
+            person_ids = await person_family_ids(session, person_id)
             ownership = tuple(
                 BindingOwnership.of(item) for item in await bindings_for_person(session, person_id)
             )
@@ -382,7 +386,7 @@ class PeopleRepository:
                 await session.scalars(
                     select(CanonicalConversationModel.id).where(
                         CanonicalConversationModel.kind == "private",
-                        CanonicalConversationModel.person_id == person_id,
+                        CanonicalConversationModel.person_id.in_(person_ids),
                     )
                 )
             )
@@ -407,8 +411,8 @@ class PeopleRepository:
                     )
                     .where(
                         or_(
-                            _privacy_owned_events(person_id, private_ids, ownership),
-                            _privacy_mentions(person_id, ownership),
+                            _privacy_owned_events(person_ids, private_ids, ownership),
+                            _privacy_mentions(person_ids, ownership),
                         )
                     )
                     .distinct()
@@ -733,38 +737,39 @@ class PeopleRepository:
         return await self.delete_person_id(person_id, marker=marker)
 
     async def delete_person_id(self, person_id: str, *, marker: str = "[已删除用户]") -> bool:
-        while True:
-            try:
-                prepared = await self.prepare_person_forget(person_id, marker=marker)
-                if prepared is None:
-                    return False
-                async with self._database.immediate_session() as writer:
-                    return await self.apply_person_forget(writer, prepared, marker=marker)
-            except ValueError as exc:
-                if str(exc) not in {
-                    "memory_rebuild_privacy_preparation_changed",
-                    "privacy_aliases_changed",
-                    "privacy_source_changed",
-                }:
-                    raise
+        async def erase(session: AsyncSession) -> bool:
+            prepared = await self.prepare_person_forget(person_id, marker=marker, session=session)
+            if prepared is None:
+                return False
+            return await self.apply_person_forget(session, prepared, marker=marker)
+
+        return await self._database.apply_snapshot_write(erase)
 
     async def prepare_person_forget(
-        self, person_id: str, *, marker: str = "[已删除用户]"
+        self, person_id: str, *, session: AsyncSession, marker: str = "[已删除用户]"
     ) -> PersonForgetPreparation | None:
-        async with self._database.sessions() as reader:
+        from qq_ai_bot.persistence.unit_of_work import optional_session
+
+        async with optional_session(self._database, session, write=False) as reader:
             if await reader.get(CanonicalPersonModel, person_id) is None:
                 return None
+            person_ids = await person_family_ids(reader, person_id)
             ownership = tuple(
                 BindingOwnership.of(item)
                 for item in sorted(
-                    await bindings_for_person(reader, person_id), key=lambda item: item.id
+                    await reader.scalars(
+                        select(IdentityBindingModel).where(
+                            IdentityBindingModel.person_id.in_(person_ids)
+                        )
+                    ),
+                    key=lambda item: item.id,
                 )
             )
             private_ids = tuple(
                 await reader.scalars(
                     select(CanonicalConversationModel.id).where(
                         CanonicalConversationModel.kind == "private",
-                        CanonicalConversationModel.person_id == person_id,
+                        CanonicalConversationModel.person_id.in_(person_ids),
                     )
                 )
             )
@@ -777,9 +782,8 @@ class PeopleRepository:
                     }
                 )
             )
-            source_token = await _privacy_source_token(reader)
-            owned = _privacy_owned_events(person_id, private_ids, ownership)
-            mentions = _privacy_mentions(person_id, ownership)
+            owned = _privacy_owned_events(person_ids, private_ids, ownership)
+            mentions = _privacy_mentions(person_ids, ownership)
             affected = set(private_ids)
             affected.update(
                 item
@@ -789,7 +793,7 @@ class PeopleRepository:
                         or_(
                             owned,
                             _privacy_mentions(
-                                person_id, tuple(item for item in ownership if not item.bounded)
+                                person_ids, tuple(item for item in ownership if not item.bounded)
                             ),
                         )
                     )
@@ -806,7 +810,7 @@ class PeopleRepository:
                 )
                 platform = presence.platform if presence is not None else "qq"
                 aliases = {
-                    person_id,
+                    *person_ids,
                     *(
                         item.account
                         for item in ownership
@@ -836,19 +840,120 @@ class PeopleRepository:
                         ),
                     )
                 )
-            if await _privacy_source_token(reader) != source_token:
-                raise ValueError("privacy_source_changed")
+            audit_redactions = []
+            audit_aliases = (*person_ids, *legacy)
+            pattern = re.compile(
+                r"(?<![A-Za-z0-9_-])(?:"
+                + "|".join(re.escape(item) for item in sorted(audit_aliases, key=len, reverse=True))
+                + r")(?![A-Za-z0-9_-])"
+            )
+            audit_match = or_(
+                AdminOperationEventModel.actor_user_id.in_(audit_aliases),
+                AdminOperationEventModel.target_id.in_(audit_aliases),
+                *[
+                    AdminOperationEventModel.conversation_key.contains(item)
+                    for item in audit_aliases
+                ],
+                _privacy_json_match(AdminOperationEventModel.before_json, audit_aliases),
+                _privacy_json_match(AdminOperationEventModel.after_json, audit_aliases),
+            )
+            for audit in await reader.scalars(select(AdminOperationEventModel).where(audit_match)):
+                audit_redactions.append(
+                    (
+                        audit.id,
+                        dict(
+                            actor_user_id=marker
+                            if audit.actor_user_id in audit_aliases
+                            else audit.actor_user_id,
+                            target_id=marker
+                            if audit.target_id in audit_aliases
+                            else audit.target_id,
+                            conversation_key=pattern.sub(lambda _: marker, audit.conversation_key),
+                            before_json=_redact_privacy_json(audit.before_json, pattern, marker),
+                            after_json=_redact_privacy_json(audit.after_json, pattern, marker),
+                        ),
+                    )
+                )
+            sandbox_ids = tuple(
+                await reader.scalars(
+                    select(SandboxTaskRunModel.request_id).where(
+                        SandboxTaskRunModel.source_conversation_id.in_(affected)
+                    )
+                )
+            )
+            sources = func.json_each(InitiativeRunModel.sources_json).table_valued("value")
+            owned_events = select(ChatEventModel.id).where(owned)
+            owned_facts = select(MemoryFactModel.id).where(
+                or_(
+                    MemoryFactModel.canonical_subject_person_id.in_(person_ids),
+                    MemoryFactModel.canonical_visibility_person_id.in_(person_ids),
+                )
+            )
+            source_erased = (
+                select(sources.c.value)
+                .where(
+                    or_(
+                        and_(
+                            func.json_extract(sources.c.value, "$.kind") == "event",
+                            cast(func.json_extract(sources.c.value, "$.source_id"), Integer).in_(
+                                owned_events
+                            ),
+                        ),
+                        and_(
+                            func.json_extract(sources.c.value, "$.kind") == "memory",
+                            cast(func.json_extract(sources.c.value, "$.source_id"), Integer).in_(
+                                owned_facts
+                            ),
+                        ),
+                    )
+                )
+                .exists()
+            )
+            support = func.json_each(InitiativeRunModel.support_refs_json).table_valued("value")
+            support_erased = (
+                select(support.c.value)
+                .where(
+                    or_(
+                        support.c.value.in_(
+                            select("event:" + cast(ChatEventModel.id, String)).where(owned)
+                        ),
+                        support.c.value.in_(
+                            select("memory:" + cast(MemoryFactModel.id, String)).where(
+                                or_(
+                                    MemoryFactModel.canonical_subject_person_id.in_(person_ids),
+                                    MemoryFactModel.canonical_visibility_person_id.in_(person_ids),
+                                )
+                            )
+                        ),
+                    )
+                )
+                .exists()
+            )
+            initiative_ids = tuple(
+                await reader.scalars(
+                    select(InitiativeRunModel.id).where(
+                        or_(
+                            InitiativeRunModel.conversation_id.in_(private_ids),
+                            source_erased,
+                            support_erased,
+                        )
+                    )
+                )
+            )
         rebuild = await self._memory_rebuilds.prepare_forget_people(
-            legacy, ownership=ownership, person_id=person_id
+            legacy, ownership=ownership, person_id=person_id, session=session
         )
         return PersonForgetPreparation(
-            person_id,
-            ownership,
-            source_token,
-            private_ids,
-            tuple(sorted(affected)),
-            tuple(redactions),
-            rebuild,
+            person_id=person_id,
+            person_ids=person_ids,
+            ownership=ownership,
+            private_ids=private_ids,
+            affected_ids=tuple(sorted(affected)),
+            redactions=tuple(redactions),
+            rebuild=rebuild,
+            audit_redactions=tuple(audit_redactions),
+            sandbox_request_ids=sandbox_ids,
+            initiative_ids=initiative_ids,
         )
 
     async def apply_person_forget(
@@ -861,23 +966,17 @@ class PeopleRepository:
         person_id = prepared.person_id
         if await session.get(CanonicalPersonModel, person_id) is None:
             return False
-        ownership = tuple(
-            BindingOwnership.of(item)
-            for item in sorted(
-                await bindings_for_person(session, person_id), key=lambda item: item.id
-            )
-        )
-        if ownership != prepared.ownership:
-            raise ValueError("privacy_aliases_changed")
-        if await _privacy_source_token(session) != prepared.source_token:
-            raise ValueError("privacy_source_changed")
+        person_ids = await person_family_ids(session, person_id)
+        if person_ids != prepared.person_ids:
+            raise ValueError("privacy_persons_changed")
+        ownership = prepared.ownership
         legacy = prepared.legacy_aliases
         await self._memory_rebuilds.forget_people(
             legacy, prepared=prepared.rebuild, session=session
         )
-        owned = _privacy_owned_events(person_id, prepared.private_ids, ownership)
+        owned = _privacy_owned_events(person_ids, prepared.private_ids, ownership)
         event_ids = select(ChatEventModel.id).where(
-            or_(owned, _privacy_mentions(person_id, ownership))
+            or_(owned, _privacy_mentions(person_ids, ownership))
         )
         await session.execute(
             delete(WebSearchRunModel).where(
@@ -904,13 +1003,47 @@ class PeopleRepository:
                     conversation.last_generation_change_event_id = 0
                     conversation.revision += 1
                     conversation.updated_at = now
-        await self._forget_person_plugin(session, person_id, legacy)
+        await session.execute(
+            delete(SandboxTaskContinuationModel).where(
+                SandboxTaskContinuationModel.request_id.in_(prepared.sandbox_request_ids)
+            )
+        )
+        await session.execute(
+            delete(SandboxTaskRunModel).where(
+                SandboxTaskRunModel.request_id.in_(prepared.sandbox_request_ids)
+            )
+        )
+        await session.execute(
+            delete(MemoryToolReceiptModel).where(
+                MemoryToolReceiptModel.initiative_run_id.in_(prepared.initiative_ids)
+            )
+        )
+        await session.execute(
+            delete(InitiativeFeedbackModel).where(
+                InitiativeFeedbackModel.run_id.in_(prepared.initiative_ids)
+            )
+        )
+        await session.execute(
+            delete(InitiativeRunModel).where(InitiativeRunModel.id.in_(prepared.initiative_ids))
+        )
+        await session.execute(
+            update(InitiativeRunModel)
+            .where(InitiativeRunModel.target_person_id.in_(person_ids))
+            .values(target_person_id=None)
+        )
+        await session.execute(
+            delete(AutonomyBindingModel).where(
+                AutonomyBindingModel.conversation_id.in_(prepared.private_ids)
+            )
+        )
+        for member_id in person_ids:
+            await self._forget_person_plugin(session, member_id, legacy)
+            await self._forget_person_automations(session, member_id)
+            await self._forget_person_memory(session, member_id)
+            await self._forget_person_conversation(session, member_id, legacy)
         trip("after_forget_plugin")
-        await self._forget_person_automations(session, person_id)
         trip("after_forget_automations")
-        await self._forget_person_memory(session, person_id)
         trip("after_forget_memory")
-        await self._forget_person_conversation(session, person_id, legacy)
         trip("after_forget_conversation")
         for event_id, values in prepared.redactions:
             await session.execute(
@@ -919,7 +1052,7 @@ class PeopleRepository:
         await session.execute(
             delete(RuntimeConfigOverrideModel).where(
                 RuntimeConfigOverrideModel.scope_type == "user",
-                RuntimeConfigOverrideModel.canonical_person_id == person_id,
+                RuntimeConfigOverrideModel.canonical_person_id.in_(person_ids),
             )
         )
         if legacy:
@@ -929,28 +1062,16 @@ class PeopleRepository:
                     .where(RuntimeConfigOverrideModel.updated_by == owner)
                     .values(updated_by=marker)
                 )
-            pattern = re.compile(
-                "|".join(re.escape(item) for item in sorted(legacy, key=len, reverse=True))
+        for audit_id, values in prepared.audit_redactions:
+            await session.execute(
+                update(AdminOperationEventModel)
+                .where(AdminOperationEventModel.id == audit_id)
+                .values(**values)
             )
-            audit_match = or_(
-                AdminOperationEventModel.actor_user_id.in_(legacy),
-                AdminOperationEventModel.target_id.in_(legacy),
-                *[AdminOperationEventModel.conversation_key.contains(item) for item in legacy],
-                _privacy_json_match(AdminOperationEventModel.before_json, legacy),
-                _privacy_json_match(AdminOperationEventModel.after_json, legacy),
-            )
-            for audit in await session.scalars(select(AdminOperationEventModel).where(audit_match)):
-                if audit.actor_user_id in legacy:
-                    audit.actor_user_id = marker
-                if audit.target_id in legacy:
-                    audit.target_id = marker
-                audit.conversation_key = pattern.sub(lambda _: marker, audit.conversation_key)
-                audit.before_json = _redact_privacy_json(audit.before_json, pattern, marker)
-                audit.after_json = _redact_privacy_json(audit.after_json, pattern, marker)
         await session.execute(
             delete(EmojiUsageEventModel).where(
                 or_(
-                    EmojiUsageEventModel.canonical_actor_person_id == person_id,
+                    EmojiUsageEventModel.canonical_actor_person_id.in_(person_ids),
                     EmojiUsageEventModel.actor_user_id.in_(legacy),
                 )
             )
@@ -959,19 +1080,19 @@ class PeopleRepository:
             update(EmojiAssetModel)
             .where(
                 or_(
-                    EmojiAssetModel.canonical_first_seen_person_id == person_id,
+                    EmojiAssetModel.canonical_first_seen_person_id.in_(person_ids),
                     EmojiAssetModel.first_seen_user_id.in_(legacy),
                 )
             )
             .values(canonical_first_seen_person_id=None, first_seen_user_id=None)
         )
-        device_ids = select(ClientDeviceModel.id).where(ClientDeviceModel.person_id == person_id)
+        device_ids = select(ClientDeviceModel.id).where(ClientDeviceModel.person_id.in_(person_ids))
         audit_ids = select(AdminOperationEventModel.id).where(
             or_(
-                AdminOperationEventModel.actor_user_id == person_id,
+                AdminOperationEventModel.actor_user_id.in_(person_ids),
                 and_(
                     AdminOperationEventModel.target_type == "person",
-                    AdminOperationEventModel.target_id == person_id,
+                    AdminOperationEventModel.target_id.in_(person_ids),
                 ),
                 AdminOperationEventModel.actor_principal_id.in_(device_ids),
                 AdminOperationEventModel.actor_principal_id.in_(
@@ -984,19 +1105,30 @@ class PeopleRepository:
                 or_(
                     ControlCommandReceiptModel.audit_id.in_(audit_ids),
                     ControlCommandReceiptModel.principal_id.in_(device_ids),
-                    ControlCommandReceiptModel.principal_id == person_id,
+                    ControlCommandReceiptModel.principal_id.in_(person_ids),
                 )
             )
         )
         await session.execute(
             delete(AdminOperationEventModel).where(AdminOperationEventModel.id.in_(audit_ids))
         )
-        await session.execute(delete(ChatEventModel).where(owned))
+        owned_event_ids = select(ChatEventModel.id).where(owned)
         await session.execute(
-            delete(MembershipModel).where(MembershipModel.canonical_person_id == person_id)
+            update(ChatEventModel)
+            .where(ChatEventModel.reply_to_event_id.in_(owned_event_ids))
+            .values(reply_to_event_id=None, reply_to_message_id=None)
         )
         await session.execute(
-            delete(PersonAliasModel).where(PersonAliasModel.canonical_person_id == person_id)
+            update(ChatEventModel)
+            .where(ChatEventModel.caused_by_event_id.in_(owned_event_ids))
+            .values(caused_by_event_id=None)
+        )
+        await session.execute(delete(ChatEventModel).where(owned))
+        await session.execute(
+            delete(MembershipModel).where(MembershipModel.canonical_person_id.in_(person_ids))
+        )
+        await session.execute(
+            delete(PersonAliasModel).where(PersonAliasModel.canonical_person_id.in_(person_ids))
         )
         await forget_person_by_id(session, person_id)
         return True

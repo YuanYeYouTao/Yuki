@@ -91,7 +91,7 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
             return await complete(request)
 
         class DelayedObserver:
-            async def evaluate(self, snapshot):
+            async def evaluate(self, snapshot, **_kwargs):
                 snapshots.append(snapshot)
                 jev_started.set()
                 await release_jev.wait()
@@ -284,7 +284,7 @@ async def test_selected_same_main_input_survives_late_participation_exit(
                     >= 2
                 )
                 binding = prepared.admission.binding
-                assert binding is not None and host.continuation_current(
+                assert binding is not None and await host.continuation_current(
                     binding, check_budget=False
                 )
                 if late_exit == "quiet":
@@ -319,7 +319,7 @@ async def test_selected_same_main_input_survives_late_participation_exit(
                         }
                     )
                     assert item.controller.apply_semantic_observation(observation)
-                assert not host.continuation_current(binding, check_budget=False)
+                assert not await host.continuation_current(binding, check_budget=False)
                 flipped = True
             return await publish(
                 repository,

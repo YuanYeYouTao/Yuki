@@ -138,7 +138,7 @@ async def test_members_ignore_send_pause_and_try_accessible_connections(social_e
         generation = route.route_generation
     env.registry.connect(other, provider_id="snowluma", presence_id=second)
     result = await env.service.execute("get_group_members", {}, env.context)
-    assert result["items"] == [{"person_id": env.person, "display_name": "成员"}]
+    assert result["items"] == [{"person_id": env.person, "display_name": "test-10001"}]
     assert result["coverage"] == "observed"
     async with env.db.sessions() as session:
         route = await session.get(SpaceActiveRouteModel, env.space)

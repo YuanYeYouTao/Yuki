@@ -30,6 +30,7 @@ from qq_ai_bot.identity.db_models import (
     SpaceBindingModel,
 )
 from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.person_identity import person_family_ids
 from qq_ai_bot.persistence.models import ChatEventModel
 
 IDENTITY_PLATFORM: Final[str] = "qq"
@@ -263,6 +264,7 @@ async def create_person_binding(
         async with session.begin_nested():
             person = CanonicalPersonModel(
                 id=new_identity_id(),
+                display_name=display_name[:128],
                 enabled=True,
                 revision=1,
                 created_at=now,
@@ -530,37 +532,57 @@ async def forget_person_by_id(session: AsyncSession, person_id: str) -> None:
     """Delete exactly the selected Person aggregate, including historical bindings."""
 
     trip("before_forget_canonical")
+    family = await person_family_ids(session, person_id)
     bindings = list(
         await session.scalars(
-            select(IdentityBindingModel).where(IdentityBindingModel.person_id == person_id)
+            select(IdentityBindingModel).where(IdentityBindingModel.person_id.in_(family))
         )
     )
-    route = await session.get(PersonActiveRouteModel, person_id)
-    if route is not None:
-        await session.delete(route)
-    conversations = await session.scalars(
-        select(CanonicalConversationModel).where(
-            CanonicalConversationModel.kind == "private",
-            CanonicalConversationModel.person_id == person_id,
+    routes = list(
+        await session.scalars(
+            select(PersonActiveRouteModel).where(PersonActiveRouteModel.person_id.in_(family))
         )
     )
-    for conversation in conversations:
-        aliases = list(
-            await session.scalars(
-                select(ConversationLegacyAliasModel).where(
-                    ConversationLegacyAliasModel.conversation_id == conversation.id
+    conversations = list(
+        await session.scalars(
+            select(CanonicalConversationModel).where(
+                CanonicalConversationModel.kind == "private",
+                CanonicalConversationModel.person_id.in_(family),
+            )
+        )
+    )
+    aliases = list(
+        await session.scalars(
+            select(ConversationLegacyAliasModel).where(
+                ConversationLegacyAliasModel.conversation_id.in_(
+                    tuple(row.id for row in conversations)
                 )
             )
         )
-        for alias in aliases:
-            await session.delete(alias)
+    )
+    people = list(
+        await session.scalars(
+            select(CanonicalPersonModel).where(CanonicalPersonModel.id.in_(family))
+        )
+    )
+    for route in routes:
+        await session.delete(route)
+    # Delete Conversations before their pinned aliases, whose trigger protects live entries.
+    for conversation in conversations:
         await session.delete(conversation)
     await session.flush()
-    for item in bindings:
-        await session.delete(item)
-    person = await session.get(CanonicalPersonModel, person_id)
-    if person is not None:
-        await session.delete(person)
+    for alias in aliases:
+        await session.delete(alias)
+    for binding in bindings:
+        await session.delete(binding)
+    await session.flush()
+    for person in people:
+        if person.merged_into_person_id is not None:
+            await session.delete(person)
+    await session.flush()
+    for person in people:
+        if person.merged_into_person_id is None:
+            await session.delete(person)
     await session.flush()
 
 

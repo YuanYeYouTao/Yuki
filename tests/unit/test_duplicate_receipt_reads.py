@@ -78,10 +78,7 @@ async def test_social_read_reuse_preserves_payload_plan_source_and_target_confli
     else:
         args["target"] = SocialTarget(kind="person", id=UUID(int=0))
     async with other_writer_and_read_only(database):
-        with pytest.raises(
-            SocialError,
-            match=("target_not_found" if change == "target" else "idempotency_conflict"),
-        ):
+        with pytest.raises(SocialError, match="idempotency_conflict"):
             await repository.prepare(**args)
 
 

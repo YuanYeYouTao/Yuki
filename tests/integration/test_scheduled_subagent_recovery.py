@@ -185,7 +185,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             settings=case.settings,
         )
         assert recovered.actor_person_id == source["actor_person_id"]
-        assert recovered.actor_user_id == "10001"
+        assert recovered.actor_user_id == "old-derived-account"
     for changed in (
         {"generation": source["generation"] + 1},
         {"automation_run_id": case.run.id + 1},
@@ -209,14 +209,15 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             )
             .values(status="disabled")
         )
-    with pytest.raises(ValueError, match="task_space_binding_unavailable"):
-        await recover_execution_source(
-            database,
-            child["conversation_id"],
-            source,
-            request_id=child["id"],
-            settings=case.settings,
-        )
+    recovered = await recover_execution_source(
+        database,
+        child["conversation_id"],
+        source,
+        request_id=child["id"],
+        settings=case.settings,
+    )
+    assert recovered.generation == source["generation"]
+    assert recovered.presence_id == source["presence_id"]
     async with database.sessions() as session, session.begin():
         await session.execute(
             update(SpaceBindingModel)
@@ -748,7 +749,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
             account, permission = await resolve_execution_identity(
                 reader, settings, owner_id=case.env.person
             )
-            assert account == "10001" and permission is PermissionLevel.SUPERUSER
+            assert account == "" and permission is PermissionLevel.SUPERUSER
         return await case.chat.generate_origin_turn(**kwargs)
 
     resumer = make_work_resumer(
@@ -784,7 +785,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
         account, permission = await resolve_execution_identity(
             reader, settings, owner_id=case.env.person
         )
-        assert account == "10001" and permission is PermissionLevel.USER
+        assert account == "" and permission is PermissionLevel.USER
         assert (
             await reader.scalar(select(budgets.c.models).where(budgets.c.root_id == parent["id"]))
             == 3

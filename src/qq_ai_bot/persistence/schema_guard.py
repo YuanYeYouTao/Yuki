@@ -188,7 +188,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "presence_id",
         }
     ),
-    "persons": frozenset({"id", "enabled", "revision"}),
+    "persons": frozenset({"id", "enabled", "revision", "display_name", "merged_into_person_id"}),
     "identity_bindings": frozenset(
         {
             "id",

@@ -21,6 +21,7 @@ from qq_ai_bot.identity.db_models import (
     IdentityBindingModel,
     SpaceBindingModel,
 )
+from qq_ai_bot.identity.person_identity import current_person_id
 from qq_ai_bot.persistence.database import Database
 
 USER_CAPABILITIES: frozenset[str] = frozenset(
@@ -77,6 +78,12 @@ class ControlAccess:
             person = await session.get(CanonicalPersonModel, person_id) if person_id else None
             if person is None or not person.enabled:
                 raise ControlPrincipalLookupError()
+            person = await session.get(
+                CanonicalPersonModel, await current_person_id(session, person.id)
+            )
+            assert person is not None
+            if not person.enabled:
+                raise ControlPrincipalLookupError()
             privileged = await person_is_superuser(session, person.id, self._superuser_ids)
         return self._principal(PersonId.parse(person.id), privileged, PrincipalSource.PLATFORM)
 
@@ -104,7 +111,16 @@ class ControlAccess:
             binding = await _identity_binding(session, token)
             if binding is None or binding.status != "active":
                 raise ControlPrincipalLookupError()
-            person_id = PersonId.parse(binding.person_id)
+            original = await session.get(CanonicalPersonModel, binding.person_id)
+            if original is None or not original.enabled:
+                raise ControlPrincipalLookupError()
+            current = await session.get(
+                CanonicalPersonModel, await current_person_id(session, original.id)
+            )
+            assert current is not None
+            if not current.enabled:
+                raise ControlPrincipalLookupError()
+            person_id = PersonId.parse(current.id)
             privileged = await person_is_superuser(session, person_id.text, self._superuser_ids)
         return self._principal(person_id, privileged, PrincipalSource.QQ)
 
@@ -113,6 +129,10 @@ class ControlAccess:
             person = await session.get(CanonicalPersonModel, person_id)
             if person is None:
                 raise ValueError("没有找到该 Person。")
+            person = await session.get(
+                CanonicalPersonModel, await current_person_id(session, person.id)
+            )
+            assert person is not None
             protected = await person_is_superuser(session, person.id, self._superuser_ids)
         return PersonControlTarget(
             person_id=PersonId.parse(person.id),

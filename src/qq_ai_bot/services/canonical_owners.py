@@ -10,6 +10,7 @@ from qq_ai_bot.identity.canonical_repository import (
 )
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, PresenceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.person_identity import current_person_id
 
 MISSING_CANONICAL_OWNER = "missing_canonical_owner"
 CANONICAL_OWNER_DISABLED = "canonical_owner_disabled"
@@ -31,6 +32,10 @@ async def require_live_person(session: AsyncSession, person_id: str | None) -> s
     person = await session.get(CanonicalPersonModel, person_id)
     if person is None:
         raise CanonicalIdentityError(MISSING_CANONICAL_OWNER)
+    if not person.enabled:
+        raise CanonicalIdentityError(CANONICAL_OWNER_DISABLED)
+    person = await session.get(CanonicalPersonModel, await current_person_id(session, person.id))
+    assert person is not None
     if not person.enabled:
         raise CanonicalIdentityError(CANONICAL_OWNER_DISABLED)
     return person.id

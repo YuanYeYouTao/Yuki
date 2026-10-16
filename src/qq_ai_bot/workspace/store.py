@@ -106,6 +106,14 @@ class WorkspaceStore:
         self._id(name[:-5])
         return self.root / name
 
+    def snapshot_source(self, artifact_id: str) -> str | None:
+        """Read the original immutable provenance without reopening its bytes."""
+        with self._transaction(write=False) as db:
+            row = db.execute(
+                "SELECT source_key FROM artifact_snapshots WHERE id=?", (self._id(artifact_id),)
+            ).fetchone()
+            return row[0] if row is not None else None
+
     def _row(self, db: sqlite3.Connection, artifact_id: str) -> sqlite3.Row:
         row = db.execute(
             "SELECT *, EXISTS(SELECT 1 FROM artifact_snapshots s WHERE s.id=artifacts.id) "

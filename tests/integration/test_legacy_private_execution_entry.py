@@ -240,6 +240,21 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
         )
 
     command.upgrade(Config("alembic.ini"), "0124")
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT entry_presence_id FROM canonical_conversations WHERE id=?",
+            (conversation_id,),
+        ).fetchone() == (original_presence,)
+        assert connection.execute(
+            "SELECT canonical_conversation_id,ingress_presence_id FROM chat_events WHERE id=9"
+        ).fetchone() == (conversation_id, second_presence)
+        assert connection.execute(
+            "SELECT canonical_conversation_id,canonical_presence_id "
+            "FROM plugin_background_target_grants WHERE plugin_id='legacy.notification'"
+        ).fetchone() == (conversation_id, second_presence)
+    # Exercise today's consumers against the real forward-upgraded schema, while
+    # keeping the original private-entry migration assertions above.
+    command.upgrade(Config("alembic.ini"), "head")
 
     async def check():
         database = Database(url)

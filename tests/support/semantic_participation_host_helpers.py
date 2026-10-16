@@ -71,7 +71,7 @@ class Observer:
         self.calls = []
         self.aclose = AsyncMock()
 
-    async def evaluate(self, snapshot):
+    async def evaluate(self, snapshot, **_kwargs):
         self.calls.append(snapshot)
         return _observation(snapshot, unknown=self.unknown)
 

@@ -239,6 +239,7 @@ class CommandReceiptRepository:
         trigger_message_id: str = "",
         conversation_key: str = "",
         problem_code: str | None = None,
+        request_person_id: str | None = None,
     ) -> ControlCommandReceiptModel:
         """Write a personal command and its audit in the caller's short transaction.
 
@@ -269,6 +270,7 @@ class CommandReceiptRepository:
         receipt = ControlCommandReceiptModel(
             principal_id=principal_id,
             request_id=request_id,
+            request_person_id=request_person_id,
             payload_hash=payload_hash,
             status="failed" if problem_code else "succeeded",
             problem_code=problem_code,

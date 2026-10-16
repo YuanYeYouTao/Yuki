@@ -17,10 +17,10 @@ from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
-    IdentityBindingModel,
     PresenceModel,
     SpaceBindingModel,
 )
+from qq_ai_bot.identity.person_identity import current_person_id, same_person_id
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import AutomationRunModel, ChatEventModel
 from qq_ai_bot.runtime.origin import TurnOrigin
@@ -213,7 +213,6 @@ async def _original_space_binding(
         )
     if (
         binding is None
-        or binding.status != "active"
         or binding.space_id != conversation.space_id
         or binding.platform != presence.platform
     ):
@@ -321,11 +320,7 @@ async def recover_automation_source(
         ):
             raise ValueError("automation_task_source_changed")
         presence = await session.get(PresenceModel, owner.canonical_presence_id)
-        if (
-            presence is None
-            or not presence.enabled
-            or presence.external_account_id != owner.bot_user_id
-        ):
+        if presence is None or presence.external_account_id != owner.bot_user_id:
             raise ValueError("task_presence_disabled")
         actor_person = owner.canonical_creator_person_id
         actor_user = ""
@@ -354,6 +349,7 @@ async def recover_automation_source(
                 conversation_id=conversation.id,
                 presence_id=presence.id,
             )
+            actor_user = source.get("actor_user_id") or owner.creator_user_id or actor_user
             actor_is_superuser = permission.value == "superuser"
         if conversation.space_id:
             space = await session.get(CanonicalSpaceModel, conversation.space_id)
@@ -558,32 +554,24 @@ async def recover_source(
         if event.ingress_presence_id != source.get("presence_id"):
             raise ValueError("task_source_presence_changed")
         actor = await session.get(CanonicalPersonModel, event.author_person_id)
-        presence = await session.get(PresenceModel, event.ingress_presence_id)
-        if actor is None or not actor.enabled:
-            raise ValueError("task_actor_disabled")
-        if (
-            presence is None
-            or not presence.enabled
-            or presence.external_account_id != event.bot_user_id
-        ):
-            raise ValueError("task_presence_disabled")
-        actor_binding = await session.scalar(
-            select(IdentityBindingModel.id).where(
-                IdentityBindingModel.person_id == actor.id,
-                IdentityBindingModel.external_account_id == event.sender_user_id,
-                IdentityBindingModel.platform == presence.platform,
-                IdentityBindingModel.status == "active",
-            )
+        current_actor = await session.get(
+            CanonicalPersonModel, await current_person_id(session, event.author_person_id)
         )
-        if actor_binding is None:
-            raise ValueError("task_actor_binding_unavailable")
+        presence = await session.get(PresenceModel, event.ingress_presence_id)
+        if actor is None or not actor.enabled or current_actor is None or not current_actor.enabled:
+            raise ValueError("task_actor_disabled")
+        if presence is None or presence.external_account_id != event.bot_user_id:
+            raise ValueError("task_presence_disabled")
         if conversation.kind == "private":
             if (
-                conversation.person_id != actor.id
+                not conversation.person_id
+                or not await same_person_id(session, conversation.person_id, actor.id)
                 or event.private_peer_user_id != event.sender_user_id
             ):
                 raise ValueError("task_target_changed")
-            binding_id, external_target = actor_binding, event.sender_user_id
+            if conversation.identity_binding_id is None:
+                raise ValueError("task_target_changed")
+            binding_id, external_target = conversation.identity_binding_id, event.sender_user_id
         else:
             space = await session.get(CanonicalSpaceModel, conversation.space_id)
             if space is None or not space.enabled:

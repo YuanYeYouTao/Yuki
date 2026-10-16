@@ -10,10 +10,16 @@ from qq_ai_bot.persistence.database import Database
 
 
 async def enable_history_column_for_legacy_seed(database: Database) -> None:
-    """Temporarily supply the current Binding ORM column to an old seed database."""
+    """Supply current identity ORM fields only while seeding an old database."""
     async with database.immediate_session() as writer:
         await writer.execute(
             text("ALTER TABLE identity_bindings ADD COLUMN history_starts_at DATETIME")
+        )
+        await writer.execute(
+            text("ALTER TABLE persons ADD COLUMN merged_into_person_id VARCHAR(36)")
+        )
+        await writer.execute(
+            text("ALTER TABLE persons ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
         )
     original_close = database.close
 
@@ -22,6 +28,10 @@ async def enable_history_column_for_legacy_seed(database: Database) -> None:
             async with database.immediate_session() as writer:
                 await writer.execute(
                     text("ALTER TABLE identity_bindings DROP COLUMN history_starts_at")
+                )
+                await writer.execute(text("ALTER TABLE persons DROP COLUMN display_name"))
+                await writer.execute(
+                    text("ALTER TABLE persons DROP COLUMN merged_into_person_id")
                 )
         finally:
             await original_close()

@@ -1007,19 +1007,18 @@ class MemoryRebuildRepository:
     ) -> int:
         from qq_ai_bot.memory.rebuild.privacy import apply_forget
 
+        if session is None:
+
+            async def erase(owned: AsyncSession) -> int:
+                current = await self.prepare_forget_people(aliases, session=owned)
+                return await apply_forget(owned, current)
+
+            return await self.database.apply_snapshot_write(erase)
         if prepared is None:
-            if session is not None:
-                raise ValueError("memory_rebuild_privacy_preparation_required")
-            prepared = await self.prepare_forget_people(aliases)
+            raise ValueError("memory_rebuild_privacy_preparation_required")
         if prepared.aliases != tuple(sorted(set(aliases))):
             raise ValueError("memory_rebuild_privacy_aliases_changed")
-        transaction = (
-            self.database.immediate_session()
-            if session is None
-            else optional_session(self.database, session, write=True)
-        )
-        async with transaction as writer:
-            return await apply_forget(writer, prepared)
+        return await apply_forget(session, prepared)
 
     async def health(
         self,

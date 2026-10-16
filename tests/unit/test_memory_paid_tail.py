@@ -37,7 +37,10 @@ from qq_ai_bot.persistence.models import (
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 
 
-async def test_reflection_checkpoint_finishes_after_the_original_daily_request_is_spent(database):
+@pytest.mark.parametrize("merge_owner", [False, True])
+async def test_reflection_checkpoint_finishes_after_the_original_daily_request_is_spent(
+    database, merge_owner
+):
     mutations, facts, ledger, _ = _service(database, self_memory_enabled=True)
     repository = SelfReflectionRepository(database)
     await repository.scan_new_events()
@@ -101,6 +104,19 @@ async def test_reflection_checkpoint_finishes_after_the_original_daily_request_i
     worker = SelfReflectionWorker(settings=settings, repository=repository, service=service)
     paid = await worker.control.reserve_request(batch.run_id)
     await worker.control.finish_request(paid, "completed", 12)
+    if merge_owner:
+        from tests.unit.test_memory_person_identity import merge_people
+
+        from qq_ai_bot.identity.canonical_repository import find_identity_binding
+
+        async with database.sessions() as reader:
+            target = (await find_identity_binding(reader, "1002")).person_id
+            saved = (await reader.get(MemorySelfReflectionRunModel, batch.run_id)).checkpoint_json
+        await merge_people(database, source.author_person_id, target)
+        async with database.sessions() as reader:
+            assert (
+                await reader.get(MemorySelfReflectionRunModel, batch.run_id)
+            ).checkpoint_json == saved
     assert await repository.recover_interrupted(batch.run_id, "sqlite_busy") == "failed"
     await worker.run_now(
         source_event_id=source.id, conversation_id=source.canonical_conversation_id

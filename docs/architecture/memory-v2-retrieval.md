@@ -10,6 +10,8 @@
 人物、群名片、subject_ref 和群选择器不承担授权证明。多个冲突人物选择器明确拒绝。
 原始私聊、完整 evidence、他人的 private SELF 继续使用各自真实权限边界。
 已知主体沿调用链传内部 Person/Space；账号换绑不改写原事实与历史 membership 的 owner。
+同一人归并集合用于本人、subject、private SELF 和共同群 SQL 判断，无 Binding 的来源人物也纳入；
+同 Space 与同人名称命中去重。结果按当前 root 组织人物块，原 fact/evidence owner 和来源 ID 保持原件。
 
 ## 查询与排序
 

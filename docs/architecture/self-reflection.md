@@ -7,7 +7,10 @@ schema 0067 扩展可信 SELF 工具来源；完整迁移按当前 Alembic 链�
 实际线上版本以当前容器镜像与数据库迁移记录为准。
 
 人物和空间分别使用原内部 Person/Space，输入携原 Conversation、事件或执行身份；
-App/TG 来源不依赖 QQ Binding。账号换绑和新入口不会重写既有 batch 的归属。
+App/TG 来源不依赖 QQ Binding。账号换绑、同人合并、改名和新入口不会重写既有 batch 的归属。
+原人物流的扫描水位、run、Checkpoint、输入输出、请求预算和 mutation 回执继续使用原 raw Person/Space；
+不因同人合并拼接批次或重编已付输出。新查询的可见事实和本人权限按 Person 归并集合读取，
+source 与 visibility 分别核验；原事件、工具回执及执行身份始终保持原件。
 
 ## 结构化生成
 
@@ -82,6 +85,8 @@ tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来�
 不借最近发言者或目标人的身份准备上下文。纯工具自省经同一 MutationService 验证、
 冲突处理和原子回执写入；只能影响有相应证据的 SELF global/当前群范围，不能写私人事实。
 历史 run 证据可保留，不能因此恢复已失效 generation 的执行权限。
+显式人物遗忘按整个人物族清退实际私人资料和被擦除来源；主动 run 仅以人物作为 target 时清空目标引用，
+不删除其他作者正文、独立群 SELF 经历、原工具证据或原反馈，也不把目标身份当作继续写私人资料的许可。
 
 主生成仍复用同一 MainAgentTurnService、Runner 和固定完整工具声明。资料与 SELF run
 位于动态输入中，恢复读取原 journal；不把恢复时新检索到的记忆登记成旧投影已经曝光。

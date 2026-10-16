@@ -131,6 +131,7 @@ class CanonicalConversationModel(Base):
 
     __tablename__ = "canonical_conversations"
     __table_args__ = (
+        Index("ix_conversations_person", "person_id", sqlite_where=text("person_id IS NOT NULL")),
         ForeignKeyConstraint(
             ["person_id"],
             ["persons.id"],
@@ -523,10 +524,19 @@ class ControlCommandReceiptModel(Base):
 
     __tablename__ = "control_command_receipts"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_control_command_receipts_principal_request",
             "principal_id",
             "request_id",
-            name="uq_control_command_receipts_principal_request",
+            unique=True,
+            sqlite_where=text("request_person_id IS NULL"),
+        ),
+        Index(
+            "uq_control_command_receipts_person_request",
+            "request_person_id",
+            "request_id",
+            unique=True,
+            sqlite_where=text("request_person_id IS NOT NULL"),
         ),
         CheckConstraint(
             uuid4_text36_sql("principal_id"),
@@ -607,6 +617,8 @@ class ControlCommandReceiptModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     principal_id: Mapped[str] = mapped_column(String(36), nullable=False)
     request_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    # Original App namespace, independent of current human and actual device actor.
+    request_person_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     result_resource_id: Mapped[str | None] = mapped_column(String(255), nullable=True)

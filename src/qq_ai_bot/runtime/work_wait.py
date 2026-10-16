@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.identity.db_models import PresenceModel
+from qq_ai_bot.identity.person_identity import same_person_id
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.plugin_host.db_models import (
     PluginBackgroundTargetGrantModel,
@@ -208,7 +209,13 @@ class WorkWaitRepository:
             original_principal = (
                 "self" if original_kind == "self" else original_source.get("actor_person_id")
             )
-            if (principal_kind, principal_id) != (original_kind, original_principal):
+            if principal_kind != original_kind or (
+                principal_id != original_principal
+                and not (
+                    principal_kind == "person"
+                    and await same_person_id(session, principal_id, original_principal)
+                )
+            ):
                 raise WorkConflict("wait_work_source_changed")
             conversation = await session.get(CanonicalConversationModel, lease.conversation_id)
             if conversation is None:
@@ -623,7 +630,11 @@ class WorkWaitRepository:
                 source = json.loads(candidate["source_json"])
                 if (
                     source.get("origin") != "user_message"
-                    or source.get("actor_person_id") != event.author_person_id
+                    or not event.author_person_id
+                    or not source.get("actor_person_id")
+                    or not await same_person_id(
+                        session, source["actor_person_id"], event.author_person_id
+                    )
                     or not isinstance(source.get("trigger_event_id"), int)
                 ):
                     continue

@@ -35,6 +35,7 @@ from qq_ai_bot.automation.repository import AutomationRepository
 from qq_ai_bot.automation.task_spec import TaskSpec, canonical_task_hash, prepare_task
 from qq_ai_bot.config import Settings
 from qq_ai_bot.domain.tool_actor import ToolActor
+from qq_ai_bot.identity.person_identity import current_person_id, same_person_id
 from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.time.schedules import initial_run_at
@@ -457,11 +458,16 @@ class AutomationService:
         row = await self._repository.get(automation_id, session=session)
         if row is None:
             raise ValueError("自动化任务不存在")
-        if (
-            permission is not PermissionLevel.SUPERUSER
-            and self._canonical_owner(row) != actor_person_id
-        ):
-            raise PermissionError("任务存在，但当前主体不是任务所有者，不能修改")
+        if permission is not PermissionLevel.SUPERUSER:
+            owner = self._canonical_owner(row)
+            async with optional_session(self._repository._database, session, write=False) as reader:
+                matches = owner == actor_person_id or (
+                    owner != "self"
+                    and actor_person_id != "self"
+                    and await same_person_id(reader, owner, actor_person_id)
+                )
+            if not matches:
+                raise PermissionError("任务存在，但当前主体不是任务所有者，不能修改")
         return row
 
     async def pause(self, automation_id: int, *, actor: ToolActor, conversation_key: str) -> bool:
@@ -750,7 +756,11 @@ class AutomationService:
             person = await reader.get(CanonicalPersonModel, person_id)
             if person is None or not person.enabled:
                 raise PermissionError("automation_owner_unavailable")
-            return person.id
+            root_id = await current_person_id(reader, person.id)
+            root = await reader.get(CanonicalPersonModel, root_id)
+            if root is None or not root.enabled:
+                raise PermissionError("automation_owner_unavailable")
+            return root_id
 
     async def _creator_context(
         self,

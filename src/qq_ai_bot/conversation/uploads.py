@@ -20,6 +20,7 @@ from qq_ai_bot.client_api.errors import ClientError
 from qq_ai_bot.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
 from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
 from qq_ai_bot.conversation.media_service import _GLOBAL_BUDGET, _MAX_FILE, ConversationMediaService
+from qq_ai_bot.identity.person_identity import person_family_condition
 
 
 async def owned_upload(session: AsyncSession, person_id: str, media_id: str) -> dict[str, Any]:
@@ -29,7 +30,7 @@ async def owned_upload(session: AsyncSession, person_id: str, media_id: str) -> 
         select(ControlCommandReceiptModel)
         .join(ClientDeviceModel, ClientDeviceModel.id == ControlCommandReceiptModel.principal_id)
         .where(
-            ClientDeviceModel.person_id == person_id,
+            person_family_condition(ClientDeviceModel.person_id, person_id),
             ControlCommandReceiptModel.operation_kind == "client.upload",
             ControlCommandReceiptModel.result_resource_id == media_id,
             ControlCommandReceiptModel.status == "succeeded",
@@ -75,14 +76,17 @@ class ConversationUploads:
         operation = "client.upload"
         bound = fingerprint(
             operation,
-            principal.person_id,
+            principal.request_person_id,
             {"sha256": sha256, "size": size, "filename": filename, "kind": kind},
         )
         async with self.identity.database.sessions() as session:
-            principal = await self.identity.require_device(session, principal.device_id)
-            previous = await self.identity.replay(session, principal.device_id, request_id, bound)
+            principal = await self.identity.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
+            previous = await self.identity.replay(
+                session, principal.device_id, request_id, bound, principal=principal
+            )
             if previous is not None:
-                await owned_upload(session, principal.person_id, previous["media_id"])
                 return previous
         async with self._staging:
             self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -114,7 +118,10 @@ class ConversationUploads:
                         await asyncio.to_thread(os.replace, temporary, destination)
                     result: dict[str, JsonValue] = {
                         "media_id": str(
-                            uuid5(NAMESPACE_URL, f"yuki:upload:{principal.person_id}:{request_id}")
+                            uuid5(
+                                NAMESPACE_URL,
+                                f"yuki:upload:{principal.request_person_id}:{request_id}",
+                            )
                         ),
                         "sha256": sha256,
                         "size": size,
@@ -123,9 +130,11 @@ class ConversationUploads:
                         "expires_at": (datetime.now(UTC) + timedelta(hours=24)).timestamp(),
                     }
                     async with self.identity.database.immediate_session() as writer:
-                        principal = await self.identity.require_device(writer, principal.device_id)
+                        principal = await self.identity.require_device(
+                            writer, principal.device_id, binding_id=principal.binding_id
+                        )
                         previous = await self.identity.replay(
-                            writer, principal.device_id, request_id, bound
+                            writer, principal.device_id, request_id, bound, principal=principal
                         )
                         if previous is not None:
                             return previous
@@ -136,10 +145,11 @@ class ConversationUploads:
                             person_id=principal.person_id,
                             request_id=request_id,
                             operation=operation,
-                            operation_ref=principal.person_id,
+                            operation_ref=principal.request_person_id,
                             payload_hash=bound,
                             resource_id=str(result["media_id"]),
                             result=result,
+                            request_person_id=principal.request_person_id,
                         )
                 return {**result, "replay": False}
             finally:

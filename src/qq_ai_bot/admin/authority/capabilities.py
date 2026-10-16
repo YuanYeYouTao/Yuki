@@ -65,6 +65,8 @@ CONTROL_CAPABILITY_IDS: Final[frozenset[str]] = frozenset(
         "identity.person.enable",
         "identity.person.forget",
         "identity.person.read",
+        "identity.person.merge",
+        "identity.person.rename",
         "identity.presence.read",
         "identity.presence.register",
         "identity.presence.set_ingest",

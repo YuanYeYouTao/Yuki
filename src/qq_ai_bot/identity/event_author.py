@@ -15,6 +15,7 @@ from qq_ai_bot.identity.canonical_repository import (
 )
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.person_identity import person_root_id
 from qq_ai_bot.identity.write_settings import identity_write_settings
 
 
@@ -89,7 +90,16 @@ async def project_event_authors(
                     IdentityBindingModel.external_account_id,
                     IdentityBindingModel.person_id,
                     IdentityBindingModel.status,
-                    CanonicalPersonModel.enabled,
+                    (
+                        CanonicalPersonModel.enabled
+                        & select(CanonicalPersonModel.enabled)
+                        .where(
+                            CanonicalPersonModel.id
+                            == person_root_id(IdentityBindingModel.person_id)
+                        )
+                        .correlate(IdentityBindingModel)
+                        .scalar_subquery()
+                    ).label("enabled"),
                 )
                 .outerjoin(
                     CanonicalPersonModel, CanonicalPersonModel.id == IdentityBindingModel.person_id

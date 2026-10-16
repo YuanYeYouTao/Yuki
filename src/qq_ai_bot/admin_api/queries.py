@@ -20,6 +20,7 @@ from qq_ai_bot.domain.identity import PrincipalId, RequestId
 from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel
 from qq_ai_bot.execution_trace.payload import decode_payload
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from qq_ai_bot.identity.person_identity import current_person_id
 from qq_ai_bot.memory.dream.db_models import MemoryDreamRunModel
 from qq_ai_bot.persistence.command_receipts import control_operation, run_operation
 from qq_ai_bot.persistence.database import Database
@@ -61,7 +62,16 @@ class AdminQueries:
             row = await session.get(CanonicalPersonModel, identity)
             if row is None:
                 raise fail(ProblemCode.NOT_FOUND)
-            return {"id": row.id, "revision": row.revision, "enabled": row.enabled}
+            root = await current_person_id(session, row.id)
+            current = await session.get(CanonicalPersonModel, root)
+            assert current is not None
+            return {
+                "id": root,
+                "source_person_id": row.id,
+                "revision": current.revision,
+                "enabled": current.enabled,
+                "display_name": current.display_name,
+            }
 
     async def binding(self, principal: ControlPrincipal, identity: str) -> dict[str, Any]:
         authorize(principal, "identity.binding.read")

@@ -15,6 +15,7 @@ from qq_ai_bot.client_api.works import work_access
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.conversation.uploads import ConversationUploads, owned_upload
 from qq_ai_bot.domain.messages import AttachmentKind, MessageAttachment
+from qq_ai_bot.identity.person_identity import person_family_condition
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_schema_v1 import work
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
@@ -32,7 +33,9 @@ class ClientFiles:
     ) -> tuple[tuple[dict[str, Any], ...], tuple[MessageAttachment, ...]]:
         segments, attachments = [], []
         async with self.identity.database.sessions() as session:
-            principal = await self.identity.require_device(session, principal.device_id)
+            principal = await self.identity.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
             for index, identity in enumerate(references):
                 item = await owned_upload(session, principal.person_id, identity)
                 kind = item["kind"]
@@ -61,7 +64,9 @@ class ClientFiles:
     async def _authorized(self, principal: ClientPrincipal, identity: str, version: str) -> None:
         async with self.identity.database.sessions() as session:
             await session.execute(text("BEGIN"))
-            principal = await self.identity.require_device(session, principal.device_id)
+            principal = await self.identity.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
             # The exact artifact and content version must occur together in a visible outbound.
             rows = await session.scalars(
                 select(ChatEventModel.segments_json)
@@ -71,7 +76,9 @@ class ClientFiles:
                 )
                 .where(
                     CanonicalConversationModel.kind == "private",
-                    CanonicalConversationModel.person_id == principal.person_id,
+                    person_family_condition(
+                        CanonicalConversationModel.person_id, principal.person_id
+                    ),
                     ChatEventModel.direction == "outbound",
                     ChatEventModel.author_kind == "yuki",
                     ChatEventModel.suppression_status == "keeper",

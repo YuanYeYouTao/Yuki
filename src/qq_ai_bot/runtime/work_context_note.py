@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 
+from qq_ai_bot.identity.person_identity import same_person_id
+
 if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_control import WorkControl
 
@@ -43,11 +45,6 @@ async def validate_note(
 
     identity = control.current["id"]
     source = json.loads(control.current["source_json"])
-    if control.context_access is not None and (
-        source.get("actor_person_id", "") != control.context_access.actor_person_id
-        or source.get("principal_kind", "person") != control.context_access.principal_kind
-    ):
-        raise ValueError("work_context_note_actor_mismatch")
     selected_events = {
         source.get("trigger_event_id"),
         *(control.session.event_ids if control.session is not None else ()),
@@ -56,6 +53,19 @@ async def validate_note(
     handles = []
     async with control.repository.database.sessions() as reader:
         await reader.execute(text("BEGIN"))
+        if control.context_access is not None and (
+            source.get("principal_kind", "person") != control.context_access.principal_kind
+            or (
+                source.get("actor_person_id", "") != control.context_access.actor_person_id
+                and (
+                    not source.get("actor_person_id")
+                    or not await same_person_id(
+                        reader, source["actor_person_id"], control.context_access.actor_person_id
+                    )
+                )
+            )
+        ):
+            raise ValueError("work_context_note_actor_mismatch")
         conversation = await reader.get(CanonicalConversationModel, control.lease.conversation_id)
         if conversation is None or conversation.generation != control.lease.generation:
             raise ValueError("work_context_note_source_changed")
@@ -146,13 +156,21 @@ async def visible_context_note(control: WorkControl) -> dict[str, Any] | None:
         payload = ContextNote.model_validate(saved.get("payload")).model_dump()
     except ValueError:
         return None
-    if (
-        source.get("actor_person_id", "") != access.actor_person_id
-        or source.get("principal_kind", "person") != access.principal_kind
-        or any(saved.get("access", {}).get(key) != value for key, value in asdict(access).items())
+    if source.get("principal_kind", "person") != access.principal_kind or any(
+        saved.get("access", {}).get(key) != value
+        for key, value in asdict(access).items()
+        if key != "actor_person_id"
     ):
         return None
     async with control.repository.database.sessions() as reader:
+        for person_id in (
+            source.get("actor_person_id", ""),
+            saved.get("access", {}).get("actor_person_id", ""),
+        ):
+            if person_id != access.actor_person_id and (
+                not person_id or not await same_person_id(reader, person_id, access.actor_person_id)
+            ):
+                return None
         conversation = await reader.get(CanonicalConversationModel, access.conversation_id)
         privacy = int(
             await reader.scalar(

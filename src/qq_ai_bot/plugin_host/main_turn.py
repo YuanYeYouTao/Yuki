@@ -220,13 +220,11 @@ async def _execute_plugin_main_turn(
         async def validate() -> None:
             if host._require(permission) is not invocation:
                 raise LLMInvalidRequestError("plugin invocation changed before model request")
-            from sqlalchemy import select
-
             from qq_ai_bot.identity.db_models import (
                 CanonicalPersonModel,
-                IdentityBindingModel,
                 PresenceModel,
             )
+            from qq_ai_bot.identity.person_identity import current_person_id
 
             async with ledger._database.sessions() as session:
                 person = (
@@ -235,26 +233,25 @@ async def _execute_plugin_main_turn(
                     else None
                 )
                 presence = await session.get(PresenceModel, invocation.presence_id)
-                active_person = (
-                    await session.scalar(
-                        select(IdentityBindingModel.person_id).where(
-                            IdentityBindingModel.person_id == actor.person_id,
-                            IdentityBindingModel.platform == actor.platform,
-                            IdentityBindingModel.external_account_id == actor.user_id,
-                            IdentityBindingModel.status == "active",
-                        )
+                current_person = (
+                    await session.get(
+                        CanonicalPersonModel, await current_person_id(session, actor.person_id)
                     )
-                    if actor.user_id
+                    if person is not None and actor.person_id is not None
                     else None
                 )
             if (
                 presence is None
-                or not presence.enabled
                 or presence.platform != actor.platform
                 or presence.external_account_id != invocation.bot_user_id
                 or (
                     actor.principal_kind == "person"
-                    and (person is None or not person.enabled or active_person != actor.person_id)
+                    and (
+                        person is None
+                        or not person.enabled
+                        or current_person is None
+                        or not current_person.enabled
+                    )
                 )
             ):
                 raise PluginPermissionError("plugin source identity is no longer active")

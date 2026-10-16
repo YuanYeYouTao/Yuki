@@ -6,7 +6,7 @@
 
 ## 仓库与 CI
 
-Quality workflow 检查 Python 的 Ruff、Mypy、pytest 与 Node 24 前端测试及构建。
+当前开发分支的 Quality workflow 检查 Python 的 Ruff、Mypy 和 pytest；旧 WebUI 前端已退役。3.9.0 发行时的检查范围保留在原发布记录中。
 正式 tag 发布使用 `scripts/release_validate.py` 核对 tag、项目版本、运行时版本、锁文件、安装器及 main 祖先关系；不再运行 Memory synthetic quality/baseline/release-check 或独立迁移矩阵。迁移与启动由实际构建镜像的 release smoke 核验。
 
 ## 发布流程

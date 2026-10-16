@@ -33,12 +33,19 @@ def _facts(path: Path) -> tuple[str, int]:
 
 class PersonalClient:
     def __init__(
-        self, url: str, token: str, outbox: Outbox, *, http: httpx.AsyncClient | None = None
+        self,
+        url: str,
+        token: str,
+        outbox: Outbox,
+        *,
+        http: httpx.AsyncClient | None = None,
+        entry_binding_id: str | None = None,
     ) -> None:
         self.url, self.token, self.outbox = url.rstrip("/"), token, outbox
         self.http = http or httpx.AsyncClient(timeout=30, trust_env=False)
         self._owns_http = http is None
         self._me: dict[str, Any] | None = None
+        self._entry_binding_id = entry_binding_id
         self.snapshot: dict[str, Any] = {}
         self.events: dict[str, list[dict[str, Any]]] = {}
 
@@ -51,7 +58,10 @@ class PersonalClient:
 
     @property
     def headers(self) -> dict[str, str]:
-        return {"Authorization": f"Bearer {self.token}"}
+        return {
+            "Authorization": f"Bearer {self.token}",
+            **({"X-Yuki-Entry": self._entry_binding_id} if self._entry_binding_id else {}),
+        }
 
     @staticmethod
     def data(response: httpx.Response) -> dict[str, Any]:
@@ -67,9 +77,32 @@ class PersonalClient:
         )
 
     async def _bind(self) -> None:
-        if self._me is None:
+        if self._me is None or "request_person_id" not in self._me:
             me = await self.get("me")
-            self.outbox.bind(self.url, me["person_id"])
+            owner = self.outbox.owner()
+            if owner is not None and self._entry_binding_id is None:
+                binding = next(
+                    (
+                        row["binding_id"]
+                        for row in me["bindings"]
+                        if row["platform"] == "app"
+                        and row["source_person_id"] == owner["person"]
+                        and owner["binding_id"] in {None, row["binding_id"]}
+                    ),
+                    None,
+                )
+                if owner["server"] != self.url or binding is None:
+                    raise ValueError("outbox_owner_mismatch")
+                if binding != me["binding_id"]:
+                    self._entry_binding_id = binding
+                    me = await self.get("me")
+            self.outbox.bind(
+                self.url,
+                me["request_person_id"],
+                binding_id=me["binding_id"],
+                conversation_id=me["conversation_id"],
+            )
+            self._entry_binding_id = me["binding_id"]
             self._me = me
 
     async def prepare_message(
@@ -153,15 +186,17 @@ class PersonalClient:
 
     def _verify(self, row: dict[str, Any], original: dict[str, Any]) -> None:
         assert self._me is not None
+        owner = self.outbox.owner()
+        assert owner is not None
         body = {
             key: value
             for key, value in row["body"].items()
             if key not in {"request_id", "local_path"}
         }
         if row["path"] == "messages":
-            operation, target = "message", self._me["conversation_id"]
+            operation, target = "message", owner["conversation_id"]
         elif row["path"] == "uploads":
-            operation, target = "client.upload", self._me["person_id"]
+            operation, target = "client.upload", owner["person"]
         else:
             _, target, action = row["path"].split("/")
             operation = "client.work_input" if action == "inputs" else "client.work_cancel"

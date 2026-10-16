@@ -3,6 +3,9 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
+from sqlalchemy import or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from qq_ai_bot.identity.db_models import IdentityBindingModel
 
 
@@ -36,3 +39,30 @@ class BindingOwnership:
         return (self.starts_at is None or point >= utc(self.starts_at)) and (
             self.ends_at is None or point < utc(self.ends_at)
         )
+
+
+async def historical_person_ids(
+    session: AsyncSession,
+    platform: str,
+    accounts: tuple[str, ...],
+    at: datetime,
+) -> dict[str, str]:
+    """Read the original human owners at an event's time, including transferred accounts."""
+
+    if not accounts:
+        return {}
+    binding = IdentityBindingModel
+    return dict(
+        (
+            await session.execute(
+                select(binding.external_account_id, binding.person_id).where(
+                    binding.platform == platform,
+                    binding.external_account_id.in_(accounts),
+                    or_(binding.history_starts_at.is_(None), binding.history_starts_at <= at),
+                    or_(binding.status != "transferred", binding.updated_at > at),
+                )
+            )
+        )
+        .tuples()
+        .all()
+    )

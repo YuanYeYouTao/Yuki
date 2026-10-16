@@ -51,6 +51,8 @@ GRANTS = (
     "identity.client.pair",
     "identity.client.revoke",
     "identity.person.forget",
+    "identity.person.merge",
+    "identity.person.rename",
     "control.plugin.read",
     "control.plugin.mutate",
     "control.plugin.config.content.read",
@@ -494,3 +496,40 @@ async def test_work_management_keeps_original_work_and_replays_one_revision(
     assert actual["revision"] == changed.json()["data"]["revision"]
     assert actual["model_requests"] == row["model_requests"]
     assert actual["state"] == ("cancelled" if action == "cancel" else "queued")
+
+
+async def test_person_merge_and_names_use_real_operator_and_preserve_original_replay(admin):
+    client, *_ = admin
+    source = (await client.post("/admin/v1/persons", json=command(display_name="Source"))).json()[
+        "data"
+    ]["resource_id"]
+    target = (await client.post("/admin/v1/persons", json=command(display_name="Target"))).json()[
+        "data"
+    ]["resource_id"]
+    request = {"request_id": str(uuid4()), "to_person": target}
+    denied = await client.post(
+        f"/admin/v1/persons/{source}/merge",
+        json=request,
+        headers={"Authorization": f"Bearer {READER}"},
+    )
+    assert denied.status_code == 403
+    merged = await client.post(f"/admin/v1/persons/{source}/merge", json=request)
+    assert merged.status_code == 200, merged.text
+    assert merged.json()["data"]["person_id"] == target
+    renamed = await client.post(
+        f"/admin/v1/persons/{source}/rename",
+        json={
+            "request_id": str(uuid4()),
+            "display_name": "Chosen",
+        },
+    )
+    assert renamed.status_code == 200, renamed.text
+    current = (await client.get(f"/admin/v1/persons/{source}")).json()["data"]
+    assert current["id"] == target and current["display_name"] == "Chosen"
+    replay = await client.post(f"/admin/v1/persons/{source}/merge", json=request)
+    assert replay.status_code == 200 and replay.json()["data"]["replay"]
+    assert replay.json()["data"]["person_id"] == target
+    unknown = await client.post(
+        f"/admin/v1/persons/{uuid4()}/merge", json={**request, "request_id": str(uuid4())}
+    )
+    assert unknown.status_code == 404, unknown.text

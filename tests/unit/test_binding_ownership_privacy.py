@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.memory_identity import transfer_account
 from tests.support.social_identity_cases import social_env
 from tests.unit.test_client_identity import code_for
 from tests.unit.test_rebuild_receipt_finalization import _seed
@@ -57,15 +58,13 @@ def values(row):
 @pytest.mark.parametrize("forget_current", [False, True])
 async def test_transfer_erases_only_selected_person_and_source_period(database, forget_current):
     seeded = await _seed(database, 2, proposals=True)
-    service, current_person, code = await code_for(database, "1002")
+    service, current_person, _code = await code_for(database, "1002")
     async with database.sessions() as session:
         old = await find_identity_binding(session, "1001")
         old_person, old_binding = old.person_id, old.id
     old_mention = await append(database, "old period mentions 1001", account="1003", group=True)
     old_device = await pair_owner(service, old_person)
-    await service.claim_account(
-        code["code"], platform="qq", account="1001", display_name="B", message_id=str(uuid4())
-    )
+    await transfer_account(database, "1001")
     current = await append(database, "current owner 1001")
     current_mention = await append(
         database, "current period mentions 1001", account="1003", group=True
@@ -186,10 +185,7 @@ async def test_live_history_uses_current_row_even_after_previous_owner_is_forgot
         {"target": {"kind": "person", "target_id": env.person}, "text": "old"},
         env.context,
     )
-    service, _target, code = await code_for(database, "1002")
-    await service.claim_account(
-        code["code"], platform="qq", account="10001", display_name="B", message_id=str(uuid4())
-    )
+    await transfer_account(database, "10001")
     new_event = await append(database, "new owner's message", account="10001")
     if forget_previous:
         assert await PeopleRepository(database).delete_person_id(env.person)
@@ -219,10 +215,7 @@ async def test_forget_gate_scope_does_not_cancel_previous_owner_group_work(datab
         direction="inbound",
         content="previous owner's group message",
     )
-    service, _, code = await code_for(database, "1002")
-    await service.claim_account(
-        code["code"], platform="qq", account="1001", display_name="B", message_id=str(uuid4())
-    )
+    await transfer_account(database, "1001")
     await append(database, "current owner's private message")
     from qq_ai_bot.identity.canonical_repository import find_identity_binding
 

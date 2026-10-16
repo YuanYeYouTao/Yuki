@@ -43,7 +43,12 @@ Replies use the original Conversation entry and actual Presence. Explicit delive
 to another entry resolves its real Binding; proactive sends use the actual target
 route. Source, ownership, permission and connection checks remain at execution.
 Internal Work, child execution and automation do not require an online gateway or
-an unchanged connection generation before model, memory or workspace work.
+an unchanged connection generation, a unique human platform account or an active
+original human Binding before model, memory or workspace work. Current Person
+authority follows explicit human merges; original sources, request proofs and root
+budgets remain unchanged. Account transfer does not revoke the original human's
+accepted internal Work. Actual Person revocation and new transport qualification
+remain effective.
 
 Social owns original operation IDs, budget reservations, claim, ledger and durable
 receipts. A GatewayProvider's native adapter performs protocol encoding, media
@@ -58,6 +63,15 @@ Confirmed file success survives caption failure. Replays project original receip
 and confirmed ledger facts, including before the final tool result was persisted.
 Native message references remain in transport/receipts; public tool results use
 internal operation/event IDs. Recall uses the original Presence and message locator.
+
+An original receipt is read against its original call parameters and committed
+transport facts before today's media TTL, conversation reset floor or route state.
+SDK image replay verifies the immutable snapshot's original plugin handle without
+reopening expired media. Fresh attachment use still requires available media.
+Explicit forgetting may remove content and its Conversation while a send is in
+flight. A real transport confirmation settles its original content-free success
+receipt with no event link when necessary; it never restores forgotten content or
+sends again. An unconfirmed operation remains unknown.
 
 The public history tool reads authorized canonical ledger events, even while the
 platform is offline. Explicit Conversation IDs disambiguate multiple entries.

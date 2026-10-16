@@ -18,6 +18,7 @@ from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationMode
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
+from qq_ai_bot.identity.person_identity import same_person_condition, same_person_id
 from qq_ai_bot.memory.claim_processor import (
     MemoryClaimProcessor,
     MemoryClaimResolution,
@@ -263,7 +264,9 @@ class MemoryMutationService:
             session=session,
         )
         partition = self._dream_partition(sources[0])
-        if any(self._dream_partition(item) != partition for item in sources[1:]):
+        if any(
+            item.kind != sources[0].kind for item in sources[1:]
+        ) or not await self._facts.same_targets(sources, session=session):
             raise ValueError("dream mutation cannot cross memory partitions")
         if operation_type is DreamOperationType.RECOMPOSE:
             if any(not 1 <= output.importance <= 5 for output in recompose_outputs):
@@ -1150,7 +1153,7 @@ class MemoryMutationService:
             config_scope=MemoryConfigScope(space_id=source.space_id),
         )
         self._validate_self_request(request, target, None, fact=fact, merge_fact=merge_fact)
-        self._validate_fact_requirements(
+        await self._validate_fact_requirements(
             request,
             target,
             owners,
@@ -1823,13 +1826,16 @@ class MemoryMutationService:
                     session=identity_session,
                     person_id=context.actor_person_id or event.author_person_id,
                 )
+                actor_owns_target = bool(
+                    actor_person_id
+                    and target_owners.subject_person_id
+                    and await same_person_id(
+                        identity_session, actor_person_id, target_owners.subject_person_id
+                    )
+                )
         except MemoryPartitionResolutionError as exc:
             raise MemoryMutationRejected("canonical_identity_unavailable") from exc
-        actor_owns_target = bool(
-            actor_person_id
-            and target_owners.subject_person_id
-            and actor_person_id == target_owners.subject_person_id
-        )
+
         self._authorize(
             request.operation,
             target,
@@ -1859,7 +1865,7 @@ class MemoryMutationService:
                 update={"merge_fact_id": merge_fact.id, "merge_selector": None}
             )
         self._validate_self_request(request, target, event, fact=fact, merge_fact=merge_fact)
-        self._validate_fact_requirements(
+        await self._validate_fact_requirements(
             request,
             target,
             target_owners,
@@ -2446,8 +2452,8 @@ class MemoryMutationService:
             }:
                 raise MemoryMutationRejected("private_self_fact_cannot_be_global")
 
-    @staticmethod
-    def _validate_fact_requirements(
+    async def _validate_fact_requirements(
+        self,
         request: MemoryMutationRequest,
         target: ResolvedSubject,
         target_owners: MemoryFactCanonicalOwners,
@@ -2478,19 +2484,9 @@ class MemoryMutationService:
             and fact.status is not request.expected_fact_state
         ):
             raise MemoryMutationRejected("expected_fact_state_mismatch")
-        fact_target = MemoryFactService.target_signature(
-            scope_type=fact.scope_type,
-            visibility_type=fact.visibility_type,
-            owners=MemoryFactService.persisted_target_owners(fact),
-        )
-        requested_target = MemoryFactService.target_signature(
-            scope_type=target.scope_type,
-            visibility_type=target.visibility_type,
-            owners=target_owners,
-        )
         if (
             request.operation is not MemoryMutationOperation.REASSIGN
-            and fact_target != requested_target
+            and not await self._facts.same_targets((fact, target))
         ):
             raise MemoryMutationRejected("fact_target_mismatch")
         if request.operation is MemoryMutationOperation.REASSIGN:
@@ -2504,19 +2500,14 @@ class MemoryMutationService:
                 raise MemoryMutationRejected("reassign_must_remain_in_current_group")
             if (
                 not context.actor_is_superuser
-                and fact.canonical_subject_person_id != actor_person_id
+                and not await self._facts.person_owns_fact(fact, actor_person_id=actor_person_id)
                 and fact.authority in {MemoryAuthority.EXPLICIT, MemoryAuthority.SELF_REPORT}
             ):
                 raise MemoryMutationRejected("third_party_cannot_reassign_subject_owned_fact")
         if request.operation is MemoryMutationOperation.MERGE:
             if merge_fact is None:
                 raise MemoryMutationRejected("merge_fact_required")
-            merge_target = MemoryFactService.target_signature(
-                scope_type=merge_fact.scope_type,
-                visibility_type=merge_fact.visibility_type,
-                owners=MemoryFactService.persisted_target_owners(merge_fact),
-            )
-            if merge_target != requested_target:
+            if not await self._facts.same_targets((merge_fact, target)):
                 raise MemoryMutationRejected("merge_target_mismatch")
         elif merge_fact is not None:
             raise MemoryMutationRejected("merge_fact_id_only_valid_for_merge")
@@ -2809,21 +2800,31 @@ class MemoryMutationService:
         except MemoryPartitionResolutionError:
             return False
         if claim.fact.scope_type is MemoryScopeType.PERSON:
-            return owners.subject_person_id == event.author_person_id
+            return bool(
+                owners.subject_person_id
+                and event.author_person_id
+                and await same_person_id(session, owners.subject_person_id, event.author_person_id)
+            )
         if owners.subject_space_id is None or owners.subject_space_id != source.space_id:
             return False
         if claim.fact.scope_type is MemoryScopeType.GROUP:
             return True
         if claim.fact.scope_type is not MemoryScopeType.PERSON_GROUP:
             return False
-        if owners.subject_person_id == event.author_person_id:
+        if (
+            owners.subject_person_id
+            and event.author_person_id
+            and await same_person_id(session, owners.subject_person_id, event.author_person_id)
+        ):
             return True
         # Named-member aliases, mentions and replies all resolve to actual members
         # of the source Space before a claim reaches this private boundary.
         return (
             await session.scalar(
                 select(MembershipModel.canonical_person_id).where(
-                    MembershipModel.canonical_person_id == owners.subject_person_id,
+                    same_person_condition(
+                        MembershipModel.canonical_person_id, owners.subject_person_id
+                    ),
                     MembershipModel.canonical_space_id == source.space_id,
                 )
             )

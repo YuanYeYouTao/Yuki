@@ -22,7 +22,7 @@ override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`�
 
 ## 方法与 CLI
 
-所有写入都要求 UUID4 `request_id` 与非负整数 `expected_revision`，不接受请求方自报主体。
+状态命令使用 UUID4 `request_id` 与非负整数 `expected_revision`；下述身份关联类操作只使用原请求 UUID，不接受请求方自报主体。
 返回 `data`；命令含 `success`、资源 ID、revision、审计 ID 与公开结果，外部命令可含原 operation。
 
 | 方法 | CLI／消费者 | 权限 |
@@ -35,6 +35,7 @@ override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`�
 | `POST /persons/{id}/client-pair`；`POST /devices/{id}/revoke` | `admin client pair --person <id>`；`admin client revoke <id>` | `identity.client.pair\|revoke` |
 | `POST /bindings/{id}/transfer` | `admin binding transfer <id> --to-person <id>` | `identity.binding.transfer` |
 | `POST /persons/{id}/forget` | `admin person forget <id>` | `identity.person.forget` |
+| `POST /persons/{id}/merge`；`POST /persons/{id}/rename` | `admin person merge <id> --to-person <id>`；`admin person rename <id> <name>` | `identity.person.merge\|rename` |
 | `GET /plugins`、`GET /plugins/{id}` | `plugin list\|inspect\|permissions`、部署向导 | `control.plugin.read` |
 | `POST /plugins/{id}/actions/{discover\|approve\|enable\|disable\|doctor}` | 同名 `plugin` 命令、部署向导 | `control.plugin.mutate` |
 | `GET /plugins/{id}/configuration`；`POST` 同路径 | `plugin configuration\|configure` | `control.plugin.config.content.read\|mutate` |
@@ -53,6 +54,16 @@ override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`�
 `app` 绑定不可转移。停用保持历史、Memory、Work 和回执归属。平台标识沿原通用字符串合同。
 配对码、撤销、转移与遗忘使用 `{request_id}`，转移另需 `to_person`，不需要 revision。
 配对码明文只返回一次；相同请求重放返回原码 ID 与到期时间，不能取回明文。
+
+## 人物归并与名称
+
+`POST /persons` 可带 `display_name`，缺省为空；名称不是主键，允许重名和没有账号。
+`POST /persons/{id}/merge {request_id,to_person}` 需 `identity.person.merge`；
+`POST /persons/{id}/rename {request_id,display_name}` 需 `identity.person.rename`。
+两者调用共同人物领域操作，当前查询解析最终人物，原请求按原 UUID/参数返回原回执。
+归并和改名不创建 App、不切换入口、不重写 Conversation、原事件或已付输入。
+`GET /persons/{id}` 同时返回当前 `id`、原查询 `source_person_id`、主名和当前 revision。
+账号真正转给另一人继续用独立 `binding transfer`，不会创建同人关系。
 
 ## 回执与效果
 
@@ -81,7 +92,9 @@ Work 取消与续跑调用 `manage_work`，沿原 revision、执行身份、来�
 ```sh
 qq-ai-bot-cli admin model apply ./models.toml --revision <revision>
 qq-ai-bot-cli admin model secret set MY_MODEL_KEY --from-env NEW_MODEL_SECRET --revision <revision>
-qq-ai-bot-cli admin person create
+qq-ai-bot-cli admin person create --display-name "人物名称"
+qq-ai-bot-cli admin person merge <source-person-id> --to-person <target-person-id>
+qq-ai-bot-cli admin person rename <person-id> "新名称"
 qq-ai-bot-cli admin binding attach --person <person-id> --platform qq --account <account> --revision <revision>
 ```
 

@@ -32,9 +32,11 @@ API 4.0 的普通 user_id/group_id/target_id 参数分别表示内部 Person/Spa
 `send_private_forward_msg`、`send_group_forward_msg`、`send_forward_msg` 尚无同等回执合同，
 当前在发送前明确拒绝，不通过原始动作绕过。其他管理动作保留原有权限与行为。
 
-发送前先持久化执行意图。只有严格有效的网关消息 ID 才确认成功，成功回执和账本在同一
-事务提交；超时、无效回执、取消和提交失败记为 `unknown` / `uncertain=true`，不自动重试，
+发送前先持久化执行意图。只有严格有效的网关消息 ID 才确认成功，通常成功回执和账本在同一
+事务提交；没有真实平台确认的超时、无效回执或取消保留 `unknown` / `uncertain=true`，不自动重试，
 仅该次调用保留未知事实，后续独立显式发送继续执行。已提交成功的回执不会因后续唤醒通知失败而降级。
+Social与SDK OneBot两条路径收到真实确认后，即使并发遗忘已不允许追加正文，也沿原operation结算
+无正文成功事实，`event_id`可为空；不复活已删除的资料，也不重新发送。
 
 每个显式发送调用使用独立序号，相同正文主动调用两次仍发送两次，不按正文去重。
 工具调用使用原执行/调用 ID；归档的旧自动化插件步骤保留原 run/step ID，新的定时执行已退出步骤解释器。同一可信身份按原顺序
@@ -43,6 +45,15 @@ API 4.0 的普通 user_id/group_id/target_id 参数分别表示内部 Person/Spa
 **不承诺任意插件回调的跨重启 exactly-once**；插件不得据 `unknown` 自行重跑整个回调。
 没有真实来源、canonical 会话或持久账本时在网络发送前拒绝，不补造入站消息。
 这不是自动最终回复，也不增加插件发送权限或新的 SDK 参数。
+
+SDK图片重放先核原callback/call、参数和不可变snapshot来源，再读取原Social结果，不重新读取已到期或
+已清理的插件媒体。新媒体发送仍核当前媒体资格。分段发送直接使用Social完整聚合结果及各段真实状态，
+不以父记录的`prepared`否定已发送部分。OneBot原调用按原参数和已提交传输事实对账，不先要求今日
+`/ai new`水位、目标Binding或Presence仍可用；实际新派发仍在原claim边界复核当前来源和资格。
+
+人物作用域按当前归并关系核权，原插件session、grant、publication和回执保留原ID及来源。
+USER配置只读取当前根人物的有效行，原来源冲突行不作为unset后的fallback；plugin-global KV中的
+不透明JSON不因人物合并而改写。原人物或根人物禁用、安装批准和grant撤销仍生效。
 
 Memory V2 的写入仍统一经过 Host `MemoryFactService`。插件 update 创建修正版本，delete 只做显式
 失效；插件不能直接访问 Repository、指定事实状态/authority、物理删除审计记录或绕过当前真实

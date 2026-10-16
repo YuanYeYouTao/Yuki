@@ -43,6 +43,10 @@ class CommandBody(BaseModel):
         )
 
 
+class PersonBody(CommandBody):
+    display_name: str = Field(default="", max_length=128)
+
+
 class BindingBody(CommandBody):
     platform: str
     external_account_id: str
@@ -76,6 +80,10 @@ class IdentityRequest(BaseModel):
 
 class TransferBody(IdentityRequest):
     to_person: UUID4
+
+
+class RenameBody(IdentityRequest):
+    display_name: str = Field(max_length=128)
 
 
 def result_view(result: ControlResult) -> dict[str, Any]:
@@ -123,14 +131,39 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         }
 
     @router.post("/persons")
-    async def create_person(body: CommandBody, actor: Actor) -> Any:
+    async def create_person(body: PersonBody, actor: Actor) -> Any:
+        payload = {"display_name": body.display_name} if body.display_name else {}
         return {
-            "data": result_view(await resolve().commands.create_person(actor, body.command({})))
+            "data": result_view(
+                await resolve().commands.create_person(actor, body.command(payload))
+            )
         }
 
     @router.get("/persons/{identity}")
     async def person(identity: UUID4, actor: Actor) -> Any:
         return {"data": await resolve().queries.person(actor, str(identity))}
+
+    @router.post("/persons/{identity}/merge")
+    async def merge_person(identity: UUID4, body: TransferBody, actor: Actor) -> Any:
+        return {
+            "data": await resolve().commands.change_person(
+                actor,
+                str(identity),
+                str(body.request_id),
+                to_person=str(body.to_person),
+            )
+        }
+
+    @router.post("/persons/{identity}/rename")
+    async def rename_person(identity: UUID4, body: RenameBody, actor: Actor) -> Any:
+        return {
+            "data": await resolve().commands.change_person(
+                actor,
+                str(identity),
+                str(body.request_id),
+                display_name=body.display_name,
+            )
+        }
 
     @router.post("/persons/{identity}/disable")
     async def disable_person(identity: UUID4, body: CommandBody, actor: Actor) -> Any:

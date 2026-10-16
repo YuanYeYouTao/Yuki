@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
+from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel
+from qq_ai_bot.identity.ownership_interval import BindingOwnership
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -21,6 +24,7 @@ class TrustedSourceFence:
     identity_tokens: tuple[Any, ...]
     reply_token: tuple[Any, ...] | None
     platform: str | None = None
+    observed_at: datetime | None = None
 
 
 async def _reply_tokens(session: AsyncSession, ids: tuple[int, ...]) -> dict[int, tuple[Any, ...]]:
@@ -48,43 +52,33 @@ async def _reply_tokens(session: AsyncSession, ids: tuple[int, ...]) -> dict[int
 
 
 async def _identity_tokens(
-    session: AsyncSession, ids: tuple[tuple[str | None, str], ...]
-) -> dict[tuple[str | None, str], tuple[Any, ...]]:
+    session: AsyncSession, ids: tuple[tuple[str | None, str, datetime | None], ...]
+) -> dict[tuple[str | None, str, datetime | None], tuple[Any, ...]]:
     if not ids:
         return {}
-    binding = IdentityBindingModel
-    person = CanonicalPersonModel
-    bindings = {
-        (row.platform, str(row.external_account_id)): tuple(row)
-        for row in await session.execute(
-            select(
-                binding.platform,
-                binding.external_account_id,
-                binding.id,
-                binding.person_id,
-                binding.status,
-                binding.revision,
-                person.enabled,
-                person.revision,
+    bindings: dict[tuple[str | None, str], list[tuple[BindingOwnership, str]]] = defaultdict(list)
+    for binding in await session.scalars(
+        select(IdentityBindingModel).where(
+            tuple_(IdentityBindingModel.platform, IdentityBindingModel.external_account_id).in_(
+                tuple({(platform, account) for platform, account, _at in ids})
             )
-            .outerjoin(person, person.id == binding.person_id)
-            .where(tuple_(binding.platform, binding.external_account_id).in_(ids))
         )
-    }
-    presence = PresenceModel
-    presences = {
-        (row.platform, str(row.external_account_id)): tuple(row)
-        for row in await session.execute(
-            select(
-                presence.platform,
-                presence.external_account_id,
-                presence.id,
-                presence.enabled,
-                presence.revision,
-            ).where(tuple_(presence.platform, presence.external_account_id).in_(ids))
+    ):
+        bindings[(binding.platform, binding.external_account_id)].append(
+            (BindingOwnership.of(binding), binding.person_id)
         )
+    return {
+        key: tuple(
+            sorted(
+                {
+                    owner
+                    for interval, owner in bindings.get((key[0], key[1]), ())
+                    if key[2] is not None and interval.contains(key[2])
+                }
+            )
+        )
+        for key in ids
     }
-    return {account: (bindings.get(account), presences.get(account)) for account in ids}
 
 
 async def prepare_trusted_sources(
@@ -110,27 +104,39 @@ async def prepare_trusted_sources(
             )
         )
     }
+    observed = dict(
+        (
+            await session.execute(
+                select(ChatEventModel.id, ChatEventModel.observed_at).where(
+                    ChatEventModel.id.in_(tuple(event.id for event in events))
+                )
+            )
+        )
+        .tuples()
+        .all()
+    )
     accounts: dict[int, tuple[str, ...]] = {}
     for event in events:
-        refs = list(event.mentioned_user_ids)
-        if not refs and platforms.get(event.ingress_presence_id) == "qq":
+        recorded = bool(event.mentioned_person_ids) or any(
+            part.get("type") == "yuki_context"
+            and isinstance(data := part.get("data"), dict)
+            and "mentioned_person_ids" in data
+            for part in event.segments
+        )
+        refs = [] if recorded else list(event.mentioned_user_ids)
+        if not recorded and not refs and platforms.get(event.ingress_presence_id) == "qq":
             for segment in event.segments:
                 data = segment.get("data")
                 if segment.get("type") == "at" and isinstance(data, dict):
                     raw = str(data.get("qq", "")).strip()
                     if raw.isdigit():
                         refs.append(raw)
-        if event.reply_sender_user_id:
-            refs.append(event.reply_sender_user_id)
-        elif event.reply_to_event_id in replies:
-            # get_reply_event uses this internal ID, never a platform-ID lookup.
-            refs.append(str(replies[event.reply_to_event_id][5]))
         accounts[event.id] = tuple(sorted({str(ref).strip() for ref in refs if str(ref).strip()}))
     identities = await _identity_tokens(
         session,
         tuple(
             {
-                (platforms.get(event.ingress_presence_id), account)
+                (platforms.get(event.ingress_presence_id), account, observed.get(event.id))
                 for event in events
                 for account in accounts[event.id]
             }
@@ -141,11 +147,14 @@ async def prepare_trusted_sources(
             account_ids=accounts[event.id],
             reply_event_id=event.reply_to_event_id,
             identity_tokens=tuple(
-                identities[(platforms.get(event.ingress_presence_id), account)]
+                identities[
+                    (platforms.get(event.ingress_presence_id), account, observed.get(event.id))
+                ]
                 for account in accounts[event.id]
             ),
             reply_token=replies.get(event.reply_to_event_id) if event.reply_to_event_id else None,
             platform=platforms.get(event.ingress_presence_id),
+            observed_at=observed.get(event.id),
         )
         for event in events
     }
@@ -156,7 +165,11 @@ async def changed_trusted_sources(
 ) -> frozenset[int]:
     """Batch-check the same references under the writer, without rehydrating any body."""
     accounts = tuple(
-        {(fence.platform, account) for fence in prepared.values() for account in fence.account_ids}
+        {
+            (fence.platform, account, fence.observed_at)
+            for fence in prepared.values()
+            for account in fence.account_ids
+        }
     )
     reply_ids = tuple(
         sorted({fence.reply_event_id for fence in prepared.values() if fence.reply_event_id})
@@ -167,7 +180,10 @@ async def changed_trusted_sources(
         event_id
         for event_id, fence in prepared.items()
         if fence.identity_tokens
-        != tuple(identities[(fence.platform, account)] for account in fence.account_ids)
+        != tuple(
+            identities[(fence.platform, account, fence.observed_at)]
+            for account in fence.account_ids
+        )
         or fence.reply_token
         != (replies.get(fence.reply_event_id) if fence.reply_event_id else None)
     )

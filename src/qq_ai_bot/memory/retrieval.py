@@ -6,6 +6,7 @@ import hashlib
 import logging
 import time
 
+from qq_ai_bot.identity.person_identity import current_person_ids
 from qq_ai_bot.memory.authorized_scope import (
     AuthorizedMemoryScope,
     target_for_authorized_fact,
@@ -216,10 +217,23 @@ class MemoryRetriever:
         semantic_by_id: dict[int, AuthorizedSemanticCandidate] = {
             item.fact_id: item for item in semantic
         }
+        async with self._repository.database.sessions() as reader:
+            person_roots = await current_person_ids(
+                reader,
+                (
+                    person
+                    for fact in facts
+                    for person in (
+                        fact.canonical_subject_person_id,
+                        fact.canonical_visibility_person_id,
+                    )
+                    if person is not None
+                ),
+            )
         by_target: dict[str, list[MemoryFact]] = {}
         targets: dict[str, MemoryEntityTarget] = {}
         for fact in facts:
-            target = target_for_authorized_fact(fact, scope)
+            target = target_for_authorized_fact(fact, scope, person_roots=person_roots)
             targets[target.block_id] = target
             by_target.setdefault(target.block_id, []).append(fact)
         pooled: list[MemoryRetrievalHit] = []

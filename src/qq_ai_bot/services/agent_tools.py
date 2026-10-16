@@ -1507,10 +1507,12 @@ class AgentToolService:
             or (selected_space_id is not None and selected_space_id != space_id)
         ):
             return _ToolFailure("permission_denied", "当前执行没有该人物的读取授权")
+        from qq_ai_bot.identity.person_identity import same_person_condition
+
         async with self._people.database.sessions() as session:
             membership = await session.scalar(
                 select(MembershipModel.canonical_person_id).where(
-                    MembershipModel.canonical_person_id == person_id,
+                    same_person_condition(MembershipModel.canonical_person_id, person_id),
                     MembershipModel.canonical_space_id == space_id,
                 )
             )
@@ -1946,7 +1948,12 @@ class AgentToolService:
         person_id = owners[0]
         if person_id is None or not canonical_fact_owner_complete(fact):
             return False
-        return bool(fact.canonical_subject_person_id == person_id)
+        from qq_ai_bot.identity.person_identity import same_person_id
+
+        if fact.canonical_subject_person_id is None:
+            return False
+        async with self._people.database.sessions() as session:
+            return await same_person_id(session, fact.canonical_subject_person_id, person_id)
 
     async def _runtime_canonical_owners(
         self, runtime: ToolRuntime

@@ -14,6 +14,7 @@ from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.identity.canonical_repository import find_identity_binding, find_presence
 from qq_ai_bot.identity.db_models import IdentityBindingModel
+from qq_ai_bot.identity.person_identity import current_person_id
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
@@ -75,7 +76,7 @@ async def test_expired_codes_and_other_person_devices_do_not_disclose_identity(d
         await service.revoke(principal, str(uuid4()), str(uuid4()))
 
 
-async def test_account_transfer_keeps_old_owner_and_history_and_creates_new_interval(database):
+async def test_account_claim_merges_person_and_preserves_original_binding_and_history(database):
     service, target, issued = await code_for(database, "1002")
     writer = ScopedEventLedgerUnitOfWork(database)
     old_event = (
@@ -97,13 +98,13 @@ async def test_account_transfer_keeps_old_owner_and_history_and_creates_new_inte
         display_name="same name",
         message_id="link-request",
     )
-    assert linked["transferred"] and linked["person_id"] == target
+    assert linked["merged"] and not linked["transferred"] and linked["person_id"] == target
     async with database.sessions() as session:
         old = await session.get(IdentityBindingModel, old_binding)
         current = await find_identity_binding(session, "1001")
-        assert old.person_id == old_person and old.status == "transferred"
-        assert current.id != old.id and current.person_id == target
-        assert current.history_starts_at == current.created_at == old.updated_at
+        assert old.person_id == old_person and old.status == "active"
+        assert current.id == old.id and current.person_id == old_person
+        assert await current_person_id(session, old_person) == target
         assert (
             await session.get(CanonicalConversationModel, old_event.canonical_conversation_id)
         ).person_id == old_person
@@ -117,7 +118,7 @@ async def test_account_transfer_keeps_old_owner_and_history_and_creates_new_inte
                     )
                 )
             )
-            == 0
+            == 1
         )
     new_event = (
         await writer.append(
@@ -130,8 +131,10 @@ async def test_account_transfer_keeps_old_owner_and_history_and_creates_new_inte
     ).event
     async with database.sessions() as session:
         entry = await session.get(CanonicalConversationModel, new_event.canonical_conversation_id)
-        assert entry.person_id == target and entry.identity_binding_id == current.id
-        assert entry.id != old_event.canonical_conversation_id
+        assert entry.person_id == old_person and entry.identity_binding_id == current.id
+        assert entry.id == old_event.canonical_conversation_id
+        assert new_event.author_person_id == old_event.author_person_id == old_person
+        assert await current_person_id(session, new_event.author_person_id) == target
     with pytest.raises(ClientError, match="unauthenticated"):
         await service.claim_account(
             issued["code"],

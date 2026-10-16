@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 from qq_ai_bot.client_api.errors import ClientError
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 
 
 async def client_error_response(_request: Any, exc: Any) -> JSONResponse:
@@ -31,6 +32,16 @@ async def credential_safe_validation(request: Any, exc: Any) -> JSONResponse:
 
 def install_identity_errors(app: FastAPI) -> None:
     app.add_exception_handler(ClientError, client_error_response)
+
+    async def identity_error(_request: Any, exc: Any) -> JSONResponse:
+        return JSONResponse(
+            {"problem": {"code": exc.category}},
+            status_code=(
+                404 if exc.category in {"missing_canonical_owner", "unclassified"} else 409
+            ),
+        )
+
+    app.add_exception_handler(CanonicalIdentityError, identity_error)
     app.add_exception_handler(RequestValidationError, credential_safe_validation)
 
     async def database_error(_request: Any, exc: Any) -> JSONResponse:

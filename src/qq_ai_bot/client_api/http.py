@@ -61,11 +61,14 @@ class WorkCancelBody(BaseModel):
 def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
     router = APIRouter(prefix="/client/v1")
 
-    async def principal(authorization: Annotated[str | None, Header()] = None) -> ClientPrincipal:
+    async def principal(
+        authorization: Annotated[str | None, Header()] = None,
+        x_yuki_entry: Annotated[str | None, Header()] = None,
+    ) -> ClientPrincipal:
         scheme, _, token = (authorization or "").partition(" ")
         if scheme.casefold() != "bearer" or not token:
             raise ClientError("unauthenticated")
-        return await resolve().identity.authenticate(token)
+        return await resolve().identity.authenticate(token, binding_id=x_yuki_entry)
 
     Actor = Annotated[ClientPrincipal, Depends(principal)]
 

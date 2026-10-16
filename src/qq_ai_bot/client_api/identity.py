@@ -27,6 +27,12 @@ from qq_ai_bot.conversation.canonical_db_models import (
 from qq_ai_bot.conversation.hydrate import conversation_for_binding, ensure_canonical_conversation
 from qq_ai_bot.identity.canonical_repository import find_identity_binding, find_presence
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from qq_ai_bot.identity.person_identity import (
+    current_person_id,
+    merge_persons,
+    person_family_condition,
+    same_person_id,
+)
 from qq_ai_bot.persistence.command_receipts import CommandReceiptRepository, aware
 from qq_ai_bot.persistence.database import Database
 
@@ -48,6 +54,8 @@ class ClientPrincipal:
     binding_id: str
     external_account_id: str
     conversation_id: str
+    source_person_id: str
+    request_person_id: str
 
 
 class ClientIdentityService:
@@ -55,7 +63,7 @@ class ClientIdentityService:
         self.database = database
         self.receipts = CommandReceiptRepository(database)
 
-    async def authenticate(self, token: str) -> ClientPrincipal:
+    async def authenticate(self, token: str, *, binding_id: str | None = None) -> ClientPrincipal:
         async with self.database.sessions() as session, session.begin():
             device = await session.scalar(
                 select(ClientDeviceModel).where(
@@ -65,23 +73,32 @@ class ClientIdentityService:
             )
             if device is None:
                 raise ClientError("unauthenticated")
-            principal = await self.require_device(session, device.id)
+            principal = await self.require_device(session, device.id, binding_id=binding_id)
             device.last_used_at = datetime.now(UTC)
             return principal
 
-    async def require_device(self, session: AsyncSession, device_id: str) -> ClientPrincipal:
+    async def require_device(
+        self, session: AsyncSession, device_id: str, *, binding_id: str | None = None
+    ) -> ClientPrincipal:
         device = await session.get(ClientDeviceModel, device_id)
         if device is None or device.revoked_at is not None:
             raise ClientError("unauthenticated")
         person = await session.get(CanonicalPersonModel, device.person_id)
+        if person is None or not person.enabled:
+            raise ClientError("unauthenticated")
+        root_id = await current_person_id(session, person.id)
+        root = await session.get(CanonicalPersonModel, root_id)
+        if root is None or not root.enabled:
+            raise ClientError("unauthenticated")
         binding = await session.scalar(
             select(IdentityBindingModel).where(
-                IdentityBindingModel.person_id == device.person_id,
+                IdentityBindingModel.id == binding_id
+                if binding_id is not None
+                else IdentityBindingModel.person_id == device.person_id,
                 IdentityBindingModel.platform == APP_PLATFORM,
-                IdentityBindingModel.status == "active",
             )
         )
-        if person is None or not person.enabled or binding is None:
+        if binding is None or not await same_person_id(session, binding.person_id, root_id):
             raise ClientError("unauthenticated")
         presence = await find_presence(session, "yuki-app", platform=APP_PLATFORM)
         if presence is None:
@@ -90,19 +107,31 @@ class ClientIdentityService:
         if conversation is None:
             raise ClientError("unauthenticated")
         return ClientPrincipal(
-            device.id, person.id, binding.id, binding.external_account_id, conversation.id
+            device.id,
+            root_id,
+            binding.id,
+            binding.external_account_id,
+            conversation.id,
+            person.id,
+            binding.person_id,
         )
 
     async def replay(
-        self, session: AsyncSession, principal_id: str, request_id: str, bound: str
+        self,
+        session: AsyncSession,
+        principal_id: str,
+        request_id: str,
+        bound: str,
+        *,
+        principal: ClientPrincipal | None = None,
     ) -> dict[str, Any] | None:
         device = await session.get(ClientDeviceModel, principal_id)
         if device is not None:
             from qq_ai_bot.client_api.requests import ClientRequests, personal_command
 
-            row = await personal_command(session, device.person_id, request_id)
+            principal = principal or await self.require_device(session, device.id)
+            row = await personal_command(session, principal.request_person_id, request_id)
             if row is None:
-                principal = await self.require_device(session, device.id)
                 if await ClientRequests(self).message(session, principal, request_id) is not None:
                     raise ClientError("request_conflict")
         else:
@@ -129,7 +158,10 @@ class ClientIdentityService:
         person = await session.get(CanonicalPersonModel, person_id)
         if person is None or not person.enabled:
             raise ClientError("not_found")
-        return person
+        root = await session.get(CanonicalPersonModel, await current_person_id(session, person_id))
+        if root is None or not root.enabled:
+            raise ClientError("not_found")
+        return root
 
     async def _binding(
         self,
@@ -181,11 +213,12 @@ class ClientIdentityService:
         request_id: str,
         source_binding_id: str | None = None,
         trigger_message_id: str = "",
+        principal: ClientPrincipal | None = None,
     ) -> dict[str, Any]:
         await self._person(session, person_id)
         operation = "client.link_code"
         bound = fingerprint(operation, person_id, {"source_binding_id": source_binding_id})
-        previous = await self.replay(session, issuer_id, request_id, bound)
+        previous = await self.replay(session, issuer_id, request_id, bound, principal=principal)
         if previous is not None:
             return {**previous, "code": None}
         now = datetime.now(UTC)
@@ -214,19 +247,23 @@ class ClientIdentityService:
             payload_hash=bound,
             result=result,
             trigger_message_id=trigger_message_id,
+            request_person_id=principal.request_person_id if principal is not None else None,
         )
         return {**result, "code": raw, "request_id": request_id, "replay": False}
 
     async def issue_for_device(self, principal: ClientPrincipal, request_id: str) -> dict[str, Any]:
         async with self.database.immediate_session() as session:
-            current = await self.require_device(session, principal.device_id)
+            current = await self.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
             return await self._issue_code(
                 session,
-                person_id=current.person_id,
+                person_id=current.request_person_id,
                 issuer_id=current.device_id,
                 source="device",
                 request_id=request_id,
                 source_binding_id=current.binding_id,
+                principal=current,
             )
 
     async def issue_for_operator(
@@ -251,6 +288,9 @@ class ClientIdentityService:
             raise ClientError("unauthenticated")
         person = await session.get(CanonicalPersonModel, code.person_id)
         if person is None or not person.enabled:
+            raise ClientError("unauthenticated")
+        root = await session.get(CanonicalPersonModel, await current_person_id(session, person.id))
+        if root is None or not root.enabled:
             raise ClientError("unauthenticated")
         return code
 
@@ -306,9 +346,12 @@ class ClientIdentityService:
         await self._person(session, to_person)
         if binding.platform == APP_PLATFORM or binding.status != "active":
             raise ClientError("precondition_failed")
-        if binding.person_id == to_person:
+        to_person = await current_person_id(session, to_person)
+        if await same_person_id(session, binding.person_id, to_person):
             return binding
-        route = await session.get(PersonActiveRouteModel, binding.person_id)
+        route = await session.get(
+            PersonActiveRouteModel, await current_person_id(session, binding.person_id)
+        )
         if route is not None and route.identity_binding_id == binding.id:
             route.paused = True
             route.route_generation += 1
@@ -338,26 +381,35 @@ class ClientIdentityService:
 
     async def me(self, principal: ClientPrincipal) -> dict[str, Any]:
         async with self.database.sessions() as session:
-            principal = await self.require_device(session, principal.device_id)
+            principal = await self.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
             bindings = list(
                 await session.scalars(
                     select(IdentityBindingModel)
-                    .where(IdentityBindingModel.person_id == principal.person_id)
+                    .where(
+                        person_family_condition(IdentityBindingModel.person_id, principal.person_id)
+                    )
                     .order_by(IdentityBindingModel.created_at, IdentityBindingModel.id)
                 )
             )
             devices = list(
                 await session.scalars(
                     select(ClientDeviceModel)
-                    .where(ClientDeviceModel.person_id == principal.person_id)
+                    .where(
+                        person_family_condition(ClientDeviceModel.person_id, principal.person_id)
+                    )
                     .order_by(ClientDeviceModel.created_at)
                 )
             )
+            person = await session.get(CanonicalPersonModel, principal.person_id)
+            assert person is not None
             return {
                 "person_id": principal.person_id,
-                "display_name": next(
-                    (row.display_name for row in bindings if row.display_name), "本人"
-                ),
+                "source_person_id": principal.source_person_id,
+                "request_person_id": principal.request_person_id,
+                "binding_id": principal.binding_id,
+                "display_name": person.display_name or "本人",
                 "conversation_id": principal.conversation_id,
                 "bindings": [
                     {
@@ -365,6 +417,7 @@ class ClientIdentityService:
                         "platform": row.platform,
                         "display_name": row.display_name,
                         "status": row.status,
+                        "source_person_id": row.person_id,
                     }
                     for row in bindings
                 ],
@@ -388,10 +441,11 @@ class ClientIdentityService:
         issuer_id: str,
         source: str,
         request_id: str,
+        principal: ClientPrincipal | None = None,
     ) -> dict[str, Any]:
         operation = "client.revoke"
         bound = fingerprint(operation, device.id, {})
-        old = await self.replay(session, issuer_id, request_id, bound)
+        old = await self.replay(session, issuer_id, request_id, bound, principal=principal)
         if old is not None:
             return old
         if device.revoked_at is None:
@@ -408,6 +462,7 @@ class ClientIdentityService:
             payload_hash=bound,
             resource_id=device.id,
             result=result,
+            request_person_id=principal.request_person_id if principal is not None else None,
         )
         return {**result, "replay": False}
 
@@ -415,9 +470,13 @@ class ClientIdentityService:
         self, principal: ClientPrincipal, device_id: str, request_id: str
     ) -> dict[str, Any]:
         async with self.database.immediate_session() as session:
-            current = await self.require_device(session, principal.device_id)
+            current = await self.require_device(
+                session, principal.device_id, binding_id=principal.binding_id
+            )
             device = await session.get(ClientDeviceModel, device_id)
-            if device is None or device.person_id != current.person_id:
+            if device is None or not await same_person_id(
+                session, device.person_id, current.person_id
+            ):
                 raise ClientError("not_found")
             return await self._revoke(
                 session,
@@ -425,6 +484,7 @@ class ClientIdentityService:
                 issuer_id=current.device_id,
                 source="device",
                 request_id=request_id,
+                principal=current,
             )
 
     async def revoke_for_operator(
@@ -506,7 +566,8 @@ class ClientIdentityService:
         session: AsyncSession | None = None,
     ) -> dict[str, Any]:
         if session is None:
-            async with self.database.immediate_session() as writer:
+
+            async def operation(writer: AsyncSession) -> dict[str, Any]:
                 return await self.claim_account(
                     raw_code,
                     platform=platform,
@@ -515,13 +576,23 @@ class ClientIdentityService:
                     message_id=message_id,
                     session=writer,
                 )
+
+            return await self.database.apply_snapshot_write(operation)
         now = datetime.now(UTC)
         code = await self._code(session, raw_code, now)
         if platform == APP_PLATFORM or await find_presence(session, account, platform=platform):
             raise ClientError("precondition_failed")
         old = await find_identity_binding(session, account, platform=platform)
+        merged = old is not None and not await same_person_id(
+            session, old.person_id, code.person_id
+        )
         if old is not None:
-            binding = await self.transfer_binding(session, old, code.person_id, now=now)
+            if old.status != "active":
+                raise ClientError("precondition_failed")
+            await merge_persons(
+                session, old.person_id, code.person_id, now=now, actor_id=code.issuer_principal_id
+            )
+            binding = old
         else:
             binding = await self._binding(
                 session,
@@ -534,8 +605,9 @@ class ClientIdentityService:
         code.used_at = now
         result: dict[str, JsonValue] = {
             "binding_id": binding.id,
-            "person_id": binding.person_id,
-            "transferred": old is not None and old.id != binding.id,
+            "person_id": await current_person_id(session, binding.person_id),
+            "transferred": False,
+            "merged": merged,
         }
         await self.receipts.record_personal_command(
             session,

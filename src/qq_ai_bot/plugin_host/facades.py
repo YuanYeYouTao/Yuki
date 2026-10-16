@@ -73,6 +73,7 @@ from qq_ai_bot.plugin_host.direct_delivery import (
     DirectDeliveryScope,
     delivery_unknown,
     prepare_delivery,
+    validate_delivery_source,
 )
 from qq_ai_bot.plugin_host.event_bus import PluginEventBus
 from qq_ai_bot.plugin_host.http_client import BoundHttpFacade
@@ -92,7 +93,8 @@ from qq_ai_bot.services.agent_runner import (
 from qq_ai_bot.services.native_media import NativeMediaPreparer
 from qq_ai_bot.services.renderer import sanitize_model_output
 from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
-from qq_ai_bot.social.models import OperationStatus, SocialReceipt
+from qq_ai_bot.social.models import OperationStatus, SocialError, SocialReceipt
+from qq_ai_bot.social.repository import SocialOperationRepository
 from qq_ai_bot.vision.models import VisualObservation
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import WebSearchRequest
@@ -291,16 +293,7 @@ class PluginInvocation:
     delivery_identity: str | None = None
 
     def __post_init__(self) -> None:
-        authority = self.delegated_authority
-        if (
-            not self.plugin_id
-            or not self.bot_user_id
-            or (
-                not self.actor_user_id
-                and (self.actor is None or self.actor.principal_kind != "self")
-                and (authority is None or authority.principal_kind != "self")
-            )
-        ):
+        if not self.plugin_id or not self.bot_user_id:
             raise ValueError("plugin invocation identity fields cannot be empty")
         if self.inbound is not None:
             object.__setattr__(self, "platform", self.inbound.platform)
@@ -840,11 +833,22 @@ class HostPluginContext:
             if invocation.actor
             else ()
         )
-        if (
-            normalized != invocation.actor_person_id
-            and normalized not in mentioned
-            and not await self._is_real_superuser(invocation)
-        ):
+        ledger = self._services.ledger
+        same_actor = normalized == invocation.actor_person_id
+        same_mentioned = normalized in mentioned
+        if ledger is not None and not same_actor and not same_mentioned:
+            from qq_ai_bot.identity.person_identity import same_person_id
+
+            async with ledger._database.sessions() as session:
+                same_actor = bool(
+                    invocation.actor_person_id
+                    and await same_person_id(session, normalized, invocation.actor_person_id)
+                )
+                for person_id in mentioned:
+                    if await same_person_id(session, normalized, person_id):
+                        same_mentioned = True
+                        break
+        if not same_actor and not same_mentioned and not await self._is_real_superuser(invocation):
             raise PluginPermissionError("target user is outside the current real turn")
         return normalized
 
@@ -2291,9 +2295,7 @@ class _OneBotFacade:
                 },
             )
             if checked.current_group_id is not None:
-                target = await _require_qq_group_scope(
-                    self._host, checked, checked.current_group_id
-                )
+                target = checked.current_group_id
                 return await _send_onebot(
                     self._host,
                     checked,
@@ -2301,7 +2303,7 @@ class _OneBotFacade:
                     {"group_id": target, "message": message},
                     outbound=_group_music_outbound(target, outbound_segments),
                 )
-            target = await _require_qq_user_scope(self._host, checked, checked.actor_user_id)
+            target = checked.actor_user_id
             return await _send_onebot(
                 self._host,
                 checked,
@@ -2345,9 +2347,7 @@ class _OneBotFacade:
             message = [{"type": "music", "data": card_data}]
             outbound_segments = ({"type": "music", "data": dict(card_data)},)
             if checked.current_group_id is not None:
-                target = await _require_qq_group_scope(
-                    self._host, checked, checked.current_group_id
-                )
+                target = checked.current_group_id
                 return await _send_onebot(
                     self._host,
                     checked,
@@ -2355,7 +2355,7 @@ class _OneBotFacade:
                     {"group_id": target, "message": message},
                     outbound=_group_music_outbound(target, outbound_segments),
                 )
-            target = await _require_qq_user_scope(self._host, checked, checked.actor_user_id)
+            target = checked.actor_user_id
             return await _send_onebot(
                 self._host,
                 checked,
@@ -2378,7 +2378,7 @@ class _OneBotFacade:
         async def send() -> PluginResult:
             checked = self._host._require(PluginPermission.ONEBOT_SEND, send=True)
             assert checked is not None
-            target = await _require_qq_user_scope(self._host, checked, user_id)
+            target = user_id
             content = _outbound_text(text)
             return await _send_onebot(
                 self._host,
@@ -2402,7 +2402,7 @@ class _OneBotFacade:
         async def send() -> PluginResult:
             checked = self._host._require(PluginPermission.ONEBOT_SEND, send=True)
             assert checked is not None
-            target = await _require_qq_group_scope(self._host, checked, group_id)
+            target = group_id
             content = _outbound_text(text)
             return await _send_onebot(
                 self._host,
@@ -2457,7 +2457,6 @@ class _OneBotFacade:
                 mutation=True,
             )
             assert checked is not None
-            await self._host._require_privileged(checked)
             normalized = action.strip()
             if not normalized or len(normalized) > 128:
                 raise ValueError("OneBot action is invalid")
@@ -2485,15 +2484,11 @@ class _OneBotFacade:
                 self._host._require(PluginPermission.ONEBOT_MUTATE, mutation=True, send=True)
                 message, content, segments = _outbound_onebot_message(params.get("message"))
                 if normalized == "send_group_msg":
-                    target = await _require_qq_group_scope(
-                        self._host, checked, str(params.get("group_id", ""))
-                    )
+                    target = str(params.get("group_id", ""))
                     outbound = _group_outbound(target, content)
                     target_key = "group_id"
                 else:
-                    target = await _require_qq_user_scope(
-                        self._host, checked, str(params.get("user_id", ""))
-                    )
+                    target = str(params.get("user_id", ""))
                     outbound = _private_outbound(target, content)
                     target_key = "user_id"
                 return await _send_onebot(
@@ -2506,7 +2501,9 @@ class _OneBotFacade:
                         "message": message,
                     },
                     outbound=replace(outbound, segments=segments),
+                    privileged=True,
                 )
+            await self._host._require_privileged(checked)
             return await _call_onebot(self._host, checked, normalized, params)
 
         return await self._host._run_audited(
@@ -2616,7 +2613,29 @@ async def _send_social(
     actor = _invocation_actor(invocation)
     async with state.lock:
         call_id = state.next_call()
+        context = SocialContext(
+            state.identity,
+            call_id,
+            invocation.conversation_id,
+            person_refs={"current_speaker": actor.person_id} if actor.person_id else {},
+            space_id=invocation.space_id,
+            trigger_event_id=invocation.source_event_id,
+            caused_by_event_id=(
+                invocation.source_event_id
+                if invocation.origin in {TurnOrigin.PLUGIN_BACKGROUND, TurnOrigin.SYSTEM_TASK}
+                else None
+            ),
+            origin=invocation.origin.value,
+            actor=actor,
+            conversation_key=invocation.conversation_key,
+            inbound=invocation.inbound,
+            initiative_run_id=actor.initiative_run_id,
+            automation_run_id=actor.automation_run_id,
+            presence_id=invocation.presence_id,
+            reply_presence_id=invocation.presence_id,
+        )
         args: dict[str, Any] = {"text": text}
+        result = None
         current_target = invocation.space_id if target_type == "group" else invocation.person_id
         if target_id != current_target:
             args["target"] = {
@@ -2624,57 +2643,41 @@ async def _send_social(
                 "target_id": target_id,
             }
         if media_reference is not None:
+            artifact_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{state.identity}:{call_id}:media"))
+            args.update(artifact_id=artifact_id, attachment_kind="image")
             import tempfile
 
-            media = _require_service(host._services.media_artifacts, "plugin media artifacts")
             store = _require_service(social.workspace, "artifact delivery")
-            original, data = await media.read_owned(
-                plugin_id=host.plugin_id,
-                handle_id=media_reference,
-            )
+            prior = await social.receipts.find(state.identity, call_id)
+            if prior is not None:
+                source = await asyncio.to_thread(store.snapshot_source, artifact_id)
+                if source is None or not source.startswith(
+                    f"plugin-media:{host.plugin_id}:{media_reference}:"
+                ):
+                    raise SocialError("idempotency_conflict")
+                result = await social.replay_send(args, context)
+            if result is None:
+                media = _require_service(host._services.media_artifacts, "plugin media artifacts")
+                original, data = await media.read_owned(
+                    plugin_id=host.plugin_id,
+                    handle_id=media_reference,
+                )
 
-            def snapshot() -> dict[str, Any]:
-                with tempfile.TemporaryFile() as stream:
-                    stream.write(data)
-                    stream.flush()
-                    return store.snapshot(
-                        stream.fileno(),
-                        original.filename,
-                        artifact_id=str(
-                            uuid.uuid5(uuid.NAMESPACE_URL, f"{state.identity}:{call_id}:media")
-                        ),
-                        source_key=f"plugin-media:{host.plugin_id}:{original.handle_id}:{original.sha256}",
-                    )
+                def snapshot() -> dict[str, Any]:
+                    with tempfile.TemporaryFile() as stream:
+                        stream.write(data)
+                        stream.flush()
+                        return store.snapshot(
+                            stream.fileno(),
+                            original.filename,
+                            artifact_id=artifact_id,
+                            source_key=f"plugin-media:{host.plugin_id}:{original.handle_id}:{original.sha256}",
+                        )
 
-            artifact = await asyncio.to_thread(snapshot)
-            args.update(artifact_id=artifact["artifact_id"], attachment_kind="image")
+                await asyncio.to_thread(snapshot)
         try:
-            result = await social.execute(
-                "send_message",
-                args,
-                SocialContext(
-                    state.identity,
-                    call_id,
-                    invocation.conversation_id,
-                    person_refs={"current_speaker": actor.person_id} if actor.person_id else {},
-                    space_id=invocation.space_id,
-                    trigger_event_id=invocation.source_event_id,
-                    caused_by_event_id=(
-                        invocation.source_event_id
-                        if invocation.origin
-                        in {TurnOrigin.PLUGIN_BACKGROUND, TurnOrigin.SYSTEM_TASK}
-                        else None
-                    ),
-                    origin=invocation.origin.value,
-                    actor=actor,
-                    conversation_key=invocation.conversation_key,
-                    inbound=invocation.inbound,
-                    initiative_run_id=actor.initiative_run_id,
-                    automation_run_id=actor.automation_run_id,
-                    presence_id=invocation.presence_id,
-                    reply_presence_id=invocation.presence_id,
-                ),
-            )
+            if result is None:
+                result = await social.execute("send_message", args, context)
         except SocialError as exc:
             prior = await social.receipts.find(state.identity, call_id)
             if str(exc) != "idempotency_conflict" or prior is None:
@@ -2694,11 +2697,22 @@ async def _send_social(
                 data=_safe_json(result),
                 error_code=str(result.get("error") or "social.delivery_unconfirmed"),
             )
-        receipt = await social.receipts.get(operation_id)
-        projected = _delivery_result(receipt)
-        return projected.model_copy(
-            update={"data": {**projected.data, "result": _safe_json(result)}}
+        status = str(result.get("status", "unknown"))
+        unknown = status in {"executing", "uncertain", "unknown"}
+        projected = _HostSocialResult(
+            ok=status == "succeeded",
+            data={
+                "operation_id": operation_id,
+                "status": "unknown" if unknown else status,
+                "uncertain": unknown,
+                "retryable": False,
+                "result": _safe_json(result),
+            },
+            error_code=None if status == "succeeded" else "social.delivery_unconfirmed",
+            detail=str(result.get("error") or ""),
         )
+        projected._receipt = await social.receipts.get(operation_id)
+        return projected
 
 
 async def _send_onebot(
@@ -2708,13 +2722,22 @@ async def _send_onebot(
     params: Mapping[str, JsonValue] | Mapping[str, object],
     *,
     outbound: _OutboundLedgerMessage,
+    privileged: bool = False,
 ) -> PluginResult:
     ledger = host._services.ledger
     state = _CURRENT_DELIVERY.get()
     if ledger is None or state is None or not invocation.conversation_id:
         return _unavailable("SDK delivery requires a durable canonical invocation")
+    if invocation.platform != "qq":
+        raise PluginPermissionError("OneBot extensions require an original QQ entry")
     # Keep per-callback call ordinals ordered even when plugin code uses gather().
     async with state.lock:
+        call_id = state.next_call()
+        prior = await SocialOperationRepository(ledger._database).find(state.identity, call_id)
+        if prior is None or prior.status is OperationStatus.PREPARED:
+            if privileged:
+                await host._require_privileged(invocation)
+            await _validate_onebot_scope(host, invocation, cast(Mapping[str, JsonValue], params))
         repository, receipt, presence_id = await prepare_delivery(
             ledger,
             source_conversation_id=invocation.conversation_id,
@@ -2726,7 +2749,7 @@ async def _send_onebot(
             group_id=outbound.group_id,
             user_id=outbound.private_peer_user_id,
             source_turn_id=state.identity,
-            call_id=state.next_call(),
+            call_id=call_id,
             action=action,
             params=dict(params),
         )
@@ -2735,48 +2758,103 @@ async def _send_onebot(
         gateway = await _qq_gateway(host, invocation)
         claimed = False
         if receipt.status is OperationStatus.PREPARED:
-            claimed = await repository.claim(receipt.operation_id, presence_id=presence_id)
+            async with ledger._database.immediate_session() as session:
+                target, current_presence = await validate_delivery_source(
+                    session,
+                    source_conversation_id=invocation.conversation_id,
+                    source_event_id=invocation.source_event_id,
+                    actor_user_id=invocation.actor_user_id,
+                    actor=invocation.actor,
+                    bot_user_id=invocation.bot_user_id,
+                    group_id=outbound.group_id,
+                    user_id=outbound.private_peer_user_id,
+                )
+                if target != receipt.target or current_presence != presence_id:
+                    raise SocialError("plugin_send_source_mismatch")
+                claimed = await repository.claim(
+                    receipt.operation_id,
+                    presence_id=presence_id,
+                    session=session,
+                    expected_payload_hash=receipt.payload_hash,
+                )
         if not claimed:
             receipt = await repository.get(receipt.operation_id)
             return _delivery_result(receipt)
+        confirmed = None
         try:
             raw = await gateway.call_api(action, dict(params))
             confirmed = parse_onebot_send_receipt(raw)
             scope = (
-                ConversationScope.group(invocation.bot_user_id, outbound.group_id)
+                ConversationScope.group(
+                    invocation.bot_user_id,
+                    outbound.group_id,
+                    presence_id=presence_id,
+                    conversation_id=invocation.conversation_id
+                    if outbound.group_id == invocation.current_group_id
+                    else None,
+                )
                 if outbound.group_id is not None
                 else ConversationScope.private(
-                    invocation.bot_user_id, outbound.private_peer_user_id or ""
+                    invocation.bot_user_id,
+                    outbound.private_peer_user_id or "",
+                    presence_id=presence_id,
+                    conversation_id=invocation.conversation_id
+                    if invocation.current_group_id is None
+                    and outbound.private_peer_user_id == invocation.actor_user_id
+                    else None,
                 )
             )
             async with ledger._database.immediate_session() as session:
-                appended = await ledger._writer.append(
-                    scope=scope,
-                    platform_message_id=confirmed.platform_message_id,
-                    sender_user_id=invocation.bot_user_id,
-                    direction="outbound",
-                    content=outbound.content,
-                    segments=outbound.segments,
-                    sender_is_bot=True,
-                    origin=invocation.origin.value,
-                    session=session,
+                from qq_ai_bot.social.confirmed_content import content_sources_retained
+
+                retained = await content_sources_retained(
+                    session,
+                    conversation_id=invocation.conversation_id,
+                    target=receipt.target,
+                    event_ids=(invocation.source_event_id,),
+                    person_id=invocation.actor_person_id,
+                )
+                appended = (
+                    await ledger._writer.append(
+                        scope=scope,
+                        platform_message_id=confirmed.platform_message_id,
+                        sender_user_id=invocation.bot_user_id,
+                        direction="outbound",
+                        content=outbound.content,
+                        segments=outbound.segments,
+                        sender_is_bot=True,
+                        origin=invocation.origin.value,
+                        session=session,
+                    )
+                    if retained
+                    else None
                 )
                 await repository.finish(
                     receipt.operation_id,
                     status=OperationStatus.SUCCEEDED,
                     platform_reference=confirmed.platform_message_id,
-                    event_id=appended.event.id,
+                    event_id=appended.event.id if appended is not None else None,
                     session=session,
                 )
         except BaseException as exc:
-            # Once claimed, a timeout, malformed receipt, cancellation, or failed
-            # persistence cannot establish whether QQ already accepted the send.
+            # A parsed platform confirmation remains success if its body can no
+            # longer be published. Without that confirmation the effect is unknown.
             try:
+                persisted = await repository.get(receipt.operation_id)
+                if persisted.status is OperationStatus.SUCCEEDED:
+                    if not isinstance(exc, Exception):
+                        raise
+                    return _delivery_result(persisted)
                 async with ledger._database.sessions() as session, session.begin():
                     await repository.finish(
                         receipt.operation_id,
-                        status=OperationStatus.UNCERTAIN,
-                        error_category=type(exc).__name__[:64],
+                        status=OperationStatus.SUCCEEDED
+                        if confirmed is not None
+                        else OperationStatus.UNCERTAIN,
+                        platform_reference=confirmed.platform_message_id
+                        if confirmed is not None
+                        else None,
+                        error_category=None if confirmed is not None else type(exc).__name__[:64],
                         session=session,
                     )
                 receipt = await repository.get(receipt.operation_id)

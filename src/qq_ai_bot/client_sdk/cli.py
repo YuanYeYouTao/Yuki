@@ -19,6 +19,7 @@ def add_client_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     parser = subparsers.add_parser("client", help="个人 HTTP 客户端（持久请求与重连核对）")
     parser.add_argument("--url", default=os.getenv("YUKI_CLIENT_URL", "http://127.0.0.1:8080"))
     parser.add_argument("--token-env", default="YUKI_CLIENT_TOKEN")
+    parser.add_argument("--entry-binding", default=os.getenv("YUKI_CLIENT_ENTRY_BINDING"))
     parser.add_argument(
         "--state",
         type=Path,
@@ -76,7 +77,9 @@ async def client_command(args: argparse.Namespace) -> int:
         token = os.getenv(args.token_env, "")
         if not token:
             raise ValueError("device_token_missing")
-        client = PersonalClient(args.url, token, Outbox(args.state), http=http)
+        client = PersonalClient(
+            args.url, token, Outbox(args.state), http=http, entry_binding_id=args.entry_binding
+        )
         await client._bind()
         action = args.client_action
         data: Any = None
