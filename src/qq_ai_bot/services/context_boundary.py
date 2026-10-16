@@ -34,9 +34,19 @@ class PreparedContextBoundary:
 @dataclass(frozen=True, slots=True)
 class ContextBoundary:
     fragments: tuple[EventFragment, ...]
-    commit: Callable[[bool], Awaitable[None]]
-    prepare: Callable[[bool], Awaitable[PreparedContextBoundary]] | None = None
-    current_inputs: tuple[ChatMessage, ...] = ()
+    commit: Callable[[bool, tuple[OrdinaryContextInput, ...]], Awaitable[None]]
+    prepare: (
+        Callable[[bool, tuple[OrdinaryContextInput, ...]], Awaitable[PreparedContextBoundary]] | None
+    ) = None
+    ordinary_inputs: tuple[OrdinaryContextInput, ...] = ()
+
+    @property
+    def current_inputs(self) -> tuple[ChatMessage, ...]:
+        return tuple(
+            candidate.message
+            for candidate in self.ordinary_inputs
+            if candidate.message is not None
+        )
 
     @property
     def event_ids(self) -> frozenset[int]:

@@ -60,7 +60,7 @@ def _authoritative_autonomous_observation_refs(
 class _GroupState:
     # Admission uses the latest observation; durable history already lives in the ledger.
     message: InboundMessage
-    # Host-owned ordinary admission for the latest group_open/continuation source.
+    # Host-owned ordinary admission for the latest implicit human source.
     # None keeps the original local-scoring path. It returns sent messages.
     ordinary_attempt: Callable[[], Awaitable[int]] | None = None
     revision: int = 0
@@ -113,11 +113,32 @@ class AutonomousGroupService:
             source = message.source_event_id
             if latest is not None and source is not None and source < latest:
                 return
-            state.message = message
-            state.ordinary_attempt = ordinary_attempt
+            if (
+                source is not None
+                and source == latest
+                and ordinary_attempt is not None
+                and state.ordinary_attempt is not None
+            ):
+                state.message = message
+                state.ordinary_attempt = ordinary_attempt
+                self._ensure_task(scope_key, state)
+                return
+            if ordinary_attempt is not None or state.ordinary_attempt is None:
+                state.message = message
+                state.ordinary_attempt = ordinary_attempt
         state.revision += 1
         state.changed.set()
         self._ensure_task(scope_key, state)
+
+    def is_current_ordinary_input(self, message: InboundMessage) -> bool:
+        scope_key = runtime_conversation_key(identity=message.scope(), inbound=message)
+        state = self._states.get(scope_key)
+        return (
+            state is not None
+            and state.ordinary_attempt is not None
+            and state.message.source_event_id == message.source_event_id
+            and not state.changed.is_set()
+        )
 
     def _ensure_task(self, scope_key: str, state: _GroupState) -> None:
         """Keep exactly one coalescing worker alive for one group."""

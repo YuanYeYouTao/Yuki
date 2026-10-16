@@ -2,12 +2,14 @@
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from tests.conftest import MemorySender
 from tests.unit.test_auto_reply_merge import (
     VOICE_REQUIREMENT,
@@ -668,7 +670,7 @@ async def test_work_accepted_during_original_round_keeps_real_mailbox_authorizat
 
 
 @pytest.mark.parametrize("entrance", ["direct", "semantic_invitation"])
-async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_original_route(
+async def test_direct_stays_immediate_and_invitation_joins_the_existing_worker(
     database, tmp_path, monkeypatch, entrance
 ):
     provider = _PausedProvider(
@@ -720,12 +722,10 @@ async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_origina
             )
         )
         if entrance == "semantic_invitation":
-            # Invitation promotion attempts now and retains its original busy
-            # result. It must not become a deferred opportunity or A's input.
-            assert (await pending).reason == "ordinary_busy_or_superseded"
+            assert (await pending).reason == "ordinary_deferred"
             d = await _event(database, "D：明确的新请求")
             assert await harness.processor.ordinary_admissions.get(d.id) is None
-            assert worker._states[key].message.source_event_id == c.id
+            assert worker._states[key].message.source_event_id == d.id
         else:
             # Direct input is admitted now; its model dispatch still obeys the
             # existing conversation lock.
@@ -737,7 +737,13 @@ async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_origina
         await provider.wait(2)
         assert "D：明确的新请求" in provider.entered[1].messages[-1].content
         if entrance == "semantic_invitation":
-            assert await harness.processor.ordinary_admissions.get(d.id) is None
+            admitted = await harness.processor.ordinary_admissions.get(d.id)
+            original_admission = await harness.processor.ordinary_admissions.get(
+                (await _event(database, A)).id
+            )
+            assert admitted.activation_id == original_admission.activation_id
+            assert admitted.reason == "semantic_invitation"
+            assert admitted.binding.event_id == d.id
         else:
             assert await harness.processor.ordinary_admissions.get(c.id) is None
         provider.release[2].set()
@@ -747,7 +753,9 @@ async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_origina
         assert len(provider.entered) == 2
         if entrance == "semantic_invitation":
             assert provider.entered[0].request_chain_id == provider.entered[1].request_chain_id
-            assert await harness.processor.ordinary_admissions.get(d.id) is None
+            assert (await harness.processor.ordinary_admissions.get(d.id)).reason == (
+                "semantic_invitation"
+            )
         else:
             assert provider.entered[0].request_chain_id != provider.entered[1].request_chain_id
             assert await harness.processor.ordinary_admissions.get(c.id) is None
@@ -757,6 +765,183 @@ async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_origina
             event.set()
         if pending is not None:
             await asyncio.gather(pending, return_exceptions=True)
+        await worker.close()
+
+
+@pytest.mark.parametrize("failure", ["read", "save"])
+async def test_derived_participation_database_error_does_not_block_selected_request(
+    database, tmp_path, monkeypatch, failure
+):
+    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "read"), "NO_REPLY"])
+    _env, harness, worker, message = await _scene(
+        database, tmp_path, provider, reason="continuation"
+    )
+    processor = harness.processor
+    sender = MemorySender()
+    try:
+        await processor.handle(message(1, A), sender)
+        await provider.wait(1)
+        key = next(iter(worker._states))
+        await processor.handle(message(2, C), sender)
+        c = await _event(database, C)
+        if failure == "save":
+            processor._participation.on_ordinary_admitted.side_effect = SQLAlchemyError(
+                "synthetic derived save failure"
+            )
+        else:
+            record_feedback = processor._record_ordinary_participation
+
+            async def fail_derived_read(event_id, binding):
+                if event_id != c.id:
+                    return await record_feedback(event_id, binding)
+                with monkeypatch.context() as scoped:
+                    scoped.setattr(
+                        processor.ordinary_admissions,
+                        "get",
+                        AsyncMock(side_effect=SQLAlchemyError("synthetic derived read failure")),
+                    )
+                    await record_feedback(event_id, binding)
+
+            monkeypatch.setattr(processor, "_record_ordinary_participation", fail_derived_read)
+        provider.release[1].set()
+        await provider.wait(2)
+        a = await _event(database, A)
+        admitted = await processor.ordinary_admissions.get(c.id)
+        assert admitted.activation_id == (
+            await processor.ordinary_admissions.get(a.id)
+        ).activation_id
+        assert C in _plain(provider.entered[1])
+        provider.release[2].set()
+        await asyncio.wait_for(_wait_for_worker(worker, key), 10)
+        assert len(provider.entered) == 2
+        assert await _work_count(database) == sender.calls == 0
+    finally:
+        for release in provider.release.values():
+            release.set()
+        await worker.close()
+
+
+async def test_derived_participation_read_still_propagates_cancellation(
+    database, tmp_path, monkeypatch
+):
+    provider = _PausedProvider([], pauses=())
+    _env, harness, worker, _message = await _scene(
+        database, tmp_path, provider, reason="continuation"
+    )
+    monkeypatch.setattr(
+        harness.processor.ordinary_admissions,
+        "get",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await harness.processor._record_ordinary_participation(1, None)
+        assert not provider.requests
+    finally:
+        await worker.close()
+
+
+async def test_pending_input_survives_envelope_eviction_and_context_observations(
+    database, tmp_path, monkeypatch
+):
+    provider = _PausedProvider(["NO_REPLY", "NO_REPLY"])
+    _env, harness, worker, message = await _scene(
+        database, tmp_path, provider, reason="continuation", runtime_work_enabled=False
+    )
+    processor = harness.processor
+    service = processor._participation
+    classify = service.continuation_for_event
+
+    async def classify_humans(event_id, *, check_budget=True):
+        record = await harness.ledger.get_event(event_id)
+        if record.content.startswith("仅观察"):
+            return None
+        return await classify(event_id, check_budget=check_budget)
+
+    monkeypatch.setattr(service, "continuation_for_event", classify_humans)
+    sender = MemorySender()
+    try:
+        await processor.handle(message(1, A), sender)
+        await provider.wait(1)
+        key = next(iter(worker._states))
+        await processor.handle(message(2, C), sender)
+        c = await _event(database, C)
+        for number in range(257):
+            observed = await processor.handle(message(3 + number, f"仅观察 {number}"), sender)
+            assert observed.reason == "group_observed"
+        assert worker._states[key].message.source_event_id == c.id
+        assert await processor.ordinary_admissions.get(c.id) is None
+        provider.release[1].set()
+        await provider.wait(2)
+        admitted = await processor.ordinary_admissions.get(c.id)
+        assert admitted is not None and admitted.reason == "continuation"
+        assert C in provider.entered[1].messages[-1].content
+        provider.release[2].set()
+        await asyncio.wait_for(_wait_for_worker(worker, key), 10)
+        assert len(provider.entered) == 2 and sender.calls == 0
+    finally:
+        for release in provider.release.values():
+            release.set()
+        await worker.close()
+
+
+async def test_background_invitation_waits_for_original_turn_without_losing_its_input(
+    database, tmp_path, monkeypatch
+):
+    provider = _PausedProvider(["NO_REPLY", "NO_REPLY"])
+    _env, harness, worker, message = await _scene(
+        database, tmp_path, provider, reason="continuation", runtime_work_enabled=False
+    )
+    processor = harness.processor
+    service = processor._participation
+    classify = service.continuation_for_event
+
+    async def before_observer(event_id, *, check_budget=True):
+        if (await harness.ledger.get_event(event_id)).content == C:
+            return None
+        return await classify(event_id, check_budget=check_budget)
+
+    monkeypatch.setattr(service, "continuation_for_event", before_observer)
+    sender = MemorySender()
+    original_turn = asyncio.create_task(processor.handle(message(1, A, mention=True), sender))
+    try:
+        await provider.wait(1)
+        assert (await processor.handle(message(2, C), sender)).reason == "group_observed"
+        c = await _event(database, C)
+        binding = await service.binding_for_event(c.id)
+        waiting = asyncio.Event()
+        conversation = processor._concurrency.conversation
+
+        @asynccontextmanager
+        async def handoff(conversation_key):
+            waiting.set()
+            async with conversation(conversation_key):
+                yield
+
+        monkeypatch.setattr(processor._concurrency, "conversation", handoff)
+        assert (
+            await processor.promote_committed_event(c.id, binding, reason="semantic_invitation")
+        ).reason == "ordinary_deferred"
+        await asyncio.wait_for(waiting.wait(), 10)
+        key = next(iter(worker._states))
+        assert await processor.ordinary_admissions.get(c.id) is None
+        # A repeated observer callback retains the same source and current window.
+        assert (
+            await processor.promote_committed_event(c.id, binding, reason="semantic_invitation")
+        ).reason == "ordinary_deferred"
+        provider.release[1].set()
+        assert (await original_turn).reason == "chat"
+        await provider.wait(2)
+        admitted = await processor.ordinary_admissions.get(c.id)
+        assert admitted.reason == "semantic_invitation" and admitted.binding == binding
+        assert provider.entered[0].request_chain_id != provider.entered[1].request_chain_id
+        provider.release[2].set()
+        await asyncio.wait_for(_wait_for_worker(worker, key), 10)
+        assert len(provider.entered) == 2 and sender.calls == 0
+    finally:
+        for release in provider.release.values():
+            release.set()
+        await asyncio.gather(original_turn, return_exceptions=True)
         await worker.close()
 
 

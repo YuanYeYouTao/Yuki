@@ -19,10 +19,14 @@ from qq_ai_bot.conversation.ordinary_admission import (
     OrdinaryAdmissionRepository,
 )
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
+from qq_ai_bot.conversation.projections import ProjectionConflict
 from qq_ai_bot.domain.audio import AudioTranscript, serialize_transcripts
-from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ChatResponse
+from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ChatRequest, ChatResponse
+from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.identity.db_models import PresenceModel
 from qq_ai_bot.llm.fake import FakeLLMProvider
+from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
+from qq_ai_bot.model_runtime.models import ModelExecutionPriority
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.runtime.work_activation import activate_work, current_work_control
@@ -31,8 +35,9 @@ from qq_ai_bot.runtime.work_session import WorkSession
 from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
 from qq_ai_bot.services.agent_runner import AgentRuntime
 from qq_ai_bot.services.context_boundary import OrdinaryContextInput
+from qq_ai_bot.services.context_compaction import EXECUTION_COMPACT_INSTRUCTION
 from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
-from qq_ai_bot.services.turn_execution import _PrimaryDispatch
+from qq_ai_bot.services.turn_execution import TurnExecution, _PrimaryDispatch
 from qq_ai_bot.services.turn_transcript import (
     DispatchOrigin,
     TranscriptRequest,
@@ -227,6 +232,123 @@ async def test_compact_publication_does_not_take_input_but_retained_business_inp
     scene.hook.assert_not_awaited()
     await _dispatch(scene, boundary).admit()
     assert (await scene.ordinary.get(candidate.prepared.event.id)).activation_id == (
+        scene.owner.activation_id
+    )
+    assert await _projection(database) == after_compact
+    scene.hook.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize("arrival", ["preparation", "after_selection"])
+async def test_later_arrival_is_not_added_to_selected_request_or_skipped_by_watermark(
+    database, tmp_path, arrival
+):
+    scene = await _boundary_scene(database, tmp_path)
+    selected = await scene.add(private=ChatMessage("user", "本次准备的 B 材料"))
+    later = None
+
+    async def prepare(event_ids):
+        nonlocal later
+        if arrival == "preparation" and later is None:
+            later = await scene.add(private=ChatMessage("user", "后到的 C 材料"))
+
+    scene.preparation.side_effect = prepare
+    boundary = await _read_boundary(scene)
+    if later is None:
+        later = await scene.add(private=ChatMessage("user", "后到的 C 材料"))
+    assert selected.prepared.event.id in boundary.event_ids
+    assert later.prepared.event.id not in boundary.event_ids
+    assert boundary.current_inputs == (selected.message,)
+    await _dispatch(scene, boundary).admit()
+    assert await scene.ordinary.get(later.prepared.event.id) is None
+
+    following = await scene.composition.observation_boundary(boundary.event_ids)
+    assert following is not None
+    assert later.prepared.event.id in following.event_ids
+    assert selected.prepared.event.id not in following.event_ids
+    await _dispatch(scene, following).admit()
+    for candidate in (selected, later):
+        assert (await scene.ordinary.get(candidate.prepared.event.id)).activation_id == (
+            scene.owner.activation_id
+        )
+
+
+@pytest.mark.parametrize("change", ["source", "privacy", "projection", "generation"])
+async def test_compact_publication_still_checks_sources_in_business_admission_writer(
+    database, tmp_path, change
+):
+    scene = await _boundary_scene(database, tmp_path)
+    candidate = await scene.add(private=ChatMessage("user", "仍完整的私有材料"))
+    boundary = await _read_boundary(scene)
+    await _dispatch(scene, boundary, private=False, business=False).admit()
+    assert boundary.prepare is not None
+    prepared = await boundary.prepare(True, boundary.ordinary_inputs)
+    prepared.stage()
+    # Change the real source after the last preparation read, before the
+    # admission writer. Compact has already published the public fragments.
+    async with database.immediate_session() as writer:
+        if change == "source":
+            original = await writer.get(ChatEventModel, scene.owner.event_id)
+            original.content = "原 A 来源在最终读取后修订"
+        elif change == "privacy":
+            privacy = await writer.get(ExecutionTraceStateModel, 1)
+            if privacy is None:
+                writer.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
+            else:
+                privacy.privacy_generation += 1
+        elif change == "projection":
+            projection = await writer.get(PromptProjectionModel, scene.owner.conversation_id)
+            projection.revision += 1
+        else:
+            conversation = await writer.get(CanonicalConversationModel, scene.owner.conversation_id)
+            conversation.generation += 1
+    after_change = await _projection(database)
+    try:
+        with pytest.raises(ProjectionConflict):
+            async with database.immediate_session() as writer:
+                await prepared.publication(writer)
+    finally:
+        prepared.rollback()
+    assert await scene.ordinary.get(candidate.prepared.event.id) is None
+    assert await _projection(database) == after_change
+    scene.hook.assert_not_awaited()
+
+
+async def test_execution_compact_selects_only_candidates_with_retained_private_material(
+    database, tmp_path
+):
+    scene = await _boundary_scene(database, tmp_path)
+    covered = await scene.add(private=ChatMessage("user", "C 的较早私有材料。" * 800))
+    retained = await scene.add(private=ChatMessage("user", "D 的完整私有材料。" * 80))
+    runner = scene.chat.runtime.runner
+    runtime = replace(scene.runtime, observation_boundary=scene.composition.observation_boundary)
+    execution = TurnExecution(runner, scene.composition.messages, runtime, None)
+    await execution.begin(1)
+    boundary = execution.state.boundary
+    assert boundary is not None
+    request = ChatRequest(messages=execution.state.transcript.request().messages)
+    fitting_prefix = (
+        *request.messages[:-1],
+        ChatMessage("user", EXECUTION_COMPACT_INSTRUCTION),
+    )
+    budget = estimate_request_tokens(
+        runner._capacity_request(replace(request, messages=fitting_prefix))
+    )
+    assert estimate_request_tokens(runner._capacity_request(request)) > budget
+    compacted = await execution.compact_current(
+        1, request, ModelExecutionPriority.FOREGROUND, budget
+    )
+    # Use the actual capacity planner and compact adoption: public C/D survive,
+    # while only D's private input remains outside the covered prefix.
+    assert all(message in compacted.messages for _, message in boundary.fragments)
+    assert covered.message not in compacted.messages
+    assert retained.message in compacted.messages
+    after_compact = await _projection(database)
+    assert await scene.ordinary.get(covered.prepared.event.id) is None
+    assert await scene.ordinary.get(retained.prepared.event.id) is None
+    dispatch = replace(_dispatch(scene, boundary), sequence=execution.state.transcript.request())
+    await dispatch.admit()
+    assert await scene.ordinary.get(covered.prepared.event.id) is None
+    assert (await scene.ordinary.get(retained.prepared.event.id)).activation_id == (
         scene.owner.activation_id
     )
     assert await _projection(database) == after_compact

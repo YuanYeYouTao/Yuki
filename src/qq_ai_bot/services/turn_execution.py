@@ -131,22 +131,23 @@ class _PrimaryDispatch:
     def __post_init__(self) -> None:
         # Capacity compaction may replace a candidate with a summary. Only a
         # rendering present in this frozen primary request can be published.
-        self.selected_boundary = (
-            self.boundary
-            if self.boundary is not None
-            and all(
-                message in (*self.sequence.messages, *self.sequence.items)
-                for _, message in self.boundary.fragments
+        if self.boundary is None:
+            return
+        messages = (*self.sequence.messages, *self.sequence.items)
+        if not all(message in messages for _, message in self.boundary.fragments):
+            return
+        inputs = self.boundary.ordinary_inputs
+        if self.business_inputs:
+            # An execution compact can cover one private input while retaining
+            # another. Each admission still requires its own original material.
+            inputs = tuple(
+                candidate
+                for candidate in inputs
+                if candidate.message is None or candidate.message in messages
             )
-            and (
-                not self.business_inputs
-                or all(
-                    message in (*self.sequence.messages, *self.sequence.items)
-                    for message in self.boundary.current_inputs
-                )
-            )
-            else None
-        )
+            if self.boundary.ordinary_inputs and not inputs:
+                return
+        self.selected_boundary = replace(self.boundary, ordinary_inputs=inputs)
 
     async def complete(self) -> ChatResponse:
         with model_dispatch_guard(self.admit):
@@ -178,14 +179,18 @@ class _PrimaryDispatch:
                     and self.runtime.work_control.current is not None
                     and self.selected_boundary.prepare is not None
                 ):
-                    candidate = await self.selected_boundary.prepare(self.business_inputs)
+                    candidate = await self.selected_boundary.prepare(
+                        self.business_inputs, self.selected_boundary.ordinary_inputs
+                    )
                     candidate.stage()
                     prior_event_ids = list(work_session.event_ids)
                     work_session.event_ids.extend(
                         sorted(self.selected_boundary.event_ids.difference(work_session.event_ids))
                     )
                 else:
-                    await self.selected_boundary.commit(self.business_inputs)
+                    await self.selected_boundary.commit(
+                        self.business_inputs, self.selected_boundary.ordinary_inputs
+                    )
             if work_session is not None:
                 try:
                     await work_session.save(
@@ -206,7 +211,9 @@ class _PrimaryDispatch:
                     work_session.public_event_ids.update(self.selected_boundary.event_ids)
         else:
             if self.selected_boundary is not None:
-                await self.selected_boundary.commit(self.business_inputs)
+                await self.selected_boundary.commit(
+                    self.business_inputs, self.selected_boundary.ordinary_inputs
+                )
                 self.observed_event_ids.update(self.selected_boundary.event_ids)
         if self.has_native_effects:
             # Mark the original private task before real native dispatch. SDK
