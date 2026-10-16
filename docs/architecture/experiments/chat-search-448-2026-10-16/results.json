@@ -1,0 +1,395 @@
+{
+  "environment": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "python": "3.12.7",
+    "sqlite": "3.45.3",
+    "cpu": "Apple M4",
+    "messages": 200000,
+    "queries": 400,
+    "repeats": 30,
+    "seed": 448
+  },
+  "trigram_semantics": {
+    "\"电吉他 三千\"": [],
+    "电吉他 三千": [
+      1,
+      8
+    ],
+    "\"电吉他\" AND \"三千\"": [],
+    "\"三千\"": [],
+    "\"报销\"": [],
+    "\"報銷单\"": [],
+    "\"报销单\"": [
+      4
+    ],
+    "\"PR #448\"": [
+      6
+    ],
+    "\"pr #448\"": [
+      6
+    ],
+    "\"phone\"": [
+      9
+    ],
+    "\"电吉他\" NOT \"不买\"": [
+      1,
+      8
+    ],
+    "\"电吉他\" NOT \"不买电\"": [
+      1
+    ]
+  },
+  "v0_invariant": {
+    "rows": 50000,
+    "queries": 300,
+    "queries_with_missed_matches": 0,
+    "examples_missed": []
+  },
+  "time_binding": {
+    "2026-10-10T00:00:00+08:00": 0,
+    "2026-10-10T00:00:00": 0,
+    "2026-10-09T16:00:00Z": 1,
+    "stored_row_is_utc_for_local": "2026-10-10T00:30:00+08:00",
+    "after_converted_to_naive_utc_text": 1,
+    "sqlalchemy_stored": "2026-10-09 16:30:00.000000",
+    "sqlalchemy_text_bind_after_+08:00": 0
+  },
+  "highlight_examples": {
+    "PR #448 in 'see ＰＲ＃４４８ ok'": [
+      [
+        4,
+        10
+      ]
+    ],
+    "k in '5㎏'": [
+      [
+        1,
+        2
+      ]
+    ],
+    "é in 'café!'": [
+      [
+        3,
+        5
+      ]
+    ],
+    "报销 in '報 銷單'": [
+      [
+        0,
+        3
+      ]
+    ],
+    "ガ in 'ｶﾞｲﾄﾞ'": [
+      [
+        0,
+        2
+      ]
+    ]
+  },
+  "index_options": {
+    "raw_trigram": {
+      "description": "current: built-in trigram over raw content",
+      "index_mb": 15.63,
+      "base_table_mb": 12.97,
+      "bulk_build_seconds": 0.75,
+      "incremental_insert_ms_per_message_with_commit": 0.429,
+      "reindex_batch_500_write_txn_ms_p50_max": null,
+      "queries": 400,
+      "queries_with_missed_matches": 181,
+      "examples_missed": [
+        "#448",
+        "pr#448",
+        "PR #448",
+        "ＰＲ＃４４８",
+        "448",
+        "fi",
+        "kg",
+        "é",
+        "ガ",
+        "报销",
+        "報銷",
+        "电"
+      ],
+      "candidate_to_truth_ratio": 0.928,
+      "latency_ms_p50_p95_conv3": {
+        "one_char_common": [
+          3.308,
+          3.418
+        ],
+        "two_char": [
+          2.848,
+          2.919
+        ],
+        "long_cjk": [
+          0.018,
+          0.019
+        ],
+        "latin_inner": [
+          0.585,
+          0.603
+        ],
+        "punct_mixed": [
+          0.679,
+          0.718
+        ]
+      }
+    },
+    "ngram123": {
+      "description": "one contentless-delete table, normalized 1/2/3-gram tokens",
+      "index_mb": 35.81,
+      "base_table_mb": 12.97,
+      "bulk_build_seconds": 7.43,
+      "incremental_insert_ms_per_message_with_commit": 0.79,
+      "reindex_batch_500_write_txn_ms_p50_max": [
+        4.23,
+        99.14
+      ],
+      "queries": 400,
+      "queries_with_missed_matches": 0,
+      "examples_missed": [],
+      "candidate_to_truth_ratio": 1.002,
+      "latency_ms_p50_p95_conv3": {
+        "one_char_common": [
+          11.389,
+          11.602
+        ],
+        "two_char": [
+          0.266,
+          0.281
+        ],
+        "long_cjk": [
+          0.023,
+          0.024
+        ],
+        "latin_inner": [
+          0.56,
+          0.6
+        ],
+        "punct_mixed": [
+          1.62,
+          1.647
+        ]
+      }
+    },
+    "trigram_plus_12": {
+      "description": "contentless-delete trigram over normalized text + 1/2-gram table",
+      "index_mb": 36.33,
+      "base_table_mb": 12.97,
+      "bulk_build_seconds": 11.44,
+      "incremental_insert_ms_per_message_with_commit": 1.126,
+      "reindex_batch_500_write_txn_ms_p50_max": [
+        5.18,
+        230.13
+      ],
+      "queries": 400,
+      "queries_with_missed_matches": 0,
+      "examples_missed": [],
+      "candidate_to_truth_ratio": 1.0,
+      "latency_ms_p50_p95_conv3": {
+        "one_char_common": [
+          11.349,
+          11.448
+        ],
+        "two_char": [
+          0.268,
+          0.278
+        ],
+        "long_cjk": [
+          0.019,
+          0.02
+        ],
+        "latin_inner": [
+          0.59,
+          0.607
+        ],
+        "punct_mixed": [
+          1.716,
+          1.736
+        ]
+      }
+    },
+    "ngram23_prefix": {
+      "description": "normalized 2/3-gram tokens, 1-char via bigram prefix (end padded)",
+      "index_mb": 29.7,
+      "base_table_mb": 12.97,
+      "bulk_build_seconds": 6.99,
+      "incremental_insert_ms_per_message_with_commit": 0.57,
+      "reindex_batch_500_write_txn_ms_p50_max": null,
+      "queries": 400,
+      "queries_with_missed_matches": 0,
+      "examples_missed": [],
+      "candidate_to_truth_ratio": 1.002,
+      "latency_ms_p50_p95_conv3": {
+        "one_char_common": [
+          14.493,
+          14.642
+        ],
+        "two_char": [
+          0.27,
+          0.276
+        ],
+        "long_cjk": [
+          0.03,
+          0.031
+        ],
+        "latin_inner": [
+          0.564,
+          0.599
+        ],
+        "punct_mixed": [
+          1.612,
+          1.633
+        ]
+      }
+    },
+    "cjk12_words": {
+      "description": "rejected design of the first draft: CJK 1/2-gram + alnum words",
+      "index_mb": 17.18,
+      "base_table_mb": 12.97,
+      "bulk_build_seconds": 5.89,
+      "incremental_insert_ms_per_message_with_commit": 0.475,
+      "reindex_batch_500_write_txn_ms_p50_max": null,
+      "queries": 400,
+      "queries_with_missed_matches": 61,
+      "examples_missed": [
+        "phone",
+        "15pro",
+        "iphone15",
+        "#448",
+        "pr#448",
+        "PR #448",
+        "ＰＲ＃４４８",
+        "448",
+        "a?b=1",
+        "wi-fi",
+        "fi",
+        "kg"
+      ],
+      "candidate_to_truth_ratio": 1.215,
+      "latency_ms_p50_p95_conv3": {
+        "one_char_common": [
+          11.39,
+          11.61
+        ],
+        "two_char": [
+          0.612,
+          0.627
+        ],
+        "long_cjk": [
+          0.191,
+          0.196
+        ],
+        "latin_inner": [
+          0.025,
+          0.033
+        ],
+        "punct_mixed": [
+          1.454,
+          1.54
+        ]
+      }
+    }
+  },
+  "contentless_delete_operations": {
+    "delete_by_rowid": "ok",
+    "insert_or_replace": "ok",
+    "after_replace_match_dd": [
+      2
+    ],
+    "after_replace_match_bb": [],
+    "integrity_check": "ok",
+    "optimize": "ok",
+    "rebuild": "error: 'rebuild' may not be used with a contentless fts5 table",
+    "delete_command": "error: 'delete' may not be used with a contentless_delete=1 table",
+    "delete_all": "ok",
+    "rows_after_delete_all": 0,
+    "select_column_value": "ok",
+    "select_column_value_result": [],
+    "trigger_delete_leaves_match": []
+  },
+  "enqueue_write_lock": {
+    "rows": 1000000,
+    "single_insert_select_write_lock_seconds": 0.12,
+    "keyset_batches": 201,
+    "batch_5000_write_lock_ms_p50": 0.62,
+    "batch_5000_write_lock_ms_max": 2.54
+  },
+  "bm25": {
+    "order_by_rank_returns_most_relevant_first": [
+      [
+        2,
+        -6.490215870108852
+      ],
+      [
+        1,
+        -6.331239685093251
+      ]
+    ],
+    "score_sign": "negative; lower is better (ORDER BY rank ascending)",
+    "same_doc_scores_before_after_inserting_50_unrelated_docs": {
+      "1": [
+        -6.3312,
+        -6.5451
+      ],
+      "2": [
+        -6.4902,
+        -6.6525
+      ]
+    },
+    "sum_aggregation": {
+      "one_message_group_sum": -11.0083,
+      "two_message_group_sum": -12.6462,
+      "note": "lower is better, so summing favours the group with more messages"
+    }
+  },
+  "grouping": {
+    "overlapping_A_B_A": [
+      [
+        1,
+        2
+      ],
+      [
+        2,
+        3
+      ]
+    ],
+    "three_terms_with_far_cover": [
+      [
+        2,
+        9
+      ]
+    ],
+    "counterexample_25_hits_new_minimal_windows": [
+      [
+        12,
+        13
+      ]
+    ],
+    "counterexample_first_draft_split_drop": [],
+    "counterexample_first_draft_equal_gaps": [
+      [
+        1,
+        24
+      ]
+    ],
+    "chain_A_C_every_10min_then_B": [
+      [
+        28,
+        31
+      ]
+    ]
+  },
+  "paging": {
+    "messages": 200000,
+    "budget_per_term": 2000,
+    "keyset_requests_to_exhaust": 31,
+    "keyset_rare_hits_reached": [
+      500,
+      40000,
+      199990
+    ],
+    "naive_top_budget_contains_rare": [
+      199990
+    ]
+  }
+}
