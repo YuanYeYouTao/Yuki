@@ -91,8 +91,8 @@
       "description": "current: built-in trigram over raw content",
       "index_mb": 15.63,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 0.74,
-      "incremental_insert_ms_per_message_with_commit": 0.424,
+      "bulk_build_seconds": 0.71,
+      "incremental_insert_ms_per_message_with_commit": 0.426,
       "reindex_batch_500_write_txn_ms_p50_max": null,
       "queries": 400,
       "queries_with_missed_matches": 181,
@@ -113,24 +113,24 @@
       "candidate_to_truth_ratio": 0.928,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          3.268,
-          3.307
+          3.148,
+          3.202
         ],
         "two_char": [
-          2.846,
-          3.064
+          2.761,
+          2.898
         ],
         "long_cjk": [
-          0.016,
-          0.017
+          0.014,
+          0.02
         ],
         "latin_inner": [
-          1.453,
-          2.052
+          0.577,
+          0.593
         ],
         "punct_mixed": [
-          1.53,
-          1.936
+          0.68,
+          0.698
         ]
       }
     },
@@ -138,11 +138,11 @@
       "description": "one contentless-delete table, normalized 1/2/3-gram tokens",
       "index_mb": 35.81,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 5.31,
-      "incremental_insert_ms_per_message_with_commit": 0.79,
+      "bulk_build_seconds": 5.19,
+      "incremental_insert_ms_per_message_with_commit": 0.74,
       "reindex_batch_500_write_txn_ms_p50_max": [
-        4.07,
-        95.75
+        3.97,
+        105.07
       ],
       "queries": 400,
       "queries_with_missed_matches": 0,
@@ -150,24 +150,24 @@
       "candidate_to_truth_ratio": 1.002,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          11.425,
-          11.588
+          11.378,
+          11.617
         ],
         "two_char": [
-          0.264,
-          0.27
+          0.268,
+          0.273
         ],
         "long_cjk": [
           0.02,
           0.021
         ],
         "latin_inner": [
-          0.555,
-          0.565
+          0.546,
+          0.59
         ],
         "punct_mixed": [
-          1.605,
-          1.623
+          1.616,
+          1.631
         ]
       }
     },
@@ -175,11 +175,11 @@
       "description": "contentless-delete trigram over normalized text + 1/2-gram table",
       "index_mb": 36.33,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 7.03,
-      "incremental_insert_ms_per_message_with_commit": 1.092,
+      "bulk_build_seconds": 6.61,
+      "incremental_insert_ms_per_message_with_commit": 1.062,
       "reindex_batch_500_write_txn_ms_p50_max": [
-        5.08,
-        231.42
+        4.99,
+        218.12
       ],
       "queries": 400,
       "queries_with_missed_matches": 0,
@@ -187,11 +187,11 @@
       "candidate_to_truth_ratio": 1.0,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          11.405,
-          11.573
+          11.434,
+          23.284
         ],
         "two_char": [
-          0.265,
+          0.268,
           0.275
         ],
         "long_cjk": [
@@ -199,12 +199,12 @@
           0.018
         ],
         "latin_inner": [
-          0.586,
-          0.599
+          0.601,
+          0.608
         ],
         "punct_mixed": [
-          1.713,
-          1.734
+          1.693,
+          1.716
         ]
       }
     },
@@ -212,8 +212,8 @@
       "description": "normalized 2/3-gram tokens, 1-char via bigram prefix (end padded)",
       "index_mb": 29.7,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 4.89,
-      "incremental_insert_ms_per_message_with_commit": 0.552,
+      "bulk_build_seconds": 4.77,
+      "incremental_insert_ms_per_message_with_commit": 0.544,
       "reindex_batch_500_write_txn_ms_p50_max": null,
       "queries": 400,
       "queries_with_missed_matches": 0,
@@ -221,24 +221,24 @@
       "candidate_to_truth_ratio": 1.002,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          14.399,
-          14.628
+          14.483,
+          14.677
         ],
         "two_char": [
-          0.271,
-          0.281
+          0.266,
+          0.271
         ],
         "long_cjk": [
           0.027,
           0.028
         ],
         "latin_inner": [
-          0.562,
-          0.583
+          0.559,
+          0.565
         ],
         "punct_mixed": [
-          1.63,
-          1.644
+          1.618,
+          1.627
         ]
       }
     },
@@ -246,8 +246,8 @@
       "description": "rejected design of the first draft: CJK 1/2-gram + alnum words",
       "index_mb": 17.18,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 3.6,
-      "incremental_insert_ms_per_message_with_commit": 0.465,
+      "bulk_build_seconds": 3.69,
+      "incremental_insert_ms_per_message_with_commit": 0.454,
       "reindex_batch_500_write_txn_ms_p50_max": null,
       "queries": 400,
       "queries_with_missed_matches": 61,
@@ -268,24 +268,24 @@
       "candidate_to_truth_ratio": 1.215,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          11.413,
-          11.645
+          11.374,
+          11.53
         ],
         "two_char": [
-          0.606,
-          0.631
+          0.597,
+          0.605
         ],
         "long_cjk": [
-          0.187,
-          0.189
+          0.186,
+          0.191
         ],
         "latin_inner": [
           0.018,
           0.019
         ],
         "punct_mixed": [
-          1.433,
-          1.451
+          1.439,
+          1.462
         ]
       }
     }
@@ -309,10 +309,10 @@
   },
   "enqueue_write_lock": {
     "rows": 1000000,
-    "single_insert_select_write_lock_seconds": 0.12,
+    "single_insert_select_write_lock_seconds": 0.119,
     "keyset_batches": 201,
-    "batch_5000_write_lock_ms_p50": 0.62,
-    "batch_5000_write_lock_ms_max": 2.5
+    "batch_5000_write_lock_ms_p50": 0.6,
+    "batch_5000_write_lock_ms_max": 2.47
   },
   "bm25": {
     "order_by_rank_returns_most_relevant_first": [
@@ -560,14 +560,63 @@
       "latest_text_not_found": 0
     },
     "reenqueue_during_processing": {
-      "queue_rows_after_first_write": 1,
-      "bravo_found_while_queued": [
+      "queue_at_start": [
         1
       ],
-      "bravo_found_after_second_round": [
+      "queue_after_update": [
+        1,
+        2
+      ],
+      "found_before_write": {
+        "alpha": [
+          1
+        ],
+        "bravo": [
+          1
+        ]
+      },
+      "queue_after_first_write": [
+        2
+      ],
+      "index_has_bravo_after_first_write": false,
+      "found_after_first_write": {
+        "alpha": [
+          1
+        ],
+        "bravo": [
+          1
+        ]
+      },
+      "queue_after_second_round": [],
+      "found_after_second_round": {
+        "alpha": [
+          1
+        ],
+        "bravo": [
+          1
+        ]
+      },
+      "index_has_bravo_after_second_round": true
+    },
+    "delete_during_processing_unconditional_write": {
+      "queue_at_start": [
         1
       ],
-      "queue_left": 0
+      "ledger_rows": 0,
+      "queue_rows": 0,
+      "orphan_index_rowids": [
+        1
+      ],
+      "search_alpha": []
+    },
+    "delete_during_processing_conditional_write": {
+      "queue_at_start": [
+        1
+      ],
+      "ledger_rows": 0,
+      "queue_rows": 0,
+      "orphan_index_rowids": [],
+      "search_alpha": []
     },
     "queue_scan_budget_5": {
       "raw_rows_distinct_events": 5,
@@ -586,14 +635,14 @@
         "index_saw_event": false,
         "queue_saw_event": false,
         "event_found": false,
-        "writer_committed_while_reader_open_seconds": 0.0012
+        "writer_committed_while_reader_open_seconds": 0.001
       },
       {
         "explicit_begin": true,
         "index_saw_event": false,
         "queue_saw_event": true,
         "event_found": true,
-        "writer_committed_while_reader_open_seconds": 0.0008
+        "writer_committed_while_reader_open_seconds": 0.0009
       }
     ]
   },
@@ -718,12 +767,18 @@
   "paging_engine": {
     "trials": 300,
     "stats": {
-      "no_progress_requests": 0,
-      "max_overshoot": 19,
-      "runs": 7938,
-      "requests": 142761,
-      "empty_pages": 78362,
-      "state_exhausted": 7938
+      "pages": 195189,
+      "no_progress": 0,
+      "bound_violations": 0,
+      "actual_rows_above_charged": 0,
+      "window_reads_above_nM": 0,
+      "pages_window_exhausted_budget": 120681,
+      "pages_sources_above_budget": 43879,
+      "max_charged_over_budget": 270,
+      "runs": 9738,
+      "requests": 195189,
+      "empty_pages": 112909,
+      "state_exhausted": 9738
     },
     "failures": [],
     "failure_count": 0
@@ -770,6 +825,82 @@
     "after_delete": 2,
     "after_floor_change": 3
   },
+  "relevance_recompute_cost": {
+    "first_page": {
+      "frontier_used": 21,
+      "index_source_rows": 0,
+      "verify_rows": 0,
+      "scan_rows": 20,
+      "total_rows": 20,
+      "hits": 20
+    },
+    "W": 20,
+    "after_backfill_enqueue": {
+      "current_sources": {
+        "frontier_used": 1,
+        "index_source_rows": 40,
+        "verify_rows": 20,
+        "scan_rows": 0,
+        "total_rows": 60,
+        "hits": 20
+      },
+      "frozen_frontier": {
+        "frontier_used": 21,
+        "index_source_rows": 0,
+        "verify_rows": 0,
+        "scan_rows": 20,
+        "total_rows": 20,
+        "hits": 20
+      }
+    },
+    "after_indexing": {
+      "current_sources": {
+        "frontier_used": 1,
+        "index_source_rows": 40,
+        "verify_rows": 20,
+        "scan_rows": 0,
+        "total_rows": 60,
+        "hits": 20
+      },
+      "frozen_frontier": {
+        "frontier_used": 21,
+        "index_source_rows": 0,
+        "verify_rows": 0,
+        "scan_rows": 20,
+        "total_rows": 20,
+        "hits": 20
+      }
+    },
+    "epoch_unchanged": true,
+    "mixed_range": {
+      "first_page": {
+        "frontier_used": 11,
+        "index_source_rows": 20,
+        "verify_rows": 10,
+        "scan_rows": 10,
+        "total_rows": 40,
+        "hits": 15
+      },
+      "after_backfill_and_indexing": {
+        "current_sources": {
+          "frontier_used": 1,
+          "index_source_rows": 35,
+          "verify_rows": 20,
+          "scan_rows": 0,
+          "total_rows": 55,
+          "hits": 15
+        },
+        "frozen_frontier": {
+          "frontier_used": 11,
+          "index_source_rows": 15,
+          "verify_rows": 10,
+          "scan_rows": 10,
+          "total_rows": 35,
+          "hits": 15
+        }
+      }
+    }
+  },
   "plugin": {
     "hits": [
       6,
@@ -777,7 +908,6 @@
       13
     ],
     "second_draft_single_request": [
-      10,
       13
     ],
     "revised_internal_continuation": [
@@ -785,8 +915,9 @@
       10,
       13
     ],
-    "requests_used": 2,
+    "requests_used": 4,
     "no_progress_requests": 0,
+    "bound_violations": 0,
     "final_state": "exhausted"
   }
 }

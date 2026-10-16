@@ -1010,8 +1010,15 @@ def _tokens(text: str | None) -> str:
     return " ".join(out)
 
 
-def indexer_round(db, batch: int, rule: str = "revised", between=None) -> int:
-    """One indexer pass. ``between`` runs after the read, before the write."""
+def indexer_round(
+    db, batch: int, rule: str = "revised", between=None, conditional_write: bool = True
+) -> int:
+    """One indexer pass. ``between`` runs after the read, before the write.
+
+    Tokens are prepared outside the write transaction.  The write is conditional on
+    the event still existing, checked inside the same short write transaction.
+    ``conditional_write=False`` reproduces the unconditional write.
+    """
 
     if rule == "second_draft":
         rows = db.execute(
@@ -1042,7 +1049,13 @@ def indexer_round(db, batch: int, rule: str = "revised", between=None) -> int:
         between(db)
     db.execute("begin immediate")
     for event_id, seq in work:
-        if prepared[event_id] is not None:
+        if prepared[event_id] is not None and conditional_write:
+            db.execute(
+                "insert or replace into idx(rowid, c_grams, a_grams)"
+                " select ?, ?, ? where exists (select 1 from ev where id = ?)",
+                (event_id, *prepared[event_id], event_id),
+            )
+        elif prepared[event_id] is not None:
             db.execute(
                 "insert or replace into idx(rowid, c_grams, a_grams) values (?,?,?)",
                 (event_id, *prepared[event_id]),
@@ -1174,22 +1187,62 @@ def probe_queue() -> dict:
                 "first_rounds_removed": progress[:3],
                 "latest_text_not_found": stale_tokens,
             }
-    # Re-enqueue between read and write must survive.
-    db = toy_db(rows=[(1, 1, "message", "alpha", None)])
+    # Re-enqueue between read and write must survive.  The event is inserted through
+    # the trigger, so the indexer starts from a real pending item (seq 1).
+    db = toy_db(rows=[(1, 1, "message", "alpha", None)], init_before_rows=True)
+    trace = {"queue_at_start": [r[0] for r in db.execute("select seq from queue")]}
 
     def update_during(conn):
         conn.execute("update ev set asr = 'bravo' where id = 1")
+        trace["queue_after_update"] = [r[0] for r in conn.execute("select seq from queue")]
+        trace["found_before_write"] = {
+            word: sorted(toy_search(conn, word, 1)[0]) for word in ("alpha", "bravo")
+        }
 
     indexer_round(db, 10, "revised", between=update_during)
-    queued_after_race = db.execute("select seq from queue where event_id = 1").fetchall()
-    found_during = toy_search(db, "bravo", 1)[0]
-    indexer_round(db, 10, "revised")
-    out["reenqueue_during_processing"] = {
-        "queue_rows_after_first_write": len(queued_after_race),
-        "bravo_found_while_queued": sorted(found_during),
-        "bravo_found_after_second_round": sorted(toy_search(db, "bravo", 1)[0]),
-        "queue_left": db.execute("select count(*) from queue").fetchone()[0],
+    trace["queue_after_first_write"] = [r[0] for r in db.execute("select seq from queue")]
+    trace["index_has_bravo_after_first_write"] = bool(
+        db.execute(
+            "select rowid from idx where idx match ?",
+            (f'"{hex_token("t", fold_whole("bravo")[:3])}"',),
+        ).fetchall()
+    )
+    trace["found_after_first_write"] = {
+        word: sorted(toy_search(db, word, 1)[0]) for word in ("alpha", "bravo")
     }
+    indexer_round(db, 10, "revised")
+    trace["queue_after_second_round"] = [r[0] for r in db.execute("select seq from queue")]
+    trace["found_after_second_round"] = {
+        word: sorted(toy_search(db, word, 1)[0]) for word in ("alpha", "bravo")
+    }
+    trace["index_has_bravo_after_second_round"] = bool(
+        db.execute(
+            "select rowid from idx where idx match ?",
+            (f'"{hex_token("t", fold_whole("bravo")[:3])}"',),
+        ).fetchall()
+    )
+    out["reenqueue_during_processing"] = trace
+    # Delete between read and write must not leave an orphan index row.
+    for label, flag in (("unconditional_write", False), ("conditional_write", True)):
+        db = toy_db(rows=[(1, 1, "message", "alpha", None)], init_before_rows=True)
+        queue_at_start = [r[0] for r in db.execute("select seq from queue")]
+        indexer_round(
+            db,
+            10,
+            "revised",
+            between=lambda conn: conn.execute("delete from ev where id = 1"),
+            conditional_write=flag,
+        )
+        out[f"delete_during_processing_{label}"] = {
+            "queue_at_start": queue_at_start,
+            "ledger_rows": db.execute("select count(*) from ev").fetchone()[0],
+            "queue_rows": db.execute("select count(*) from queue").fetchone()[0],
+            "orphan_index_rowids": [
+                r[0]
+                for r in db.execute("select rowid from idx where rowid not in (select id from ev)")
+            ],
+            "search_alpha": sorted(toy_search(db, "alpha", 1)[0]),
+        }
     # Duplicate queue rows must not consume the search budget.
     db = toy_db(rows=[(i, 1, "message", "x", None) for i in range(1, 6)])
     for _ in range(3):
@@ -1369,8 +1422,12 @@ def sim_groups(
     requirements: tuple,
     max_messages: int,
     max_seconds: int,
+    evaluated: list | None = None,
 ) -> list[tuple[int, int]]:
-    """Minimal covering windows (start_id, end_id) over hits sorted by id."""
+    """Minimal covering windows (start_id, end_id) over hits sorted by id.
+
+    ``evaluated`` collects the windows whose message distance had to be counted.
+    """
 
     ordered = sorted(hits)
     if len(requirements) <= 1:
@@ -1389,6 +1446,8 @@ def sim_groups(
                 left += 1
                 continue
             needed = any(count[r] == 1 for r in hits[rid])
+            if needed and evaluated is not None:
+                evaluated.append((lid, rid))
             if (
                 needed
                 and pos[rid] - pos[lid] <= max_messages
@@ -1400,57 +1459,83 @@ def sim_groups(
 
 
 def sim_engine(dataset, requirements, budget, limit, max_messages, max_seconds, chunk=4):
-    """Return pages, request count and per-request checks (recent order).
+    """Return pages, request count and per-page checks (recent order), section 6.7.
 
-    A request makes progress when it emits a group, lowers the scan bound or ends
-    the search.  ``overshoot`` is the work spent beyond the request budget.
+    Cost model (charged units): every candidate read is charged ``unit`` up front:
+    1 source row + 1 original-text row + (M + 1) reserved for the one distance count
+    in which it can be the right endpoint (multi-requirement only).  Each merge step
+    also charges ``boundary`` = M + 1 for locating the event at pos(f) + M.  Actual
+    rows are tracked separately and must never exceed the charged units.
     """
 
     ids, pos, times, sources = dataset  # sources: name -> (requirement, sorted ids)
     upper = (max(ids) + 1) if ids else 1
     single = len(requirements) <= 1
     margin = 0 if single else max_messages
+    unit = 2 + (0 if single else max_messages + 1)
+    boundary = 0 if single else max_messages + 1
     id_at = sorted(ids)
     cursor = (upper, upper)
     pages = []
     requests = 0
-    checks = {"no_progress": 0, "max_overshoot": 0}
+    checks = Counter()
     while cursor is not None and requests < 100000:
         requests += 1
         emit_upper, scan_upper = cursor
-        remaining = budget
+        charged = 0
+        rows = Counter()
         known: dict[int, set] = {}
+        verified: set[int] = set()
+        counted: set[tuple[int, int]] = set()
 
-        def add(source_name, event_id, known=known):
-            known.setdefault(event_id, set()).add(sources[source_name][0])
+        def read(name, event_ids, known=known, verified=verified, rows=rows):
+            for i in event_ids:
+                known.setdefault(i, set()).add(sources[name][0])
+                rows["source"] += 1
+                if i not in verified:
+                    verified.add(i)
+                    rows["verify"] += 1
+            return unit * len(event_ids)
 
+        window_reads = 0
         for name, (_, source_ids) in sources.items():
             window = [i for i in source_ids if scan_upper <= i < emit_upper]
-            remaining -= len(window)
-            for i in window:
-                add(name, i)
+            window_reads += len(window)
+            charged += read(name, window)
+        window_units = charged
         position = {name: scan_upper for name in sources}
         exhausted = {name: False for name in sources}
         first = True
+        first_active = sum(1 for n in sources if not exhausted[n])
         state = None
         while True:
             active = [n for n in sources if not exhausted[n]]
-            if active and (first or remaining > 0):
+            step_cost = len(active) * unit + boundary
+            remaining = budget - charged
+            if active and (first or remaining >= step_cost):
+                fit = (remaining - boundary) // (len(active) * unit) if remaining > boundary else 0
+                page = max(1, min(chunk, fit)) if first else min(chunk, fit)
                 first = False
-                page = max(1, min(chunk, remaining // len(active))) if remaining > 0 else 1
                 for name in active:
                     below = [i for i in reversed(sources[name][1]) if i < position[name]][:page]
-                    remaining -= len(below)
-                    for i in below:
-                        add(name, i)
+                    charged += read(name, below)
                     if below:
                         position[name] = below[-1]
                     if len(below) < page:
                         exhausted[name] = True
+                charged += boundary
+                rows["boundary"] += boundary
             active = [n for n in sources if not exhausted[n]]
             frontier = max((position[n] for n in active), default=0)
             complete = {i: frozenset(v) for i, v in known.items() if i >= frontier}
-            groups = sim_groups(complete, pos, times, requirements, max_messages, max_seconds)
+            evaluated: list = []
+            groups = sim_groups(
+                complete, pos, times, requirements, max_messages, max_seconds, evaluated
+            )
+            for lid, rid in evaluated:
+                if (lid, rid) not in counted:
+                    counted.add((lid, rid))
+                    rows["distance"] += min(max_messages + 1, pos[rid] - pos[lid] + 1)
             if active:
                 threshold_pos = pos[frontier] + margin if frontier in pos else 0
                 safe = [g for g in groups if g[1] < emit_upper and pos[g[1]] >= threshold_pos]
@@ -1463,22 +1548,33 @@ def sim_engine(dataset, requirements, budget, limit, max_messages, max_seconds, 
             if not active:
                 state = "exhausted"
                 break
-            if remaining <= 0:
+            if budget - charged < len(active) * unit + boundary:
                 state = "incomplete"
                 break
         emitted = safe[:limit]
         pages.append((state, emitted))
-        checks["max_overshoot"] = max(checks["max_overshoot"], -remaining)
-        if state != "exhausted" and not emitted and frontier >= scan_upper:
-            checks["no_progress"] += 1
+        bound = max(budget, window_units + first_active * unit + boundary)
+        checks["pages"] += 1
+        checks["bound_violations"] += charged > bound
+        checks["actual_rows_above_charged"] += sum(rows.values()) > charged
+        checks["window_reads_above_nM"] += window_reads > len(sources) * margin
+        checks["pages_window_exhausted_budget"] += window_units >= budget > 0
+        checks["pages_sources_above_budget"] += first_active > budget
+        checks["max_charged_over_budget"] = max(checks["max_charged_over_budget"], charged - budget)
         if state == "more":
-            cursor = (emitted[-1][1], frontier)
+            next_cursor = (emitted[-1][1], emitted[-1][1])
         elif state == "exhausted":
-            cursor = None
+            next_cursor = None
         else:
             threshold_index = pos[frontier] + margin
             new_emit = id_at[threshold_index] if threshold_index < len(id_at) else upper
-            cursor = (min(emit_upper, new_emit), frontier)
+            next_cursor = (min(emit_upper, new_emit), frontier)
+        if next_cursor is not None and not (
+            next_cursor[0] < emit_upper
+            or (next_cursor[0] == emit_upper and next_cursor[1] < scan_upper)
+        ):
+            checks["no_progress"] += 1
+        cursor = next_cursor
     return pages, requests, checks
 
 
@@ -1533,7 +1629,10 @@ def probe_paging_engine(seed: int, trials: int) -> dict:
         )
         reference.sort(key=lambda g: g[1], reverse=True)
         total_candidates = sum(len(v[1]) for v in sources.values())
-        for budget in sorted({1, 2, 3, 7, max(1, total_candidates)}):
+        unit_max = 2 + max_messages + 1
+        for budget in sorted(
+            {1, 2, 3, 7, max(1, total_candidates), total_candidates * unit_max + 50}
+        ):
             for limit in (1, 2, 5):
                 for direction in ("recent", "oldest"):
                     if direction == "recent":
@@ -1569,8 +1668,19 @@ def probe_paging_engine(seed: int, trials: int) -> dict:
                             (shift - e, shift - s) for _, groups in pages for s, e in groups
                         ]
                         expected = sorted(reference, key=lambda g: g[0])
-                    stats["no_progress_requests"] += checks["no_progress"]
-                    stats["max_overshoot"] = max(stats["max_overshoot"], checks["max_overshoot"])
+                    for key in (
+                        "pages",
+                        "no_progress",
+                        "bound_violations",
+                        "actual_rows_above_charged",
+                        "window_reads_above_nM",
+                        "pages_window_exhausted_budget",
+                        "pages_sources_above_budget",
+                    ):
+                        stats[key] += checks[key]
+                    stats["max_charged_over_budget"] = max(
+                        stats["max_charged_over_budget"], checks["max_charged_over_budget"]
+                    )
                     stats["runs"] += 1
                     stats["requests"] += requests
                     stats["empty_pages"] += sum(1 for _, groups in pages if not groups)
@@ -1674,6 +1784,116 @@ def probe_relevance_revision() -> dict:
     return log
 
 
+def range_plan_rows(db, terms, conv, lo, hi, frozen_frontier=None) -> dict:
+    """Read every candidate of a fixed ranking range [lo, hi) with the section 6.7
+    sources, inside one read transaction, and count the rows each SQL returns.
+
+    Index sources: one per term (index matches at or above the frontier, plus queued
+    events at or above the frontier).  Below the frontier: one shared scan.  With
+    ``frozen_frontier`` the frontier recorded by the first page is used instead of the
+    current one, so events backfilled since then are still read by the shared scan.
+    """
+
+    db.execute("begin")
+    frontier = frozen_frontier or db.execute("select frontier from state").fetchone()[0]
+    upper_index = max(lo, frontier)
+    source_rows = 0
+    candidates: set[int] = set()
+    for term in terms:
+        target = fold_whole(term)
+        grams = sorted({hex_token("t", target[i : i + 3]) for i in range(len(target) - 2)})
+        expr = " AND ".join(f'"{g}"' for g in grams)
+        source: set[int] = set()
+        for column in ("c_grams", "a_grams"):
+            source.update(
+                r[0]
+                for r in db.execute(
+                    "select rowid from idx where idx match ? and rowid >= ? and rowid < ?",
+                    (f"{{{column}}}: ({expr})", upper_index, hi),
+                )
+            )
+        source.update(
+            r[0]
+            for r in db.execute(
+                "select distinct q.event_id from queue q join ev on ev.id = q.event_id"
+                " where ev.conv = ? and q.event_id >= ? and q.event_id < ?",
+                (conv, upper_index, hi),
+            )
+        )
+        source_rows += len(source)
+        candidates |= source
+    verify_rows = 0
+    texts = {}
+    for event_id in sorted(candidates):
+        texts[event_id] = db.execute(
+            "select content, asr from ev where id = ?", (event_id,)
+        ).fetchone()
+        verify_rows += 1
+    scanned = db.execute(
+        "select id, content, asr from ev where conv = ? and kind = 'message' and id >= ?"
+        " and id < ?",
+        (conv, lo, min(hi, frontier)),
+    ).fetchall()
+    for event_id, content, asr in scanned:
+        texts[event_id] = (content, asr)
+    db.execute("rollback")
+    hits = {
+        event_id
+        for event_id, row in texts.items()
+        if row and all(any(fold_whole(t) in fold_whole(f or "") for f in row) for t in terms)
+    }
+    return {
+        "frontier_used": frontier,
+        "index_source_rows": source_rows,
+        "verify_rows": verify_rows,
+        "scan_rows": len(scanned),
+        "total_rows": source_rows + verify_rows + len(scanned),
+        "hits": len(hits),
+    }
+
+
+def probe_relevance_recompute_cost() -> dict:
+    """Review counterexample: 20 messages all containing alpha and bravo."""
+
+    rows = [(i, 1, "message", "alpha bravo", None) for i in range(1, 21)]
+    db = toy_db(rows=rows)  # existing history: frontier 21, nothing queued
+    terms, lo, hi = ("alpha", "bravo"), 1, 21
+    first = range_plan_rows(db, terms, 1, lo, hi)
+    recorded_frontier = first["frontier_used"]
+    out = {"first_page": first, "W": first["total_rows"]}
+    backfill_round(db, 100)
+    out["after_backfill_enqueue"] = {
+        "current_sources": range_plan_rows(db, terms, 1, lo, hi),
+        "frozen_frontier": range_plan_rows(db, terms, 1, lo, hi, recorded_frontier),
+    }
+    while indexer_round(db, 100):
+        pass
+    out["after_indexing"] = {
+        "current_sources": range_plan_rows(db, terms, 1, lo, hi),
+        "frozen_frontier": range_plan_rows(db, terms, 1, lo, hi, recorded_frontier),
+    }
+    out["epoch_unchanged"] = db.execute("select epoch from state").fetchone()[0] == 0
+    # Mixed range: 10 old messages below the frontier, 10 new ones still queued on the
+    # first page (5 contain both words, 5 only alpha).
+    db = toy_db(rows=[(i, 1, "message", "alpha bravo", None) for i in range(1, 11)])
+    db.executemany(
+        "insert into ev values(?,?,?,?,?)",
+        [(i, 1, "message", "alpha bravo" if i % 2 else "alpha", None) for i in range(11, 21)],
+    )
+    mixed = {"first_page": range_plan_rows(db, terms, 1, lo, hi)}
+    recorded_frontier = mixed["first_page"]["frontier_used"]
+    while backfill_round(db, 100):
+        pass
+    while indexer_round(db, 100):
+        pass
+    mixed["after_backfill_and_indexing"] = {
+        "current_sources": range_plan_rows(db, terms, 1, lo, hi),
+        "frozen_frontier": range_plan_rows(db, terms, 1, lo, hi, recorded_frontier),
+    }
+    out["mixed_range"] = mixed
+    return out
+
+
 def probe_plugin(seed: int) -> dict:
     rng = random.Random(seed)
     dataset = sim_dataset(rng, 400, {"a": ("A", 0.0)}, gap=False)
@@ -1692,6 +1912,7 @@ def probe_plugin(seed: int) -> dict:
         "revised_internal_continuation": sorted(looped),
         "requests_used": requests,
         "no_progress_requests": checks["no_progress"],
+        "bound_violations": checks["bound_violations"],
         "final_state": pages[-1][0],
     }
 
@@ -1742,6 +1963,7 @@ def main() -> None:
         "paging_engine": probe_paging_engine(seed=12, trials=args.paging_trials),
         "second_draft_scan_no_progress": probe_second_draft_no_progress(),
         "relevance_revision": probe_relevance_revision(),
+        "relevance_recompute_cost": probe_relevance_recompute_cost(),
         "plugin": probe_plugin(seed=4),
     }
     args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
