@@ -710,7 +710,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
             actor, permission = await resolve_execution_identity(
                 reader, case.settings, owner_id=case.env.person
             )
-        assert actor == "10001" and permission is PermissionLevel.SUPERUSER
+        assert actor == "" and permission is PermissionLevel.SUPERUSER
     resumed_actors = []
 
     async def capture_main(**kwargs):

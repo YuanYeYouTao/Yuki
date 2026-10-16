@@ -389,7 +389,7 @@ async def test_deferred_audit_cannot_refill_person_erased_before_accepted(
 
 
 @pytest.mark.parametrize("after_prepare", [False, True])
-async def test_group_binding_move_cannot_reassign_original_event_receipt(
+async def test_group_binding_move_preserves_original_event_receipt_owner(
     database, tmp_path, monkeypatch, after_prepare
 ):
     env, work, runtime = await active_work(database, tmp_path)
@@ -461,8 +461,12 @@ async def test_group_binding_move_cannot_reassign_original_event_receipt(
             )
             == destination
         )
-        assert await session.scalar(select(func.count(MemoryToolReceiptModel.id))) == 0
-        assert await session.scalar(select(func.count(ToolInvocationModel.id))) == 0
+        receipt = (await session.scalars(select(MemoryToolReceiptModel))).one()
+        assert receipt.canonical_space_id == env.space
+        assert receipt.canonical_person_id is None
+        assert receipt.trigger_event_id == runtime.trigger_event_id
+        invocation = (await session.scalars(select(ToolInvocationModel))).one()
+        assert invocation.canonical_conversation_id == runtime.conversation_id
 
 
 async def test_tool_telemetry_queue_freezes_origin_and_rejects_privacy_erasure(database, tmp_path):
@@ -520,7 +524,7 @@ async def test_tool_telemetry_queue_freezes_origin_and_rejects_privacy_erasure(d
         assert await session.scalar(select(func.count(ToolInvocationModel.id))) == 1
 
 
-@pytest.mark.parametrize("change", ["privacy", "owner_binding", "generation"])
+@pytest.mark.parametrize("change", ["privacy", "binding_disabled", "generation"])
 async def test_event_receipt_source_rechecked_atomically_after_read_prepare(
     database, tmp_path, monkeypatch, change
 ):
@@ -541,13 +545,14 @@ async def test_event_receipt_source_rechecked_atomically_after_read_prepare(
             async with original() as session, session.begin():
                 if change == "privacy":
                     session.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
-                elif change == "owner_binding":
+                elif change == "binding_disabled":
                     await session.execute(update(SpaceBindingModel).values(status="disabled"))
                 else:
                     await session.execute(update(CanonicalConversationModel).values(generation=2))
 
     monkeypatch.setattr(database, "sessions", changed_after_prepare)
-    with pytest.raises(MemoryPartitionResolutionError, match="tool_receipt_source_changed"):
+
+    async def record_original_receipt():
         await ToolInvocationRepository(database).record_invocation(
             conversation_key="source",
             provider_id="core",
@@ -564,9 +569,23 @@ async def test_event_receipt_source_rechecked_atomically_after_read_prepare(
             bot_user_id=env.bot.self_id,
             result_excerpt="verified source",
         )
+
+    if change == "binding_disabled":
+        await record_original_receipt()
+    else:
+        with pytest.raises(MemoryPartitionResolutionError, match="tool_receipt_source_changed"):
+            await record_original_receipt()
     async with original() as session:
-        assert await session.scalar(select(func.count(MemoryToolReceiptModel.id))) == 0
-        assert await session.scalar(select(func.count(ToolInvocationModel.id))) == 0
+        if change == "binding_disabled":
+            receipt = (await session.scalars(select(MemoryToolReceiptModel))).one()
+            assert receipt.canonical_space_id == env.space
+            assert receipt.canonical_person_id is None
+            assert receipt.trigger_event_id == source.id
+            invocation = (await session.scalars(select(ToolInvocationModel))).one()
+            assert invocation.canonical_conversation_id == env.context.conversation_id
+        else:
+            assert await session.scalar(select(func.count(MemoryToolReceiptModel.id))) == 0
+            assert await session.scalar(select(func.count(ToolInvocationModel.id))) == 0
 
 
 async def test_self_receipt_keeps_existing_call_key_and_refuses_erased_generation(database):

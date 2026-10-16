@@ -10,7 +10,7 @@ from tests.support.social_identity_cases import Bot, social_env
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
-from qq_ai_bot.identity.db_models import IdentityBindingModel
+from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialTarget
@@ -127,9 +127,14 @@ async def test_contacts_page_people_instead_of_accounts_and_keep_exact_ambiguity
         second = await ensure_person(writer, "11002")
         first, last = sorted((env.person, second))
         await writer.execute(
+            update(CanonicalPersonModel)
+            .where(CanonicalPersonModel.id.in_((first, last)))
+            .values(display_name="same")
+        )
+        await writer.execute(
             update(IdentityBindingModel)
             .where(IdentityBindingModel.person_id.in_((first, last)))
-            .values(display_name="same")
+            .values(display_name="platform nickname")
         )
         for index in range(32):
             writer.add(
@@ -138,7 +143,7 @@ async def test_contacts_page_people_instead_of_accounts_and_keep_exact_ambiguity
                     person_id=first,
                     platform="qq",
                     external_account_id=str(918200000 + index),
-                    display_name="same",
+                    display_name="platform nickname",
                     first_seen_at=now,
                     last_seen_at=now,
                     created_at=now,
