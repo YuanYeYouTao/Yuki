@@ -164,6 +164,7 @@ class ApplicationContainer:
             settings.model_runtime,
             self.database,
             lifecycle=self.lifecycle,
+            web_settings=settings.web,
         ).build()
         self.model_runtime = model_runtime
         self.tool_invocations.writer = model_runtime.invocations.writer

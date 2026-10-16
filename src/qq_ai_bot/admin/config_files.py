@@ -23,6 +23,7 @@ from qq_ai_bot.model_runtime.profiles import (
     ModelProfileCatalog,
     ModelRuntimeConfigurationError,
     model_profile_environment,
+    normalize_model_profile_document,
     parse_model_profile_catalog,
 )
 from qq_ai_bot.model_runtime.secrets import (
@@ -115,6 +116,8 @@ class ConfigFileService:
         return parse_model_profile_catalog(
             content,
             environment=model_profile_environment(settings),
+            web_mode=settings.web.mode,
+            search_backend=settings.web_search_backend,
         )
 
     async def read(self) -> dict[str, Any]:
@@ -136,6 +139,12 @@ class ConfigFileService:
             # Headers are kept server-side even for content-authorized readers.
             raw: dict[str, Any] = (
                 tomllib.loads(text) if text else {"schema_version": 3, "profiles": {}, "routes": {}}
+            )
+            raw = normalize_model_profile_document(
+                raw,
+                environment=model_profile_environment(self._settings),
+                web_mode=self._settings.web.mode,
+                search_backend=self._settings.web_search_backend,
             )
             if not isinstance(raw.get("profiles"), dict):
                 raise ValueError("invalid profiles")
@@ -267,6 +276,12 @@ class ConfigFileService:
                         raise ValueError("invalid previous profile")
                     if "headers" in previous:
                         profile["headers"] = previous["headers"]
+                document = normalize_model_profile_document(
+                    document,
+                    environment=model_profile_environment(self._settings),
+                    web_mode=self._settings.web.mode,
+                    search_backend=self._settings.web_search_backend,
+                )
                 text = tomlkit.dumps(document)
                 pending_catalog = self._catalog_from(text)
                 content = text.encode("utf-8")

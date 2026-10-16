@@ -238,7 +238,7 @@ class WebSettings(DomainSettings):
     web_enabled: bool
     web_mode: WebMode | None = None
     tavily_api_key: str
-    web_search_backend: Literal["tavily", "model", "deepseek_anthropic"] = "tavily"
+    web_search_backend: Literal["tavily", "model", "deepseek_anthropic"] = "model"
     web_search_bridge_state_path: Path = Path("data/web-search-bridge.sqlite3")
     web_search_depth: str
     web_search_max_results: int = Field(gt=0)
@@ -251,11 +251,11 @@ class WebSettings(DomainSettings):
 
     @property
     def mode(self) -> WebMode:
-        """Resolve WEB_MODE while preserving the legacy WEB_ENABLED behavior."""
+        """The legacy switch enables the current model-search default."""
 
         if self.web_mode is not None:
             return self.web_mode
-        return WebMode.TAVILY if self.web_enabled else WebMode.DISABLED
+        return WebMode.NATIVE if self.web_enabled else WebMode.DISABLED
 
 
 class VisionSettings(DomainSettings):

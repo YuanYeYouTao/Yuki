@@ -291,7 +291,7 @@ class Settings(BaseSettings):
     web_enabled: bool = True
     web_mode: WebMode | None = None
     tavily_api_key: str = Field(default="", repr=False)
-    web_search_backend: Literal["tavily", "model", "deepseek_anthropic"] = "tavily"
+    web_search_backend: Literal["tavily", "model", "deepseek_anthropic"] = "model"
     web_search_bridge_state_path: Path = Path("data/web-search-bridge.sqlite3")
     web_search_depth: str = "advanced"
     web_search_max_results: int = 5
@@ -549,11 +549,16 @@ class Settings(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _default_web_strategy(cls, value: object) -> object:
-        """New installs use model search; explicitly supplied legacy switches stay legacy."""
+        """Enabled web uses model search unless the operator selects an external backend."""
         if isinstance(value, dict):
             supplied = {str(key).casefold() for key in value}
             if not {"web_mode", "web_enabled"}.intersection(supplied):
                 value = {**value, "web_mode": WebMode.NATIVE}
+            if (
+                str(value.get("web_mode", value.get("WEB_MODE", ""))) == "tavily"
+                and "web_search_backend" not in supplied
+            ):
+                value = {**value, "web_search_backend": "tavily"}
         return value
 
     @model_validator(mode="after")

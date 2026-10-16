@@ -20,7 +20,7 @@ from qq_ai_bot.model_runtime.profiles import model_profile_environment
 from qq_ai_bot.model_runtime.secrets import read_model_secrets
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.diagnostic_writer import DiagnosticWriter
-from qq_ai_bot.settings_domains import ModelRuntimeSettings
+from qq_ai_bot.settings_domains import ModelRuntimeSettings, WebSettings
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,16 +40,20 @@ class ModelRuntimeModule:
         database: Database,
         *,
         lifecycle: LifecycleRegistry,
+        web_settings: WebSettings,
     ) -> None:
         self._settings = settings
         self._database = database
         self._lifecycle = lifecycle
+        self._web_settings = web_settings
 
     def build(self) -> ModelRuntimeBundle:
         settings = self._settings
         profiles = load_model_profile_catalog(
             settings.model_profiles_file,
             environment=model_profile_environment(settings),
+            web_mode=self._web_settings.mode,
+            search_backend=self._web_settings.web_search_backend,
         )
         clients = ModelClientPool(
             secret_overrides={

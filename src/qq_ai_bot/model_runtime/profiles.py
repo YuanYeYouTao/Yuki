@@ -17,6 +17,8 @@ from qq_ai_bot.model_runtime.models import (
     ModelRoute,
     ModelTask,
 )
+from qq_ai_bot.model_runtime.search_defaults import normalize_model_search_document
+from qq_ai_bot.web.models import WebMode
 
 if TYPE_CHECKING:
     from qq_ai_bot.config import Settings
@@ -67,6 +69,15 @@ class ModelProfileCatalog(BaseModel):
     def _validate_routes(self) -> ModelProfileCatalog:
         if self.search_connection is not None and self.search_connection not in self.profiles:
             raise ValueError("search connection references an unknown model connection")
+        for configured_profile in self.profiles.values():
+            if (
+                configured_profile.search_connection is not None
+                and configured_profile.search_connection not in self.profiles
+            ):
+                raise ValueError(
+                    f"profile {configured_profile.id} search connection references "
+                    "an unknown model connection"
+                )
         missing = set(ModelTask).difference(self.routes)
         if missing:
             names = ", ".join(sorted(task.value for task in missing))
@@ -98,7 +109,11 @@ _DEFAULT_REQUIREMENTS: dict[ModelTask, frozenset[ModelCapability]] = {
 
 
 def load_model_profile_catalog(
-    path: Path, *, environment: Mapping[str, str] | None = None
+    path: Path,
+    *,
+    environment: Mapping[str, str] | None = None,
+    web_mode: WebMode = WebMode.NATIVE,
+    search_backend: str = "model",
 ) -> ModelProfileCatalog:
     """Load an explicit, complete v3 TOML model configuration."""
     if not path.is_file():
@@ -110,15 +125,47 @@ def load_model_profile_catalog(
         content = path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ModelRuntimeConfigurationError("cannot read model profile configuration") from exc
-    return parse_model_profile_catalog(content, environment=environment)
+    return parse_model_profile_catalog(
+        content, environment=environment, web_mode=web_mode, search_backend=search_backend
+    )
+
+
+def normalize_model_profile_document(
+    document: dict[str, Any],
+    *,
+    environment: Mapping[str, str] | None = None,
+    web_mode: WebMode = WebMode.NATIVE,
+    search_backend: str = "model",
+) -> dict[str, Any]:
+    """Prepare the same complete search configuration for every model entry point."""
+    validated = _ProfileDocument.model_validate(document)
+    for profile_id, payload in validated.profiles.items():
+        ModelProfile.model_validate(
+            {"id": profile_id, **_resolve_profile_environment(payload, environment=environment)}
+        )
+    return normalize_model_search_document(
+        validated.model_dump(exclude_none=True),
+        environment=environment,
+        web_mode=web_mode,
+        search_backend=search_backend,
+    )
 
 
 def parse_model_profile_catalog(
-    content: str, *, environment: Mapping[str, str] | None = None
+    content: str,
+    *,
+    environment: Mapping[str, str] | None = None,
+    web_mode: WebMode = WebMode.NATIVE,
+    search_backend: str = "model",
 ) -> ModelProfileCatalog:
     """Validate the same document for startup and management, without file I/O."""
     try:
-        raw = tomllib.loads(content)
+        raw = normalize_model_profile_document(
+            tomllib.loads(content),
+            environment=environment,
+            web_mode=web_mode,
+            search_backend=search_backend,
+        )
         document = _ProfileDocument.model_validate(raw)
         profiles = {
             profile_id: ModelProfile.model_validate(
