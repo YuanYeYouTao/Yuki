@@ -557,13 +557,7 @@ class SemanticParticipationService:
             thread = outbound_threads.get(key, thread)
         options = [HostUnitOption(key="new", thread=thread, target=target)]
         recent = sorted(state.events.values(), key=lambda e: e.at, reverse=True)
-        active_refs = {
-            ref for unit in item.controller.participating_units(time.time()) for ref in unit.anchors
-        }
-        self_anchors = sorted(
-            (event for event in recent if event.kind == "self"),
-            key=lambda event: (event.ref not in active_refs, -event.at),
-        )
+        self_anchors = [event for event in recent if event.kind == "self"]
         for event in (*self_anchors, *(event for event in recent if event.kind != "self")):
             resolved = item.controller.resolved_unit(event)
             if (
