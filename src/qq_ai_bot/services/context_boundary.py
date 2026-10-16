@@ -36,7 +36,8 @@ class ContextBoundary:
     fragments: tuple[EventFragment, ...]
     commit: Callable[[bool, tuple[OrdinaryContextInput, ...]], Awaitable[None]]
     prepare: (
-        Callable[[bool, tuple[OrdinaryContextInput, ...]], Awaitable[PreparedContextBoundary]] | None
+        Callable[[bool, tuple[OrdinaryContextInput, ...]], Awaitable[PreparedContextBoundary]]
+        | None
     ) = None
     ordinary_inputs: tuple[OrdinaryContextInput, ...] = ()
 
