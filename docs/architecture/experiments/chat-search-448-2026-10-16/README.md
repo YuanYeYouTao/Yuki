@@ -7,7 +7,7 @@
 | 檔案 | 內容 |
 | --- | --- |
 | `chat_search_probe.py` | 實驗腳本 |
-| `results.json` | 本機完整執行基線及本輪 E7／E14 定向重跑的輸出；其餘保留提交 `27854baa` 的結果（Apple M4、Python 3.12.7、`unicodedata` 15.0.0、SQLite 3.45.3、SQLAlchemy 2.0.51、aiosqlite 0.22.1） |
+| `results.json` | 既有完整執行基線、本輪 E7／E14 重跑及新增 E15 的輸出；E7／E14 數值與提交 `9d932fa8` 相同，其餘未重新量測（Apple M4、Python 3.12.7、`unicodedata` 15.0.0、SQLite 3.45.3、SQLAlchemy 2.0.51、aiosqlite 0.22.1） |
 
 ## 重現
 
@@ -21,9 +21,9 @@ PROBE_CPU="<cpu>" .venv/bin/python -I \
 
 預設參數：`--messages 200000 --queries 400 --repeats 30 --enqueue-rows 1000000 --normalization-samples 200000 --paging-trials 300`。本機完整執行約 65 秒。
 
-所有隨機選擇都有固定種子，同一 Python、Unicode 與 SQLite 版本重跑時，計數類結果相同；耗時隨機器而異。
+合成資料的隨機選擇都有固定種子；游標金鑰使用 OS 隨機來源，只留在記憶體，金鑰與完整 token 均不進入結果檔。同一 Python、Unicode 與 SQLite 版本重跑時，計數類結果相同；MAC／金鑰每次不同，耗時隨機器而異。
 
-本輪只影響 E14，另重跑 E7 確認既有計價規則不變。可在倉庫根目錄定向重現（約 6 秒，不重建其餘索引或覆寫結果檔）：
+本輪新增 E15，並讓 E14 的 4,245 次合法續頁通過整份 MAC 與綁定核驗；重跑 E7／E14，確認原有數值不變。可在倉庫根目錄定向重現（約 6 秒，不重建其餘索引或覆寫結果檔）：
 
 ```bash
 .venv/bin/python -B - <<'PY'
@@ -39,6 +39,7 @@ saved = json.loads(path.with_name("results.json").read_text())
 for key, result in (
     ("paging_engine", probe.probe_paging_engine(seed=12, trials=300)),
     ("relevance_recompute_cost", probe.probe_relevance_recompute_cost()),
+    ("cursor_integrity", probe.probe_cursor_integrity()),
 ):
     assert json.loads(json.dumps(result)) == saved[key], key
     print(key, "PASS")
@@ -63,6 +64,7 @@ PY
 | E12 | 空庫與兩條建庫路徑、第一條消息、回填、損壞重建、回填與重建的競爭 | `lifecycle` |
 | E13 | 插件單頁回傳與內部續頁 | `plugin` |
 | E14 | `relevance` 範圍發現與凍結重算：實際 keyset SQL、預算檢查點、原文核驗及封頂距離查詢。發現範圍才取輸出邊界，W = 首頁 `charged`；固定範圍只按候選計價，不查邊界、不計 b。保留 4 個完整範圍案例；新增 chunk = 25、B = 1171 的反例，以及 48 個隨機資料集 × 3 預算 × 3 chunk，含跨範圍窗口、不同重讀批量、索引進度與排序鍵續頁 | `relevance_recompute_cost`；新增檢查在其 `budgeted_ranges` |
+| E15 | 整份游標 HMAC-SHA256、目前匹配／計價／版本綁定與權限入口；改寫位置、範圍、W、排序鍵、逐 payload byte，以及非法格式、回執混接、重啟與撤權。SQLite trace 確認拒絕在搜尋前；合法重送、不同 chunk、展示參數變更與 U 之後新增消息仍可續查 | `cursor_integrity` |
 
 ## 口徑
 
@@ -77,5 +79,8 @@ PY
 - E14 的 `range_page(budget=...)` 發現排名範圍，按 §6.7 確定候選範圍、輸出下界與 W；不帶 budget 時只重算已知範圍。後者可能多一個空探測批次，但沒有邊界 SQL，計價與批數無關。`charged`、`W` 是計價；`total_rows` 是來源＋掃描＋核驗列數；`search_rows` 再加上實際邊界與距離列數，兩種口徑分開。狀態列等固定控制讀取不屬於候選搜尋計價。
 - E14 不以全會話掃描求 pos()：先枚舉最小覆蓋窗口，再以最多 M＋1 列的 SQL 求真實消息距離。隨機實驗的原文 oracle 來自既有合成資料，在搜尋以外建立；所有時間跨度設為 0，本輪不驗證時間排序、取消、權限或實際 runtime 游標裝配。
 - `budgeted_ranges.stats` 記錄 433 組設定、3,556 個排名範圍、4,245 次重算與 2,607 組輸出；每次檢查計價上界、實際搜尋列數、分來源候選不增、重算無邊界查詢、排序鍵接續、窗口上界、游標進展及與原文 oracle 不重不漏。任一不符會觸發斷言，阻止寫入成功結果。
+- E14 的範圍發現後由共享 codec 簽發整份回執，續頁透過 `verified_relevance_replay` 驗 MAC 與目前綁定後才執行 SQL。codec 的金鑰在一次實驗服務生命週期內共用；不是每次請求生成。結果數字與未加入 MAC 的基線相同。
+- E15 使用標準庫 `secrets.token_bytes(32)`、`hmac.digest(..., "sha256")`、`hmac.compare_digest`；545 個改寫或失效案例全部拒絕，SQLite trace 沒有任何搜尋 SQL。原本可擴成 2,760 計價的未簽名範圍現被拒絕；合法讀取批量 1／25／2000 的計價都為 1,150 ≤ W（1,171）。
+- E15 的入口會從實際解析後查詢核對匹配雜湊，權限結果必須明確傳入，不預設授權；目前權限、版本、解析後匹配條件與計價設定是合成的可信 fixture，不是真實 runtime 的身份／授權整合測試；未修改任何產品認證程式。有效 MAC 不能取代目前權限核驗。產品仍須按 V35–V37 裝配同一服務、金鑰與讀快照。金鑰重建後回 `cursor_stale`，不增加游標表、期限或消耗次數。
 - E10 的安全起點邊界性質對 Unicode 15.0.0 全部已指派碼位中判定為安全起點者，各接在 16 種前文之後檢查。
 - 第二版的分頁模擬（舊 `paging` 鍵，「最密集需求定下界」）已由 E7 取代並自腳本刪除。

@@ -2761,5 +2761,35 @@
     "no_progress_requests": 0,
     "bound_violations": 0,
     "final_state": "exhausted"
+  },
+  "cursor_integrity": {
+    "unsigned_expanded_range_charge": 2760,
+    "signed_home_W": 1171,
+    "valid_replay_charges": [
+      1150,
+      1150,
+      1150
+    ],
+    "changed_display_parameters_allowed": true,
+    "new_insert_above_U_excluded": true,
+    "same_token_retry_identical": true,
+    "stats": {
+      "expanded_range": 1,
+      "rejected_before_sql": 545,
+      "expanded_range_and_W": 1,
+      "position_fields": 3,
+      "ranking_fields": 6,
+      "binding_fields": 12,
+      "changed_runtime": 12,
+      "changed_matching_query": 9,
+      "payload_byte_changes": 483,
+      "malformed_or_unsigned": 11,
+      "mixed_receipts": 1,
+      "service_restart": 1,
+      "permission_revoked": 1,
+      "time_order_window_fields": 4
+    },
+    "unexpected_accepts": 0,
+    "sql_statements_on_rejected_cursors": 0
   }
 }

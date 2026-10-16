@@ -2,8 +2,9 @@
 
 Standard library + sqlite3.  The snapshot probe imports Yuki's ``Database`` and
 the revision probe runs Yuki's 0119 trigger SQL; nothing else uses Yuki code.  No
-real chat data, no network.  Every random choice is seeded, so a rerun on the
-same Python, Unicode and SQLite version reproduces the counts; timings vary.
+real chat data, no network. Synthetic data choices are seeded; cursor keys use
+OS randomness and are never stored. A rerun on the same Python, Unicode and
+SQLite version reproduces the counts; timings vary.
 
 Usage (from the repository root, with the repository virtualenv):
     .venv/bin/python -I chat_search_probe.py --workdir /tmp/x --out results.json
@@ -12,11 +13,16 @@ Usage (from the repository root, with the repository virtualenv):
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import hashlib
+import hmac
 import itertools
 import json
 import os
 import platform
 import random
+import secrets
 import sqlite3
 import statistics
 import time
@@ -1784,6 +1790,144 @@ def probe_relevance_revision() -> dict:
     return log
 
 
+class CursorStale(ValueError):
+    """An untrusted or outdated search cursor; no candidate SQL may follow."""
+
+
+class SearchCursorCodec:
+    """Synthetic model of a shared search service's process-local cursor key.
+
+    This authenticates the complete receipt, including scope and cost. Current
+    runtime permission and read-version checks remain separate from the MAC.
+    """
+
+    _domain = b"yuki.chat-search.cursor.v1\0"
+
+    def __init__(self):
+        self._key = secrets.token_bytes(32)
+
+    @staticmethod
+    def _encode(raw):
+        return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+    @staticmethod
+    def _decode(part):
+        return base64.b64decode(part + "=" * (-len(part) % 4), altchars=b"-_", validate=True)
+
+    def issue(self, receipt):
+        raw = json.dumps(
+            receipt, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        ).encode("utf-8")
+        tag = hmac.digest(self._key, self._domain + raw, "sha256")
+        return f"cs1.{self._encode(raw)}.{self._encode(tag)}"
+
+    def verify(self, token, current_binding):
+        try:
+            version, body, tag = token.split(".")
+            if version != "cs1":
+                raise CursorStale("cursor_stale")
+            raw, supplied = self._decode(body), self._decode(tag)
+            expected = hmac.digest(self._key, self._domain + raw, "sha256")
+            if not hmac.compare_digest(expected, supplied):
+                raise CursorStale("cursor_stale")
+            # Authenticate bytes before interpreting positions, W or the binding.
+            receipt = json.loads(raw)
+            if receipt["binding"] != current_binding:
+                raise CursorStale("cursor_stale")
+            return receipt
+        except (ValueError, TypeError, KeyError, binascii.Error) as exc:
+            raise CursorStale("cursor_stale") from exc
+
+
+def search_cursor_binding(
+    query, *, conv=1, floor=1, revision=0, epoch=0, budget=1171, max_messages=20
+):
+    """Trusted, resolved runtime/semantic values for the toy cursor experiment.
+
+    U is in the authenticated receipt, not compared to a new MAX(id). New messages
+    therefore remain excluded without invalidating the original snapshot.
+    """
+
+    fields = (
+        "terms",
+        "any_of",
+        "exclude",
+        "match_within",
+        "sender",
+        "after",
+        "before",
+        "has",
+        "order",
+    )
+    matching = {field: query[field] for field in fields if field in query}
+    raw = json.dumps(
+        matching, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+    ).encode("utf-8")
+    requirements = len(matching.get("terms", ())) + bool(matching.get("any_of"))
+    grouped = requirements > 1 and matching.get("match_within", "group") == "group"
+    return {
+        "conversation_id": conv,
+        "generation": 1,
+        "starts_after_event_id": floor - 1,
+        "prompt_source_revision": revision,
+        "match_definition": "normalized_v1",
+        "index_epoch": epoch,
+        "query_hash": hashlib.sha256(raw).hexdigest(),
+        "order": query["order"],
+        "cost_definition": "search_units_v1",
+        "group_max_messages": max_messages if grouped else 0,
+        "group_max_minutes": 30 if grouped else 0,
+        "request_budget": budget,
+    }
+
+
+def issue_relevance_cursor(codec, first, binding, upper, last_key):
+    """Only a trusted discovery result supplies the range, cost and snapshot."""
+
+    return codec.issue(
+        {
+            "binding": binding,
+            "U": upper,
+            "E": first["range_to"],
+            "S": first["range_from"],
+            "ranking": {
+                "from": first["range_from"],
+                "L": first["output_lower"],
+                "F1": first["frontier_used"],
+                "W": first["charged"],
+                "last_key": last_key,
+                "ranking_scope": (
+                    "complete" if first["result_state"] == "exhausted" else "scanned_range"
+                ),
+            },
+        }
+    )
+
+
+def verified_relevance_replay(db, codec, token, current, query, *, authorized, chunk=25):
+    """Toy execution gate: permission, MAC and current bindings precede ledger SQL."""
+
+    if not authorized:
+        raise PermissionError("history_scope_denied")
+    receipt = codec.verify(token, current)
+    # Match the actual normalized request, not just a prebuilt runtime fixture.
+    if search_cursor_binding(query)["query_hash"] != current["query_hash"]:
+        raise CursorStale("cursor_stale")
+    ranking = receipt["ranking"]
+    result = range_page(
+        db,
+        tuple(query["terms"]),
+        current["conversation_id"],
+        ranking["from"],
+        receipt["E"],
+        ranking["F1"],
+        current["group_max_messages"],
+        chunk=chunk,
+        output_lower=ranking["L"],
+    )
+    return receipt, result
+
+
 def range_page(
     db,
     terms,
@@ -2094,6 +2238,14 @@ def probe_relevance_budget_paging(seed=448, trials=48) -> dict:
     stats = Counter()
 
     def check_pages(db, fixture, terms, lo, hi, budget, chunk, limit, max_messages, progress):
+        codec = SearchCursorCodec()
+        query = {"terms": list(terms), "order": "relevance"}
+        current = search_cursor_binding(
+            query,
+            floor=lo,
+            budget=budget,
+            max_messages=max_messages,
+        )
         ledger = [
             row for row in fixture if row[1] == 1 and row[2] == "message" and lo <= row[0] < hi
         ]
@@ -2144,23 +2296,24 @@ def probe_relevance_budget_paging(seed=448, trials=48) -> dict:
             page = ranked[:limit]
             emitted.extend(page)
             last_key = first["ranked_keys"][len(page) - 1] if page else None
+            token = issue_relevance_cursor(codec, first, current, hi - 1, last_key)
             # One replay also checks empty and already-drained ranges. With results
             # remaining, continue with the last ranking key until all are emitted.
             while True:
                 if progress:
                     backfill_round(db, 7)
                     indexer_round(db, 3)
-                replay = range_page(
+                receipt, replay = verified_relevance_replay(
                     db,
-                    terms,
-                    1,
-                    first["range_from"],
-                    emit_upper,
-                    first["frontier_used"],
-                    max_messages,
+                    codec,
+                    token,
+                    current,
+                    query,
+                    authorized=True,  # trusted synthetic scope fixture
                     chunk=chunk + 1,
-                    output_lower=first["output_lower"],
                 )
+                received_key = receipt["ranking"]["last_key"]
+                last_key = tuple(received_key) if received_key is not None else None
                 stats["replays"] += 1
                 assert replay["charged"] <= first["charged"], (first, replay)
                 assert replay["actual_rows_le_charged"], replay
@@ -2184,6 +2337,7 @@ def probe_relevance_budget_paging(seed=448, trials=48) -> dict:
                     break
                 emitted.extend(group for _, group in page)
                 last_key = page[-1][0]
+                token = issue_relevance_cursor(codec, first, current, hi - 1, last_key)
             if first["result_state"] == "exhausted":
                 break
             next_cursor = (first["output_lower"], first["range_from"])
@@ -2274,6 +2428,180 @@ def probe_relevance_budget_paging(seed=448, trials=48) -> dict:
     }
 
 
+def probe_cursor_integrity() -> dict:
+    """Authenticate the actual range/W receipt before any candidate SQL (E15).
+
+    Keys and complete tokens stay in memory and are never included in results.
+    Database tracing proves rejection happens before search, not after expensive
+    recomputation. Runtime values are synthetic trusted fixtures, not an API audit.
+    """
+
+    codec = SearchCursorCodec()
+    terms = ("alpha", "bravo")
+    query = {
+        "terms": list(terms),
+        "any_of": [],
+        "exclude": [],
+        "match_within": "group",
+        "sender": None,
+        "after": None,
+        "before": None,
+        "has": [],
+        "order": "relevance",
+    }
+    current = search_cursor_binding(query)
+    db = toy_db(rows=[(i, 1, "message", "alpha bravo", None) for i in range(1, 61)])
+    backfill_round(db, 1000)
+    indexer_round(db, 1000)
+    first = range_page(db, terms, 1, 1, 61, chunk=25, budget=1171)
+    token = issue_relevance_cursor(codec, first, current, 60, first["ranked_keys"][0])
+    state = codec.verify(token, current)
+    version, body, tag = token.split(".")
+    stats = Counter()
+
+    def forged(receipt):
+        raw = json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+        return f"{version}.{codec._encode(raw)}.{tag}"
+
+    def rejected(
+        candidate, binding=current, owner=codec, *, query_input=query, authorized=True, category
+    ):
+        statements = []
+        db.set_trace_callback(statements.append)
+        try:
+            verified_relevance_replay(
+                db, owner, candidate, binding, query_input, authorized=authorized
+            )
+        except CursorStale:
+            assert authorized, "Permission must be checked separately"
+        except PermissionError:
+            assert not authorized, "A valid caller must not be denied as a cursor failure"
+        else:
+            raise AssertionError(f"Cursor unexpectedly accepted: {category}")
+        finally:
+            db.set_trace_callback(None)
+        assert not statements, (category, statements)
+        stats[category] += 1
+        stats["rejected_before_sql"] += 1
+
+    # The previous counterexample: change both candidate and output lower bounds,
+    # keep W and the runtime-authorized conversation/snapshot unchanged.
+    expanded = json.loads(json.dumps(state))
+    expanded["S"] = expanded["ranking"]["from"] = expanded["ranking"]["L"] = 1
+    unsigned_replay = range_page(db, terms, 1, 1, 61, 1, output_lower=1)
+    assert unsigned_replay["charged"] == 2760 > first["charged"]
+    rejected(forged(expanded), category="expanded_range")
+    expanded["ranking"]["W"] = 100000
+    rejected(forged(expanded), category="expanded_range_and_W")
+
+    def different(value):
+        if isinstance(value, int):
+            return value + 1
+        if isinstance(value, list):
+            return [value[0] + 1, *value[1:]]
+        return value + "_changed"
+
+    for name in ("U", "E", "S"):
+        altered = json.loads(json.dumps(state))
+        altered[name] = different(altered[name])
+        rejected(forged(altered), category="position_fields")
+    for name, value in state["ranking"].items():
+        altered = json.loads(json.dumps(state))
+        altered["ranking"][name] = different(value)
+        rejected(forged(altered), category="ranking_fields")
+    for name, value in current.items():
+        altered = json.loads(json.dumps(state))
+        altered["binding"][name] = different(value)
+        rejected(forged(altered), category="binding_fields")
+        # An authentic old token must also fail when trusted runtime values change.
+        rejected(token, current | {name: different(value)}, category="changed_runtime")
+
+    for name, value in {
+        "terms": ["alpha"],
+        "any_of": ["charlie"],
+        "exclude": ["delta"],
+        "match_within": "message",
+        "sender": {"person_id": "other-resolved-person"},
+        "after": "2026-01-01",
+        "before": "2026-12-31",
+        "has": ["audio"],
+        "order": "recent",
+    }.items():
+        rejected(token, query_input=query | {name: value}, category="changed_matching_query")
+
+    raw = codec._decode(body)
+    for i in range(len(raw)):
+        changed = raw[:i] + bytes([raw[i] ^ 1]) + raw[i + 1 :]
+        rejected(f"{version}.{codec._encode(changed)}.{tag}", category="payload_byte_changes")
+    replacement = "A" if tag[0] != "A" else "B"
+    malformed = (
+        "",
+        body,
+        f"{body}.{tag}",
+        f"cs0.{body}.{tag}",
+        f"cs2.{body}.{tag}",
+        f"{version}..{tag}",
+        f"{version}.%.{tag}",
+        f"{version}.{body}.%",
+        f"{version}.{body}.{replacement}{tag[1:]}",
+        token + ".extra",
+        token[:-1],
+    )
+    for candidate in malformed:
+        rejected(candidate, category="malformed_or_unsigned")
+    other = issue_relevance_cursor(codec, first, current, 60, None)
+    rejected(f"{version}.{body}.{other.split('.')[2]}", category="mixed_receipts")
+    rejected(token, owner=SearchCursorCodec(), category="service_restart")
+    rejected(token, authorized=False, category="permission_revoked")
+
+    # The same envelope protects recent/oldest window positions too. Neither order
+    # can opt into the previous unsigned format or forge a larger [S, E) window.
+    for order in ("recent", "oldest"):
+        binding = search_cursor_binding(query | {"order": order})
+        position = {"binding": binding, "U": 60, "E": 61, "S": 56, "ranking": None}
+        original = codec.issue(position)
+        assert codec.verify(original, binding) == position
+        for name, value in (("E", 1000), ("S", 1)):
+            changed = position | {name: value}
+            _, _, original_tag = original.split(".")
+            candidate = f"cs1.{codec._encode(json.dumps(changed).encode())}.{original_tag}"
+            rejected(candidate, binding, category="time_order_window_fields")
+
+    valid_charges = []
+    for chunk in (1, 25, 2000):
+        receipt, replay = verified_relevance_replay(
+            db, codec, token, current, query, authorized=True, chunk=chunk
+        )
+        assert replay["charged"] == 1150 <= receipt["ranking"]["W"]
+        assert replay["groups"] == first["groups"]
+        valid_charges.append(replay["charged"])
+    changed_display = query | {"limit": 20, "context_before": 2, "context_after": 3}
+    _, displayed = verified_relevance_replay(
+        db, codec, token, current, changed_display, authorized=True
+    )
+    assert displayed["groups"] == first["groups"] and displayed["charged"] == 1150
+    # U belongs to the signed receipt, not to current MAX(id): new rows do not stale
+    # the cursor, enter the replay, or increase its charged work.
+    db.execute("insert into ev values(61,1,'message','alpha bravo',null)")
+    _, after_insert = verified_relevance_replay(db, codec, token, current, query, authorized=True)
+    assert after_insert["charged"] == 1150 and after_insert["groups"] == first["groups"]
+    # Valid replay can be retried; no nonce, expiry or consumable receipt is added.
+    _, retry = verified_relevance_replay(db, codec, token, current, query, authorized=True)
+    assert retry == after_insert
+    db.close()
+    return {
+        "unsigned_expanded_range_charge": unsigned_replay["charged"],
+        "signed_home_W": first["charged"],
+        "valid_replay_charges": valid_charges,
+        "changed_display_parameters_allowed": True,
+        "new_insert_above_U_excluded": True,
+        "same_token_retry_identical": True,
+        "stats": dict(stats),
+        "unexpected_accepts": 0,
+        "sql_statements_on_rejected_cursors": 0,
+    }
+
+
 def probe_plugin(seed: int) -> dict:
     rng = random.Random(seed)
     dataset = sim_dataset(rng, 400, {"a": ("A", 0.0)}, gap=False)
@@ -2344,6 +2672,7 @@ def main() -> None:
         "second_draft_scan_no_progress": probe_second_draft_no_progress(),
         "relevance_revision": probe_relevance_revision(),
         "relevance_recompute_cost": probe_relevance_recompute_cost(),
+        "cursor_integrity": probe_cursor_integrity(),
         "plugin": probe_plugin(seed=4),
     }
     args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
