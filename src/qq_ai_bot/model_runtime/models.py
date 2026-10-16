@@ -98,6 +98,7 @@ class ModelProfile(_FrozenModel):
     reasoning_effort: ReasoningEffort | None = ReasoningEffort.MEDIUM
     structured_output_mode: StructuredOutputMode = StructuredOutputMode.FUNCTION_TOOL
     search_mode: ModelSearchMode | None = None
+    search_connection: str | None = None
     capabilities: frozenset[ModelCapability] = frozenset()
     wire_options: ChatWireOptions | None = None
     headers: dict[str, str] = Field(default_factory=dict, repr=False)

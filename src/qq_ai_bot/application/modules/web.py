@@ -20,10 +20,11 @@ from qq_ai_bot.model_runtime.pool import ModelClientPool, create_model_provider
 from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
 from qq_ai_bot.settings_domains import WebSettings
-from qq_ai_bot.web.base import WebSearchError, WebSearchProvider
+from qq_ai_bot.web.base import WebPageExtractor, WebSearchError, WebSearchProvider
 from qq_ai_bot.web.bridge_state import BridgeState
 from qq_ai_bot.web.models import WebMode, WebSearchRequest, WebSearchResponse, WebSearchSource
 from qq_ai_bot.web.native_bridge import NativeSearchBridge
+from qq_ai_bot.web.page_extractor import DirectPageExtractor
 from qq_ai_bot.web.route_context import current_web_model_task
 from qq_ai_bot.web.search_config import effective_search_profile
 from qq_ai_bot.web.tavily import TavilyWebSearchProvider
@@ -149,26 +150,31 @@ class TaskRoutedWebSearchProvider:
         self,
         default: WebSearchProvider | None,
         bridges: Mapping[ModelTask, WebSearchProvider],
+        *,
+        extractor: WebPageExtractor,
     ) -> None:
         self.default = default
         self.bridges = bridges
+        self.extractor = extractor
 
-    def _selected(self) -> WebSearchProvider:
+    def _selected(self) -> WebSearchProvider | None:
         task = current_web_model_task.get()
-        selected = self.bridges.get(task, self.default) if task is not None else self.default
-        if selected is None:
-            raise WebSearchError("search_unavailable", "当前模型未配置可用的联网搜索后端")
-        return selected
+        return self.bridges.get(task, self.default) if task is not None else self.default
 
     async def search(self, request: WebSearchRequest) -> WebSearchResponse:
-        return await self._selected().search(request)
+        selected = self._selected()
+        if selected is None:
+            raise WebSearchError("search_unavailable", "当前模型未配置可用的联网搜索后端")
+        return await selected.search(request)
 
     async def extract(self, url: str, query: str) -> WebSearchSource:
-        return await self._selected().extract(url, query)
+        return await (self._selected() or self.extractor).extract(url, query)
 
     async def close(self) -> None:
         unique = {
-            id(item): item for item in (self.default, *self.bridges.values()) if item is not None
+            id(item): item
+            for item in (self.default, *self.bridges.values(), self.extractor)
+            if item is not None
         }
         errors = await asyncio.gather(
             *(provider.close() for provider in unique.values()), return_exceptions=True
@@ -220,16 +226,27 @@ class WebModule:
                 if ModelCapability.TOOLS not in route.required_capabilities:
                     continue
                 profile = catalog.profiles[route.profile_id]
-                if profile.search_mode is ModelSearchMode.BRIDGE:
+                if profile.search_mode is ModelSearchMode.BRIDGE or (
+                    profile.search_connection is not None
+                    and profile.search_mode is not ModelSearchMode.NATIVE
+                ):
                     bridge_profiles[task] = effective_search_profile(catalog, backend, profile)
                 elif profile.search_mode in {ModelSearchMode.EXTERNAL, ModelSearchMode.BOTH} or (
-                    profile.search_mode is None and settings.mode in {WebMode.TAVILY, WebMode.BOTH}
+                    profile.search_mode is None
+                    and (
+                        backend == "tavily"
+                        or catalog.search_connection is not None
+                        or settings.mode in {WebMode.TAVILY, WebMode.BOTH}
+                    )
                 ):
                     needs_default = True
         selected_default = None
-        if backend != "tavily":
-            if catalog is None:
-                raise ValueError("Native search requires a configured model connection")
+        if (
+            needs_default
+            and backend != "tavily"
+            and catalog is not None
+            and catalog.search_connection is not None
+        ):
             selected_default = effective_search_profile(catalog, backend)
         selected_profiles = [*bridge_profiles.values()]
         if selected_default is not None:
@@ -256,13 +273,20 @@ class WebModule:
             bridge(selected_default)
             if selected_default is not None
             else self._tavily()
-            if settings.tavily_api_key
+            if needs_default and backend == "tavily"
             else None
         )
         bridges = {task: bridge(profile) for task, profile in bridge_profiles.items()}
-        if not bridges and settings.mode is not WebMode.NATIVE:
+        if default is not None and not bridges and settings.mode is not WebMode.NATIVE:
             return default
-        return TaskRoutedWebSearchProvider(default, bridges)
+        return TaskRoutedWebSearchProvider(
+            default,
+            bridges,
+            extractor=DirectPageExtractor(
+                state=BridgeState(settings.web_search_bridge_state_path),
+                timeout_seconds=settings.web_timeout_seconds,
+            ),
+        )
 
     def _native_bridge(self, profile: ModelProfile, clients: ModelClientPool) -> NativeSearchBridge:
         settings = self._settings
@@ -272,7 +296,6 @@ class WebModule:
             credential=key,
             provider=create_model_provider(profile.model_copy(update={"max_retries": 0}), key),
             state=BridgeState(settings.web_search_bridge_state_path),
-            extractor=self._tavily() if settings.tavily_api_key else None,
             invocations=self._invocations,
         )
 

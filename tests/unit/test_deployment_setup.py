@@ -7,8 +7,15 @@ from io import StringIO
 from pathlib import Path
 
 import pytest
+import tomlkit
 
-from qq_ai_bot.deployment_setup.command import _configure, _page_gateway, _page_web, _SetupDraft
+from qq_ai_bot.deployment_setup.command import (
+    _configure,
+    _page_gateway,
+    _page_web,
+    _review_and_commit,
+    _SetupDraft,
+)
 from qq_ai_bot.deployment_setup.service import (
     EnvironmentDocument,
     SetupConfiguration,
@@ -203,20 +210,21 @@ def test_deepseek_setup_generates_independent_messages_search_profile(
         main_provider="deepseek",
         flash_enabled=False,
         main_search_mode=ModelSearchMode.EXTERNAL,
-        search_connection=True,
+        environment={"LLM_BASE_URL": "https://api.deepseek.com/v1"},
     )
     payload = tomllib.loads(text)
-    assert payload["search_backend"] == "model" and payload["search_connection"] == "search"
-    search = payload["profiles"]["search"]
+    assert payload["search_backend"] == "model"
+    search_id = payload["profiles"]["primary_agent"]["search_connection"]
+    search = payload["profiles"][search_id]
     assert search["protocol"] == "anthropic_messages"
     assert search["base_url"] == "https://api.deepseek.com/anthropic/v1"
-    assert search["model"] == "deepseek-flash" and search["thinking_mode"] == "disabled"
+    assert search["model_env"] == "LLM_MODEL" and search["thinking_enabled"] is False
     assert search["api_key_env"] == payload["profiles"]["primary_agent"]["api_key_env"]
     paths, configuration = _search_setup(tmp_path, text, WEB_MODE=web_mode)
     validate_configuration(paths, configuration)
     catalog = parse_model_profile_catalog(text, environment=configuration.environment)
     assert catalog.profiles["primary_agent"].protocol is ModelProtocol.RESPONSES
-    assert catalog.profiles["search"].protocol is ModelProtocol.ANTHROPIC_MESSAGES
+    assert catalog.profiles[search_id].protocol is ModelProtocol.ANTHROPIC_MESSAGES
     assert all(route.profile_id == "primary_agent" for route in catalog.routes.values())
 
 
@@ -248,13 +256,13 @@ def test_setup_rejects_missing_selected_search_key_and_accepts_sidecar(tmp_path:
         main_provider="deepseek",
         flash_enabled=False,
         main_search_mode=ModelSearchMode.EXTERNAL,
-        search_connection=True,
+        environment={"LLM_BASE_URL": "https://api.deepseek.com/v1"},
     )
     # Only the selected independent connection gets this sidecar key alias.
-    head, selected = profiles.split("[profiles.search]", 1)
+    head, selected = profiles.split("[profiles.primary_agent_search]", 1)
     profiles = (
         head
-        + "[profiles.search]"
+        + "[profiles.primary_agent_search]"
         + selected.replace('api_key_env = "LLM_API_KEY"', f'api_key_env = "{alias}"')
     )
     paths, configuration = _search_setup(tmp_path, profiles)
@@ -273,10 +281,10 @@ def test_setup_rejects_deepseek_responses_as_a_native_search_connection(tmp_path
         main_provider="deepseek",
         flash_enabled=False,
         main_search_mode=ModelSearchMode.EXTERNAL,
-    ).replace(
-        "schema_version = 3",
-        'schema_version = 3\nsearch_backend = "model"\nsearch_connection = "primary_agent"',
     )
+    document = tomllib.loads(profiles)
+    document["search_connection"] = "primary_agent"
+    profiles = tomlkit.dumps(document)
     paths, configuration = _search_setup(tmp_path, profiles)
     with pytest.raises(SetupValidationError, match="does not support native"):
         validate_configuration(paths, configuration)
@@ -288,10 +296,48 @@ def test_setup_still_requires_key_for_selected_tavily_backend(tmp_path: Path) ->
         main_provider="deepseek",
         flash_enabled=False,
         main_search_mode=ModelSearchMode.EXTERNAL,
+        search_backend="tavily",
     )
     paths, configuration = _search_setup(tmp_path, profiles, WEB_MODE="tavily")
     with pytest.raises(SetupValidationError, match="Tavily"):
         validate_configuration(paths, configuration)
+
+
+def test_setup_native_mode_checks_explicit_tavily_backend_without_profile_mode(tmp_path: Path):
+    profiles = build_model_profiles(
+        main_protocol="gemini",
+        main_provider="gemini",
+        flash_enabled=False,
+        search_backend="tavily",
+    )
+    paths, configuration = _search_setup(tmp_path, profiles)
+    with pytest.raises(SetupValidationError, match="Tavily"):
+        validate_configuration(paths, configuration)
+
+
+@pytest.mark.parametrize("mode", [None, "external", "bridge", "both"])
+def test_setup_profile_search_target_checks_own_key_without_tavily(
+    tmp_path: Path, mode: str | None
+):
+    profiles = build_model_profiles(
+        main_protocol="gemini",
+        main_provider="gemini",
+        flash_enabled=False,
+        search_backend="tavily",
+    )
+    document = tomllib.loads(profiles)
+    main = document["profiles"]["primary_agent"]
+    main["search_connection"] = "primary_agent"
+    if mode is not None:
+        main["search_mode"] = mode
+    if mode == "both":
+        main["capabilities"].append("native_web_search")
+    paths, configuration = _search_setup(tmp_path, tomlkit.dumps(document))
+    validate_configuration(paths, configuration)
+    main["api_key_env"] = "MISSING_SEARCH_KEY"
+    missing = SetupConfiguration(configuration.environment, tomlkit.dumps(document), None)
+    with pytest.raises(SetupValidationError, match="API Key"):
+        validate_configuration(paths, missing)
 
 
 def test_setup_still_reads_old_deepseek_key_borrowing_configuration(tmp_path: Path) -> None:
@@ -300,12 +346,15 @@ def test_setup_still_reads_old_deepseek_key_borrowing_configuration(tmp_path: Pa
         main_provider="deepseek",
         flash_enabled=False,
         main_search_mode=ModelSearchMode.EXTERNAL,
+        search_backend="deepseek_anthropic",
     ).replace("schema_version = 3", 'schema_version = 3\nsearch_connection = "primary_agent"')
     paths, configuration = _search_setup(
         tmp_path, profiles, WEB_SEARCH_BACKEND="deepseek_anthropic"
     )
     validate_configuration(paths, configuration)
-    catalog = parse_model_profile_catalog(profiles, environment=configuration.environment)
+    catalog = parse_model_profile_catalog(
+        profiles, environment=configuration.environment, search_backend="deepseek_anthropic"
+    )
     assert catalog.search_backend is None
     assert catalog.profiles["primary_agent"].protocol is ModelProtocol.RESPONSES
 
@@ -322,8 +371,22 @@ def test_deepseek_new_install_uses_model_backend_without_changing_main_protocol(
     assert draft.protocol == "responses"
 
 
-def test_deepseek_native_setup_commits_independent_search_configuration(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "protocol,provider,endpoint,expected_mode",
+    [
+        ("responses", "deepseek", "https://api.deepseek.com/v1", "bridge"),
+        ("chat_completions", "deepseek", "https://api.deepseek.com/v1", "bridge"),
+        ("gemini", "gemini", "https://generativelanguage.googleapis.com/v1beta", "bridge"),
+        ("anthropic_messages", "anthropic", "https://api.anthropic.com/v1", "native"),
+    ],
+)
+def test_native_setup_commits_provider_search_without_tavily(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    protocol: str,
+    provider: str,
+    endpoint: str,
+    expected_mode: str,
 ) -> None:
     root = Path(__file__).resolve().parents[2]
     paths = SetupPaths(tmp_path)
@@ -336,9 +399,9 @@ def test_deepseek_native_setup_commits_independent_search_configuration(
     answers = iter(
         (
             "12345",
-            "responses",
-            "deepseek",
-            "https://api.deepseek.com/v1",
+            protocol,
+            *([provider] if protocol in {"responses", "chat_completions"} else []),
+            endpoint,
             "deepseek-main",
             "n",
             "n",
@@ -358,10 +421,60 @@ def test_deepseek_native_setup_commits_independent_search_configuration(
     )
     assert _configure(paths, ui) == 0
     payload = tomllib.loads(paths.model_profiles.read_text(encoding="utf-8"))
-    assert payload["search_backend"] == "model" and payload["search_connection"] == "search"
-    assert payload["profiles"]["primary_agent"]["protocol"] == "responses"
-    assert payload["profiles"]["primary_agent"]["search_mode"] == "external"
-    assert payload["profiles"]["search"]["protocol"] == "anthropic_messages"
+    assert payload["search_backend"] == "model"
+    assert payload["profiles"]["primary_agent"]["protocol"] == protocol
+    main = payload["profiles"]["primary_agent"]
+    assert main["search_mode"] == expected_mode
+    if provider == "deepseek":
+        selected = payload["profiles"][main["search_connection"]]
+        assert selected["protocol"] == "anthropic_messages"
+        assert selected["api_key_env"] == main["api_key_env"]
+        assert selected["model_env"] == main["model_env"]
+    elif protocol == "gemini":
+        assert main["search_connection"] == "primary_agent"
+    else:
+        assert "native_web_search" in main["capabilities"]
+    assert "TAVILY_API_KEY=\n" in paths.env.read_text(encoding="utf-8")
+
+
+def test_existing_setup_native_selection_replaces_old_tavily_inheritance(tmp_path: Path) -> None:
+    profiles = build_model_profiles(
+        main_protocol="chat_completions",
+        main_provider="deepseek",
+        flash_enabled=False,
+        main_search_mode=ModelSearchMode.EXTERNAL,
+        search_backend="tavily",
+    )
+    paths, configuration = _search_setup(tmp_path, profiles)
+    environment = configuration.environment
+    environment.pop("WEB_MODE")
+    environment["WEB_ENABLED"] = "true"
+    paths.model_profiles.parent.mkdir()
+    paths.model_profiles.write_text(profiles, encoding="utf-8")
+    paths.env.write_text(
+        "\n".join(f"{name}={value}" for name, value in environment.items()) + "\n",
+        encoding="utf-8",
+    )
+    draft = _SetupDraft(environment, "chat_completions", False, initial=False)
+    page_ui = TerminalUI(no_color=True, input_fn=lambda _: "native", output=StringIO())
+    _page_web(paths, page_ui, draft)
+    assert environment["WEB_SEARCH_BACKEND"] == "model"
+    assert (
+        _review_and_commit(
+            paths=paths,
+            ui=TerminalUI(no_color=True, input_fn=lambda _: "y", output=StringIO()),
+            document=EnvironmentDocument(paths.env.read_text(encoding="utf-8")),
+            draft=draft,
+            sections=("web",),
+            initial=False,
+        )
+        == 0
+    )
+    saved = tomllib.loads(paths.model_profiles.read_text(encoding="utf-8"))
+    assert saved["search_backend"] == "model"
+    target = saved["profiles"]["primary_agent"]["search_connection"]
+    assert saved["profiles"][target]["api_key_env"] == "LLM_API_KEY"
+    assert saved["profiles"]["primary_agent"]["protocol"] == "chat_completions"
 
 
 def _auxiliary_profile(search_mode: str) -> str:
@@ -403,6 +516,7 @@ def test_setup_actual_plugin_external_route_still_requires_tavily(tmp_path: Path
         main_provider="gemini",
         flash_enabled=False,
         main_search_mode=ModelSearchMode.BRIDGE,
+        search_backend="tavily",
     ).replace('plugin_agent_session = "primary_agent"', 'plugin_agent_session = "aux"')
     profiles += _auxiliary_profile("external")
     paths, configuration = _search_setup(tmp_path, profiles, WEB_MODE="tavily")

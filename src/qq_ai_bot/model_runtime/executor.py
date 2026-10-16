@@ -977,6 +977,8 @@ class TaskModelExecutor:
             excluded.add("headers")
         if profile.search_mode is None:
             excluded.add("search_mode")
+        if profile.search_connection is None:
+            excluded.add("search_connection")
         serialized = profile.model_dump(mode="json", exclude=excluded)
         wire_provider = profile.provider.casefold()
         if wire_provider != "fake":

@@ -6,6 +6,8 @@ schema_version = 3
 # GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta
 # LLM_FLASH_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 # Put keys/model names in the named environment variables, not this file.
+# Model search is the default backend. Only explicit Tavily search requires a Tavily key.
+# Setup and Admin/CLI fill omitted search settings; explicit modes/connections take precedence.
 
 [profiles.main]
 provider = "anthropic"
@@ -56,8 +58,8 @@ reasoning_effort = "medium"
 structured_output_mode = "json_schema"
 capabilities = ["structured_output", "reasoning"]
 # Gemini 3 thinkingLevel dialect. Gemini 2.5: wire_options.reasoning = "budget".
-# For a Gemini main-agent connection with tools, explicitly use search_mode = "bridge"
-# instead of declaring native_web_search. The independent bridge needs no Tavily key.
+# A Gemini main-agent connection defaults to search_mode = "bridge" with its own connection.
+# Explicit search modes remain unchanged; the independent bridge needs no Tavily key.
 
 [routes]
 chat_agent = "main"

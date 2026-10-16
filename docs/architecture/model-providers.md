@@ -55,22 +55,34 @@ Gemini 的 Google Search 与函数工具混用曾在 Cloud Code 代理上返回 
 这一组合；兼容协议或能力声明都不证明当前端点真实可用。
 
 顶层 `search_backend="model"` 与 `search_connection="连接ID"` 明确选择本地搜索的独立模型；
-`search_backend="tavily"` 则选择 Tavily 外部搜索。旧文件未填写 `search_backend` 时沿部署设置，
-仅预选 `search_connection` 不接管旧搜索。全局 `WEB_MODE=disabled` 仍关闭联网工具。
+`search_backend="tavily"` 则选择 Tavily 外部搜索。缺省后端为 `model`，不从 Tavily 密钥或
+旧隐式默认值选择外部搜索。全局 `WEB_MODE=disabled` 仍关闭联网工具；未设置开关与旧
+`WEB_ENABLED=true` 均使用 `native`，旧 `WEB_ENABLED=false` 继续关闭。
+显式 `WEB_MODE=tavily`、TOML 后端、主连接搜索模式与独立搜索连接保留原选择。
 每个主连接的 `search_mode` 可选 `external`、`bridge`、`native` 或在协议允许时选 `both`：
 
-- `external` 使用顶层选定的本地搜索后端；该后端可以是独立原生搜索模型，也可以是 Tavily。
+- `external` 使用本地搜索后端；主 Profile 的 `search_connection` 优先选择该独立模型，
+  未指定时使用顶层后端及连接，可以是独立原生搜索模型，也可以是 Tavily。
 - `bridge` 强制使用指定的独立原生搜索连接，主协议可为 Chat、Gemini、Anthropic 或 Responses。
-  未指定连接时，仅自身支持原生搜索的 Profile 可沿用自身；普通 Chat 主连接必须明确选择搜索连接。
+  主 Profile 的 `search_connection` 优先于顶层选择；两处都未指定时，仅自身支持原生搜索的
+  Profile 可沿用自身，普通 Chat 主连接必须明确选择搜索连接。
 - `native` 将搜索内联到当前模型请求，`both` 在协议允许时保留内联搜索和本地搜索函数。
+  `both` 的本地搜索也优先使用主 Profile 的 `search_connection`，`native` 不使用该本地连接。
   内联须声明 `native_web_search` 能力。Claude 原生工具与本地 `web_search` 同名，不能同时声明。
 
 独立搜索连接支持 Gemini GenerateContent、Anthropic Messages 与 Responses，不要求主模型
 切换协议。选择该连接即是明确的搜索配置，不要求为了独立搜索向主请求增加原生工具。
 Responses 既能内联搜索，也能作为独立搜索连接；Chat 主 Agent 继续使用完整函数合同，
 不把 Chat 搜索专用模型或 `web_search_options` 当作通用函数与搜索混用接口。
-DeepSeek 的 Responses 原生搜索仍未验证，不自动开放；其既有搜索沿显式 Anthropic 搜索
-Profile 配置，旧 `deepseek_anthropic` 部署由升级 reader 保留原地址、模型与密钥来源。
+安装向导、Admin API / CLI 与配置加载使用共享后端逻辑补齐缺省搜索项。官方 DeepSeek
+Chat / Responses 保留主协议，生成共用原密钥引用的独立 Messages 搜索 Profile；无需 Claude
+账户。Gemini 默认 `bridge` 并沿自身连接独立搜索，Anthropic Messages 默认 `native`。
+显式搜索项不被这些默认覆盖。DeepSeek 的 Responses 内联原生搜索仍未验证，不自动开放。
+默认独立搜索连接绑定到对应主 Profile，聊天和插件路由使用不同模型时各用自己的搜索模型与凭据。
+旧 `deepseek_anthropic` 部署由升级 reader 保留原地址、模型与密钥来源。
+自定义网关保留实际 endpoint 和凭据，不按供应商名称将 key 发往另一服务；不确定的搜索
+路径由用户显式配置。普通 Chat 没有模型搜索默认映射时，搜索不可用，不要求 Tavily key
+才能启动 Bot；明确配置的无效搜索连接仍返回真实配置错误。
 
 真实搜索来源只来自上游结构化证据：Gemini 的
 `groundingMetadata.groundingChunks[].web`，Anthropic 中与 `server_tool_use` 关联的
@@ -80,8 +92,10 @@ Profile 配置，旧 `deepseek_anthropic` 部署由升级 reader 保留原地址
 `provider_summary` 只作为外部不可信的模型总结，不冒充网页原文或逐来源摘录。
 
 搜索和网页读取分开。`read_webpage` 提取用户明确提供或本轮真实搜索返回的 URL；
-Tavily 可作为提取后端；未配置时复用经过公共地址、DNS 与重定向检查的 HTTP 下载器，
-不因提取失败改变搜索供应商。提取失败明确报错，
+模型搜索及无搜索后端时的网页读取复用经过公共地址、DNS 与重定向检查的 HTTP 下载器，
+不按 Tavily key 自动选择提取后端。显式 Tavily 后端保留其搜索与提取，返回正文保持原来源，
+不因提取失败改变搜索供应商。
+提取失败明确报错，
 不将搜索总结充当网页正文。来源、上游已返回内容和总结保留原件，再由既有结果预算器
 整理展示或保存 artifact，不为保有来源额外抓页。
 
