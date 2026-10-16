@@ -91,8 +91,8 @@
       "description": "current: built-in trigram over raw content",
       "index_mb": 15.63,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 0.75,
-      "incremental_insert_ms_per_message_with_commit": 0.429,
+      "bulk_build_seconds": 0.74,
+      "incremental_insert_ms_per_message_with_commit": 0.424,
       "reindex_batch_500_write_txn_ms_p50_max": null,
       "queries": 400,
       "queries_with_missed_matches": 181,
@@ -113,24 +113,24 @@
       "candidate_to_truth_ratio": 0.928,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          3.308,
-          3.418
+          3.268,
+          3.307
         ],
         "two_char": [
-          2.848,
-          2.919
+          2.846,
+          3.064
         ],
         "long_cjk": [
-          0.018,
-          0.019
+          0.016,
+          0.017
         ],
         "latin_inner": [
-          0.585,
-          0.603
+          1.453,
+          2.052
         ],
         "punct_mixed": [
-          0.679,
-          0.718
+          1.53,
+          1.936
         ]
       }
     },
@@ -138,11 +138,11 @@
       "description": "one contentless-delete table, normalized 1/2/3-gram tokens",
       "index_mb": 35.81,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 7.43,
+      "bulk_build_seconds": 5.31,
       "incremental_insert_ms_per_message_with_commit": 0.79,
       "reindex_batch_500_write_txn_ms_p50_max": [
-        4.23,
-        99.14
+        4.07,
+        95.75
       ],
       "queries": 400,
       "queries_with_missed_matches": 0,
@@ -150,24 +150,24 @@
       "candidate_to_truth_ratio": 1.002,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          11.389,
-          11.602
+          11.425,
+          11.588
         ],
         "two_char": [
-          0.266,
-          0.281
+          0.264,
+          0.27
         ],
         "long_cjk": [
-          0.023,
-          0.024
+          0.02,
+          0.021
         ],
         "latin_inner": [
-          0.56,
-          0.6
+          0.555,
+          0.565
         ],
         "punct_mixed": [
-          1.62,
-          1.647
+          1.605,
+          1.623
         ]
       }
     },
@@ -175,11 +175,11 @@
       "description": "contentless-delete trigram over normalized text + 1/2-gram table",
       "index_mb": 36.33,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 11.44,
-      "incremental_insert_ms_per_message_with_commit": 1.126,
+      "bulk_build_seconds": 7.03,
+      "incremental_insert_ms_per_message_with_commit": 1.092,
       "reindex_batch_500_write_txn_ms_p50_max": [
-        5.18,
-        230.13
+        5.08,
+        231.42
       ],
       "queries": 400,
       "queries_with_missed_matches": 0,
@@ -187,24 +187,24 @@
       "candidate_to_truth_ratio": 1.0,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          11.349,
-          11.448
+          11.405,
+          11.573
         ],
         "two_char": [
-          0.268,
-          0.278
+          0.265,
+          0.275
         ],
         "long_cjk": [
-          0.019,
-          0.02
+          0.017,
+          0.018
         ],
         "latin_inner": [
-          0.59,
-          0.607
+          0.586,
+          0.599
         ],
         "punct_mixed": [
-          1.716,
-          1.736
+          1.713,
+          1.734
         ]
       }
     },
@@ -212,8 +212,8 @@
       "description": "normalized 2/3-gram tokens, 1-char via bigram prefix (end padded)",
       "index_mb": 29.7,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 6.99,
-      "incremental_insert_ms_per_message_with_commit": 0.57,
+      "bulk_build_seconds": 4.89,
+      "incremental_insert_ms_per_message_with_commit": 0.552,
       "reindex_batch_500_write_txn_ms_p50_max": null,
       "queries": 400,
       "queries_with_missed_matches": 0,
@@ -221,24 +221,24 @@
       "candidate_to_truth_ratio": 1.002,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          14.493,
-          14.642
+          14.399,
+          14.628
         ],
         "two_char": [
-          0.27,
-          0.276
+          0.271,
+          0.281
         ],
         "long_cjk": [
-          0.03,
-          0.031
+          0.027,
+          0.028
         ],
         "latin_inner": [
-          0.564,
-          0.599
+          0.562,
+          0.583
         ],
         "punct_mixed": [
-          1.612,
-          1.633
+          1.63,
+          1.644
         ]
       }
     },
@@ -246,8 +246,8 @@
       "description": "rejected design of the first draft: CJK 1/2-gram + alnum words",
       "index_mb": 17.18,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 5.89,
-      "incremental_insert_ms_per_message_with_commit": 0.475,
+      "bulk_build_seconds": 3.6,
+      "incremental_insert_ms_per_message_with_commit": 0.465,
       "reindex_batch_500_write_txn_ms_p50_max": null,
       "queries": 400,
       "queries_with_missed_matches": 61,
@@ -268,24 +268,24 @@
       "candidate_to_truth_ratio": 1.215,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          11.39,
-          11.61
+          11.413,
+          11.645
         ],
         "two_char": [
-          0.612,
-          0.627
+          0.606,
+          0.631
         ],
         "long_cjk": [
-          0.191,
-          0.196
+          0.187,
+          0.189
         ],
         "latin_inner": [
-          0.025,
-          0.033
+          0.018,
+          0.019
         ],
         "punct_mixed": [
-          1.454,
-          1.54
+          1.433,
+          1.451
         ]
       }
     }
@@ -312,7 +312,7 @@
     "single_insert_select_write_lock_seconds": 0.12,
     "keyset_batches": 201,
     "batch_5000_write_lock_ms_p50": 0.62,
-    "batch_5000_write_lock_ms_max": 2.54
+    "batch_5000_write_lock_ms_max": 2.5
   },
   "bm25": {
     "order_by_rank_returns_most_relevant_first": [
@@ -379,17 +379,414 @@
       ]
     ]
   },
-  "paging": {
-    "messages": 200000,
-    "budget_per_term": 2000,
-    "keyset_requests_to_exhaust": 31,
-    "keyset_rare_hits_reached": [
-      500,
-      40000,
-      199990
+  "normalization": {
+    "counterexample": {
+      "x": "a U+0315 U+0300",
+      "y": "U+00E0 U+0315",
+      "nfkc_equal": true,
+      "second_draft_equal": false,
+      "second_draft_y_finds_x": false,
+      "revised_equal": true,
+      "revised_y_finds_x": true
+    },
+    "equivalence_pairs": [
+      {
+        "pair": [
+          "à̕",
+          "à̕"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      },
+      {
+        "pair": [
+          "é",
+          "é"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      },
+      {
+        "pair": [
+          "q̣̇",
+          "q̣̇"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      },
+      {
+        "pair": [
+          "Å",
+          "Å"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      },
+      {
+        "pair": [
+          "ｶﾞ",
+          "ガ"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      },
+      {
+        "pair": [
+          "가",
+          "가"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      },
+      {
+        "pair": [
+          "ㄱㅏ",
+          "가"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      },
+      {
+        "pair": [
+          "㎏",
+          "kg"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      },
+      {
+        "pair": [
+          "ﬁ",
+          "fi"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      },
+      {
+        "pair": [
+          "ß",
+          "ss"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      },
+      {
+        "pair": [
+          "ＰＲ＃４４８",
+          "pr#448"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      },
+      {
+        "pair": [
+          "報 銷",
+          "报销"
+        ],
+        "oracle_equal": true,
+        "segmented_equal": true,
+        "segmented_matches_oracle": true,
+        "right_finds_left": true
+      }
     ],
-    "naive_top_budget_contains_rare": [
-      199990
+    "random_strings": 200000,
+    "random_segmented_vs_oracle_mismatches": 0,
+    "highlight_spans_not_containing_target": 0,
+    "assigned_code_points": 149251,
+    "safe_start_code_points": 148190,
+    "boundary_contexts": 16,
+    "boundary_failures": [],
+    "boundary_failure_count": 0
+  },
+  "queue": {
+    "second_draft_batch_500": {
+      "rounds": 4,
+      "queue_left": 1000,
+      "first_rounds_removed": [
+        0,
+        0,
+        0
+      ],
+      "latest_text_not_found": 0
+    },
+    "second_draft_batch_1": {
+      "rounds": 4,
+      "queue_left": 1000,
+      "first_rounds_removed": [
+        0,
+        0,
+        0
+      ],
+      "latest_text_not_found": 0
+    },
+    "revised_batch_500": {
+      "rounds": 1,
+      "queue_left": 0,
+      "first_rounds_removed": [
+        1000
+      ],
+      "latest_text_not_found": 0
+    },
+    "revised_batch_1": {
+      "rounds": 500,
+      "queue_left": 0,
+      "first_rounds_removed": [
+        2,
+        2,
+        2
+      ],
+      "latest_text_not_found": 0
+    },
+    "reenqueue_during_processing": {
+      "queue_rows_after_first_write": 1,
+      "bravo_found_while_queued": [
+        1
+      ],
+      "bravo_found_after_second_round": [
+        1
+      ],
+      "queue_left": 0
+    },
+    "queue_scan_budget_5": {
+      "raw_rows_distinct_events": 5,
+      "distinct_rows_distinct_events": 5
+    }
+  },
+  "snapshot": {
+    "versions": {
+      "sqlalchemy": "2.0.51",
+      "aiosqlite": "0.22.1",
+      "sqlite": "3.45.3"
+    },
+    "cases": [
+      {
+        "explicit_begin": false,
+        "index_saw_event": false,
+        "queue_saw_event": false,
+        "event_found": false,
+        "writer_committed_while_reader_open_seconds": 0.0012
+      },
+      {
+        "explicit_begin": true,
+        "index_saw_event": false,
+        "queue_saw_event": true,
+        "event_found": true,
+        "writer_committed_while_reader_open_seconds": 0.0008
+      }
     ]
+  },
+  "lifecycle": {
+    "empty_migration": {
+      "state_after_init": [
+        1,
+        0
+      ],
+      "empty": {
+        "mismatches": 0,
+        "frontier": 1,
+        "queued": 0,
+        "below_frontier": 0
+      },
+      "backfill_rows_on_empty": 0,
+      "first_message_before_index": {
+        "mismatches": 0,
+        "frontier": 1,
+        "queued": 0,
+        "below_frontier": 0
+      },
+      "first_message_after_index": {
+        "mismatches": 0,
+        "frontier": 1,
+        "queued": 0,
+        "below_frontier": 0
+      }
+    },
+    "empty_create_schema": {
+      "state_after_init": [
+        1,
+        0
+      ],
+      "empty": {
+        "mismatches": 0,
+        "frontier": 1,
+        "queued": 0,
+        "below_frontier": 0
+      },
+      "backfill_rows_on_empty": 0,
+      "first_message_before_index": {
+        "mismatches": 0,
+        "frontier": 1,
+        "queued": 0,
+        "below_frontier": 0
+      },
+      "first_message_after_index": {
+        "mismatches": 0,
+        "frontier": 1,
+        "queued": 0,
+        "below_frontier": 0
+      }
+    },
+    "existing_history": {
+      "before_backfill": {
+        "mismatches": 0,
+        "frontier": 3001,
+        "queued": 0,
+        "below_frontier": 1420
+      },
+      "backfill_step_1": {
+        "mismatches": 0,
+        "frontier": 2741,
+        "queued": 25,
+        "below_frontier": 1298
+      },
+      "backfill_step_5": {
+        "mismatches": 0,
+        "frontier": 1682,
+        "queued": 139,
+        "below_frontier": 786
+      },
+      "backfill_requests": 12,
+      "backfill_finished": {
+        "mismatches": 0,
+        "frontier": 1,
+        "queued": 0,
+        "below_frontier": 0
+      },
+      "rows_below_frontier_after_finish": 0,
+      "after_delete_all": {
+        "mismatches": 0,
+        "frontier": 100115,
+        "queued": 0,
+        "below_frontier": 1448
+      },
+      "rebuild_in_progress": {
+        "mismatches": 0,
+        "frontier": 2012,
+        "queued": 206,
+        "below_frontier": 946
+      },
+      "rebuild_finished": {
+        "mismatches": 0,
+        "frontier": 1,
+        "queued": 0,
+        "below_frontier": 0
+      }
+    },
+    "reset_during_backfill_without_compare_and_set": {
+      "frontier_before_race": 1439,
+      "frontier_after_raced_write": 1173,
+      "after_rebuild": {
+        "mismatches": 16,
+        "frontier": 1,
+        "queued": 0,
+        "below_frontier": 0
+      }
+    },
+    "reset_during_backfill_compare_and_set": {
+      "frontier_before_race": 1439,
+      "frontier_after_raced_write": 3001,
+      "after_rebuild": {
+        "mismatches": 0,
+        "frontier": 1,
+        "queued": 0,
+        "below_frontier": 0
+      }
+    }
+  },
+  "paging_engine": {
+    "trials": 300,
+    "stats": {
+      "no_progress_requests": 0,
+      "max_overshoot": 19,
+      "runs": 7938,
+      "requests": 142761,
+      "empty_pages": 78362,
+      "state_exhausted": 7938
+    },
+    "failures": [],
+    "failure_count": 0
+  },
+  "second_draft_scan_no_progress": {
+    "iterations": [
+      {
+        "C": 4,
+        "read": [
+          3
+        ],
+        "L": 3,
+        "zone": []
+      },
+      {
+        "C": 4,
+        "read": [
+          3
+        ],
+        "L": 3,
+        "zone": []
+      },
+      {
+        "C": 4,
+        "read": [
+          3
+        ],
+        "L": 3,
+        "zone": []
+      }
+    ]
+  },
+  "relevance_revision": {
+    "initial": 0,
+    "after_insert": 0,
+    "after_asr_update": 1,
+    "second_draft_pages": [
+      1,
+      2,
+      1
+    ],
+    "second_draft_duplicate": true,
+    "revised_cursor_result": "cursor_stale",
+    "after_delete": 2,
+    "after_floor_change": 3
+  },
+  "plugin": {
+    "hits": [
+      6,
+      10,
+      13
+    ],
+    "second_draft_single_request": [
+      10,
+      13
+    ],
+    "revised_internal_continuation": [
+      6,
+      10,
+      13
+    ],
+    "requests_used": 2,
+    "no_progress_requests": 0,
+    "final_state": "exhausted"
   }
 }

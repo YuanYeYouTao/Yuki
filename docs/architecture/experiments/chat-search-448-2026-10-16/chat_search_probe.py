@@ -1,16 +1,18 @@
 """Synthetic probes for the #448 chat-search taskbook.
 
-Pure standard library + the Python sqlite3 module.  No Yuki code, no real chat
-data, no network.  Every random choice is seeded, so a rerun on the same Python
-and SQLite version reproduces the counts; timings vary with the machine.
+Standard library + sqlite3.  The snapshot probe imports Yuki's ``Database`` and
+the revision probe runs Yuki's 0119 trigger SQL; nothing else uses Yuki code.  No
+real chat data, no network.  Every random choice is seeded, so a rerun on the
+same Python, Unicode and SQLite version reproduces the counts; timings vary.
 
-Usage:
-    python -I chat_search_probe.py --workdir /tmp/x --messages 200000 --out results.json
+Usage (from the repository root, with the repository virtualenv):
+    .venv/bin/python -I chat_search_probe.py --workdir /tmp/x --out results.json
 """
 
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import platform
@@ -45,44 +47,85 @@ T2S = str.maketrans(
 )
 
 
-def _fold(segment: str) -> str:
-    text = unicodedata.normalize("NFKC", segment)
-    text = unicodedata.normalize("NFKC", text.casefold())
-    text = text.translate(T2S)
-    return "".join(ch for ch in text if not ch.isspace())
+def fold_whole(text: str) -> str:
+    """Independent oracle: the v1 pipeline applied to the whole string at once."""
+
+    folded = unicodedata.normalize("NFKC", text)
+    folded = unicodedata.normalize("NFKC", folded.casefold())
+    folded = folded.translate(T2S)
+    return "".join(ch for ch in folded if not ch.isspace())
+
+
+def _composition_seconds() -> frozenset[str]:
+    """Characters that can be the second element of a canonical composition."""
+
+    seconds = set()
+    for code_point in range(0x110000):
+        decomposition = unicodedata.decomposition(chr(code_point))
+        if decomposition and not decomposition.startswith("<"):
+            parts = decomposition.split()
+            if len(parts) == 2:
+                seconds.add(chr(int(parts[1], 16)))
+    # Hangul syllables compose algorithmically and have no decomposition entry.
+    seconds.update(chr(code_point) for code_point in range(0x1161, 0x1176))
+    seconds.update(chr(code_point) for code_point in range(0x11A8, 0x11C3))
+    return frozenset(seconds)
+
+
+COMPOSITION_SECONDS = _composition_seconds()
+
+
+def safe_start(ch: str) -> bool:
+    """True when no normalization step can interact with text before ``ch``.
+
+    UAX #15 section 1.4: normalization is not closed under concatenation.  A cut
+    before ``ch`` is safe when ``ch``, its NFKD form and the NFKD form after
+    casefolding all begin with a starter that never composes with a preceding
+    character.  Being conservative only makes highlight units larger.
+    """
+
+    for form in (
+        ch,
+        unicodedata.normalize("NFKD", ch),
+        unicodedata.normalize("NFKD", unicodedata.normalize("NFKC", ch).casefold()),
+    ):
+        if form and (unicodedata.combining(form[0]) != 0 or form[0] in COMPOSITION_SECONDS):
+            return False
+    return True
 
 
 def normalize(text: str) -> tuple[str, list[tuple[int, int]]]:
-    """Return folded text and, per output char, the original [start, end) span.
-
-    The original text is cut greedily into minimal units u such that folding
-    u+next equals fold(u)+fold(next); each unit's output chars map to the
-    whole unit.  This keeps NFKC compositions (combining marks, half-width
-    voiced marks, conjoining jamo) inside one unit.
-    """
+    """Fold per safe unit; return folded text and each output char's source span."""
 
     out: list[str] = []
     spans: list[tuple[int, int]] = []
-    start = 0
+    cuts = [0, *(i for i in range(1, len(text)) if safe_start(text[i])), len(text)]
+    for begin, finish in itertools.pairwise(cuts):
+        folded = fold_whole(text[begin:finish])
+        out.append(folded)
+        spans.extend([(begin, finish)] * len(folded))
+    return "".join(out), spans
+
+
+def greedy_normalize_first_revision(text: str) -> str:
+    """The second-draft method kept only to reproduce its counterexample."""
+
+    out = []
     index = 0
     while index < len(text):
         end = index + 1
-        while end < len(text) and _fold(text[index : end + 1]) != _fold(text[index:end]) + _fold(
-            text[end]
-        ):
+        while end < len(text) and fold_whole(text[index : end + 1]) != fold_whole(
+            text[index:end]
+        ) + fold_whole(text[end]):
             end += 1
-        folded = _fold(text[index:end])
-        for ch in folded:
-            out.append(ch)
-            spans.append((index, end))
+        out.append(fold_whole(text[index:end]))
         index = end
-    del start
-    return "".join(out), spans
+    return "".join(out)
 
 
 def highlight(original: str, needle: str) -> list[tuple[int, int]]:
     folded, spans = normalize(original)
-    target, _ = normalize(needle)
+    target = fold_whole(needle)
     found: list[tuple[int, int]] = []
     if not target:
         return found
@@ -343,11 +386,12 @@ def timed(fn, repeats: int) -> tuple[float, float]:
 
 # ---------------------------------------------------------------- probes
 def probe_index_options(rows, workdir: Path, query_count: int, repeats: int) -> dict:
-    folded_rows = {i: normalize(c)[0] for i, _, c in rows}
+    # The answer key uses the whole-string oracle, not the segmented normalizer.
+    folded_rows = {i: fold_whole(c) for i, _, c in rows}
     queries = make_queries(rows, 5, query_count)
     truth = {}
     for q in queries:
-        target = normalize(q)[0]
+        target = fold_whole(q)
         truth[q] = {i for i, f in folded_rows.items() if target and target in f}
     results = {}
     for option in OPTIONS:
@@ -664,40 +708,6 @@ def probe_grouping() -> dict:
     }
 
 
-def probe_paging(count: int, budget: int) -> dict:
-    rng = random.Random(9)
-    common = {i for i in range(1, count + 1) if rng.random() < 0.3}
-    rare = {500, 40_000, count - 10}
-    t_hits = {"common": sorted(common), "rare": sorted(rare)}
-
-    def page(upper: int):
-        fetched = {}
-        floors = []
-        for term, ids in t_hits.items():
-            below = [i for i in ids if i < upper][::-1][:budget]
-            fetched[term] = below
-            floors.append(below[-1] if len(below) == budget else 0)
-        lower = max(floors)
-        return lower, {t: [i for i in v if i > lower] for t, v in fetched.items()}
-
-    upper, requests, found = count + 1, 0, []
-    while upper > 1 and requests < 10_000:
-        lower, complete = page(upper)
-        requests += 1
-        found += complete["rare"]
-        if lower >= upper:
-            break
-        upper = lower + 1 if lower else 1
-    naive = sorted(common | rare, reverse=True)[:budget]
-    return {
-        "messages": count,
-        "budget_per_term": budget,
-        "keyset_requests_to_exhaust": requests,
-        "keyset_rare_hits_reached": sorted(found),
-        "naive_top_budget_contains_rare": sorted(rare & set(naive)),
-    }
-
-
 def probe_trigram_semantics() -> dict:
     db = sqlite3.connect(":memory:")
     db.execute("create table ev(id integer primary key, content text)")
@@ -844,6 +854,848 @@ def probe_time_binding() -> dict:
     return out
 
 
+# ---------------------------------------------------------------- round 3 probes
+NORMALIZATION_CONTEXTS = [
+    "",
+    "a",
+    "a̕",
+    "é",
+    "ᄀ",
+    "가",
+    "각",
+    "ｶ",
+    "カ",
+    "େ",
+    "ೆ",
+    "ে",
+    "q̣",
+    " ",
+    "报",
+    "1",
+]
+
+
+def probe_normalization(seed: int, samples: int) -> dict:
+    x, y = "à̕", "à̕"
+    pairs = [
+        (x, y),
+        ("é", "é"),
+        ("q̣̇", "q̣̇"),
+        ("Å", "Å"),
+        ("ｶﾞ", "ガ"),
+        ("가", "가"),
+        ("ㄱㅏ", "가"),
+        ("㎏", "kg"),
+        ("ﬁ", "fi"),
+        ("ß", "ss"),
+        ("ＰＲ＃４４８", "pr#448"),
+        ("報 銷", "报销"),
+    ]
+    pair_results = []
+    for left, right in pairs:
+        pair_results.append(
+            {
+                "pair": [left, right],
+                "oracle_equal": fold_whole(left) == fold_whole(right),
+                "segmented_equal": normalize(left)[0] == normalize(right)[0],
+                "segmented_matches_oracle": normalize(left)[0] == fold_whole(left)
+                and normalize(right)[0] == fold_whole(right),
+                "right_finds_left": bool(fold_whole(right))
+                and fold_whole(right) in normalize("<" + left + ">")[0],
+            }
+        )
+    rng = random.Random(seed)
+    pool = [
+        chr(code_point)
+        for code_point in [
+            *range(0x300, 0x370),
+            *range(0x1100, 0x1200),
+            *range(0xAC00, 0xAC40),
+            *range(0xFF61, 0xFFA0),
+            *range(0x3130, 0x3190),
+            *range(0x3099, 0x309D),
+        ]
+    ] + list("aeiouAEIOUßİﬁ㎏ 報报銷销ཱི̕ͅ")
+    pool += list("ೕೆୋোเก้Å")
+    random_mismatch = 0
+    highlight_failures = 0
+    for _ in range(samples):
+        text = "".join(rng.choice(pool) for _ in range(rng.randint(1, 10)))
+        folded = normalize(text)[0]
+        if folded != fold_whole(text):
+            random_mismatch += 1
+            continue
+        if folded:
+            start = rng.randrange(len(folded))
+            target = folded[start : start + rng.randint(1, 3)]
+            for begin, finish in highlight(text, target):
+                if fold_whole(target) not in fold_whole(text[begin:finish]):
+                    highlight_failures += 1
+    assigned = [
+        chr(code_point)
+        for code_point in range(0x110000)
+        if unicodedata.category(chr(code_point)) not in {"Cn", "Cs", "Co"}
+    ]
+    safe = [ch for ch in assigned if safe_start(ch)]
+    boundary_failures = []
+    for ch in safe:
+        for context in NORMALIZATION_CONTEXTS:
+            if fold_whole(context + ch) != fold_whole(context) + fold_whole(ch):
+                boundary_failures.append([context, f"U+{ord(ch):04X}"])
+    return {
+        "counterexample": {
+            "x": "a U+0315 U+0300",
+            "y": "U+00E0 U+0315",
+            "nfkc_equal": unicodedata.normalize("NFKC", x) == unicodedata.normalize("NFKC", y),
+            "second_draft_equal": greedy_normalize_first_revision(x)
+            == greedy_normalize_first_revision(y),
+            "second_draft_y_finds_x": greedy_normalize_first_revision(y)
+            in greedy_normalize_first_revision(x),
+            "revised_equal": normalize(x)[0] == normalize(y)[0],
+            "revised_y_finds_x": fold_whole(y) in normalize(x)[0],
+        },
+        "equivalence_pairs": pair_results,
+        "random_strings": samples,
+        "random_segmented_vs_oracle_mismatches": random_mismatch,
+        "highlight_spans_not_containing_target": highlight_failures,
+        "assigned_code_points": len(assigned),
+        "safe_start_code_points": len(safe),
+        "boundary_contexts": len(NORMALIZATION_CONTEXTS),
+        "boundary_failures": boundary_failures[:10],
+        "boundary_failure_count": len(boundary_failures),
+    }
+
+
+# Toy lifecycle schema mirroring taskbook section 7 (not Yuki's real tables).
+TOY_SCHEMA = (
+    "create table ev(id integer primary key, conv integer, kind text, content text, asr text)",
+    "create virtual table idx using fts5(c_grams, a_grams, content='', contentless_delete=1)",
+    "create table queue(seq integer primary key autoincrement, event_id integer not null)",
+    "create index ix_queue_event on queue(event_id)",
+    "create table state(id integer primary key check (id = 1), frontier integer not null,"
+    " epoch integer not null)",
+    "create trigger ev_ai after insert on ev when new.kind = 'message' begin"
+    " insert into queue(event_id) values (new.id); end",
+    "create trigger ev_au after update of content, asr on ev begin"
+    " delete from idx where rowid = old.id; insert into queue(event_id) values (new.id); end",
+    "create trigger ev_ad after delete on ev begin delete from idx where rowid = old.id;"
+    " delete from queue where event_id = old.id; end",
+)
+# Shared by the "migration" path and the "create_schema" path.
+TOY_STATE_INIT = (
+    "insert into state(id, frontier, epoch) select 1, coalesce(max(id), 0) + 1, 0 from ev"
+)
+
+
+def toy_db(path: str = ":memory:", rows=(), init_before_rows: bool = False):
+    db = sqlite3.connect(path, isolation_level=None)
+    db.execute(
+        "create table ev(id integer primary key, conv integer, kind text, content text, asr text)"
+    )
+    if not init_before_rows:
+        db.executemany("insert into ev values(?,?,?,?,?)", rows)
+    for statement in TOY_SCHEMA[1:]:
+        db.execute(statement)
+    db.execute(TOY_STATE_INIT)
+    if init_before_rows:
+        db.executemany("insert into ev values(?,?,?,?,?)", rows)
+    return db
+
+
+def _tokens(text: str | None) -> str:
+    folded = normalize(text or "")[0]
+    out = []
+    for size, tag in ((1, "u"), (2, "b"), (3, "t")):
+        out.extend(hex_token(tag, folded[i : i + size]) for i in range(len(folded) - size + 1))
+    return " ".join(out)
+
+
+def indexer_round(db, batch: int, rule: str = "revised", between=None) -> int:
+    """One indexer pass. ``between`` runs after the read, before the write."""
+
+    if rule == "second_draft":
+        rows = db.execute(
+            "select seq, event_id from queue order by seq limit ?", (batch,)
+        ).fetchall()
+        work = []
+        for seq, event_id in rows:
+            newer = db.execute(
+                "select 1 from queue where event_id = ? and seq > ?", (event_id, seq)
+            ).fetchone()
+            if newer is None:
+                work.append((event_id, seq))
+    else:
+        work = db.execute(
+            "select event_id, max(seq) from queue where event_id in"
+            " (select event_id from queue order by seq limit ?) group by event_id",
+            (batch,),
+        ).fetchall()
+    texts = {
+        event_id: db.execute("select content, asr from ev where id = ?", (event_id,)).fetchone()
+        for event_id, _ in work
+    }
+    prepared = {
+        event_id: (None if row is None else (_tokens(row[0]), _tokens(row[1])))
+        for event_id, row in texts.items()
+    }
+    if between is not None:
+        between(db)
+    db.execute("begin immediate")
+    for event_id, seq in work:
+        if prepared[event_id] is not None:
+            db.execute(
+                "insert or replace into idx(rowid, c_grams, a_grams) values (?,?,?)",
+                (event_id, *prepared[event_id]),
+            )
+        db.execute("delete from queue where event_id = ? and seq <= ?", (event_id, seq))
+    db.execute("commit")
+    return len(work)
+
+
+def backfill_round(db, batch: int, between=None, compare_and_set: bool = True) -> int:
+    """One backfill step; returns the number of ids read (0 = nothing below frontier)."""
+
+    frontier, epoch = db.execute("select frontier, epoch from state").fetchone()
+    ids = [
+        r[0]
+        for r in db.execute(
+            "select id from ev where kind = 'message' and id < ? order by id desc limit ?",
+            (frontier, batch),
+        )
+    ]
+    if not ids:
+        return 0
+    if between is not None:
+        between(db)
+    db.execute("begin immediate")
+    if compare_and_set:
+        moved = db.execute(
+            "update state set frontier = ? where frontier = ? and epoch = ?",
+            (min(ids), frontier, epoch),
+        ).rowcount
+    else:
+        moved = db.execute("update state set frontier = ?", (min(ids),)).rowcount
+    if moved:
+        db.executemany("insert into queue(event_id) values (?)", [(i,) for i in ids])
+    db.execute("commit")
+    return len(ids)
+
+
+def reset_index(db) -> None:
+    """Corruption recovery: one short write transaction."""
+
+    db.execute("begin immediate")
+    db.execute("insert into idx(idx) values ('delete-all')")
+    db.execute(
+        "update state set frontier = (select coalesce(max(id), 0) + 1 from ev), epoch = epoch + 1"
+    )
+    db.execute("commit")
+
+
+def toy_search(db, term: str, conv: int) -> tuple[set[int], dict]:
+    """Candidate generation + verification inside one read transaction."""
+
+    target = fold_whole(term)
+    db.execute("begin")
+    frontier = db.execute("select frontier from state").fetchone()[0]
+    if len(target) >= 3:
+        grams = sorted({hex_token("t", target[i : i + 3]) for i in range(len(target) - 2)})
+    else:
+        grams = [hex_token("u" if len(target) == 1 else "b", target)]
+    expr = " AND ".join(f'"{g}"' for g in grams)
+    indexed = {
+        r[0]
+        for column in ("c_grams", "a_grams")
+        for r in db.execute(
+            "select id from ev where id in (select rowid from idx where idx match ?)"
+            " and conv = ? and id >= ?",
+            (f"{{{column}}}: ({expr})", conv, frontier),
+        )
+    }
+    queued = {
+        r[0]
+        for r in db.execute(
+            "select distinct q.event_id from queue q join ev on ev.id = q.event_id"
+            " where ev.conv = ? and ev.id >= ?",
+            (conv, frontier),
+        )
+    }
+    below = {
+        r[0]
+        for r in db.execute(
+            "select id from ev where conv = ? and kind = 'message' and id < ?", (conv, frontier)
+        )
+    }
+    candidates = indexed | queued | below
+    hits = set()
+    for event_id in candidates:
+        row = db.execute("select content, asr from ev where id = ?", (event_id,)).fetchone()
+        if row and any(target and target in fold_whole(field or "") for field in row):
+            hits.add(event_id)
+    db.execute("rollback")
+    return hits, {"frontier": frontier, "queued": len(queued), "below_frontier": len(below)}
+
+
+def toy_oracle(db, term: str, conv: int) -> set[int]:
+    target = fold_whole(term)
+    return {
+        event_id
+        for event_id, content, asr in db.execute(
+            "select id, content, asr from ev where conv = ? and kind = 'message'", (conv,)
+        )
+        if target and (target in fold_whole(content or "") or target in fold_whole(asr or ""))
+    }
+
+
+def probe_queue() -> dict:
+    out = {}
+    for rule in ("second_draft", "revised"):
+        for batch in (500, 1):
+            rows = [(i, 1, "message", f"old {i}", None) for i in range(1, 501)]
+            db = toy_db(rows=rows, init_before_rows=True)  # seq 1..500
+            db.execute("update ev set content = 'new ' || id")  # seq 501..1000
+            rounds = 0
+            progress = []
+            while db.execute("select count(*) from queue").fetchone()[0] and rounds < 2000:
+                before = db.execute("select count(*) from queue").fetchone()[0]
+                indexer_round(db, batch, rule)
+                after = db.execute("select count(*) from queue").fetchone()[0]
+                progress.append(before - after)
+                rounds += 1
+                if before == after and rounds > 3:
+                    break
+            left = db.execute("select count(*) from queue").fetchone()[0]
+            stale_tokens = sum(
+                1 for i in range(1, 501) if i not in toy_search(db, f"new {i}", 1)[0]
+            )
+            out[f"{rule}_batch_{batch}"] = {
+                "rounds": rounds,
+                "queue_left": left,
+                "first_rounds_removed": progress[:3],
+                "latest_text_not_found": stale_tokens,
+            }
+    # Re-enqueue between read and write must survive.
+    db = toy_db(rows=[(1, 1, "message", "alpha", None)])
+
+    def update_during(conn):
+        conn.execute("update ev set asr = 'bravo' where id = 1")
+
+    indexer_round(db, 10, "revised", between=update_during)
+    queued_after_race = db.execute("select seq from queue where event_id = 1").fetchall()
+    found_during = toy_search(db, "bravo", 1)[0]
+    indexer_round(db, 10, "revised")
+    out["reenqueue_during_processing"] = {
+        "queue_rows_after_first_write": len(queued_after_race),
+        "bravo_found_while_queued": sorted(found_during),
+        "bravo_found_after_second_round": sorted(toy_search(db, "bravo", 1)[0]),
+        "queue_left": db.execute("select count(*) from queue").fetchone()[0],
+    }
+    # Duplicate queue rows must not consume the search budget.
+    db = toy_db(rows=[(i, 1, "message", "x", None) for i in range(1, 6)])
+    for _ in range(3):
+        db.execute("update ev set content = content || 'y'")
+    raw = db.execute("select event_id from queue order by seq desc limit 5").fetchall()
+    distinct = db.execute(
+        "select distinct event_id from queue order by event_id desc limit 5"
+    ).fetchall()
+    out["queue_scan_budget_5"] = {
+        "raw_rows_distinct_events": len({r[0] for r in raw}),
+        "distinct_rows_distinct_events": len(distinct),
+    }
+    return out
+
+
+def probe_lifecycle(seed: int) -> dict:
+    rng = random.Random(seed)
+    words = ["电吉他", "报销", "報銷", "预算三千", "iPhone15Pro", "ＰＲ＃４４８", "à̕", "饭"]
+    queries = ["电吉他", "报销", "phone", "pr#448", "à̕", "饭", "三千", "吉"]
+
+    def make_rows(count, start=1):
+        return [
+            (
+                start + i,
+                rng.choice([1, 2]),
+                "message" if rng.random() < 0.95 else "external_event",
+                rng.choice(words) + rng.choice(["", "了", " 吗", "!"]),
+                rng.choice([None, None, rng.choice(words)]),
+            )
+            for i in range(count)
+        ]
+
+    def check(db, label, results):
+        mismatches = 0
+        info = None
+        for query in queries:
+            for conv in (1, 2):
+                got, info = toy_search(db, query, conv)
+                if got != toy_oracle(db, query, conv):
+                    mismatches += 1
+        results[label] = {"mismatches": mismatches, **(info or {})}
+
+    out = {}
+    # Empty database, both init paths.
+    for path_name, init_before in (("migration", False), ("create_schema", True)):
+        results = {}
+        db = toy_db(rows=[], init_before_rows=init_before)
+        results["state_after_init"] = list(
+            db.execute("select frontier, epoch from state").fetchone()
+        )
+        check(db, "empty", results)
+        results["backfill_rows_on_empty"] = backfill_round(db, 100)
+        db.execute("insert into ev values(1, 1, 'message', '电吉他', null)")
+        check(db, "first_message_before_index", results)
+        indexer_round(db, 100)
+        check(db, "first_message_after_index", results)
+        out[f"empty_{path_name}"] = results
+    # Existing history, then migration, backfill and indexing interleaved.
+    rows = make_rows(3000)
+    results = {}
+    db = toy_db(rows=rows)
+    check(db, "before_backfill", results)
+    steps = 0
+    while backfill_round(db, 250):
+        indexer_round(db, 200)
+        db.executemany("insert into ev values(?,?,?,?,?)", make_rows(5, 100000 + steps * 10))
+        steps += 1
+        if steps in (1, 5):
+            check(db, f"backfill_step_{steps}", results)
+    results["backfill_requests"] = steps
+    while indexer_round(db, 1000):
+        pass
+    check(db, "backfill_finished", results)
+    results["rows_below_frontier_after_finish"] = db.execute(
+        "select count(*) from ev where kind = 'message' and id < (select frontier from state)"
+    ).fetchone()[0]
+    # Corruption recovery: delete-all, reset frontier, bump epoch.
+    reset_index(db)
+    check(db, "after_delete_all", results)
+    step = 0
+    while backfill_round(db, 500):
+        indexer_round(db, 300)
+        step += 1
+        if step == 2:
+            check(db, "rebuild_in_progress", results)
+    while indexer_round(db, 1000):
+        pass
+    check(db, "rebuild_finished", results)
+    out["existing_history"] = results
+    # A reset that commits between a backfill read and its write.
+    history = make_rows(3000)
+    for rule, flag in (("without_compare_and_set", False), ("compare_and_set", True)):
+        results = {}
+        db = toy_db(rows=history)
+        for _ in range(6):  # index the newest half, frontier ends near the middle
+            backfill_round(db, 250)
+        while indexer_round(db, 1000):
+            pass
+        results["frontier_before_race"] = db.execute("select frontier from state").fetchone()[0]
+        backfill_round(db, 250, between=reset_index, compare_and_set=flag)
+        results["frontier_after_raced_write"] = db.execute("select frontier from state").fetchone()[
+            0
+        ]
+        while backfill_round(db, 250, compare_and_set=flag):
+            while indexer_round(db, 1000):
+                pass
+        while indexer_round(db, 1000):
+            pass
+        check(db, "after_rebuild", results)
+        out[f"reset_during_backfill_{rule}"] = results
+    return out
+
+
+async def _snapshot_case(path: Path, explicit_begin: bool) -> dict:
+    from sqlalchemy import text
+
+    from qq_ai_bot.persistence.database import Database
+
+    path.unlink(missing_ok=True)  # noqa: ASYNC240 - synchronous setup before any await
+    database = Database(f"sqlite+aiosqlite:///{path}")
+    async with database.sessions() as setup:
+        for statement in (
+            "create virtual table idx using fts5(tok, content='', contentless_delete=1)",
+            "create table queue(seq integer primary key autoincrement, event_id integer)",
+            "insert into queue(event_id) values (7)",
+        ):
+            await setup.execute(text(statement))
+        await setup.commit()
+    async with database.sessions() as reader, database.sessions() as writer:
+        if explicit_begin:
+            await reader.execute(text("BEGIN"))
+        from_index = (
+            await reader.execute(text("select rowid from idx where idx match 'zz'"))
+        ).all()
+        started = time.perf_counter()
+        await writer.execute(text("insert into idx(rowid, tok) values (7, 'zz')"))
+        await writer.execute(text("delete from queue where event_id = 7"))
+        await writer.commit()
+        writer_seconds = time.perf_counter() - started
+        from_queue = (await reader.execute(text("select event_id from queue"))).all()
+        await reader.rollback()
+    await database.engine.dispose()
+    return {
+        "explicit_begin": explicit_begin,
+        "index_saw_event": bool(from_index),
+        "queue_saw_event": bool(from_queue),
+        "event_found": bool(from_index) or bool(from_queue),
+        "writer_committed_while_reader_open_seconds": round(writer_seconds, 4),
+    }
+
+
+def probe_snapshot(workdir: Path) -> dict:
+    import asyncio
+
+    import aiosqlite
+    import sqlalchemy
+
+    cases = [
+        asyncio.run(_snapshot_case(workdir / "snapshot.db", explicit_begin=flag))
+        for flag in (False, True)
+    ]
+    return {
+        "versions": {
+            "sqlalchemy": sqlalchemy.__version__,
+            "aiosqlite": aiosqlite.__version__,
+            "sqlite": sqlite3.sqlite_version,
+        },
+        "cases": cases,
+    }
+
+
+# ------------------------------------------------ paging mechanism simulation
+def sim_groups(
+    hits: dict[int, frozenset],
+    pos: dict[int, int],
+    times: dict[int, int],
+    requirements: tuple,
+    max_messages: int,
+    max_seconds: int,
+) -> list[tuple[int, int]]:
+    """Minimal covering windows (start_id, end_id) over hits sorted by id."""
+
+    ordered = sorted(hits)
+    if len(requirements) <= 1:
+        return [(i, i) for i in ordered if hits[i] >= frozenset(requirements)]
+    windows = []
+    count: Counter = Counter()
+    left = 0
+    for rid in ordered:
+        for req in hits[rid]:
+            count[req] += 1
+        while all(count[r] > 0 for r in requirements):
+            lid = ordered[left]
+            if all(count[r] - (1 if r in hits[lid] else 0) > 0 for r in requirements):
+                for req in hits[lid]:
+                    count[req] -= 1
+                left += 1
+                continue
+            needed = any(count[r] == 1 for r in hits[rid])
+            if (
+                needed
+                and pos[rid] - pos[lid] <= max_messages
+                and times[rid] - times[lid] <= max_seconds
+            ):
+                windows.append((lid, rid))
+            break
+    return windows
+
+
+def sim_engine(dataset, requirements, budget, limit, max_messages, max_seconds, chunk=4):
+    """Return pages, request count and per-request checks (recent order).
+
+    A request makes progress when it emits a group, lowers the scan bound or ends
+    the search.  ``overshoot`` is the work spent beyond the request budget.
+    """
+
+    ids, pos, times, sources = dataset  # sources: name -> (requirement, sorted ids)
+    upper = (max(ids) + 1) if ids else 1
+    single = len(requirements) <= 1
+    margin = 0 if single else max_messages
+    id_at = sorted(ids)
+    cursor = (upper, upper)
+    pages = []
+    requests = 0
+    checks = {"no_progress": 0, "max_overshoot": 0}
+    while cursor is not None and requests < 100000:
+        requests += 1
+        emit_upper, scan_upper = cursor
+        remaining = budget
+        known: dict[int, set] = {}
+
+        def add(source_name, event_id, known=known):
+            known.setdefault(event_id, set()).add(sources[source_name][0])
+
+        for name, (_, source_ids) in sources.items():
+            window = [i for i in source_ids if scan_upper <= i < emit_upper]
+            remaining -= len(window)
+            for i in window:
+                add(name, i)
+        position = {name: scan_upper for name in sources}
+        exhausted = {name: False for name in sources}
+        first = True
+        state = None
+        while True:
+            active = [n for n in sources if not exhausted[n]]
+            if active and (first or remaining > 0):
+                first = False
+                page = max(1, min(chunk, remaining // len(active))) if remaining > 0 else 1
+                for name in active:
+                    below = [i for i in reversed(sources[name][1]) if i < position[name]][:page]
+                    remaining -= len(below)
+                    for i in below:
+                        add(name, i)
+                    if below:
+                        position[name] = below[-1]
+                    if len(below) < page:
+                        exhausted[name] = True
+            active = [n for n in sources if not exhausted[n]]
+            frontier = max((position[n] for n in active), default=0)
+            complete = {i: frozenset(v) for i, v in known.items() if i >= frontier}
+            groups = sim_groups(complete, pos, times, requirements, max_messages, max_seconds)
+            if active:
+                threshold_pos = pos[frontier] + margin if frontier in pos else 0
+                safe = [g for g in groups if g[1] < emit_upper and pos[g[1]] >= threshold_pos]
+            else:
+                safe = [g for g in groups if g[1] < emit_upper]
+            safe.sort(key=lambda g: g[1], reverse=True)
+            if len(safe) >= limit + 1:
+                state = "more"
+                break
+            if not active:
+                state = "exhausted"
+                break
+            if remaining <= 0:
+                state = "incomplete"
+                break
+        emitted = safe[:limit]
+        pages.append((state, emitted))
+        checks["max_overshoot"] = max(checks["max_overshoot"], -remaining)
+        if state != "exhausted" and not emitted and frontier >= scan_upper:
+            checks["no_progress"] += 1
+        if state == "more":
+            cursor = (emitted[-1][1], frontier)
+        elif state == "exhausted":
+            cursor = None
+        else:
+            threshold_index = pos[frontier] + margin
+            new_emit = id_at[threshold_index] if threshold_index < len(id_at) else upper
+            cursor = (min(emit_upper, new_emit), frontier)
+    return pages, requests, checks
+
+
+def sim_dataset(rng, size, densities, gap=True):
+    ids = []
+    current = 0
+    for _ in range(size):
+        current += rng.choice([1, 1, 2, 3]) if gap else 1
+        ids.append(current)
+    pos = {event_id: index for index, event_id in enumerate(ids)}
+    times = {}
+    clock = 0
+    for event_id in ids:
+        clock += rng.choice([5, 30, 60, 600, 4000])
+        times[event_id] = clock
+    sources = {}
+    for name, (requirement, density) in densities.items():
+        sources[name] = (requirement, [i for i in ids if rng.random() < density])
+    return ids, pos, times, sources
+
+
+def probe_paging_engine(seed: int, trials: int) -> dict:
+    rng = random.Random(seed)
+    failures = []
+    stats = Counter()
+    shapes = [
+        {"a": ("A", 0.3)},
+        {"a": ("A", 0.4), "b": ("B", 0.05)},
+        {"a": ("A", 0.5), "b": ("B", 0.5)},
+        {"a": ("A", 0.2), "b1": ("B", 0.02), "b2": ("B", 0.02), "c": ("C", 0.1)},
+        {"a": ("A", 0.0), "b": ("B", 0.3)},
+    ]
+    for trial in range(trials):
+        shape = rng.choice(shapes)
+        size = rng.choice([0, 1, 5, 40, 200])
+        dataset = sim_dataset(rng, size, shape)
+        requirements = tuple(sorted({req for req, _ in shape.values()}))
+        max_messages = rng.choice([1, 3, 10])
+        max_seconds = rng.choice([600, 3600, 10**9])
+        ids, pos, times, sources = dataset
+        all_hits: dict[int, set] = {}
+        for requirement, source_ids in sources.values():
+            for i in source_ids:
+                all_hits.setdefault(i, set()).add(requirement)
+        reference = sim_groups(
+            {i: frozenset(v) for i, v in all_hits.items()},
+            pos,
+            times,
+            requirements,
+            max_messages,
+            max_seconds,
+        )
+        reference.sort(key=lambda g: g[1], reverse=True)
+        total_candidates = sum(len(v[1]) for v in sources.values())
+        for budget in sorted({1, 2, 3, 7, max(1, total_candidates)}):
+            for limit in (1, 2, 5):
+                for direction in ("recent", "oldest"):
+                    if direction == "recent":
+                        pages, requests, checks = sim_engine(
+                            dataset, requirements, budget, limit, max_messages, max_seconds
+                        )
+                        produced = [g for _, groups in pages for g in groups]
+                        expected = reference
+                    else:
+                        mirror = {i: -i for i in ids}
+                        m_ids = sorted(mirror[i] for i in ids)
+                        m_pos = {mirror[i]: len(ids) - 1 - pos[i] for i in ids}
+                        m_times = {mirror[i]: -times[i] for i in ids}
+                        m_sources = {
+                            n: (r, sorted(mirror[i] for i in s)) for n, (r, s) in sources.items()
+                        }
+                        shift = (max(ids) + 1) if ids else 0
+                        m_ids = [i + shift for i in m_ids]
+                        m_pos = {i + shift: p for i, p in m_pos.items()}
+                        m_times = {i + shift: t for i, t in m_times.items()}
+                        m_sources = {
+                            n: (r, [i + shift for i in s]) for n, (r, s) in m_sources.items()
+                        }
+                        pages, requests, checks = sim_engine(
+                            (m_ids, m_pos, m_times, m_sources),
+                            requirements,
+                            budget,
+                            limit,
+                            max_messages,
+                            max_seconds,
+                        )
+                        produced = [
+                            (shift - e, shift - s) for _, groups in pages for s, e in groups
+                        ]
+                        expected = sorted(reference, key=lambda g: g[0])
+                    stats["no_progress_requests"] += checks["no_progress"]
+                    stats["max_overshoot"] = max(stats["max_overshoot"], checks["max_overshoot"])
+                    stats["runs"] += 1
+                    stats["requests"] += requests
+                    stats["empty_pages"] += sum(1 for _, groups in pages if not groups)
+                    stats[f"state_{pages[-1][0]}"] += 1
+                    if produced != expected or pages[-1][0] != "exhausted":
+                        failures.append(
+                            {
+                                "trial": trial,
+                                "budget": budget,
+                                "limit": limit,
+                                "direction": direction,
+                                "expected": len(expected),
+                                "produced": len(produced),
+                            }
+                        )
+    return {
+        "trials": trials,
+        "stats": dict(stats),
+        "failures": failures[:10],
+        "failure_count": len(failures),
+    }
+
+
+def probe_second_draft_no_progress() -> dict:
+    """Section 6.7 of the second draft: C=4, budget=1, one source reads id 3."""
+
+    source = [3, 2, 1]
+    upper, history = 4, []
+    for _ in range(3):
+        read = [i for i in source if i < upper][:1]
+        lower = read[-1] if len(read) == 1 else 0
+        emitted_zone = [i for i in source if lower < i < upper]
+        history.append({"C": upper, "read": read, "L": lower, "zone": emitted_zone})
+        upper = lower + 1
+    return {"iterations": history}
+
+
+def probe_relevance_revision() -> dict:
+    from qq_ai_bot.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
+
+    db = sqlite3.connect(":memory:", isolation_level=None)
+    db.execute(
+        "create table canonical_conversations(id text primary key, generation integer default 0,"
+        " starts_after_event_id integer default 0, prompt_source_revision integer default 0,"
+        " kind text, person_id text, space_id text)"
+    )
+    db.execute(
+        "create table prompt_projections(conversation_id text, payload_json text,"
+        " byte_size integer, revision integer default 0, invalidated_reason text)"
+    )
+    db.execute(
+        "create table chat_events(id integer primary key, canonical_conversation_id text,"
+        " content text, segments_json text, visual_summary text, external_payload_json text,"
+        " suppression_status text, audio_transcript text)"
+    )
+    for name in (
+        "prompt_projection_reset",
+        "prompt_projection_event_delete",
+        "prompt_projection_event_update",
+        "prompt_projection_audio_update",
+    ):
+        db.execute(PROJECTION_TRIGGERS_0119[name])
+    db.execute("insert into canonical_conversations(id) values ('c1')")
+
+    def revision():
+        return db.execute(
+            "select prompt_source_revision from canonical_conversations where id = 'c1'"
+        ).fetchone()[0]
+
+    log = {"initial": revision()}
+    db.execute(
+        "insert into chat_events(id, canonical_conversation_id, content, audio_transcript)"
+        " values (1, 'c1', '', '吉他吉他吉他'), (2, 'c1', '', '吉他吉他吉他吉他吉他吉他')"
+    )
+    log["after_insert"] = revision()
+
+    def page(after_key):
+        rows = db.execute("select id, audio_transcript from chat_events").fetchall()
+        ranked = sorted((len(asr), -event_id, event_id) for event_id, asr in rows)
+        remaining = [r for r in ranked if after_key is None or r[:2] > after_key]
+        return remaining[0] if remaining else None
+
+    first = page(None)
+    cursor = {"key": first[:2], "revision": revision()}
+    db.execute("update chat_events set audio_transcript = ? where id = 1", ("吉他" * 15,))
+    log["after_asr_update"] = revision()
+    pages = [first[2]]
+    key = cursor["key"]
+    while (row := page(key)) is not None:
+        pages.append(row[2])
+        key = row[:2]
+    log["second_draft_pages"] = pages
+    log["second_draft_duplicate"] = len(pages) != len(set(pages))
+    log["revised_cursor_result"] = (
+        "cursor_stale" if cursor["revision"] != revision() else "continue"
+    )
+    db.execute("delete from chat_events where id = 2")
+    log["after_delete"] = revision()
+    db.execute("update canonical_conversations set starts_after_event_id = 1 where id = 'c1'")
+    log["after_floor_change"] = revision()
+    return log
+
+
+def probe_plugin(seed: int) -> dict:
+    rng = random.Random(seed)
+    dataset = sim_dataset(rng, 400, {"a": ("A", 0.0)}, gap=False)
+    ids, pos, times, sources = dataset
+    hits = [ids[5], ids[9], ids[12]]  # old messages, far below the first batch
+    sources = {"a": ("A", hits)}
+    dataset = (ids, pos, times, sources)
+    pages, requests, checks = sim_engine(
+        dataset, ("A",), budget=2, limit=3, max_messages=0, max_seconds=0
+    )
+    first_page = [e for _, groups in pages[:1] for _, e in groups]
+    looped = [e for _, groups in pages for _, e in groups][:3]
+    return {
+        "hits": hits,
+        "second_draft_single_request": sorted(first_page),
+        "revised_internal_continuation": sorted(looped),
+        "requests_used": requests,
+        "no_progress_requests": checks["no_progress"],
+        "final_state": pages[-1][0],
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workdir", type=Path, required=True)
@@ -851,6 +1703,8 @@ def main() -> None:
     parser.add_argument("--queries", type=int, default=400)
     parser.add_argument("--repeats", type=int, default=30)
     parser.add_argument("--enqueue-rows", type=int, default=1_000_000)
+    parser.add_argument("--normalization-samples", type=int, default=200_000)
+    parser.add_argument("--paging-trials", type=int, default=300)
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     args.workdir.mkdir(parents=True, exist_ok=True)
@@ -881,7 +1735,14 @@ def main() -> None:
         "enqueue_write_lock": probe_enqueue_lock(args.workdir, args.enqueue_rows),
         "bm25": probe_bm25(),
         "grouping": probe_grouping(),
-        "paging": probe_paging(200_000, 2000),
+        "normalization": probe_normalization(seed=15, samples=args.normalization_samples),
+        "queue": probe_queue(),
+        "snapshot": probe_snapshot(args.workdir),
+        "lifecycle": probe_lifecycle(seed=6),
+        "paging_engine": probe_paging_engine(seed=12, trials=args.paging_trials),
+        "second_draft_scan_no_progress": probe_second_draft_no_progress(),
+        "relevance_revision": probe_relevance_revision(),
+        "plugin": probe_plugin(seed=4),
     }
     args.out.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False, indent=2))
