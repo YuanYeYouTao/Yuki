@@ -232,6 +232,8 @@ def _model_catalog(settings: Settings) -> ModelProfileCatalog:
     return load_model_profile_catalog(
         settings.model_profiles_file,
         environment=model_profile_environment(settings),
+        web_mode=settings.web.mode,
+        search_backend=settings.web_search_backend,
     )
 
 

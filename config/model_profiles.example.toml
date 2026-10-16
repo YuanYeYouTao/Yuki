@@ -6,6 +6,7 @@ search_connection = "native_search"
 # Secrets stay in environment variables; this file only names them.
 # Other vendors and native Claude/Gemini: see model_profiles.providers.example.toml
 # and docs/architecture/model-providers.md. Vendor settings never select models by content.
+# Setup and Admin/CLI share these search defaults; explicit choices remain unchanged.
 
 [profiles.primary_agent]
 # For deepseek-flash (V4.1). Remove image_input for a text-only model.
@@ -30,6 +31,8 @@ search_mode = "external"
 [profiles.native_search]
 # Explicit DeepSeek Anthropic search; independent of the main Responses profile.
 # Other verified Gemini/Anthropic/Responses search connections can replace this one.
+# This official endpoint shares the DeepSeek key and requires no Claude account.
+# For a custom gateway, explicitly configure that gateway's search endpoint and key.
 provider = "deepseek"
 protocol = "anthropic_messages"
 base_url = "https://api.deepseek.com/anthropic/v1"
@@ -40,6 +43,7 @@ max_retries = 0
 default_temperature = 0.1
 default_max_output_tokens = 8192
 thinking_mode = "disabled"
+capabilities = ["native_web_search"]
 
 [profiles.background_tasks]
 provider = "deepseek"

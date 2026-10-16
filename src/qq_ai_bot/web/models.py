@@ -19,13 +19,6 @@ class WebMode(StrEnum):
     TAVILY = "tavily"
     BOTH = "both"
 
-    @classmethod
-    def _missing_(cls, value: object) -> WebMode | None:
-        # Configuration spelling only; never restores the removed router.
-        if value == "native_with_tavily_fallback":
-            return cls.BOTH
-        return None
-
 
 @dataclass(frozen=True, slots=True)
 class WebSearchRequest:

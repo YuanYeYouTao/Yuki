@@ -83,6 +83,9 @@ observe 只调用运行中插件的观察合同。通知只允许原领域规则
 
 Work 取消与续跑调用 `manage_work`，沿原 revision、执行身份、来源与效果回执处理。
 模型保存调用共享 `ConfigFileService` 原子保存并热应用，返回 `applied` 或实际的待重启状态。
+安装向导与模型保存共用搜索默认配置生成：官方 DeepSeek Chat / Responses 使用同密钥的独立
+Messages 搜索连接，Gemini 使用自身独立桥，Anthropic Messages 使用原生搜索。已有的显式
+关闭、搜索模式、后端和手选连接保留；自定义网关沿实际地址与凭据处理。详见[独立原生搜索](../deepseek-search-bridge.md)。
 密钥写入 `model_profiles.secrets.json`，可新增或更新已有别名；别名使用合法环境变量名称。
 配置文件中的 `api_key_env` 必须引用该别名。
 读取模型时只返回配置与已配置状态，响应、审计和 TOML 不包含密钥值。
