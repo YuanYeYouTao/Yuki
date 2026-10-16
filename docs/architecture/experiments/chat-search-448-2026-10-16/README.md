@@ -7,7 +7,7 @@
 | 檔案 | 內容 |
 | --- | --- |
 | `chat_search_probe.py` | 實驗腳本 |
-| `results.json` | 本機完整執行的原始輸出（Apple M4、Python 3.12.7、`unicodedata` 15.0.0、SQLite 3.45.3、SQLAlchemy 2.0.51、aiosqlite 0.22.1） |
+| `results.json` | 本機完整執行基線及本輪 E7／E14 定向重跑的輸出；其餘保留提交 `27854baa` 的結果（Apple M4、Python 3.12.7、`unicodedata` 15.0.0、SQLite 3.45.3、SQLAlchemy 2.0.51、aiosqlite 0.22.1） |
 
 ## 重現
 
@@ -22,6 +22,28 @@ PROBE_CPU="<cpu>" .venv/bin/python -I \
 預設參數：`--messages 200000 --queries 400 --repeats 30 --enqueue-rows 1000000 --normalization-samples 200000 --paging-trials 300`。本機完整執行約 65 秒。
 
 所有隨機選擇都有固定種子，同一 Python、Unicode 與 SQLite 版本重跑時，計數類結果相同；耗時隨機器而異。
+
+本輪只影響 E14，另重跑 E7 確認既有計價規則不變。可在倉庫根目錄定向重現（約 6 秒，不重建其餘索引或覆寫結果檔）：
+
+```bash
+.venv/bin/python -B - <<'PY'
+import importlib.util
+import json
+from pathlib import Path
+
+path = Path("docs/architecture/experiments/chat-search-448-2026-10-16/chat_search_probe.py")
+spec = importlib.util.spec_from_file_location("chat_search_probe", path)
+probe = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(probe)
+saved = json.loads(path.with_name("results.json").read_text())
+for key, result in (
+    ("paging_engine", probe.probe_paging_engine(seed=12, trials=300)),
+    ("relevance_recompute_cost", probe.probe_relevance_recompute_cost()),
+):
+    assert json.loads(json.dumps(result)) == saved[key], key
+    print(key, "PASS")
+PY
+```
 
 ## 實驗與 `results.json` 的對應
 
@@ -40,7 +62,7 @@ PROBE_CPU="<cpu>" .venv/bin/python -I \
 | E11 | `prompt_source_revision` 在插入、ASR 更新、刪除、floor 變化時的行為；審查的重複反例 | `relevance_revision` |
 | E12 | 空庫與兩條建庫路徑、第一條消息、回填、損壞重建、回填與重建的競爭 | `lifecycle` |
 | E13 | 插件單頁回傳與內部續頁 | `plugin` |
-| E14 | `relevance` 固定範圍重算：以實際 keyset SQL 按合併步讀取，分別記錄 SQL 列數（來源、核驗、掃描、邊界取位、距離計數）與任務書 §6.7 的計價（`charged`，M = 20、u = 23、b = 21）；首頁計價即 W。案例：20 條同一消息含兩詞、混合範圍、跨消息成組（`chunk` 2000 與 3）；時點：首頁、回填入隊後、索引完成後；計畫：按當前來源與按首頁前沿 F₁ 凍結 | `relevance_recompute_cost` |
+| E14 | `relevance` 範圍發現與凍結重算：實際 keyset SQL、預算檢查點、原文核驗及封頂距離查詢。發現範圍才取輸出邊界，W = 首頁 `charged`；固定範圍只按候選計價，不查邊界、不計 b。保留 4 個完整範圍案例；新增 chunk = 25、B = 1171 的反例，以及 48 個隨機資料集 × 3 預算 × 3 chunk，含跨範圍窗口、不同重讀批量、索引進度與排序鍵續頁 | `relevance_recompute_cost`；新增檢查在其 `budgeted_ranges` |
 
 ## 口徑
 
@@ -51,6 +73,9 @@ PROBE_CPU="<cpu>" .venv/bin/python -I \
 - 合成資料不代表真實群聊分佈，延遲只作方案間的相對比較。
 - E2 的「500 列重建索引寫交易」在已有 20 萬列的索引上測得。
 - E4 的持鎖測量使用只有兩欄的窄表，是真實遷移的下限。
-- E7、E13 是 Python 內的機制模擬，不經 SQLite，只驗證推進與計價規則；E7 的計價模型見腳本 `sim_engine` 的說明，與任務書 §6.7 相同。E8、E12、E14 使用與任務書 §7 同構的最小表，不是 Yuki 的真實表。E14 的首頁是一頁讀完的完整範圍（預算不構成限制）；`total_rows` 等欄位是 SQL 列數，`charged` 與 `W` 是計價，兩者不可互換。
+- E7、E13 是 Python 內的機制模擬，不經 SQLite，只驗證推進與計價規則；E7 的計價模型見腳本 `sim_engine`，規則未改。E8、E12、E14 使用與任務書 §7 同構的最小表，不是 Yuki 的真實表。
+- E14 的 `range_page(budget=...)` 發現排名範圍，按 §6.7 確定候選範圍、輸出下界與 W；不帶 budget 時只重算已知範圍。後者可能多一個空探測批次，但沒有邊界 SQL，計價與批數無關。`charged`、`W` 是計價；`total_rows` 是來源＋掃描＋核驗列數；`search_rows` 再加上實際邊界與距離列數，兩種口徑分開。狀態列等固定控制讀取不屬於候選搜尋計價。
+- E14 不以全會話掃描求 pos()：先枚舉最小覆蓋窗口，再以最多 M＋1 列的 SQL 求真實消息距離。隨機實驗的原文 oracle 來自既有合成資料，在搜尋以外建立；所有時間跨度設為 0，本輪不驗證時間排序、取消、權限或實際 runtime 游標裝配。
+- `budgeted_ranges.stats` 記錄 433 組設定、3,556 個排名範圍、4,245 次重算與 2,607 組輸出；每次檢查計價上界、實際搜尋列數、分來源候選不增、重算無邊界查詢、排序鍵接續、窗口上界、游標進展及與原文 oracle 不重不漏。任一不符會觸發斷言，阻止寫入成功結果。
 - E10 的安全起點邊界性質對 Unicode 15.0.0 全部已指派碼位中判定為安全起點者，各接在 16 種前文之後檢查。
 - 第二版的分頁模擬（舊 `paging` 鍵，「最密集需求定下界」）已由 E7 取代並自腳本刪除。

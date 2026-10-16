@@ -1784,111 +1784,192 @@ def probe_relevance_revision() -> dict:
     return log
 
 
-def range_page(db, terms, conv, lo, hi, frozen_frontier=None, max_messages=20, chunk=2000):
-    """Read a ranking range [lo, hi) with real keyset SQL, charge it by section 6.7.
+def range_page(
+    db,
+    terms,
+    conv,
+    lo,
+    hi,
+    frozen_frontier=None,
+    max_messages=20,
+    chunk=2000,
+    *,
+    budget=None,
+    scan_upper=None,
+    output_lower=None,
+):
+    """Discover a ranking range (budget supplied), or replay a fixed range.
 
-    Sources: one per term (index matches and queued events at or above the frontier)
-    and one shared scan below the frontier.  Each merge step reads ``chunk`` rows per
-    active source; a source returning fewer is exhausted.  Charging: u = 2 + d per
-    candidate (d = M + 1 with two or more terms), b = M + 1 per merge step.  Actual
-    rows (source, verification, scan, boundary, distance) are counted separately.
-    With ``frozen_frontier`` the first page's frontier F1 decides the sources.
+    Discovery uses section 6.7's mandatory first merge, checkpoints and (E, S)
+    window. Replay reads [lo, hi) to completion using the frozen source plan; its
+    output lower bound is already known, so it performs no boundary queries.
+    Candidate charging is identical in both modes. Empty exhaustion probes return
+    no candidates and do not add boundary work to a replay.
     """
 
     multi = len(terms) > 1
     unit = 2 + (max_messages + 1 if multi else 0)
     boundary = max_messages + 1 if multi else 0
     db.execute("begin")
-    frontier = frozen_frontier or db.execute("select frontier from state").fetchone()[0]
+    frontier = (
+        db.execute("select frontier from state").fetchone()[0]
+        if frozen_frontier is None
+        else frozen_frontier
+    )
     index_lo = max(lo, frontier)
     scan_hi = min(hi, frontier)
     statements = {}
-    for term in terms:
+    for name, term in enumerate(terms):
         target = fold_whole(term)
-        grams = sorted({hex_token("t", target[i : i + 3]) for i in range(len(target) - 2)})
+        size = min(3, len(target))
+        tag = {1: "u", 2: "b", 3: "t"}[size]
+        grams = sorted(
+            {hex_token(tag, target[i : i + size]) for i in range(len(target) - size + 1)}
+        )
         expr = " AND ".join(f'"{g}"' for g in grams)
-        statements[term] = (
+        statements[name] = (
             "select id from (select rowid as id from idx where idx match :c"
             " union select rowid from idx where idx match :a"
             " union select event_id from queue where event_id >= :f)"
-            " where id in (select id from ev where conv = :conv)"
+            " where id in (select id from ev where conv = :conv and kind = 'message')"
             " and id >= :lo and id < :pos order by id desc limit :p",
             {"c": f"{{c_grams}}: ({expr})", "a": f"{{a_grams}}: ({expr})", "f": frontier},
         )
-    position = {name: hi for name in [*terms, "scan"]}
-    active = [*terms, "scan"] if scan_hi > lo else list(terms)
+    sources = list(statements)
+    if scan_hi > lo:
+        sources.append("scan")
+    scan_upper = hi if scan_upper is None else scan_upper
+    position = dict.fromkeys(sources, scan_upper)
+    active = list(sources)
     rows = Counter()
+    candidate_reads = Counter()
     charged = steps = 0
     texts: dict[int, tuple] = {}
+
+    def read_source(name, lower, upper, count):
+        if name == "scan":
+            got = db.execute(
+                "select id, content, asr from ev where conv = ? and kind = 'message'"
+                " and id >= ? and id < ? and id < ? order by id desc limit ?",
+                (conv, max(lo, lower), scan_hi, upper, count),
+            ).fetchall()
+            for event_id, content, asr in got:
+                texts[event_id] = (content, asr)
+            rows["scan"] += len(got)
+            ids = [r[0] for r in got]
+        else:
+            sql, params = statements[name]
+            ids = [
+                r[0]
+                for r in db.execute(
+                    sql,
+                    {
+                        **params,
+                        "conv": conv,
+                        "lo": max(index_lo, lower),
+                        "pos": upper,
+                        "p": count,
+                    },
+                )
+            ]
+            rows["source"] += len(ids)
+            for event_id in ids:
+                if event_id not in texts:
+                    texts[event_id] = db.execute(
+                        "select content, asr from ev where id = ?", (event_id,)
+                    ).fetchone()
+                    rows["verify"] += 1
+        candidate_reads[str(name)] += len(ids)
+        return ids
+
+    if scan_upper < hi:
+        for name in sources:
+            charged += unit * len(read_source(name, scan_upper, hi, -1))
+    window_candidates = rows["source"] + rows["scan"]
+    read_frontier = lo
+    state = "exhausted"
     while active:
+        page = chunk
+        if budget is not None:
+            fit = (budget - charged - boundary) // (len(active) * unit)
+            page = max(1, min(chunk, fit)) if steps == 0 else min(chunk, fit)
         steps += 1
         for name in list(active):
-            if name == "scan":
-                got = db.execute(
-                    "select id, content, asr from ev where conv = ? and kind = 'message'"
-                    " and id >= ? and id < ? and id < ? order by id desc limit ?",
-                    (conv, lo, scan_hi, position[name], chunk),
-                ).fetchall()
-                for event_id, content, asr in got:
-                    texts[event_id] = (content, asr)
-                rows["scan"] += len(got)
-                ids = [r[0] for r in got]
-            else:
-                sql, params = statements[name]
-                ids = [
-                    r[0]
-                    for r in db.execute(
-                        sql,
-                        {**params, "conv": conv, "lo": index_lo, "pos": position[name], "p": chunk},
-                    )
-                ]
-                rows["source"] += len(ids)
-                for event_id in ids:
-                    if event_id not in texts:
-                        texts[event_id] = db.execute(
-                            "select content, asr from ev where id = ?", (event_id,)
-                        ).fetchone()
-                        rows["verify"] += 1
+            ids = read_source(name, lo, position[name], page)
             charged += unit * len(ids)
             if ids:
                 position[name] = ids[-1]
-            if len(ids) < chunk:
+            if len(ids) < page:
                 active.remove(name)
-        frontier_now = max((position[n] for n in active), default=lo)
-        charged += boundary
-        if boundary:
-            rows["boundary"] += len(
+        read_frontier = max((position[n] for n in active), default=lo)
+        if budget is not None:
+            charged += boundary
+            following = (
                 db.execute(
                     "select id from ev where conv = ? and kind = 'message' and id >= ?"
-                    " order by id limit ?",
-                    (conv, frontier_now, boundary),
+                    " and id < ? order by id limit ?",
+                    (conv, read_frontier, hi, boundary),
                 ).fetchall()
+                if boundary and active
+                else []
             )
-    all_ids = [
-        r[0]
-        for r in db.execute(
-            "select id from ev where conv = ? and kind = 'message' order by id", (conv,)
-        )
-    ]
-    pos = {event_id: index for index, event_id in enumerate(all_ids)}
+            rows["boundary"] += len(following)
+            if not active:
+                output_lower = lo
+            elif not multi:
+                output_lower = read_frontier
+            elif len(following) == boundary:
+                output_lower = following[-1][0]
+            else:
+                output_lower = hi
+            if active and budget - charged < len(active) * unit + boundary:
+                state = "incomplete"
+                break
+    output_lower = lo if output_lower is None else output_lower
     hits = {}
     for event_id, row in texts.items():
+        if event_id < read_frontier:
+            continue
         covers = frozenset(
             t for t in terms if row and any(fold_whole(t) in fold_whole(f or "") for f in row)
         )
         if covers:
             hits[event_id] = covers
-    evaluated: list = []
-    groups = sim_groups(
-        hits, pos, dict.fromkeys(pos, 0), tuple(terms), max_messages, 10**9, evaluated
+    # Enumerate covering windows in hit order, then measure their real message
+    # distance by bounded SQL. No full-conversation id scan is needed for pos().
+    covers = sim_groups(
+        hits,
+        {event_id: index for index, event_id in enumerate(sorted(hits))},
+        dict.fromkeys(hits, 0),
+        tuple(terms),
+        len(hits),
+        10**9,
     )
-    for left, right in dict.fromkeys(evaluated):
+    groups = []
+    ranking_keys = {}
+    for left, right in covers:
+        distance = 0
         if left != right:
-            rows["distance"] += db.execute(
-                "select count(*) from (select 1 from ev where conv = ? and kind = 'message'"
-                " and id > ? and id <= ? limit ?)",
-                (conv, left, right, max_messages + 1),
-            ).fetchone()[0]
+            distance = len(
+                db.execute(
+                    "select id from ev where conv = ? and kind = 'message'"
+                    " and id > ? and id <= ? order by id limit ?",
+                    (conv, left, right, max_messages + 1),
+                ).fetchall()
+            )
+            rows["distance"] += distance
+        if distance <= max_messages and right >= output_lower:
+            groups.append((left, right))
+            required = {left, right}
+            for term in set(terms) - hits[left] - hits[right]:
+                required.add(min(i for i in hits if left < i < right and term in hits[i]))
+            length = sum(
+                len(fold_whole(field or ""))
+                for event_id in required
+                for field in texts[event_id]
+                if any(fold_whole(t) in fold_whole(field or "") for t in terms)
+            )
+            ranking_keys[left, right] = (distance, 0, length, -right, -left)
     db.execute("rollback")
     candidates = rows["source"] + rows["scan"]
     return {
@@ -1899,14 +1980,25 @@ def range_page(db, terms, conv, lo, hi, frozen_frontier=None, max_messages=20, c
         "total_rows": rows["source"] + rows["verify"] + rows["scan"],
         "boundary_rows": rows["boundary"],
         "distance_rows": rows["distance"],
+        "search_rows": sum(rows.values()),
+        "actual_rows_le_charged": sum(rows.values()) <= charged,
         "distance_rows_within_reservation": rows["distance"]
         <= (max_messages + 1 if multi else 0) * candidates,
         "merge_steps": steps,
+        "boundary_steps": steps if budget is not None else 0,
         "candidates": candidates,
+        "candidate_reads": dict(candidate_reads),
+        "window_candidates": window_candidates,
         "unit_u": unit,
         "boundary_b": boundary,
         "charged": charged,
+        "result_state": state,
+        "range_from": read_frontier,
+        "range_to": hi,
+        "output_lower": output_lower,
         "groups": groups,
+        "ranked_groups": sorted(groups, key=ranking_keys.__getitem__),
+        "ranked_keys": sorted(ranking_keys.values()),
     }
 
 
@@ -1914,16 +2006,24 @@ def _recompute_states(make_db, terms, lo, hi, chunk) -> dict:
     """First page, then backfill enqueue, then indexing; current vs frozen sources."""
 
     db = make_db()
-    first = range_page(db, terms, 1, lo, hi, chunk=chunk)
+    first = range_page(db, terms, 1, lo, hi, chunk=chunk, budget=20000)
+    assert first["result_state"] == "exhausted" and first["actual_rows_le_charged"], first
     w, frozen = first["charged"], first["frontier_used"]
-    out = {"first_page": first, "W": w}
+
+    def measured(result):
+        return {k: v for k, v in result.items() if k not in {"ranked_groups", "ranked_keys"}}
+
+    out = {"first_page": measured(first), "W": w}
 
     def record(label):
         current = range_page(db, terms, 1, lo, hi, chunk=chunk)
         replay = range_page(db, terms, 1, lo, hi, frozen, chunk=chunk)
+        assert replay["charged"] <= w and replay["actual_rows_le_charged"], replay
+        assert replay["groups"] == first["groups"] and current["groups"] == first["groups"]
+        assert replay["boundary_rows"] == replay["boundary_steps"] == 0, replay
         out[label] = {
-            "current_sources": current,
-            "frozen_frontier": replay,
+            "current_sources": measured(current),
+            "frozen_frontier": measured(replay),
             "frozen_charged_le_W": replay["charged"] <= w,
             "current_charged_le_W": current["charged"] <= w,
             "frozen_groups_equal_first_page": replay["groups"] == first["groups"],
@@ -1979,7 +2079,199 @@ def probe_relevance_recompute_cost() -> dict:
 
     for chunk in (2000, 3):
         out[f"cross_message_chunk_{chunk}"] = _recompute_states(cross_db, terms, 1, 61, chunk=chunk)
+    out["budgeted_ranges"] = probe_relevance_budget_paging()
     return out
+
+
+def probe_relevance_budget_paging(seed=448, trials=48) -> dict:
+    """Budget-stopped range discovery, frozen replays and cross-range continuation.
+
+    The raw-ledger oracle is prepared from fixtures outside the measured reads.
+    Actual pages use keyset sources and bounded distance SQL in range_page().
+    """
+
+    rng = random.Random(seed)
+    stats = Counter()
+
+    def check_pages(db, fixture, terms, lo, hi, budget, chunk, limit, max_messages, progress):
+        ledger = [
+            row for row in fixture if row[1] == 1 and row[2] == "message" and lo <= row[0] < hi
+        ]
+        pos = {row[0]: i for i, row in enumerate(ledger)}
+        oracle_hits = {
+            row[0]: frozenset(
+                t for t in terms if any(fold_whole(t) in fold_whole(f or "") for f in row[3:])
+            )
+            for row in ledger
+        }
+        expected = sim_groups(
+            {i: covers for i, covers in oracle_hits.items() if covers},
+            pos,
+            dict.fromkeys(pos, 0),
+            terms,
+            max_messages,
+            10**9,
+        )
+        emitted = []
+        emit_upper = scan_upper = hi
+        stats["runs"] += 1
+        while True:
+            first = range_page(
+                db,
+                terms,
+                1,
+                lo,
+                emit_upper,
+                max_messages=max_messages,
+                chunk=chunk,
+                budget=budget,
+                scan_upper=scan_upper,
+            )
+            stats["ranking_ranges"] += 1
+            stats["scanned_ranges"] += first["result_state"] == "incomplete"
+            stats["window_ranges"] += first["window_candidates"] > 0
+            n = len(first["candidate_reads"])
+            margin = max_messages if len(terms) > 1 else 0
+            bound = max(
+                budget,
+                first["unit_u"] * n * margin + n * first["unit_u"] + first["boundary_b"],
+            )
+            assert first["charged"] <= bound, first
+            assert first["actual_rows_le_charged"], first
+            assert first["distance_rows_within_reservation"], first
+            assert first["window_candidates"] <= n * margin, first
+            ranked = first["ranked_groups"]
+            page = ranked[:limit]
+            emitted.extend(page)
+            last_key = first["ranked_keys"][len(page) - 1] if page else None
+            # One replay also checks empty and already-drained ranges. With results
+            # remaining, continue with the last ranking key until all are emitted.
+            while True:
+                if progress:
+                    backfill_round(db, 7)
+                    indexer_round(db, 3)
+                replay = range_page(
+                    db,
+                    terms,
+                    1,
+                    first["range_from"],
+                    emit_upper,
+                    first["frontier_used"],
+                    max_messages,
+                    chunk=chunk + 1,
+                    output_lower=first["output_lower"],
+                )
+                stats["replays"] += 1
+                assert replay["charged"] <= first["charged"], (first, replay)
+                assert replay["actual_rows_le_charged"], replay
+                assert replay["distance_rows_within_reservation"], replay
+                assert replay["boundary_rows"] == replay["boundary_steps"] == 0, replay
+                assert replay["ranked_groups"] == ranked, (first, replay)
+                assert replay["ranked_keys"] == first["ranked_keys"], (first, replay)
+                assert all(
+                    count <= first["candidate_reads"].get(name, 0)
+                    for name, count in replay["candidate_reads"].items()
+                ), (first, replay)
+                remaining = [
+                    (key, group)
+                    for key, group in zip(
+                        replay["ranked_keys"], replay["ranked_groups"], strict=True
+                    )
+                    if last_key is None or key > last_key
+                ]
+                page = remaining[:limit]
+                if not page:
+                    break
+                emitted.extend(group for _, group in page)
+                last_key = page[-1][0]
+            if first["result_state"] == "exhausted":
+                break
+            next_cursor = (first["output_lower"], first["range_from"])
+            assert next_cursor < (emit_upper, scan_upper), (first, emit_upper, scan_upper)
+            emit_upper, scan_upper = next_cursor
+        assert len(emitted) == len(set(emitted)), emitted
+        assert set(emitted) == set(expected), (emitted, expected)
+        stats["groups_emitted"] += len(emitted)
+        db.close()
+
+    fixture = [(i, 1, "message", "alpha bravo", None) for i in range(1, 61)]
+    db = toy_db(rows=fixture)
+    backfill_round(db, 1000)
+    indexer_round(db, 1000)
+    first = range_page(db, ("alpha", "bravo"), 1, 1, 61, chunk=25, budget=1171)
+    replay = range_page(
+        db,
+        ("alpha", "bravo"),
+        1,
+        first["range_from"],
+        61,
+        first["frontier_used"],
+        chunk=25,
+        output_lower=first["output_lower"],
+    )
+    assert first["charged"] == 1171 and first["range_from"] == 36, first
+    assert len(first["groups"]) == 5 and replay["groups"] == first["groups"], (first, replay)
+    assert replay["charged"] == 1150 and replay["merge_steps"] == 2, replay
+    counterexample = {
+        "budget": 1171,
+        "chunk": 25,
+        "first_page": {k: v for k, v in first.items() if k != "ranked_keys"},
+        "replay": {k: v for k, v in replay.items() if k != "ranked_keys"},
+        "previous_replay_formula": replay["charged"] + replay["boundary_b"] * replay["merge_steps"],
+    }
+    check_pages(db, fixture, ("alpha", "bravo"), 1, 61, 1171, 25, 1, 20, False)
+
+    # Exact chunk multiples, empty hits, sparse ids, short terms, multiple fields,
+    # scope boundaries and all three candidate states. Progress changes only the
+    # index; the ledger and its revision stay unchanged between discovery/replay.
+    for trial in range(trials):
+        terms = rng.choice([("甲",), ("alpha", "bravo"), ("alpha", "bravo", "charlie")])
+        max_messages = rng.choice([1, 3, 20])
+        fixture = []
+        event_id = 0
+        for i in range(rng.choice([5, 25, 60])):
+            event_id += rng.choice([1, 1, 3])
+            words = [t for t in terms if rng.random() < 0.35]
+            content = " ".join(words) or "闲聊"
+            asr = None
+            if i % 3 == 0:
+                content, asr = "語音", content
+            fixture.append((event_id, 2 if i % 13 == 0 else 1, "message", content, asr))
+        mode = trial % 4
+        for budget, chunk in itertools.product((1, 67, 1171), (1, 3, 25)):
+            if mode == 0:
+                db = toy_db(rows=fixture)
+            elif mode == 1:
+                db = toy_db(rows=fixture, init_before_rows=True)
+            elif mode == 2:
+                db = toy_db(rows=fixture)
+                backfill_round(db, 1000)
+                indexer_round(db, 1000)
+            else:
+                split = len(fixture) // 2
+                db = toy_db(rows=fixture[:split])
+                db.executemany("insert into ev values(?,?,?,?,?)", fixture[split:])
+            lo = fixture[1][0]
+            hi = fixture[-1][0]  # intentionally excludes the last event
+            check_pages(
+                db,
+                fixture,
+                terms,
+                lo,
+                hi,
+                budget,
+                chunk,
+                rng.choice([1, 2, 5]),
+                max_messages,
+                progress=mode != 2,
+            )
+    return {
+        "seed": seed,
+        "datasets": trials + 1,
+        "counterexample": counterexample,
+        "stats": dict(stats),
+        "invariant_failures": 0,
+    }
 
 
 def probe_plugin(seed: int) -> dict:
