@@ -266,7 +266,10 @@ async def test_legacy_ordinary_memory_basis_uses_current_exact_authorized_source
         await host._hydrate(restored)
         await host._validate_boundaries(restored)
         assert (await host._sources_current(restored, (ref,)))[ref]
-        assert restored.controller._binding_valid(unit)
+        assert any(
+            current.binding == unit
+            for current in restored.controller.participating_units(time.time())
+        )
         assert ref.event_id not in restored.controller.state.events
         assert (await host.ordinary.current(a.id)).binding == binding
 
@@ -284,7 +287,10 @@ async def test_legacy_ordinary_memory_basis_uses_current_exact_authorized_source
             assert memory_revision(await facts.get_fact(fact_id)) == digest
         await host._validate_boundaries(restored)
         assert restored.controller.state.invalidated[ref.event_id] >= ref.revision
-        assert not restored.controller._binding_valid(unit)
+        assert all(
+            current.binding != unit
+            for current in restored.controller.participating_units(time.time())
+        )
         # The old admission is a real receipt, even when its derived unit exits.
         assert (await host.ordinary.get(a.id)).activation_id == prepared.admission.activation_id
     finally:
