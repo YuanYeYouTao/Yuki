@@ -32,8 +32,11 @@ async def test_person_notification_uses_real_target_and_only_explicit_send(
                         ToolFunction("task_control", '{"action":"accept","goal":"原始完整任务"}'),
                     )
                 )
+            arguments = {"text": text}
+            if delivery == "self_private":
+                arguments["target"] = {"kind": "person", "subject_ref": "current_speaker"}
             calls.append(
-                ToolCall("explicit-send", ToolFunction("send_message", json.dumps({"text": text})))
+                ToolCall("explicit-send", ToolFunction("send_message", json.dumps(arguments)))
             )
             return ChatResponse("", 0, tool_calls=tuple(calls))
         if accept_work:
@@ -129,13 +132,12 @@ async def test_scheduled_main_contacts_receipt_history_and_recall_share_real_soc
             assert responses[-1]["data"]["target_id"] == case.env.person
             name, arguments = "send_message", {"text": "SCHEDULED_SHARED_SOCIAL"}
         elif index == 2:
-            name, arguments = "read_conversation_history", {
-                "operation_id": responses[-1]["data"]["operation_id"]
-            }
+            name, arguments = (
+                "read_conversation_history",
+                {"operation_id": responses[-1]["data"]["operation_id"]},
+            )
         elif index == 3:
-            name, arguments = "recall_own_message", {
-                "event_id": responses[1]["data"]["event_id"]
-            }
+            name, arguments = "recall_own_message", {"event_id": responses[1]["data"]["event_id"]}
         else:
             return "NO_REPLY"
         return ChatResponse(
@@ -150,10 +152,14 @@ async def test_scheduled_main_contacts_receipt_history_and_recall_share_real_soc
     assert result.status is RunStatus.SUCCEEDED and result.llm_calls == 5
     assert len(responses) == 4 and all(response["ok"] for response in responses)
     assert len(sent(case.env)) == 1
-    assert sum(action == "get_group_msg_history" for action, _ in case.env.bot.calls) == 1
+    assert sum(action == "get_group_msg_history" for action, _ in case.env.bot.calls) == 0
+    assert responses[2]["data"]["source"] == "canonical_ledger"
     assert sum(action == "delete_msg" for action, _ in case.env.bot.calls) == 1
     assert {name for name, _ in contexts} >= {
-        "find_contacts", "send_message", "read_conversation_history", "recall_own_message"
+        "find_contacts",
+        "send_message",
+        "read_conversation_history",
+        "recall_own_message",
     }
     assert all(
         context.actor.principal_kind == principal
@@ -185,7 +191,18 @@ async def test_long_private_reminder_keeps_actual_history_parts_and_original_rec
             "",
             0,
             tool_calls=(
-                ToolCall("long-send", ToolFunction("send_message", json.dumps({"text": text}))),
+                ToolCall(
+                    "long-send",
+                    ToolFunction(
+                        "send_message",
+                        json.dumps(
+                            {
+                                "text": text,
+                                "target": {"kind": "person", "subject_ref": "current_speaker"},
+                            }
+                        ),
+                    ),
+                ),
             ),
         )
         if len(case.provider.requests) == 1
@@ -194,7 +211,7 @@ async def test_long_private_reminder_keeps_actual_history_parts_and_original_rec
     case.clock.advance(2)
     result = await case.dispatch()
     assert result.status is RunStatus.SUCCEEDED
-    assert "ORIGINAL_PRIVATE_MATERIAL" in "\n".join(
+    assert "ORIGINAL_PRIVATE_MATERIAL" not in "\n".join(
         m.content or "" for m in case.provider.requests[0].messages
     )
     assert result.messages_sent == len(sent(case.env)) > 1

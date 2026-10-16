@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-from typing import Any
+from typing import Any, cast
 
 from nonebot.adapters.onebot.v11 import Bot, Message, MessageEvent, MessageSegment
 
+from qq_ai_bot.adapters.onebot.media import OneBotMediaHandle, resolve_media_file
 from qq_ai_bot.domain.messages import AttachmentKind, OutboundMessage, OutboundSendReceipt
+from qq_ai_bot.gateway.media import MediaKind, PlatformMediaFile
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,16 @@ class OneBotRouteSender:
         if not callable(call_api):
             raise ValueError("work_gateway_unavailable")
         return await call_api(action, **params)
+
+    async def resolve_media_file(
+        self, file: str, kind: MediaKind, *, max_download_bytes: int
+    ) -> PlatformMediaFile:
+        return await resolve_media_file(
+            cast(OneBotMediaHandle, self._route_bot),
+            file,
+            kind,
+            max_download_bytes=max_download_bytes,
+        )
 
     async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
         call_api = getattr(self._route_bot, "call_api", None)
@@ -75,6 +87,13 @@ class OneBotSender:
     @property
     def bot(self) -> Bot:
         return self._bot
+
+    async def resolve_media_file(
+        self, file: str, kind: MediaKind, *, max_download_bytes: int
+    ) -> PlatformMediaFile:
+        return await resolve_media_file(
+            self._bot, file, kind, max_download_bytes=max_download_bytes
+        )
 
     async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
         """Send through the original ingress connection."""

@@ -21,9 +21,9 @@ from qq_ai_bot.plugin_host.db_models import (
 from qq_ai_bot.plugin_host.ownership import (
     actor_matches_session,
     inherit_message_sender_person,
-    project_person_external_id,
-    project_space_external_id,
     require_live_actor,
+    require_live_person,
+    require_live_space,
     require_session_readable,
     resolve_session_owners,
 )
@@ -182,7 +182,7 @@ class PluginAgentSessionRepository:
         *,
         plugin_id: str,
         session_id: str,
-        actor_user_id: str,
+        actor_user_id: str | None,
         current_group_id: str | None,
         include_expired: bool = False,
         now: datetime | None = None,
@@ -240,8 +240,6 @@ class PluginAgentSessionRepository:
 
         if role not in _SESSION_ROLES:
             raise ValueError("role must be user, assistant, or tool")
-        if role == "user" and not sender_user_id:
-            raise ValueError("user messages require sender_user_id")
         if role != "user" and sender_user_id is not None:
             raise ValueError("only user messages may carry sender_user_id")
         timestamp = _aware_utc(now or datetime.now(UTC))
@@ -451,12 +449,12 @@ async def _session_record(
     owner_user_id: str | None = None
     scope_id = ""
     if row.scope_type == "user":
-        owner_user_id = await project_person_external_id(session, row.canonical_owner_person_id)
+        owner_user_id = await require_live_person(session, row.canonical_owner_person_id)
         scope_id = owner_user_id
     elif row.scope_type == "group":
         if row.canonical_owner_person_id:
-            owner_user_id = await project_person_external_id(session, row.canonical_owner_person_id)
-        scope_id = await project_space_external_id(session, row.canonical_space_id)
+            owner_user_id = await require_live_person(session, row.canonical_owner_person_id)
+        scope_id = await require_live_space(session, row.canonical_space_id)
     return PluginAgentSessionRecord(
         session_id=row.session_id,
         plugin_id=row.plugin_id,

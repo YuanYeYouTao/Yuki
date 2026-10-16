@@ -27,17 +27,14 @@ from qq_ai_bot.emoji.models import (
     EmojiScopeState,
     StoredEmojiMedia,
 )
-from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM
-from qq_ai_bot.identity.db_models import SpaceBindingModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.person_identity import person_family_condition
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.services.canonical_owners import (
     resolve_live_person_id,
     resolve_live_space_id,
     stamp_canonical_owners,
-    try_live_person_id,
-    try_live_space_id,
 )
 
 EmojiJobType = Literal["analyze", "reanalyze", "rebuild_preview"]
@@ -139,6 +136,8 @@ class EmojiRepository:
         source_event_id: int | None,
         user_id: str,
         group_id: str | None,
+        person_id: str | None = None,
+        space_id: str | None = None,
         source_sub_type: str = "",
         source_emoji_id: str = "",
         source_package_id: str = "",
@@ -173,23 +172,8 @@ class EmojiRepository:
             "updated_at": timestamp,
         }
         async with self._database.immediate_session() as session:
-            existing = await session.scalar(
-                select(EmojiAssetModel).where(EmojiAssetModel.sha256 == media.sha256)
-            )
-            person_id = (
-                await try_live_person_id(
-                    session, existing.first_seen_user_id if existing else user_id
-                )
-                if existing is None or existing.canonical_first_seen_person_id is None
-                else None
-            )
-            space_id = (
-                await try_live_space_id(
-                    session, existing.first_seen_group_id if existing else group_id
-                )
-                if existing is None or existing.canonical_first_seen_space_id is None
-                else None
-            )
+            person_id = await resolve_live_person_id(session, person_id) if person_id else None
+            space_id = await resolve_live_space_id(session, space_id) if space_id else None
             values["canonical_first_seen_person_id"] = person_id
             values["canonical_first_seen_space_id"] = space_id
             statement = (
@@ -205,12 +189,6 @@ class EmojiRepository:
                         "preview_relative_path": media.preview_relative_path,
                         "perceptual_hash": media.perceptual_hash,
                         "missing_since": None,
-                        "canonical_first_seen_person_id": func.coalesce(
-                            EmojiAssetModel.canonical_first_seen_person_id, person_id
-                        ),
-                        "canonical_first_seen_space_id": func.coalesce(
-                            EmojiAssetModel.canonical_first_seen_space_id, space_id
-                        ),
                         "status": func.iif(
                             EmojiAssetModel.status == EmojiLifecycleStatus.MISSING.value,
                             EmojiLifecycleStatus.CANDIDATE.value,
@@ -507,8 +485,8 @@ class EmojiRepository:
     async def selectable(
         self,
         *,
-        private_peer_user_id: str | None,
-        group_id: str | None,
+        person_id: str | None,
+        space_id: str | None,
         cooldown_after: datetime,
         scope_cooldown_after: datetime | None,
         limit: int,
@@ -517,14 +495,12 @@ class EmojiRepository:
             raise ValueError("limit must be positive")
         enabled_scope = aliased(EmojiScopeStateModel, name="enabled_scope")
         async with self._database.sessions() as session:
-            person_id = None
-            space_id = None
-            if group_id is not None:
-                space_id = await resolve_live_space_id(session, group_id)
+            if space_id is not None:
+                space_id = await resolve_live_space_id(session, space_id)
             else:
-                if not private_peer_user_id:
+                if not person_id:
                     raise ValueError("private emoji selection requires a real target")
-                person_id = await resolve_live_person_id(session, private_peer_user_id)
+                person_id = await resolve_live_person_id(session, person_id)
             scope_filter: ColumnElement[bool] = (enabled_scope.scope_type == "global") & (
                 enabled_scope.canonical_space_id.is_(None)
             )
@@ -548,7 +524,9 @@ class EmojiRepository:
                 else:
                     recent_scope = recent_scope.where(
                         EmojiUsageEventModel.canonical_space_id.is_(None),
-                        EmojiUsageEventModel.canonical_actor_person_id == person_id,
+                        person_family_condition(
+                            EmojiUsageEventModel.canonical_actor_person_id, person_id
+                        ),
                     )
             statement = (
                 select(EmojiAssetModel, func.max(enabled_scope.weight))
@@ -850,17 +828,17 @@ class EmojiRepository:
         self,
         emoji_id: str,
         *,
-        actor_user_id: str | None,
-        group_id: str | None,
+        actor_person_id: str | None,
+        space_id: str | None,
         trigger_message_id: str,
         source: str,
     ) -> None:
         now = datetime.now(UTC)
         async with self._database.sessions() as session:
             person_id = (
-                await resolve_live_person_id(session, actor_user_id) if actor_user_id else None
+                await resolve_live_person_id(session, actor_person_id) if actor_person_id else None
             )
-            space_id = await resolve_live_space_id(session, group_id) if group_id else None
+            space_id = await resolve_live_space_id(session, space_id) if space_id else None
         async with self._database.immediate_session() as session:
             await session.execute(
                 update(EmojiAssetModel)
@@ -873,8 +851,6 @@ class EmojiRepository:
             )
             usage = EmojiUsageEventModel(
                 emoji_id=emoji_id,
-                actor_user_id=actor_user_id,
-                group_id=group_id,
                 trigger_message_id=trigger_message_id,
                 source=source[:32],
                 created_at=now,
@@ -983,19 +959,7 @@ class EmojiRepository:
         if row.scope_type == "group":
             if row.canonical_space_id is None:
                 raise CanonicalIdentityError("missing_canonical_owner")
-            external = await session.scalar(
-                select(SpaceBindingModel.external_space_id)
-                .where(
-                    SpaceBindingModel.space_id == row.canonical_space_id,
-                    SpaceBindingModel.platform == IDENTITY_PLATFORM,
-                    SpaceBindingModel.status == "active",
-                )
-                .order_by(SpaceBindingModel.created_at, SpaceBindingModel.id)
-                .limit(1)
-            )
-            if external is None:
-                raise CanonicalIdentityError("missing_canonical_owner")
-            scope_id = str(external)
+            scope_id = row.canonical_space_id
         elif row.canonical_space_id is not None:
             raise CanonicalIdentityError("canonical_owner_mismatch")
         return EmojiScopeState(

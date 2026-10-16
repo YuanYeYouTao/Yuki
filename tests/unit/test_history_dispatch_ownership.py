@@ -1,6 +1,7 @@
 """Only an admitted fresh composition may publish its ordinary input snapshot."""
 
 import json
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
@@ -139,12 +140,14 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     chat.runtime.main_turns = MainAgentTurnService(
         chat._prompt_composer, chat.runtime.runner, database
     )
-    resolve = env.router.resolve_presence
+    from qq_ai_bot.services import work_resume
+
+    activate = work_resume.activate_work
     observed = False
 
-    async def observe_before_work_binds(presence_id):
+    @asynccontextmanager
+    async def observe_before_work_binds(*args, **kwargs):
         nonlocal observed
-        resolved = await resolve(presence_id)
         if not observed:
             observed = True
             assert current_work_control.get() is None
@@ -158,9 +161,10 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
                 MemorySender(),
             )
             assert result.reason == "group_observed"
-        return resolved
+        async with activate(*args, **kwargs) as control:
+            yield control
 
-    monkeypatch.setattr(env.router, "resolve_presence", observe_before_work_binds)
+    monkeypatch.setattr(work_resume, "activate_work", observe_before_work_binds)
     wakeup = chat.generate_main_agent_wakeup
 
     async def wake_original(**kwargs):

@@ -7,7 +7,6 @@ from typing import Any
 
 from qq_ai_bot.memory.enums import (
     MemoryContextMode,
-    MemoryKind,
     MemoryRecallPurpose,
     MemoryTemporalConstraint,
     MemoryTemporalIntentMode,
@@ -29,15 +28,6 @@ def parse_memory_tool_intent(arguments: dict[str, Any]) -> MemoryQueryIntent:
         if mode is MemoryContextMode.NONE:
             raise ValueError("none is not a tool read mode")
     purpose = MemoryRecallPurpose(arguments.get("purpose", "recall"))
-    entities = arguments.get("entities", [])
-    if not isinstance(entities, list) or any(
-        not isinstance(item, str) or not item.strip() for item in entities
-    ):
-        raise ValueError("invalid memory entities")
-    kinds = arguments.get("preferred_kinds", [])
-    if not isinstance(kinds, list):
-        raise ValueError("invalid memory kinds")
-    preferred_kinds = tuple(MemoryKind(item) for item in kinds)
     constraint = MemoryTemporalConstraint(arguments.get("temporal_constraint", "strict"))
     boundaries: list[datetime | None] = []
     for name in ("start_at", "end_at"):
@@ -66,8 +56,6 @@ def parse_memory_tool_intent(arguments: dict[str, Any]) -> MemoryQueryIntent:
     return MemoryQueryIntent(
         mode=mode,
         purpose=purpose,
-        entities=tuple(entities),
-        preferred_kinds=preferred_kinds,
         temporal=temporal,
     )
 

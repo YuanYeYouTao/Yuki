@@ -177,7 +177,7 @@ async def test_compilable_schemas_execute_once_through_real_catalog_and_original
         conversation_key=tool_runtime.conversation_key,
         current_group_id=actor.group_id,
         bot_user_id=actor.bot_user_id,
-        gateway=tool_runtime.gateway,
+        gateway=None,
         runtime_config=config,
         allowed_capabilities=frozenset(),
         max_tool_calls=config.agent.max_tool_calls,

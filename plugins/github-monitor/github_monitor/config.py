@@ -33,6 +33,7 @@ DEFAULT_EVENT_TYPES = frozenset(
 class NotificationTargetConfig(StrictModel):
     target_type: Literal["group", "private"]
     target_id: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = None
     ask_agent: bool = True
     send_text: bool = True
     send_card: bool = True
@@ -59,7 +60,10 @@ class RepositorySubscription(StrictModel):
 
     @model_validator(mode="after")
     def unique_targets(self) -> Self:
-        keys = [(target.target_type, target.target_id) for target in self.targets]
+        keys = [
+            (target.target_type, target.target_id, target.conversation_id)
+            for target in self.targets
+        ]
         if len(keys) != len(set(keys)):
             raise ValueError("repository targets must be unique")
         return self

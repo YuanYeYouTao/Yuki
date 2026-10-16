@@ -262,6 +262,7 @@ async def database(tmp_path: Path) -> Database:
     db = Database(f"sqlite+aiosqlite:///{path}")
     await db.create_schema()
     from qq_ai_bot.identity.canonical_repository import (
+        create_presence,
         ensure_person,
         ensure_presence,
         ensure_space,
@@ -289,6 +290,11 @@ async def database(tmp_path: Path) -> Database:
             await ensure_person(session, user_id, display_name=f"test-{user_id}")
         for bot_user_id in ("7777", "8000", "8001", "9999", "99999"):
             await ensure_presence(session, bot_user_id)
+        from datetime import UTC, datetime
+
+        await create_presence(
+            session, external_account_id="yuki-app", platform="app", now=datetime.now(UTC)
+        )
         for group_id in (
             "2001",
             "2002",

@@ -72,6 +72,8 @@ class SelfReflectionInput(_Contract):
     scope_type: ScopeType
     group_id: str | None = Field(default=None)
     private_peer_user_id: str | None = Field(default=None)
+    person_id: str | None = None
+    space_id: str | None = None
     context_events: tuple[SelfReflectionContextEvent, ...] = ()
     events: tuple[SelfReflectionEvent, ...]
     tool_receipts: tuple[SelfReflectionToolReceipt, ...] = ()
@@ -82,9 +84,13 @@ class SelfReflectionInput(_Contract):
     @model_validator(mode="after")
     def _scope_identity(self) -> SelfReflectionInput:
         if self.scope_type is ScopeType.GROUP:
-            if self.group_id is None or self.private_peer_user_id is not None:
+            if (
+                self.space_id is None and self.group_id is None
+            ) or self.private_peer_user_id is not None:
                 raise ValueError("group reflection input requires only group_id")
-        elif self.private_peer_user_id is None or self.group_id is not None:
+        elif (
+            self.person_id is None and self.private_peer_user_id is None
+        ) or self.group_id is not None:
             raise ValueError("private reflection input requires only private_peer_user_id")
         return self
 

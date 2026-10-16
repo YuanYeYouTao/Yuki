@@ -118,7 +118,7 @@ async def environment(database, tmp_path, *, permissions=None, handler=None):
         event_type="message",
         scope_type=ScopeType.PRIVATE,
     )
-    runtime = ToolRuntime(inbound=inbound, gateway=None, allow_generic_onebot=False)
+    runtime = ToolRuntime(inbound=inbound)
     name = registry.list(kind=ExtensionKind.TOOL)[0].model_name
     return SimpleNamespace(
         store=store,

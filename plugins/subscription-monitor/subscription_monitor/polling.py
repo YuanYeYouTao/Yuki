@@ -197,12 +197,19 @@ class FeedPoller:
                 raw, state = await self._fetch(subscription, raw, state, now)
                 raw, state = await self._mark_observed(subscription_id, raw, state)
             # Drain a saved batch even while the server would return 304 or is offline.
-            allowed_targets = {(row.target_type, row.target_id) for row in subscription.targets}
+            allowed_targets = {
+                (row.target_type, row.target_id, row.conversation_id)
+                for row in subscription.targets
+            }
             for _ in range(config.max_notifications_per_poll):
                 if self.stop.is_set() or not state.pending:
                     break
                 request = state.pending[0]
-                if (request.target.target_type, request.target.target_id) in allowed_targets:
+                if (
+                    request.target.target_type,
+                    request.target.target_id,
+                    request.target.conversation_id,
+                ) in allowed_targets:
                     await self.context.notifications.publish(request)
                     accepted = state.accepted + 1
                 else:

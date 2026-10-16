@@ -5,9 +5,9 @@ from __future__ import annotations
 import time
 
 from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
+from qq_ai_bot.admin.authority.targets import SpaceControlTarget
 from qq_ai_bot.admin.models import ControlAuditRef
-from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.control_plane.targets import SpaceControlTarget
 from qq_ai_bot.domain.control import DecisionContext
 from qq_ai_bot.persistence.repositories import GroupSetting, GroupSettingsRepository
 from qq_ai_bot.services.admin.control_auth import require_capability
@@ -79,4 +79,6 @@ def _space_storage_id(context: object) -> str:
     target = getattr(context, "canonical_target", None)
     if type(target) is not SpaceControlTarget:
         raise TypeError("canonical_target must be SpaceControlTarget")
-    return target.storage_group_id
+    if target.space_id is None:
+        raise ValueError("missing_canonical_owner")
+    return target.space_id.text

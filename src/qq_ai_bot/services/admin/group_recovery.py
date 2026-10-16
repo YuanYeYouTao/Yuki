@@ -334,6 +334,7 @@ class GroupRecoveryService:
             select(IdentityBindingModel).where(
                 IdentityBindingModel.platform == "qq",
                 IdentityBindingModel.external_account_id == audit.user_id,
+                IdentityBindingModel.status != "transferred",
             )
         )
         person = await session.get(CanonicalPersonModel, person_id)

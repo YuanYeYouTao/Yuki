@@ -18,7 +18,7 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import UUID
 
 from pydantic import PrivateAttr
@@ -45,6 +45,7 @@ from qq_ai_bot.emoji.models import (
 )
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.selector import EmojiSelector
+from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.llm.base import LLMEmptyResponseError
 from qq_ai_bot.memory.context import MemoryContextService
 from qq_ai_bot.memory.enums import (
@@ -72,6 +73,7 @@ from qq_ai_bot.plugin_host.direct_delivery import (
     DirectDeliveryScope,
     delivery_unknown,
     prepare_delivery,
+    validate_delivery_source,
 )
 from qq_ai_bot.plugin_host.event_bus import PluginEventBus
 from qq_ai_bot.plugin_host.http_client import BoundHttpFacade
@@ -88,11 +90,11 @@ from qq_ai_bot.services.agent_runner import (
     AgentRunResult,
     AgentRuntime,
 )
-from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.native_media import NativeMediaPreparer
 from qq_ai_bot.services.renderer import sanitize_model_output
 from qq_ai_bot.services.vision_service import VisionProcessingError, VisionService
-from qq_ai_bot.social.models import OperationStatus, SocialReceipt
+from qq_ai_bot.social.models import OperationStatus, SocialError, SocialReceipt
+from qq_ai_bot.social.repository import SocialOperationRepository
 from qq_ai_bot.vision.models import VisualObservation
 from qq_ai_bot.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from qq_ai_bot.web.models import WebSearchRequest
@@ -131,6 +133,9 @@ from yuki_plugin_sdk.models import (
     PublishNotificationRequest,
 )
 from yuki_plugin_sdk.permissions import PluginPermission
+
+if TYPE_CHECKING:
+    from qq_ai_bot.social.service import SocialService
 from yuki_plugin_sdk.results import PluginResult
 from yuki_plugin_sdk.sessions import (
     AgentSession,
@@ -189,8 +194,10 @@ _READ_ONEBOT_ACTIONS = frozenset(
 )
 
 
-class OneBotFacadeGateway(OneBotMediaGateway, Protocol):
+class OneBotFacadeGateway(PlatformMediaGateway, Protocol):
     """The event-bound subset used without exposing the actual Bot object."""
+
+    async def call_api(self, action: str, params: dict[str, Any]) -> Any: ...
 
 
 class ToolRuntimeProjection(Protocol):
@@ -260,7 +267,7 @@ class PluginInvocation:
     """Host-only authority captured from one real turn.
 
     There is deliberately no ``actor_is_superuser`` input.  Privileged Facades
-    compare ``actor_user_id`` against the Host's current SUPERUSERS set.
+    prove its canonical Person against the Host's current granted identities.
     """
 
     plugin_id: str
@@ -281,22 +288,15 @@ class PluginInvocation:
     space_id: str | None = None
     conversation_id: str | None = None
     presence_id: str | None = None
+    platform: str = ""
     # Host-only persisted callback key, never supplied through the public SDK.
     delivery_identity: str | None = None
 
     def __post_init__(self) -> None:
-        authority = self.delegated_authority
-        if (
-            not self.plugin_id
-            or not self.bot_user_id
-            or (
-                not self.actor_user_id
-                and (self.actor is None or self.actor.principal_kind != "self")
-                and (authority is None or authority.principal_kind != "self")
-            )
-        ):
+        if not self.plugin_id or not self.bot_user_id:
             raise ValueError("plugin invocation identity fields cannot be empty")
         if self.inbound is not None:
+            object.__setattr__(self, "platform", self.inbound.platform)
             if self.inbound.sender.user_id != self.actor_user_id:
                 raise ValueError("plugin invocation actor must match the real inbound sender")
             if self.inbound.bot_user_id and self.inbound.bot_user_id != self.bot_user_id:
@@ -315,6 +315,26 @@ class PluginInvocation:
             object.__setattr__(self, "presence_id", projection.presence_id)
             if projection.conversation_key:
                 object.__setattr__(self, "legacy_conversation_key", projection.conversation_key)
+        elif self.actor is not None:
+            object.__setattr__(self, "platform", self.actor.platform)
+
+    def scope(self) -> ConversationScope:
+        if self.current_group_id is not None:
+            return ConversationScope.group(
+                self.bot_user_id,
+                self.current_group_id,
+                platform=self.platform,
+                presence_id=self.presence_id,
+                conversation_id=self.conversation_id,
+                thread_id=self.inbound.thread_id if self.inbound else None,
+            )
+        return ConversationScope.private(
+            self.bot_user_id,
+            self.actor_user_id,
+            platform=self.platform,
+            presence_id=self.presence_id,
+            conversation_id=self.conversation_id,
+        )
 
     @property
     def current_group_id(self) -> str | None:
@@ -341,10 +361,8 @@ class PluginInvocation:
                 inbound=self.inbound,
             )
         if self.conversation_id:
-            raise ValueError("v2 conversation is missing primary runtime key")
-        if self.current_group_id:
-            return ConversationScope.group(self.bot_user_id, self.current_group_id).key
-        return ConversationScope.private(self.bot_user_id, self.actor_user_id).key
+            return f"conversation:{self.conversation_id}"
+        return self.scope().key
 
 
 @dataclass(slots=True)
@@ -354,6 +372,7 @@ class PluginFacadeServices:
     approval_revision: str = ""
     bot_display_name: str = "Yuki"
     ledger: EventLedgerRepository | None = None
+    social: SocialService | None = None
     people: PeopleRepository | None = None
     groups: GroupSettingsRepository | None = None
     memories: MemoryFactService | None = None
@@ -644,7 +663,6 @@ class HostPluginContext:
             conversation_id=actor.conversation_id,
             presence_id=actor.presence_id,
             source_event_id=actor.event_id,
-            gateway=cast(OneBotFacadeGateway | None, getattr(runtime, "gateway", None)),
             runtime_config=cast(
                 RuntimeConfigSnapshot | None,
                 getattr(runtime, "runtime_config", None),
@@ -735,7 +753,6 @@ class HostPluginContext:
         *,
         mutation: bool = False,
         send: bool = False,
-        privileged: bool = False,
         require_invocation: bool = True,
     ) -> PluginInvocation | None:
         if self._closed:
@@ -745,22 +762,24 @@ class HostPluginContext:
         invocation = self._invocation(required=require_invocation)
         if invocation is None:
             return None
-        if privileged:
-            direct_user_event = bool(
-                invocation.inbound is not None
-                and invocation.inbound.sender.user_id == invocation.actor_user_id
-            )
-            delegated_task = bool(
-                invocation.actor is not None
-                and invocation.actor.principal_kind == "person"
-                and invocation.actor.person_id == invocation.actor_person_id
-                and invocation.actor.execution_id
-            )
-            if not self._is_real_superuser(invocation) or not (direct_user_event or delegated_task):
-                raise PluginPermissionError(
-                    "operation requires direct or delegated SUPERUSERS authority"
-                )
         return invocation
+
+    async def _require_privileged(self, invocation: PluginInvocation) -> None:
+        direct_user_event = (
+            invocation.inbound is not None and invocation.source_event_id is not None
+        )
+        delegated_task = bool(
+            invocation.actor is not None
+            and invocation.actor.principal_kind == "person"
+            and invocation.actor.person_id == invocation.actor_person_id
+            and invocation.actor.execution_id
+        )
+        if not await self._is_real_superuser(invocation) or not (
+            direct_user_event or delegated_task
+        ):
+            raise PluginPermissionError(
+                "operation requires direct or delegated SUPERUSERS authority"
+            )
 
     def _require_any(
         self,
@@ -784,8 +803,16 @@ class HostPluginContext:
             require_invocation=require_invocation,
         )
 
-    def _is_real_superuser(self, invocation: PluginInvocation) -> bool:
-        return invocation.actor_user_id in self._superuser_ids
+    async def _is_real_superuser(self, invocation: PluginInvocation) -> bool:
+        from qq_ai_bot.identity.authority import person_is_superuser
+
+        ledger = self._services.ledger
+        if ledger is None:
+            return False
+        async with ledger._database.sessions() as session:
+            return await person_is_superuser(
+                session, invocation.actor_person_id, self._superuser_ids
+            )
 
     def _control_access(self) -> ControlAccess:
         people = self._services.people
@@ -793,28 +820,45 @@ class HostPluginContext:
             raise PluginPermissionError("control principal cannot be resolved")
         return ControlAccess(people._database, superuser_ids=self._superuser_ids)
 
-    def _require_user_scope(
+    async def _require_user_scope(
         self,
         invocation: PluginInvocation,
         user_id: str,
     ) -> str:
-        normalized = _validated_qq(user_id)
-        mentioned = invocation.inbound.mentioned_user_ids if invocation.inbound else ()
-        if (
-            normalized != invocation.actor_user_id
-            and normalized not in mentioned
-            and not self._is_real_superuser(invocation)
-        ):
+        normalized = str(UUID(user_id))
+        mentioned = (
+            invocation.inbound.mentioned_person_ids
+            if invocation.inbound
+            else invocation.actor.mentioned_person_ids
+            if invocation.actor
+            else ()
+        )
+        ledger = self._services.ledger
+        same_actor = normalized == invocation.actor_person_id
+        same_mentioned = normalized in mentioned
+        if ledger is not None and not same_actor and not same_mentioned:
+            from qq_ai_bot.identity.person_identity import same_person_id
+
+            async with ledger._database.sessions() as session:
+                same_actor = bool(
+                    invocation.actor_person_id
+                    and await same_person_id(session, normalized, invocation.actor_person_id)
+                )
+                for person_id in mentioned:
+                    if await same_person_id(session, normalized, person_id):
+                        same_mentioned = True
+                        break
+        if not same_actor and not same_mentioned and not await self._is_real_superuser(invocation):
             raise PluginPermissionError("target user is outside the current real turn")
         return normalized
 
-    def _require_group_scope(
+    async def _require_group_scope(
         self,
         invocation: PluginInvocation,
         group_id: str,
     ) -> str:
-        normalized = _validated_qq(group_id)
-        if normalized != invocation.current_group_id and not self._is_real_superuser(invocation):
+        normalized = str(UUID(group_id))
+        if normalized != invocation.space_id and not await self._is_real_superuser(invocation):
             raise PluginPermissionError("target group is outside the current real turn")
         return normalized
 
@@ -908,11 +952,7 @@ class _MessageFacade:
         invocation = self._host._require(PluginPermission.MESSAGE_HISTORY_READ)
         assert invocation is not None
         ledger = _require_service(self._host._services.ledger, "message history")
-        scope = (
-            ConversationScope.group(invocation.bot_user_id, invocation.current_group_id)
-            if invocation.current_group_id is not None
-            else ConversationScope.private(invocation.bot_user_id, invocation.actor_user_id)
-        )
+        scope = invocation.scope()
         rows = await ledger.list_scope_recent(
             scope,
             limit=_bounded_limit(limit),
@@ -931,14 +971,8 @@ class _MessageFacade:
         keyword = _bounded_text(query, maximum=400, field_name="query")
         rows = await ledger.search(
             keyword=keyword,
-            scope=(
-                ConversationScope.group(invocation.bot_user_id, invocation.current_group_id)
-                if invocation.current_group_id is not None
-                else ConversationScope.private(invocation.bot_user_id, invocation.actor_user_id)
-            ),
+            scope=invocation.scope(),
             limit=_bounded_limit(limit),
-            user_id=(invocation.actor_user_id if invocation.current_group_id is None else None),
-            group_id=invocation.current_group_id,
             message_only=True,
         )
         return tuple(_record_message(row) for row in rows)
@@ -946,96 +980,32 @@ class _MessageFacade:
     async def send_text(self, text: str) -> PluginResult:
         invocation = self._host._invocation()
         assert invocation is not None
-        permission = (
-            PluginPermission.MESSAGE_GROUP_SEND
-            if invocation.current_group_id
-            else PluginPermission.MESSAGE_PRIVATE_SEND
-        )
-
-        async def send() -> PluginResult:
-            checked = self._host._require(permission, send=True)
-            assert checked is not None
-            content = _outbound_text(text)
-            if checked.current_group_id:
-                target = self._host._require_group_scope(
-                    checked,
-                    checked.current_group_id,
-                )
-                return await _send_onebot(
-                    self._host,
-                    checked,
-                    "send_group_msg",
-                    {"group_id": target, "message": content},
-                    outbound=_group_outbound(target, content),
-                )
-            target = self._host._require_user_scope(checked, checked.actor_user_id)
-            return await _send_onebot(
-                self._host,
-                checked,
-                "send_private_msg",
-                {"user_id": target, "message": content},
-                outbound=_private_outbound(target, content),
-            )
-
-        return await self._host._run_audited(
-            invocation,
+        return await self._send(
+            "group" if invocation.space_id else "private",
+            invocation.space_id or cast(str, invocation.actor_person_id),
+            text=text,
+            permission=PluginPermission.MESSAGE_GROUP_SEND
+            if invocation.space_id
+            else PluginPermission.MESSAGE_PRIVATE_SEND,
             operation="message.send_text",
-            permission=permission,
-            runner=send,
         )
 
     async def send_private(self, user_id: str, text: str) -> PluginResult:
-        invocation = self._host._invocation()
-        assert invocation is not None
-
-        async def send() -> PluginResult:
-            checked = self._host._require(
-                PluginPermission.MESSAGE_PRIVATE_SEND,
-                send=True,
-            )
-            assert checked is not None
-            target = self._host._require_user_scope(checked, user_id)
-            content = _outbound_text(text)
-            return await _send_onebot(
-                self._host,
-                checked,
-                "send_private_msg",
-                {"user_id": target, "message": content},
-                outbound=_private_outbound(target, content),
-            )
-
-        return await self._host._run_audited(
-            invocation,
-            operation="message.send_private",
+        return await self._send(
+            "private",
+            user_id,
+            text=text,
             permission=PluginPermission.MESSAGE_PRIVATE_SEND,
-            runner=send,
+            operation="message.send_private",
         )
 
     async def send_group(self, group_id: str, text: str) -> PluginResult:
-        invocation = self._host._invocation()
-        assert invocation is not None
-
-        async def send() -> PluginResult:
-            checked = self._host._require(
-                PluginPermission.MESSAGE_GROUP_SEND,
-                send=True,
-            )
-            assert checked is not None
-            target = self._host._require_group_scope(checked, group_id)
-            content = _outbound_text(text)
-            return await _send_onebot(
-                self._host,
-                checked,
-                "send_group_msg",
-                {"group_id": target, "message": content},
-                outbound=_group_outbound(target, content),
-            )
-
-        return await self._host._run_audited(
-            invocation,
-            operation="message.send_group",
+        return await self._send(
+            "group",
+            group_id,
+            text=text,
             permission=PluginPermission.MESSAGE_GROUP_SEND,
-            runner=send,
+            operation="message.send_group",
         )
 
     async def send_image(
@@ -1045,50 +1015,49 @@ class _MessageFacade:
         target_id: str,
         media_reference: str,
     ) -> PluginResult:
+        return await self._send(
+            target_type,
+            target_id,
+            media_reference=media_reference,
+            permission=PluginPermission.MESSAGE_MEDIA_SEND,
+            operation="message.send_image",
+        )
+
+    async def _send(
+        self,
+        target_type: str,
+        target_id: str,
+        *,
+        permission: PluginPermission,
+        operation: str,
+        text: str = "",
+        media_reference: str | None = None,
+    ) -> PluginResult:
         invocation = self._host._invocation()
         assert invocation is not None
 
         async def send() -> PluginResult:
-            checked = self._host._require(
-                PluginPermission.MESSAGE_MEDIA_SEND,
-                send=True,
-            )
+            checked = self._host._require(permission, send=True)
             assert checked is not None
-            reference = media_reference.strip()
-            if (
-                not reference
-                or len(reference) > 512
-                or "://" in reference
-                or reference.startswith(("data:", "base64://"))
-            ):
-                raise PluginPermissionError("media_reference must be an event-derived file id")
-            if target_type == "private":
-                target = self._host._require_user_scope(checked, target_id)
-                action = "send_private_msg"
-                key = "user_id"
-                outbound = _private_outbound(target, "", image=True)
-            elif target_type == "group":
-                target = self._host._require_group_scope(checked, target_id)
-                action = "send_group_msg"
-                key = "group_id"
-                outbound = _group_outbound(target, "", image=True)
+            if target_type == "group":
+                target = await self._host._require_group_scope(checked, target_id)
+            elif target_type == "private":
+                target = await self._host._require_user_scope(checked, target_id)
             else:
                 raise ValueError("target_type must be private or group")
-            return await _send_onebot(
+            return await _send_social(
                 self._host,
                 checked,
-                action,
-                {
-                    key: target,
-                    "message": [{"type": "image", "data": {"file": reference}}],
-                },
-                outbound=outbound,
+                target_type,
+                target,
+                text=_outbound_text(text) if text else "",
+                media_reference=media_reference,
             )
 
         return await self._host._run_audited(
             invocation,
-            operation="message.send_image",
-            permission=PluginPermission.MESSAGE_MEDIA_SEND,
+            operation=operation,
+            permission=permission,
             runner=send,
         )
 
@@ -1100,18 +1069,18 @@ class _PeopleFacade:
     async def get_current(self) -> Mapping[str, JsonValue] | None:
         invocation = self._host._require(PluginPermission.PERSON_CURRENT_READ)
         assert invocation is not None
-        return await self._get_profile(invocation, invocation.actor_user_id)
+        return await self._get_profile(invocation, cast(str, invocation.actor_person_id))
 
     async def get(self, user_id: str) -> Mapping[str, JsonValue] | None:
         invocation = self._host._require(PluginPermission.PERSON_READ)
         assert invocation is not None
-        target = self._host._require_user_scope(invocation, user_id)
+        target = await self._host._require_user_scope(invocation, user_id)
         return await self._get_profile(invocation, target)
 
     async def list_aliases(self, user_id: str) -> tuple[str, ...]:
         invocation = self._host._require(PluginPermission.PERSON_ALIAS_READ)
         assert invocation is not None
-        target = self._host._require_user_scope(invocation, user_id)
+        target = await self._host._require_user_scope(invocation, user_id)
         people = _require_service(self._host._services.people, "people")
         return await people.aliases(target, limit=20)
 
@@ -1121,7 +1090,7 @@ class _PeopleFacade:
             mutation=True,
         )
         assert invocation is not None
-        self._host._require_user_scope(invocation, user_id)
+        await self._host._require_user_scope(invocation, user_id)
         _bounded_text(alias, maximum=128, field_name="alias")
         return _unavailable("person alias writes require a reviewed alias business service")
 
@@ -1131,7 +1100,7 @@ class _PeopleFacade:
         user_id: str,
     ) -> Mapping[str, JsonValue] | None:
         people = _require_service(self._host._services.people, "people")
-        row = await people.get(user_id=user_id, group_id=invocation.current_group_id)
+        row = await people.get(person_id=user_id, space_id=invocation.space_id)
         if row is None:
             return None
         return {
@@ -1150,14 +1119,14 @@ class _GroupFacade:
     async def get_current(self) -> Mapping[str, JsonValue] | None:
         invocation = self._host._require(PluginPermission.GROUP_CURRENT_READ)
         assert invocation is not None
-        if invocation.current_group_id is None:
+        if invocation.space_id is None:
             return None
-        return await self._get(invocation.current_group_id)
+        return await self._get(invocation.space_id)
 
     async def get(self, group_id: str) -> Mapping[str, JsonValue] | None:
         invocation = self._host._require(PluginPermission.GROUP_READ)
         assert invocation is not None
-        target = self._host._require_group_scope(invocation, group_id)
+        target = await self._host._require_group_scope(invocation, group_id)
         return await self._get(target)
 
     async def list_members(
@@ -1167,35 +1136,33 @@ class _GroupFacade:
     ) -> tuple[Mapping[str, JsonValue], ...]:
         invocation = self._host._require(PluginPermission.GROUP_MEMBERS_READ)
         assert invocation is not None
-        target = self._host._require_group_scope(invocation, group_id)
-        result = await _call_onebot(
-            invocation,
-            "get_group_member_list",
-            {"group_id": target},
+        target = await self._host._require_group_scope(invocation, group_id)
+        social = _require_service(self._host._services.social, "social")
+        assert invocation.conversation_id is not None
+        actor = _invocation_actor(invocation)
+        from qq_ai_bot.social.service import SocialContext
+
+        result = await social.execute(
+            "get_group_members",
+            {"target_id": target, "limit": _bounded_limit(limit, maximum=100)},
+            SocialContext(
+                f"plugin:{self._host.plugin_id}",
+                "members",
+                invocation.conversation_id,
+                space_id=invocation.space_id,
+                actor=actor,
+                inbound=invocation.inbound,
+                trigger_event_id=invocation.source_event_id,
+                origin=invocation.origin.value,
+                presence_id=invocation.presence_id,
+            ),
         )
-        if not result.ok:
-            return ()
-        raw = result.data.get("result")
-        if not isinstance(raw, list):
-            return ()
-        members: list[Mapping[str, JsonValue]] = []
-        for item in raw[: _bounded_limit(limit, maximum=500)]:
-            if not isinstance(item, dict):
-                continue
-            members.append(
-                {
-                    "user_id": str(item.get("user_id", "")),
-                    "nickname": str(item.get("nickname", ""))[:128],
-                    "card": str(item.get("card", ""))[:128],
-                    "role": str(item.get("role", "member"))[:32],
-                }
-            )
-        return tuple(members)
+        return tuple(result.get("items", ()))
 
     async def get_settings(self, group_id: str) -> Mapping[str, JsonValue]:
         invocation = self._host._require(PluginPermission.GROUP_READ)
         assert invocation is not None
-        target = self._host._require_group_scope(invocation, group_id)
+        target = await self._host._require_group_scope(invocation, group_id)
         row = await self._get(target)
         return row or {}
 
@@ -1208,10 +1175,10 @@ class _GroupFacade:
         invocation = self._host._require(
             PluginPermission.GROUP_SETTINGS_WRITE,
             mutation=True,
-            privileged=True,
         )
         assert invocation is not None
-        target = self._host._require_group_scope(invocation, group_id)
+        await self._host._require_privileged(invocation)
+        target = await self._host._require_group_scope(invocation, group_id)
         groups = _require_service(self._host._services.groups, "group settings")
         if not isinstance(value, bool):
             raise ValueError("group setting value must be boolean")
@@ -1246,9 +1213,11 @@ class _MemoryFacade:
     ) -> tuple[Mapping[str, JsonValue], ...]:
         invocation = self._host._require(PluginPermission.MEMORY_PERSON_READ)
         assert invocation is not None
-        target = self._host._require_user_scope(invocation, user_id)
+        target = await self._host._require_user_scope(invocation, user_id)
         memories = _require_service(self._host._services.memories, "memory")
-        rows = await memories.list_person(target, limit=_bounded_limit(limit, maximum=100))
+        rows = await memories.list_person(
+            person_id=target, limit=_bounded_limit(limit, maximum=100)
+        )
         return tuple(_memory_record(row, "person") for row in rows)
 
     async def list_group(
@@ -1258,9 +1227,9 @@ class _MemoryFacade:
     ) -> tuple[Mapping[str, JsonValue], ...]:
         invocation = self._host._require(PluginPermission.MEMORY_GROUP_READ)
         assert invocation is not None
-        target = self._host._require_group_scope(invocation, group_id)
+        target = await self._host._require_group_scope(invocation, group_id)
         memories = _require_service(self._host._services.memories, "memory")
-        rows = await memories.list_group(target, limit=_bounded_limit(limit, maximum=100))
+        rows = await memories.list_group(space_id=target, limit=_bounded_limit(limit, maximum=100))
         return tuple(_memory_record(row, "group") for row in rows)
 
     async def search(
@@ -1275,19 +1244,19 @@ class _MemoryFacade:
         assert invocation is not None
         keyword = _bounded_text(query, maximum=400, field_name="query")
         if scope_type == "person":
-            target_id = self._host._require_user_scope(invocation, subject_id)
+            target_id = await self._host._require_user_scope(invocation, subject_id)
             target = MemoryEntityTarget(
                 role=MemoryTargetRole.CURRENT_PERSON,
                 scope_type=MemoryScopeType.PERSON,
-                subject_user_id=target_id,
+                canonical_subject_person_id=target_id,
                 block_id="plugin_person",
             )
         elif scope_type == "group":
-            target_id = self._host._require_group_scope(invocation, subject_id)
+            target_id = await self._host._require_group_scope(invocation, subject_id)
             target = MemoryEntityTarget(
                 role=MemoryTargetRole.CURRENT_GROUP,
                 scope_type=MemoryScopeType.GROUP,
-                group_id=target_id,
+                canonical_subject_space_id=target_id,
                 block_id="plugin_group",
             )
         else:
@@ -1334,13 +1303,13 @@ class _MemoryFacade:
         assert invocation is not None
         if scope_type != "person":
             return _unavailable("group memory writes need a reviewed group-memory service")
-        target = _validated_qq(subject_id)
+        target = str(UUID(subject_id))
         memories = _require_service(self._host._services.memories, "memory")
-        if self._host._is_real_superuser(invocation):
-            target = self._host._require_user_scope(invocation, target)
+        if await self._host._is_real_superuser(invocation):
+            target = await self._host._require_user_scope(invocation, target)
         else:
-            actor_person_id = await memories.resolve_person_id(invocation.actor_user_id)
-            target_person_id = await memories.resolve_person_id(target)
+            actor_person_id = await memories.resolve_person_id(person_id=invocation.actor_person_id)
+            target_person_id = await memories.resolve_person_id(person_id=target)
             if actor_person_id is None or actor_person_id != target_person_id:
                 raise PluginPermissionError("plugins may only write the current person's memory")
         normalized = _bounded_text(content, maximum=4_000, field_name="content")
@@ -1362,11 +1331,12 @@ class _MemoryFacade:
         row = await service.add_memory(
             _memory_mutation_subject(
                 invocation,
-                is_superuser=self._host._is_real_superuser(invocation),
+                is_superuser=await self._host._is_real_superuser(invocation),
             ),
             target,
             normalized,
             evidence=evidence,
+            target_person_id=target,
         )
         await self._host._audit(
             invocation,
@@ -1396,21 +1366,21 @@ class _MemoryFacade:
         visible = None
         if current is not None and await memories.person_owns_fact(
             current,
-            actor_user_id=invocation.actor_user_id,
+            actor_person_id=invocation.actor_person_id,
         ):
             expected = _bounded_text(content, maximum=4_000, field_name="content")
             service = _require_service(self._host._services.memory_admin, "memory mutation")
             corrected = await service.correct_fact(
                 _memory_mutation_subject(
                     invocation,
-                    is_superuser=self._host._is_real_superuser(invocation),
+                    is_superuser=await self._host._is_real_superuser(invocation),
                 ),
                 numeric_id,
                 expected,
             )
             visible = await _visible_person_projection_fact(
                 memories,
-                user_id=invocation.actor_user_id,
+                user_id=cast(str, invocation.actor_person_id),
                 fact_id=corrected.id if corrected is not None else None,
                 content=expected,
             )
@@ -1441,7 +1411,7 @@ class _MemoryFacade:
         current = await memories.get_fact(numeric_id)
         if current is None or not await memories.person_owns_fact(
             current,
-            actor_user_id=invocation.actor_user_id,
+            actor_person_id=invocation.actor_person_id,
         ):
             changed = False
         else:
@@ -1449,7 +1419,7 @@ class _MemoryFacade:
             changed = await service.invalidate_fact(
                 _memory_mutation_subject(
                     invocation,
-                    is_superuser=self._host._is_real_superuser(invocation),
+                    is_superuser=await self._host._is_real_superuser(invocation),
                 ),
                 numeric_id,
                 MemoryInvalidationReason.PLUGIN_EXPLICIT_INVALIDATION.value,
@@ -1571,7 +1541,7 @@ class _AgentFacade:
         if invocation.allowed_capabilities:
             effective &= invocation.allowed_capabilities
         has_privileged = any(_privileged_capability(item) for item in effective)
-        if has_privileged and not self._host._is_real_superuser(invocation):
+        if has_privileged and not await self._host._is_real_superuser(invocation):
             raise PluginPermissionError("requested Agent capabilities require SUPERUSERS")
         tool_limit = min(
             max_tool_calls
@@ -1829,28 +1799,40 @@ class _NotificationFacade:
         invocation = self._host._require(
             PluginPermission.NOTIFICATION_PUBLISH,
             mutation=True,
-            privileged=True,
         )
         assert invocation is not None
+        await self._host._require_privileged(invocation)
         if bot_user_id and bot_user_id != invocation.bot_user_id:
             raise PluginPermissionError("grant bot must match the current connected bot")
         repository = _require_service(
             self._host._services.notifications,
             "plugin notifications",
         )
+        selected = (
+            target.model_copy(update={"conversation_id": invocation.conversation_id})
+            if target.conversation_id is None
+            and target.target_id in {invocation.actor_person_id, invocation.space_id}
+            else target
+        )
         return await repository.grant_target(
             plugin_id=self._host.plugin_id,
-            target=target,
+            target=selected,
             bot_user_id=invocation.bot_user_id,
-            created_by_user_id=invocation.actor_user_id,
+            created_by_user_id=invocation.actor_person_id or "",
+            presence_id=(
+                invocation.presence_id
+                if selected.conversation_id == invocation.conversation_id
+                else None
+            ),
         )
 
     async def revoke_target(self, target: NotificationTarget) -> bool:
-        self._host._require(
+        invocation = self._host._require(
             PluginPermission.NOTIFICATION_PUBLISH,
             mutation=True,
-            privileged=True,
         )
+        assert invocation is not None
+        await self._host._require_privileged(invocation)
         repository = _require_service(
             self._host._services.notifications,
             "plugin notifications",
@@ -1966,8 +1948,8 @@ class _EmojiFacade:
         runtime = await _runtime_snapshot(self._host, invocation)
         result = await selector.select(
             EmojiSelectionRequest(
-                private_peer_user_id=invocation.actor_user_id,
-                group_id=invocation.current_group_id,
+                person_id=invocation.actor_person_id,
+                space_id=invocation.space_id,
                 reply_text=(invocation.inbound.text if invocation.inbound else ""),
                 goal=_bounded_text(goal, maximum=300, field_name="goal"),
                 emotion=_bounded_optional_text(emotion, maximum=100),
@@ -2004,8 +1986,8 @@ class _EmojiFacade:
             return PluginResult(ok=False, error_code="emoji.not_found", detail="emoji not found")
         normalized_scope = scope_type.casefold()
         if normalized_scope == "group":
-            target = scope_id or invocation.current_group_id or ""
-            target = self._host._require_group_scope(invocation, target)
+            target = scope_id or invocation.space_id or ""
+            target = await self._host._require_group_scope(invocation, target)
         elif normalized_scope == "global":
             target = ""
         else:
@@ -2166,8 +2148,8 @@ class _ConfigFacade:
     def _bound(self, invocation: PluginInvocation | None) -> BoundConfigFacade:
         factory = _require_service(self._host._services.config_factory, "plugin config")
         return factory(
-            invocation.actor_user_id if invocation is not None else None,
-            invocation.current_group_id if invocation is not None else None,
+            invocation.actor_person_id if invocation is not None else None,
+            invocation.space_id if invocation is not None else None,
         )
 
 
@@ -2313,7 +2295,7 @@ class _OneBotFacade:
                 },
             )
             if checked.current_group_id is not None:
-                target = self._host._require_group_scope(checked, checked.current_group_id)
+                target = checked.current_group_id
                 return await _send_onebot(
                     self._host,
                     checked,
@@ -2321,7 +2303,7 @@ class _OneBotFacade:
                     {"group_id": target, "message": message},
                     outbound=_group_music_outbound(target, outbound_segments),
                 )
-            target = self._host._require_user_scope(checked, checked.actor_user_id)
+            target = checked.actor_user_id
             return await _send_onebot(
                 self._host,
                 checked,
@@ -2365,7 +2347,7 @@ class _OneBotFacade:
             message = [{"type": "music", "data": card_data}]
             outbound_segments = ({"type": "music", "data": dict(card_data)},)
             if checked.current_group_id is not None:
-                target = self._host._require_group_scope(checked, checked.current_group_id)
+                target = checked.current_group_id
                 return await _send_onebot(
                     self._host,
                     checked,
@@ -2373,7 +2355,7 @@ class _OneBotFacade:
                     {"group_id": target, "message": message},
                     outbound=_group_music_outbound(target, outbound_segments),
                 )
-            target = self._host._require_user_scope(checked, checked.actor_user_id)
+            target = checked.actor_user_id
             return await _send_onebot(
                 self._host,
                 checked,
@@ -2396,7 +2378,7 @@ class _OneBotFacade:
         async def send() -> PluginResult:
             checked = self._host._require(PluginPermission.ONEBOT_SEND, send=True)
             assert checked is not None
-            target = self._host._require_user_scope(checked, user_id)
+            target = user_id
             content = _outbound_text(text)
             return await _send_onebot(
                 self._host,
@@ -2420,7 +2402,7 @@ class _OneBotFacade:
         async def send() -> PluginResult:
             checked = self._host._require(PluginPermission.ONEBOT_SEND, send=True)
             assert checked is not None
-            target = self._host._require_group_scope(checked, group_id)
+            target = group_id
             content = _outbound_text(text)
             return await _send_onebot(
                 self._host,
@@ -2451,8 +2433,8 @@ class _OneBotFacade:
             normalized = action.strip()
             if normalized not in _READ_ONEBOT_ACTIONS:
                 raise PluginPermissionError("action is not classified as a reviewed read action")
-            _validate_onebot_scope(self._host, checked, params)
-            return await _call_onebot(checked, normalized, params)
+            await _validate_onebot_scope(self._host, checked, params)
+            return await _call_onebot(self._host, checked, normalized, params)
 
         return await self._host._run_audited(
             invocation,
@@ -2473,7 +2455,6 @@ class _OneBotFacade:
             checked = self._host._require(
                 PluginPermission.ONEBOT_MUTATE,
                 mutation=True,
-                privileged=True,
             )
             assert checked is not None
             normalized = action.strip()
@@ -2500,18 +2481,14 @@ class _OneBotFacade:
                 else:
                     raise ValueError("send_msg requires one unambiguous message target")
             if normalized in {"send_private_msg", "send_group_msg"}:
-                self._host._require(
-                    PluginPermission.ONEBOT_MUTATE, mutation=True, privileged=True, send=True
-                )
+                self._host._require(PluginPermission.ONEBOT_MUTATE, mutation=True, send=True)
                 message, content, segments = _outbound_onebot_message(params.get("message"))
                 if normalized == "send_group_msg":
-                    target = self._host._require_group_scope(
-                        checked, str(params.get("group_id", ""))
-                    )
+                    target = str(params.get("group_id", ""))
                     outbound = _group_outbound(target, content)
                     target_key = "group_id"
                 else:
-                    target = self._host._require_user_scope(checked, str(params.get("user_id", "")))
+                    target = str(params.get("user_id", ""))
                     outbound = _private_outbound(target, content)
                     target_key = "user_id"
                 return await _send_onebot(
@@ -2524,8 +2501,10 @@ class _OneBotFacade:
                         "message": message,
                     },
                     outbound=replace(outbound, segments=segments),
+                    privileged=True,
                 )
-            return await _call_onebot(checked, normalized, params)
+            await self._host._require_privileged(checked)
+            return await _call_onebot(self._host, checked, normalized, params)
 
         return await self._host._run_audited(
             invocation,
@@ -2557,8 +2536,8 @@ async def _runtime_snapshot(
         return invocation.runtime_config
     service = _require_service(host._services.runtime_config, "runtime configuration")
     return await service.snapshot(
-        user_id=invocation.actor_user_id,
-        group_id=invocation.current_group_id,
+        user_id=invocation.actor_person_id,
+        group_id=invocation.space_id,
     )
 
 
@@ -2571,7 +2550,7 @@ async def _agent_dependencies(
     return runner, AgentRuntime(
         origin=TurnOrigin.PLUGIN_SESSION,
         actor_user_id=invocation.actor_user_id,
-        actor_is_superuser=host._is_real_superuser(invocation),
+        actor_is_superuser=await host._is_real_superuser(invocation),
         delegated_authority=invocation.delegated_authority,
         conversation_key=invocation.conversation_key,
         current_group_id=invocation.current_group_id,
@@ -2596,16 +2575,12 @@ async def _agent_context(
         raise ValueError("context_profile must be none, current_user, or current_group")
     if profile == "current_group" and invocation.current_group_id is None:
         raise PluginPermissionError("current_group context requires a real group turn")
-    if not invocation.actor_user_id:
-        return (
-            f" Current group id={invocation.current_group_id}."
-            if profile == "current_group"
-            else ""
-        )
+    if not invocation.actor_person_id:
+        return f" Current Space id={invocation.space_id}." if profile == "current_group" else ""
     people = _require_service(host._services.people, "people")
     person = await people.get(
-        user_id=invocation.actor_user_id,
-        group_id=invocation.current_group_id if profile == "current_group" else None,
+        person_id=invocation.actor_person_id,
+        space_id=invocation.space_id if profile == "current_group" else None,
     )
     if person is None:
         return ""
@@ -2614,8 +2589,130 @@ async def _agent_context(
         "use only for this request."
     )
     if profile == "current_group":
-        context += f" Current group id={invocation.current_group_id}."
+        context += f" Current Space id={invocation.space_id}."
     return context
+
+
+async def _send_social(
+    host: HostPluginContext,
+    invocation: PluginInvocation,
+    target_type: str,
+    target_id: str,
+    *,
+    text: str,
+    media_reference: str | None,
+) -> PluginResult:
+    """Use the shared Social effect with the original callback/call identity."""
+    from qq_ai_bot.social.models import SocialError
+    from qq_ai_bot.social.service import SocialContext
+
+    social = _require_service(host._services.social, "social delivery")
+    state = _CURRENT_DELIVERY.get()
+    if state is None or invocation.conversation_id is None:
+        return _unavailable("SDK delivery requires a durable canonical invocation")
+    actor = _invocation_actor(invocation)
+    async with state.lock:
+        call_id = state.next_call()
+        context = SocialContext(
+            state.identity,
+            call_id,
+            invocation.conversation_id,
+            person_refs={"current_speaker": actor.person_id} if actor.person_id else {},
+            space_id=invocation.space_id,
+            trigger_event_id=invocation.source_event_id,
+            caused_by_event_id=(
+                invocation.source_event_id
+                if invocation.origin in {TurnOrigin.PLUGIN_BACKGROUND, TurnOrigin.SYSTEM_TASK}
+                else None
+            ),
+            origin=invocation.origin.value,
+            actor=actor,
+            conversation_key=invocation.conversation_key,
+            inbound=invocation.inbound,
+            initiative_run_id=actor.initiative_run_id,
+            automation_run_id=actor.automation_run_id,
+            presence_id=invocation.presence_id,
+            reply_presence_id=invocation.presence_id,
+        )
+        args: dict[str, Any] = {"text": text}
+        result = None
+        current_target = invocation.space_id if target_type == "group" else invocation.person_id
+        if target_id != current_target:
+            args["target"] = {
+                "kind": "space" if target_type == "group" else "person",
+                "target_id": target_id,
+            }
+        if media_reference is not None:
+            artifact_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{state.identity}:{call_id}:media"))
+            args.update(artifact_id=artifact_id, attachment_kind="image")
+            import tempfile
+
+            store = _require_service(social.workspace, "artifact delivery")
+            prior = await social.receipts.find(state.identity, call_id)
+            if prior is not None:
+                source = await asyncio.to_thread(store.snapshot_source, artifact_id)
+                if source is None or not source.startswith(
+                    f"plugin-media:{host.plugin_id}:{media_reference}:"
+                ):
+                    raise SocialError("idempotency_conflict")
+                result = await social.replay_send(args, context)
+            if result is None:
+                media = _require_service(host._services.media_artifacts, "plugin media artifacts")
+                original, data = await media.read_owned(
+                    plugin_id=host.plugin_id,
+                    handle_id=media_reference,
+                )
+
+                def snapshot() -> dict[str, Any]:
+                    with tempfile.TemporaryFile() as stream:
+                        stream.write(data)
+                        stream.flush()
+                        return store.snapshot(
+                            stream.fileno(),
+                            original.filename,
+                            artifact_id=artifact_id,
+                            source_key=f"plugin-media:{host.plugin_id}:{original.handle_id}:{original.sha256}",
+                        )
+
+                await asyncio.to_thread(snapshot)
+        try:
+            if result is None:
+                result = await social.execute("send_message", args, context)
+        except SocialError as exc:
+            prior = await social.receipts.find(state.identity, call_id)
+            if str(exc) != "idempotency_conflict" or prior is None:
+                raise
+            return PluginResult(
+                ok=False,
+                error_code="social.idempotency_conflict",
+                detail=(
+                    "Original call payload differs; the persisted effect was not dispatched again."
+                ),
+                data={"operation_id": prior.operation_id, "status": prior.status.value},
+            )
+        operation_id = result.get("operation_id")
+        if not isinstance(operation_id, str):
+            return PluginResult(
+                ok=False,
+                data=_safe_json(result),
+                error_code=str(result.get("error") or "social.delivery_unconfirmed"),
+            )
+        status = str(result.get("status", "unknown"))
+        unknown = status in {"executing", "uncertain", "unknown"}
+        projected = _HostSocialResult(
+            ok=status == "succeeded",
+            data={
+                "operation_id": operation_id,
+                "status": "unknown" if unknown else status,
+                "uncertain": unknown,
+                "retryable": False,
+                "result": _safe_json(result),
+            },
+            error_code=None if status == "succeeded" else "social.delivery_unconfirmed",
+            detail=str(result.get("error") or ""),
+        )
+        projected._receipt = await social.receipts.get(operation_id)
+        return projected
 
 
 async def _send_onebot(
@@ -2625,18 +2722,22 @@ async def _send_onebot(
     params: Mapping[str, JsonValue] | Mapping[str, object],
     *,
     outbound: _OutboundLedgerMessage,
+    privileged: bool = False,
 ) -> PluginResult:
     ledger = host._services.ledger
     state = _CURRENT_DELIVERY.get()
-    gateway = invocation.gateway
-    if gateway is None:
-        return _unavailable("OneBot gateway is unavailable for this invocation")
     if ledger is None or state is None or not invocation.conversation_id:
         return _unavailable("SDK delivery requires a durable canonical invocation")
+    if invocation.platform != "qq":
+        raise PluginPermissionError("OneBot extensions require an original QQ entry")
     # Keep per-callback call ordinals ordered even when plugin code uses gather().
     async with state.lock:
-        if state.unknown is not None:
-            return _delivery_result(state.unknown)
+        call_id = state.next_call()
+        prior = await SocialOperationRepository(ledger._database).find(state.identity, call_id)
+        if prior is None or prior.status is OperationStatus.PREPARED:
+            if privileged:
+                await host._require_privileged(invocation)
+            await _validate_onebot_scope(host, invocation, cast(Mapping[str, JsonValue], params))
         repository, receipt, presence_id = await prepare_delivery(
             ledger,
             source_conversation_id=invocation.conversation_id,
@@ -2648,72 +2749,121 @@ async def _send_onebot(
             group_id=outbound.group_id,
             user_id=outbound.private_peer_user_id,
             source_turn_id=state.identity,
-            call_id=state.next_call(),
+            call_id=call_id,
             action=action,
             params=dict(params),
         )
+        if receipt.status is not OperationStatus.PREPARED:
+            return _delivery_result(receipt)
+        gateway = await _qq_gateway(host, invocation)
         claimed = False
         if receipt.status is OperationStatus.PREPARED:
-            try:
-                claimed = await repository.claim(receipt.operation_id, presence_id=presence_id)
-            except BaseException:
-                # Cancellation may race a committed claim. Keep the local fence
-                # even if persistence is currently unavailable; never send here.
-                state.unknown = receipt.model_copy(update={"status": OperationStatus.UNCERTAIN})
-                raise
+            async with ledger._database.immediate_session() as session:
+                target, current_presence = await validate_delivery_source(
+                    session,
+                    source_conversation_id=invocation.conversation_id,
+                    source_event_id=invocation.source_event_id,
+                    actor_user_id=invocation.actor_user_id,
+                    actor=invocation.actor,
+                    bot_user_id=invocation.bot_user_id,
+                    group_id=outbound.group_id,
+                    user_id=outbound.private_peer_user_id,
+                )
+                if target != receipt.target or current_presence != presence_id:
+                    raise SocialError("plugin_send_source_mismatch")
+                claimed = await repository.claim(
+                    receipt.operation_id,
+                    presence_id=presence_id,
+                    session=session,
+                    expected_payload_hash=receipt.payload_hash,
+                )
         if not claimed:
             receipt = await repository.get(receipt.operation_id)
-            if delivery_unknown(receipt):
-                state.unknown = receipt
             return _delivery_result(receipt)
+        confirmed = None
         try:
             raw = await gateway.call_api(action, dict(params))
             confirmed = parse_onebot_send_receipt(raw)
             scope = (
-                ConversationScope.group(invocation.bot_user_id, outbound.group_id)
+                ConversationScope.group(
+                    invocation.bot_user_id,
+                    outbound.group_id,
+                    presence_id=presence_id,
+                    conversation_id=invocation.conversation_id
+                    if outbound.group_id == invocation.current_group_id
+                    else None,
+                )
                 if outbound.group_id is not None
                 else ConversationScope.private(
-                    invocation.bot_user_id, outbound.private_peer_user_id or ""
+                    invocation.bot_user_id,
+                    outbound.private_peer_user_id or "",
+                    presence_id=presence_id,
+                    conversation_id=invocation.conversation_id
+                    if invocation.current_group_id is None
+                    and outbound.private_peer_user_id == invocation.actor_user_id
+                    else None,
                 )
             )
             async with ledger._database.immediate_session() as session:
-                appended = await ledger._writer.append(
-                    scope=scope,
-                    platform_message_id=confirmed.platform_message_id,
-                    sender_user_id=invocation.bot_user_id,
-                    direction="outbound",
-                    content=outbound.content,
-                    segments=outbound.segments,
-                    sender_is_bot=True,
-                    origin=invocation.origin.value,
-                    session=session,
+                from qq_ai_bot.social.confirmed_content import content_sources_retained
+
+                retained = await content_sources_retained(
+                    session,
+                    conversation_id=invocation.conversation_id,
+                    target=receipt.target,
+                    event_ids=(invocation.source_event_id,),
+                    person_id=invocation.actor_person_id,
+                )
+                appended = (
+                    await ledger._writer.append(
+                        scope=scope,
+                        platform_message_id=confirmed.platform_message_id,
+                        sender_user_id=invocation.bot_user_id,
+                        direction="outbound",
+                        content=outbound.content,
+                        segments=outbound.segments,
+                        sender_is_bot=True,
+                        origin=invocation.origin.value,
+                        session=session,
+                    )
+                    if retained
+                    else None
                 )
                 await repository.finish(
                     receipt.operation_id,
                     status=OperationStatus.SUCCEEDED,
                     platform_reference=confirmed.platform_message_id,
-                    event_id=appended.event.id,
+                    event_id=appended.event.id if appended is not None else None,
                     session=session,
                 )
         except BaseException as exc:
-            # Once claimed, a timeout, malformed receipt, cancellation, or failed
-            # persistence cannot establish whether QQ already accepted the send.
-            state.unknown = receipt.model_copy(update={"status": OperationStatus.UNCERTAIN})
+            # A parsed platform confirmation remains success if its body can no
+            # longer be published. Without that confirmation the effect is unknown.
             try:
+                persisted = await repository.get(receipt.operation_id)
+                if persisted.status is OperationStatus.SUCCEEDED:
+                    if not isinstance(exc, Exception):
+                        raise
+                    return _delivery_result(persisted)
                 async with ledger._database.sessions() as session, session.begin():
                     await repository.finish(
                         receipt.operation_id,
-                        status=OperationStatus.UNCERTAIN,
-                        error_category=type(exc).__name__[:64],
+                        status=OperationStatus.SUCCEEDED
+                        if confirmed is not None
+                        else OperationStatus.UNCERTAIN,
+                        platform_reference=confirmed.platform_message_id
+                        if confirmed is not None
+                        else None,
+                        error_category=None if confirmed is not None else type(exc).__name__[:64],
                         session=session,
                     )
-                state.unknown = await repository.get(receipt.operation_id)
+                receipt = await repository.get(receipt.operation_id)
             except Exception as secondary:
                 exc.add_note(f"SDK delivery reconciliation deferred: {type(secondary).__name__}")
                 raise exc from secondary
             if not isinstance(exc, Exception):
                 raise
-            return _delivery_result(state.unknown)
+            return _delivery_result(receipt)
         receipt = await repository.get(receipt.operation_id)
         result = _delivery_result(receipt)
         return result.model_copy(update={"data": {**result.data, "result": _safe_json(raw)}})
@@ -2763,13 +2913,12 @@ def _delivery_result(receipt: SocialReceipt) -> PluginResult:
 
 
 async def _call_onebot(
+    host: HostPluginContext,
     invocation: PluginInvocation,
     action: str,
     params: Mapping[str, object],
 ) -> PluginResult:
-    gateway = invocation.gateway
-    if gateway is None:
-        return _unavailable("OneBot gateway is unavailable for this invocation")
+    gateway = await _qq_gateway(host, invocation)
     try:
         raw = await gateway.call_api(action, dict(params))
     except Exception as exc:
@@ -2876,6 +3025,8 @@ def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
     mentioned_user_ids = _legacy_facade_mentions_excluding_current_handle(inbound)
     projection = projection_from_inbound(inbound)
     return CurrentMessage(
+        platform=inbound.platform,
+        mentioned_person_ids=inbound.mentioned_person_ids,
         message_id=inbound.message_id,
         sender_user_id=inbound.sender.user_id,
         scope_type=inbound.scope_type.value,
@@ -2890,6 +3041,8 @@ def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
 def _record_message(record: Any) -> CurrentMessage:
     projection = projection_from_event(record)
     return CurrentMessage(
+        platform=record.platform,
+        mentioned_person_ids=record.mentioned_person_ids,
         message_id=record.platform_message_id,
         sender_user_id=record.sender_user_id,
         scope_type=record.scope_type.value,
@@ -2929,6 +3082,8 @@ def _memory_mutation_subject(
     is_superuser: bool,
 ) -> MemoryPreferenceTrigger:
     inbound = invocation.inbound
+    state = _CURRENT_DELIVERY.get()
+    assert state is not None
     return MemoryPreferenceTrigger(
         user_id=invocation.actor_user_id,
         bot_user_id=invocation.bot_user_id,
@@ -2942,6 +3097,8 @@ def _memory_mutation_subject(
         # HostPluginContext derives this from its immutable SUPERUSERS set;
         # plugin code never supplies it.
         actor_is_superuser=is_superuser,
+        person_id=invocation.actor_person_id,
+        operation_id=state.next_memory_call(),
     )
 
 
@@ -2968,7 +3125,7 @@ async def _visible_person_projection_fact(
     return next(
         (
             row
-            for row in await memories.list_person(user_id)
+            for row in await memories.list_person(person_id=user_id)
             if row.id == fact_id and row.content == expected
         ),
         None,
@@ -2992,9 +3149,9 @@ def _memory_record(row: Any, scope: str) -> dict[str, JsonValue]:
         "evidence_count": row.evidence_count,
         "last_confirmed_at": row.last_confirmed_at.isoformat(),
         "updated_at": row.updated_at.isoformat(),
-        "user_id": row.user_id,
-        "group_id": row.group_id,
-        "subject_user_id": row.subject_user_id,
+        "user_id": row.canonical_subject_person_id,
+        "group_id": row.canonical_subject_space_id or row.canonical_visibility_space_id,
+        "subject_user_id": row.canonical_subject_person_id,
     }
 
 
@@ -3054,7 +3211,61 @@ def _person_memory_id(value: str) -> int:
     return result
 
 
-def _validate_onebot_scope(
+async def _require_qq_user_scope(
+    host: HostPluginContext, invocation: PluginInvocation, user_id: str
+) -> str:
+    if invocation.platform != "qq":
+        raise PluginPermissionError("OneBot extensions require an original QQ entry")
+    from qq_ai_bot.identity.canonical_repository import find_identity_binding
+
+    ledger = _require_service(host._services.ledger, "ledger")
+    async with ledger._database.sessions() as session:
+        binding = await find_identity_binding(session, user_id)
+        if binding is None or binding.status != "active":
+            raise PluginPermissionError("QQ target is not an active Binding")
+        person_id = binding.person_id
+    await host._require_user_scope(invocation, person_id)
+    return user_id
+
+
+async def _require_qq_group_scope(
+    host: HostPluginContext, invocation: PluginInvocation, group_id: str
+) -> str:
+    if invocation.platform != "qq":
+        raise PluginPermissionError("OneBot extensions require an original QQ entry")
+    from qq_ai_bot.identity.canonical_repository import find_space_binding
+
+    ledger = _require_service(host._services.ledger, "ledger")
+    async with ledger._database.sessions() as session:
+        binding = await find_space_binding(session, group_id)
+        if binding is None or binding.status != "active":
+            raise PluginPermissionError("QQ target is not an active SpaceBinding")
+        space_id = binding.space_id
+    await host._require_group_scope(invocation, space_id)
+    return group_id
+
+
+async def _qq_gateway(host: HostPluginContext, invocation: PluginInvocation) -> OneBotFacadeGateway:
+    if invocation.platform != "qq":
+        raise PluginPermissionError("OneBot extensions require an original QQ entry")
+    if invocation.gateway is not None:
+        return invocation.gateway
+    from qq_ai_bot.adapters.onebot.sender import OneBotRouteSender
+
+    social = _require_service(host._services.social, "social")
+    if invocation.presence_id is None:
+        raise PluginPermissionError("OneBot extension requires its original Presence")
+    resolved = await social.router.resolve_presence(invocation.presence_id)
+    if resolved.platform != "qq":
+        raise PluginPermissionError("OneBot extensions require an original QQ Presence")
+    return OneBotRouteSender(
+        resolved.connection.bot,
+        group=invocation.current_group_id is not None,
+        target_id=invocation.current_group_id or invocation.actor_user_id,
+    )
+
+
+async def _validate_onebot_scope(
     host: HostPluginContext,
     invocation: PluginInvocation,
     params: Mapping[str, JsonValue],
@@ -3062,9 +3273,9 @@ def _validate_onebot_scope(
     user_id = params.get("user_id")
     group_id = params.get("group_id")
     if isinstance(user_id, str | int):
-        host._require_user_scope(invocation, str(user_id))
+        await _require_qq_user_scope(host, invocation, str(user_id))
     if isinstance(group_id, str | int):
-        host._require_group_scope(invocation, str(group_id))
+        await _require_qq_group_scope(host, invocation, str(group_id))
 
 
 def _safe_json(value: object, *, depth: int = 0) -> JsonValue:

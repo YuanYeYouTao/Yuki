@@ -20,7 +20,6 @@ from qq_ai_bot.workspace.store import WorkspaceError
 
 MAX_TEXT = 32768
 MAX_FILE = 200 * 1024 * 1024
-MAX_CONTROL_UPLOAD = 4 * 1024 * 1024
 
 
 class FileWorkspace:

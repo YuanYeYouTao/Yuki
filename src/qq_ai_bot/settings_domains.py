@@ -195,8 +195,6 @@ class MemorySettings(DomainSettings):
     memory_dream_max_output_tokens: int = Field(gt=0)
     memory_dream_evidence_per_fact: int = Field(ge=1)
     memory_dream_evidence_excerpt_characters: int = Field(gt=0)
-    memory_evidence_compaction_enabled: bool
-    memory_evidence_compaction_batch_size: int = Field(ge=1)
     memory_maintenance_enabled: bool
     memory_maintenance_interval_seconds: float = Field(gt=0)
     memory_maintenance_batch_limit: int = Field(gt=0)
@@ -240,7 +238,7 @@ class WebSettings(DomainSettings):
     web_enabled: bool
     web_mode: WebMode | None = None
     tavily_api_key: str
-    web_search_backend: Literal["tavily", "model", "deepseek_anthropic"] = "tavily"
+    web_search_backend: Literal["tavily", "model", "deepseek_anthropic"] = "model"
     web_search_bridge_state_path: Path = Path("data/web-search-bridge.sqlite3")
     web_search_depth: str
     web_search_max_results: int = Field(gt=0)
@@ -253,11 +251,11 @@ class WebSettings(DomainSettings):
 
     @property
     def mode(self) -> WebMode:
-        """Resolve WEB_MODE while preserving the legacy WEB_ENABLED behavior."""
+        """The legacy switch enables the current model-search default."""
 
         if self.web_mode is not None:
             return self.web_mode
-        return WebMode.TAVILY if self.web_enabled else WebMode.DISABLED
+        return WebMode.NATIVE if self.web_enabled else WebMode.DISABLED
 
 
 class VisionSettings(DomainSettings):
@@ -276,7 +274,6 @@ class VisionSettings(DomainSettings):
     vision_max_output_tokens: int = Field(gt=0)
     vision_thinking_enabled: bool
     vision_thinking_budget: int = Field(gt=0)
-    vision_low_confidence_retry_threshold: float = Field(ge=0, le=1)
     vision_max_images_per_turn: int = Field(gt=0)
     vision_max_frames_per_turn: int = Field(gt=0)
     vision_gif_max_frames: int = Field(gt=0)

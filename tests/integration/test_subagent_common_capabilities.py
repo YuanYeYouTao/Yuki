@@ -120,8 +120,9 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
         assert (await repository.get(child))["state"] == "completed"
         for name, _ in calls[:-2]:
             assert observed[name]["ok"], (name, observed[name])
-        assert observed["call_onebot_api"]["ok"] is privileged
-        assert sum(action == "get_status" for action, _ in case.env.bot.calls) == int(privileged)
+        assert not observed["call_onebot_api"]["ok"]
+        assert observed["call_onebot_api"]["error"] == "tool_not_declared"
+        assert not any(action == "get_status" for action, _ in case.env.bot.calls)
         assert sum(action == "send_group_msg" for action, _ in case.env.bot.calls) == 1
         assert plugin.calls == [True]
         assert (
@@ -137,6 +138,7 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
             case.provider.requests[0].tools
             == await case.chat.runtime.runner.main_contract.model_definitions()
         )
+        assert "call_onebot_api" not in {tool.name for tool in case.provider.requests[0].tools}
         assert (
             case.provider.requests[0].messages[0] == case.chat._prompt_composer.static_messages()[0]
         )

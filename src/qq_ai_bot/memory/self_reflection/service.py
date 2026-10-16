@@ -387,6 +387,8 @@ class SelfReflectionService:
         candidates = await self._candidates.list_pending_self(
             group_id=batch.state.external_space_id,
             private_user_id=batch.state.external_person_id,
+            space_id=batch.state.canonical_space_id,
+            person_id=batch.state.canonical_person_id,
             limit=20,
         )
         candidate_map = {f"candidate_{index}": item for index, item in enumerate(candidates, 1)}
@@ -403,8 +405,8 @@ class SelfReflectionService:
         return (
             SelfReflectionInput(
                 scope_type=_batch_scope_type(batch),
-                group_id=batch.state.external_space_id,
-                private_peer_user_id=batch.state.external_person_id,
+                person_id=batch.state.canonical_person_id,
+                space_id=batch.state.canonical_space_id,
                 context_events=tuple(context_rows),
                 events=events,
                 source_kind="initiative_tools" if batch.initiative_run_id else "chat",
@@ -506,6 +508,7 @@ class SelfReflectionService:
                 source_occurred_at=batch.occurred_at,
                 source_group_id=batch.state.external_space_id,
                 evidence_tool_receipt_id=tool_receipt_id,
+                operation_id=f"reflection:{batch.run_id}:proposal:{result_index}",
             ),
             target=(
                 target
@@ -517,6 +520,10 @@ class SelfReflectionService:
                     fact.visibility_type,
                     fact.visibility_user_id,
                     fact.visibility_group_id,
+                    fact.canonical_subject_person_id,
+                    fact.canonical_subject_space_id,
+                    fact.canonical_visibility_person_id,
+                    fact.canonical_visibility_space_id,
                 )
             ),
             additional_evidence=additional,
@@ -608,6 +615,7 @@ class SelfReflectionService:
                 source_occurred_at=batch.occurred_at,
                 source_group_id=batch.state.external_space_id,
                 evidence_tool_receipt_id=(primary_tool.id if primary_tool is not None else None),
+                operation_id=f"reflection:{batch.run_id}:episode:{index}",
             ),
             target=target,
             additional_evidence=tuple(additional),
@@ -710,6 +718,7 @@ class SelfReflectionService:
                 SelfMemoryVisibility.GROUP,
                 None,
                 batch.state.external_space_id,
+                canonical_visibility_space_id=batch.state.canonical_space_id,
             )
         return ResolvedSubject(
             MemoryScopeType.SELF,
@@ -718,6 +727,7 @@ class SelfReflectionService:
             SelfMemoryVisibility.PRIVATE,
             batch.state.external_person_id,
             None,
+            canonical_visibility_person_id=batch.state.canonical_person_id,
         )
 
 

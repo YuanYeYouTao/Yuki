@@ -21,10 +21,25 @@ async def approve_background_plugin(database, *, plugin_id, bot_user_id, group_i
     await installations.set_enabled(plugin_id, enabled=True)
     await installations.set_status(plugin_id, status="running")
     notifications = PluginNotificationRepository(database)
+    from qq_ai_bot.conversation.hydrate import conversation_for_scope
+    from qq_ai_bot.domain.conversations import ConversationScope
+    from qq_ai_bot.identity.canonical_repository import person_id_for, presence_id_for, space_id_for
+
+    async with database.sessions() as session:
+        person = await person_id_for(session, creator_user_id)
+        space = await space_id_for(session, group_id)
+        presence = await presence_id_for(session, bot_user_id)
+        conversation = await conversation_for_scope(
+            session, ConversationScope.group(bot_user_id, group_id)
+        )
+        assert person is not None and space is not None and conversation is not None
     await notifications.grant_target(
         plugin_id=plugin_id,
-        target=NotificationTarget(target_type="group", target_id=group_id),
+        target=NotificationTarget(
+            target_type="group", target_id=space, conversation_id=conversation.id
+        ),
         bot_user_id=bot_user_id,
-        created_by_user_id=creator_user_id,
+        created_by_user_id=person,
+        presence_id=presence,
     )
     return notifications

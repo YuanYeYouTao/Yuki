@@ -8,7 +8,7 @@
 派生本身已经登记工作，工作者无需再次 `task_control.accept`。
 
 工作者沿部署的 direct / Code Mode 执行，复用 `MainAgentContract` 的完整声明、核心 system、
-同一 ScriptApi 和 `MainAgentBackend`。`lookup_tools` 查询同一已提交目录，不维护独立工具
+原入口的 ScriptApi 和 `MainAgentBackend`。App 子任务保留 App 的工具合同，平台子任务保留平台入口的合同；不会把 App 请求换成 QQ 声明。`lookup_tools` 查询同一已提交目录，不维护独立工具
 上限。子目标、父子关系和 cwd 作为 brief 资料；实际来源与权限由 Host 绑定，模型不能
 通过资料包取得额外身份或授权。pending 沿原 run_id 等待，不以新脚本重做已提交子调用。
 
@@ -29,10 +29,16 @@
 不另调视觉 Provider。媒体读取最多 20 MiB，主请求仍计入根预算；更大视频可先通过
 终端提取帧或生成较小文件。来源和版本规则见[聊天媒体](chat-media-workspace.md)。
 
-工作者可沿真实来源与授权发送 QQ、撤回、戳人、写长期记忆、修改 short_state、管理
+工作者可沿真实来源与授权使用统一 Social 发送、撤回、写长期记忆、修改 short_state、管理
 自动化和使用已批准插件。Person、SELF、automation 与插件来源分别核验自己的 actor、
-目标、能力批准和权限；普通 Person 不因成为 worker 获得 generic OneBot 管理权限。
-主、子 Agent 在同一群交错发言时，正文与回执仍归各自原执行，已确认发送不重复交付。
+目标、能力批准和权限。固定 Main 合同不再声明 raw OneBot 管理入口；独立批准的插件 QQ 扩展只在真实 QQ 传输边界执行。
+主、子 Agent 在同一会话交错发言时，正文与回执仍归各自原执行，已确认发送不重复交付。
+
+后台执行沿原内部 Conversation、Person/Space、Presence、event/run 和 Work 租约核验。
+断开连接、同 Presence 重连或活动发送路由变化不终止纯内部执行；真正发送时才解析、核验
+当次平台连接。群入口保原 SpaceBinding 与 topic；平台群地址迁移不改变原业务来源。
+迁移前私聊曾由两个 QQ Bot 共用 Conversation 的真实旧执行，只能用原内部事件、原
+Presence 与旧持久 alias 证明其入口；新的私聊按 Binding + Presence 分开，不借旧 alias 合并。
 
 子 Agent 用自己的 Work 作为嵌套子任务的父节点。`subagent_message` 指定 child_id 时联系
 自己的子任务；省略时联系自己的父任务。实际提问保存后，只有父任务仍非终态时才接纳 `waiting_parent=true` 并提议子任务等待；父已经终态时仍保存问题，返回 `waiting_parent=false`，不暂停子任务或复活父任务。同一原批次、程序中剩余获准的通信、派生、保存和交付继续收拢。子孙通信和管理核验

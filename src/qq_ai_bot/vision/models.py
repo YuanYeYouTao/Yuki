@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 MediaSource = Literal["current", "reply"]
 VisionAnalysisMode = Literal["general", "meme", "ocr", "question", "character"]
@@ -66,12 +66,6 @@ class VisionAnalysisOptions(_FrozenModel):
     analysis_mode: VisionAnalysisMode = "general"
     thinking_enabled: bool = True
     thinking_budget: int = Field(default=6144, gt=0, le=32768)
-    low_confidence_retry_threshold: float = Field(default=0.65, ge=0.0, le=1.0)
-
-    @field_validator("thinking_enabled")
-    @classmethod
-    def _enable_reasoning(cls, value: bool) -> bool:
-        return True
 
 
 class VisualCharacterCandidate(_FrozenModel):

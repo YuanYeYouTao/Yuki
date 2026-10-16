@@ -39,7 +39,7 @@ def inspect_event_evidence(
     source = (
         ChatEventPromptRenderer.event_content(_event_record(event), None, "")
         if reflection
-        else event.content
+        else _event_record(event).evidence_content
     )
     normalized = normalize_memory_text(source)
     quote = evidence.excerpt

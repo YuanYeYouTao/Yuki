@@ -58,7 +58,9 @@ async def test_revocation_during_scope_wait_refuses_handler(tmp_path, change):
         installations=SimpleNamespace(get=get),
         invocation_scope=scope,
     )
-    runtime = ToolRuntime(inbound=None, gateway=None, allow_generic_onebot=False)
+    runtime = ToolRuntime(
+        inbound=None,
+    )
     result = (await adapter.execute("write", "{}", runtime)).model_payload()
     assert result["error_code"] == "plugin_tool_denied"
     assert not external.exists()
@@ -107,7 +109,9 @@ async def test_real_installation_manifest_revision_revokes_queued_tool(database,
     adapter = PluginCapabilityAdapter(
         registry=registry, installations=installations, invocation_scope=scope
     )
-    runtime = ToolRuntime(inbound=None, gateway=None, allow_generic_onebot=False)
+    runtime = ToolRuntime(
+        inbound=None,
+    )
     result = (await adapter.execute(item.model_name, "{}", runtime)).model_payload()
     assert result["error_code"] == "plugin_tool_denied" and not external.exists()
     assert registry.resolve_model_name(item.model_name) is item

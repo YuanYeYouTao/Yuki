@@ -2,7 +2,6 @@
 
 from qq_ai_bot.application.modules.admin import AdminBundle, AdminModule
 from qq_ai_bot.application.modules.automation import AutomationBundle, AutomationModule
-from qq_ai_bot.application.modules.control_plane import ControlPlaneBundle, ControlPlaneModule
 from qq_ai_bot.application.modules.conversation import ConversationBundle, ConversationModule
 from qq_ai_bot.application.modules.emoji import EmojiBundle, EmojiModule
 from qq_ai_bot.application.modules.media import MediaBundle, MediaModule
@@ -16,8 +15,6 @@ __all__ = [
     "AdminModule",
     "AutomationBundle",
     "AutomationModule",
-    "ControlPlaneBundle",
-    "ControlPlaneModule",
     "ConversationBundle",
     "ConversationModule",
     "EmojiBundle",

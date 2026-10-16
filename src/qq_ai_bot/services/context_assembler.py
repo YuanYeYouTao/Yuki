@@ -167,7 +167,10 @@ class ContextAssembler:
     ) -> AssembledContext:
         """Prepare the common history for a real execution without a chat event."""
         snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
-        metadata = {"scene": "群聊" if identity.scope_type is ScopeType.GROUP else "私聊"}
+        metadata = {
+            "scene": "群聊" if identity.scope_type is ScopeType.GROUP else "私聊",
+            "platform": identity.platform,
+        }
         current = ChatMessage(role="user", content=content)
         recent = snapshot.recent
         snapshot = replace(
@@ -244,6 +247,7 @@ class ContextAssembler:
         if recovery is not None:
             return recovery
         version, _ = await self._ledger.read_scope_context(scope, limit=0)
+        metadata = {**metadata, "platform": scope.platform}
         rows: tuple[EventRecord, ...] = ()
         checkpoint = ""
         checkpoint_kind = None
@@ -354,13 +358,16 @@ class ContextAssembler:
         current_event = await self._ledger.get_event(turn.trigger_event_id)
         if (
             current_event is None
-            or current_event.bot_user_id != identity.bot_user_id
-            or current_event.platform_message_id != inbound.message_id
+            or current_event.canonical_conversation_id != turn.conversation_id
+            or current_event.ingress_presence_id != inbound.presence_id
         ):
             raise ConversationCoverageError("turn trigger event does not match scope snapshot")
         recent = snapshot.recent
 
-        metadata_payload = {"scene": "群聊" if inbound.group_id else "私聊"}
+        metadata_payload = {
+            "scene": "群聊" if inbound.group_id else "私聊",
+            "platform": inbound.platform,
+        }
         metadata_json = json.dumps(
             metadata_payload,
             ensure_ascii=False,
@@ -464,7 +471,7 @@ class ContextAssembler:
         sandbox = isinstance(trigger, (SandboxTaskTurnTrigger, WorkResumeTrigger))
         if (
             event.id != trigger.source_event_id
-            or event.canonical_conversation_id is None
+            or event.canonical_conversation_id != turn.conversation_id
             or (sandbox and (event.direction != "inbound" or event.event_kind != "message"))
             or (
                 not sandbox
@@ -475,8 +482,6 @@ class ContextAssembler:
             )
         ):
             raise ConversationCoverageError("external wakeup source does not match trigger")
-        if identity.key != turn.transport_scope_key:
-            raise ConversationCoverageError("external wakeup transport identity changed")
         snapshot = await self._load_history_snapshot(
             identity,
             turn=turn,
@@ -485,7 +490,10 @@ class ContextAssembler:
         if event.id <= snapshot.starts_after_event_id:
             raise ConversationCoverageError("external trigger precedes the reset boundary")
         recent = snapshot.recent
-        metadata_payload = {"scene": "群聊" if event.group_id else "私聊"}
+        metadata_payload = {
+            "scene": "群聊" if event.group_id else "私聊",
+            "platform": event.platform or identity.platform,
+        }
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         recent = recent
         snapshot = replace(
@@ -633,7 +641,6 @@ class ContextAssembler:
             turn,
             conversation_id=loaded.scope.id,
             generation=loaded.scope.generation,
-            transport_key=scope.key,
             runtime_key=loaded.scope.runtime_scope_key,
         ):
             raise ConversationCoverageError("prompt snapshot generation changed")
@@ -737,14 +744,13 @@ class ContextAssembler:
     ) -> None:
         """Check the original canonical identity before selecting source bodies."""
 
-        state = await self._scopes.get(scope)
+        state = await self._scopes.get(scope, expected_turn=turn)
         if state is None:
             raise ConversationCoverageError("conversation scope does not exist")
         if not turn_matches_hydrated_scope(
             turn,
             conversation_id=state.id,
             generation=state.generation,
-            transport_key=scope.key,
             runtime_key=state.runtime_scope_key,
         ):
             raise ConversationCoverageError("turn generation changed before prompt snapshot")

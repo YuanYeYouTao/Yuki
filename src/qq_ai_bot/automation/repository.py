@@ -25,17 +25,14 @@ from qq_ai_bot.automation.models import (
     Schedule,
 )
 from qq_ai_bot.automation.task_spec import TaskSpec, canonical_task_hash
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import (
-    IDENTITY_PLATFORM,
-    active_person_id_for,
-    active_space_id_for,
-    presence_id_for,
-)
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
-    IdentityBindingModel,
+    PresenceModel,
+)
+from qq_ai_bot.identity.person_identity import (
+    person_family_condition,
+    person_root_id,
+    same_person_id,
 )
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import (
@@ -58,7 +55,7 @@ class AutomationRepository:
             return AutomationModel.creator_kind == "self"
         return and_(
             AutomationModel.creator_kind == "person",
-            AutomationModel.canonical_creator_person_id == owner_id,
+            person_family_condition(AutomationModel.canonical_creator_person_id, owner_id),
         )
 
     async def create(
@@ -102,8 +99,16 @@ class AutomationRepository:
                 if authority.principal_kind != "self":
                     raise ValueError("invalid_self_automation_authority")
             else:
-                creator = await active_person_id_for(active, authority.creator_user_id)
-                if creator != creator_person_id or authority.principal_kind != "person":
+                creator = await active.get(CanonicalPersonModel, creator_person_id)
+                if (
+                    creator is None
+                    or not creator.enabled
+                    or authority.canonical_creator_person_id is None
+                    or not await same_person_id(
+                        active, authority.canonical_creator_person_id, creator_person_id
+                    )
+                    or authority.principal_kind != "person"
+                ):
                     raise ValueError("创建者没有对应的永久主体")
             target_person, target_space = await _bind_canonical_send_targets(
                 active,
@@ -111,7 +116,9 @@ class AutomationRepository:
                 authority,
                 now=timestamp,
             )
-            presence = await presence_id_for(active, authority.bot_user_id)
+            presence = await active.get(PresenceModel, authority.canonical_presence_id)
+            if presence is None:
+                raise ValueError("automation_presence_unavailable")
             row = AutomationModel(
                 creator_kind=authority.principal_kind,
                 creator_user_id=authority.creator_user_id,
@@ -140,7 +147,7 @@ class AutomationRepository:
                 else creator_person_id,
                 canonical_target_person_id=target_person,
                 canonical_target_space_id=target_space,
-                canonical_presence_id=presence,
+                canonical_presence_id=presence.id,
             )
             active.add(row)
             await active.flush()
@@ -152,7 +159,7 @@ class AutomationRepository:
                 authority_snapshot_json=authority_json,
                 canonical_target_person_id=target_person,
                 canonical_target_space_id=target_space,
-                canonical_presence_id=presence,
+                canonical_presence_id=presence.id,
                 updated_by=authority.creator_user_id,
                 created_at=timestamp,
             )
@@ -208,45 +215,6 @@ class AutomationRepository:
                 "canonical_presence_id": version.canonical_presence_id,
             }
         )
-
-    async def resolve_active_creator_person(
-        self,
-        external_account_id: str,
-        *,
-        session: AsyncSession | None = None,
-    ) -> str | None:
-        """Resolve a live QQ binding to its enabled permanent Person."""
-
-        async with optional_session(self._database, session, write=False) as active:
-            return await active_person_id_for(active, external_account_id)
-
-    async def active_creator_accounts(
-        self,
-        creator_person_id: str,
-        *,
-        session: AsyncSession | None = None,
-    ) -> tuple[str, ...]:
-        """Return deterministic active QQ provenance for an enabled Person."""
-
-        async with optional_session(self._database, session, write=False) as active:
-            person = await active.get(CanonicalPersonModel, creator_person_id)
-            if person is None or not person.enabled:
-                return ()
-            accounts = (
-                await active.scalars(
-                    select(IdentityBindingModel.external_account_id)
-                    .where(
-                        IdentityBindingModel.person_id == creator_person_id,
-                        IdentityBindingModel.platform == IDENTITY_PLATFORM,
-                        IdentityBindingModel.status == "active",
-                    )
-                    .order_by(
-                        IdentityBindingModel.created_at.asc(),
-                        IdentityBindingModel.id.asc(),
-                    )
-                )
-            ).all()
-            return tuple(str(account) for account in accounts)
 
     async def get_by_creation_key(
         self,
@@ -541,8 +509,16 @@ class AutomationRepository:
                 if authority.principal_kind != "self":
                     raise ValueError("invalid_self_automation_authority")
             else:
-                authority_creator = await active_person_id_for(active, authority.creator_user_id)
-                if authority_creator != creator_person_id or authority.principal_kind != "person":
+                authority_creator = await active.get(CanonicalPersonModel, creator_person_id)
+                if (
+                    authority_creator is None
+                    or not authority_creator.enabled
+                    or authority.canonical_creator_person_id is None
+                    or not await same_person_id(
+                        active, authority.canonical_creator_person_id, creator_person_id
+                    )
+                    or authority.principal_kind != "person"
+                ):
                     raise ValueError("更新授权与自动化永久创建者不一致")
             row = await active.scalar(
                 select(AutomationModel).where(
@@ -1100,17 +1076,9 @@ async def _bind_canonical_send_targets(
 ) -> tuple[str | None, str | None]:
     target = task.delivery.target
     if target == "self_private":
-        target_person = await active_person_id_for(session, authority.creator_user_id)
+        target_person = authority.canonical_creator_person_id
         if target_person is None:
             raise ValueError("发送目标没有对应的永久主体")
-        await ensure_canonical_conversation(
-            session,
-            kind="private",
-            primary_scope_key=ConversationScope.private(
-                authority.bot_user_id, authority.creator_user_id
-            ).key,
-            person_id=target_person,
-        )
         return target_person, None
     return await _default_canonical_target(session, authority)
 
@@ -1121,12 +1089,12 @@ async def _default_canonical_target(
 ) -> tuple[str | None, str | None]:
     """Bind non-sending automations to their canonical creation context."""
 
-    if authority.current_group_id:
-        target_space = await active_space_id_for(session, authority.current_group_id)
+    if authority.canonical_space_id:
+        target_space = authority.canonical_space_id
         if target_space is None:
             raise ValueError("发送目标没有对应的永久空间")
         return None, target_space
-    target_person = await active_person_id_for(session, authority.creator_user_id)
+    target_person = authority.canonical_creator_person_id
     if target_person is None:
         raise ValueError("发送目标没有对应的永久主体")
     return target_person, None
@@ -1180,13 +1148,13 @@ def _directory_statement(*, include_script: bool = False) -> Any:
         if include_script
         else [getattr(AutomationModel, field) for field in AutomationDirectoryRecord.model_fields]
     )
-    return select(*columns, IdentityBindingModel.display_name).outerjoin(
-        IdentityBindingModel,
-        and_(
-            IdentityBindingModel.person_id == AutomationModel.canonical_creator_person_id,
-            IdentityBindingModel.platform == IDENTITY_PLATFORM,
-            IdentityBindingModel.external_account_id == AutomationModel.creator_user_id,
-        ),
+    return select(
+        *columns,
+        CanonicalPersonModel.display_name,
+        person_root_id(AutomationModel.canonical_creator_person_id),
+    ).outerjoin(
+        CanonicalPersonModel,
+        CanonicalPersonModel.id == person_root_id(AutomationModel.canonical_creator_person_id),
     )
 
 
@@ -1205,11 +1173,11 @@ def _automation_directory_entry(
             next_run_at=_aware_utc(row.next_run_at) if row.next_run_at else None,
         )
     )
-    display_name = row[-1]
+    display_name = row[-2]
     return AutomationDirectoryEntry(
         record=record,
         creator=AutomationCreatorIdentity(
-            person_id=record.canonical_creator_person_id,
+            person_id=row[-1],
             external_account_id=record.creator_user_id,
             display_name="Yuki / SELF" if record.creator_kind == "self" else display_name or None,
             kind=record.creator_kind,

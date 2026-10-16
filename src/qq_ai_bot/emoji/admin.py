@@ -13,8 +13,8 @@ from qq_ai_bot.emoji.models import EmojiAsset, EmojiLifecycleStatus
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.storage import EmojiStorage
 from qq_ai_bot.emoji.worker import EmojiWorker
+from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.services.admin.config_admin import ConfigAdminService
-from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 
 
 class EmojiAdminService:
@@ -43,7 +43,7 @@ class EmojiAdminService:
         actor: AdminActor,
         message: InboundMessage,
         argument: str,
-        gateway: OneBotMediaGateway | None = None,
+        gateway: PlatformMediaGateway | None = None,
     ) -> str:
         try:
             return await self._execute(
@@ -71,7 +71,7 @@ class EmojiAdminService:
         actor: AdminActor,
         message: InboundMessage,
         argument: str,
-        gateway: OneBotMediaGateway | None = None,
+        gateway: PlatformMediaGateway | None = None,
     ) -> str:
         if not actor.is_superuser:
             return "权限不足：表情库管理仅限超级管理员。"
@@ -118,7 +118,7 @@ class EmojiAdminService:
             "/ai emoji show|adopt|unadopt|reject|ban|unban|reanalyze <ID>\n"
             "/ai emoji pin <ID> on|off\n"
             "/ai emoji enable|disable <ID> group current\n"
-            "/ai emoji adopt|unadopt <ID> global|group [群号]\n"
+            "/ai emoji adopt|unadopt <ID> global|group [Space ID]\n"
             "/ai emoji group enable|disable（当前群）\n"
             "/ai emoji stats|cleanup|doctor\n"
             "/ai emoji import（和当前或回复图片一起发送）"
@@ -164,9 +164,9 @@ class EmojiAdminService:
             scope_id = ""
         elif scope == "group":
             scope_type = "group"
-            scope_id = arguments[2] if len(arguments) >= 3 else (message.group_id or "")
+            scope_id = arguments[2] if len(arguments) >= 3 else (message.space_id or "")
             if not scope_id:
-                return "请提供目标群号；私聊中没有“本群”。"
+                return "请提供目标 Space ID；私聊中没有“本群”。"
         else:
             return "作用域必须是 global 或 group。"
         if operation == "adopt":
@@ -212,9 +212,9 @@ class EmojiAdminService:
         if len(arguments) < 2 or arguments[1].casefold() != "group":
             return "格式：/ai emoji enable|disable <ID> group current"
         raw_group = arguments[2] if len(arguments) >= 3 else "current"
-        group_id = message.group_id if raw_group.casefold() in {"current", "本群"} else raw_group
+        group_id = message.space_id if raw_group.casefold() in {"current", "本群"} else raw_group
         if not group_id:
-            return "私聊中没有当前群，请提供明确群号。"
+            return "私聊中没有当前群，请提供明确 Space ID。"
         await self._repository.set_group_enabled(
             asset.id,
             group_id=group_id,
@@ -230,7 +230,7 @@ class EmojiAdminService:
         message: InboundMessage,
         arguments: list[str],
     ) -> str:
-        if message.group_id is None:
+        if message.space_id is None:
             return "该命令只能在群聊中使用。"
         if len(arguments) != 1 or arguments[0].casefold() not in {"enable", "disable"}:
             return "格式：/ai emoji group enable|disable"
@@ -240,7 +240,7 @@ class EmojiAdminService:
             key="emoji.enabled",
             value=enabled,
             scope_type="group",
-            scope_id=message.group_id,
+            scope_id=message.space_id,
         )
         return (
             result.detail
@@ -251,7 +251,7 @@ class EmojiAdminService:
     async def _import(
         self,
         message: InboundMessage,
-        gateway: OneBotMediaGateway | None,
+        gateway: PlatformMediaGateway | None,
     ) -> str:
         attachments: tuple[MessageAttachment, ...] = (
             *message.attachments,
@@ -262,8 +262,8 @@ class EmojiAdminService:
             return "请把 /ai emoji import 和当前图片一起发送，或回复一张仍可读取的图片。"
         runtime = (
             await self._config.snapshot(
-                user_id=message.sender.user_id,
-                group_id=message.group_id,
+                user_id=message.person_id,
+                group_id=message.space_id,
             )
         ).emoji
         asset, created, restored = await self._collector.collect_attachment(

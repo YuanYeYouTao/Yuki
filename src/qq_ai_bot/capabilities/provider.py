@@ -27,9 +27,9 @@ _RESIDENT_YUKI_TOOLS = (
         {
             "find_contacts",
             "send_message",
-            "poke_person",
             "get_group_members",
             "read_conversation_history",
+            "read_personal_entry",
             "recall_own_message",
             "workspace_list",
             "workspace_read",
@@ -70,8 +70,8 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     "get_code_run": ("sandbox.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "cancel_code_run": ("sandbox.cancel", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
     "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "read_personal_entry": ("social.entry.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "send_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
-    "poke_person": ("social.poke", CapabilityEffect.PLATFORM_MUTATE, CapabilityRisk.MUTATE),
     "get_group_members": ("social.members", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "read_conversation_history": (
         "social.history",
@@ -130,11 +130,6 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     ),
     "web_search": ("web.search", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "read_webpage": ("web.read", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
-    "call_onebot_api": (
-        "qq.platform.mutate",
-        CapabilityEffect.PLATFORM_MUTATE,
-        CapabilityRisk.MUTATE,
-    ),
 }
 
 _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
@@ -146,7 +141,6 @@ _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
     "memory_change": ("记住", "忘记", "纠正记忆", "保存记忆"),
     "web_search": ("搜索", "联网", "查资料", "最新新闻", "搜下", "上网"),
     "read_webpage": ("打开网页", "阅读链接", "看这个URL"),
-    "call_onebot_api": ("禁言", "踢人", "QQ群操作"),
     "send_message": ("发消息", "回复", "表情", "引用这条"),
     "read_tool_artifact": ("读取工具结果", "artifact"),
 }
@@ -225,7 +219,6 @@ _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
         "上网",
     ),
     "read_webpage": ("网页", "链接", "URL", "打开网页", "读取页面", "看这个链接"),
-    "call_onebot_api": ("QQ群", "好友", "禁言", "踢人", "群设置", "QQ操作"),
     "send_message": ("发消息", "回复", "表情", "来张图"),
 }
 

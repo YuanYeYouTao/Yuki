@@ -10,9 +10,11 @@ from sqlalchemy.orm import defer
 
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
-    ConversationLegacyAliasModel,
 )
-from qq_ai_bot.conversation.hydrate import hydrate_scope_state_from_canonical
+from qq_ai_bot.conversation.hydrate import (
+    conversation_for_scope,
+    hydrate_scope_state_from_canonical,
+)
 from qq_ai_bot.conversation.projection_models import PromptProjectionModel
 from qq_ai_bot.conversation.projections import current_checkpoint_query
 from qq_ai_bot.conversation.scope import ConversationTurnSnapshot, turn_matches_hydrated_scope
@@ -78,16 +80,15 @@ class ConversationScopeRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
-    async def get(self, scope: ConversationScope) -> ConversationScopeState | None:
+    async def get(
+        self, scope: ConversationScope, *, expected_turn: ConversationTurnSnapshot | None = None
+    ) -> ConversationScopeState | None:
         async with self._database.sessions() as session:
-            alias = await session.scalar(
-                select(ConversationLegacyAliasModel).where(
-                    ConversationLegacyAliasModel.scope_key == scope.key
-                )
+            conversation = (
+                await session.get(CanonicalConversationModel, expected_turn.conversation_id)
+                if expected_turn
+                else await conversation_for_scope(session, scope)
             )
-            if alias is None:
-                return None
-            conversation = await session.get(CanonicalConversationModel, alias.conversation_id)
             if conversation is None:
                 return None
             return await hydrate_scope_state_from_canonical(session, scope, conversation)
@@ -106,15 +107,10 @@ class ConversationScopeRepository:
     ) -> ConversationPromptSnapshot:
         async with self._database.sessions() as session:
             await session.execute(text("BEGIN"))
-            alias = await session.scalar(
-                select(ConversationLegacyAliasModel).where(
-                    ConversationLegacyAliasModel.scope_key == scope.key
-                )
-            )
             conversation = (
-                await session.get(CanonicalConversationModel, alias.conversation_id)
-                if alias
-                else None
+                await session.get(CanonicalConversationModel, expected_turn.conversation_id)
+                if expected_turn
+                else await conversation_for_scope(session, scope)
             )
             if conversation is None:
                 raise ConversationCoverageError("conversation scope does not exist")
@@ -123,7 +119,6 @@ class ConversationScopeRepository:
                 expected_turn,
                 conversation_id=state.id,
                 generation=state.generation,
-                transport_key=scope.key,
                 runtime_key=state.runtime_scope_key,
             ):
                 raise ConversationCoverageError("turn identity changed before prompt snapshot")

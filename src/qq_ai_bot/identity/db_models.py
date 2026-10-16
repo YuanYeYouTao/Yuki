@@ -12,6 +12,7 @@ from sqlalchemy import (
     Index,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -50,16 +51,23 @@ def opaque_external_id_sql(column: str) -> str:
 
 
 class CanonicalPersonModel(Base):
-    """Permanent human subject; platform display names live on bindings."""
+    """Permanent human identity; merged IDs remain the original facts' subjects."""
 
     __tablename__ = "persons"
     __table_args__ = (
         CheckConstraint(uuid4_text36_sql("id"), name="ck_persons_id"),
         CheckConstraint("enabled IN (0, 1)", name="ck_persons_enabled"),
         CheckConstraint("revision >= 1", name="ck_persons_revision"),
+        Index("ix_persons_merged_into_person_id", "merged_into_person_id"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    merged_into_person_id: Mapped[str | None] = mapped_column(
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"), nullable=True
+    )
+    display_name: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="", server_default=""
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     revision: Mapped[int] = mapped_column(nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -71,10 +79,18 @@ class IdentityBindingModel(Base):
 
     __tablename__ = "identity_bindings"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_identity_bindings_platform_account",
             "platform",
             "external_account_id",
-            name="uq_identity_bindings_platform_account",
+            unique=True,
+            sqlite_where=text("status <> 'transferred'"),
+        ),
+        Index(
+            "uq_identity_bindings_app_person",
+            "person_id",
+            unique=True,
+            sqlite_where=text("platform='app' AND status <> 'transferred'"),
         ),
         CheckConstraint(uuid4_text36_sql("id"), name="ck_identity_bindings_id"),
         CheckConstraint(uuid4_text36_sql("person_id"), name="ck_identity_bindings_person_id"),
@@ -83,7 +99,9 @@ class IdentityBindingModel(Base):
             opaque_external_id_sql("external_account_id"),
             name="ck_identity_bindings_external_account_id",
         ),
-        CheckConstraint("status IN ('active', 'disabled')", name="ck_identity_bindings_status"),
+        CheckConstraint(
+            "status IN ('active', 'disabled', 'transferred')", name="ck_identity_bindings_status"
+        ),
         CheckConstraint("revision >= 1", name="ck_identity_bindings_revision"),
         CheckConstraint("first_seen_at <= last_seen_at", name="ck_identity_bindings_seen_range"),
         Index("ix_identity_bindings_person_id", "person_id"),
@@ -102,6 +120,9 @@ class IdentityBindingModel(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    history_starts_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
 
 class CanonicalSpaceModel(Base):

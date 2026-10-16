@@ -113,10 +113,6 @@ class SelfReflectionWorker:
             and not self._stop.is_set()
         ):
             await self._repository.scan_new_events()
-            snapshot = await self.control.snapshot()
-            if snapshot["calls_today"] >= snapshot["daily_limit"]:
-                exhausted = True
-                break
             batches = await self._repository.claim_due(
                 scheduled_slot=f"{local.date().isoformat()}:{cycle['id'][3:15]}:{attempted}",
                 event_threshold=self._settings.memory_self_reflection_event_threshold,
@@ -151,6 +147,7 @@ class SelfReflectionWorker:
                     exhausted = True
                     break
         rows = await self.control.cycle_runs(cycle["id"])
+        snapshot = await self.control.snapshot()
         completed = [r for r in rows if r["status"] == "completed"]
         deferred = [r for r in rows if r["error"] in ("daily_limit_reached", "preempted")]
         failed = [r for r in rows if r["status"] == "failed" and r not in deferred]

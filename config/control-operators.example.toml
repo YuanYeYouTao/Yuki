@@ -1,5 +1,5 @@
 # Optional server-owned management policy. Never copy actual tokens into this file.
-# Set CONTROL_OPERATORS_FILE to the provisioned file; unset means no Web/CLI operator access.
+# Set CONTROL_OPERATORS_FILE to the provisioned file; unset denies management API access.
 # Supply a separately generated credential (at least 32 characters) in the named environment variable.
 [[operators]]
 principal_id = "ab4c2676-9434-40f2-8f67-8a90c0de7fc6"
@@ -8,4 +8,11 @@ enabled = true
 roles = ["operator"]
 # A role is descriptive. Grant each reviewed capability explicitly; no wildcard grants.
 capabilities = ["control.system.read", "control.health.read", "control.operation.read"]
+# 按真实管理需要补充：identity.person.create / identity.person.disable、
+# identity.binding.attach / identity.binding.disable / identity.binding.transfer、
+# identity.client.pair / identity.client.revoke / identity.person.forget、
+# control.plugin.read / control.plugin.mutate、
+# control.plugin.config.content.read / control.plugin.config.mutate、
+# control.config.file.content.read / control.config.file.mutate、control.work.mutate、
+# control.execution.metadata.read / control.execution.content.read。
 # Optional person_id must identify an existing canonical Person, never a QQ number.

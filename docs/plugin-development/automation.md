@@ -15,3 +15,5 @@ Host 使用当前绑定的原 ToolActor 和真实会话；SELF 保自身主体�
 工具内部使用的 Facade 仍需原 Manifest 批准和实际权限；定时来源不另有媒体、音乐或工具
 许可菜单。未知发送及已确认效果保原 Social 回执，不重发。旧定义、版本 hash 和已发生
 回执是原事实，不由新定义或模型正文重算。
+
+执行场景保留创建授权中的原 canonical Conversation、Space 与 Presence；`delivery.target` 只选择投递目标，不把私聊投递目标换成执行会话。新发生沿当前 generation，已接纳 Work 沿原发生与预算恢复。平台在线连接只在实际投递处核验；内部读取、计算和恢复不因暂时离线或同 Presence 重连终止。

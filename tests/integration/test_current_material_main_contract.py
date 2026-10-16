@@ -277,7 +277,7 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             scope = await app.conversation_scopes.get(identity)
             actor = await self_actor(database, env)
             source = runtime(actor, env)
-            config = await app.runtime_config.snapshot(group_id="20001")
+            config = await app.runtime_config.snapshot(group_id=env.space)
             token = await app.turn_coordinator.notify_message(
                 scope.runtime_scope_key, TurnOrigin.SELF_INITIATIVE
             )
@@ -478,7 +478,7 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
         )
         app, env, message, sender = await _deployment(database, tmp_path, original, request_limit=2)
         try:
-            config = await app.runtime_config.snapshot(group_id="20001")
+            config = await app.runtime_config.snapshot(group_id=env.space)
             original_contract = await app.runtime.main_turns.recovery_contract(config)
             original_profile_revision = app.models.profile_revision(ModelTask.CHAT_AGENT)
             assert (await app.processor.handle(message, sender)).reason == "chat"

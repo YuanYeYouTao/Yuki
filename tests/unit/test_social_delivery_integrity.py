@@ -29,7 +29,14 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
 ):
     env = await social_env(database, tmp_path)
     gateway = AsyncMock()
-    monkeypatch.setattr(env.service, "_call", gateway)
+    original = env.bot.call_api
+
+    async def call(action, **params):
+        if action.startswith("send_") or action.startswith("upload_"):
+            return await gateway(action, **params)
+        return await original(action, **params)
+
+    monkeypatch.setattr(env.bot, "call_api", call)
     invalid = (
         None,
         {},
@@ -84,7 +91,7 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
         replace(env.context, call_id="upload-no-message-id"),
     )
     assert uploaded["status"] == "succeeded"
-    assert uploaded["platform_reference"] is None and uploaded["delivered_text"] == ""
+    assert "platform_reference" not in uploaded and uploaded["delivered_text"] == ""
 
 
 @pytest.mark.asyncio
@@ -120,7 +127,7 @@ async def test_receipt_content_projection_uses_internal_event_and_checks_ownersh
         # pre-existing imported/corrupt ledger data to exercise read isolation.
         async with database.sessions.begin() as session:
             other = await session.get(ChatEventModel, unrelated.event.id)
-            other.platform_message_id = receipt["platform_reference"]
+            other.platform_message_id = actual.platform_message_id
         unrelated_ids.append(unrelated.event.id)
     assert await env.service.execute("send_message", args, env.context) == receipt
     async with database.sessions.begin() as session:
@@ -191,11 +198,27 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
         group_id="20001",
         creator_user_id="10001",
     )
+    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+    from qq_ai_bot.identity.canonical_repository import find_identity_binding
+
+    async with database.immediate_session() as session:
+        binding = await find_identity_binding(session, "10001")
+        private = await ensure_canonical_conversation(
+            session,
+            kind="private",
+            person_id=env.person,
+            identity_binding_id=binding.id,
+            presence_id=env.presence,
+            primary_scope_key="bot:80001:private:10001",
+        )
     await notifications.grant_target(
         plugin_id="test",
-        target=NotificationTarget(target_type="private", target_id="10001"),
+        target=NotificationTarget(
+            target_type="private", target_id=env.person, conversation_id=private.conversation_id
+        ),
         bot_user_id="80001",
-        created_by_user_id="10001",
+        created_by_user_id=env.person,
+        presence_id=env.presence,
     )
     selector = SimpleNamespace(
         select=AsyncMock(return_value=EmojiSelectionResult(emoji_id="emoji"))
@@ -284,13 +307,13 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
             finally:
                 current_invocation.reset(token)
         usage = repository.mark_used.await_args.kwargs
-        assert usage["group_id"] == scope.group_id
-        assert usage["actor_user_id"] == scope.private_peer_user_id
+        assert usage["space_id"] == (env.space if scope.group_id else None)
+        assert usage["actor_person_id"] == (env.person if scope.private_peer_user_id else None)
         assert usage["trigger_message_id"] == ""
         assert repository.mark_used.await_count == (1 if target_kind == "group" else 2)
         request = selector.select.await_args.args[0]
-        assert request.group_id == scope.group_id
-        assert request.private_peer_user_id == scope.private_peer_user_id
+        assert request.space_id == (env.space if scope.group_id else None)
+        assert request.person_id == (env.person if scope.private_peer_user_id else None)
 
 
 @pytest.mark.asyncio
@@ -435,8 +458,8 @@ async def test_emoji_usage_follows_route_instead_of_inbound_scope(database, tmp_
     )
     assert result["status"] == "succeeded"
     usage = delivery.record_success.await_args.kwargs
-    assert usage["group_id"] == ("20001" if target_kind == "space" else None)
-    assert usage["private_peer_user_id"] == ("10001" if target_kind == "person" else None)
+    assert usage["space_id"] == (env.space if target_kind == "space" else None)
+    assert usage["actor_person_id"] == (env.person if target_kind == "person" else None)
     assert usage["trigger_message_id"] == "different-source"
 
 
@@ -488,9 +511,9 @@ async def test_emoji_usage_resolves_canonical_owners_before_writer(database, tmp
     event.listen(engine, "rollback", ended)
     try:
         repository = EmojiRepository(database)
-        for actor, group in (("10001", None), (None, "20001")):
+        for actor, group in ((env.person, None), (None, env.space)):
             await repository.mark_used(
-                "used", actor_user_id=actor, group_id=group, trigger_message_id="", source="agent"
+                "used", actor_person_id=actor, space_id=group, trigger_message_id="", source="agent"
             )
     finally:
         event.remove(engine, "before_cursor_execute", observe)

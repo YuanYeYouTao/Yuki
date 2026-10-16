@@ -86,6 +86,18 @@ def execution_evidence(
     if tool == "send_message" and isinstance(args, dict):
         if isinstance(args.get("artifact_id"), str):
             receipt = body.get("file", body)
+            parts = body.get("parts", ())
+            if isinstance(parts, list):
+                receipt = next(
+                    (
+                        part
+                        for part in parts
+                        if isinstance(part, dict)
+                        and part.get("artifact_id") == args["artifact_id"]
+                        and part.get("status") == "succeeded"
+                    ),
+                    receipt,
+                )
             if isinstance(receipt, dict) and receipt.get("status") == "succeeded":
                 delivered.append(args["artifact_id"])
                 artifacts.append(args["artifact_id"])
@@ -95,6 +107,24 @@ def execution_evidence(
                     and args["text"].strip()
                     and (
                         (isinstance(caption, dict) and caption.get("status") == "succeeded")
+                        or (
+                            body.get("status") == "succeeded"
+                            and (
+                                (
+                                    body.get("delivered_text_available") is True
+                                    and bool(body.get("delivered_text"))
+                                )
+                                or (
+                                    isinstance(parts, list)
+                                    and any(
+                                        isinstance(part, dict)
+                                        and part.get("delivered_text_available") is True
+                                        and bool(part.get("delivered_text"))
+                                        for part in parts
+                                    )
+                                )
+                            )
+                        )
                         or (
                             args.get("attachment_kind") == "image"
                             and body.get("status") == "succeeded"

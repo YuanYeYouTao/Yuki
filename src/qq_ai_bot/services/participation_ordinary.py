@@ -5,12 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Literal, cast
 
+from sqlalchemy.ext.asyncio import AsyncSession
+from yuki_participation.controller import original_actor
 from yuki_participation.models import CandidateKind, ScopedEvent, SourceRef
-from yuki_participation.participation import ParticipationUnit, UnitBinding
+from yuki_participation.participation import ParticipationUnit, UnitBinding, UnitParticipation
 from yuki_participation.self_report import SelfDelta, SelfReport
 
 from qq_ai_bot.conversation.initiative_sources import source_revision
@@ -26,6 +28,7 @@ from qq_ai_bot.services.participation_feedback import (
     admission_unit_binding,
     sync_scope_effects,
 )
+from qq_ai_bot.services.participation_identity import actor_identity
 
 if TYPE_CHECKING:
     from qq_ai_bot.services.semantic_participation import SemanticParticipationService, _Session
@@ -36,7 +39,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def event_scope(
     service: SemanticParticipationService, event_id: int
-) -> AsyncIterator[tuple[EventRecord, _Session, ScopedEvent] | None]:
+) -> AsyncIterator[tuple[EventRecord, _Session, ScopedEvent, Callable[[str], str]] | None]:
     row = await service.app.ledger.get_event(event_id)
     if row is None or not row.canonical_conversation_id or service._store is None:
         yield None
@@ -45,7 +48,7 @@ async def event_scope(
     if scene is None or not scene.enabled:
         yield None
         return
-    runtime = await service.app.runtime_config.snapshot(group_id=scene.group_id)
+    runtime = await service.app.runtime_config.snapshot(group_id=scene.space_id)
     if not runtime.conversation_policy().semantic_participation_enabled:
         yield None
         return
@@ -55,7 +58,10 @@ async def event_scope(
         await sync_scope_effects(service, item)
         await service._hydrate(item)
         await service._validate_boundaries(item)
-        event = service._event(row, item)
+        identity = await actor_identity(
+            service, item, (row.author_person_id,) if row.author_person_id else ()
+        )
+        event = service._event(row, item, actor_identity=identity)
         if (
             event is None
             or event.kind != "human"
@@ -64,12 +70,17 @@ async def event_scope(
             yield None
         else:
             item.controller.observe_committed_event(event)
-            yield row, item, event
+            yield row, item, event, identity
     finally:
         item.pins -= 1
 
 
-def invitation_unit(item: _Session, event: ScopedEvent) -> ParticipationUnit | None:
+def invitation_unit(
+    item: _Session,
+    event: ScopedEvent,
+    *,
+    actor_identity: Callable[[str], str] = original_actor,
+) -> ParticipationUnit | None:
     candidate = item.controller.state.candidates.get(event.ref.event_id)
     observation = item.controller.state.observations.get(event.ref.event_id)
     if (
@@ -79,7 +90,9 @@ def invitation_unit(item: _Session, event: ScopedEvent) -> ParticipationUnit | N
         or candidate.event.ref != event.ref
         or candidate.support.kind != "observed"
         or candidate.support.strength(time.time()) <= 0
-        or not item.controller.participation_view(event, time.time()).addressed
+        or not item.controller.participation_view(
+            event, time.time(), actor_identity=actor_identity
+        ).addressed
     ):
         return None
     interaction = observation.answers.get("interaction_mark")
@@ -106,7 +119,7 @@ def host_binding(
         event_id=row.id,
         source_revision=str(source_revision(row)),
         unit_key=unit.thread,
-        target_hint=unit.target,
+        target_hint=row.author_person_id or unit.target,
         basis=tuple((ref.event_id, ref.revision) for ref in dict.fromkeys(basis)),
     )
 
@@ -121,23 +134,41 @@ def invitation_basis(item: _Session, event: ScopedEvent) -> tuple[SourceRef, ...
 ImplicitReason = Literal["semantic_invitation", "continuation"]
 
 
+def _continuation_basis(
+    item: _Session, matched: UnitParticipation, event: ScopedEvent
+) -> tuple[SourceRef, ...]:
+    # A logical current unit may represent another original Person. A new input
+    # still belongs to its own original actor's existing unit and source proof.
+    own = next(
+        (
+            unit.binding.basis
+            for unit in item.controller.participating_units(time.time())
+            if unit.unit.thread == matched.unit.thread
+            and unit.unit.target == event.author
+            and unit.binding.actor == event.author
+        ),
+        (),
+    )
+    return tuple(dict.fromkeys((*matched.binding.basis, *own, event.ref)))
+
+
 async def binding_for_event(
     service: SemanticParticipationService, event_id: int
 ) -> OrdinaryParticipationBinding | None:
     async with service._lock, event_scope(service, event_id) as found:
         if found is None:
             return None
-        row, item, event = found
-        view = item.controller.participation_view(event, time.time())
+        row, item, event, identity = found
+        view = item.controller.participation_view(event, time.time(), actor_identity=identity)
         if not view.source_valid:
             return None
         matched = view.matched_unit
         if matched is not None:
-            basis = tuple(dict.fromkeys((*matched.binding.basis, event.ref)))
+            basis = _continuation_basis(item, matched, event)
             if all((await service._sources_current(item, basis)).values()):
                 return host_binding(row, item, matched.unit, basis)
             return None
-        invited = invitation_unit(item, event)
+        invited = invitation_unit(item, event, actor_identity=identity)
         if invited is not None:
             basis = invitation_basis(item, event)
             if all((await service._sources_current(item, basis)).values()):
@@ -157,28 +188,31 @@ async def continuation_for_event(
     async with service._lock, event_scope(service, event_id) as found:
         if found is None:
             return None
-        row, item, event = found
-        view = item.controller.participation_view(event, time.time(), check_budget=check_budget)
+        row, item, event, identity = found
+        view = item.controller.participation_view(
+            event, time.time(), check_budget=check_budget, actor_identity=identity
+        )
         if not view.source_valid:
             return None
-        invited = invitation_unit(item, event)
+        invited = invitation_unit(item, event, actor_identity=identity)
         if invited is not None:
             basis = invitation_basis(item, event)
             if all((await service._sources_current(item, basis)).values()):
                 return host_binding(row, item, invited, basis), "semantic_invitation"
         matched = view.matched_unit
         if matched is not None:
-            basis = tuple(dict.fromkeys((*matched.binding.basis, event.ref)))
+            basis = _continuation_basis(item, matched, event)
             if all((await service._sources_current(item, basis)).values()):
                 return host_binding(row, item, matched.unit, basis), "continuation"
         return None
 
 
-def continuation_current(
+async def continuation_current(
     service: SemanticParticipationService,
     binding: OrdinaryParticipationBinding,
     *,
     check_budget: bool = True,
+    session: AsyncSession | None = None,
 ) -> bool:
     """Read the current derived eligibility at the original admission boundary."""
     item = service._sessions.get((binding.conversation_id, binding.generation))
@@ -205,6 +239,7 @@ def continuation_current(
         ),
         time.time(),
         check_budget=check_budget,
+        actor_identity=await actor_identity(service, item, (event.author,), session=session),
     )
 
 
@@ -218,7 +253,7 @@ async def on_ordinary_admitted(
     async with service._lock, event_scope(service, admission.event_id) as found:
         if found is None:
             return
-        _, item, event = found
+        _, item, event, _identity = found
         current = await service.ordinary.current(
             admission.event_id,
             conversation_id=binding.conversation_id,
@@ -254,7 +289,7 @@ async def observe_main_response(
     async with service._lock, event_scope(service, event_id) as found:
         if found is None:
             return
-        _, item, event = found
+        _, item, event, identity = found
         admission = await service.ordinary.current(
             event_id, conversation_id=item.scene.conversation_id, generation=snapshot.generation
         )
@@ -276,8 +311,9 @@ async def observe_main_response(
         prior = next(
             (
                 u.engage
-                for u in item.controller.participating_units(time.time())
-                if u.unit == unit.unit
+                for u in item.controller.participating_units(time.time(), actor_identity=identity)
+                if u.unit.thread == unit.unit.thread
+                and identity(u.unit.target) == identity(unit.unit.target)
             ),
             None,
         )
@@ -302,19 +338,27 @@ async def promote_invitations(service: SemanticParticipationService, item: _Sess
     conversation = item.scene.conversation_id
     if callback is None or conversation in service._promotions:
         return
+    identity = await actor_identity(
+        service,
+        item,
+        (candidate.event.author for candidate in item.controller.state.candidates.values()),
+    )
     for candidate in tuple(item.controller.state.candidates.values()):
         event = candidate.event
-        unit = invitation_unit(item, event)
+        unit = invitation_unit(item, event, actor_identity=identity)
         if unit is None or not await service._source_current(item, event.ref):
             continue
-        key, _, identity = event.ref.event_id.partition(":")
-        if key != "event" or not identity.isdecimal():
+        key, _, event_identity = event.ref.event_id.partition(":")
+        if key != "event" or not event_identity.isdecimal():
             continue
-        if await service.ordinary.get(int(identity), generation=item.scene.generation) is not None:
+        if (
+            await service.ordinary.get(int(event_identity), generation=item.scene.generation)
+            is not None
+        ):
             item.controller.state.consumed[event.ref.event_id] = event.ref.revision
             item.controller.state.candidates.pop(event.ref.event_id, None)
             continue
-        row = await service.app.ledger.get_event(int(identity))
+        row = await service.app.ledger.get_event(int(event_identity))
         if row is None:
             continue
         basis = invitation_basis(item, event)

@@ -33,7 +33,7 @@ class FixtureIngress(CanonicalIngressResolver):
                 if bot is not None and str(getattr(bot, "self_id", "")) == account
                 else SimpleNamespace(self_id=account)
             )
-            self._registry.connect(handle)
+            self._registry.connect(handle, provider_id="snowluma")
             self.handles[account] = handle
         return await super().pre_admit(self.handles[account], replace(message, bot_user_id=account))
 

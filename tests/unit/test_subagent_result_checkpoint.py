@@ -612,7 +612,6 @@ async def test_paused_child_resumes_original_goal_without_a_new_instruction(
 
 
 async def test_three_level_creation_queries_budget_and_direct_parent_recovery(database, tmp_path):
-    from qq_ai_bot.persistence.control_work_query import ControlWorkQueryAdapter
     from qq_ai_bot.runtime.work_tree import ancestor_work_ids, descendant_work_ids
 
     database.subagents_enabled = True
@@ -737,11 +736,20 @@ async def test_three_level_creation_queries_budget_and_direct_parent_recovery(da
         )
     )
     assert archived["work"]["state"] == "cancelled"
-    details = await ControlWorkQueryAdapter(database.sessions).read_work(leaf_id)
-    assert details.fields["parent_work_id"] == branch_id
-    assert details.fields["root_id"] == details.fields["budget_root_id"] == root["id"]
-    assert details.fields["shared_budget"]["models"] == 2
-    assert details.fields["shared_budget"]["tools"] == 3
+    from qq_ai_bot.runtime.work_budget_schema import budgets
+    from qq_ai_bot.runtime.work_queries import WorkQueries
+
+    details = await WorkQueries(repo).get(leaf_lease, {}, leaf_id)
+    assert details["parent_work_id"] == branch_id
+    assert details["budget_root_id"] == root["id"]
+    async with database.sessions() as session:
+        shared_budget = (
+            (await session.execute(select(budgets).where(budgets.c.root_id == root["id"])))
+            .mappings()
+            .one()
+        )
+        assert shared_budget["models"] == 2
+        assert shared_budget["tools"] == 3
     await repo.transition(parent_lease, branch_id, branch["revision"], "waiting_external")
     await repo.accept_control(
         leaf_lease, leaf_id, {"action": "complete", "call_key": "leaf-done", "result": "checked"}
@@ -1031,6 +1039,7 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
         group_id="20001",
         creator_user_id="10001",
     )
+    original_grant = (await notifications.list_grants(plugin_id))[0]
     legacy = {}
     for index in range(256):
         receipt = await notifications.publish(
@@ -1039,7 +1048,11 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
                 event_key=f"legacy:{index}",
                 event_type="fixture",
                 external_source="fixture",
-                target=NotificationTarget(target_type="group", target_id="20001"),
+                target=NotificationTarget(
+                    target_type="group",
+                    target_id=original_grant.target_id,
+                    conversation_id=original_grant.conversation_id,
+                ),
                 occurred_at=datetime.now(UTC),
                 summary="original background event",
                 ask_agent=True,

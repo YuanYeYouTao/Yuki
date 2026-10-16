@@ -52,6 +52,9 @@ async def reserve(
             ):
                 raise WorkConflict("delivery_intent_conflict")
             if prior["state"] == "reserved":
+                control.current["sent_messages"] = await session.scalar(
+                    select(work.c.sent_messages).where(work.c.id == identity)
+                )
                 return True
             if prior["state"] in {"accepted", "unknown", "dispatching"}:
                 raise WorkConflict("delivery_replay_forbidden")

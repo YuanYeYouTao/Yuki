@@ -134,7 +134,7 @@ async def _scene(
             SimpleNamespace(
                 continuation_for_event=continuation_for_event,
                 binding_for_event=binding_for_event,
-                continuation_current=lambda binding, *, check_budget=True: True,
+                continuation_current=AsyncMock(return_value=True),
                 on_ordinary_admitted=AsyncMock(),
             )
         )
@@ -342,9 +342,9 @@ async def test_other_members_public_input_keeps_original_execution_authority(
     chat = harness.processor._chat
     sessions = []
 
-    def open_memory_session(inbound, *, autonomous):
+    def open_memory_session(*, autonomous):
         assert not autonomous
-        session = TurnMemorySession.open(inbound=inbound, origin=TurnOrigin.USER_MESSAGE)
+        session = TurnMemorySession.open(origin=TurnOrigin.USER_MESSAGE)
         sessions.append(session)
         return session
 
@@ -376,7 +376,6 @@ async def test_other_members_public_input_keeps_original_execution_authority(
             assert runtime.effective_execution_id == f"event:{a.id}"
         assert runtimes[1].memory_session is runtimes[0].memory_session
         assert len(sessions) == 1 and runtimes[0].memory_session is sessions[0]
-        assert sessions[0].scope.partition_key == "group:20001"
         assert runtimes[1].memory_allowed_scopes == runtimes[0].memory_allowed_scopes
         assert await _work_count(database) == 0
     finally:

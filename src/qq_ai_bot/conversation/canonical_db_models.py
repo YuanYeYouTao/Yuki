@@ -52,6 +52,8 @@ CANONICAL_CONVERSATION_CREATE_ORDER: tuple[str, ...] = (
     "control_command_receipts",
 )
 CANONICAL_EVENT_TABLES: tuple[str, ...] = ("canonical_event_receipts",)
+
+
 def sha256_hex_sql(column: str) -> str:
     """SQLite CHECK for a lowercase SHA-256 hex digest."""
 
@@ -125,10 +127,11 @@ def _install_parent_route_guards_if_ready(connection: Connection) -> None:
 
 
 class CanonicalConversationModel(Base):
-    """One canonical private conversation per Person, or one space conversation per Space."""
+    """History belongs to the actual private or shared platform entry."""
 
     __tablename__ = "canonical_conversations"
     __table_args__ = (
+        Index("ix_conversations_person", "person_id", sqlite_where=text("person_id IS NOT NULL")),
         ForeignKeyConstraint(
             ["person_id"],
             ["persons.id"],
@@ -136,9 +139,27 @@ class CanonicalConversationModel(Base):
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
+            ["identity_binding_id"],
+            ["identity_bindings.id"],
+            name="fk_canonical_conversations_binding",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
             ["space_id"],
             ["spaces.id"],
             name="fk_canonical_conversations_space",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["entry_presence_id"],
+            ["presences.id"],
+            name="fk_conversations_entry_presence",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["space_binding_id"],
+            ["space_bindings.id"],
+            name="fk_conversations_space_binding",
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
@@ -161,9 +182,11 @@ class CanonicalConversationModel(Base):
         ),
         CheckConstraint(
             "("
-            "kind = 'private' AND person_id IS NOT NULL AND space_id IS NULL"
+            "kind = 'private' AND person_id IS NOT NULL AND space_id IS NULL "
+            "AND identity_binding_id IS NOT NULL"
             ") OR ("
-            "kind = 'space' AND space_id IS NOT NULL AND person_id IS NULL"
+            "kind = 'space' AND space_id IS NOT NULL AND person_id IS NULL "
+            "AND identity_binding_id IS NULL"
             ")",
             name="ck_canonical_conversations_owner_xor",
         ),
@@ -190,23 +213,35 @@ class CanonicalConversationModel(Base):
             name="ck_canonical_conversations_watermarks",
         ),
         Index(
-            "uq_canonical_conversations_person",
-            "person_id",
+            "uq_canonical_conversations_binding",
+            "identity_binding_id",
+            "entry_presence_id",
             unique=True,
             sqlite_where=text("kind = 'private'"),
         ),
         Index(
             "uq_canonical_conversations_space",
+            "space_binding_id",
+            text("coalesce(thread_id, '')"),
+            unique=True,
+            sqlite_where=text("kind = 'space' AND space_binding_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_canonical_conversations_legacy_space",
             "space_id",
             unique=True,
-            sqlite_where=text("kind = 'space'"),
+            sqlite_where=text("kind = 'space' AND space_binding_id IS NULL"),
         ),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     person_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    identity_binding_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     space_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    entry_presence_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    space_binding_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    thread_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     primary_alias_id: Mapped[str] = mapped_column(String(36), nullable=False)
     primary_marker: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     generation: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
@@ -489,10 +524,19 @@ class ControlCommandReceiptModel(Base):
 
     __tablename__ = "control_command_receipts"
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_control_command_receipts_principal_request",
             "principal_id",
             "request_id",
-            name="uq_control_command_receipts_principal_request",
+            unique=True,
+            sqlite_where=text("request_person_id IS NULL"),
+        ),
+        Index(
+            "uq_control_command_receipts_person_request",
+            "request_person_id",
+            "request_id",
+            unique=True,
+            sqlite_where=text("request_person_id IS NOT NULL"),
         ),
         CheckConstraint(
             uuid4_text36_sql("principal_id"),
@@ -573,6 +617,8 @@ class ControlCommandReceiptModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     principal_id: Mapped[str] = mapped_column(String(36), nullable=False)
     request_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    # Original App namespace, independent of current human and actual device actor.
+    request_person_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     result_resource_id: Mapped[str | None] = mapped_column(String(255), nullable=True)

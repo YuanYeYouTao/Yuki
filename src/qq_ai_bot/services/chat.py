@@ -34,7 +34,7 @@ from qq_ai_bot.conversation.scope import (
 )
 from qq_ai_bot.conversation.scope_models import ConversationCoverageError
 from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
     ChatImage,
@@ -42,6 +42,7 @@ from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatTool,
     InboundMessage,
+    LocalDeliveryReceipt,
     OutboundMedia,
     OutboundMessage,
     OutboundSendReceipt,
@@ -85,7 +86,7 @@ from qq_ai_bot.services.agent_runner import (
     AgentRunner,
     AgentRunResult,
 )
-from qq_ai_bot.services.agent_tools import AgentToolService, OneBotToolGateway, ToolRuntime
+from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
 from qq_ai_bot.services.chat_preparation_timings import (
     collect_chat_preparation,
     emit_chat_preparation,
@@ -140,7 +141,7 @@ def _core_result_character_budget(runtime: RuntimeConfigSnapshot | None) -> int:
 class OutboundSender(Protocol):
     """Adapter-provided sender used by the business layer."""
 
-    async def send(self, message: OutboundMessage) -> OutboundSendReceipt:
+    async def send(self, message: OutboundMessage) -> OutboundSendReceipt | LocalDeliveryReceipt:
         """Send one message and return proof of platform acceptance."""
 
 
@@ -220,6 +221,12 @@ class ChatService:
         pin = getattr(self._models, "pin", None)
         return pin() if callable(pin) else nullcontext()
 
+    async def _person_is_superuser(self, person_id: str | None) -> bool:
+        from qq_ai_bot.identity.authority import person_is_superuser
+
+        async with self._ledger._database.sessions() as session:
+            return await person_is_superuser(session, person_id, self._settings.superusers)
+
     def __init__(
         self,
         *,
@@ -243,9 +250,6 @@ class ChatService:
         conversation_scopes: ConversationScopeRepository | None = None,
         effect_gate: ConversationEffectGate | None = None,
     ) -> None:
-        lookup: object = memory_partition_lookup
-        if lookup is None or not callable(getattr(lookup, "resolve_from_scope", None)):
-            raise TypeError("memory_partition_lookup must provide callable resolve_from_scope")
         self._memory_partition_lookup = memory_partition_lookup
         self._settings = settings
         models = model_executor
@@ -649,12 +653,19 @@ class ChatService:
         if matched is not None and matched > 0:
             return matched
         control = self.runtime.bindings.get(conversation_key)
-        if (
-            control is None
-            or control.current is None
-            or control.source.get("actor_user_id") != inbound.sender.user_id
-        ):
+        if control is None or control.current is None:
             return matched
+        from qq_ai_bot.identity.person_identity import same_person_id
+
+        async with self._ledger._database.sessions() as session:
+            if (
+                not inbound.person_id
+                or not control.source.get("actor_person_id")
+                or not await same_person_id(
+                    session, control.source["actor_person_id"], inbound.person_id
+                )
+            ):
+                return matched
         from qq_ai_bot.runtime.work_repository import WorkCapacityError
 
         try:
@@ -807,7 +818,7 @@ class ChatService:
                         "bot_user_id": inbound.bot_user_id,
                         "generation": turn_snapshot.generation,
                         "conversation_id": inbound.conversation_id,
-                        "actor_is_superuser": inbound.sender.user_id in self._settings.superusers,
+                        "actor_is_superuser": await self._person_is_superuser(inbound.person_id),
                         "presence_id": inbound.presence_id,
                     }
 
@@ -870,16 +881,13 @@ class ChatService:
                             work_control = None
                 preparation.advance("runtime_snapshot")
                 runtime_config = runtime_snapshot or await self._runtime_config.snapshot(
-                    user_id=inbound.sender.user_id,
-                    group_id=inbound.group_id,
+                    user_id=inbound.person_id,
+                    group_id=inbound.space_id,
                 )
                 preparation.advance("memory_and_repair")
                 memory_session = self.open_memory_session(
-                    inbound,
                     autonomous=False,
                 )
-                if memory_session is not None:
-                    memory_cleanup.push_async_callback(memory_session.close)
 
                 preparation.advance("build_messages")
                 (
@@ -915,18 +923,11 @@ class ChatService:
                 )
                 await self.run_effect(turn_snapshot, validate_context)
                 preparation.advance("agent_setup")
-                gateway = (
-                    cast(OneBotToolGateway, sender)
-                    if callable(getattr(sender, "call_api", None))
-                    else None
-                )
                 runtime = ToolRuntime(
                     inbound=inbound,
-                    gateway=gateway,
-                    allow_generic_onebot=inbound.sender.user_id in self._settings.superusers,
                     conversation_key=conversation_key,
                     trigger_message_id=inbound.message_id,
-                    actor_is_superuser=inbound.sender.user_id in self._settings.superusers,
+                    actor_is_superuser=await self._person_is_superuser(inbound.person_id),
                     runtime_config=runtime_config,
                     origin=turn_origin,
                     turn_token=turn_token,
@@ -966,7 +967,6 @@ class ChatService:
 
     def open_memory_session(
         self,
-        inbound: InboundMessage,
         *,
         autonomous: bool,
     ) -> TurnMemorySession | None:
@@ -975,7 +975,7 @@ class ChatService:
         origin = (
             RuntimeTurnOrigin.AUTONOMOUS_GROUP if autonomous else RuntimeTurnOrigin.USER_MESSAGE
         )
-        return TurnMemorySession.open(inbound=inbound, origin=origin)
+        return TurnMemorySession.open(origin=origin)
 
     async def _record_tool_invocation(
         self,
@@ -1040,8 +1040,8 @@ class ChatService:
         key = runtime_conversation_key(identity=identity, turn=turn_snapshot, inbound=inbound)
         async with self._turn_coordinator.hold(key), self._concurrency.conversation(key):
             config = await self._runtime_config.snapshot(
-                user_id=inbound.sender.user_id,
-                group_id=inbound.group_id,
+                user_id=inbound.person_id,
+                group_id=inbound.space_id,
             )
             (
                 messages,
@@ -1062,10 +1062,8 @@ class ChatService:
             validate = self._context_validator(version, commit_projection=commit)
             runtime = ToolRuntime(
                 inbound=inbound,
-                gateway=None,
-                allow_generic_onebot=inbound.sender.user_id in self._settings.superusers,
                 conversation_key=key,
-                actor_is_superuser=inbound.sender.user_id in self._settings.superusers,
+                actor_is_superuser=await self._person_is_superuser(inbound.person_id),
                 runtime_config=config,
                 turn_snapshot=turn_snapshot,
                 visible_event_ids=visible,
@@ -1126,7 +1124,9 @@ class ChatService:
                     runtime=runtime,
                 ),
                 current_work_control.get(),
-                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(
+                    runtime, turn_snapshot.conversation_id
+                ),
             )
         current = self._with_input_material(
             context.current_message, native_images=native_images, attachment_text=attachment_text
@@ -1313,8 +1313,8 @@ class ChatService:
             if runtime.inbound is None:
                 raise RuntimeError("actorless Main Agent turn requires a runtime snapshot")
             config = await self._runtime_config.snapshot(
-                user_id=runtime.inbound.sender.user_id,
-                group_id=runtime.inbound.group_id,
+                user_id=runtime.inbound.person_id,
+                group_id=runtime.inbound.space_id,
             )
             runtime = replace(runtime, runtime_config=config)
         runtime = await self._prepare_tool_candidates(runtime)
@@ -1333,6 +1333,26 @@ class ChatService:
         async def before_model_request() -> None:
             if runtime.before_model_request is not None:
                 await runtime.before_model_request()
+            actor = runtime.actor_context
+            if (
+                actor is not None
+                and actor.principal_kind == "person"
+                and actor.person_id is not None
+            ):
+                from qq_ai_bot.identity.db_models import CanonicalPersonModel
+                from qq_ai_bot.identity.person_identity import current_person_id
+
+                async with self._ledger._database.sessions() as session:
+                    original = await session.get(CanonicalPersonModel, actor.person_id)
+                    root = (
+                        await session.get(
+                            CanonicalPersonModel, await current_person_id(session, actor.person_id)
+                        )
+                        if original is not None and actor.person_id is not None
+                        else None
+                    )
+                    if original is None or not original.enabled or root is None or not root.enabled:
+                        raise PermissionError("main_person_disabled")
             snapshot = runtime.turn_snapshot
             if snapshot is not None and not await self.validate_turn_snapshot(snapshot):
                 raise TurnSupersededError("turn generation changed before model invocation")
@@ -1398,7 +1418,14 @@ class ChatService:
         return await TurnMemorySession.open_self_origin(
             initiative_run_id=trigger.run_id,
             canonical_conversation_id=trigger.conversation_id,
-            identity=ConversationScope.group(trigger.bot_user_id, trigger.group_id),
+            identity=ConversationScope.group(
+                trigger.bot_user_id,
+                trigger.group_id,
+                platform=trigger.platform,
+                presence_id=trigger.presence_id,
+                conversation_id=trigger.conversation_id,
+                thread_id=trigger.thread_id,
+            ),
             partition_lookup=self._memory_partition_lookup,
         )
 
@@ -1427,7 +1454,9 @@ class ChatService:
                     runtime=runtime,
                 ),
                 current_work_control.get(),
-                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(
+                    runtime, turn_snapshot.conversation_id
+                ),
             )
             composition = await self.runtime.main_turns.compose(
                 inbound=None,
@@ -1487,19 +1516,23 @@ class ChatService:
 
         await validate()
         memory = await self.open_self_memory_session(trigger)
-        async with AsyncExitStack() as cleanup:
-            if memory is not None:
-                cleanup.push_async_callback(memory.close)
-            return await self.generate_origin_turn(
-                content=trigger.instruction,
-                identity=ConversationScope.group(trigger.bot_user_id, trigger.group_id),
-                runtime=runtime,
-                turn_token=turn_token,
-                turn_snapshot=turn_snapshot,
-                before_model_request=validate,
-                source_runtime=source_runtime,
-                memory_session=memory,
-            )
+        return await self.generate_origin_turn(
+            content=trigger.instruction,
+            identity=ConversationScope.group(
+                trigger.bot_user_id,
+                trigger.group_id,
+                platform=trigger.platform,
+                presence_id=trigger.presence_id,
+                conversation_id=trigger.conversation_id,
+                thread_id=trigger.thread_id,
+            ),
+            runtime=runtime,
+            turn_token=turn_token,
+            turn_snapshot=turn_snapshot,
+            before_model_request=validate,
+            source_runtime=source_runtime,
+            memory_session=memory,
+        )
 
     async def generate_main_agent_wakeup(
         self,
@@ -1545,7 +1578,9 @@ class ChatService:
                     external_trigger=trigger,
                 ),
                 current_work_control.get(),
-                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(
+                    runtime, turn_snapshot.conversation_id
+                ),
             )
             composition = await self.runtime.main_turns.compose(
                 inbound=None,
@@ -1556,12 +1591,6 @@ class ChatService:
             )
             tool_runtime = ToolRuntime(
                 inbound=None,
-                gateway=(
-                    cast(OneBotToolGateway, gateway)
-                    if callable(getattr(gateway, "call_api", None))
-                    else None
-                ),
-                allow_generic_onebot=False,
                 conversation_key=conversation_key,
                 trigger_message_id=event.platform_message_id,
                 actor_is_superuser=False,
@@ -1668,11 +1697,10 @@ class ChatService:
         content = self._ledger_content(message)
         recorded = False
         try:
-            await self._ledger.append(
-                bot_user_id=inbound.bot_user_id or "unknown-bot",
+            await self._ledger._writer.append(
+                scope=inbound.scope(),
                 platform_message_id=platform_message_id,
-                scope_type=inbound.scope_type,
-                sender_user_id=inbound.bot_user_id or "unknown-bot",
+                sender_user_id=inbound.bot_user_id,
                 direction="outbound",
                 content=content,
                 segments=(
@@ -1684,13 +1712,10 @@ class ChatService:
                     *(({"type": "text", "data": {"text": message.text}},) if message.text else ()),
                     *media_segments,
                 ),
-                group_id=inbound.group_id,
-                private_peer_user_id=(
-                    inbound.sender.user_id if inbound.scope_type is ScopeType.PRIVATE else None
-                ),
                 reply_to_message_id=message.reply_to_message_id,
                 sender_is_bot=True,
                 origin=origin,
+                source_event_id=inbound.source_event_id,
             )
             recorded = True
         except asyncio.CancelledError:
@@ -1719,10 +1744,12 @@ class ChatService:
         self,
         inbound: InboundMessage,
         message: OutboundMessage,
-        receipt: OutboundSendReceipt,
+        receipt: OutboundSendReceipt | LocalDeliveryReceipt,
     ) -> bool:
         """Share the same ledger boundary with deterministic media commands."""
 
+        if isinstance(receipt, LocalDeliveryReceipt):
+            return True
         return await self._record_outbound_message(inbound, message, receipt)
 
     @staticmethod

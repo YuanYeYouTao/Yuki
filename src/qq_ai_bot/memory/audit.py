@@ -5,8 +5,9 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import literal_column, text
 
+from qq_ai_bot.identity.person_identity import person_root_id
 from qq_ai_bot.memory.metrics import MemoryLifecycleMetrics
 from qq_ai_bot.memory.models import (
     MemoryConsistencyHealth,
@@ -61,11 +62,15 @@ class MemoryAuditService:
         *,
         subject_user_id: str | None = None,
         group_id: str | None = None,
+        person_id: str | None = None,
+        space_id: str | None = None,
         limit: int = 100,
     ) -> tuple[MemoryFact, ...]:
         return await self._repository.list_conflicts(
             subject_user_id=subject_user_id,
             group_id=group_id,
+            person_id=person_id,
+            space_id=space_id,
             limit=limit,
         )
 
@@ -119,6 +124,9 @@ class MemoryAuditService:
         }
 
     async def health(self) -> MemoryConsistencyHealth:
+        def root(column: str) -> str:
+            return str(person_root_id(literal_column(column)))
+
         queries = {
             "contested_fact_count": "SELECT COUNT(*) FROM memory_facts WHERE status='contested'",
             "active_contested_count": """
@@ -131,18 +139,18 @@ class MemoryAuditService:
                 LEFT JOIN memory_facts t ON t.id=r.target_fact_id
                 WHERE s.id IS NULL OR t.id IS NULL
             """,
-            "cross_target_relation_count": """
+            "cross_target_relation_count": f"""
                 SELECT COUNT(*) FROM memory_fact_relations r
                 JOIN memory_facts s ON s.id=r.source_fact_id
                 JOIN memory_facts t ON t.id=r.target_fact_id
                 WHERE s.scope_type != t.scope_type
-                    OR COALESCE(s.canonical_subject_person_id, '')
-                        != COALESCE(t.canonical_subject_person_id, '')
+                    OR COALESCE({root("s.canonical_subject_person_id")}, '')
+                        != COALESCE({root("t.canonical_subject_person_id")}, '')
                     OR COALESCE(s.canonical_subject_space_id, '')
                         != COALESCE(t.canonical_subject_space_id, '')
                     OR COALESCE(s.visibility_type, '') != COALESCE(t.visibility_type, '')
-                    OR COALESCE(s.canonical_visibility_person_id, '')
-                        != COALESCE(t.canonical_visibility_person_id, '')
+                    OR COALESCE({root("s.canonical_visibility_person_id")}, '')
+                        != COALESCE({root("t.canonical_visibility_person_id")}, '')
                     OR COALESCE(s.canonical_visibility_space_id, '')
                         != COALESCE(t.canonical_visibility_space_id, '')
             """,

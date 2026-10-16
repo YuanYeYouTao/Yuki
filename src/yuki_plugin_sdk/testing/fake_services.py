@@ -348,7 +348,7 @@ class FakeMediaFacade:
 class FakeNotificationFacade:
     def __init__(self) -> None:
         self.published: list[PublishNotificationRequest] = []
-        self.grants: dict[tuple[str, str], BackgroundTargetGrantView] = {}
+        self.grants: dict[tuple[str, str, str | None], BackgroundTargetGrantView] = {}
 
     async def publish(self, request: PublishNotificationRequest) -> NotificationPublishReceipt:
         self.published.append(request)
@@ -373,12 +373,16 @@ class FakeNotificationFacade:
             bot_user_id=bot_user_id or "test-bot",
             enabled=True,
             created_by_user_id="test-admin",
+            conversation_id=target.conversation_id,
         )
-        self.grants[(target.target_type, target.target_id)] = view
+        self.grants[(target.target_type, target.target_id, target.conversation_id)] = view
         return view
 
     async def revoke_target(self, target: NotificationTarget) -> bool:
-        return self.grants.pop((target.target_type, target.target_id), None) is not None
+        return (
+            self.grants.pop((target.target_type, target.target_id, target.conversation_id), None)
+            is not None
+        )
 
     async def list_grants(self) -> tuple[BackgroundTargetGrantView, ...]:
         return tuple(self.grants.values())

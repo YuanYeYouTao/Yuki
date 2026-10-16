@@ -19,6 +19,8 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.identity.db_models import PresenceModel
+from qq_ai_bot.identity.person_identity import same_person_id
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.plugin_host.db_models import (
     PluginBackgroundTargetGrantModel,
@@ -207,7 +209,13 @@ class WorkWaitRepository:
             original_principal = (
                 "self" if original_kind == "self" else original_source.get("actor_person_id")
             )
-            if (principal_kind, principal_id) != (original_kind, original_principal):
+            if principal_kind != original_kind or (
+                principal_id != original_principal
+                and not (
+                    principal_kind == "person"
+                    and await same_person_id(session, principal_id, original_principal)
+                )
+            ):
                 raise WorkConflict("wait_work_source_changed")
             conversation = await session.get(CanonicalConversationModel, lease.conversation_id)
             if conversation is None:
@@ -560,13 +568,23 @@ class WorkWaitRepository:
         return delivered_input if delivered_input is not None else (0 if matched_any else None)
 
     async def match_user_reply(self, event_id: int) -> int | None:
-        """A reply to the Work's own question can resume waiting_user."""
+        """Resume a quoted question, or the same Person's current App waiting Work."""
         from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
         from qq_ai_bot.social.db_models import SocialOperationModel
 
         async with self.repository.database.sessions() as observer:
             event = await observer.get(ChatEventModel, event_id)
-            if event is None or event.reply_to_event_id is None:
+            if event is None:
+                return None
+            if (
+                event.reply_to_event_id is None
+                and await observer.scalar(
+                    select(PresenceModel.platform).where(
+                        PresenceModel.id == event.ingress_presence_id
+                    )
+                )
+                != "app"
+            ):
                 return None
         async with self.repository.database.immediate_session() as session:
             event = await session.get(ChatEventModel, event_id)
@@ -574,7 +592,6 @@ class WorkWaitRepository:
                 event is None
                 or event.direction != "inbound"
                 or event.event_kind != "message"
-                or event.reply_to_event_id is None
                 or event.author_person_id is None
                 or event.canonical_conversation_id is None
             ):
@@ -583,6 +600,16 @@ class WorkWaitRepository:
                 CanonicalConversationModel, event.canonical_conversation_id
             )
             if conversation is None:
+                return None
+            if (
+                event.reply_to_event_id is None
+                and await session.scalar(
+                    select(PresenceModel.platform).where(
+                        PresenceModel.id == event.ingress_presence_id
+                    )
+                )
+                != "app"
+            ):
                 return None
             candidates = (
                 (
@@ -603,18 +630,26 @@ class WorkWaitRepository:
                 source = json.loads(candidate["source_json"])
                 if (
                     source.get("origin") != "user_message"
-                    or source.get("actor_person_id") != event.author_person_id
+                    or not event.author_person_id
+                    or not source.get("actor_person_id")
+                    or not await same_person_id(
+                        session, source["actor_person_id"], event.author_person_id
+                    )
                     or not isinstance(source.get("trigger_event_id"), int)
                 ):
                     continue
-                question = await session.scalar(
-                    select(SocialOperationModel.id).where(
-                        SocialOperationModel.source_conversation_id == conversation.id,
-                        SocialOperationModel.source_turn_id
-                        == f"{conversation.id}:event:{source['trigger_event_id']}",
-                        SocialOperationModel.event_id == event.reply_to_event_id,
-                        SocialOperationModel.status == "succeeded",
+                question = (
+                    await session.scalar(
+                        select(SocialOperationModel.id).where(
+                            SocialOperationModel.source_conversation_id == conversation.id,
+                            SocialOperationModel.source_turn_id
+                            == f"{conversation.id}:event:{source['trigger_event_id']}",
+                            SocialOperationModel.event_id == event.reply_to_event_id,
+                            SocialOperationModel.status == "succeeded",
+                        )
                     )
+                    if event.reply_to_event_id is not None
+                    else True
                 )
                 if question is None:
                     continue

@@ -46,13 +46,16 @@ from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import (
     ChatImage,
     InboundMessage,
+    LocalDeliveryReceipt,
     OutboundMessage,
     OutboundSendReceipt,
 )
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.collector import EmojiCollector
 from qq_ai_bot.emoji.worker import EmojiWorker
+from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
+from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.ingress import CanonicalIngressResolver, IngressPreAdmit
 from qq_ai_bot.identity.readers import canonical_group_policy, canonical_private_policy
 from qq_ai_bot.llm.base import LLMConfigurationError, LLMEmptyResponseError, LLMError
@@ -66,12 +69,12 @@ from qq_ai_bot.persistence.repositories import (
     PrivateUserSettingsRepository,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
+from qq_ai_bot.persistence.scoped_event_uow import ScopedAppendResult
 from qq_ai_bot.plugin_host.direct_command_router import DirectCommandMatch
 from qq_ai_bot.runtime.activation_outcome import (
     WorkActivationHandled,
     WorkRecoveryDeferred,
 )
-from qq_ai_bot.runtime.keys import ResolvedMemoryScope
 from qq_ai_bot.runtime.observability import (
     RuntimeTurnCorrelation,
     TurnObservationRecorder,
@@ -89,6 +92,7 @@ from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminServ
 from qq_ai_bot.services.attachment_inputs import AttachmentInputService
 from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
 from qq_ai_bot.services.chat import ChatService, OutboundSender
+from qq_ai_bot.services.client_link import ClientLinkCommands
 from qq_ai_bot.services.command_service import CommandExecution, CommandService
 from qq_ai_bot.services.concurrency import ConcurrencyManager, RequestCancelledError
 from qq_ai_bot.services.context_boundary import OrdinaryContextInput
@@ -98,7 +102,6 @@ from qq_ai_bot.services.effect_gate import (
     EffectGateTimeoutError,
     EffectPermitRejectedError,
 )
-from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     content_free_turn_payload,
@@ -231,8 +234,12 @@ class OrdinaryParticipationService(Protocol):
         tuple[OrdinaryParticipationBinding, Literal["semantic_invitation", "continuation"]] | None
     ): ...
 
-    def continuation_current(
-        self, binding: OrdinaryParticipationBinding, *, check_budget: bool = True
+    async def continuation_current(
+        self,
+        binding: OrdinaryParticipationBinding,
+        *,
+        check_budget: bool = True,
+        session: AsyncSession | None = None,
     ) -> bool: ...
 
     async def on_ordinary_admitted(
@@ -364,6 +371,12 @@ def _vision_failure_message(error_code: str | None, *, reply_only: bool) -> str:
 class MessageProcessor:
     """Admission → dedup → identity → ledger → memory → reply."""
 
+    async def _person_is_superuser(self, person_id: str | None) -> bool:
+        from qq_ai_bot.identity.authority import person_is_superuser
+
+        async with self._ledger._database.sessions() as session:
+            return await person_is_superuser(session, person_id, self._settings.superusers)
+
     def __init__(
         self,
         *,
@@ -406,9 +419,11 @@ class MessageProcessor:
         turn_observations: TurnObservationRecorder | None = None,
         canonical_ingress: CanonicalIngressResolver,
         group_recovery: GroupRecoveryHandler | None = None,
+        client_links: ClientLinkCommands | None = None,
         canonical_uow: CanonicalIngressUnitOfWork,
     ) -> None:
         database = ledger._database
+        self._client_links = client_links
         self._turn_observations = turn_observations
         self._settings = settings
         self._asr = asr_service
@@ -467,7 +482,6 @@ class MessageProcessor:
             settings=settings,
             config_registry=self._runtime_config.registry,
         )
-        self._vision = vision_service
         self._native_images = attachment_inputs
         self._conversation_media = conversation_media
         self._automation = automation_service
@@ -535,7 +549,8 @@ class MessageProcessor:
         if observed is None:
             return ProcessResult(False, reason="ordinary_envelope_unavailable")
         runtime = await self._runtime_config.snapshot(
-            user_id=observed.message.sender.user_id, group_id=observed.message.group_id
+            user_id=observed.message.person_id,
+            group_id=observed.message.space_id,
         )
         if not defer_new_main:
             original = await self.promote_committed_event(
@@ -543,7 +558,7 @@ class MessageProcessor:
             )
             if original.reason != "ordinary_deferred":
                 return original
-            group_policy = await self._effective_group_policy(observed.message.group_id)
+            group_policy = await self._effective_group_policy(observed.message.space_id)
             if group_policy is None or not group_policy.enabled:
                 return ProcessResult(False, reason="group_disabled")
             if reason == "group_open":
@@ -635,6 +650,8 @@ class MessageProcessor:
         message: InboundMessage,
         sender: OutboundSender,
         profile_resolver: UserProfileResolver | None = None,
+        *,
+        on_committed: Callable[[ScopedAppendResult], None] | None = None,
     ) -> ProcessResult:
         """Bind one opaque runtime turn correlation around real message handling.
 
@@ -658,6 +675,17 @@ class MessageProcessor:
         # hot provider switch cannot change the model between those two steps.
         with bind_runtime_turn(correlation), self._chat.pin_model_runtime():
             try:
+                if (
+                    self._client_links is not None
+                    and message.platform != "app"
+                    and self._client_links.is_request(message)
+                ):
+                    link_response = await self._client_links.execute(
+                        getattr(sender, "bot", None), message
+                    )
+                    await sender.send(OutboundMessage(text=link_response))
+                    result = ProcessResult(True, sent_messages=1, reason="client_link")
+                    return result
                 if self._group_recovery is not None and self._group_recovery.is_enable_request(
                     message
                 ):
@@ -688,6 +716,7 @@ class MessageProcessor:
                     sender,
                     profile_resolver,
                     admitted=admitted,
+                    on_committed=on_committed,
                 )
                 return result
             except BaseException as exc:
@@ -726,6 +755,7 @@ class MessageProcessor:
         profile_resolver: UserProfileResolver | None = None,
         *,
         admitted: IngressPreAdmit,
+        on_committed: Callable[[ScopedAppendResult], None] | None = None,
     ) -> ProcessResult:
         """Process one message without deriving authority from model-visible data."""
 
@@ -744,11 +774,11 @@ class MessageProcessor:
                 "is_self_message": message.is_self_message,
             },
         )
-        group_policy = await self._effective_group_policy(message.group_id)
+        group_policy = await self._effective_group_policy(message.space_id)
         private_policy = await self._effective_private_policy(message)
         direct_match = (
             self._direct_plugin_commands.match(message.text)
-            if self._direct_plugin_commands is not None
+            if self._direct_plugin_commands is not None and admitted.provider != "app"
             else None
         )
         decision = evaluate_message(
@@ -758,11 +788,12 @@ class MessageProcessor:
             private_policy=private_policy,
             direct_triggered=direct_match is not None,
             yuki_account_ids=yuki_account_ids,
+            commands_enabled=admitted.provider != "app",
         )
         if decision.reason == "bot_message":
             await self._publish_turn_rejected(message, decision.reason)
             return ProcessResult(False, reason=decision.reason)
-        is_superuser = message.sender.user_id in self._settings.superusers
+        is_superuser = await self._person_is_superuser(message.person_id)
         admin_candidate = bool(
             is_superuser
             and direct_match is None
@@ -793,8 +824,8 @@ class MessageProcessor:
         )
         event_key = build_event_key(message, identity.key)
         runtime_snapshot = await self._runtime_config.snapshot(
-            user_id=message.sender.user_id,
-            group_id=message.group_id,
+            user_id=message.person_id,
+            group_id=message.space_id,
         )
         self._turn_coordinator.configure_policy(
             interrupt_autonomous_on_new_message=(
@@ -847,7 +878,10 @@ class MessageProcessor:
 
         # A non-explicit keeper resend must not advance the version that a
         # pending source of another real message is waiting on.
-        turn_token = await notify() if direct_turn else None
+        app_message = (
+            admitted.provider == "app" and decision.command is None and direct_match is None
+        )
+        turn_token = await notify() if direct_turn and not app_message else None
         has_visual_input = VisionService.has_visual_input(message) or (
             self._native_images is not None
             and any(
@@ -939,15 +973,21 @@ class MessageProcessor:
             record = appended.event
             created = appended.created
             scope_state = appended.scope
+        if on_committed is not None:
+            on_committed(ScopedAppendResult(event=record, created=created, scope=scope_state))
         if turn_token is None:
             if not created:
                 return ProcessResult(False, reason="group_observed")
             turn_token = await notify()
-        message = replace(message, source_event_id=record.id)
+        message = replace(
+            message,
+            source_event_id=record.id,
+            conversation_id=record.canonical_conversation_id,
+        )
         if created and message.attachments and self._conversation_media is not None:
             media_gateway = (
-                cast(OneBotMediaGateway, sender)
-                if callable(getattr(sender, "call_api", None))
+                cast(PlatformMediaGateway, sender)
+                if callable(getattr(sender, "resolve_media_file", None))
                 else None
             )
             self._conversation_media.submit(record.id, media_gateway)
@@ -974,8 +1014,8 @@ class MessageProcessor:
             and not is_explicit_emoji_import
         ):
             media_gateway = (
-                cast(OneBotMediaGateway, sender)
-                if callable(getattr(sender, "call_api", None))
+                cast(PlatformMediaGateway, sender)
+                if callable(getattr(sender, "resolve_media_file", None))
                 else None
             )
             self._emoji_collector.submit(
@@ -1209,7 +1249,9 @@ class MessageProcessor:
                 or (
                     prepared.admission.binding is not None
                     and self._participation is not None
-                    and self._participation.continuation_current(prepared.admission.binding)
+                    and await self._participation.continuation_current(
+                        prepared.admission.binding, session=session
+                    )
                 )
             )
         )
@@ -1238,7 +1280,8 @@ class MessageProcessor:
                     continue
                 assert record is not None
                 runtime = await self._runtime_config.snapshot(
-                    user_id=observed.message.sender.user_id, group_id=observed.message.group_id
+                    user_id=observed.message.person_id,
+                    group_id=observed.message.space_id,
                 )
                 content = _input_content(observed.message, observed.message.text)
                 if len(content) > self._settings.max_input_characters:
@@ -1375,8 +1418,8 @@ class MessageProcessor:
                 "command" if direct_match is not None or decision.command is not None else "chat"
             )
             rate = await self._rate_limiter.check(
-                user_id=message.sender.user_id,
-                group_id=message.group_id,
+                user_id=cast(str, record.author_person_id),
+                group_id=message.space_id,
                 category=category,
             )
             if not rate.allowed:
@@ -1803,8 +1846,8 @@ class MessageProcessor:
         if record.audio_transcript:
             return record, AudioInput(transcript=record.audio_transcript)
         gateway = (
-            cast(OneBotMediaGateway, sender)
-            if callable(getattr(sender, "call_api", None))
+            cast(PlatformMediaGateway, sender)
+            if callable(getattr(sender, "resolve_media_file", None))
             else None
         )
         audio = (
@@ -1832,16 +1875,9 @@ class MessageProcessor:
         return record, audio
 
     async def _enqueue_memory(self, record: EventRecord) -> None:
-        memory_conversation_key = (
-            ResolvedMemoryScope.for_group(record.group_id).partition_key
-            if record.group_id is not None
-            else ResolvedMemoryScope.for_private(
-                record.private_peer_user_id or record.sender_user_id
-            ).partition_key
-        )
         await self._memory_worker.enqueue(
             record.id,
-            memory_conversation_key,
+            record.scope.key,
             content_characters=len(record.evidence_content),
         )
 
@@ -1879,8 +1915,8 @@ class MessageProcessor:
             return VisualTurnState()
         if self._native_images is not None:
             gateway = (
-                cast(OneBotMediaGateway, sender)
-                if callable(getattr(sender, "call_api", None))
+                cast(PlatformMediaGateway, sender)
+                if callable(getattr(sender, "resolve_media_file", None))
                 else None
             )
             try:
@@ -1981,7 +2017,9 @@ class MessageProcessor:
         if message.scope_type is not ScopeType.PRIVATE:
             return None
         async with self._ledger._database.sessions() as session:
-            return await canonical_private_policy(session, message.sender.user_id)
+            return await canonical_private_policy(
+                session, message.sender.user_id, platform=message.platform
+            )
 
     async def _handle_ingress_drop(
         self, message: InboundMessage, sender: OutboundSender, reason: str
@@ -2019,8 +2057,8 @@ class MessageProcessor:
                 argument,
                 started,
                 gateway=(
-                    cast(OneBotMediaGateway, sender)
-                    if callable(getattr(sender, "call_api", None))
+                    cast(PlatformMediaGateway, sender)
+                    if callable(getattr(sender, "resolve_media_file", None))
                     else None
                 ),
             )
@@ -2095,7 +2133,9 @@ class MessageProcessor:
     ) -> ProcessResult:
         """Cancel old work, acquire sorted scope gates, then delete in one DB transaction."""
 
-        scopes = await self._people.affected_conversation_scopes(message.sender.user_id)
+        if message.person_id is None:
+            raise CanonicalIdentityError("no_person")
+        scopes = await self._people.affected_conversation_scopes(message.person_id)
         for scope in scopes:
             await self._turn_coordinator.cancel_interruptible(scope.key)
         try:
@@ -2256,7 +2296,7 @@ class MessageProcessor:
         record: bool,
     ) -> None:
         receipt = await sender.send(outbound)
-        if not isinstance(receipt, OutboundSendReceipt):
+        if not isinstance(receipt, (OutboundSendReceipt, LocalDeliveryReceipt)):
             raise TypeError("outbound sender returned no delivery receipt")
         if record:
             await self._chat.record_confirmed_outbound(inbound, outbound, receipt)
@@ -2310,7 +2350,7 @@ class MessageProcessor:
         outbound: OutboundMessage,
     ) -> None:
         receipt = await sender.send(outbound)
-        if not isinstance(receipt, OutboundSendReceipt):
+        if not isinstance(receipt, (OutboundSendReceipt, LocalDeliveryReceipt)):
             raise TypeError("outbound sender returned no delivery receipt")
         await self._chat.record_confirmed_outbound(inbound, outbound, receipt)
 

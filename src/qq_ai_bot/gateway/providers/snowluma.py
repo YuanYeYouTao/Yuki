@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Final, final
 
+from qq_ai_bot.adapters.onebot.social import OneBotSocialOperations
+from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.gateway.provider import GatewayConnectionProfile
 
 SNOWLUMA_PROVIDER_ID: Final[str] = "snowluma"
@@ -23,6 +26,14 @@ SNOWLUMA_CAPABILITIES: Final[frozenset[str]] = frozenset(
 @final
 class SnowLumaProvider:
     """Profile SnowLuma OneBot handles without leaking them into core services."""
+
+    def __init__(self, transfer_root: Path | None = None, gateway_root: str = "") -> None:
+        self.social = OneBotSocialOperations(transfer_root, gateway_root)
+
+    def project_inbound(self, message: InboundMessage, yuki_ids: frozenset[str]) -> InboundMessage:
+        from qq_ai_bot.adapters.onebot.normalizer import reproject_inbound_mentions
+
+        return reproject_inbound_mentions(message, yuki_ids)
 
     @property
     def provider_id(self) -> str:

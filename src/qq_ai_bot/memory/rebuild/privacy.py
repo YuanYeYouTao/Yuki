@@ -8,12 +8,20 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import delete, exists, func, or_, select, update
+from sqlalchemy import and_, delete, exists, func, or_, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
+from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel
+from qq_ai_bot.identity.ownership_interval import BindingOwnership
+from qq_ai_bot.identity.person_identity import person_family_ids
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.persistence.models import MemoryRebuildProposalModel, MemoryRebuildRunModel
+from qq_ai_bot.persistence.models import (
+    ChatEventModel,
+    MemoryRebuildProposalModel,
+    MemoryRebuildRunModel,
+)
 
 _TERMINAL = {"completed", "cancelled", "failed"}
 
@@ -21,24 +29,35 @@ _TERMINAL = {"completed", "cancelled", "failed"}
 @dataclass(frozen=True, slots=True)
 class PreparedRebuildForget:
     aliases: tuple[str, ...]
-    catalogue_token: tuple[Any, ...]
     # Original identity and the fully serialized replacement; no writer JSON parsing.
     changes: tuple[tuple[int, str, datetime, str, str, str, bool], ...]
+    ownership: tuple[BindingOwnership, ...] = ()
+    person_ids: tuple[str, ...] = ()
 
 
-async def _catalogue_token(session: AsyncSession) -> tuple[Any, ...]:
-    run = MemoryRebuildRunModel
-    return tuple(
-        tuple(row)
-        for row in await session.execute(
-            select(run.id, run.selection_hash, run.status, run.updated_at).order_by(run.id)
+async def prepare_forget(
+    session: AsyncSession,
+    aliases: tuple[str, ...],
+    ownership: tuple[BindingOwnership, ...] = (),
+    *,
+    person_id: str | None = None,
+) -> PreparedRebuildForget:
+    aliases = tuple(sorted(set(aliases)))
+    person_ids = (
+        await person_family_ids(session, person_id)
+        if person_id is not None
+        else tuple(
+            await session.scalars(
+                select(IdentityBindingModel.person_id)
+                .where(
+                    IdentityBindingModel.platform == "qq",
+                    IdentityBindingModel.external_account_id.in_(aliases),
+                    IdentityBindingModel.status != "transferred",
+                )
+                .distinct()
+            )
         )
     )
-
-
-async def prepare_forget(session: AsyncSession, aliases: tuple[str, ...]) -> PreparedRebuildForget:
-    aliases = tuple(sorted(set(aliases)))
-    catalogue = await _catalogue_token(session)
     run = MemoryRebuildRunModel
     senders = func.json_each(run.selection_json, "$.sender_user_ids").table_valued("value")
     bots = func.json_each(run.selection_json, "$.bot_user_ids").table_valued("value")
@@ -89,14 +108,10 @@ async def prepare_forget(session: AsyncSession, aliases: tuple[str, ...]) -> Pre
                 not bounded,
             )
         )
-    if await _catalogue_token(session) != catalogue:
-        raise ValueError("memory_rebuild_privacy_preparation_changed")
-    return PreparedRebuildForget(aliases, catalogue, tuple(changes))
+    return PreparedRebuildForget(aliases, tuple(changes), ownership, person_ids)
 
 
 async def apply_forget(session: AsyncSession, prepared: PreparedRebuildForget) -> int:
-    if await _catalogue_token(session) != prepared.catalogue_token:
-        raise ValueError("memory_rebuild_privacy_preparation_changed")
     run = MemoryRebuildRunModel
     rows = {
         row.id: (row.selection_hash, row.updated_at, row.status)
@@ -108,11 +123,45 @@ async def apply_forget(session: AsyncSession, prepared: PreparedRebuildForget) -
     }
     if any(rows.get(change[0]) != change[1:4] for change in prepared.changes):
         raise ValueError("memory_rebuild_privacy_preparation_changed")
-    deleted = await session.execute(
-        delete(MemoryRebuildProposalModel).where(
-            MemoryRebuildProposalModel.subject_user_id.in_(prepared.aliases)
+    proposal = MemoryRebuildProposalModel
+    # Original canonical targets are authoritative, including third-party claims.
+    conditions: list[ColumnElement[bool]] = [
+        proposal.canonical_subject_person_id.in_(prepared.person_ids)
+    ]
+    source_platform = func.coalesce(
+        select(PresenceModel.platform)
+        .where(PresenceModel.id == ChatEventModel.ingress_presence_id)
+        .scalar_subquery(),
+        "qq",  # Legacy events without an ingress Presence predate other platforms.
+    )
+    conditions.append(
+        and_(
+            proposal.canonical_subject_person_id.is_(None),
+            proposal.subject_user_id.in_(prepared.aliases),
+            exists(
+                select(ChatEventModel.id).where(
+                    ChatEventModel.id == proposal.event_id, source_platform == "qq"
+                )
+            ),
         )
     )
+    for interval in prepared.ownership:
+        source = [
+            ChatEventModel.id == proposal.event_id,
+            source_platform == interval.platform,
+        ]
+        if interval.starts_at is not None:
+            source.append(ChatEventModel.observed_at >= interval.starts_at)
+        if interval.ends_at is not None:
+            source.append(ChatEventModel.observed_at < interval.ends_at)
+        conditions.append(
+            and_(
+                proposal.canonical_subject_person_id.is_(None),
+                proposal.subject_user_id == interval.account,
+                exists(select(ChatEventModel.id).where(*source)),
+            )
+        )
+    deleted = await session.execute(delete(proposal).where(or_(*conditions)))
     changed = int(cast(CursorResult[Any], deleted).rowcount or 0)
     now = datetime.now(UTC)
     for run_id, old_hash, old_time, status, encoded, fingerprint, cancel in prepared.changes:

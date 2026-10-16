@@ -73,6 +73,8 @@ class PluginAdmissionSignalAdapter:
             conversation_key=plugin_conversation_key(message, message.scope()),
             origin=SdkTurnOrigin(origin.value),
             current=CurrentMessage(
+                platform=message.platform,
+                mentioned_person_ids=message.mentioned_person_ids,
                 message_id=message.message_id,
                 sender_user_id=message.sender.user_id,
                 scope_type=message.scope_type.value,

@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-import re
 
+from qq_ai_bot.admin.authority.principal import ControlPrincipal
 from qq_ai_bot.admin.control_resolution import ControlAccess, audit_ref_from_actor
 from qq_ai_bot.admin.models import AdminActor, ControlAuditRef
-from qq_ai_bot.control_plane.principal import ControlPrincipal
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.identity import PersonId
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
@@ -18,11 +18,9 @@ from qq_ai_bot.persistence.repositories import PeopleRepository
 from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
 from qq_ai_bot.services.admin.preference_admin import PreferenceAdminService
 
-_NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
-
 
 class ProfileCommandHandler:
-    """Handle deterministic commands scoped to one QQ person."""
+    """Handle deterministic commands scoped to a canonical Person."""
 
     def __init__(
         self,
@@ -51,23 +49,25 @@ class ProfileCommandHandler:
             return special
         parsed = self._parse_scoped_operation(
             argument,
-            actor.user_id,
+            actor.person_id,
             actor.is_superuser,
         )
         if isinstance(parsed, str):
             return parsed
         operation, target, rest = parsed
         if operation == "list":
-            rows = await self._memory_admin.list_memories(actor, target)
+            rows = await self._memory_admin.list_memories(actor, target, target_person_id=target)
             if not rows:
-                return f"QQ {target} 暂无人物记忆。"
+                return f"Person {target} 暂无人物记忆。"
             return "\n".join(f"{row.id}. [{row.source_type}] {row.content}" for row in rows)
         if operation == "add":
             content = " ".join(rest).strip()
             if not content:
                 return "格式：/ai memory add <内容>"
             try:
-                row = await self._memory_admin.add_memory(actor, target, content)
+                row = await self._memory_admin.add_memory(
+                    actor, target, content, target_person_id=target
+                )
             except ValueError as exc:
                 return str(exc)
             return f"已添加人物记忆 {row.id}。"
@@ -79,6 +79,7 @@ class ProfileCommandHandler:
                 target,
                 int(rest[0]),
                 " ".join(rest[1:]),
+                target_person_id=target,
             )
             return "记忆已更新。" if updated else "没有找到可修改的记忆。"
         if operation == "delete":
@@ -88,12 +89,15 @@ class ProfileCommandHandler:
                 actor,
                 target,
                 int(rest[0]),
+                target_person_id=target,
             )
             return "记忆已删除。" if deleted else "没有找到该记忆。"
         if operation == "evidence":
             if len(rest) != 1 or not rest[0].isdigit():
                 return "格式：/ai memory evidence <记忆ID>"
-            evidence_rows = await self._memory_admin.list_evidence(actor, target, int(rest[0]))
+            evidence_rows = await self._memory_admin.list_evidence(
+                actor, target, int(rest[0]), target_person_id=target
+            )
             if not evidence_rows:
                 return "没有找到该记忆的证据。"
             return "\n".join(
@@ -107,14 +111,14 @@ class ProfileCommandHandler:
     async def _memory_rebuild_command(self, actor: AdminActor, argument: str) -> str:
         if self._memory_rebuild is None:
             return "历史记忆重建服务未装配。"
-        if not actor.is_superuser:
+        if not actor.is_superuser or actor.person_id is None:
             raise PermissionError("仅当前真实超级管理员可使用历史记忆重建。")
         operation, _, rest = argument.partition(" ")
         operation = operation.casefold()
         rest = rest.strip()
         try:
             if operation == "list":
-                rows = await self._memory_rebuild.list(actor_user_id=actor.user_id)
+                rows = await self._memory_rebuild.list(actor_user_id=actor.person_id)
                 return (
                     "\n".join(
                         f"{row.public_id} [{row.status.value}] "
@@ -125,7 +129,7 @@ class ProfileCommandHandler:
                 )
             if operation == "plan":
                 selection = MemoryRebuildSelection.model_validate_json(rest)
-                run = await self._memory_rebuild.plan(selection, actor_user_id=actor.user_id)
+                run = await self._memory_rebuild.plan(selection, actor_user_id=actor.person_id)
                 return (
                     f"已规划 {run.public_id}：匹配 {run.plan_statistics.matched_events}，"
                     f"可提取 {run.plan_statistics.eligible_events}；plan 未调用模型。"
@@ -143,10 +147,10 @@ class ProfileCommandHandler:
                 if not rest:
                     return f"格式：/ai memory rebuild {operation} <run_id>"
                 if operation == "status":
-                    data = await self._memory_rebuild.status(rest, actor_user_id=actor.user_id)
+                    data = await self._memory_rebuild.status(rest, actor_user_id=actor.person_id)
                     return json.dumps(data, ensure_ascii=False, indent=2)
                 method = getattr(self._memory_rebuild, operation)
-                result = await method(rest, actor_user_id=actor.user_id)
+                result = await method(rest, actor_user_id=actor.person_id)
                 if isinstance(result, bool):
                     return "重建暂存数据已清理。" if result else "没有找到该重建任务。"
                 return f"{result.public_id} -> {result.status.value}"
@@ -154,7 +158,7 @@ class ProfileCommandHandler:
                 run_id, _, raw_page = rest.partition(" ")
                 review_entries = await self._memory_rebuild.review(
                     run_id,
-                    actor_user_id=actor.user_id,
+                    actor_user_id=actor.person_id,
                     page=int(raw_page or "1"),
                 )
                 return json.dumps(
@@ -170,7 +174,7 @@ class ProfileCommandHandler:
                     run_id,
                     selector,
                     approved=operation == "approve",
-                    actor_user_id=actor.user_id,
+                    actor_user_id=actor.person_id,
                 )
                 return f"已{('批准' if operation == 'approve' else '拒绝')} {count} 条 proposal。"
         except (ValueError, RuntimeError, PermissionError, json.JSONDecodeError) as exc:
@@ -261,16 +265,13 @@ class ProfileCommandHandler:
             if operation == "conflicts":
                 target: str | None = None
                 if parts:
-                    if (
-                        len(parts) != 2
-                        or parts[0].casefold() != "user"
-                        or _NUMERIC_PLATFORM_ID.fullmatch(parts[1]) is None
-                    ):
-                        return "格式：/ai memory conflicts [user <QQ号>]"
-                    target = parts[1]
+                    if len(parts) != 2 or parts[0].casefold() != "user":
+                        return "格式：/ai memory conflicts [user <Person ID>]"
+                    target = PersonId.parse(parts[1]).text
                 rows = await self._memory_admin.list_conflicts(
                     actor,
                     target_user_id=target,
+                    person_id=target or actor.person_id,
                 )
                 return (
                     "\n".join(
@@ -364,18 +365,22 @@ class ProfileCommandHandler:
                 return "权限不足：该记忆检索诊断仅限超级管理员。"
             if operation == "search":
                 if len(parts) < 3 or parts[0].casefold() not in {"person", "group"}:
-                    return "格式：/ai memory search person <QQ号> <query> 或 group <群号> <query>"
+                    return (
+                        "格式：/ai memory search person <Person ID> <query> "
+                        "或 group <Space ID> <query>"
+                    )
                 scope = parts.pop(0).casefold()
                 target = parts.pop(0)
-                if _NUMERIC_PLATFORM_ID.fullmatch(target) is None:
-                    return "目标 QQ 号或群号格式错误。"
+                target = PersonId.parse(target).text
                 query = " ".join(parts).strip()
                 if not query:
                     return "检索 query 不能为空。"
                 result = (
-                    await self._memory_admin.search_person(actor, target, query)
+                    await self._memory_admin.search_person(actor, target, query, person_id=target)
                     if scope == "person"
-                    else await self._memory_admin.search_group(actor, target, query)
+                    else await self._memory_admin.search_group(
+                        actor, target, query, space_id=target
+                    )
                 )
                 if not result.hits:
                     return "没有检索到相关记忆。"
@@ -545,7 +550,7 @@ class ProfileCommandHandler:
     async def preference(self, *, actor: AdminActor, argument: str) -> str:
         parsed = self._parse_scoped_operation(
             argument,
-            actor.user_id,
+            actor.person_id,
             actor.is_superuser,
         )
         if isinstance(parsed, str):
@@ -557,7 +562,7 @@ class ProfileCommandHandler:
             if operation == "list":
                 rows = await self._preference_admin.list_preferences(context, audit)
                 if not rows:
-                    return f"QQ {target} 暂无交互偏好。"
+                    return f"Person {target} 暂无交互偏好。"
                 return "\n".join(f"{row.key} = {row.value}" for row in rows)
             if operation == "set":
                 if len(rest) < 2:
@@ -584,8 +589,10 @@ class ProfileCommandHandler:
 
     @staticmethod
     def _parse_scoped_operation(
-        argument: str, actor: str, is_superuser: bool
+        argument: str, actor: str | None, is_superuser: bool
     ) -> tuple[str, str, list[str]] | str:
+        if actor is None:
+            return "没有找到当前 Person。"
         parts = argument.split()
         if not parts:
             return "缺少操作名。"
@@ -593,16 +600,18 @@ class ProfileCommandHandler:
         target = actor
         if len(parts) >= 2 and parts[0].casefold() == "user":
             if not is_superuser:
-                return "只有超级管理员可以管理其他 QQ 人物。"
-            candidate = parts[1]
-            if _NUMERIC_PLATFORM_ID.fullmatch(candidate) is None:
-                return "目标 QQ 号格式错误。"
-            target = candidate
+                return "只有超级管理员可以管理其他人物。"
+            try:
+                target = PersonId.parse(parts[1]).text
+            except (TypeError, ValueError):
+                return "目标 Person ID 格式错误。"
             del parts[:2]
         return operation, target, parts
 
     async def _authorized_call(self, actor: AdminActor) -> tuple[ControlPrincipal, ControlAuditRef]:
-        return await self._control.principal_for_qq(actor.user_id), audit_ref_from_actor(actor)
+        return await self._control.principal_for_person(actor.person_id), audit_ref_from_actor(
+            actor
+        )
 
     async def whoami(
         self,
@@ -612,11 +621,12 @@ class ProfileCommandHandler:
     ) -> str:
         if argument:
             return "该命令不接受参数，只能查看发送者本人。"
-        aliases = await self._people.aliases(profile.user_id)
-        memory_count = await self._memories.count_person(profile.user_id)
-        membership_count = await self._people.membership_count(profile.user_id)
+        aliases = await self._people.aliases(person_id=message.person_id)
+        memory_count = await self._memories.count_person(person_id=message.person_id)
+        membership_count = await self._people.membership_count(person_id=message.person_id)
         lines = [
-            f"QQ：{profile.user_id}",
+            f"Person：{message.person_id}",
+            f"当前平台：{message.platform}；账号：{profile.user_id}",
             f"当前昵称：{profile.nickname or '未获取'}",
         ]
         if message.scope_type is ScopeType.GROUP:

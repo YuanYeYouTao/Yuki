@@ -57,14 +57,7 @@ async def _seed_job(
             )
         )
     repository = PluginNotificationRepository(database)
-    target = NotificationTarget(target_type="private", target_id="1001")
-    await repository.grant_target(
-        plugin_id=_PLUGIN_ID,
-        target=target,
-        bot_user_id="8000",
-        created_by_user_id="1001",
-    )
-    await EventLedgerRepository(database).append(
+    source, _created = await EventLedgerRepository(database).append(
         bot_user_id="8000",
         platform_message_id="human-before-external",
         scope_type=ScopeType.PRIVATE,
@@ -72,6 +65,18 @@ async def _seed_job(
         private_peer_user_id="1001",
         direction="inbound",
         content="before external",
+    )
+    target = NotificationTarget(
+        target_type="private",
+        target_id=source.author_person_id,
+        conversation_id=source.canonical_conversation_id,
+    )
+    await repository.grant_target(
+        plugin_id=_PLUGIN_ID,
+        target=target,
+        bot_user_id="8000",
+        created_by_user_id=source.author_person_id,
+        presence_id=source.ingress_presence_id,
     )
     receipt = await repository.publish(
         plugin_id=_PLUGIN_ID,
@@ -181,7 +186,7 @@ async def test_message_history_filters_external_before_limit(database: Database)
         message_only=True,
     )
     assert [row.content for row in searched] == ["before external", "after external"]
-    with pytest.raises(ValueError, match="require a QQ"):
+    with pytest.raises(ValueError, match="require a conversation, owner, or time bound"):
         await ledger.search(keyword="x", limit=10, message_only=True)
 
 

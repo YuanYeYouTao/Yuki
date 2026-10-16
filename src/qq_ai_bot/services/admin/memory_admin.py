@@ -60,7 +60,6 @@ from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.memory.validation import normalize_memory_text
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.admin.common import require_self_or_superuser
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +80,8 @@ class MemoryPreferenceTrigger:
     canonical_conversation_id: str | None = None
     ingress_presence_id: str | None = None
     actor_is_superuser: bool = False
+    person_id: str | None = None
+    operation_id: str | None = None
 
 
 class MemoryAdminService:
@@ -107,6 +108,7 @@ class MemoryAdminService:
         self._memories = memories
         self._audit = audit
         database = memories.repository.database
+        self._database = database
         self._memory_index = memory_index or SQLiteMemoryFTSIndex(database)
         self._memory_context = memory_context or MemoryContextService(
             query_builder=MemoryQueryBuilder(MemoryTargetResolver(PeopleRepository(database))),
@@ -132,10 +134,14 @@ class MemoryAdminService:
         self,
         actor: AdminActor,
         target: str,
+        *,
+        target_person_id: str | None = None,
     ) -> tuple[MemoryFact, ...]:
-        require_self_or_superuser(actor, target, self._settings)
+        target_person_id = await self._require_authorized_person_target(
+            actor, target, person_id=target_person_id
+        )
         return await self._memories.list_person(
-            target,
+            person_id=target_person_id,
         )
 
     async def set_explicit_preference(
@@ -146,12 +152,21 @@ class MemoryAdminService:
         value: str,
         *,
         existing: MemoryFact | None,
+        target_person_id: str | None = None,
     ) -> MemoryFact:
         """Route deterministic preference writes through the mutation boundary."""
 
+        target_person_id = await self._require_authorized_person_target(
+            trigger, target, person_id=target_person_id
+        )
         mutation = await self._apply_mutation(
             trigger,
-            target=ResolvedSubject(MemoryScopeType.PERSON, target, None),
+            target=ResolvedSubject(
+                MemoryScopeType.PERSON,
+                target,
+                None,
+                canonical_subject_person_id=target_person_id,
+            ),
             operation=(
                 MemoryMutationOperation.CORRECT
                 if existing is not None
@@ -177,12 +192,22 @@ class MemoryAdminService:
         trigger: MemoryPreferenceTrigger,
         target: str,
         existing: MemoryFact,
+        *,
+        target_person_id: str | None = None,
     ) -> bool:
         """Route deterministic preference deletion through the mutation boundary."""
 
+        target_person_id = await self._require_authorized_person_target(
+            trigger, target, person_id=target_person_id
+        )
         mutation = await self._apply_mutation(
             trigger,
-            target=ResolvedSubject(MemoryScopeType.PERSON, target, None),
+            target=ResolvedSubject(
+                MemoryScopeType.PERSON,
+                target,
+                None,
+                canonical_subject_person_id=target_person_id,
+            ),
             operation=MemoryMutationOperation.INVALIDATE,
             fact_id=existing.id,
             reason="deterministic_preference_delete",
@@ -198,15 +223,23 @@ class MemoryAdminService:
         content: str,
         *,
         evidence: MemoryEvidenceCreate | None = None,
+        target_person_id: str | None = None,
     ) -> MemoryFact:
-        await self._require_authorized_person_target(actor, target)
+        target_person_id = await self._require_authorized_person_target(
+            actor, target, person_id=target_person_id
+        )
         normalized = " ".join(content.split()).strip()
         if not normalized:
             raise ValueError("记忆内容不能为空")
         started = time.perf_counter()
         mutation = await self._apply_mutation(
             actor,
-            target=ResolvedSubject(MemoryScopeType.PERSON, target, None),
+            target=ResolvedSubject(
+                MemoryScopeType.PERSON,
+                target,
+                None,
+                canonical_subject_person_id=target_person_id,
+            ),
             operation=MemoryMutationOperation.CREATE,
             new_content=normalized,
             memory_key=None,
@@ -236,6 +269,7 @@ class MemoryAdminService:
             row = await self._memories.add_explicit_person(
                 target,
                 normalized,
+                person_id=target_person_id,
                 evidence=evidence,
                 session=session,
             )
@@ -263,8 +297,12 @@ class MemoryAdminService:
         target: str,
         memory_id: int,
         content: str,
+        *,
+        target_person_id: str | None = None,
     ) -> bool:
-        require_self_or_superuser(actor, target, self._settings)
+        target_person_id = await self._require_authorized_person_target(
+            actor, target, person_id=target_person_id
+        )
         normalized = " ".join(content.split()).strip()
         if not normalized:
             raise ValueError("记忆内容不能为空")
@@ -272,7 +310,12 @@ class MemoryAdminService:
         current = await self._memories.get_fact(memory_id)
         mutation = await self._apply_mutation(
             actor,
-            target=ResolvedSubject(MemoryScopeType.PERSON, target, None),
+            target=ResolvedSubject(
+                MemoryScopeType.PERSON,
+                target,
+                None,
+                canonical_subject_person_id=target_person_id,
+            ),
             operation=MemoryMutationOperation.CORRECT,
             fact_id=memory_id,
             new_content=normalized,
@@ -307,7 +350,7 @@ class MemoryAdminService:
                 (
                     row
                     for row in await self._memories.list_person(
-                        target,
+                        person_id=target_person_id,
                         session=session,
                     )
                     if row.id == memory_id
@@ -317,6 +360,7 @@ class MemoryAdminService:
             updated_row = await self._memories.update_explicit_person(
                 memory_id,
                 user_id=target,
+                person_id=target_person_id,
                 content=normalized,
                 session=session,
             )
@@ -346,13 +390,22 @@ class MemoryAdminService:
         actor: AdminActor,
         target: str,
         memory_id: int,
+        *,
+        target_person_id: str | None = None,
     ) -> bool:
-        require_self_or_superuser(actor, target, self._settings)
+        target_person_id = await self._require_authorized_person_target(
+            actor, target, person_id=target_person_id
+        )
         started = time.perf_counter()
         current = await self._memories.get_fact(memory_id)
         mutation = await self._apply_mutation(
             actor,
-            target=ResolvedSubject(MemoryScopeType.PERSON, target, None),
+            target=ResolvedSubject(
+                MemoryScopeType.PERSON,
+                target,
+                None,
+                canonical_subject_person_id=target_person_id,
+            ),
             operation=MemoryMutationOperation.INVALIDATE,
             fact_id=memory_id,
             reason="deterministic_memory_delete",
@@ -381,7 +434,7 @@ class MemoryAdminService:
                 (
                     row
                     for row in await self._memories.list_person(
-                        target,
+                        person_id=target_person_id,
                         session=session,
                     )
                     if row.id == memory_id
@@ -391,6 +444,7 @@ class MemoryAdminService:
             deleted = await self._memories.invalidate_person(
                 memory_id,
                 user_id=target,
+                person_id=target_person_id,
                 session=session,
             )
             await self._audit.record(
@@ -415,13 +469,17 @@ class MemoryAdminService:
         actor: AdminActor,
         target: str,
         memory_id: int,
+        *,
+        target_person_id: str | None = None,
     ) -> tuple[MemoryEvidence, ...]:
-        require_self_or_superuser(actor, target, self._settings)
+        target_person_id = await self._require_authorized_person_target(
+            actor, target, person_id=target_person_id
+        )
         fact = next(
             (
                 row
                 for row in await self._memories.list_person(
-                    target,
+                    person_id=target_person_id,
                 )
                 if row.id == memory_id
             ),
@@ -438,13 +496,16 @@ class MemoryAdminService:
         query: str,
         *,
         limit: int = 20,
+        person_id: str | None = None,
     ) -> MemoryRetrievalResult:
-        require_self_or_superuser(actor, user_id, self._settings)
-        runtime = await self._runtime_config.snapshot(user_id=user_id)
+        person_id = await self._require_authorized_person_target(
+            actor, user_id, person_id=person_id
+        )
+        runtime = await self._runtime_config.snapshot(user_id=person_id)
         target = MemoryEntityTarget(
             role=MemoryTargetRole.CURRENT_PERSON,
             scope_type=MemoryScopeType.PERSON,
-            subject_user_id=user_id,
+            canonical_subject_person_id=person_id,
             block_id="admin_person",
         )
         return await MemoryQueryPlane(self._memory_context).read(
@@ -464,14 +525,19 @@ class MemoryAdminService:
         query: str,
         *,
         limit: int = 20,
+        space_id: str | None = None,
     ) -> MemoryRetrievalResult:
-        if not actor.is_superuser or actor.user_id not in self._settings.superusers:
+        if not actor.is_superuser:
             raise PermissionError("只有超级管理员可以诊断群记忆")
-        runtime = await self._runtime_config.snapshot(group_id=group_id)
+        from qq_ai_bot.services.canonical_owners import require_live_space
+
+        async with self._database.sessions() as session:
+            space_id = await require_live_space(session, space_id or actor.space_id)
+        runtime = await self._runtime_config.snapshot(group_id=space_id)
         target = MemoryEntityTarget(
             role=MemoryTargetRole.CURRENT_GROUP,
             scope_type=MemoryScopeType.GROUP,
-            group_id=group_id,
+            canonical_subject_space_id=space_id,
             block_id="admin_group",
         )
         return await MemoryQueryPlane(self._memory_context).read(
@@ -546,11 +612,7 @@ class MemoryAdminService:
         if fact is None:
             return None
         explanation = await self._fact_audit.explain(fact_id)
-        if (
-            explanation is not None
-            and actor.is_superuser
-            and actor.user_id in self._settings.superusers
-        ):
+        if explanation is not None and actor.is_superuser:
             explanation["evidence_sources"] = [
                 {
                     "event_id": row.event_id,
@@ -576,10 +638,11 @@ class MemoryAdminService:
         actor: AdminActor,
         *,
         target_user_id: str | None = None,
+        person_id: str | None = None,
     ) -> tuple[MemoryFact, ...]:
         target = target_user_id or actor.user_id
-        require_self_or_superuser(actor, target, self._settings)
-        return await self._fact_audit.list_conflicts(subject_user_id=target)
+        person_id = await self._require_authorized_person_target(actor, target, person_id=person_id)
+        return await self._fact_audit.list_conflicts(person_id=person_id)
 
     async def correct_fact(
         self,
@@ -917,7 +980,7 @@ class MemoryAdminService:
             decision_actor_type = MemoryDecisionActorType(actor.decision_actor_type)
         except ValueError:
             decision_actor_type = MemoryDecisionActorType.ADMIN
-        quote_source = event.content
+        quote_source = event.evidence_content
         preferred_quote = " ".join((new_content or "").split()).strip()
         evidence_quote = (
             preferred_quote
@@ -944,6 +1007,21 @@ class MemoryAdminService:
             importance=importance,
             evidence_quote=evidence_quote,
         )
+        if fact_id is not None and operation is not MemoryMutationOperation.REASSIGN:
+            original_fact = await self._memories.get_fact(fact_id)
+            if original_fact is not None:
+                target = ResolvedSubject(
+                    original_fact.scope_type,
+                    original_fact.subject_user_id,
+                    original_fact.group_id,
+                    original_fact.visibility_type,
+                    original_fact.visibility_user_id,
+                    original_fact.visibility_group_id,
+                    original_fact.canonical_subject_person_id,
+                    original_fact.canonical_subject_space_id,
+                    original_fact.canonical_visibility_person_id,
+                    original_fact.canonical_visibility_space_id,
+                )
         return await self._mutations.mutate_resolved(
             request,
             MemoryMutationContext(
@@ -956,6 +1034,8 @@ class MemoryAdminService:
                 decision_actor_id=actor.decision_actor_id or actor.user_id,
                 executed_by_bot_user_id=event.bot_user_id,
                 actor_is_superuser=_mutation_is_superuser(actor, self._settings),
+                actor_person_id=event.author_person_id,
+                operation_id=getattr(actor, "operation_id", None),
             ),
             target=target,
         )
@@ -970,11 +1050,11 @@ class MemoryAdminService:
             fact is None
             or fact.content != expected_content
             or fact.scope_type is not MemoryScopeType.PERSON
-            or fact.subject_user_id is None
+            or fact.canonical_subject_person_id is None
         ):
             return None
         projection = await self._memories.list_person(
-            fact.subject_user_id,
+            person_id=fact.canonical_subject_person_id,
         )
         return next((row for row in projection if row.id == fact.id), None)
 
@@ -994,13 +1074,22 @@ class MemoryAdminService:
         self,
         actor: AdminActor | MemoryPreferenceTrigger,
         target: str,
-    ) -> None:
-        if _mutation_is_superuser(actor, self._settings):
-            return
-        actor_person_id = await self._memories.resolve_person_id(actor.user_id)
-        target_person_id = await self._memories.resolve_person_id(target)
-        if actor_person_id is not None and actor_person_id == target_person_id:
-            return
+        *,
+        person_id: str | None = None,
+    ) -> str:
+        from qq_ai_bot.identity.person_identity import same_person_id
+        from qq_ai_bot.services.canonical_owners import require_live_person
+
+        actor_person_id = await self._actor_person_id(actor)
+        async with self._database.sessions() as session:
+            target_person_id = await require_live_person(
+                session, person_id or (actor_person_id if target == actor.user_id else None)
+            )
+            own = actor_person_id is not None and await same_person_id(
+                session, actor_person_id, target_person_id
+            )
+        if _mutation_is_superuser(actor, self._settings) or own:
+            return target_person_id
         raise PermissionError("只有当前真实超级管理员可以执行该操作")
 
     async def _require_authorized_fact_mutation(
@@ -1015,6 +1104,7 @@ class MemoryAdminService:
         if not await self._memories.person_owns_fact(
             fact,
             actor_user_id=actor.user_id,
+            actor_person_id=await self._actor_person_id(actor),
         ):
             raise PermissionError("只能查看与本人有关的人物记忆")
         if fact.scope_type is MemoryScopeType.GROUP:
@@ -1023,11 +1113,12 @@ class MemoryAdminService:
     async def _require_fact_access(self, actor: AdminActor, fact: MemoryFact | None) -> None:
         if fact is None:
             return
-        if actor.is_superuser and actor.user_id in self._settings.superusers:
+        if actor.is_superuser:
             return
         if not await self._memories.person_owns_fact(
             fact,
             actor_user_id=actor.user_id,
+            actor_person_id=await self._actor_person_id(actor),
         ):
             raise PermissionError("只能查看与本人有关的人物记忆")
 
@@ -1041,8 +1132,18 @@ class MemoryAdminService:
             raise PermissionError("普通用户不能修改群共同事实")
 
     def _require_superuser(self, actor: AdminActor) -> None:
-        if not actor.is_superuser or actor.user_id not in self._settings.superusers:
+        if not actor.is_superuser:
             raise PermissionError("只有超级管理员可以执行此记忆管理操作")
+
+    async def _actor_person_id(self, actor: AdminActor | MemoryPreferenceTrigger) -> str | None:
+        if actor.person_id is not None:
+            return actor.person_id
+        if self._ledger is not None and actor.trigger_event_id is not None:
+            event = await self._ledger.get_event(actor.trigger_event_id)
+            if event is not None and event.sender_user_id == actor.user_id:
+                return event.author_person_id
+            return None
+        return None
 
 
 def _authorized_is_superuser(actor: AdminActor | MemoryPreferenceTrigger) -> bool:
@@ -1052,6 +1153,5 @@ def _authorized_is_superuser(actor: AdminActor | MemoryPreferenceTrigger) -> boo
 
 
 def _mutation_is_superuser(actor: AdminActor | MemoryPreferenceTrigger, settings: Settings) -> bool:
-    if isinstance(actor, MemoryPreferenceTrigger):
-        return actor.actor_is_superuser
-    return actor.is_superuser and actor.user_id in settings.superusers
+    del settings
+    return _authorized_is_superuser(actor)

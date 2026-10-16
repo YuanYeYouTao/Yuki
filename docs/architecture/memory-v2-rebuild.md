@@ -49,9 +49,10 @@ extract 每个事件独立调用 `ModelTask.MEMORY_EXTRACTION`，只暂存 propo
 `current_speaker / other_member / bot` 提供消歧，不得独立产生事实。回复方式、称呼、格式、
 语音和表情等交互要求由提取结果表达，不按固定风格分类硬拒绝。
 
-`third_party_mode=trusted_metadata` 只接受持久 `yuki_context`、OneBot 数字 at 段，以及同一 Bot、
-同一精确群的回复事件作者；不按正文姓名、昵称、FTS 或向量猜人。disabled 模式只提供 speaker
-和 group。
+`third_party_mode=trusted_metadata` 优先接受原持久 canonical 作者和提及；明确保存的空提及不会回退到平台段。
+旧 `yuki_context` 平台账号及 OneBot 数字 at 段只按原平台和事件 `observed_at` 对应的历史 Binding 时段归属，
+不查今日同号账号的持有人。回复使用同一原 Conversation 的内部 reply 事件作者；不按正文姓名、昵称、
+FTS 或向量猜人。disabled 模式只提供 speaker 和 group。
 
 ## 审阅与提交
 
@@ -81,8 +82,9 @@ run completed 也不表示异步向量已经生成完毕。
 明确包含 failed live jobs 时才允许接管 failed。
 来源正文和指纹也在只读阶段按候选页核验；`trusted_metadata` 继续复用既有主体补全，
 可能增加只读查询，不在 writer 内补全或解析正文。没有候选或重复收尾时不申请 writer。
-可信引用的 Person、Binding、Presence 和内部 reply 事件元数据也纳入同一页的核验，
-包括被过滤的原始引用；准备后引用状态改变时延后该 item，下一轮重新准备。
+旧平台选择器核原始账号时段及原 owner，内部 reply 核原事件身份；现代 canonical 提及直接保留原件。
+人物改名、同人合并或账号后来的换绑不单独使已批准结果失效；原来源、时段归属或 reply 证明真实变化时，
+该 item 下一轮重新准备。
 单项主体失效只将该 item 标记为来源变化，不阻塞其他 item，也不清空引用或改写来源哈希。
 
 已批准子集提交后，失败 proposal 进入 commit_paused，未决 proposal 回到 review；
@@ -120,7 +122,7 @@ item 回执都已收尾，run 才能进入 completed。
 只有 completed/cancelled/failed run 可 purge。purge 只删除 staging；已提交事实、证据和事件
 receipt 保留。cancel 只停止后续处理，不回滚已提交事实。
 
-重建通过 `/ai memory rebuild` 和 WebUI 调用同一领域服务，按真实授权操作并保留 review。
+重建通过 `/ai memory rebuild` 调用原领域服务，按真实授权操作并保留 review。
 
 ## 配置
 
@@ -131,17 +133,18 @@ selection 可用 `maximum_events` 指定本次范围的数量边界；留空时�
 
 日志、health 和普通 status 不记录事件正文、claim 正文、selection JSON、QQ、群号、模型完整
 输入输出或密钥。review 是超级管理员主动请求的有界审阅页。`/ai forgetme` 会由事件外键级联
-清理 staging，删除以该人物为 subject 的 proposal，取消仅针对该人物的非终态 run，并从其余
-selection 中删除精确 QQ；已提交人物事实继续按现有 forgetme 规则删除。
-所有别名合并为一个 readonly prepared plan，精确匹配 JSON 数组成员并在 writer 前完成 selection
-重写和 hash。共享隐私 writer 必须传入 prepared；writer 复核完整 run 目录的 id/hash/status/
-updated_at，再按原行 token 删除 proposal 和更新 selection。目录或原行变更会使整个隐私事务
-回滚并要求重新准备；不通过 LIKE 匹配平台 ID，也不将多个别名拆为独立提交。
+清理 staging，删除以该整个人物归并集合为 canonical subject/visibility 的 proposal，取消仅针对该人物的非终态 run，
+并按真实平台与原持有时段处理其余 selection；已提交人物事实继续按现有 forgetme 规则删除。
+第三方事实目标独立于原作者，跨平台同号不扩大范围。
+整族账号时段、JSON selection 重写与 hash 在同一 WAL 读快照准备，首次 DML 后只消费本批准备的真实相关行。
+共享隐私 writer 必须传入 prepared；不扫描完整 run 目录、比较全库 catalogue token 或在写后重解析 JSON。
+SQLite 读快照竞争会整体回滚并重备纯数据库单元；不重买模型结果、不改原 run/proposal/operation ID，
+不通过 LIKE 匹配平台 ID，也不将多个别名拆为独立提交。
 
 
 `status` 的 token 数仅累计供应商实际返回的 usage；供应商不返回时保持 0，不做字符数伪估算。
 原 extraction 指纹保留为历史说明；换模型、Prompt 或 Schema 不封死原 run 的恢复，
-提交仍核验已存 proposal 的 source hash、当前 owner、来源、批准状态与实际回执。
+提交仍核验已存 proposal 的原 canonical 目标、source hash、真实来源、批准状态与实际回执；当前同人权限单独按归并集合核验。
 延迟以累计毫秒记录，Embedding 任务数按本 run 提交后实际关联的新任务统计。
 
 常见状态：

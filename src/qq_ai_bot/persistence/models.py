@@ -126,6 +126,7 @@ class ChatEventModel(Base):
             "uq_chat_events_external_event_target",
             "source_plugin_id",
             "external_event_key",
+            "canonical_conversation_id",
             "scope_type",
             "external_target_id",
             unique=True,
@@ -700,7 +701,6 @@ class MemoryMutationReceiptModel(Base):
     __table_args__ = (
         UniqueConstraint("mutation_id", name="uq_memory_mutation_receipts_mutation_id"),
         UniqueConstraint("idempotency_key", name="uq_memory_mutation_receipts_idempotency"),
-        UniqueConstraint("claim_fingerprint", name="uq_memory_mutation_receipts_claim"),
         CheckConstraint(
             "decision_actor_type IN "
             "('agent','worker','command','admin','plugin','reflection','system')",
@@ -933,7 +933,6 @@ class MemorySelfReflectionStateModel(Base):
             sqlite_where=text("canonical_space_id IS NOT NULL AND canonical_person_id IS NULL"),
         ),
     )
-
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     conversation_key_hash: Mapped[str] = mapped_column(String(64), nullable=False)
@@ -1205,6 +1204,7 @@ class MemoryRebuildProposalModel(Base):
         Index("ix_memory_rebuild_proposals_run_review", "run_id", "review_status"),
         Index("ix_memory_rebuild_proposals_run_commit", "run_id", "commit_status"),
         Index("ix_memory_rebuild_proposals_subject", "subject_user_id"),
+        Index("ix_memory_rebuild_proposals_canonical_person", "canonical_subject_person_id"),
         Index("ix_memory_rebuild_proposals_group", "group_id"),
     )
 
@@ -1224,6 +1224,12 @@ class MemoryRebuildProposalModel(Base):
     scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
     subject_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     group_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    canonical_subject_person_id: Mapped[str | None] = mapped_column(
+        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"), nullable=True
+    )
+    canonical_subject_space_id: Mapped[str | None] = mapped_column(
+        ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT"), nullable=True
+    )
     operation: Mapped[str] = mapped_column(String(16), nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     authority: Mapped[str] = mapped_column(String(16), nullable=False)

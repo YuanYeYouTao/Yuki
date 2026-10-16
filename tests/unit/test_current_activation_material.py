@@ -337,9 +337,9 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
                 text=body,
                 source_event_id=created.event.id,
             ),
-            gateway=env.bot,
-            allow_generic_onebot=False,
-            runtime_config=await chat._runtime_config.snapshot(user_id="10001", group_id="20001"),
+            runtime_config=await chat._runtime_config.snapshot(
+                user_id=env.person, group_id=env.space
+            ),
             conversation_key=f"canonical:{message.conversation_id}:generation:1",
             conversation_id=message.conversation_id,
             person_id=env.person,
@@ -352,7 +352,7 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
         old = None
     event = await harness.ledger.get_event(created.event.id)
     state = await harness.conversation_scopes.get(scope)
-    config = await chat._runtime_config.snapshot(group_id="20001")
+    config = await chat._runtime_config.snapshot(group_id=env.space)
     first_wakeup_call = len(provider.requests)
     dispatched_controls = []
     source_checks = []
@@ -389,10 +389,10 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
         )
 
     provider._responder = finish_actual_work
-    async with chat._turn_coordinator.background_turn(scope.key) as token:
+    async with chat._turn_coordinator.background_turn(state.runtime_scope_key) as token:
         snapshot = ConversationTurnSnapshot(
             state.id,
-            scope.key,
+            state.runtime_scope_key,
             state.generation,
             event.id,
             token.version,

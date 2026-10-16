@@ -59,7 +59,6 @@ from qq_ai_bot.services.agent_runner import (
     AgentRunResult,
     AgentRuntime,
     AgentToolBackend,
-    ReusableToolResult,
     _RequestNotStarted,
 )
 from qq_ai_bot.services.concurrency import RequestCancelledError
@@ -90,7 +89,6 @@ class TurnState:
     response_status: ModelResponseStatus = ModelResponseStatus.COMPLETED
     continuation_tools: tuple[ChatTool, ...] = ()
     continuation_native_tools: tuple[NativeToolDefinition, ...] = ()
-    reusable_tool_results: dict[tuple[str, str], ReusableToolResult] = field(default_factory=dict)
     provider_pause_replay: bool = False
     observed_event_ids: set[int] = field(default_factory=set)
     public_tail: list[ChatMessage] = field(default_factory=list)
@@ -251,7 +249,14 @@ class TurnExecution:
         if self.runtime.fixed_tools is not None:
             self.state.fixed_definitions = self.runtime.fixed_tools
         elif self.runner.main_contract is not None:
-            self.state.fixed_definitions = await self.runner.main_contract.model_definitions()
+            manifest = self.runner.main_contract
+            entry = await manifest.entry_for(self.runtime.canonical_conversation_id)
+            self.state.fixed_definitions = await manifest.model_definitions(entry)
+            self.runtime = replace(
+                self.runtime,
+                script_api=manifest.app_script_api if entry == "app" else manifest.script_api,
+                manifest_revision=manifest.app_revision if entry == "app" else manifest.revision,
+            )
             if not self.runtime.dynamic_context_prepared:
                 raise LLMError("main_agent_composition_required")
             if self.tools is None:
@@ -265,6 +270,7 @@ class TurnExecution:
                 self.initial_messages,
                 self.state.fixed_definitions,
                 script_api=self.runtime.script_api,
+                manifest_revision=self.runtime.manifest_revision,
             )
             self.runtime.work_control.session = WorkSession(self.runtime.work_control, contract)
             public_count = (
@@ -391,6 +397,7 @@ class TurnExecution:
             self.initial_messages,
             self.state.fixed_definitions,
             script_api=self.runtime.script_api,
+            manifest_revision=self.runtime.manifest_revision,
         )
         if saved["main_contract"] != contract:
             from qq_ai_bot.runtime.work_repository import WorkConflict
@@ -1136,6 +1143,7 @@ class TurnExecution:
             self.initial_messages,
             self.state.fixed_definitions,
             script_api=self.runtime.script_api,
+            manifest_revision=self.runtime.manifest_revision,
         )
         self.state.transcript = plan.transcript
 
@@ -1399,8 +1407,6 @@ class TurnExecution:
                 ),
             ),
             max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
-            reusable_results=self.state.reusable_tool_results,
-            cacheable_names=frozenset(t.name for t in self.state.definitions if t.result_cacheable),
             declared_names=frozenset(t.name for t in self.state.definitions),
             chain_id=self.state.transcript.chain_id,
             request_sequence=request_index + 1,

@@ -101,6 +101,7 @@ def evaluate_message(
     group_policy: EffectiveGroupPolicy | None = None,
     private_policy: EffectivePrivatePolicy | None = None,
     direct_triggered: bool = False,
+    commands_enabled: bool = True,
     yuki_account_ids: frozenset[str] = frozenset(),
 ) -> PolicyDecision:
     """Apply self/bot, allowlist, group, mention, reply-to-bot, prefix, and command rules."""
@@ -108,7 +109,11 @@ def evaluate_message(
     if message.is_self_message or message.sender.is_bot:
         return PolicyDecision(False, reason="bot_message")
 
-    command, content, prefix_triggered = parse_command(message.text, settings.ai_prefix)
+    command, content, prefix_triggered = (
+        parse_command(message.text, settings.ai_prefix)
+        if commands_enabled
+        else (None, message.text, False)
+    )
     is_superuser = message.sender.user_id in settings.superusers
 
     if message.scope_type is ScopeType.PRIVATE:

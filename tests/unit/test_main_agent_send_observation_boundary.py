@@ -125,7 +125,8 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
             record = await EventLedgerRepository(database).get_event(interleaved[1])
             original = ChatEventPromptRenderer([record]).reference_message(record)
             assert original.role == "assistant"
-            assert f"#{record.id}>" in original.content and "QQ:80001" in original.content
+            assert f"#{record.id}>" in original.content
+            assert f"presence:{record.author_presence_id}" in original.content
             observations = [
                 item
                 for item in continuation

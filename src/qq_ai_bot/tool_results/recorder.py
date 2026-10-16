@@ -21,9 +21,7 @@ from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
-    IdentityBindingModel,
     PresenceModel,
-    SpaceBindingModel,
 )
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.diagnostic_writer import DiagnosticWriter
@@ -116,9 +114,7 @@ class ToolInvocationRepository:
             or not execution_id
             or not execution_id.strip()
         ):
-            raise ValueError(
-                "SELF receipt requires an actorless source and call identity"
-            )
+            raise ValueError("SELF receipt requires an actorless source and call identity")
         if any(len(value) > 255 for value in (tool_call_id, execution_id) if value):
             raise ValueError("tool call identity exceeds storage bounds")
         if audit_source is not None and canonical_conversation_id != audit_source[0]:
@@ -215,8 +211,6 @@ class ToolInvocationRepository:
                             CanonicalConversationModel.kind == "space",
                             CanonicalConversationModel.space_id == source.space_id,
                             CanonicalConversationModel.person_id.is_(None),
-                            PresenceModel.platform == "qq",
-                            PresenceModel.external_account_id == source.bot_user_id,
                             PresenceModel.enabled.is_(True),
                             CanonicalSpaceModel.enabled.is_(True),
                         )
@@ -284,6 +278,7 @@ class ToolInvocationRepository:
                         .where(
                             ChatEventModel.id == event.id,
                             ChatEventModel.canonical_event_id == event.canonical_event_id,
+                            ChatEventModel.ingress_presence_id == event.ingress_presence_id,
                             ChatEventModel.author_person_id == event.author_person_id,
                             ChatEventModel.canonical_conversation_id
                             == event.canonical_conversation_id,
@@ -301,46 +296,32 @@ class ToolInvocationRepository:
                         )
                         .exists()
                     )
-                    binding: Any
                     owner: Any
                     owner_id: str | None
                     if partition.space_id:
-                        binding = SpaceBindingModel
                         owner = CanonicalSpaceModel
-                        external = str(event.group_id)
                         owner_id = partition.space_id
-                        owner_column = binding.space_id
-                        external_column = binding.external_space_id
                     else:
-                        binding = IdentityBindingModel
                         owner = CanonicalPersonModel
-                        external = str(event.private_peer_user_id or event.sender_user_id)
                         owner_id = partition.person_id
-                        owner_column = binding.person_id
-                        external_column = binding.external_account_id
                     guards.extend(
                         (
                             select(owner.id)
                             .where(owner.id == owner_id, owner.enabled.is_(True))
                             .exists(),
-                            select(owner_column)
-                            .where(
-                                owner_column == owner_id,
-                                external_column == external,
-                                binding.platform == "qq",
-                                binding.status == "active",
-                            )
-                            .exists(),
-                            select(func.count(func.distinct(owner_column)))
-                            .where(
-                                external_column == external,
-                                binding.platform == "qq",
-                                binding.status == "active",
-                            )
-                            .scalar_subquery()
-                            == 1,
                         )
                     )
+                    if partition.person_id:
+                        from qq_ai_bot.identity.person_identity import person_root_id
+
+                        guards.append(
+                            select(CanonicalPersonModel.id)
+                            .where(
+                                CanonicalPersonModel.id == person_root_id(partition.person_id),
+                                CanonicalPersonModel.enabled.is_(True),
+                            )
+                            .exists()
+                        )
         privacy_guard = (
             func.coalesce(
                 select(ExecutionTraceStateModel.privacy_generation)

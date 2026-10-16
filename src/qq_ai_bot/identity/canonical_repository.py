@@ -30,6 +30,7 @@ from qq_ai_bot.identity.db_models import (
     SpaceBindingModel,
 )
 from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.person_identity import person_family_ids
 from qq_ai_bot.persistence.models import ChatEventModel
 
 IDENTITY_PLATFORM: Final[str] = "qq"
@@ -83,6 +84,7 @@ async def find_identity_binding(
             select(IdentityBindingModel).where(
                 IdentityBindingModel.platform == platform,
                 IdentityBindingModel.external_account_id == external_account_id,
+                IdentityBindingModel.status != "transferred",
             )
         ),
     )
@@ -262,6 +264,7 @@ async def create_person_binding(
         async with session.begin_nested():
             person = CanonicalPersonModel(
                 id=new_identity_id(),
+                display_name=display_name[:128],
                 enabled=True,
                 revision=1,
                 created_at=now,
@@ -279,6 +282,7 @@ async def create_person_binding(
                 last_seen_at=now,
                 created_at=now,
                 updated_at=now,
+                history_starts_at=now,
             )
             session.add_all((person, binding))
             await session.flush()
@@ -497,6 +501,7 @@ async def apply_event_identity(
     event: ChatEventModel,
     *,
     sender_is_bot: bool,
+    ingress: PresenceModel,
 ) -> None:
     """Fill canonical event author and ingress fields without legacy lookup."""
 
@@ -504,17 +509,17 @@ async def apply_event_identity(
     from qq_ai_bot.identity.event_author import project_event_author
 
     trip("before_event_shadow")
-    ingress = await find_presence(session, external_id(event.bot_user_id))
     event.utterance_fingerprint = None
     event.ingress_provider = None
     event.ingress_gateway_instance_id = None
-    event.ingress_presence_id = None if ingress is None else ingress.id
+    event.ingress_presence_id = ingress.id
     author = await project_event_author(
         session,
         sender_user_id=event.sender_user_id,
         sender_is_bot=sender_is_bot,
         event_kind=event.event_kind,
         direction=event.direction,
+        platform=ingress.platform,
     )
     if author.author_kind == AuthorKind.PERSON.value and author.author_person_id is None:
         raise CanonicalIdentityError("unclassified")
@@ -523,44 +528,61 @@ async def apply_event_identity(
     event.author_presence_id = author.author_presence_id
 
 
-async def forget_person_for_external_account(session: AsyncSession, user_id: str) -> None:
-    """Delete one canonical Person aggregate selected through a Binding."""
+async def forget_person_by_id(session: AsyncSession, person_id: str) -> None:
+    """Delete exactly the selected Person aggregate, including historical bindings."""
 
     trip("before_forget_canonical")
-    binding = await find_identity_binding(session, external_id(user_id))
-    if binding is None:
-        return
-    person_id = binding.person_id
+    family = await person_family_ids(session, person_id)
     bindings = list(
         await session.scalars(
-            select(IdentityBindingModel).where(IdentityBindingModel.person_id == person_id)
+            select(IdentityBindingModel).where(IdentityBindingModel.person_id.in_(family))
         )
     )
-    route = await session.get(PersonActiveRouteModel, person_id)
-    if route is not None:
-        await session.delete(route)
-    for item in bindings:
-        await session.delete(item)
-    conversation = await session.scalar(
-        select(CanonicalConversationModel).where(
-            CanonicalConversationModel.kind == "private",
-            CanonicalConversationModel.person_id == person_id,
+    routes = list(
+        await session.scalars(
+            select(PersonActiveRouteModel).where(PersonActiveRouteModel.person_id.in_(family))
         )
     )
-    if conversation is not None:
-        aliases = list(
-            await session.scalars(
-                select(ConversationLegacyAliasModel).where(
-                    ConversationLegacyAliasModel.conversation_id == conversation.id
+    conversations = list(
+        await session.scalars(
+            select(CanonicalConversationModel).where(
+                CanonicalConversationModel.kind == "private",
+                CanonicalConversationModel.person_id.in_(family),
+            )
+        )
+    )
+    aliases = list(
+        await session.scalars(
+            select(ConversationLegacyAliasModel).where(
+                ConversationLegacyAliasModel.conversation_id.in_(
+                    tuple(row.id for row in conversations)
                 )
             )
         )
-        for alias in aliases:
-            await session.delete(alias)
+    )
+    people = list(
+        await session.scalars(
+            select(CanonicalPersonModel).where(CanonicalPersonModel.id.in_(family))
+        )
+    )
+    for route in routes:
+        await session.delete(route)
+    # Delete Conversations before their pinned aliases, whose trigger protects live entries.
+    for conversation in conversations:
         await session.delete(conversation)
-    person = await session.get(CanonicalPersonModel, person_id)
-    if person is not None:
-        await session.delete(person)
+    await session.flush()
+    for alias in aliases:
+        await session.delete(alias)
+    for binding in bindings:
+        await session.delete(binding)
+    await session.flush()
+    for person in people:
+        if person.merged_into_person_id is not None:
+            await session.delete(person)
+    await session.flush()
+    for person in people:
+        if person.merged_into_person_id is None:
+            await session.delete(person)
     await session.flush()
 
 
@@ -582,7 +604,7 @@ __all__ = [
     "find_identity_binding",
     "find_presence",
     "find_space_binding",
-    "forget_person_for_external_account",
+    "forget_person_by_id",
     "new_identity_id",
     "optional_external_id",
     "person_id_for",

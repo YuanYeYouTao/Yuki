@@ -57,6 +57,9 @@ class EventRecord:
     visual_summary: str
     segments: tuple[dict[str, Any], ...]
     occurred_at: datetime
+    projected_content: str | None = None
+    platform: str = ""
+    thread_id: str | None = None
     audio_transcript: str = ""
     sender_nickname: str = ""
     sender_group_card: str = ""
@@ -68,6 +71,7 @@ class EventRecord:
     automation_id: int | None = None
     automation_run_id: int | None = None
     mentioned_user_ids: tuple[str, ...] = ()
+    mentioned_person_ids: tuple[str, ...] = ()
     reply_sender_user_id: str | None = None
     event_kind: str = "message"
     source_plugin_id: str | None = None
@@ -88,13 +92,23 @@ class EventRecord:
 
     @property
     def scope(self) -> ConversationScope:
-        """Reconstruct the exact bot-aware conversation identity."""
+        """Use the original internal conversation; transport fields are provenance."""
 
         if self.scope_type is ScopeType.GROUP:
-            return ConversationScope.group(self.bot_user_id, self.group_id or "")
+            return ConversationScope.group(
+                self.bot_user_id,
+                self.group_id or "",
+                platform=self.platform or ("" if self.canonical_conversation_id else "qq"),
+                presence_id=self.ingress_presence_id,
+                conversation_id=self.canonical_conversation_id,
+                thread_id=self.thread_id,
+            )
         return ConversationScope.private(
             self.bot_user_id,
             self.private_peer_user_id or self.sender_user_id,
+            platform=self.platform or ("" if self.canonical_conversation_id else "qq"),
+            presence_id=self.ingress_presence_id,
+            conversation_id=self.canonical_conversation_id,
         )
 
     @property
@@ -136,7 +150,7 @@ class EventRecord:
             return "external bot"
         if self.author_kind == AuthorKind.SYSTEM.value:
             return "system"
-        return f"QQ {self.sender_user_id}"
+        return "成员"
 
 
 @dataclass(frozen=True, slots=True)

@@ -5,7 +5,7 @@ import gc
 from types import SimpleNamespace
 
 import pytest
-from tests.unit.test_memory_rebuild import _event, _service
+from tests.unit.test_memory_rebuild import _admin, _event, _service
 
 from qq_ai_bot.memory.enums import MemoryRebuildRunStatus
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
@@ -39,8 +39,10 @@ async def test_cancelled_idle_runs_do_not_accumulate_process_state():
 async def test_extraction_cancellation_preserves_owner_and_releases_task(database, explicit_cancel):
     _settings, ledger, _facts, _provider, service = await _service(database)
     await _event(ledger, message_id="cancel-lifecycle")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
+    run = await service.plan(
+        MemoryRebuildSelection(all_events=True), actor_user_id=await _admin(database)
+    )
+    await service.start(run.public_id, actor_user_id=await _admin(database))
     run = await service.repository.get_run(run.public_id)
     entered = asyncio.Event()
 
@@ -52,7 +54,7 @@ async def test_extraction_cancellation_preserves_owner_and_releases_task(databas
     execution = asyncio.create_task(service.process_extraction_once(run))
     await asyncio.wait_for(entered.wait(), 5)
     if explicit_cancel:
-        await service.cancel(run.public_id, actor_user_id="9000")
+        await service.cancel(run.public_id, actor_user_id=await _admin(database))
         assert await execution == 0
         assert (
             await service.repository.get_run(run.public_id)

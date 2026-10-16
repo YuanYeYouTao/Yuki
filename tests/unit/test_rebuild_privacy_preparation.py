@@ -52,7 +52,9 @@ async def test_aliases_prepared_together_exact_selection_no_writer_json(database
         assert not tuple(await reader.scalars(select(MemoryRebuildProposalModel)))
 
 
-async def test_new_matching_selection_detected_even_when_catalogue_maxima_unchanged(database):
+async def test_new_matching_selection_is_prepared_on_current_snapshot_without_catalogue_gate(
+    database,
+):
     first, second = await _seed(database, 1, proposals=True), await _seed(database, 1)
     now = datetime.now(UTC)
     async with database.immediate_session() as writer:
@@ -91,11 +93,17 @@ async def test_new_matching_selection_detected_even_when_catalogue_maxima_unchan
             .values(**_selection(sender_user_ids=("1001",)), updated_at=now)
         )
     assert await maxima() == before
-    with pytest.raises(ValueError, match="preparation_changed"):
-        await repo.forget_people(("1001",), prepared=prepared)
+    assert await repo.forget_people(("1001",), prepared=prepared) >= 2
     async with database.sessions() as reader:
         assert (
-            await reader.scalar(select(func.count()).select_from(MemoryRebuildProposalModel)) == 1
+            await reader.scalar(select(func.count()).select_from(MemoryRebuildProposalModel)) == 0
+        )
+        sanitized = await reader.get(MemoryRebuildRunModel, second.run_id)
+        assert (
+            "1001"
+            not in MemoryRebuildSelection.model_validate_json(
+                sanitized.selection_json
+            ).sender_user_ids
         )
 
 

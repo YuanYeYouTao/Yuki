@@ -12,6 +12,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
+from qq_ai_bot.identity.ownership_interval import BindingOwnership
 from qq_ai_bot.memory.enums import (
     MemoryRebuildCommitStatus,
     MemoryRebuildItemStatus,
@@ -353,6 +354,8 @@ class MemoryRebuildRepository:
                     scope_type=validated.fact.scope_type.value,
                     subject_user_id=validated.fact.subject_user_id,
                     group_id=validated.fact.group_id,
+                    canonical_subject_person_id=validated.fact.canonical_subject_person_id,
+                    canonical_subject_space_id=validated.fact.canonical_subject_space_id,
                     operation=validated.operation.value,
                     kind=validated.fact.kind.value,
                     authority=validated.fact.authority.value,
@@ -979,7 +982,12 @@ class MemoryRebuildRepository:
             return True
 
     async def prepare_forget_people(
-        self, aliases: tuple[str, ...], *, session: AsyncSession | None = None
+        self,
+        aliases: tuple[str, ...],
+        *,
+        session: AsyncSession | None = None,
+        ownership: tuple[BindingOwnership, ...] = (),
+        person_id: str | None = None,
     ) -> PreparedRebuildForget:
         from qq_ai_bot.memory.rebuild.privacy import prepare_forget
 
@@ -988,7 +996,7 @@ class MemoryRebuildRepository:
 
             if session is None:
                 await reader.execute(text("BEGIN"))
-            return await prepare_forget(reader, aliases)
+            return await prepare_forget(reader, aliases, ownership, person_id=person_id)
 
     async def forget_people(
         self,
@@ -999,19 +1007,18 @@ class MemoryRebuildRepository:
     ) -> int:
         from qq_ai_bot.memory.rebuild.privacy import apply_forget
 
+        if session is None:
+
+            async def erase(owned: AsyncSession) -> int:
+                current = await self.prepare_forget_people(aliases, session=owned)
+                return await apply_forget(owned, current)
+
+            return await self.database.apply_snapshot_write(erase)
         if prepared is None:
-            if session is not None:
-                raise ValueError("memory_rebuild_privacy_preparation_required")
-            prepared = await self.prepare_forget_people(aliases)
+            raise ValueError("memory_rebuild_privacy_preparation_required")
         if prepared.aliases != tuple(sorted(set(aliases))):
             raise ValueError("memory_rebuild_privacy_aliases_changed")
-        transaction = (
-            self.database.immediate_session()
-            if session is None
-            else optional_session(self.database, session, write=True)
-        )
-        async with transaction as writer:
-            return await apply_forget(writer, prepared)
+        return await apply_forget(session, prepared)
 
     async def health(
         self,

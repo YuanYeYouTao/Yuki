@@ -28,8 +28,6 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationRequest,
     MemoryMutationTarget,
 )
-from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
-from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
 from qq_ai_bot.memory.self_reflection.control import ReflectionControlRepository
 from qq_ai_bot.memory.self_reflection.db_models import InitiativeReflectionCursorModel
 from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
@@ -780,21 +778,6 @@ async def test_committed_tool_receipt_does_not_need_a_live_group_binding(databas
 
 
 @pytest.mark.asyncio
-async def test_actorless_memory_scope_has_no_target_person_partition(database):
-    _, _, event, run_id = await seed(database)
-    turn = await TurnMemorySession.open_self_origin(
-        initiative_run_id=run_id,
-        canonical_conversation_id=event.canonical_conversation_id,
-        identity=event.scope,
-        partition_lookup=DatabaseMemoryPartitionLookup(database),
-    )
-    assert turn.scope.scope_type.value == "group"
-    assert turn.scope.scope_id == event.group_id
-    assert turn.scope.partition_key == f"group:{event.group_id}"
-    assert turn.contract.persistent_write_allowed
-
-
-@pytest.mark.asyncio
 async def test_silent_reflection_cursor_survives_restart_and_late_receipt(database):
     _, _, event, run_id = await seed(database)
     await record(database, event, run_id)
@@ -1052,6 +1035,7 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
     from tests.integration.test_self_automation_delivery import self_actor
     from tests.support.social_identity_cases import social_env
 
+    from qq_ai_bot.conversation.hydrate import primary_alias_for_conversation
     from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
     from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
     from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -1065,10 +1049,6 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
     from qq_ai_bot.workspace.short_state import ShortState
 
     env = await social_env(database, tmp_path)
-    async with database.sessions() as session:
-        binding_id = await session.scalar(
-            select(SpaceBindingModel.id).where(SpaceBindingModel.external_space_id == "20001")
-        )
     if multiple_bindings:
         async with database.sessions() as session, session.begin():
             session.add(
@@ -1095,8 +1075,8 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
         "evidence_quote": "member",
     }
     calls = [
-        ("get_group_members", {"limit": 10, "space_binding_id": binding_id}),
-        ("get_group_members", {"limit": 20, "space_binding_id": binding_id}),
+        ("get_group_members", {"limit": 10, "target_id": env.space}),
+        ("get_group_members", {"limit": 20, "target_id": env.space}),
         ("memory_change", write),
     ]
     results = []
@@ -1157,17 +1137,26 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
     recovered = await recover_self_source(
         database, actor.conversation_id, source, request_id=item["id"]
     )
-    identity = ConversationScope.group("80001", "20001")
+    identity = ConversationScope.group(
+        "80001",
+        "20001",
+        platform=recovered.platform,
+        conversation_id=actor.conversation_id,
+        presence_id=actor.presence_id,
+    )
+    async with database.sessions() as session:
+        runtime_key = await primary_alias_for_conversation(session, actor.conversation_id)
+    assert runtime_key is not None
 
     async def validate():
         assert await owner.valid(lease)
 
     control = WorkControl(owner, lease, item["source_key"], source, validate)
     control.current = item
-    async with chat._turn_coordinator.background_turn(identity.key) as token:
+    async with chat._turn_coordinator.background_turn(runtime_key) as token:
         snapshot = ConversationTurnSnapshot(
             actor.conversation_id,
-            identity.key,
+            runtime_key,
             1,
             None,
             token.version,
@@ -1177,16 +1166,14 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
         async with bind_work_activation(control):
             result = await chat.generate_self_initiative(
                 trigger=recovered.trigger(),
-                runtime=await chat._runtime_config.snapshot(group_id="20001"),
+                runtime=await chat._runtime_config.snapshot(group_id=env.space),
                 turn_token=token,
                 turn_snapshot=snapshot,
                 before_model_request=validate,
                 source_runtime=ToolRuntime(
                     inbound=None,
                     actor_context=recovered.actor(item["id"]),
-                    gateway=None,
-                    allow_generic_onebot=False,
-                    conversation_key=identity.key,
+                    conversation_key=runtime_key,
                     execution_id=item["id"],
                     origin=TurnOrigin.SELF_INITIATIVE,
                     initiative_run_id=actor.initiative_run_id,
@@ -1223,7 +1210,9 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
     fact = await facts.get_fact(mutation.new_fact_id)
     evidence = await facts.list_evidence(fact.id)
-    assert fact.scope_type is MemoryScopeType.SELF and fact.visibility_group_id == "20001"
+    assert (
+        fact.scope_type is MemoryScopeType.SELF and fact.canonical_visibility_space_id == env.space
+    )
     assert (
         len(evidence) == 1
         and evidence[0].tool_receipt_id == receipt.id

@@ -24,16 +24,26 @@ from yuki_plugin_sdk.models import CurrentMessage
 from yuki_plugin_sdk.testing import FakePluginContext
 
 ctx = FakePluginContext("com.example.plugin")
+person_id = "11111111-1111-4111-8111-111111111111"
+space_id = "22222222-2222-4222-8222-222222222222"
 ctx.messages.current = CurrentMessage(
     message_id="m-1",
-    sender_user_id="10001",
-    scope_type="private",
+    platform="telegram",
+    sender_user_id="42",
+    group_id="-10042",
+    person_id=person_id,
+    space_id=space_id,
+    scope_type="group",
     text="hello",
     received_at=datetime.now(UTC),
 )
-await ctx.config.set("mode", "short", scope_type="user", scope_id="10001")
+await ctx.config.set("mode", "short", scope_type="user", scope_id=person_id)
+await ctx.config.set("mode", "short", scope_type="group", scope_id=space_id)
 await ctx.storage.set("state", "count", 1)
 ```
+
+`person_id` / `space_id` 是业务与配置作用域的内部 ID。`sender_user_id` / `group_id`
+在 `CurrentMessage` 中仅记录原传输出处，不能用作 API 4.0 的人物或群选择参数。
 
 可用 Fake 覆盖 Message、People、Group、Memory、Agent、AgentSession、Web、HTTP、Vision、Media、Emoji、Notification、Automation、OneBot、Config、Secrets、Storage、Scheduler 和 EventBus。
 

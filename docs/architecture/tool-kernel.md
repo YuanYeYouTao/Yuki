@@ -10,12 +10,15 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 `UnifiedToolCatalog` 负责目录，`MainAgentContract.definitions()` 在部署初始化时收集
 主工具注册表与已批准插件，加入工作控制、子任务和 short_state；启用 Code 时再加入编排与只读目录工具，
 按名称排序并冻结完整名称、说明和参数 schema。重名声明直接报错。
+平台合同保持原能力，App 主会话另含只读 read_personal_entry；两者各有 revision。
+选择依据是 canonical Conversation 的 Binding.platform（app 或其他），不按设备、消息正文
+或配置切换。启动一次冻结两套，Work 收到 App 补充仍沿原会话合同。
 
 `definitions()` 保留完整执行清单。默认 direct 模式的 `model_definitions()` 返回
 部署内冻结的完整工具清单，不加载 Code 引擎。显式启用 Code 时才使用固定直调集合：聊天、
 生命周期、记忆与历史、基础工作区、时间、终端与环境状态、联网、`execute_code` 和
 `lookup_tools`；包管理、服务管理、自动化和管理等其余能力经脚本调用。两个模式分别
-冻结声明，普通聊天、主动触发、自动化、插件主调用和持久续跑复用本部署的合同。
+冻结声明；每个模式同时冻结平台入口与 App 主会话两套合同。普通聊天、主动触发、自动化、插件主调用和持久续跑按原会话绑定的平台选择合同。
 它不是按每条消息或每个用户生成的白名单。工具合同变更需重启并开启明确的新链。
 `get_chat_history_around` 只以必填的内部 `event_id` 定位当前会话账本；缺少编号或传入
 平台消息号会收到错误回执。声明变更随部署生成新的合同 revision，不沿用旧请求链。
@@ -244,23 +247,32 @@ pause 与压缩尚未完成时不提前换链；媒体、来源与 CAS 在原派
 
 WorkspaceStore 的快照沿現行永久保留合同，不再暴露無生產者的 TTL 選項；既有 expires_at 列保留舊資料讀取與首次啟動轉換。物理儲存仍受原 512 MiB 總量、200 MiB 單檔與 1000 個物件容量限制。
 
-## 合并转发历史读取
+## 共同账本历史与原生平台操作
 
-固定 `read_conversation_history` schema_version="2"，仍 result_cacheable=false。参数有 event_id
-key 时沿事件模式，必须是真正正整数；它与 operation_id 是冲突的两种 anchor。合法未用
-selector/limit 不改变原事件账号或裁剪 raw。旧 receipt/target 模式沿原解析与文字投影。
+固定的 read_conversation_history 读取授权的 canonical 账本；默认当前入口，显式
+conversation_id 选择原内部会话，人物/空间有多个入口时返回内部候选，不猜主动路由。
+event_id 只定位当前会话原事件；operation_id 按原来源的发送回执读取真实出站会话。
+委托 read_target_id 核原 owner，读取尊重现有 starts_after 与 keeper 边界。
+结果标明 coverage=observed，不冒充完整平台历史；平台离线不阻止账本读取。
 
-执行处由 current_invocation.runtime 取得 canonical Conversation、generation 与既有读授权，
-委托 read_target_id 只允许其原 owner。get_reply_event 核当前会话 keeper/message，
-reader 使用外层原 Presence 的固定 get_forward_msg；不新增探针、换号或任意管理 API。
+默认模型已退役任意 OneBot action、戳一戳和远端/raw 转发历史展开。原始 segments、
+历史真实工具结果、已付请求和旧回执保留，不因退役重写冻结内容或重派旧调用。
+新 read call 经当前授权读取事实，不以另一 call 的同参结果代替。原 call 和历史
+readonly alias 仍读自己的真实持久回执，不增加缓存失效总线。
 
-每个外层 forward segment 按位置成组，同 invocation 的同 locator 可复用一次实际读取，
-多 locator 沿原并行调用处理。响应先核 provider status/retcode，随后选择支持 envelope 中
-首个实际 list；空列表合法，原顺序、标量、null 和未知字段保留。部分失败保成功组，
-全失败返回真实顶层 error 并保分组状态；原取消传播。内层 forward 留作 raw，绝不自动展开。
+共同 Social 管内部目标、授权、预算、原操作 claim、账本与回执。GatewayProvider 的
+原生操作接口负责文字/媒体布局、参数、引用和响应。纯 plan_send 不执行网络请求，
+每项各有实际派发和持久回执；平台适配器不能内部多次发送却只返回一个成功。
+详见[平台适配与升级](platform-adapters.md)。
 
-实际读取的 locator/账号构成本次来源；正常文字/ASR/visual 派生及读完暂离线不清空结果。
-真正 generation/privacy/owner 授权失效沿原执行与发布围栏拒绝新正文，已发生回执保留。
-结果不附图片，完整 raw 沿共同预算/artifact 链处理；仅成功外置才有真实分页 handle。
-没有 store 或外置失败不声称保存全文，不添加固定节点/文本/递归经验帽，也不重写通用
-artifact、Work journal、原 Code consumer 或恢复别名。
+## 主会话的跨入口读取与发送
+
+read_personal_entry 只从本人 App 主会话按 binding_id 或 conversation_id 显式读取本人
+其他私聊账本，使用内部事件游标且最多 50 条。结果携带入口、会话、事件 ID 与
+untrusted_data 标记；历史里的指令不构成新授权，读取不改历史、generation 或 Main session。
+平台合同不声明该工具；执行处仍核真实 actor、来源 App 绑定及目标私聊归属。
+
+send_message 的 person target 可带 binding_id。从 App 显式指定 person 目标必须明确绑定，缺失时返回 binding_required 与可选绑定；
+省略目标时仍回复当前 App 会话。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
+在派发事务复核绑定、Presence 和连接。结果 uncertain 不重发；出站记到真实目标入口，
+SocialOperation 的 source_conversation_id 仍是原主会话。文件说明沿同一绑定投递。

@@ -8,6 +8,7 @@ import copy
 import json
 import os
 import secrets
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import tomlkit
 
 from qq_ai_bot import __version__
 from qq_ai_bot.config import Settings
@@ -37,8 +40,9 @@ from qq_ai_bot.deployment_setup.service import (
 )
 from qq_ai_bot.deployment_setup.terminal import BackRequested, QuitRequested, TerminalUI
 from qq_ai_bot.llm.vendor_policy import CHAT_VENDORS, RESPONSES_VENDORS, supports_native_search
-from qq_ai_bot.model_runtime.models import ModelSearchMode
+from qq_ai_bot.model_runtime.profiles import normalize_model_profile_document
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
+from qq_ai_bot.web.models import WebMode
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 _SECTIONS = (
@@ -175,12 +179,6 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
     )
     draft.environment["YUKI_VERSION"] = __version__
     draft.environment["MODEL_PROFILES_FILE"] = "webui-config/model_profiles.toml"
-    draft.environment["ONEBOT_ACCESS_TOKEN"] = _token_or_existing(
-        draft.environment.get("ONEBOT_ACCESS_TOKEN", "")
-    )
-    draft.environment["SNOWLUMA_VNC_PASSWORD"] = _token_or_existing(
-        draft.environment.get("SNOWLUMA_VNC_PASSWORD", "")
-    )
 
     forced_sections: set[str] = set()
 
@@ -299,12 +297,8 @@ def _run_page_state_machine(
 def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     del paths
     environment = draft.environment
-    environment["SUPERUSERS"] = _ask_qq(
-        ui,
-        default=_real_value(environment.get("SUPERUSERS", "")),
-    )
     if not draft.initial:
-        ui.info("模型连接与任务路由请在 WebUI 的模型档案中修改。")
+        ui.info("模型连接与任务路由请编辑模型配置文件，再通过 admin model apply 应用。")
         return
     draft.protocol = ui.choose(
         "主模型接入类型",
@@ -431,15 +425,13 @@ def _page_web(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     if model_search:
         web_choices.insert(1, ("native", "模型搜索（无需 Tavily 密钥）"))
     current = environment.get("WEB_MODE", "").casefold()
-    if current == "native_with_tavily_fallback":
-        current = "both"
     if current == "both":
         web_choices.append(("both", "保留模型与外部搜索"))
     if current == "native" and not draft.initial and not model_search:
         web_choices.insert(1, ("native", "保留已配置模型搜索"))
     if not current:
         current = (
-            ("tavily" if _as_bool(environment["WEB_ENABLED"]) else "disabled")
+            ("native" if _as_bool(environment["WEB_ENABLED"]) else "disabled")
             if "WEB_ENABLED" in environment
             else "native"
         )
@@ -448,21 +440,18 @@ def _page_web(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
     web_mode = ui.choose("Web 搜索方式", tuple(web_choices), default=current)
     environment["WEB_MODE"] = web_mode
     environment["WEB_ENABLED"] = _bool_text(web_mode != "disabled")
-    if draft.initial and web_mode == "native":
+    if web_mode == "native":
+        environment["WEB_SEARCH_BACKEND"] = "model"
         if provider == "deepseek":
-            environment["WEB_SEARCH_BACKEND"] = "model"
             ui.info("将生成独立 DeepSeek Messages 搜索连接，共用已填写密钥；主对话仍用原协议。")
         elif draft.protocol == "gemini":
-            environment["WEB_SEARCH_BACKEND"] = "tavily"
             ui.info("Gemini 将使用独立搜索桥，不把 Google Search 和函数声明混入同一个请求。")
         else:
-            environment["WEB_SEARCH_BACKEND"] = "tavily"
             ui.info("将声明 native_web_search；请确认所选模型及接入服务支持原生联网。")
     elif not model_search and draft.initial:
         ui.info("此主连接没有可用的默认模型搜索；选择 Tavily 需密钥，或换用支持搜索的模型连接。")
     if web_mode == "tavily":
-        if draft.initial:
-            environment["WEB_SEARCH_BACKEND"] = "tavily"
+        environment["WEB_SEARCH_BACKEND"] = "tavily"
         environment["TAVILY_API_KEY"] = _ask_required_secret(
             ui,
             "Tavily API Key",
@@ -552,6 +541,15 @@ def _page_gateway(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None
         gateways=gateways,
     )
     if "snowluma" in gateways:
+        environment["SUPERUSERS"] = _ask_qq(
+            ui, default=_real_value(environment.get("SUPERUSERS", ""))
+        )
+        environment["ONEBOT_ACCESS_TOKEN"] = _token_or_existing(
+            environment.get("ONEBOT_ACCESS_TOKEN", "")
+        )
+        environment["SNOWLUMA_VNC_PASSWORD"] = _token_or_existing(
+            environment.get("SNOWLUMA_VNC_PASSWORD", "")
+        )
         ui.info("SnowLuma 首次启动后，请在本机 WebUI 手动确认协议并扫码登录。")
         ui.info("同一 QQ 已连接其他 Provider 时，新连接会被 Yuki 拒绝。")
 
@@ -571,10 +569,9 @@ def _review_and_commit(
             main_protocol=draft.protocol,
             flash_enabled=draft.flash_enabled,
             main_provider=draft.environment.get("LLM_PROVIDER"),
-            main_search_mode=_new_main_search_mode(draft) if initial else None,
-            search_connection=initial
-            and draft.environment.get("WEB_MODE") == "native"
-            and draft.environment.get("LLM_PROVIDER", "").casefold() == "deepseek",
+            environment=draft.environment,
+            web_mode=WebMode(draft.environment.get("WEB_MODE", "native")),
+            search_backend=draft.environment.get("WEB_SEARCH_BACKEND", "model"),
         )
     else:
         try:
@@ -583,6 +580,17 @@ def _review_and_commit(
             raise SetupValidationError(
                 "现有部署缺少模型档案，请返回区块选择并选择 basic 或 flash"
             ) from exc
+        if "web" in sections and draft.environment.get("WEB_MODE") in {"native", "tavily"}:
+            document_payload = tomllib.loads(profiles)
+            document_payload["search_backend"] = draft.environment["WEB_SEARCH_BACKEND"]
+            normalized = normalize_model_profile_document(
+                document_payload,
+                environment=draft.environment,
+                web_mode=WebMode(draft.environment["WEB_MODE"]),
+                search_backend=draft.environment["WEB_SEARCH_BACKEND"],
+            )
+            profiles = tomlkit.dumps(normalized)
+            write_model_profiles = True
     configuration = SetupConfiguration(
         environment=draft.environment,
         model_profiles=profiles,
@@ -616,16 +624,6 @@ def _review_and_commit(
         "qq-ai-bot-cli setup environment-check"
     )
     return 0
-
-
-def _new_main_search_mode(draft: _SetupDraft) -> ModelSearchMode:
-    if draft.environment.get("WEB_MODE") != "native":
-        return ModelSearchMode.EXTERNAL
-    if draft.protocol == "gemini":
-        return ModelSearchMode.BRIDGE
-    if draft.environment.get("LLM_PROVIDER", "").casefold() == "deepseek":
-        return ModelSearchMode.EXTERNAL
-    return ModelSearchMode.NATIVE
 
 
 def _select_sections(ui: TerminalUI, draft: _SetupDraft) -> tuple[str, ...]:
@@ -770,8 +768,10 @@ def _render_summary(
     *,
     pending_plugins: tuple[str, ...] | None,
 ) -> None:
-    masked_qq = environment["SUPERUSERS"][-4:].rjust(len(environment["SUPERUSERS"]), "*")
-    ui.line(f"管理员 QQ：{masked_qq}")
+    superusers = _real_value(environment.get("SUPERUSERS", ""))
+    if superusers:
+        masked_qq = superusers[-4:].rjust(len(superusers), "*")
+        ui.line(f"管理员 QQ：{masked_qq}")
     ui.line(f"主模型协议：{protocol}")
     ui.line(f"主模型：{environment['LLM_MODEL']}")
     ui.line("主模型 API Key：已配置")
@@ -850,14 +850,14 @@ def _ask_required_secret(ui: TerminalUI, label: str, existing: str) -> str:
 
 
 def _ask_qq(ui: TerminalUI, *, default: str) -> str:
-    value = ui.ask("管理员 QQ", default=default, required=True)
-    if not value.isdigit() or not 5 <= len(value) <= 20:
-        raise SetupValidationError("管理员 QQ 必须是 5 到 20 位数字")
+    value = ui.ask("管理员 QQ（可留空，operator 管理不依赖 QQ 账号）", default=default)
+    if value and not value.isdigit():
+        raise SetupValidationError("管理员 QQ 必须是数字")
     return value
 
 
 def _require_base_configuration(environment: dict[str, str]) -> None:
-    required = ("SUPERUSERS", "LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+    required = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
     missing = [key for key in required if not _real_value(environment.get(key, ""))]
     if missing:
         raise SetupValidationError("基础配置不完整：" + ", ".join(missing))

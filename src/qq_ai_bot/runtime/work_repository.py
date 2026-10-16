@@ -36,6 +36,7 @@ from qq_ai_bot.conversation.canonical_db_models import (
 )
 from qq_ai_bot.domain.messages import ChatImage
 from qq_ai_bot.persistence.database import Database
+from qq_ai_bot.persistence.unit_of_work import optional_session
 from qq_ai_bot.runtime.subagent_schema import children, media, media_refs
 from qq_ai_bot.runtime.work_recovery_schema import recovery
 from qq_ai_bot.runtime.work_schema_v1 import (
@@ -1058,15 +1059,17 @@ class WorkRepository:
         work_id: str | None = None,
         ready: bool = True,
         resume: tuple[WorkLease, dict[str, Any]] | None = None,
+        payload: dict[str, Any] | None = None,
+        session: AsyncSession | None = None,
     ) -> int:
         from qq_ai_bot.runtime.execution_receipts import PROCESS_ID
 
         if not source_key or kind not in {"message", "completion", "control"}:
             raise ValueError("invalid_work_input")
-        serialized = encode_json(resume[1]) if resume else "{}"
+        serialized = encode_json(resume[1] if resume else payload if payload is not None else {})
 
         def matches(row: Any) -> bool:
-            return all(
+            return (payload is None or row["payload_json"] == serialized) and all(
                 row[key] == value
                 for key, value in {
                     "conversation_id": conversation_id,
@@ -1078,7 +1081,7 @@ class WorkRepository:
             )
 
         # Explicit resume also changes the Work state and retains its writer/CAS.
-        if resume is None:
+        if resume is None and session is None:
             async with self.database.sessions() as reader:
                 existing_row = (
                     (await reader.execute(select(inputs).where(inputs.c.source_key == source_key)))
@@ -1089,7 +1092,12 @@ class WorkRepository:
                     if not matches(existing_row):
                         raise WorkConflict("work_input_conflict")
                     return int(existing_row["id"])
-        async with self.database.immediate_session() as session:
+        transaction = (
+            self.database.immediate_session()
+            if session is None
+            else optional_session(self.database, session, write=True)
+        )
+        async with transaction as session:
             if resume is not None:
                 owned, _payload = resume
                 await self._assert_lease(session, owned)

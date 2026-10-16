@@ -26,6 +26,8 @@ def _event(event_id: int, at: datetime, content: str = "消息") -> EventRecord:
         occurred_at=at,
         group_id="2001",
         canonical_conversation_id="conversation-1",
+        author_kind="person",
+        author_person_id="person-1",
     )
 
 
@@ -40,9 +42,9 @@ def test_history_time_uses_first_event_and_caps_the_whole_group_at_five_minutes(
 
     assert [ids for _, ids, _ in history] == [(6912, 6913, 6914), (6915,)]
     assert history[0][2].content == (
-        "[14:02:11｜阿明|QQ:1001]\n#6912>今晚提醒我\n#6913>八点开始\n#6914>还有一件事"
+        "[14:02:11｜阿明|person:person-1]\n#6912>今晚提醒我\n#6913>八点开始\n#6914>还有一件事"
     )
-    assert (history[1][2].content or "").startswith("[14:10:11｜阿明|QQ:1001]\n")
+    assert (history[1][2].content or "").startswith("[14:10:11｜阿明|person:person-1]\n")
 
 
 def test_history_starts_new_group_at_local_midnight_and_on_backward_event_time() -> None:
@@ -55,9 +57,9 @@ def test_history_starts_new_group_at_local_midnight_and_on_backward_event_time()
 
     assert [ids for _, ids, _ in history] == [(1,), (2,), (3,)]
     assert [message.content.split("\n", 1)[0] for _, _, message in history] == [
-        "[23:59:30｜阿明|QQ:1001]",
-        "[00:01:30｜阿明|QQ:1001]",
-        "[00:00:30｜阿明|QQ:1001]",
+        "[23:59:30｜阿明|person:person-1]",
+        "[00:01:30｜阿明|person:person-1]",
+        "[00:00:30｜阿明|person:person-1]",
     ]
 
 
@@ -70,7 +72,7 @@ def test_backward_time_splits_a_group_even_inside_the_first_five_minutes() -> No
     history = ChatEventPromptRenderer(rows).main_agent_history(rows)
 
     assert [ids for _, ids, _ in history] == [(1, 2), (3,)]
-    assert (history[1][2].content or "").startswith("[14:03:00｜阿明|QQ:1001]\n")
+    assert (history[1][2].content or "").startswith("[14:03:00｜阿明|person:person-1]\n")
 
 
 def test_current_event_time_is_visible_without_changing_single_event_watermark() -> None:
@@ -81,9 +83,9 @@ def test_current_event_time_is_visible_without_changing_single_event_watermark()
         renderer.reference_message(
             event, current_event_id=event.id, current_content="当前输入"
         ).content
-        == "[14:02:11｜阿明|QQ:1001]\n#6912>当前输入"
+        == "[14:02:11｜阿明|person:person-1]\n#6912>当前输入"
     )
-    assert renderer.render_reference_event(event) == "[阿明|QQ:1001]\n#6912>原文"
+    assert renderer.render_reference_event(event) == "[阿明|person:person-1]\n#6912>原文"
 
 
 def test_frozen_old_fragment_keeps_its_text_when_new_event_is_appended() -> None:
@@ -112,5 +114,5 @@ def test_frozen_old_fragment_keeps_its_text_when_new_event_is_appended() -> None
 
     assert [message.content for message in extended.messages()] == [
         "[阿明|QQ:1001]\n#1>旧消息",
-        "[14:02:11｜阿明|QQ:1001]\n#2>新消息",
+        "[14:02:11｜阿明|person:person-1]\n#2>新消息",
     ]

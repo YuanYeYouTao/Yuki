@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.conversation.canonical_db_models import SpaceActiveRouteModel
+from qq_ai_bot.gateway.social import TransportMessage
 from qq_ai_bot.identity.canonical_repository import ensure_space
 from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
 from qq_ai_bot.identity.routing import RouteSendError
@@ -76,8 +77,8 @@ async def test_slow_cross_space_probe_does_not_block_current_group_reply(
             replace(env.context, call_id="other"),
             other_target,
             other_route,
-            "send_group_msg",
-            {"group_id": 20002, "message": []},
+            "send",
+            {"message": TransportMessage("concurrent")},
         )
     )
     try:
@@ -89,8 +90,8 @@ async def test_slow_cross_space_probe_does_not_block_current_group_reply(
                 current_context,
                 current_target,
                 current_route,
-                "send_group_msg",
-                {"group_id": 20001, "message": []},
+                "send",
+                {"message": TransportMessage("concurrent")},
             ),
             2,
         )
@@ -131,8 +132,8 @@ async def test_concurrent_same_operation_dispatches_once(
                 env.context,
                 target,
                 route,
-                "send_group_msg",
-                {"group_id": 20001, "message": []},
+                "send",
+                {"message": TransportMessage("concurrent")},
             )
             for _ in range(2)
         ]
@@ -183,6 +184,19 @@ async def test_route_change_after_probe_before_claim_fails_closed(
         return prepared
 
     monkeypatch.setattr(env.service, "send_route", change_after_prepare)
+    if change in {"paused", "generation"}:
+        result = await env.service._effect(
+            "send_message",
+            {"text": "one"},
+            env.context,
+            target,
+            route,
+            "send",
+            {"message": TransportMessage("current entry")},
+        )
+        assert result["status"] == "succeeded"
+        assert any(action == "send_group_msg" for action, _ in env.bot.calls)
+        return
     with pytest.raises((RouteSendError, SocialError)):
         await env.service._effect(
             "send_message",
@@ -190,8 +204,8 @@ async def test_route_change_after_probe_before_claim_fails_closed(
             env.context,
             target,
             route,
-            "send_group_msg",
-            {"group_id": 20001, "message": []},
+            "send",
+            {"message": TransportMessage("concurrent")},
         )
     assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
     receipt = await env.service.receipts.find(env.context.turn_id, env.context.call_id)

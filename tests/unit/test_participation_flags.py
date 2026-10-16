@@ -63,8 +63,13 @@ async def test_four_flags_new_ordinary_admission_and_explicit_call(
 
 async def test_canonical_config_queries_use_exact_keys_aliases_and_owner(database):
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
-    _, space = await runtime._owner_match(user_id=None, group_id="2001")
-    _, other = await runtime._owner_match(user_id=None, group_id="2002")
+    from qq_ai_bot.identity.canonical_repository import find_space_binding
+
+    async with database.sessions() as reader:
+        original = await find_space_binding(reader, "2001")
+        alternate = await find_space_binding(reader, "2002")
+    _, space = await runtime._owner_match(user_id=None, group_id=original.space_id)
+    _, other = await runtime._owner_match(user_id=None, group_id=alternate.space_id)
     await override(database, None, "conversation.auto_reply_enabled", False, version=5)
     await override(database, other, "conversation.auto_reply_enabled", True, version=9)
     async with database.immediate_session() as writer:

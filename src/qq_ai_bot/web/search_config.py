@@ -13,13 +13,14 @@ def effective_search_profile(
     own_profile: ModelProfile | None = None,
 ) -> ModelProfile:
     """Keep the retired DeepSeek key-borrowing setting readable on upgrade."""
-    profile = (
-        catalog.profiles[catalog.search_connection]
-        if catalog.search_connection is not None
-        else own_profile
+    connection = (
+        own_profile.search_connection
+        if own_profile is not None and own_profile.search_connection is not None
+        else catalog.search_connection
     )
+    profile = catalog.profiles[connection] if connection is not None else own_profile
     if profile is None:
-        raise ValueError("Select a native search connection in the WebUI")
+        raise ValueError("Select a native search connection in model profiles via Admin or CLI")
     if catalog.search_backend is None and backend == "deepseek_anthropic":
         endpoint = urlsplit(profile.base_url)
         if (

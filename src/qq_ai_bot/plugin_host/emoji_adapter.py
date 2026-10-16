@@ -36,7 +36,7 @@ class PluginEmojiSelectionSignalAdapter:
         context = EmojiSelectionSignalContext(
             goal=request.goal[:300],
             emotion=request.emotion[:100],
-            group_id=request.group_id,
+            space_id=request.space_id,
             candidates=tuple(
                 EmojiSelectionCandidate(
                     emoji_id=item.asset.id,

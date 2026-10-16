@@ -208,6 +208,7 @@ class AdminAuditService:
         *,
         key: str | None = None,
         actor_user_id: str | None = None,
+        actor_principal_id: str | None = None,
         capability: str | None = None,
         limit: int = 20,
     ) -> tuple[AdminOperationEvent, ...]:
@@ -216,6 +217,10 @@ class AdminAuditService:
             statement = statement.where(AdminOperationEventModel.target_id == key)
         if actor_user_id:
             statement = statement.where(AdminOperationEventModel.actor_user_id == actor_user_id)
+        if actor_principal_id:
+            statement = statement.where(
+                AdminOperationEventModel.actor_principal_id == actor_principal_id
+            )
         if capability:
             statement = statement.where(AdminOperationEventModel.capability == capability)
         statement = statement.order_by(

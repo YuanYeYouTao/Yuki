@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
-from yuki_participation.controller import Controller, State
+from yuki_participation.controller import Controller, State, original_actor
 from yuki_participation.models import (
     CandidateKind,
     Feedback,
@@ -44,6 +44,7 @@ from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
 from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
+    SpaceBindingIngestRouteModel,
 )
 from qq_ai_bot.conversation.initiative_sources import memory_revision, source_revision
 from qq_ai_bot.conversation.ordinary_admission import (
@@ -62,6 +63,7 @@ from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_helpers import keeper_event_clause
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.work_repository import WorkRepository
+from qq_ai_bot.services.participation_identity import actor_identity as prepare_actor_identity
 from qq_ai_bot.services.participation_parameters import (
     DEFAULT_AUTONOMY_PARAMETERS,
     AutonomyParameters,
@@ -91,6 +93,8 @@ class Scene:
     bot_user_id: str
     enabled: bool
     autonomous_enabled: bool
+    platform: str
+    thread_id: str | None = None
 
     @property
     def scope(self) -> Scope:
@@ -98,7 +102,14 @@ class Scene:
 
     @property
     def identity(self) -> ConversationScope:
-        return ConversationScope.group(self.bot_user_id, self.group_id)
+        return ConversationScope.group(
+            self.bot_user_id,
+            self.group_id,
+            platform=self.platform,
+            presence_id=self.presence_id,
+            conversation_id=self.conversation_id,
+            thread_id=self.thread_id,
+        )
 
 
 @dataclass
@@ -232,12 +243,16 @@ class SemanticParticipationService:
 
         return await continuation_for_event(self, event_id, check_budget=check_budget)
 
-    def continuation_current(
-        self, binding: OrdinaryParticipationBinding, *, check_budget: bool = True
+    async def continuation_current(
+        self,
+        binding: OrdinaryParticipationBinding,
+        *,
+        check_budget: bool = True,
+        session: AsyncSession | None = None,
     ) -> bool:
         from qq_ai_bot.services.participation_ordinary import continuation_current
 
-        return continuation_current(self, binding, check_budget=check_budget)
+        return await continuation_current(self, binding, check_budget=check_budget, session=session)
 
     async def on_ordinary_admitted(
         self, binding: OrdinaryParticipationBinding | None, admission: OrdinaryAdmission
@@ -324,22 +339,27 @@ class SemanticParticipationService:
                 return None
             space = await session.get(CanonicalSpaceModel, conversation.space_id)
             route = await session.get(SpaceActiveRouteModel, conversation.space_id)
-            if space is None or route is None or route.paused:
+            if space is None:
                 return None
-            presence = await session.get(PresenceModel, route.presence_id)
-            bindings = (
-                await session.scalars(
-                    select(SpaceBindingModel).where(
-                        SpaceBindingModel.space_id == space.id,
-                        SpaceBindingModel.platform == "qq",
-                        SpaceBindingModel.status == "active",
-                    )
-                )
-            ).all()
-            if presence is None or not presence.enabled or len(bindings) != 1:
-                return None
-            binding = bindings[0]
-            if route.space_binding_id != binding.id or presence.platform != "qq":
+            binding_id = conversation.space_binding_id or (
+                route.space_binding_id if route else None
+            )
+            binding = await session.get(SpaceBindingModel, binding_id) if binding_id else None
+            ingest = (
+                await session.get(SpaceBindingIngestRouteModel, binding_id) if binding_id else None
+            )
+            presence_id = (
+                ingest.ingest_presence_id if ingest else (route.presence_id if route else None)
+            )
+            presence = await session.get(PresenceModel, presence_id) if presence_id else None
+            if (
+                presence is None
+                or not presence.enabled
+                or binding is None
+                or binding.space_id != space.id
+                or binding.status != "active"
+                or presence.platform != binding.platform
+            ):
                 return None
             return Scene(
                 conversation.id,
@@ -350,6 +370,8 @@ class SemanticParticipationService:
                 presence.external_account_id,
                 space.enabled,
                 space.autonomous_enabled,
+                presence.platform,
+                conversation.thread_id,
             )
 
     @staticmethod
@@ -406,7 +428,10 @@ class SemanticParticipationService:
         from qq_ai_bot.services.participation_trace import TracedSemanticObserver
 
         observation = (
-            ObservationSession(controller, TracedSemanticObserver(self._observer, self._traces))
+            ObservationSession(
+                controller,
+                TracedSemanticObserver(self._observer, self._traces, database=self.database),
+            )
             if self._observer
             else None
         )
@@ -459,7 +484,7 @@ class SemanticParticipationService:
         scene = item.scene
         if runtime is None:
             runtime = await self.app.runtime_config.snapshot(
-                group_id=scene.group_id if scene.enabled else None
+                group_id=scene.space_id if scene.enabled else None
             )
         policy = runtime.conversation_policy()
         prior = await self.repository.get_binding(scene.conversation_id, scene.generation)
@@ -478,7 +503,13 @@ class SemanticParticipationService:
             external_enabled=desired.external_enabled,
         )
 
-    def _event(self, row: EventRecord, item: _Session) -> ScopedEvent | None:
+    def _event(
+        self,
+        row: EventRecord,
+        item: _Session,
+        *,
+        actor_identity: Callable[[str], str] = original_actor,
+    ) -> ScopedEvent | None:
         scene, state = item.scene, item.controller.state
         if (
             row.canonical_conversation_id != scene.conversation_id
@@ -517,7 +548,7 @@ class SemanticParticipationService:
         # Rereading an immutable source never rewrites its old unit projection.
         if old is not None and old.ref == ref:
             return old
-        author = row.author_person_id if row.author_is_human() else "SELF"
+        author = cast(str, row.author_person_id) if row.author_is_human() else "SELF"
         target = author if row.author_is_human() else "group"
         thread = f"event:{row.id}"
         quoted = (
@@ -564,7 +595,13 @@ class SemanticParticipationService:
                 ):
                     options.append(option)
         for boundary in state.boundaries.values():
-            if anchor is None and boundary.target in {target, "group"}:
+            if anchor is None and (
+                boundary.target == "group"
+                or (
+                    boundary.target is not None
+                    and actor_identity(boundary.target) == actor_identity(target)
+                )
+            ):
                 option = HostUnitOption(
                     key=f"b{len(options)}",
                     thread=boundary.thread,
@@ -608,6 +645,9 @@ class SemanticParticipationService:
             or version.conversation_id != item.scene.conversation_id
         ):
             return None
+        identity = await prepare_actor_identity(
+            self, item, (row.author_person_id for row in rows if row.author_person_id)
+        )
         if not item.controller.state.human_activity_initialized:
             # Old snapshots only retain detailed events for about ten minutes.
             # Read hourly aggregates from this generation once, outside any write transaction;
@@ -632,7 +672,6 @@ class SemanticParticipationService:
                         )
                         .where(
                             ChatEventModel.canonical_conversation_id == version.conversation_id,
-                            ChatEventModel.group_id == item.scene.group_id,
                             ChatEventModel.id > version.starts_after_event_id,
                             ChatEventModel.event_kind == "message",
                             ChatEventModel.author_kind == "person",
@@ -703,7 +742,7 @@ class SemanticParticipationService:
         runtime = cast(
             RuntimeConfigSnapshot,
             await self.app.runtime_config.snapshot(
-                group_id=item.scene.group_id if item.scene.enabled else None
+                group_id=item.scene.space_id if item.scene.enabled else None
             ),
         )
         observe_enabled = (
@@ -729,14 +768,14 @@ class SemanticParticipationService:
                 and key not in versions
                 and timestamp(row.occurred_at) >= now - 600
             ):
-                self._event(row, item)
+                self._event(row, item, actor_identity=identity)
         basis_valid = await self._sources_current(
             item, tuple(ref for unit in units.values() if unit is not None for ref in unit.basis)
         )
         for row in rows:
             if timestamp(row.occurred_at) < now - 600:
                 continue
-            event = self._event(row, item)
+            event = self._event(row, item, actor_identity=identity)
             if event is None:
                 continue
             fresh = item.controller.observe_committed_event(event)
@@ -762,7 +801,9 @@ class SemanticParticipationService:
                     )
                 )
                 and not (direct and direct.get(row.id))
-                and item.controller.participation_view(event, now).needs_observation
+                and item.controller.participation_view(
+                    event, now, actor_identity=identity
+                ).needs_observation
             ):
                 item.observation.request_observation(event.ref)
         return runtime
@@ -1098,11 +1139,17 @@ class SemanticParticipationService:
             return
         async with self.database.sessions() as session:
             presence = await session.get(PresenceModel, run.presence_id)
+            conversation = await session.get(CanonicalConversationModel, run.conversation_id)
             bindings = (
                 await session.scalars(
                     select(SpaceBindingModel).where(
                         SpaceBindingModel.space_id == run.space_id,
-                        SpaceBindingModel.platform == "qq",
+                        SpaceBindingModel.platform == (presence.platform if presence else ""),
+                        *(
+                            [SpaceBindingModel.id == conversation.space_binding_id]
+                            if conversation and conversation.space_binding_id
+                            else []
+                        ),
                         SpaceBindingModel.status == "active",
                     )
                 )
@@ -1302,12 +1349,24 @@ class SemanticParticipationService:
         # After observer/external work below, _binding reads current policy again.
         binding = await self._binding(item, runtime=runtime)
         if item.observation is not None and scene.enabled and binding.external_enabled:
+            identity = await prepare_actor_identity(
+                self,
+                item,
+                (
+                    event.author
+                    for event in item.controller.state.events.values()
+                    if event.kind == "human"
+                ),
+            )
             await item.observation.evaluate_due(
                 time.time(),
                 active=any(
                     not unit.closed and unit.engage != "quiet"
-                    for unit in item.controller.participating_units(time.time())
+                    for unit in item.controller.participating_units(
+                        time.time(), actor_identity=identity
+                    )
                 ),
+                actor_identity=identity,
             )
             # A real source may change while Jev is in flight. Stops have no
             # remaining candidate, so invalidate their original dependencies
@@ -1318,7 +1377,7 @@ class SemanticParticipationService:
             return
         item.scene = current_scene
         runtime = await self.app.runtime_config.snapshot(
-            group_id=current_scene.group_id if current_scene.enabled else None
+            group_id=current_scene.space_id if current_scene.enabled else None
         )
         binding = await self._binding(item, runtime=runtime)
         policy = runtime.conversation_policy()
@@ -1328,6 +1387,12 @@ class SemanticParticipationService:
             if allowed
         )
         from qq_ai_bot.services.participation_ordinary import invitation_unit, promote_invitations
+
+        identity = await prepare_actor_identity(
+            self,
+            item,
+            (candidate.event.author for candidate in item.controller.state.candidates.values()),
+        )
 
         if current_scene.enabled and binding.external_enabled and policy.auto_reply_enabled:
             await promote_invitations(self, item)
@@ -1365,7 +1430,7 @@ class SemanticParticipationService:
                     await self._admit(item, binding, pending)
             elif pending.kind == CandidateKind.CONVERSATION and any(
                 (event := item.controller.state.events.get(ref.event_id)) is not None
-                and invitation_unit(item, event) is not None
+                and invitation_unit(item, event, actor_identity=identity) is not None
                 for ref in pending.sources
             ):
                 item.controller.discard_unaccepted_proposal(pending.proposal_id)

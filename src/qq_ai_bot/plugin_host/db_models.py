@@ -1,4 +1,4 @@
-"""Host-owned SQLAlchemy models for Plugin API 3.5."""
+"""Host-owned SQLAlchemy models for Plugin API 4.0."""
 
 from __future__ import annotations
 
@@ -301,14 +301,21 @@ class PluginBackgroundTargetGrantModel(Base):
             "plugin_id",
             "canonical_target_person_id",
             unique=True,
-            sqlite_where=text("target_type = 'private'"),
+            sqlite_where=text("target_type = 'private' AND canonical_conversation_id IS NULL"),
         ),
         Index(
             "uq_plugin_background_target_space",
             "plugin_id",
             "canonical_target_space_id",
             unique=True,
-            sqlite_where=text("target_type = 'group'"),
+            sqlite_where=text("target_type = 'group' AND canonical_conversation_id IS NULL"),
+        ),
+        Index(
+            "uq_plugin_background_target_conversation",
+            "plugin_id",
+            "canonical_conversation_id",
+            unique=True,
+            sqlite_where=text("canonical_conversation_id IS NOT NULL"),
         ),
         CheckConstraint(
             "target_type IN ('group', 'private')",
@@ -375,6 +382,10 @@ class PluginBackgroundTargetGrantModel(Base):
         String(36),
         ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
+    )
+
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("canonical_conversations.id", ondelete="RESTRICT"), nullable=True
     )
 
 
@@ -468,9 +479,8 @@ class PluginNotificationOutboxModel(Base):
     bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     part_type: Mapped[str] = mapped_column(String(16), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    media_handle_id: Mapped[str | None] = mapped_column(
-        ForeignKey("plugin_media_artifacts.handle_id", ondelete="SET NULL"), nullable=True
-    )
+    # Original publication provenance outlives its temporary artifact/file.
+    media_handle_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)

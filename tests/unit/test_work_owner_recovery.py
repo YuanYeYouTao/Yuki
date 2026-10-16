@@ -12,16 +12,14 @@ from tests.support.runtime_execution import make_work_resumer
 from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-from qq_ai_bot.control_plane.command_service import ControlCommandService
-from qq_ai_bot.control_plane.commands import ControlCommand
-from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.domain.control import DecisionContext
+from qq_ai_bot.admin.authority.commands import ControlCommand
+from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
+from qq_ai_bot.admin_api.commands import AdminCommands
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import PrincipalId, RequestId
 from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import LLMUnavailableError
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.control_command import ControlCommandAdapter
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_recovery_schema import recovery
 from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
@@ -47,14 +45,8 @@ async def public_action(database, row, action):
         expected_revision=row["revision"],
         payload={"resource_id": row["id"], "action": action},
     )
-    context = DecisionContext(
-        request_id=request,
-        principal=principal,
-        source=PrincipalSource.CLI,
-        canonical_target=row["id"],
-    )
-    return await ControlCommandService(ControlCommandAdapter(database)).mutate_work(
-        context, command
+    return await AdminCommands(database, None, None).work_action(
+        principal, row["id"], action, command
     )
 
 
@@ -718,7 +710,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
             actor, permission = await resolve_execution_identity(
                 reader, case.settings, owner_id=case.env.person
             )
-        assert actor == "10001" and permission is PermissionLevel.SUPERUSER
+        assert actor == "" and permission is PermissionLevel.SUPERUSER
     resumed_actors = []
 
     async def capture_main(**kwargs):
@@ -1068,7 +1060,9 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
         group_id="20001",
         creator_user_id="10001",
     )
-    target = NotificationTarget(target_type="group", target_id="20001")
+    target = NotificationTarget(
+        target_type="group", target_id=env.space, conversation_id=env.context.conversation_id
+    )
     receipt = await notifications.publish(
         plugin_id=plugin_id,
         request=PublishNotificationRequest(
@@ -1103,7 +1097,6 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
         chat=chat,
         turns=chat._turn_coordinator,
         conversation_scopes=chat._conversation_scopes,
-        router=env.router,
     )
     job = await notifications.claim_turn()
     assert job and job.source_event_id == receipt.source_event_id

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import time
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from qq_ai_bot.admin.audit import AdminAuditService
+from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
+from qq_ai_bot.admin.authority.targets import PersonControlTarget
 from qq_ai_bot.admin.models import ControlAuditRef
-from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.control_plane.targets import PersonControlTarget
 from qq_ai_bot.domain.control import DecisionContext
 from qq_ai_bot.memory.models import MemoryFact
 from qq_ai_bot.memory.service import MemoryFactService
@@ -43,7 +45,7 @@ class PreferenceAdminService:
         require_self_or_capability(context, "control.preference.mutate", audit)
         require_capability(context, "control.preference.read")
         return await self._memories.list_preferences(
-            person_storage_id(context),
+            person_id=person_storage_id(context),
         )
 
     async def set_preference(
@@ -65,7 +67,7 @@ class PreferenceAdminService:
             matching = [
                 row
                 for row in await self._memories.list_preferences(
-                    target,
+                    person_id=target,
                 )
                 if row.key == normalized_key
             ]
@@ -78,6 +80,7 @@ class PreferenceAdminService:
                 normalized_key,
                 normalized_value,
                 existing=existing,
+                target_person_id=target,
             )
             await self._audit.record(
                 actor=audit,
@@ -94,11 +97,12 @@ class PreferenceAdminService:
                 duration_seconds=time.perf_counter() - started,
             )
             return row
-        async with self._audit.transaction() as session:
+
+        async def write(session: AsyncSession) -> MemoryFact:
             matching = [
                 row
                 for row in await self._memories.list_preferences(
-                    target,
+                    person_id=target,
                     session=session,
                 )
                 if row.key == normalized_key
@@ -111,6 +115,7 @@ class PreferenceAdminService:
                 normalized_key,
                 normalized_value,
                 session=session,
+                person_id=target,
             )
             await self._audit.record(
                 actor=audit,
@@ -127,6 +132,9 @@ class PreferenceAdminService:
                 duration_seconds=time.perf_counter() - started,
                 session=session,
             )
+            return row
+
+        row = await self._memories.repository.apply_evidence_write(write)
         await self._memories.schedule_embedding(row.id)
         return row
 
@@ -145,7 +153,7 @@ class PreferenceAdminService:
             matching = [
                 row
                 for row in await self._memories.list_preferences(
-                    target,
+                    person_id=target,
                 )
                 if row.key == normalized_key
             ]
@@ -158,6 +166,7 @@ class PreferenceAdminService:
                     _preference_trigger(context, audit),
                     target,
                     existing,
+                    target_person_id=target,
                 )
             )
             await self._audit.record(
@@ -176,11 +185,12 @@ class PreferenceAdminService:
                 duration_seconds=time.perf_counter() - started,
             )
             return deleted
-        async with self._audit.transaction() as session:
+
+        async def write(session: AsyncSession) -> bool:
             matching = [
                 row
                 for row in await self._memories.list_preferences(
-                    target,
+                    person_id=target,
                     session=session,
                 )
                 if row.key == normalized_key
@@ -192,6 +202,7 @@ class PreferenceAdminService:
                 target,
                 normalized_key,
                 session=session,
+                person_id=target,
             )
             await self._audit.record(
                 actor=audit,
@@ -209,7 +220,9 @@ class PreferenceAdminService:
                 duration_seconds=time.perf_counter() - started,
                 session=session,
             )
-        return deleted
+            return deleted
+
+        return await self._memories.repository.apply_evidence_write(write)
 
 
 def _preference_trigger(
@@ -228,4 +241,5 @@ def _preference_trigger(
         decision_actor_type=audit.decision_actor_type,
         decision_actor_id=audit.decision_actor_id,
         actor_is_superuser="superuser" in principal.roles,
+        person_id=principal.person_id.text if principal.person_id else None,
     )

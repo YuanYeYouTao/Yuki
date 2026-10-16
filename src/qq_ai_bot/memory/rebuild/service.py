@@ -278,8 +278,12 @@ class MemoryRebuildService:
     def active_in_flight_calls(self) -> int:
         return self._active_in_flight_calls
 
-    def _authorize(self, actor_user_id: str) -> None:
-        if actor_user_id not in self.settings.superusers:
+    async def _authorize(self, actor_user_id: str) -> None:
+        from qq_ai_bot.identity.authority import person_is_superuser
+
+        async with self.repository.database.sessions() as session:
+            allowed = await person_is_superuser(session, actor_user_id, self.settings.superusers)
+        if not allowed:
             raise PermissionError("memory rebuild requires the current real superuser")
 
     def _available(self) -> None:
@@ -295,7 +299,7 @@ class MemoryRebuildService:
         session: AsyncSession | None = None,
     ) -> MemoryRebuildRun:
         if authorize:
-            self._authorize(actor_user_id)
+            await self._authorize(actor_user_id)
         self._available()
         snapshot = await self.ledger.maximum_event_id()
         statistics = await self.ledger.count_rebuild_candidates(
@@ -318,11 +322,11 @@ class MemoryRebuildService:
         )
 
     async def list(self, *, actor_user_id: str) -> tuple[MemoryRebuildRun, ...]:
-        self._authorize(actor_user_id)
+        await self._authorize(actor_user_id)
         return await self.repository.list_runs()
 
     async def status(self, run_id: str, *, actor_user_id: str) -> dict[str, Any]:
-        self._authorize(actor_user_id)
+        await self._authorize(actor_user_id)
         run = await self._require(run_id)
         return {
             "run": run.model_dump(mode="json"),
@@ -340,7 +344,7 @@ class MemoryRebuildService:
         session: AsyncSession | None = None,
     ) -> MemoryRebuildRun:
         if authorize:
-            self._authorize(actor_user_id)
+            await self._authorize(actor_user_id)
         self._available()
         if await self.repository.executing_count(session=session):
             raise RuntimeError("another memory rebuild run is executing")
@@ -355,7 +359,7 @@ class MemoryRebuildService:
         return await self._require(run_id, session=session)
 
     async def pause(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
-        self._authorize(actor_user_id)
+        await self._authorize(actor_user_id)
         return await manage_rebuild_core(
             self.repository,
             run_id,
@@ -366,7 +370,7 @@ class MemoryRebuildService:
         )
 
     async def resume(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
-        self._authorize(actor_user_id)
+        await self._authorize(actor_user_id)
         return await manage_rebuild_core(
             self.repository,
             run_id,
@@ -385,7 +389,7 @@ class MemoryRebuildService:
         session: AsyncSession | None = None,
     ) -> MemoryRebuildRun:
         if authorize:
-            self._authorize(actor_user_id)
+            await self._authorize(actor_user_id)
         run = await self._require(run_id, session=session)
         if run.status in {
             MemoryRebuildRunStatus.COMPLETED,
@@ -412,7 +416,7 @@ class MemoryRebuildService:
         actor_user_id: str,
         page: int = 1,
     ) -> tuple[MemoryRebuildReviewEntry, ...]:
-        self._authorize(actor_user_id)
+        await self._authorize(actor_user_id)
         if page <= 0:
             raise ValueError("page must be positive")
         await self._require(run_id)
@@ -454,7 +458,7 @@ class MemoryRebuildService:
         approved: bool,
         actor_user_id: str,
     ) -> int:
-        self._authorize(actor_user_id)
+        await self._authorize(actor_user_id)
         run = await self._require(run_id)
         if run.status not in {
             MemoryRebuildRunStatus.REVIEW,
@@ -489,7 +493,7 @@ class MemoryRebuildService:
         return changed
 
     async def commit(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
-        self._authorize(actor_user_id)
+        await self._authorize(actor_user_id)
         return await manage_rebuild_core(
             self.repository,
             run_id,
@@ -500,7 +504,7 @@ class MemoryRebuildService:
         )
 
     async def retry(self, run_id: str, *, actor_user_id: str) -> MemoryRebuildRun:
-        self._authorize(actor_user_id)
+        await self._authorize(actor_user_id)
         return await manage_rebuild_core(
             self.repository,
             run_id,
@@ -511,7 +515,7 @@ class MemoryRebuildService:
         )
 
     async def purge(self, run_id: str, *, actor_user_id: str) -> bool:
-        self._authorize(actor_user_id)
+        await self._authorize(actor_user_id)
         return await self.repository.purge(run_id)
 
     async def process_extraction_once(self, run: MemoryRebuildRun) -> int:
@@ -720,8 +724,17 @@ class MemoryRebuildService:
             )
             if (
                 validated is None
-                or validated.fact.subject_user_id != proposal.subject_user_id
-                or validated.fact.group_id != proposal.group_id
+                or (
+                    validated.fact.canonical_subject_person_id
+                    != proposal.canonical_subject_person_id
+                    if proposal.canonical_subject_person_id is not None
+                    else validated.fact.subject_user_id != proposal.subject_user_id
+                )
+                or (
+                    validated.fact.canonical_subject_space_id != proposal.canonical_subject_space_id
+                    if proposal.canonical_subject_space_id is not None
+                    else validated.fact.group_id != proposal.group_id
+                )
                 or validated.fact.scope_type.value != proposal.scope_type
             ):
                 await self.repository.finish_proposal(
@@ -868,7 +881,9 @@ class MemoryRebuildService:
 
     async def _adapt_event(self, event: Any, mode: MemoryRebuildThirdPartyMode) -> Any:
         if mode is MemoryRebuildThirdPartyMode.DISABLED:
-            return replace(event, mentioned_user_ids=(), reply_sender_user_id=None)
+            return replace(
+                event, mentioned_user_ids=(), mentioned_person_ids=(), reply_sender_user_id=None
+            )
         return await self.ledger.hydrate_rebuild_subjects(event)
 
     async def _require(

@@ -73,14 +73,6 @@ logger = logging.getLogger(__name__)
 CODE_COMPOSITION_YIELDED = "\x00yuki.code.yielded"
 
 
-@dataclass(frozen=True, slots=True)
-class ReusableToolResult:
-    """A turn-local display paired with the execution fact that permits reuse."""
-
-    display: str
-    evidence: dict[str, Any]
-
-
 def _unexecuted_tool_result(name: str, error: str) -> str:
     """Publish a pre-dispatch refusal before formatting its public result."""
     capture = current_result_capture.get()
@@ -126,6 +118,7 @@ class AgentRuntime:
     source_event_id: int | None = None
     fixed_tools: tuple[ChatTool, ...] | None = None
     script_api: ScriptApi | None = None
+    manifest_revision: str = ""
     invocation_source: dict[str, Any] | None = None
     invocation_goal: str | None = None
     visible_event_ids: frozenset[int] = frozenset()
@@ -216,6 +209,7 @@ class AgentRunner:
         definitions: tuple[ChatTool, ...] | None,
         *,
         script_api: ScriptApi | None = None,
+        manifest_revision: str = "",
     ) -> str:
         return hashlib.sha256(
             json.dumps(
@@ -224,9 +218,8 @@ class AgentRunner:
                     repr(definitions),
                     script_api.manifest_revision
                     if script_api is not None
-                    else self.main_contract.revision
-                    if self.main_contract is not None
-                    else "",
+                    else manifest_revision
+                    or (self.main_contract.revision if self.main_contract is not None else ""),
                     asdict(runtime.llm),
                     asdict(runtime.web),
                     self._models.profile_revision(self._task),
@@ -470,8 +463,6 @@ class AgentRunner:
         *,
         remaining_calls: int | None,
         max_parallel_calls: int,
-        reusable_results: dict[tuple[str, str], ReusableToolResult],
-        cacheable_names: frozenset[str],
         declared_names: frozenset[str],
         chain_id: str = "",
         request_sequence: int = 0,
@@ -483,8 +474,6 @@ class AgentRunner:
                 runtime,
                 remaining_calls=remaining_calls,
                 max_parallel_calls=max_parallel_calls,
-                reusable_results=reusable_results,
-                cacheable_names=cacheable_names,
                 declared_names=declared_names,
                 chain_id=chain_id,
                 request_sequence=request_sequence,
@@ -574,8 +563,6 @@ class AgentRunner:
                     if runtime.max_tool_calls is None
                     else max(0, runtime.max_tool_calls - control.tools_started),
                     max_parallel_calls=tooling.max_parallel_calls if tooling is not None else 1,
-                    reusable_results={},
-                    cacheable_names=frozenset(),
                     declared_names=declared,
                     batch_calls=calls,
                 )
@@ -785,14 +772,12 @@ class AgentRunner:
         *,
         remaining_calls: int | None,
         max_parallel_calls: int,
-        reusable_results: dict[tuple[str, str], ReusableToolResult],
-        cacheable_names: frozenset[str],
         declared_names: frozenset[str],
         chain_id: str = "",
         request_sequence: int = 0,
         batch_calls: tuple[ToolCall, ...] | None = None,
     ) -> CoordinatedToolResult:
-        """Preserve original IDs; only explicitly safe read results may be reused."""
+        """Dispatch each new call under its own identity and current authorization."""
 
         control = runtime.work_control
         session = getattr(control, "session", None)
@@ -855,8 +840,6 @@ class AgentRunner:
                         else max(0, remaining_calls - mixed_executed)
                     ),
                     max_parallel_calls=max_parallel_calls,
-                    reusable_results=reusable_results,
-                    cacheable_names=cacheable_names,
                     declared_names=declared_names,
                     chain_id=chain_id,
                     request_sequence=request_sequence,
@@ -946,9 +929,8 @@ class AgentRunner:
                 manifest_revision=(
                     runtime.script_api.manifest_revision
                     if runtime.script_api is not None
-                    else self.main_contract.revision
-                    if self.main_contract is not None
-                    else ""
+                    else runtime.manifest_revision
+                    or (self.main_contract.revision if self.main_contract is not None else "")
                 ),
             )[0]
             capture = ResultCapture("", call.id)
@@ -1000,9 +982,12 @@ class AgentRunner:
                         manifest_revision=(
                             runtime.script_api.manifest_revision
                             if runtime.script_api is not None
-                            else self.main_contract.revision
-                            if self.main_contract is not None
-                            else ""
+                            else runtime.manifest_revision
+                            or (
+                                self.main_contract.revision
+                                if self.main_contract is not None
+                                else ""
+                            )
                         ),
                     )[0],
                 )
@@ -1024,12 +1009,7 @@ class AgentRunner:
                 tuple((call, metadata_results[call.id], False) for call in calls), 0
             )
 
-        signatures = {call.id: self._tool_call_signature(call) for call in calls}
-        first_call_by_signature: dict[tuple[str, str], ToolCall] = {}
-        reused_by_id: dict[str, str] = {}
-        reused_evidence: dict[str, dict[str, Any]] = {}
         rejected_by_id: dict[str, str] = dict(metadata_results)
-        aliases: dict[str, str] = {}
         unique_calls: list[ToolCall] = []
         for call in calls:
             if call.id in metadata_results:
@@ -1043,55 +1023,9 @@ class AgentRunner:
                     }
                 )
                 continue
-            signature = signatures[call.id]
-            side_effecting = self._is_side_effecting(tools, call, runtime)
-            cached = (
-                reusable_results.get(signature)
-                if not side_effecting and call.function.name in cacheable_names
-                else None
-            )
-            if (
-                cached is not None
-                and session is not None
-                and control is not None
-                and control.current is not None
-            ):
-                original_key = session.readonly_result_keys.get(signature)
-                if original_key is None or not original_key.startswith(
-                    session.call_key("").rsplit(":", 2)[0] + ":"
-                ):
-                    cached = None
-            if cached is not None:
-                reused_by_id[call.id] = cached.display
-                reused_evidence[call.id] = cached.evidence
-                continue
-            representative = (
-                first_call_by_signature.get(signature)
-                if not side_effecting and call.function.name in cacheable_names
-                else None
-            )
-            if representative is not None:
-                aliases[call.id] = representative.id
-                continue
-            if not side_effecting and call.function.name in cacheable_names:
-                first_call_by_signature[signature] = call
             unique_calls.append(call)
 
         if session is not None:
-            session.pending_readonly_keys.update(
-                {
-                    call.id: session.readonly_result_keys[signatures[call.id]]
-                    for call in calls
-                    if call.id in reused_by_id
-                    and signatures[call.id] in session.readonly_result_keys
-                }
-            )
-            session.pending_readonly_keys.update(
-                {
-                    alias: session.call_key(representative)
-                    for alias, representative in aliases.items()
-                }
-            )
             await session.save("response", batch_calls if batch_calls is not None else calls)
         coordinated = await self._tool_coordinator.execute_batch(
             tuple(unique_calls),
@@ -1104,9 +1038,8 @@ class AgentRunner:
             manifest_revision=(
                 runtime.script_api.manifest_revision
                 if runtime.script_api is not None
-                else self.main_contract.revision
-                if self.main_contract
-                else ""
+                else runtime.manifest_revision
+                or (self.main_contract.revision if self.main_contract else "")
             ),
         )
         unique_results = {call.id: result for call, result, _executed in coordinated.calls}
@@ -1117,11 +1050,7 @@ class AgentRunner:
             if call.id in rejected_by_id:
                 ordered.append((call, rejected_by_id[call.id], False))
                 continue
-            if call.id in reused_by_id:
-                ordered.append((call, reused_by_id[call.id], False))
-                continue
-            representative_id = aliases.get(call.id, call.id)
-            payload = unique_results.get(representative_id)
+            payload = unique_results.get(call.id)
             if payload is None:
                 logger.error("tool_result_missing call_id=%s", call.id)
                 ordered.append((call, MISSING_TOOL_RESULT, False))
@@ -1130,65 +1059,16 @@ class AgentRunner:
                 (
                     call,
                     payload,
-                    unique_executed.get(representative_id, False)
-                    if representative_id == call.id
-                    else False,
+                    unique_executed.get(call.id, False),
                 )
             )
-
-        for call, result, executed in coordinated.calls:
-            fact = coordinated.evidence.get(call.id)
-            if not executed or fact is None:
-                continue
-            signature = signatures[call.id]
-            if fact.get("mutation_committed") is True or (
-                self._is_side_effecting(tools, call, runtime)
-                and (fact.get("mutation_committed") is not False or fact.get("uncertain") is True)
-            ):
-                reusable_results.clear()
-                if session is not None:
-                    session.readonly_result_keys.clear()
-            elif (
-                not self._is_side_effecting(tools, call, runtime)
-                and call.function.name in cacheable_names
-                and fact.get("ok") is True
-                and fact.get("pending") is False
-                and fact.get("uncertain") is False
-                and fact.get("retryable") is False
-            ):
-                reusable_results[signature] = ReusableToolResult(result, fact)
-                if session is not None:
-                    session.readonly_result_keys[signature] = session.call_key(call.id)
 
         return CoordinatedToolResult(
             calls=tuple(ordered),
             executed_count=coordinated.executed_count,
-            reused_count=len(reused_by_id) + len(aliases),
-            evidence={
-                **coordinated.evidence,
-                **reused_evidence,
-                **{
-                    alias: coordinated.evidence[original]
-                    for alias, original in aliases.items()
-                    if original in coordinated.evidence
-                },
-            },
+            reused_count=coordinated.reused_count,
+            evidence=coordinated.evidence,
         )
-
-    @staticmethod
-    def _tool_call_signature(call: ToolCall) -> tuple[str, str]:
-        try:
-            arguments = json.loads(call.function.arguments)
-        except json.JSONDecodeError:
-            normalized = call.function.arguments.strip()
-        else:
-            normalized = json.dumps(
-                arguments,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            )
-        return call.function.name, normalized
 
     @staticmethod
     def _is_side_effecting(
@@ -1198,9 +1078,7 @@ class AgentRunner:
     ) -> bool:
         from qq_ai_bot.codemode.tool_visibility import TOOL_LOOKUP_NAME
 
-        if call.function.name == TOOL_LOOKUP_NAME:
-            return False
-        if tools is None:
+        if call.function.name == TOOL_LOOKUP_NAME or tools is None:
             return False
         return tools.is_side_effecting(call.function.name, call.function.arguments, runtime)
 
