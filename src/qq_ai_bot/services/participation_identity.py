@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING
 
@@ -23,9 +22,7 @@ async def actor_identity(
     session: AsyncSession | None = None,
 ) -> Callable[[str], str]:
     ids = set(additional)
-    for unit in item.controller.participating_units(time.time()):
-        if unit.binding.actor != "SELF":
-            ids.update((unit.binding.actor, unit.unit.target))
+    ids.update(item.controller.participation_actor_ids())
     async with optional_session(service.database, session, write=False) as reader:
         roots = await current_person_ids(reader, ids)
     return lambda actor: roots.get(actor, actor)
