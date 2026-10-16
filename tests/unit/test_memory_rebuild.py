@@ -92,6 +92,7 @@ async def _service(
     database: Database,
     *,
     provider: _ExtractionProvider | None = None,
+    people=None,
     **settings_overrides: object,
 ):
     settings = make_settings(
@@ -110,6 +111,7 @@ async def _service(
         ledger=ledger,
         model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(),
+        people=people,
     )
     service = MemoryRebuildService(
         settings=settings,

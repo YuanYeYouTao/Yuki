@@ -167,7 +167,10 @@ class ContextAssembler:
     ) -> AssembledContext:
         """Prepare the common history for a real execution without a chat event."""
         snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
-        metadata = {"scene": "群聊" if identity.scope_type is ScopeType.GROUP else "私聊"}
+        metadata = {
+            "scene": "群聊" if identity.scope_type is ScopeType.GROUP else "私聊",
+            "platform": identity.platform,
+        }
         current = ChatMessage(role="user", content=content)
         recent = snapshot.recent
         snapshot = replace(
@@ -244,6 +247,7 @@ class ContextAssembler:
         if recovery is not None:
             return recovery
         version, _ = await self._ledger.read_scope_context(scope, limit=0)
+        metadata = {**metadata, "platform": scope.platform}
         rows: tuple[EventRecord, ...] = ()
         checkpoint = ""
         checkpoint_kind = None
@@ -360,7 +364,10 @@ class ContextAssembler:
             raise ConversationCoverageError("turn trigger event does not match scope snapshot")
         recent = snapshot.recent
 
-        metadata_payload = {"scene": "群聊" if inbound.group_id else "私聊"}
+        metadata_payload = {
+            "scene": "群聊" if inbound.group_id else "私聊",
+            "platform": inbound.platform,
+        }
         metadata_json = json.dumps(
             metadata_payload,
             ensure_ascii=False,
@@ -483,7 +490,10 @@ class ContextAssembler:
         if event.id <= snapshot.starts_after_event_id:
             raise ConversationCoverageError("external trigger precedes the reset boundary")
         recent = snapshot.recent
-        metadata_payload = {"scene": "群聊" if event.group_id else "私聊"}
+        metadata_payload = {
+            "scene": "群聊" if event.group_id else "私聊",
+            "platform": event.platform or identity.platform,
+        }
         metadata_json = json.dumps(metadata_payload, ensure_ascii=False, separators=(",", ":"))
         recent = recent
         snapshot = replace(

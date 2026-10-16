@@ -724,8 +724,17 @@ class MemoryRebuildService:
             )
             if (
                 validated is None
-                or validated.fact.subject_user_id != proposal.subject_user_id
-                or validated.fact.group_id != proposal.group_id
+                or (
+                    validated.fact.canonical_subject_person_id
+                    != proposal.canonical_subject_person_id
+                    if proposal.canonical_subject_person_id is not None
+                    else validated.fact.subject_user_id != proposal.subject_user_id
+                )
+                or (
+                    validated.fact.canonical_subject_space_id != proposal.canonical_subject_space_id
+                    if proposal.canonical_subject_space_id is not None
+                    else validated.fact.group_id != proposal.group_id
+                )
                 or validated.fact.scope_type.value != proposal.scope_type
             ):
                 await self.repository.finish_proposal(

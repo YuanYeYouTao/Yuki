@@ -84,9 +84,7 @@ class SandboxClient:
                 return cast(dict[str, Any], json.loads(prepared.completion_json or "{}"))
         submitted = False
         try:
-            async with asyncio.timeout(
-                25 if name == "workspace_media_read" else 7
-            ):
+            async with asyncio.timeout(25 if name == "workspace_media_read" else 7):
                 connect = getattr(asyncio, "open_unix_connection", None)
                 if connect is None:
                     return {"error": "sandbox_unavailable", "retryable": False}

@@ -13,6 +13,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
+from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel
 from qq_ai_bot.identity.ownership_interval import BindingOwnership
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
 from qq_ai_bot.persistence.models import (
@@ -31,6 +32,7 @@ class PreparedRebuildForget:
     # Original identity and the fully serialized replacement; no writer JSON parsing.
     changes: tuple[tuple[int, str, datetime, str, str, str, bool], ...]
     ownership: tuple[BindingOwnership, ...] = ()
+    person_ids: tuple[str, ...] = ()
 
 
 async def _catalogue_token(session: AsyncSession) -> tuple[Any, ...]:
@@ -47,8 +49,25 @@ async def prepare_forget(
     session: AsyncSession,
     aliases: tuple[str, ...],
     ownership: tuple[BindingOwnership, ...] = (),
+    *,
+    person_id: str | None = None,
 ) -> PreparedRebuildForget:
     aliases = tuple(sorted(set(aliases)))
+    person_ids = (
+        (person_id,)
+        if person_id is not None
+        else tuple(
+            await session.scalars(
+                select(IdentityBindingModel.person_id)
+                .where(
+                    IdentityBindingModel.platform == "qq",
+                    IdentityBindingModel.external_account_id.in_(aliases),
+                    IdentityBindingModel.status != "transferred",
+                )
+                .distinct()
+            )
+        )
+    )
     catalogue = await _catalogue_token(session)
     run = MemoryRebuildRunModel
     senders = func.json_each(run.selection_json, "$.sender_user_ids").table_valued("value")
@@ -102,7 +121,7 @@ async def prepare_forget(
         )
     if await _catalogue_token(session) != catalogue:
         raise ValueError("memory_rebuild_privacy_preparation_changed")
-    return PreparedRebuildForget(aliases, catalogue, tuple(changes), ownership)
+    return PreparedRebuildForget(aliases, catalogue, tuple(changes), ownership, person_ids)
 
 
 async def apply_forget(session: AsyncSession, prepared: PreparedRebuildForget) -> int:
@@ -120,15 +139,39 @@ async def apply_forget(session: AsyncSession, prepared: PreparedRebuildForget) -
     if any(rows.get(change[0]) != change[1:4] for change in prepared.changes):
         raise ValueError("memory_rebuild_privacy_preparation_changed")
     proposal = MemoryRebuildProposalModel
-    conditions: list[ColumnElement[bool]] = [proposal.subject_user_id.in_(prepared.aliases)]
+    # Original canonical targets are authoritative, including third-party claims.
+    conditions: list[ColumnElement[bool]] = [
+        proposal.canonical_subject_person_id.in_(prepared.person_ids)
+    ]
+    source_platform = func.coalesce(
+        select(PresenceModel.platform)
+        .where(PresenceModel.id == ChatEventModel.ingress_presence_id)
+        .scalar_subquery(),
+        "qq",  # Legacy events without an ingress Presence predate other platforms.
+    )
+    conditions.append(
+        and_(
+            proposal.canonical_subject_person_id.is_(None),
+            proposal.subject_user_id.in_(prepared.aliases),
+            exists(
+                select(ChatEventModel.id).where(
+                    ChatEventModel.id == proposal.event_id, source_platform == "qq"
+                )
+            ),
+        )
+    )
     for interval in prepared.ownership:
-        source = [ChatEventModel.id == proposal.event_id]
+        source = [
+            ChatEventModel.id == proposal.event_id,
+            source_platform == interval.platform,
+        ]
         if interval.starts_at is not None:
             source.append(ChatEventModel.observed_at >= interval.starts_at)
         if interval.ends_at is not None:
             source.append(ChatEventModel.observed_at < interval.ends_at)
         conditions.append(
             and_(
+                proposal.canonical_subject_person_id.is_(None),
                 proposal.subject_user_id == interval.account,
                 exists(select(ChatEventModel.id).where(*source)),
             )

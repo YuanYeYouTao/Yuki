@@ -408,19 +408,6 @@ class PluginNotificationRepository:
                 plugin_id, request.event_key, target.target_type, scope.conversation_id or ""
             )
             existing = await session.get(ChatEventModel, existing_id) if existing_id else None
-            media = await _resolve_request_media(
-                session,
-                plugin_id=plugin_id,
-                handle_ids=request.media_handles,
-                now=now,
-            )
-            incoming = manifest_from_request(
-                request,
-                plugin_id=plugin_id,
-                media=tuple(
-                    MediaIdentity(index=index, sha256=sha256) for index, _handle_id, sha256 in media
-                ),
-            )
             if existing is not None:
                 original_id = await session.scalar(
                     select(PluginNotificationOutboxModel.notification_id)
@@ -435,17 +422,20 @@ class PluginNotificationRepository:
                     if existing.platform_message_id.startswith("external2-")
                     else existing.external_target_id or "",
                 )
-                incoming = dataclass_replace(
-                    incoming, target_id=existing.external_target_id or target.target_id
-                )
                 receipt = await _existing_event_receipt(
                     session,
                     plugin_id=plugin_id,
                     event=existing,
                     notification_id=notification_id,
-                    incoming=incoming,
+                    request=request,
                 )
             else:
+                media = await _resolve_request_media(
+                    session,
+                    plugin_id=plugin_id,
+                    handle_ids=request.media_handles,
+                    now=now,
+                )
                 try:
                     appended = await self._scoped_events.append_external(
                         scope=scope,
@@ -476,7 +466,7 @@ class PluginNotificationRepository:
                         plugin_id=plugin_id,
                         event=created,
                         notification_id=notification_id,
-                        incoming=incoming,
+                        request=request,
                     )
                 else:
                     delivery_enqueued = False
@@ -1699,11 +1689,10 @@ async def _stored_media_identity(
             if row.media_handle_id != token:
                 raise _receipt_conflict()
             artifact = await session.get(PluginMediaArtifactModel, token)
-            if (
-                artifact is None
-                or artifact.plugin_id != plugin_id
-                or not is_sha256_digest(artifact.sha256)
-            ):
+            if artifact is None:
+                items.append(MediaIdentity(index=index, sha256=None, legacy_handle_id=token))
+                continue
+            if artifact.plugin_id != plugin_id or not is_sha256_digest(artifact.sha256):
                 raise _receipt_conflict()
             sha256 = artifact.sha256
         items.append(MediaIdentity(index=index, sha256=sha256))
@@ -1808,7 +1797,7 @@ async def _existing_event_receipt(
     plugin_id: str,
     event: ChatEventModel,
     notification_id: str,
-    incoming: PublicationManifest,
+    request: PublishNotificationRequest,
 ) -> NotificationPublishReceipt:
     """Exact match returns the prior receipt. Any mismatch fails closed. No child writes."""
 
@@ -1818,6 +1807,30 @@ async def _existing_event_receipt(
         plugin_id=plugin_id,
         event=event,
         notification_id=notification_id,
+    )
+    media = []
+    for index, handle_id in enumerate(request.media_handles):
+        artifact = await session.get(PluginMediaArtifactModel, handle_id)
+        if artifact is not None:
+            if artifact.plugin_id != plugin_id or not is_sha256_digest(artifact.sha256):
+                raise PluginPermissionError("media handle is invalid or foreign")
+            media.append(MediaIdentity(index=index, sha256=artifact.sha256))
+            continue
+        # Cleanup removes temporary bytes, never the original publication's handle.
+        part = await session.scalar(
+            select(PluginNotificationOutboxModel).where(
+                PluginNotificationOutboxModel.notification_id == notification_id,
+                PluginNotificationOutboxModel.part_type == "media",
+                PluginNotificationOutboxModel.part_key.like(f"media:{index}:%"),
+                PluginNotificationOutboxModel.media_handle_id == handle_id,
+            )
+        )
+        if part is None:
+            raise PluginPermissionError("media handle has no original publication proof")
+        media.append(next(item for item in stored.media if item.index == index))
+    incoming = dataclass_replace(
+        manifest_from_request(request, plugin_id=plugin_id, media=tuple(media)),
+        target_id=event.external_target_id or request.target.target_id,
     )
     if stored != incoming:
         raise _receipt_conflict()

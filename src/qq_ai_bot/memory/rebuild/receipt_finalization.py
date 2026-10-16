@@ -12,7 +12,6 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.memory.eligibility import MemoryEventEligibilityPolicy
 from qq_ai_bot.memory.enums import (
@@ -102,26 +101,6 @@ async def _read_batch(
     }
     event = ChatEventModel
     conversation = CanonicalConversationModel
-    person_binding = exists(
-        select(IdentityBindingModel.id).where(
-            IdentityBindingModel.platform == PresenceModel.platform,
-            IdentityBindingModel.external_account_id
-            == func.coalesce(
-                event.private_peer_user_id,
-                case((event.direction == "inbound", event.sender_user_id), else_=None),
-            ),
-            IdentityBindingModel.person_id == conversation.person_id,
-            IdentityBindingModel.status == "active",
-        )
-    )
-    space_binding = exists(
-        select(SpaceBindingModel.id).where(
-            SpaceBindingModel.platform == PresenceModel.platform,
-            SpaceBindingModel.external_space_id == event.group_id,
-            SpaceBindingModel.space_id == conversation.space_id,
-            SpaceBindingModel.status == "active",
-        )
-    )
     rows = await session.execute(
         select(
             MemoryRebuildItemModel.id,
@@ -135,8 +114,6 @@ async def _read_batch(
             conversation.space_id,
             conversation.generation,
             conversation.prompt_source_revision,
-            person_binding.label("person_bound"),
-            space_binding.label("space_bound"),
             event.group_id,
             event.scope_type,
             event.canonical_event_id,
@@ -147,20 +124,13 @@ async def _read_batch(
         )
         .join(event, event.id == MemoryRebuildItemModel.event_id)
         .outerjoin(conversation, conversation.id == event.canonical_conversation_id)
-        .outerjoin(PresenceModel, PresenceModel.id == event.ingress_presence_id)
         .where(MemoryRebuildItemModel.run_id == run_id, MemoryRebuildItemModel.id.in_(item_ids))
     )
     items: dict[int, _Item] = {}
     for row in rows:
         aggregate = counts.get(int(row.id))
-        person_id = (
-            row.person_id
-            if row.kind == "private" and not row.group_id and row.person_bound
-            else None
-        )
-        space_id = (
-            row.space_id if row.kind == "space" and row.group_id and row.space_bound else None
-        )
+        person_id = row.person_id if row.kind == "private" else None
+        space_id = row.space_id if row.kind == "space" else None
         items[int(row.id)] = _Item(
             id=int(row.id),
             event_id=int(row.event_id),

@@ -673,7 +673,7 @@ class MessageProcessor:
             try:
                 if (
                     self._client_links is not None
-                    and message.platform == "qq"
+                    and message.platform != "app"
                     and self._client_links.is_request(message)
                 ):
                     link_response = await self._client_links.execute(
@@ -975,7 +975,11 @@ class MessageProcessor:
             if not created:
                 return ProcessResult(False, reason="group_observed")
             turn_token = await notify()
-        message = replace(message, source_event_id=record.id)
+        message = replace(
+            message,
+            source_event_id=record.id,
+            conversation_id=record.canonical_conversation_id,
+        )
         if created and message.attachments and self._conversation_media is not None:
             media_gateway = (
                 cast(PlatformMediaGateway, sender)
@@ -1408,8 +1412,8 @@ class MessageProcessor:
                 "command" if direct_match is not None or decision.command is not None else "chat"
             )
             rate = await self._rate_limiter.check(
-                user_id=message.sender.user_id,
-                group_id=message.group_id,
+                user_id=cast(str, record.author_person_id),
+                group_id=message.space_id,
                 category=category,
             )
             if not rate.allowed:

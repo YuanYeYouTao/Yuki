@@ -251,7 +251,7 @@ class ConversationMediaService:
         self, keys: tuple[tuple[int, int], ...]
     ) -> dict[
         tuple[int, int],
-        tuple[ConversationMediaItemModel, int | None, int | None, dict[str, Any]],
+        tuple[ConversationMediaItemModel, int | None, int | None, dict[str, Any], str],
     ]:
         """Prepare selected metadata together, parsing each source event once."""
         if not keys:
@@ -300,7 +300,7 @@ class ConversationMediaService:
         parsed: dict[int, Any] = {}
         sources: dict[
             tuple[int, int],
-            tuple[ConversationMediaItemModel, int | None, int | None, dict[str, Any]],
+            tuple[ConversationMediaItemModel, int | None, int | None, dict[str, Any], str],
         ] = {}
         for key in keys:
             row = metadata.get(key)
@@ -319,7 +319,7 @@ class ConversationMediaService:
                 or not isinstance(segment.get("data"), dict)
             ):
                 raise ConversationMediaError("attachment_source_invalid")
-            sources[key] = (item, generation, floor, segment["data"])
+            sources[key] = (item, generation, floor, segment["data"], raw_segments[key[0]])
         return sources
 
     def _path(self, item: ConversationMediaItemModel) -> Path:
@@ -335,12 +335,12 @@ class ConversationMediaService:
         index: int,
         gateway: PlatformMediaGateway | None,
         *,
-        source: tuple[ConversationMediaItemModel, int | None, int | None, dict[str, Any]]
+        source: tuple[ConversationMediaItemModel, int | None, int | None, dict[str, Any], str]
         | None = None,
     ) -> Path:
         if source is None:
             source = (await self._sources(((event_id, index),)))[(event_id, index)]
-        item, _, _, data = source
+        item, _, _, data, source_segments = source
         if item.cache_status == "expired":
             raise ConversationMediaError("attachment_expired")
         if item.expires_at is not None:
@@ -394,6 +394,9 @@ class ConversationMediaService:
             async with self._lock:
                 async with self.database.sessions() as session:
                     live = await session.get(ConversationMediaItemModel, (event_id, index))
+                    event = await session.get(ChatEventModel, event_id)
+                    if event is None or event.segments_json != source_segments:
+                        raise ConversationMediaError("attachment_source_changed")
                     if live is None or live.cache_status == "expired":
                         raise ConversationMediaError("attachment_expired")
                     if live.cache_status == "cached" and live.cache_name:
@@ -420,21 +423,19 @@ class ConversationMediaService:
                     raise ConversationMediaError("cache_budget_exhausted")
                 await asyncio.to_thread(_publish_cache_file, temporary, final, facts)
                 now = datetime.now(UTC)
-                async with self.database.sessions() as session:
+                async with self.database.immediate_session() as session:
                     live = await session.get(ConversationMediaItemModel, (event_id, index))
+                    event = await session.get(ChatEventModel, event_id)
+                    if event is None or event.segments_json != source_segments:
+                        raise ConversationMediaError("attachment_source_changed")
                     if live is None or live.cache_status == "expired":
-                        final.unlink(missing_ok=True)
                         raise ConversationMediaError("attachment_expired")
-                    old_name = live.cache_name
                     live.cache_status = "cached"
                     live.cache_name = final_name
                     live.content_sha256 = digest
                     if live.cached_at is None:
                         live.cached_at = now
                         live.expires_at = now + _LIFETIME
-                    await session.commit()
-                if old_name and old_name != final_name:
-                    (directory / old_name).unlink(missing_ok=True)
             return final
         except MediaResolutionError as exc:
             raise ConversationMediaError(exc.code) from exc
@@ -452,7 +453,7 @@ class ConversationMediaService:
     ) -> tuple[ConversationMediaItemModel, Path]:
         key = (event_id, attachment_index)
         source = (await self._sources((key,)))[key]
-        item, current_generation, floor, _ = source
+        item, current_generation, floor, _, source_segments = source
         if (
             current_generation is None
             or floor is None
@@ -466,6 +467,9 @@ class ConversationMediaService:
         # Recheck after network work: /ai new may have advanced during download.
         async with self.database.sessions() as session:
             conversation = await session.get(CanonicalConversationModel, conversation_id)
+            event = await session.get(ChatEventModel, event_id)
+            if event is None or event.segments_json != source_segments:
+                raise ConversationMediaError("attachment_source_changed")
             if (
                 conversation is None
                 or item.generation != conversation.generation
@@ -487,6 +491,26 @@ class ConversationMediaService:
         except (VisionProcessingError, ImagePreprocessingError) as exc:
             raise ConversationMediaError(exc.code) from exc
 
+    async def _validated_cached_path(
+        self, item: ConversationMediaItemModel, path: Path
+    ) -> ConversationMediaItemModel:
+        key = (item.source_event_id, item.attachment_index)
+        live, generation, floor, _data, _segments = (await self._sources((key,)))[key]
+        if generation != item.generation or floor is None or item.source_event_id <= floor:
+            raise ConversationMediaError("attachment_scope_denied")
+        if (
+            live.cache_status != "cached"
+            or not live.content_sha256
+            or live.expires_at is None
+            or _aware(live.expires_at) <= datetime.now(UTC)
+        ):
+            raise ConversationMediaError("attachment_expired")
+        if self._path(live) != path or (
+            item.content_sha256 is not None and item.content_sha256 != live.content_sha256
+        ):
+            raise ConversationMediaError("attachment_source_changed")
+        return live
+
     async def _inspect(
         self,
         item: ConversationMediaItemModel,
@@ -499,13 +523,7 @@ class ConversationMediaService:
             raise ConversationMediaError("invalid_question")
         # Cache metadata returned by authorized_path predates download. Fetch
         # the published version again, without resolving its URL a second time.
-        async with self.database.sessions() as session:
-            live = await session.get(
-                ConversationMediaItemModel, (item.source_event_id, item.attachment_index)
-            )
-            if live is None or live.cache_status != "cached" or not live.content_sha256:
-                raise ConversationMediaError("attachment_expired")
-            item = live
+        item = await self._validated_cached_path(item, path)
         digest = item.content_sha256
 
         def content_kind() -> str:
@@ -545,6 +563,7 @@ class ConversationMediaService:
             result = json.loads(raw)
             if result.get("error"):
                 raise ConversationMediaError(str(result["error"]))
+            await self._validated_cached_path(item, path)
             return {
                 "event_id": item.source_event_id,
                 "attachment_index": item.attachment_index,
@@ -625,7 +644,7 @@ class ConversationMediaService:
         sources = await self._sources(tuple(seen))
         for key, dependency in seen.items():
             conversation_id, generation, content_hash, expires_at = dependency
-            item, current_generation, floor, _ = sources[key]
+            item, current_generation, floor, _, _segments = sources[key]
             if (
                 current_generation is None
                 or floor is None
@@ -684,7 +703,7 @@ class ConversationMediaService:
                         )
                     ),
                 )
-                .values(cache_status="expired", cache_name=None)
+                .values(cache_status="expired")
             )
 
     async def _gc_cache_page(self, now: datetime) -> None:
@@ -722,15 +741,26 @@ class ConversationMediaService:
                                 ConversationMediaItemModel.conversation_id,
                                 ConversationMediaItemModel.source_event_id,
                                 ConversationMediaItemModel.cache_name,
+                                ConversationMediaItemModel.cache_status,
                             )
                             .where(
                                 ConversationMediaItemModel.source_event_id.in_(event_ids),
                                 ConversationMediaItemModel.cache_name.in_(
                                     tuple(entry.path.name for entry in file_entries)
                                 ),
-                                ConversationMediaItemModel.cache_status == "cached",
                             )
                             .distinct()
+                        )
+                    )
+                    if event_ids
+                    else ()
+                )
+                events = (
+                    tuple(
+                        await reader.execute(
+                            select(
+                                ChatEventModel.id, ChatEventModel.canonical_conversation_id
+                            ).where(ChatEventModel.id.in_(event_ids))
                         )
                     )
                     if event_ids
@@ -739,7 +769,26 @@ class ConversationMediaService:
             live_paths = {
                 self.root / row.conversation_id / str(row.source_event_id) / row.cache_name
                 for row in live
+                if row.cache_status == "cached"
             }
+            indexed_paths = {
+                self.root / row.conversation_id / str(row.source_event_id) / row.cache_name
+                for row in live
+            }
+            source_directories = {
+                self.root / conversation_id / str(event_id) for event_id, conversation_id in events
+            }
+            # Edits replace the current index, not bytes already used by a
+            # frozen request. Keep those source-owned versions for the same
+            # file lifetime; deleted/forgotten sources retain no such ownership.
+            live_paths.update(
+                entry.path
+                for entry in file_entries
+                if entry.path.parent in source_directories
+                and entry.path not in indexed_paths
+                and entry.path.suffix != ".part"
+                and entry.token[4] / 1_000_000_000 > now.timestamp() - _LIFETIME.total_seconds()
+            )
             from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
 
             async with self.database.sessions() as reader:

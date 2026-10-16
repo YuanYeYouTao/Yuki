@@ -933,6 +933,7 @@ class ApplicationContainer:
                 "telegram_gateway",
                 start=self.telegram_gateway.start,
                 close=self.telegram_gateway.close,
+                health=self.telegram_gateway.health,
             )
         self.lifecycle.register("application_event", start=self._publish_started)
         self.lifecycle.register(

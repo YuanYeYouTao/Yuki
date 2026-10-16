@@ -76,9 +76,9 @@ async def test_forget_reprepares_changed_rebuild_selection_before_atomic_write(
     prepare = rebuilds.prepare_forget_people
     attempts = 0
 
-    async def race(aliases):
+    async def race(aliases, **kwargs):
         nonlocal attempts
-        plan = await prepare(aliases)
+        plan = await prepare(aliases, **kwargs)
         attempts += 1
         if attempts <= races:
             async with database.immediate_session() as writer:

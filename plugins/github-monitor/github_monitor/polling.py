@@ -913,14 +913,6 @@ class GitHubPoller:
         delivery = self._find_delivery(unit.deliveries, target_key)
         if delivery.status != "attempting" or delivery.prepared is None:
             return snapshot
-        try:
-            self._require_prepared_media_live(delivery.prepared)
-        except GitHubQueueGap as exc:
-            return await self._record_gap(
-                subscription.repository,
-                snapshot,
-                str(exc),
-            )
         receipt = await self._context.notifications.publish(
             self._publish_request(delivery.prepared)
         )
@@ -1033,7 +1025,6 @@ class GitHubPoller:
             )
         if current.prepared is None:
             raise GitHubQueueGap("github_activation_request_not_prepared")
-        self._require_prepared_media_live(current.prepared)
         receipt = await self._context.notifications.publish(self._publish_request(current.prepared))
         completed = current.model_copy(
             update={
@@ -1413,12 +1404,6 @@ class GitHubPoller:
             ask_agent=prepared.ask_agent,
             agent_intent=prepared.agent_intent,
         )
-
-    @staticmethod
-    def _require_prepared_media_live(prepared: PreparedNotification) -> None:
-        now = datetime.now(UTC)
-        if any(item.expires_at is None or item.expires_at <= now for item in prepared.media):
-            raise GitHubQueueGap("github_prepared_media_expired")
 
     @staticmethod
     def _unit_id(repository: str, members: tuple[QueuedSourceEvent, ...]) -> str:

@@ -98,6 +98,8 @@ def update(identifier=1, *, chat=42, topic=None, text="hello", edit=False):
     }
     if topic is not None:
         message["message_thread_id"] = topic
+    if edit:
+        message["edit_date"] = message["date"] + identifier
     return {"update_id": identifier, "edited_message" if edit else "message": message}
 
 

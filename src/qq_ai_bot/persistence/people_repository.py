@@ -358,8 +358,10 @@ class PeopleRepository:
         *,
         memory_rebuilds: MemoryRebuildRepository | None = None,
     ) -> None:
+        from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
+
         self._database = database
-        self._memory_rebuilds = memory_rebuilds
+        self._memory_rebuilds = memory_rebuilds or MemoryRebuildRepository(database)
 
     @property
     def database(self) -> Database:
@@ -836,14 +838,9 @@ class PeopleRepository:
                 )
             if await _privacy_source_token(reader) != source_token:
                 raise ValueError("privacy_source_changed")
-        rebuild = None
-        if self._memory_rebuilds is not None:
-            bounded = tuple(item for item in ownership if item.bounded)
-            rebuild = (
-                await self._memory_rebuilds.prepare_forget_people(legacy, ownership=bounded)
-                if bounded
-                else await self._memory_rebuilds.prepare_forget_people(legacy)
-            )
+        rebuild = await self._memory_rebuilds.prepare_forget_people(
+            legacy, ownership=ownership, person_id=person_id
+        )
         return PersonForgetPreparation(
             person_id,
             ownership,
@@ -875,10 +872,9 @@ class PeopleRepository:
         if await _privacy_source_token(session) != prepared.source_token:
             raise ValueError("privacy_source_changed")
         legacy = prepared.legacy_aliases
-        if self._memory_rebuilds is not None:
-            await self._memory_rebuilds.forget_people(
-                legacy, prepared=prepared.rebuild, session=session
-            )
+        await self._memory_rebuilds.forget_people(
+            legacy, prepared=prepared.rebuild, session=session
+        )
         owned = _privacy_owned_events(person_id, prepared.private_ids, ownership)
         event_ids = select(ChatEventModel.id).where(
             or_(owned, _privacy_mentions(person_id, ownership))

@@ -6,7 +6,7 @@
 ## 配对与账号绑定
 
 第一台设备可由 operator 执行 `qq-ai-bot-cli admin person create`，再执行
-`qq-ai-bot-cli admin client pair --person <id>` 取得绑定码；已有 QQ 用户也可在自己的私聊
+`qq-ai-bot-cli admin client pair --person <id>` 取得绑定码；已有 QQ 或 Telegram 用户也可在自己的私聊
 发送 `/ai link`。码有效期十分钟，仅存 SHA-256，一次兑换。过期码沿原维护循环清理。
 
 | 请求 | 授权与结果 |
@@ -23,7 +23,8 @@
 配对响应丢失时原码已使用，重新签发码；未领取的设备可从设备列表撤销。
 未知设备与他人设备均返回 `not_found`；失效凭据统一返回 `unauthenticated`。
 
-新 QQ 账号可经认证网关私聊发送 `/ai link <code>`，在普通入账和自动建 Person 前兑换。
+新平台账号可经其认证网关私聊发送 `/ai link <code>`，在普通入账和自动建 Person 前兑换。
+持有证明核实际连接、Presence 与平台；App 聊天正文仍不执行平台控制命令，配对使用个人 API。
 这条控制命令不进入聊天、Main 或 Memory。已有同一 Person 绑定时消耗码并返回已绑定；
 属于其他 Person 时，只转移今后的账号控制，原历史、执行与 App 设备留在原 Person。
 operator 的转移与 Person 遗忘命令见[管理 API](admin-api.md)。

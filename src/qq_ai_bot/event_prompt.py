@@ -268,11 +268,7 @@ class ChatEventPromptRenderer:
             target = self._reply_target(row)
             fields.append(
                 f"回复:#{row.reply_to_event_id}/"
-                + (
-                    self._row_identity_label(target)
-                    if target is not None
-                    else "内容不可用"
-                )
+                + (self._row_identity_label(target) if target is not None else "内容不可用")
             )
         elif row.reply_to_message_id:
             fields.append("回复:引用不可用")
@@ -287,9 +283,7 @@ class ChatEventPromptRenderer:
     def _mention_content(self, content: str, row: EventRecord) -> str:
         legacy = row.projected_content is not None
         targets = (
-            (*row.mentioned_user_ids, *self._yuki_account_ids)
-            if legacy
-            else row.mentioned_user_ids
+            (*row.mentioned_user_ids, *self._yuki_account_ids) if legacy else row.mentioned_user_ids
         )
         for target in targets:
             label = self._legacy_identity_label(target, row) if legacy else "成员"

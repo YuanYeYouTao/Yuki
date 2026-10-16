@@ -1,4 +1,4 @@
-"""QQ possession proof before automatic Person creation or chat admission."""
+"""Platform possession proof before automatic Person creation or chat admission."""
 
 from datetime import UTC, datetime
 
@@ -37,7 +37,7 @@ class ClientLinkCommands:
             current != snapshot
             or presence is None
             or not presence.enabled
-            or presence.platform != "qq"
+            or message.platform != snapshot.platform
             or presence.platform != snapshot.platform
             or presence.external_account_id != snapshot.external_account_id
             or (message.bot_user_id and message.bot_user_id != snapshot.external_account_id)

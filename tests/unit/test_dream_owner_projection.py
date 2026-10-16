@@ -7,6 +7,7 @@ import pytest
 from sqlalchemy import func, select
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
+from tests.unit.test_client_identity import code_for
 from tests.unit.test_memory_dream import _empty_dream_statistics, _services
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
@@ -164,20 +165,22 @@ async def test_dream_provider_uses_local_fact_aliases_without_transport_owner_fi
         assert payload["visibility_type"] == rows[0].visibility_type.value
 
 
-async def test_cold_dream_reuses_original_paid_owner_proof_at_request_limit(database):
+@pytest.mark.parametrize("owner", ["person_group", "self_private", "self_group"])
+@pytest.mark.parametrize("transfer", [False, True])
+async def test_cold_dream_reuses_original_paid_owner_proof_at_request_limit(
+    database, owner, transfer
+):
     provider = FakeLLMProvider()
-    service, facts, dreams, run, cluster, rows = await _scene(
-        database, provider, owner="person_group"
-    )
+    service, facts, dreams, run, cluster, rows = await _scene(database, provider, owner=owner)
     payload, _, current_fingerprint = await service._input(rows)
     # Freeze the historical proof codec separately from the new provider projection.
     legacy_input = {
-        "scope_type": "person_group",
-        "subject_user_id": "1001",
-        "group_id": "3001",
-        "visibility_type": None,
-        "visibility_user_id": None,
-        "visibility_group_id": None,
+        "scope_type": rows[0].scope_type.value,
+        "subject_user_id": rows[0].subject_user_id,
+        "group_id": rows[0].group_id,
+        "visibility_type": rows[0].visibility_type.value if rows[0].visibility_type else None,
+        "visibility_user_id": rows[0].visibility_user_id,
+        "visibility_group_id": rows[0].visibility_group_id,
         "kind": "fact",
         "memories": [row.model_dump(mode="json") for row in payload.memories],
     }
@@ -196,7 +199,7 @@ async def test_cold_dream_reuses_original_paid_owner_proof_at_request_limit(data
     original_fingerprint = hashlib.sha256(
         json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
-    assert current_fingerprint == original_fingerprint
+    assert current_fingerprint != original_fingerprint
     assert await dreams.reserve_model_call(
         run_public_id=run.public_id, cluster_id=cluster.id, maximum=1
     )
@@ -231,6 +234,15 @@ async def test_cold_dream_reuses_original_paid_owner_proof_at_request_limit(data
             original.schema_version,
             original.model_calls,
         )
+    if transfer:
+        api, _, issued = await code_for(database, "1002")
+        await api.claim_account(
+            issued["code"],
+            platform="qq",
+            account="1001",
+            display_name="new owner",
+            message_id=f"old-paid-proof-{owner}",
+        )
     await database.close()
 
     def no_new_model(_request):
@@ -263,8 +275,9 @@ async def test_cold_dream_reuses_original_paid_owner_proof_at_request_limit(data
         current = [await cold_facts.get_fact(row.id) for row in rows]
         assert sorted(row.status.value for row in current) == ["active", "superseded"]
         active = next(row for row in current if row.status.value == "active")
-        assert active.canonical_subject_person_id == rows[0].canonical_subject_person_id
-        assert active.canonical_subject_space_id == rows[0].canonical_subject_space_id
+        assert cold_service._mutations._dream_partition(
+            active
+        ) == cold_service._mutations._dream_partition(rows[0])
         assert {item.event_id for item in await cold_facts.list_evidence(active.id)} == {
             item.event_id for sources in evidence for item in sources
         }

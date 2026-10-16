@@ -1,5 +1,6 @@
 """Link commands precede automatic identity creation and never become chat input."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -9,6 +10,7 @@ from sqlalchemy import func, select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 
+from qq_ai_bot.client_api.db_models import ClientLinkCodeModel
 from qq_ai_bot.client_api.identity import ClientIdentityService
 from qq_ai_bot.identity.canonical_repository import find_identity_binding
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
@@ -105,3 +107,21 @@ async def test_unknown_or_disconnected_account_cannot_issue_a_code(database):
     assert "身份认证" in response
     async with database.sessions() as session:
         assert await find_identity_binding(session, "56565656") is None
+
+
+async def test_connection_cannot_prove_possession_on_another_platform(database):
+    registry, bot, identities, _, code = await stack(database)
+    handler = ClientLinkCommands(identities, registry)
+    response = await handler.execute(
+        bot,
+        replace(
+            _message(message_id="wrong-platform", user_id="45454545", text=f"/ai link {code}"),
+            platform="telegram",
+        ),
+    )
+    assert "不可用" in response
+    async with database.sessions() as session:
+        assert (await session.scalar(select(ClientLinkCodeModel))).used_at is None
+        assert await find_identity_binding(session, "45454545", platform="telegram") is None
+        assert await find_identity_binding(session, "45454545", platform="qq") is None
+        assert await session.scalar(select(func.count(ChatEventModel.id))) == 0

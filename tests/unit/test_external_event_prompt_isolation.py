@@ -70,6 +70,7 @@ def _external(
         id=event_id,
         bot_user_id="8000",
         platform_message_id=f"ext-{event_id}",
+        platform="qq",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="8000",
         direction="external",
@@ -316,7 +317,7 @@ async def test_private_wakeup_targets_the_person_without_an_actor() -> None:
     # The target is the conversation person, never a fabricated current speaker.
     assert "current_person" not in items
     assert "current_group" not in items
-    assert items == {"scene": "私聊"}
+    assert items == {"scene": "私聊", "platform": "qq"}
     # Automatic memory recall stays off; the agent must use memory tools explicitly.
 
 
@@ -491,7 +492,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     assert wakeup_context.prompt_raw_tail_end_event_id == (
         ordinary_context.prompt_raw_tail_end_event_id
     )
-    assert wakeup_context.metadata_payload == {"scene": "私聊"}
+    assert wakeup_context.metadata_payload == {"scene": "私聊", "platform": "qq"}
     assert wakeup_context.current_message != ordinary_context.current_message
     assert "external_event_wakeup" in (wakeup_context.current_message.content or "")
 

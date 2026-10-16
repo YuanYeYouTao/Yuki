@@ -22,8 +22,10 @@ from qq_ai_bot.conversation.hydrate import (
     touch_canonical_watermarks,
 )
 from qq_ai_bot.conversation.initiative_sources import source_revision
+from qq_ai_bot.conversation.media_index import prepare_event_media
 from qq_ai_bot.conversation.scope_models import ConversationScopeState
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.identity.canonical_repository import (
     apply_event_identity,
     external_id,
@@ -45,7 +47,7 @@ from qq_ai_bot.identity.receipt_compat import (
     require_reply_source,
 )
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel
+from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
 from qq_ai_bot.persistence.repository_helpers import _event_record
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -227,7 +229,13 @@ class ScopedEventLedgerUnitOfWork:
         return await self._set_derived_text(event_id, normalized, audio=False)
 
     async def update_platform_message(
-        self, event_id: int, message: Any, *, presence_id: str, revision: int
+        self,
+        event_id: int,
+        message: InboundMessage,
+        *,
+        presence_id: str,
+        edited_at: datetime,
+        revision: int,
     ) -> None:
         """Apply an authenticated edit to its original event, never a new turn."""
         while True:
@@ -243,17 +251,63 @@ class ScopedEventLedgerUnitOfWork:
                     raise CanonicalIdentityError("receipt_conflict")
                 source_segments, source_content = original.segments_json, original.content
                 conversation_id = original.canonical_conversation_id
+                conversation = await reader.get(CanonicalConversationModel, conversation_id)
+                presence = await reader.get(PresenceModel, presence_id)
+                if (
+                    conversation is None
+                    or presence is None
+                    or presence.platform != message.platform
+                ):
+                    raise CanonicalIdentityError("no_conversation")
+                generation = conversation.generation
+                mentions_query = (
+                    select(
+                        IdentityBindingModel.external_account_id,
+                        IdentityBindingModel.person_id,
+                        IdentityBindingModel.revision,
+                    )
+                    .where(
+                        IdentityBindingModel.platform == presence.platform,
+                        IdentityBindingModel.external_account_id.in_(message.mentioned_user_ids),
+                        IdentityBindingModel.status == "active",
+                    )
+                    .order_by(IdentityBindingModel.external_account_id)
+                )
+                mention_facts = tuple((await reader.execute(mentions_query)).all())
+                original_at = original.occurred_at.replace(tzinfo=UTC).timestamp()
             # Parse/prepare outside the SQLite writer, preserving Host identity metadata.
             decoded = json.loads(source_segments)
             metadata = [part for part in decoded if part.get("type") == "yuki_context"]
             context = metadata[0]["data"] if metadata else {}
-            if int(context.get("platform_update_id", -1)) >= revision:
+            if (
+                float(context.get("platform_edit_date", original_at)),
+                int(context.get("platform_update_id", -1)),
+            ) >= (edited_at.timestamp(), revision):
                 return
+            mentions = {account: person for account, person, _revision in mention_facts}
+            context.update(
+                mentioned_user_ids=list(message.mentioned_user_ids),
+                mentioned_person_ids=list(
+                    dict.fromkeys(
+                        mentions[account]
+                        for account in message.mentioned_user_ids
+                        if account in mentions
+                    )
+                ),
+                reply_sender_user_id=message.reply_sender_user_id,
+                platform_edit_date=edited_at.timestamp(),
+            )
             context["platform_update_id"] = revision
             if not metadata:
                 metadata.append({"type": "yuki_context", "data": context})
             segments = json.dumps(
                 [*message.segments, *metadata], ensure_ascii=False, separators=(",", ":")
+            )
+            media = prepare_event_media(
+                event_id=event_id,
+                conversation_id=conversation_id,
+                generation=generation,
+                segments=message.segments,
             )
             async with self._database.immediate_session() as session:
                 event = await session.get(ChatEventModel, event_id)
@@ -264,6 +318,35 @@ class ScopedEventLedgerUnitOfWork:
                 conversation = await session.get(CanonicalConversationModel, conversation_id)
                 if conversation is None:
                     raise CanonicalIdentityError("no_conversation")
+                if (
+                    conversation.generation != generation
+                    or tuple((await session.execute(mentions_query)).all()) != mention_facts
+                ):
+                    continue
+                current_media = {
+                    item.attachment_index: item
+                    for item in await session.scalars(
+                        select(ConversationMediaItemModel).where(
+                            ConversationMediaItemModel.source_event_id == event_id
+                        )
+                    )
+                }
+                for prepared in media:
+                    current = current_media.pop(prepared.attachment_index, None)
+                    if current is None:
+                        session.add(prepared)
+                        continue
+                    if decoded[current.segment_index] != message.segments[prepared.segment_index]:
+                        current.cache_status = "uncached"
+                        current.content_sha256 = current.cache_name = None
+                        current.cached_at = current.expires_at = None
+                        current.created_at = prepared.created_at
+                    current.segment_index = prepared.segment_index
+                    current.kind = prepared.kind
+                    current.display_name = prepared.display_name
+                    current.declared_size = prepared.declared_size
+                for removed in current_media.values():
+                    await session.delete(removed)
                 event.content, event.segments_json = message.text, segments
                 event.visual_summary, event.audio_transcript = "", ""
                 conversation.prompt_source_revision += 1

@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     model_profiles_file: Path = Path("webui-config/model_profiles.toml")
     model_stats_recent_error_limit: int = 5
     system_prompt: str = (
-        "你是一个运行在 QQ 中的 AI 助手。请只输出给用户的最终回答，不要输出隐藏的推理过程。"
+        "你是 AI 助手 Yuki。请只输出给用户的最终回答，不要输出隐藏的推理过程。"
         "不要声称执行了未实际成功的工具、代码、命令或文件访问。"
         "只有联网工具实际成功时，才能说明已经搜索或读取网页。"
     )

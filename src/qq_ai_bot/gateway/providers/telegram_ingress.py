@@ -72,7 +72,7 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
     )
     for field, kind in media_types:
         media = raw.get(field)
-        if not media:
+        if not media or (field == "document" and raw.get("animation")):
             continue
         if field == "photo":
             media = media[-1]
@@ -94,7 +94,7 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
                 "data": {
                     "file": file,
                     "name": filename,
-                    "size": media.get("file_size"),
+                    "file_size": media.get("file_size"),
                     "mime_type": media.get("mime_type"),
                 },
             }
@@ -188,9 +188,13 @@ class TelegramGateway:
         self._poll: asyncio.Task[None] | None = None
         self._turns: set[asyncio.Task[Any]] = set()
         self.presence_id = ""
+        self._last_success_at: datetime | None = None
+        self._last_error_category: str | None = None
 
     async def start(self) -> None:
         await self.client.get_me()
+        self._last_success_at = datetime.now(UTC)
+        self._last_error_category = None
         async with self.database.immediate_session() as session:
             presence = await create_presence(
                 session,
@@ -212,6 +216,19 @@ class TelegramGateway:
         self.registry.disconnect(self.client)
         await self.client.close()
 
+    async def health(self) -> dict[str, object]:
+        running = self._poll is not None and not self._poll.done()
+        return {
+            "enabled": True,
+            "running": running,
+            "healthy": running and self._last_error_category is None,
+            "last_success_at": self._last_success_at.isoformat()
+            if self._last_success_at is not None
+            else None,
+            "last_error_category": self._last_error_category,
+            "active_turns": len(self._turns),
+        }
+
     async def _run(self) -> None:
         offset = None
         while True:
@@ -220,12 +237,15 @@ class TelegramGateway:
                 if offset is not None:
                     params["offset"] = offset
                 updates = await self.client.call("getUpdates", params)
+                self._last_success_at = datetime.now(UTC)
+                self._last_error_category = None
                 for update in updates:
                     await self.receive(update)
                     # Only the next successful request confirms this update.
                     # Original event receipts handle restart/redelivery.
                     offset = update["update_id"] + 1
             except Exception as exc:
+                self._last_error_category = type(exc).__name__
                 logger.error("telegram_poll_failed category=%s", type(exc).__name__)
                 await asyncio.sleep(self.poll_interval)
 
@@ -262,7 +282,11 @@ class TelegramGateway:
                 )
             if event is not None:
                 await self.writer.update_platform_message(
-                    event.id, message, presence_id=self.presence_id, revision=update["update_id"]
+                    event.id,
+                    message,
+                    presence_id=self.presence_id,
+                    edited_at=datetime.fromtimestamp(raw["edit_date"], UTC),
+                    revision=update["update_id"],
                 )
             return
         async with self.database.sessions() as session:

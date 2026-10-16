@@ -354,6 +354,8 @@ class MemoryRebuildRepository:
                     scope_type=validated.fact.scope_type.value,
                     subject_user_id=validated.fact.subject_user_id,
                     group_id=validated.fact.group_id,
+                    canonical_subject_person_id=validated.fact.canonical_subject_person_id,
+                    canonical_subject_space_id=validated.fact.canonical_subject_space_id,
                     operation=validated.operation.value,
                     kind=validated.fact.kind.value,
                     authority=validated.fact.authority.value,
@@ -985,6 +987,7 @@ class MemoryRebuildRepository:
         *,
         session: AsyncSession | None = None,
         ownership: tuple[BindingOwnership, ...] = (),
+        person_id: str | None = None,
     ) -> PreparedRebuildForget:
         from qq_ai_bot.memory.rebuild.privacy import prepare_forget
 
@@ -993,7 +996,7 @@ class MemoryRebuildRepository:
 
             if session is None:
                 await reader.execute(text("BEGIN"))
-            return await prepare_forget(reader, aliases, ownership)
+            return await prepare_forget(reader, aliases, ownership, person_id=person_id)
 
     async def forget_people(
         self,

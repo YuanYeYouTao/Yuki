@@ -1,8 +1,10 @@
 """Documents use document budgets, and visual choices retain explicit configuration."""
 
 import hashlib
+import json
 import sys
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
@@ -24,7 +26,7 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.emoji.grid import EmojiGrid
 from qq_ai_bot.emoji.models import EmojiSelectionRequest
 from qq_ai_bot.emoji.selector import EmojiSelector
-from qq_ai_bot.persistence.models import ConversationMediaItemModel
+from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
 from qq_ai_bot.services.attachment_inputs import AttachmentInputService
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
 from qq_ai_bot.services.media_process import MediaProcessError, run_media_process
@@ -178,7 +180,12 @@ async def test_history_document_process_failure_is_not_invalid_video(
     path = directory / "0-cached.png"
     path.write_bytes(b"original document")
     async with database.immediate_session() as writer:
+        event = await writer.get(ChatEventModel, source.id)
+        event.segments_json = json.dumps(
+            [{"type": "file", "data": {"file": "synthetic-document", "name": "document.txt"}}]
+        )
         item = await writer.get(ConversationMediaItemModel, (source.id, 0))
+        item.expires_at = datetime.now(UTC) + timedelta(hours=24)
         item.kind, item.display_name, item.content_sha256 = (
             "file",
             "document.txt",

@@ -479,9 +479,8 @@ class PluginNotificationOutboxModel(Base):
     bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     part_type: Mapped[str] = mapped_column(String(16), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    media_handle_id: Mapped[str | None] = mapped_column(
-        ForeignKey("plugin_media_artifacts.handle_id", ondelete="SET NULL"), nullable=True
-    )
+    # Original publication provenance outlives its temporary artifact/file.
+    media_handle_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=5)

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -20,6 +22,7 @@ from qq_ai_bot.plugin_host.db_models import (
     PluginMediaArtifactModel,
     PluginNotificationOutboxModel,
 )
+from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
 from qq_ai_bot.plugin_host.notification_manifest import (
     canonical_json,
     canonical_occurred_at,
@@ -421,6 +424,117 @@ async def test_same_handle_and_sha_retry_does_not_enqueue_again(database: Databa
     assert await _state(database) == before
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_original_publication_receipt_ignores_media_expiry(database, legacy):
+    repository = await _install(database)
+    digest = _sha(b"original-receipt")
+    await _add_artifact(database, handle_id="original-expiring", digest=digest)
+    request = _request(media_handles=("original-expiring",))
+    first = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+    async with database.immediate_session() as session:
+        artifact = await session.get(PluginMediaArtifactModel, "original-expiring")
+        artifact.expires_at = datetime.now(UTC) - timedelta(days=1)
+        if legacy:
+            part = await session.scalar(
+                select(PluginNotificationOutboxModel).where(
+                    PluginNotificationOutboxModel.part_type == "media"
+                )
+            )
+            part.part_key = legacy_media_part_key(index=0, handle_id="original-expiring")
+    before = await _state(database)
+    replay = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+    assert replay.deduplicated and replay.source_event_id == first.source_event_id
+    assert replay.notification_id == first.notification_id
+    assert (
+        not replay.event_created and not replay.delivery_enqueued and not replay.agent_turn_enqueued
+    )
+    with pytest.raises(CanonicalIdentityError) as conflict:
+        await repository.publish(
+            plugin_id=_PLUGIN_ID, request=request.model_copy(update={"text": "changed"})
+        )
+    assert conflict.value.category == "receipt_conflict"
+    with pytest.raises(PluginPermissionError, match="media handle"):
+        await repository.publish(
+            plugin_id=_PLUGIN_ID,
+            request=request.model_copy(update={"event_key": "new-publication"}),
+        )
+    assert await _state(database) == before
+
+
+@pytest.mark.parametrize(
+    "status", ["pending", "processing", "sent", "failed", "uncertain", "cancelled"]
+)
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_original_receipt_survives_actual_media_lifecycle_cleanup(
+    database, tmp_path, status, legacy
+):
+    repository = await _install(database)
+    store = PluginMediaArtifactStore(database, tmp_path / "plugin-media")
+    handle = await store.create(
+        plugin_id=_PLUGIN_ID,
+        data=b"\x89PNG\r\n\x1a\noriginal media",
+        content_type="image/png",
+        filename="original.png",
+        ttl_seconds=60,
+        storage_mb=1,
+    )
+    request = _request(media_handles=(handle.handle_id,))
+    first = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+    async with database.immediate_session() as writer:
+        artifact = await writer.get(PluginMediaArtifactModel, handle.handle_id)
+        path = Path(artifact.storage_path)
+        artifact.expires_at = datetime.now(UTC) - timedelta(days=1)
+        part = await writer.scalar(
+            select(PluginNotificationOutboxModel).where(
+                PluginNotificationOutboxModel.part_type == "media"
+            )
+        )
+        part.status = status
+        if legacy:
+            part.part_key = legacy_media_part_key(index=0, handle_id=handle.handle_id)
+    assert await asyncio.to_thread(path.is_file)
+    pending = status in {"pending", "processing"}
+    assert await store.cleanup() == (0 if pending else 1)
+    assert await asyncio.to_thread(path.exists) == pending
+    async with database.sessions() as reader:
+        assert (await reader.get(PluginMediaArtifactModel, handle.handle_id) is not None) == pending
+        retained = await reader.scalar(
+            select(PluginNotificationOutboxModel).where(
+                PluginNotificationOutboxModel.part_type == "media"
+            )
+        )
+        assert retained.media_handle_id == handle.handle_id and retained.status == status
+    before = await _state(database)
+    replay = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+    assert (
+        replay.notification_id == first.notification_id
+        and replay.source_event_id == first.source_event_id
+    )
+    assert (
+        replay.deduplicated
+        and not replay.event_created
+        and not replay.delivery_enqueued
+        and not replay.agent_turn_enqueued
+    )
+    assert await _state(database) == before
+    with pytest.raises(CanonicalIdentityError) as conflict:
+        await repository.publish(
+            plugin_id=_PLUGIN_ID, request=request.model_copy(update={"text": "changed"})
+        )
+    assert conflict.value.category == "receipt_conflict"
+    with pytest.raises(PluginPermissionError, match="original publication proof"):
+        await repository.publish(
+            plugin_id=_PLUGIN_ID,
+            request=request.model_copy(update={"media_handles": ("unknown-handle",)}),
+        )
+    with pytest.raises(PluginPermissionError, match="media handle"):
+        await repository.publish(
+            plugin_id=_PLUGIN_ID,
+            request=request.model_copy(update={"event_key": "independent-call"}),
+        )
+    assert await _state(database) == before
+
+
 @pytest.mark.asyncio
 async def test_same_bytes_different_handle_dedupes_without_new_work(database: Database) -> None:
     repository = await _install(database)
@@ -465,7 +579,7 @@ async def test_sha_key_survives_artifact_cleanup_and_dedupes_new_handle(
             )
         )
         assert row is not None
-        assert row.media_handle_id is None
+        assert row.media_handle_id == "cleaned-handle"
     before = await _state(database)
     second = await repository.publish(
         plugin_id=_PLUGIN_ID,

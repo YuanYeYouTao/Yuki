@@ -1085,11 +1085,25 @@ class DreamRepository:
             )
         return public_id
 
+    async def ready_preview_fingerprints(self, cluster_id: int) -> tuple[str, ...]:
+        async with self.database.sessions() as reader:
+            return tuple(
+                await reader.scalars(
+                    select(MemoryDreamClusterPreviewModel.source_fingerprint).where(
+                        MemoryDreamClusterPreviewModel.cluster_id == cluster_id,
+                        MemoryDreamClusterPreviewModel.status == "ready",
+                        MemoryDreamClusterPreviewModel.schema_version
+                        == _DREAM_PREVIEW_SCHEMA_VERSION,
+                    )
+                )
+            )
+
     async def ready_preview(
         self,
         *,
         cluster_id: int,
         source_fingerprint: str,
+        compatible_fingerprints: frozenset[str] = frozenset(),
     ) -> tuple[int, str, DreamOutput] | None:
         """Return the exact ready proposal, marking incompatible snapshots stale."""
 
@@ -1108,7 +1122,7 @@ class DreamRepository:
             )
             for row in rows:
                 if (
-                    row.source_fingerprint != source_fingerprint
+                    row.source_fingerprint not in compatible_fingerprints | {source_fingerprint}
                     or row.schema_version != _DREAM_PREVIEW_SCHEMA_VERSION
                 ):
                     row.status = "stale"

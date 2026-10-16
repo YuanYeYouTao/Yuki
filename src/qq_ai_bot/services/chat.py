@@ -34,7 +34,7 @@ from qq_ai_bot.conversation.scope import (
 )
 from qq_ai_bot.conversation.scope_models import ConversationCoverageError
 from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.messages import (
     AttachmentKind,
     ChatImage,
@@ -1670,11 +1670,10 @@ class ChatService:
         content = self._ledger_content(message)
         recorded = False
         try:
-            await self._ledger.append(
-                bot_user_id=inbound.bot_user_id or "unknown-bot",
+            await self._ledger._writer.append(
+                scope=inbound.scope(),
                 platform_message_id=platform_message_id,
-                scope_type=inbound.scope_type,
-                sender_user_id=inbound.bot_user_id or "unknown-bot",
+                sender_user_id=inbound.bot_user_id,
                 direction="outbound",
                 content=content,
                 segments=(
@@ -1686,13 +1685,10 @@ class ChatService:
                     *(({"type": "text", "data": {"text": message.text}},) if message.text else ()),
                     *media_segments,
                 ),
-                group_id=inbound.group_id,
-                private_peer_user_id=(
-                    inbound.sender.user_id if inbound.scope_type is ScopeType.PRIVATE else None
-                ),
                 reply_to_message_id=message.reply_to_message_id,
                 sender_is_bot=True,
                 origin=origin,
+                source_event_id=inbound.source_event_id,
             )
             recorded = True
         except asyncio.CancelledError:

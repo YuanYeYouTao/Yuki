@@ -21,6 +21,7 @@ class HealthPayload(TypedDict):
     vision_configured: bool
     asr: dict[str, object]
     onebot_connected: bool
+    telegram_gateway: dict[str, object]
     automation_enabled: bool
     automation_worker_running: bool
     active_automation_count: int
@@ -70,8 +71,17 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     )
     self_reflection_health = await container.memory_self_reflection_worker.health()
     dream_health = await container.memory_dream_worker.health()
+    telegram_health: dict[str, object] = (
+        await container.telegram_gateway.health()
+        if container.telegram_gateway is not None
+        else {"enabled": False, "running": False, "healthy": None}
+    )
     return HealthPayload(
-        status="ok" if database_ok and background_health["running"] else "degraded",
+        status="ok"
+        if database_ok
+        and background_health["running"]
+        and (not telegram_health["enabled"] or telegram_health["healthy"])
+        else "degraded",
         version=__version__,
         database="ok" if database_ok else "unavailable",
         sqlite_diagnostics=(
@@ -84,6 +94,7 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         vision_configured=container.settings.vision_configured,
         asr=container.asr.health(),
         onebot_connected=container.onebot_connected(),
+        telegram_gateway=telegram_health,
         automation_enabled=container.settings.automation_enabled,
         automation_worker_running=container.automation_worker.running,
         active_automation_count=await container.automation_repository.active_count(),

@@ -9,11 +9,14 @@ import uuid
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from itertools import product
 from typing import Any
 
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.config import Settings
+from qq_ai_bot.identity.db_models import IdentityBindingModel, SpaceBindingModel
 from qq_ai_bot.memory.dream.models import (
     DreamAction,
     DreamCluster,
@@ -314,9 +317,18 @@ class DreamService:
             await self._repository.stale_previews(cluster.id)
             return 0, 0, False
         payload, ref_map, input_fingerprint = await self._input(facts)
+        stored_fingerprints = await self._repository.ready_preview_fingerprints(cluster.id)
+        legacy_fingerprints = (
+            await self._legacy_preview_fingerprints(
+                facts, frozenset(stored_fingerprints) - {input_fingerprint}
+            )
+            if any(value != input_fingerprint for value in stored_fingerprints)
+            else frozenset()
+        )
         ready_preview = await self._repository.ready_preview(
             cluster_id=cluster.id,
             source_fingerprint=input_fingerprint,
+            compatible_fingerprints=legacy_fingerprints,
         )
         preview_id: int | None = None
         if ready_preview is not None:
@@ -659,11 +671,15 @@ class DreamService:
         )
 
     async def _input(
-        self, facts: tuple[MemoryFact, ...], *, session: AsyncSession | None = None
+        self,
+        facts: tuple[MemoryFact, ...],
+        *,
+        session: AsyncSession | None = None,
+        legacy_owners: dict[str, str | None] | None = None,
     ) -> tuple[DreamInput, dict[str, MemoryFact], str]:
         if session is None:
             async with self._facts.repository.transaction(read_snapshot=True) as owned:
-                return await self._input(facts, session=owned)
+                return await self._input(facts, session=owned, legacy_owners=legacy_owners)
         await self._facts.repository.prepare_evidence_rows(
             tuple(fact.id for fact in facts), session=session
         )
@@ -718,21 +734,26 @@ class DreamService:
                 )
             )
         first = facts[0]
+        owners = legacy_owners or {}
         payload = DreamInput(
             scope_type=first.scope_type.value,
-            subject_user_id=first.subject_user_id,
-            group_id=first.group_id,
+            subject_user_id=owners.get("subject_user_id"),
+            group_id=owners.get("group_id"),
             visibility_type=(
                 first.visibility_type.value if first.visibility_type is not None else None
             ),
-            visibility_user_id=first.visibility_user_id,
-            visibility_group_id=first.visibility_group_id,
             kind=first.kind.value,
+            visibility_user_id=owners.get("visibility_user_id"),
+            visibility_group_id=owners.get("visibility_group_id"),
             memories=tuple(rows),
         )
         fitted = self._fit_input(payload)
         proof = {
-            "input": fitted.model_dump(mode="json"),
+            "input": (
+                fitted.model_dump(mode="json")
+                if legacy_owners is not None
+                else self._structured_input(fitted)
+            ),
             "evidence": evidence_proofs,
             "facts": tuple(
                 (fact_signature(fact), self._mutations._dream_partition(fact), fact.review_state)
@@ -743,6 +764,59 @@ class DreamService:
             json.dumps(proof, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
         return fitted, ref_map, fingerprint
+
+    async def _legacy_preview_fingerprints(
+        self, facts: tuple[MemoryFact, ...], wanted: frozenset[str]
+    ) -> frozenset[str]:
+        """Read old paid proofs exactly; historical labels never establish an owner."""
+        first = facts[0]
+        # _validate_fact_identity and the persisted scope/self-visibility checks
+        # make subject owners and SELF visibility owners mutually exclusive.
+        person_id = first.canonical_subject_person_id or first.canonical_visibility_person_id
+        space_id = first.canonical_subject_space_id or first.canonical_visibility_space_id
+        async with self._facts.repository.database.sessions() as reader:
+            await reader.execute(text("BEGIN"))
+            persons: set[str | None] = {None}
+            spaces: set[str | None] = {None}
+            if person_id is not None:
+                persons.update(
+                    await reader.scalars(
+                        select(IdentityBindingModel.external_account_id).where(
+                            IdentityBindingModel.person_id == person_id,
+                            IdentityBindingModel.platform == "qq",
+                        )
+                    )
+                )
+            if space_id is not None:
+                spaces.update(
+                    await reader.scalars(
+                        select(SpaceBindingModel.external_space_id).where(
+                            SpaceBindingModel.space_id == space_id,
+                            SpaceBindingModel.platform == "qq",
+                        )
+                    )
+                )
+            matched: set[str] = set()
+            for person, space in product(persons, spaces):
+                _, _, fingerprint = await self._input(
+                    facts,
+                    session=reader,
+                    legacy_owners={
+                        "subject_user_id": person if first.canonical_subject_person_id else None,
+                        "group_id": space if first.canonical_subject_space_id else None,
+                        "visibility_user_id": person
+                        if first.canonical_visibility_person_id
+                        else None,
+                        "visibility_group_id": space
+                        if first.canonical_visibility_space_id
+                        else None,
+                    },
+                )
+                if fingerprint in wanted:
+                    matched.add(fingerprint)
+                    if matched == wanted:
+                        break
+            return frozenset(matched)
 
     @staticmethod
     def _output_characters(output: DreamOutput) -> int:
@@ -864,8 +938,8 @@ class DreamService:
     def _structured_input(self, payload: DreamInput) -> dict[str, Any]:
         """The decision references one canonical cluster's local fact aliases.
 
-        Transport owner labels are unnecessary model input. Keep the original
-        internal source-proof serialization so paid previews remain readable.
+        Transport owner labels are unnecessary model input. Old paid proofs are
+        read separately by their exact historical codec.
         """
         return payload.model_dump(
             mode="json",
