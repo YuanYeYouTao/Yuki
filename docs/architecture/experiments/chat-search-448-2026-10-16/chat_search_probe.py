@@ -1784,113 +1784,201 @@ def probe_relevance_revision() -> dict:
     return log
 
 
-def range_plan_rows(db, terms, conv, lo, hi, frozen_frontier=None) -> dict:
-    """Read every candidate of a fixed ranking range [lo, hi) with the section 6.7
-    sources, inside one read transaction, and count the rows each SQL returns.
+def range_page(db, terms, conv, lo, hi, frozen_frontier=None, max_messages=20, chunk=2000):
+    """Read a ranking range [lo, hi) with real keyset SQL, charge it by section 6.7.
 
-    Index sources: one per term (index matches at or above the frontier, plus queued
-    events at or above the frontier).  Below the frontier: one shared scan.  With
-    ``frozen_frontier`` the frontier recorded by the first page is used instead of the
-    current one, so events backfilled since then are still read by the shared scan.
+    Sources: one per term (index matches and queued events at or above the frontier)
+    and one shared scan below the frontier.  Each merge step reads ``chunk`` rows per
+    active source; a source returning fewer is exhausted.  Charging: u = 2 + d per
+    candidate (d = M + 1 with two or more terms), b = M + 1 per merge step.  Actual
+    rows (source, verification, scan, boundary, distance) are counted separately.
+    With ``frozen_frontier`` the first page's frontier F1 decides the sources.
     """
 
+    multi = len(terms) > 1
+    unit = 2 + (max_messages + 1 if multi else 0)
+    boundary = max_messages + 1 if multi else 0
     db.execute("begin")
     frontier = frozen_frontier or db.execute("select frontier from state").fetchone()[0]
-    upper_index = max(lo, frontier)
-    source_rows = 0
-    candidates: set[int] = set()
+    index_lo = max(lo, frontier)
+    scan_hi = min(hi, frontier)
+    statements = {}
     for term in terms:
         target = fold_whole(term)
         grams = sorted({hex_token("t", target[i : i + 3]) for i in range(len(target) - 2)})
         expr = " AND ".join(f'"{g}"' for g in grams)
-        source: set[int] = set()
-        for column in ("c_grams", "a_grams"):
-            source.update(
-                r[0]
-                for r in db.execute(
-                    "select rowid from idx where idx match ? and rowid >= ? and rowid < ?",
-                    (f"{{{column}}}: ({expr})", upper_index, hi),
-                )
-            )
-        source.update(
-            r[0]
-            for r in db.execute(
-                "select distinct q.event_id from queue q join ev on ev.id = q.event_id"
-                " where ev.conv = ? and q.event_id >= ? and q.event_id < ?",
-                (conv, upper_index, hi),
-            )
+        statements[term] = (
+            "select id from (select rowid as id from idx where idx match :c"
+            " union select rowid from idx where idx match :a"
+            " union select event_id from queue where event_id >= :f)"
+            " where id in (select id from ev where conv = :conv)"
+            " and id >= :lo and id < :pos order by id desc limit :p",
+            {"c": f"{{c_grams}}: ({expr})", "a": f"{{a_grams}}: ({expr})", "f": frontier},
         )
-        source_rows += len(source)
-        candidates |= source
-    verify_rows = 0
-    texts = {}
-    for event_id in sorted(candidates):
-        texts[event_id] = db.execute(
-            "select content, asr from ev where id = ?", (event_id,)
-        ).fetchone()
-        verify_rows += 1
-    scanned = db.execute(
-        "select id, content, asr from ev where conv = ? and kind = 'message' and id >= ?"
-        " and id < ?",
-        (conv, lo, min(hi, frontier)),
-    ).fetchall()
-    for event_id, content, asr in scanned:
-        texts[event_id] = (content, asr)
+    position = {name: hi for name in [*terms, "scan"]}
+    active = [*terms, "scan"] if scan_hi > lo else list(terms)
+    rows = Counter()
+    charged = steps = 0
+    texts: dict[int, tuple] = {}
+    while active:
+        steps += 1
+        for name in list(active):
+            if name == "scan":
+                got = db.execute(
+                    "select id, content, asr from ev where conv = ? and kind = 'message'"
+                    " and id >= ? and id < ? and id < ? order by id desc limit ?",
+                    (conv, lo, scan_hi, position[name], chunk),
+                ).fetchall()
+                for event_id, content, asr in got:
+                    texts[event_id] = (content, asr)
+                rows["scan"] += len(got)
+                ids = [r[0] for r in got]
+            else:
+                sql, params = statements[name]
+                ids = [
+                    r[0]
+                    for r in db.execute(
+                        sql,
+                        {**params, "conv": conv, "lo": index_lo, "pos": position[name], "p": chunk},
+                    )
+                ]
+                rows["source"] += len(ids)
+                for event_id in ids:
+                    if event_id not in texts:
+                        texts[event_id] = db.execute(
+                            "select content, asr from ev where id = ?", (event_id,)
+                        ).fetchone()
+                        rows["verify"] += 1
+            charged += unit * len(ids)
+            if ids:
+                position[name] = ids[-1]
+            if len(ids) < chunk:
+                active.remove(name)
+        frontier_now = max((position[n] for n in active), default=lo)
+        charged += boundary
+        if boundary:
+            rows["boundary"] += len(
+                db.execute(
+                    "select id from ev where conv = ? and kind = 'message' and id >= ?"
+                    " order by id limit ?",
+                    (conv, frontier_now, boundary),
+                ).fetchall()
+            )
+    all_ids = [
+        r[0]
+        for r in db.execute(
+            "select id from ev where conv = ? and kind = 'message' order by id", (conv,)
+        )
+    ]
+    pos = {event_id: index for index, event_id in enumerate(all_ids)}
+    hits = {}
+    for event_id, row in texts.items():
+        covers = frozenset(
+            t for t in terms if row and any(fold_whole(t) in fold_whole(f or "") for f in row)
+        )
+        if covers:
+            hits[event_id] = covers
+    evaluated: list = []
+    groups = sim_groups(
+        hits, pos, dict.fromkeys(pos, 0), tuple(terms), max_messages, 10**9, evaluated
+    )
+    for left, right in dict.fromkeys(evaluated):
+        if left != right:
+            rows["distance"] += db.execute(
+                "select count(*) from (select 1 from ev where conv = ? and kind = 'message'"
+                " and id > ? and id <= ? limit ?)",
+                (conv, left, right, max_messages + 1),
+            ).fetchone()[0]
     db.execute("rollback")
-    hits = {
-        event_id
-        for event_id, row in texts.items()
-        if row and all(any(fold_whole(t) in fold_whole(f or "") for f in row) for t in terms)
-    }
+    candidates = rows["source"] + rows["scan"]
     return {
         "frontier_used": frontier,
-        "index_source_rows": source_rows,
-        "verify_rows": verify_rows,
-        "scan_rows": len(scanned),
-        "total_rows": source_rows + verify_rows + len(scanned),
-        "hits": len(hits),
+        "index_source_rows": rows["source"],
+        "verify_rows": rows["verify"],
+        "scan_rows": rows["scan"],
+        "total_rows": rows["source"] + rows["verify"] + rows["scan"],
+        "boundary_rows": rows["boundary"],
+        "distance_rows": rows["distance"],
+        "distance_rows_within_reservation": rows["distance"]
+        <= (max_messages + 1 if multi else 0) * candidates,
+        "merge_steps": steps,
+        "candidates": candidates,
+        "unit_u": unit,
+        "boundary_b": boundary,
+        "charged": charged,
+        "groups": groups,
     }
+
+
+def _recompute_states(make_db, terms, lo, hi, chunk) -> dict:
+    """First page, then backfill enqueue, then indexing; current vs frozen sources."""
+
+    db = make_db()
+    first = range_page(db, terms, 1, lo, hi, chunk=chunk)
+    w, frozen = first["charged"], first["frontier_used"]
+    out = {"first_page": first, "W": w}
+
+    def record(label):
+        current = range_page(db, terms, 1, lo, hi, chunk=chunk)
+        replay = range_page(db, terms, 1, lo, hi, frozen, chunk=chunk)
+        out[label] = {
+            "current_sources": current,
+            "frozen_frontier": replay,
+            "frozen_charged_le_W": replay["charged"] <= w,
+            "current_charged_le_W": current["charged"] <= w,
+            "frozen_groups_equal_first_page": replay["groups"] == first["groups"],
+            "current_groups_equal_first_page": current["groups"] == first["groups"],
+        }
+
+    while backfill_round(db, 1000):
+        pass
+    record("after_backfill_enqueue")
+    while indexer_round(db, 1000):
+        pass
+    record("after_indexing")
+    out["epoch_unchanged"] = db.execute("select epoch from state").fetchone()[0] == 0
+    return out
 
 
 def probe_relevance_recompute_cost() -> dict:
-    """Review counterexample: 20 messages all containing alpha and bravo."""
+    """Review counterexample plus a cross-message grouping case (M = 20, u = 23)."""
 
-    rows = [(i, 1, "message", "alpha bravo", None) for i in range(1, 21)]
-    db = toy_db(rows=rows)  # existing history: frontier 21, nothing queued
-    terms, lo, hi = ("alpha", "bravo"), 1, 21
-    first = range_plan_rows(db, terms, 1, lo, hi)
-    recorded_frontier = first["frontier_used"]
-    out = {"first_page": first, "W": first["total_rows"]}
-    backfill_round(db, 100)
-    out["after_backfill_enqueue"] = {
-        "current_sources": range_plan_rows(db, terms, 1, lo, hi),
-        "frozen_frontier": range_plan_rows(db, terms, 1, lo, hi, recorded_frontier),
+    terms = ("alpha", "bravo")
+    out = {
+        "same_message_20": _recompute_states(
+            lambda: toy_db(rows=[(i, 1, "message", "alpha bravo", None) for i in range(1, 21)]),
+            terms,
+            1,
+            21,
+            chunk=2000,
+        )
     }
-    while indexer_round(db, 100):
-        pass
-    out["after_indexing"] = {
-        "current_sources": range_plan_rows(db, terms, 1, lo, hi),
-        "frozen_frontier": range_plan_rows(db, terms, 1, lo, hi, recorded_frontier),
-    }
-    out["epoch_unchanged"] = db.execute("select epoch from state").fetchone()[0] == 0
-    # Mixed range: 10 old messages below the frontier, 10 new ones still queued on the
-    # first page (5 contain both words, 5 only alpha).
-    db = toy_db(rows=[(i, 1, "message", "alpha bravo", None) for i in range(1, 11)])
-    db.executemany(
-        "insert into ev values(?,?,?,?,?)",
-        [(i, 1, "message", "alpha bravo" if i % 2 else "alpha", None) for i in range(11, 21)],
-    )
-    mixed = {"first_page": range_plan_rows(db, terms, 1, lo, hi)}
-    recorded_frontier = mixed["first_page"]["frontier_used"]
-    while backfill_round(db, 100):
-        pass
-    while indexer_round(db, 100):
-        pass
-    mixed["after_backfill_and_indexing"] = {
-        "current_sources": range_plan_rows(db, terms, 1, lo, hi),
-        "frozen_frontier": range_plan_rows(db, terms, 1, lo, hi, recorded_frontier),
-    }
-    out["mixed_range"] = mixed
+
+    def mixed_db():
+        db = toy_db(rows=[(i, 1, "message", "alpha bravo", None) for i in range(1, 11)])
+        db.executemany(
+            "insert into ev values(?,?,?,?,?)",
+            [(i, 1, "message", "alpha bravo" if i % 2 else "alpha", None) for i in range(11, 21)],
+        )
+        return db
+
+    out["mixed_range"] = _recompute_states(mixed_db, terms, 1, 21, chunk=2000)
+
+    def cross_db():
+        # 60 messages: alpha every 7th, bravo every 11th, the rest filler; old half
+        # below the frontier, newer half still queued on the first page.
+        def text(i):
+            return "alpha 吉他" if i % 7 == 0 else "bravo 三千" if i % 11 == 0 else f"闲聊{i}"
+
+        db = toy_db(rows=[(i, 1, "message", text(i), None) for i in range(1, 31)])
+        db.executemany(
+            "insert into ev values(?,?,?,?,?)",
+            [(i, 1, "message", text(i), None) for i in range(31, 61)],
+        )
+        return db
+
+    for chunk in (2000, 3):
+        out[f"cross_message_chunk_{chunk}"] = _recompute_states(cross_db, terms, 1, 61, chunk=chunk)
     return out
 
 

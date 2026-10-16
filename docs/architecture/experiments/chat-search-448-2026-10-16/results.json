@@ -91,8 +91,8 @@
       "description": "current: built-in trigram over raw content",
       "index_mb": 15.63,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 0.71,
-      "incremental_insert_ms_per_message_with_commit": 0.426,
+      "bulk_build_seconds": 0.72,
+      "incremental_insert_ms_per_message_with_commit": 0.424,
       "reindex_batch_500_write_txn_ms_p50_max": null,
       "queries": 400,
       "queries_with_missed_matches": 181,
@@ -113,24 +113,24 @@
       "candidate_to_truth_ratio": 0.928,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          3.148,
-          3.202
+          3.271,
+          3.64
         ],
         "two_char": [
-          2.761,
-          2.898
+          2.831,
+          3.02
         ],
         "long_cjk": [
-          0.014,
-          0.02
+          0.016,
+          0.017
         ],
         "latin_inner": [
-          0.577,
-          0.593
+          0.593,
+          0.663
         ],
         "punct_mixed": [
-          0.68,
-          0.698
+          0.677,
+          0.694
         ]
       }
     },
@@ -138,11 +138,11 @@
       "description": "one contentless-delete table, normalized 1/2/3-gram tokens",
       "index_mb": 35.81,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 5.19,
-      "incremental_insert_ms_per_message_with_commit": 0.74,
+      "bulk_build_seconds": 5.22,
+      "incremental_insert_ms_per_message_with_commit": 0.758,
       "reindex_batch_500_write_txn_ms_p50_max": [
-        3.97,
-        105.07
+        4.05,
+        96.3
       ],
       "queries": 400,
       "queries_with_missed_matches": 0,
@@ -150,23 +150,23 @@
       "candidate_to_truth_ratio": 1.002,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          11.378,
-          11.617
+          11.356,
+          11.428
         ],
         "two_char": [
-          0.268,
-          0.273
+          0.267,
+          0.276
         ],
         "long_cjk": [
           0.02,
-          0.021
+          0.026
         ],
         "latin_inner": [
-          0.546,
-          0.59
+          0.55,
+          0.565
         ],
         "punct_mixed": [
-          1.616,
+          1.613,
           1.631
         ]
       }
@@ -175,11 +175,11 @@
       "description": "contentless-delete trigram over normalized text + 1/2-gram table",
       "index_mb": 36.33,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 6.61,
-      "incremental_insert_ms_per_message_with_commit": 1.062,
+      "bulk_build_seconds": 6.78,
+      "incremental_insert_ms_per_message_with_commit": 1.066,
       "reindex_batch_500_write_txn_ms_p50_max": [
-        4.99,
-        218.12
+        4.98,
+        222.25
       ],
       "queries": 400,
       "queries_with_missed_matches": 0,
@@ -187,8 +187,8 @@
       "candidate_to_truth_ratio": 1.0,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          11.434,
-          23.284
+          11.373,
+          11.608
         ],
         "two_char": [
           0.268,
@@ -199,12 +199,12 @@
           0.018
         ],
         "latin_inner": [
-          0.601,
-          0.608
+          0.583,
+          0.594
         ],
         "punct_mixed": [
-          1.693,
-          1.716
+          1.709,
+          1.758
         ]
       }
     },
@@ -212,8 +212,8 @@
       "description": "normalized 2/3-gram tokens, 1-char via bigram prefix (end padded)",
       "index_mb": 29.7,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 4.77,
-      "incremental_insert_ms_per_message_with_commit": 0.544,
+      "bulk_build_seconds": 5.02,
+      "incremental_insert_ms_per_message_with_commit": 0.556,
       "reindex_batch_500_write_txn_ms_p50_max": null,
       "queries": 400,
       "queries_with_missed_matches": 0,
@@ -221,24 +221,24 @@
       "candidate_to_truth_ratio": 1.002,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          14.483,
-          14.677
+          14.57,
+          14.725
         ],
         "two_char": [
-          0.266,
-          0.271
+          0.27,
+          0.285
         ],
         "long_cjk": [
-          0.027,
-          0.028
+          0.028,
+          0.031
         ],
         "latin_inner": [
-          0.559,
-          0.565
+          0.563,
+          0.578
         ],
         "punct_mixed": [
-          1.618,
-          1.627
+          1.628,
+          1.658
         ]
       }
     },
@@ -246,8 +246,8 @@
       "description": "rejected design of the first draft: CJK 1/2-gram + alnum words",
       "index_mb": 17.18,
       "base_table_mb": 12.97,
-      "bulk_build_seconds": 3.69,
-      "incremental_insert_ms_per_message_with_commit": 0.454,
+      "bulk_build_seconds": 3.67,
+      "incremental_insert_ms_per_message_with_commit": 0.46,
       "reindex_batch_500_write_txn_ms_p50_max": null,
       "queries": 400,
       "queries_with_missed_matches": 61,
@@ -268,24 +268,24 @@
       "candidate_to_truth_ratio": 1.215,
       "latency_ms_p50_p95_conv3": {
         "one_char_common": [
-          11.374,
-          11.53
+          11.358,
+          11.61
         ],
         "two_char": [
-          0.597,
-          0.605
+          0.608,
+          0.644
         ],
         "long_cjk": [
-          0.186,
-          0.191
+          0.185,
+          0.197
         ],
         "latin_inner": [
           0.018,
           0.019
         ],
         "punct_mixed": [
-          1.439,
-          1.462
+          1.441,
+          1.46
         ]
       }
     }
@@ -309,10 +309,10 @@
   },
   "enqueue_write_lock": {
     "rows": 1000000,
-    "single_insert_select_write_lock_seconds": 0.119,
+    "single_insert_select_write_lock_seconds": 0.12,
     "keyset_batches": 201,
-    "batch_5000_write_lock_ms_p50": 0.6,
-    "batch_5000_write_lock_ms_max": 2.47
+    "batch_5000_write_lock_ms_p50": 0.61,
+    "batch_5000_write_lock_ms_max": 2.52
   },
   "bm25": {
     "order_by_rank_returns_most_relevant_first": [
@@ -826,52 +826,507 @@
     "after_floor_change": 3
   },
   "relevance_recompute_cost": {
-    "first_page": {
-      "frontier_used": 21,
-      "index_source_rows": 0,
-      "verify_rows": 0,
-      "scan_rows": 20,
-      "total_rows": 20,
-      "hits": 20
-    },
-    "W": 20,
-    "after_backfill_enqueue": {
-      "current_sources": {
-        "frontier_used": 1,
-        "index_source_rows": 40,
-        "verify_rows": 20,
-        "scan_rows": 0,
-        "total_rows": 60,
-        "hits": 20
-      },
-      "frozen_frontier": {
+    "same_message_20": {
+      "first_page": {
         "frontier_used": 21,
         "index_source_rows": 0,
         "verify_rows": 0,
         "scan_rows": 20,
         "total_rows": 20,
-        "hits": 20
-      }
-    },
-    "after_indexing": {
-      "current_sources": {
-        "frontier_used": 1,
-        "index_source_rows": 40,
-        "verify_rows": 20,
-        "scan_rows": 0,
-        "total_rows": 60,
-        "hits": 20
+        "boundary_rows": 20,
+        "distance_rows": 0,
+        "distance_rows_within_reservation": true,
+        "merge_steps": 1,
+        "candidates": 20,
+        "unit_u": 23,
+        "boundary_b": 21,
+        "charged": 481,
+        "groups": [
+          [
+            1,
+            1
+          ],
+          [
+            2,
+            2
+          ],
+          [
+            3,
+            3
+          ],
+          [
+            4,
+            4
+          ],
+          [
+            5,
+            5
+          ],
+          [
+            6,
+            6
+          ],
+          [
+            7,
+            7
+          ],
+          [
+            8,
+            8
+          ],
+          [
+            9,
+            9
+          ],
+          [
+            10,
+            10
+          ],
+          [
+            11,
+            11
+          ],
+          [
+            12,
+            12
+          ],
+          [
+            13,
+            13
+          ],
+          [
+            14,
+            14
+          ],
+          [
+            15,
+            15
+          ],
+          [
+            16,
+            16
+          ],
+          [
+            17,
+            17
+          ],
+          [
+            18,
+            18
+          ],
+          [
+            19,
+            19
+          ],
+          [
+            20,
+            20
+          ]
+        ]
       },
-      "frozen_frontier": {
-        "frontier_used": 21,
-        "index_source_rows": 0,
-        "verify_rows": 0,
-        "scan_rows": 20,
-        "total_rows": 20,
-        "hits": 20
-      }
+      "W": 481,
+      "after_backfill_enqueue": {
+        "current_sources": {
+          "frontier_used": 1,
+          "index_source_rows": 40,
+          "verify_rows": 20,
+          "scan_rows": 0,
+          "total_rows": 60,
+          "boundary_rows": 20,
+          "distance_rows": 0,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 40,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 941,
+          "groups": [
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              4,
+              4
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              6,
+              6
+            ],
+            [
+              7,
+              7
+            ],
+            [
+              8,
+              8
+            ],
+            [
+              9,
+              9
+            ],
+            [
+              10,
+              10
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              12,
+              12
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              14,
+              14
+            ],
+            [
+              15,
+              15
+            ],
+            [
+              16,
+              16
+            ],
+            [
+              17,
+              17
+            ],
+            [
+              18,
+              18
+            ],
+            [
+              19,
+              19
+            ],
+            [
+              20,
+              20
+            ]
+          ]
+        },
+        "frozen_frontier": {
+          "frontier_used": 21,
+          "index_source_rows": 0,
+          "verify_rows": 0,
+          "scan_rows": 20,
+          "total_rows": 20,
+          "boundary_rows": 20,
+          "distance_rows": 0,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 20,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 481,
+          "groups": [
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              4,
+              4
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              6,
+              6
+            ],
+            [
+              7,
+              7
+            ],
+            [
+              8,
+              8
+            ],
+            [
+              9,
+              9
+            ],
+            [
+              10,
+              10
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              12,
+              12
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              14,
+              14
+            ],
+            [
+              15,
+              15
+            ],
+            [
+              16,
+              16
+            ],
+            [
+              17,
+              17
+            ],
+            [
+              18,
+              18
+            ],
+            [
+              19,
+              19
+            ],
+            [
+              20,
+              20
+            ]
+          ]
+        },
+        "frozen_charged_le_W": true,
+        "current_charged_le_W": false,
+        "frozen_groups_equal_first_page": true,
+        "current_groups_equal_first_page": true
+      },
+      "after_indexing": {
+        "current_sources": {
+          "frontier_used": 1,
+          "index_source_rows": 40,
+          "verify_rows": 20,
+          "scan_rows": 0,
+          "total_rows": 60,
+          "boundary_rows": 20,
+          "distance_rows": 0,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 40,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 941,
+          "groups": [
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              4,
+              4
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              6,
+              6
+            ],
+            [
+              7,
+              7
+            ],
+            [
+              8,
+              8
+            ],
+            [
+              9,
+              9
+            ],
+            [
+              10,
+              10
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              12,
+              12
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              14,
+              14
+            ],
+            [
+              15,
+              15
+            ],
+            [
+              16,
+              16
+            ],
+            [
+              17,
+              17
+            ],
+            [
+              18,
+              18
+            ],
+            [
+              19,
+              19
+            ],
+            [
+              20,
+              20
+            ]
+          ]
+        },
+        "frozen_frontier": {
+          "frontier_used": 21,
+          "index_source_rows": 0,
+          "verify_rows": 0,
+          "scan_rows": 20,
+          "total_rows": 20,
+          "boundary_rows": 20,
+          "distance_rows": 0,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 20,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 481,
+          "groups": [
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              4,
+              4
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              6,
+              6
+            ],
+            [
+              7,
+              7
+            ],
+            [
+              8,
+              8
+            ],
+            [
+              9,
+              9
+            ],
+            [
+              10,
+              10
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              12,
+              12
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              14,
+              14
+            ],
+            [
+              15,
+              15
+            ],
+            [
+              16,
+              16
+            ],
+            [
+              17,
+              17
+            ],
+            [
+              18,
+              18
+            ],
+            [
+              19,
+              19
+            ],
+            [
+              20,
+              20
+            ]
+          ]
+        },
+        "frozen_charged_le_W": true,
+        "current_charged_le_W": false,
+        "frozen_groups_equal_first_page": true,
+        "current_groups_equal_first_page": true
+      },
+      "epoch_unchanged": true
     },
-    "epoch_unchanged": true,
     "mixed_range": {
       "first_page": {
         "frontier_used": 11,
@@ -879,16 +1334,315 @@
         "verify_rows": 10,
         "scan_rows": 10,
         "total_rows": 40,
-        "hits": 15
+        "boundary_rows": 20,
+        "distance_rows": 0,
+        "distance_rows_within_reservation": true,
+        "merge_steps": 1,
+        "candidates": 30,
+        "unit_u": 23,
+        "boundary_b": 21,
+        "charged": 711,
+        "groups": [
+          [
+            1,
+            1
+          ],
+          [
+            2,
+            2
+          ],
+          [
+            3,
+            3
+          ],
+          [
+            4,
+            4
+          ],
+          [
+            5,
+            5
+          ],
+          [
+            6,
+            6
+          ],
+          [
+            7,
+            7
+          ],
+          [
+            8,
+            8
+          ],
+          [
+            9,
+            9
+          ],
+          [
+            10,
+            10
+          ],
+          [
+            11,
+            11
+          ],
+          [
+            13,
+            13
+          ],
+          [
+            15,
+            15
+          ],
+          [
+            17,
+            17
+          ],
+          [
+            19,
+            19
+          ]
+        ]
       },
-      "after_backfill_and_indexing": {
+      "W": 711,
+      "after_backfill_enqueue": {
+        "current_sources": {
+          "frontier_used": 1,
+          "index_source_rows": 40,
+          "verify_rows": 20,
+          "scan_rows": 0,
+          "total_rows": 60,
+          "boundary_rows": 20,
+          "distance_rows": 0,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 40,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 941,
+          "groups": [
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              4,
+              4
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              6,
+              6
+            ],
+            [
+              7,
+              7
+            ],
+            [
+              8,
+              8
+            ],
+            [
+              9,
+              9
+            ],
+            [
+              10,
+              10
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              15,
+              15
+            ],
+            [
+              17,
+              17
+            ],
+            [
+              19,
+              19
+            ]
+          ]
+        },
+        "frozen_frontier": {
+          "frontier_used": 11,
+          "index_source_rows": 20,
+          "verify_rows": 10,
+          "scan_rows": 10,
+          "total_rows": 40,
+          "boundary_rows": 20,
+          "distance_rows": 0,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 30,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 711,
+          "groups": [
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              4,
+              4
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              6,
+              6
+            ],
+            [
+              7,
+              7
+            ],
+            [
+              8,
+              8
+            ],
+            [
+              9,
+              9
+            ],
+            [
+              10,
+              10
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              15,
+              15
+            ],
+            [
+              17,
+              17
+            ],
+            [
+              19,
+              19
+            ]
+          ]
+        },
+        "frozen_charged_le_W": true,
+        "current_charged_le_W": false,
+        "frozen_groups_equal_first_page": true,
+        "current_groups_equal_first_page": true
+      },
+      "after_indexing": {
         "current_sources": {
           "frontier_used": 1,
           "index_source_rows": 35,
           "verify_rows": 20,
           "scan_rows": 0,
           "total_rows": 55,
-          "hits": 15
+          "boundary_rows": 20,
+          "distance_rows": 0,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 35,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 826,
+          "groups": [
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              4,
+              4
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              6,
+              6
+            ],
+            [
+              7,
+              7
+            ],
+            [
+              8,
+              8
+            ],
+            [
+              9,
+              9
+            ],
+            [
+              10,
+              10
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              15,
+              15
+            ],
+            [
+              17,
+              17
+            ],
+            [
+              19,
+              19
+            ]
+          ]
         },
         "frozen_frontier": {
           "frontier_used": 11,
@@ -896,9 +1650,685 @@
           "verify_rows": 10,
           "scan_rows": 10,
           "total_rows": 35,
-          "hits": 15
-        }
-      }
+          "boundary_rows": 20,
+          "distance_rows": 0,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 25,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 596,
+          "groups": [
+            [
+              1,
+              1
+            ],
+            [
+              2,
+              2
+            ],
+            [
+              3,
+              3
+            ],
+            [
+              4,
+              4
+            ],
+            [
+              5,
+              5
+            ],
+            [
+              6,
+              6
+            ],
+            [
+              7,
+              7
+            ],
+            [
+              8,
+              8
+            ],
+            [
+              9,
+              9
+            ],
+            [
+              10,
+              10
+            ],
+            [
+              11,
+              11
+            ],
+            [
+              13,
+              13
+            ],
+            [
+              15,
+              15
+            ],
+            [
+              17,
+              17
+            ],
+            [
+              19,
+              19
+            ]
+          ]
+        },
+        "frozen_charged_le_W": true,
+        "current_charged_le_W": false,
+        "frozen_groups_equal_first_page": true,
+        "current_groups_equal_first_page": true
+      },
+      "epoch_unchanged": true
+    },
+    "cross_message_chunk_2000": {
+      "first_page": {
+        "frontier_used": 31,
+        "index_source_rows": 60,
+        "verify_rows": 30,
+        "scan_rows": 30,
+        "total_rows": 120,
+        "boundary_rows": 21,
+        "distance_rows": 35,
+        "distance_rows_within_reservation": true,
+        "merge_steps": 1,
+        "candidates": 90,
+        "unit_u": 23,
+        "boundary_b": 21,
+        "charged": 2091,
+        "groups": [
+          [
+            7,
+            11
+          ],
+          [
+            11,
+            14
+          ],
+          [
+            21,
+            22
+          ],
+          [
+            22,
+            28
+          ],
+          [
+            28,
+            33
+          ],
+          [
+            33,
+            35
+          ],
+          [
+            42,
+            44
+          ],
+          [
+            44,
+            49
+          ],
+          [
+            49,
+            55
+          ],
+          [
+            55,
+            56
+          ]
+        ]
+      },
+      "W": 2091,
+      "after_backfill_enqueue": {
+        "current_sources": {
+          "frontier_used": 1,
+          "index_source_rows": 120,
+          "verify_rows": 60,
+          "scan_rows": 0,
+          "total_rows": 180,
+          "boundary_rows": 21,
+          "distance_rows": 35,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 120,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 2781,
+          "groups": [
+            [
+              7,
+              11
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              21,
+              22
+            ],
+            [
+              22,
+              28
+            ],
+            [
+              28,
+              33
+            ],
+            [
+              33,
+              35
+            ],
+            [
+              42,
+              44
+            ],
+            [
+              44,
+              49
+            ],
+            [
+              49,
+              55
+            ],
+            [
+              55,
+              56
+            ]
+          ]
+        },
+        "frozen_frontier": {
+          "frontier_used": 31,
+          "index_source_rows": 60,
+          "verify_rows": 30,
+          "scan_rows": 30,
+          "total_rows": 120,
+          "boundary_rows": 21,
+          "distance_rows": 35,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 90,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 2091,
+          "groups": [
+            [
+              7,
+              11
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              21,
+              22
+            ],
+            [
+              22,
+              28
+            ],
+            [
+              28,
+              33
+            ],
+            [
+              33,
+              35
+            ],
+            [
+              42,
+              44
+            ],
+            [
+              44,
+              49
+            ],
+            [
+              49,
+              55
+            ],
+            [
+              55,
+              56
+            ]
+          ]
+        },
+        "frozen_charged_le_W": true,
+        "current_charged_le_W": false,
+        "frozen_groups_equal_first_page": true,
+        "current_groups_equal_first_page": true
+      },
+      "after_indexing": {
+        "current_sources": {
+          "frontier_used": 1,
+          "index_source_rows": 13,
+          "verify_rows": 13,
+          "scan_rows": 0,
+          "total_rows": 26,
+          "boundary_rows": 21,
+          "distance_rows": 35,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 13,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 320,
+          "groups": [
+            [
+              7,
+              11
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              21,
+              22
+            ],
+            [
+              22,
+              28
+            ],
+            [
+              28,
+              33
+            ],
+            [
+              33,
+              35
+            ],
+            [
+              42,
+              44
+            ],
+            [
+              44,
+              49
+            ],
+            [
+              49,
+              55
+            ],
+            [
+              55,
+              56
+            ]
+          ]
+        },
+        "frozen_frontier": {
+          "frontier_used": 31,
+          "index_source_rows": 7,
+          "verify_rows": 7,
+          "scan_rows": 30,
+          "total_rows": 44,
+          "boundary_rows": 21,
+          "distance_rows": 35,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 1,
+          "candidates": 37,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 872,
+          "groups": [
+            [
+              7,
+              11
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              21,
+              22
+            ],
+            [
+              22,
+              28
+            ],
+            [
+              28,
+              33
+            ],
+            [
+              33,
+              35
+            ],
+            [
+              42,
+              44
+            ],
+            [
+              44,
+              49
+            ],
+            [
+              49,
+              55
+            ],
+            [
+              55,
+              56
+            ]
+          ]
+        },
+        "frozen_charged_le_W": true,
+        "current_charged_le_W": true,
+        "frozen_groups_equal_first_page": true,
+        "current_groups_equal_first_page": true
+      },
+      "epoch_unchanged": true
+    },
+    "cross_message_chunk_3": {
+      "first_page": {
+        "frontier_used": 31,
+        "index_source_rows": 60,
+        "verify_rows": 30,
+        "scan_rows": 30,
+        "total_rows": 120,
+        "boundary_rows": 168,
+        "distance_rows": 35,
+        "distance_rows_within_reservation": true,
+        "merge_steps": 11,
+        "candidates": 90,
+        "unit_u": 23,
+        "boundary_b": 21,
+        "charged": 2301,
+        "groups": [
+          [
+            7,
+            11
+          ],
+          [
+            11,
+            14
+          ],
+          [
+            21,
+            22
+          ],
+          [
+            22,
+            28
+          ],
+          [
+            28,
+            33
+          ],
+          [
+            33,
+            35
+          ],
+          [
+            42,
+            44
+          ],
+          [
+            44,
+            49
+          ],
+          [
+            49,
+            55
+          ],
+          [
+            55,
+            56
+          ]
+        ]
+      },
+      "W": 2301,
+      "after_backfill_enqueue": {
+        "current_sources": {
+          "frontier_used": 1,
+          "index_source_rows": 120,
+          "verify_rows": 60,
+          "scan_rows": 0,
+          "total_rows": 180,
+          "boundary_rows": 378,
+          "distance_rows": 35,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 21,
+          "candidates": 120,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 3201,
+          "groups": [
+            [
+              7,
+              11
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              21,
+              22
+            ],
+            [
+              22,
+              28
+            ],
+            [
+              28,
+              33
+            ],
+            [
+              33,
+              35
+            ],
+            [
+              42,
+              44
+            ],
+            [
+              44,
+              49
+            ],
+            [
+              49,
+              55
+            ],
+            [
+              55,
+              56
+            ]
+          ]
+        },
+        "frozen_frontier": {
+          "frontier_used": 31,
+          "index_source_rows": 60,
+          "verify_rows": 30,
+          "scan_rows": 30,
+          "total_rows": 120,
+          "boundary_rows": 168,
+          "distance_rows": 35,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 11,
+          "candidates": 90,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 2301,
+          "groups": [
+            [
+              7,
+              11
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              21,
+              22
+            ],
+            [
+              22,
+              28
+            ],
+            [
+              28,
+              33
+            ],
+            [
+              33,
+              35
+            ],
+            [
+              42,
+              44
+            ],
+            [
+              44,
+              49
+            ],
+            [
+              49,
+              55
+            ],
+            [
+              55,
+              56
+            ]
+          ]
+        },
+        "frozen_charged_le_W": true,
+        "current_charged_le_W": false,
+        "frozen_groups_equal_first_page": true,
+        "current_groups_equal_first_page": true
+      },
+      "after_indexing": {
+        "current_sources": {
+          "frontier_used": 1,
+          "index_source_rows": 13,
+          "verify_rows": 13,
+          "scan_rows": 0,
+          "total_rows": 26,
+          "boundary_rows": 61,
+          "distance_rows": 35,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 3,
+          "candidates": 13,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 362,
+          "groups": [
+            [
+              7,
+              11
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              21,
+              22
+            ],
+            [
+              22,
+              28
+            ],
+            [
+              28,
+              33
+            ],
+            [
+              33,
+              35
+            ],
+            [
+              42,
+              44
+            ],
+            [
+              44,
+              49
+            ],
+            [
+              49,
+              55
+            ],
+            [
+              55,
+              56
+            ]
+          ]
+        },
+        "frozen_frontier": {
+          "frontier_used": 31,
+          "index_source_rows": 7,
+          "verify_rows": 7,
+          "scan_rows": 30,
+          "total_rows": 44,
+          "boundary_rows": 229,
+          "distance_rows": 35,
+          "distance_rows_within_reservation": true,
+          "merge_steps": 11,
+          "candidates": 37,
+          "unit_u": 23,
+          "boundary_b": 21,
+          "charged": 1082,
+          "groups": [
+            [
+              7,
+              11
+            ],
+            [
+              11,
+              14
+            ],
+            [
+              21,
+              22
+            ],
+            [
+              22,
+              28
+            ],
+            [
+              28,
+              33
+            ],
+            [
+              33,
+              35
+            ],
+            [
+              42,
+              44
+            ],
+            [
+              44,
+              49
+            ],
+            [
+              49,
+              55
+            ],
+            [
+              55,
+              56
+            ]
+          ]
+        },
+        "frozen_charged_le_W": true,
+        "current_charged_le_W": true,
+        "frozen_groups_equal_first_page": true,
+        "current_groups_equal_first_page": true
+      },
+      "epoch_unchanged": true
     }
   },
   "plugin": {
