@@ -13,6 +13,7 @@ from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
 from qq_ai_bot.web.bridge_state import BridgeState
 from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
 from qq_ai_bot.web.native_bridge import NativeSearchBridge
+from qq_ai_bot.web.page_extractor import DirectPageExtractor
 from qq_ai_bot.web.tavily import TavilyWebSearchProvider
 
 
@@ -121,6 +122,9 @@ async def test_anthropic_native_search_keeps_wire_evidence_without_local_respons
         ),
         credential="synthetic",
         state=BridgeState(tmp_path / "search.sqlite3"),
+        extractor=DirectPageExtractor(
+            state=BridgeState(tmp_path / "search.sqlite3"), timeout_seconds=2
+        ),
         provider=AnthropicMessagesProvider(
             base_url="https://wire.invalid/",
             api_key="synthetic",
@@ -172,6 +176,9 @@ async def test_gemini_keeps_original_grounding_and_full_summary(tmp_path):
         credential="synthetic",
         provider=provider,
         state=BridgeState(tmp_path / "search.sqlite3"),
+        extractor=DirectPageExtractor(
+            state=BridgeState(tmp_path / "search.sqlite3"), timeout_seconds=1
+        ),
     )
     try:
         result = await bridge.search(WebSearchRequest("q" * 700, max_results=7))
@@ -248,8 +255,6 @@ async def test_main_history_search_archives_original_requested_page(
 
 @pytest.mark.parametrize("kind", ["search", "extract"])
 async def test_search_bridge_independent_requests_do_not_queue(tmp_path, monkeypatch, kind):
-    from qq_ai_bot.web.page_extractor import DirectPageExtractor
-
     extractor = DirectPageExtractor(
         state=BridgeState(tmp_path / "cache.sqlite3"), timeout_seconds=1
     )

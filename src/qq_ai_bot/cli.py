@@ -22,6 +22,7 @@ from qq_ai_bot.deployment_setup import add_setup_parser, run_setup_command
 from qq_ai_bot.domain.messages import ChatMessage, ChatTool
 from qq_ai_bot.gateway.compatibility import provider_doctor_payload
 from qq_ai_bot.gateway.providers import builtin_provider_catalog
+from qq_ai_bot.http_environment import load_http_environment
 from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
 from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
 from qq_ai_bot.memory.repository import MemoryJobRepository
@@ -580,6 +581,7 @@ def main() -> None:
     if args.command == "gateway":
         print(json.dumps(provider_doctor_payload(str(args.provider)), ensure_ascii=False, indent=2))
         return
+    load_http_environment()
     settings = Settings()
     if args.command == "init-db":
         _init_database(settings)
