@@ -96,8 +96,8 @@ async def test_forget_reprepares_actual_family_when_merge_commits_after_preparat
     original = people.prepare_person_forget
     families = []
 
-    async def prepare(person_id, *, session, marker="[已删除用户]"):
-        result = await original(person_id, session=session, marker=marker)
+    async def prepare(person_id, *, session, marker="[已删除用户]", **kwargs):
+        result = await original(person_id, session=session, marker=marker, **kwargs)
         families.append(set(await person_family_ids(session, person_id)))
         if len(families) == 1:
             prepared.set()

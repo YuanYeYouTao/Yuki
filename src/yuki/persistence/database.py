@@ -23,6 +23,7 @@ from yuki.persistence.metadata import Base
 if TYPE_CHECKING:
     from yuki.admin.models import WorkStorageRuntimeConfig
     from yuki.persistence.sqlite_diagnostics import SQLiteDiagnostics
+    from yuki.sandbox.client import SandboxClient
 
 _SQLITE_BUSY_TIMEOUT_MS = 5_000
 
@@ -33,6 +34,7 @@ class Database:
     def __init__(self, url: str) -> None:
         self.url = url
         self.subagents_enabled = False
+        self.sandbox_client: SandboxClient | None = None
         self.work_result_store: Any = None
         self.protocol_storage_policy: Callable[[], Awaitable[WorkStorageRuntimeConfig]] | None = (
             None
