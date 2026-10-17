@@ -634,7 +634,9 @@ class ApplicationContainer:
             platform="acp",
         )
         client_gateways = {"app": self.app_gateway, "acp": self.acp_gateway}
-        client_prompts = ClientPrompts(self.client_api.identity, client_gateways)
+        client_prompts = ClientPrompts(
+            self.client_api.identity, client_gateways, self.runtime.bindings
+        )
         self.telegram_gateway = None
         if settings.telegram_bot_token.get_secret_value():
             from qq_ai_bot.gateway.providers.telegram import TelegramClient

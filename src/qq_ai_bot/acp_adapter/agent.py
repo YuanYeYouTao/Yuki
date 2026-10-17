@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -194,6 +195,50 @@ class YukiAgent:
                 return
             after = page["next_after"]
 
+    async def _event_update(
+        self, client: PersonalClient, session_id: str, event: dict[str, Any]
+    ) -> None:
+        blocks: list[TextContentBlock | ResourceContentBlock] = []
+        if event["text"]:
+            blocks.append(TextContentBlock(type="text", text=event["text"]))
+        for attachment in event.get("attachments", ()):
+            artifact, version = attachment.get("artifact_id"), attachment.get("version")
+            if artifact is not None and version is not None:
+                uri = httpx.URL(
+                    client.endpoint(f"artifacts/{quote(artifact, safe='')}"),
+                    params={"version": version},
+                ).copy_with(username=None, password=None)
+                blocks.append(
+                    ResourceContentBlock(
+                        type="resource_link",
+                        uri=str(uri),
+                        name=attachment.get("filename") or artifact,
+                        mime_type=attachment.get("mime_type"),
+                        size=attachment.get("size"),
+                        description="Download with the original Yuki device credentials.",
+                        field_meta={
+                            "yuki.conversationId": session_id,
+                            "yuki.eventId": event["event_id"],
+                        },
+                    )
+                )
+            else:
+                # The media ID is real; this API has no independent download route for it.
+                blocks.append(
+                    TextContentBlock(
+                        type="text",
+                        text="[Attachment reference; download unavailable] "
+                        + json.dumps(attachment, ensure_ascii=False),
+                    )
+                )
+        for content in blocks:
+            chunk = (
+                UserMessageChunk(session_update="user_message_chunk", content=content)
+                if event["direction"] == "inbound"
+                else AgentMessageChunk(session_update="agent_message_chunk", content=content)
+            )
+            await self._conn.session_update(session_id=session_id, update=chunk)
+
     async def load_session(
         self,
         cwd: str,
@@ -206,16 +251,7 @@ class YukiAgent:
         client = await self._session(session_id)
         try:
             async for event in self._events(client, session_id):
-                content = TextContentBlock(type="text", text=event["text"])
-                chunk = (
-                    UserMessageChunk(session_update="user_message_chunk", content=content)
-                    if event["direction"] == "inbound"
-                    else AgentMessageChunk(session_update="agent_message_chunk", content=content)
-                )
-                await self._conn.session_update(
-                    session_id=session_id,
-                    update=chunk,
-                )
+                await self._event_update(client, session_id, event)
         except (ClientProblem, httpx.HTTPError) as exc:
             raise _problem(exc) from None
         return LoadSessionResponse()
@@ -262,13 +298,7 @@ class YukiAgent:
             wanted = set(result["result_event_ids"])
             async for event in self._events(client, session_id, result["event_id"]):
                 if event["direction"] == "outbound" and event["event_id"] in wanted - sent:
-                    await self._conn.session_update(
-                        session_id=session_id,
-                        update=AgentMessageChunk(
-                            session_update="agent_message_chunk",
-                            content=TextContentBlock(type="text", text=event["text"]),
-                        ),
-                    )
+                    await self._event_update(client, session_id, event)
                     sent.add(event["event_id"])
             turn, work = result["turn"], result["work"]
             if turn["state"] == "unknown":
@@ -277,8 +307,11 @@ class YukiAgent:
                 )
             if turn["state"] == "ended" and (
                 work is None
-                or work["state"]
-                in {"completed", "failed", "cancelled", "waiting_user", "suspended"}
+                or (
+                    not work.get("active", False)
+                    and work["state"]
+                    in {"completed", "failed", "cancelled", "waiting_user", "suspended"}
+                )
             ):
                 cancelled = (
                     active.cancelled

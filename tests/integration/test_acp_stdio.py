@@ -5,6 +5,7 @@ import os
 import socket
 import sys
 from contextlib import asynccontextmanager
+from hashlib import sha256
 from typing import cast
 from uuid import uuid4
 
@@ -12,13 +13,22 @@ import httpx
 import uvicorn
 from acp import Client, spawn_agent_process
 from acp.schema import ClientCapabilities, FileSystemCapabilities, ResourceContentBlock
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from tests.unit.test_acp_adapter import Backend, Peer, text
 
 
 @asynccontextmanager
 async def backend_http(backend):
     app = FastAPI()
+
+    @app.get("/client/v1/artifacts/{identity}")
+    async def artifact(identity: str, version: str, request: Request):
+        if request.headers.get("authorization") != "Bearer test-device-token":
+            return Response(status_code=401)
+        content = backend.artifacts.get(identity)
+        if content is None or sha256(content).hexdigest() != version:
+            return Response(status_code=404)
+        return Response(content, media_type="application/octet-stream")
 
     @app.api_route("/{path:path}", methods=["GET", "POST"])
     async def dispatch(request: Request):
@@ -146,3 +156,50 @@ async def test_official_stdio_cancel_is_exact_and_disconnect_is_not_cancel(tmp_p
         await asyncio.gather(disconnected, return_exceptions=True)
         assert backend.requests[session, next_id]["turn"]["state"] == "running"
         assert backend.cancels == [(session, identity)]
+
+
+async def test_official_stdio_attachment_only_live_and_load_retain_downloadable_artifact(tmp_path):
+    backend, peer = Backend(), Peer()
+    backend.auto_end = False
+    session, identity, artifact = backend.session(), str(uuid4()), str(uuid4())
+    content = b"real immutable file bytes\n"
+    version = sha256(content).hexdigest()
+    backend.artifacts = {artifact: content}
+    async with backend_http(backend) as url:
+        async with process(peer, url, tmp_path) as (connection, _):
+            await connection.initialize(protocol_version=1)
+            pending = asyncio.create_task(
+                connection.prompt(
+                    session_id=session,
+                    prompt=[text("deliver a file")],
+                    **{"yuki.requestId": identity},
+                )
+            )
+            await asyncio.wait_for(backend.received.wait(), 10)
+            output = backend.event(session, "", "outbound")
+            backend.events[session][-1]["attachments"] = [
+                {
+                    "kind": "file",
+                    "artifact_id": artifact,
+                    "version": version,
+                    "filename": "delivered.txt",
+                    "mime_type": "text/plain",
+                    "size": len(content),
+                }
+            ]
+            backend.requests[session, identity]["result_event_ids"] = [output]
+            backend.finish(session, identity)
+            assert (await asyncio.wait_for(pending, 5)).stop_reason == "end_turn"
+            resource = peer.updates[0][1].content
+            assert isinstance(resource, ResourceContentBlock)
+            assert resource.name == "delivered.txt" and resource.size == len(content)
+            assert "test-device-token" not in resource.model_dump_json()
+            async with httpx.AsyncClient(trust_env=False) as client:
+                assert (await client.get(resource.uri)).status_code == 401
+                downloaded = await client.get(
+                    resource.uri, headers={"Authorization": "Bearer test-device-token"}
+                )
+                assert downloaded.status_code == 200 and downloaded.content == content
+            peer.updates.clear()
+            await connection.load_session(cwd=str(tmp_path), session_id=session, mcp_servers=[])
+            assert peer.updates[-1][1].content == resource

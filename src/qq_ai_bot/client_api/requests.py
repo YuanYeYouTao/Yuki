@@ -194,41 +194,38 @@ class ClientRequests:
                         .exists(),
                     )
                 )
-            result_ids = list(
-                await session.scalars(
-                    select(ChatEventModel.id)
-                    .join(SocialOperationModel, SocialOperationModel.event_id == ChatEventModel.id)
-                    .join(
-                        CanonicalConversationModel,
-                        CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
-                    )
-                    .where(
-                        SocialOperationModel.source_conversation_id == principal.conversation_id,
-                        or_(*sources),
-                        SocialOperationModel.status == "succeeded",
-                        ChatEventModel.direction == "outbound",
-                        ChatEventModel.suppression_status == "keeper",
-                        CanonicalConversationModel.kind == "private",
-                        person_family_condition(
-                            CanonicalConversationModel.person_id, principal.person_id
-                        ),
-                        *(
-                            (ChatEventModel.canonical_conversation_id == principal.conversation_id,)
-                            if principal.platform == "acp"
-                            else ()
-                        ),
-                    )
-                    .order_by(ChatEventModel.id)
+            result_query = (
+                select(ChatEventModel.id)
+                .join(SocialOperationModel, SocialOperationModel.event_id == ChatEventModel.id)
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
                 )
+                .where(
+                    SocialOperationModel.source_conversation_id == principal.conversation_id,
+                    or_(*sources),
+                    SocialOperationModel.status == "succeeded",
+                    ChatEventModel.direction == "outbound",
+                    ChatEventModel.suppression_status == "keeper",
+                    CanonicalConversationModel.kind == "private",
+                    person_family_condition(
+                        CanonicalConversationModel.person_id, principal.person_id
+                    ),
+                    *(
+                        (ChatEventModel.canonical_conversation_id == principal.conversation_id,)
+                        if principal.platform == "acp"
+                        else ()
+                    ),
+                )
+                .order_by(ChatEventModel.id)
             )
             from qq_ai_bot.client_api.prompts import message_payload
 
-            return {
+            facts = {
                 "found": True,
                 "operation_kind": "message",
                 "event_id": event.id,
                 "conversation_id": event.canonical_conversation_id,
-                "result_event_ids": result_ids,
                 "target": principal.conversation_id,
                 "payload_hash": fingerprint(
                     "message",
@@ -237,3 +234,8 @@ class ClientRequests:
                 ),
                 **status,
             }
+        # A live activation can finish after the first SQLite snapshot began.
+        # Read its confirmed sends in a fresh snapshot after observing its exit.
+        async with self.identity.database.sessions() as reader:
+            result_ids = list(await reader.scalars(result_query))
+        return {**facts, "result_event_ids": result_ids}

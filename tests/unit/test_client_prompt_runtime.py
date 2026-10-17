@@ -42,7 +42,9 @@ async def test_missing_terminal_receipt_remains_unknown_without_replaying_main(a
     assert len(env.calls) == 2
 
     # A cold reader has no original in-process owner or durable terminal fact.
-    prompts = ClientPrompts(env.identity, {"app": env.gateway})
+    prompts = ClientPrompts(
+        env.identity, {"app": env.gateway}, env.harness.processor._chat.runtime.bindings
+    )
     requests = ClientRequests(env.identity, prompts=prompts)
     facts = await requests.get(principal, request_id)
     assert facts["event_id"] == original["event_id"]
@@ -61,7 +63,9 @@ async def test_late_cancel_joins_blocked_terminal_writer_without_relabelling_mai
 ):
     env = app_env
     device, principal, request_id = await client_prompt(env)
-    prompts = ClientPrompts(env.identity, {"app": env.gateway})
+    prompts = ClientPrompts(
+        env.identity, {"app": env.gateway}, env.harness.processor._chat.runtime.bindings
+    )
     main_finished, begin_write, writing = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def finish(*args):
@@ -90,7 +94,9 @@ async def test_late_cancel_joins_blocked_terminal_writer_without_relabelling_mai
 async def test_original_cancel_receipt_is_idempotent_after_owner_is_gone(app_env, monkeypatch):
     env = app_env
     device, principal, request_id = await client_prompt(env)
-    prompts = ClientPrompts(env.identity, {"app": env.gateway})
+    prompts = ClientPrompts(
+        env.identity, {"app": env.gateway}, env.harness.processor._chat.runtime.bindings
+    )
     entered = asyncio.Event()
 
     async def waiting_model(request):
@@ -114,7 +120,9 @@ async def test_original_cancel_receipt_is_idempotent_after_owner_is_gone(app_env
 async def test_revoked_device_cannot_cancel_an_accepted_prompt(app_env, monkeypatch):
     env = app_env
     device, principal, request_id = await client_prompt(env)
-    prompts = ClientPrompts(env.identity, {"app": env.gateway})
+    prompts = ClientPrompts(
+        env.identity, {"app": env.gateway}, env.harness.processor._chat.runtime.bindings
+    )
     entered, release = asyncio.Event(), asyncio.Event()
     complete = env.provider.complete
 

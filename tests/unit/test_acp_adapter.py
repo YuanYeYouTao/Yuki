@@ -12,6 +12,7 @@ import httpx
 import pytest
 from acp import RequestError
 from acp.schema import (
+    BlobResourceContents,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
     FileSystemCapabilities,
@@ -280,6 +281,34 @@ async def test_foreground_completion_waits_original_work(adapter, work_state):
     assert (await asyncio.wait_for(running, 3)).stop_reason == "end_turn"
 
 
+@pytest.mark.parametrize("work_state", ["completed", "cancelled", "waiting_user", "suspended"])
+async def test_work_management_state_waits_real_completion_and_last_send(adapter, work_state):
+    agent, backend, peer = adapter
+    backend.auto_end = False
+    session, identity = backend.session(), str(uuid4())
+    pending = asyncio.create_task(agent.prompt(session, [text()], **{"yuki.requestId": identity}))
+    await backend.received.wait()
+    work = {"work_id": "original-work", "state": work_state, "active": True}
+    backend.finish(session, identity, work=work)
+    first = backend.event(session, "sent before the last completion", "outbound")
+    backend.requests[session, identity]["result_event_ids"].append(first)
+    await asyncio.wait_for(peer.updated.wait(), 3)
+    assert not pending.done()
+    last = backend.event(session, "last already dispatched send", "outbound")
+    backend.requests[session, identity]["result_event_ids"].append(last)
+    work["active"] = False
+    if work_state == "suspended":
+        with pytest.raises(RequestError, match="did not complete"):
+            await asyncio.wait_for(pending, 3)
+    else:
+        expected = "cancelled" if work_state == "cancelled" else "end_turn"
+        assert (await asyncio.wait_for(pending, 3)).stop_reason == expected
+    assert [u.content.text for _, u in peer.updates] == [
+        "sent before the last completion",
+        "last already dispatched send",
+    ]
+
+
 @pytest.mark.parametrize(
     "outcome,work_state", [("llm_failure", None), ("handled", "failed"), ("handled", "suspended")]
 )
@@ -355,10 +384,62 @@ async def test_content_uses_only_explicit_client_file_read_and_source_links(adap
     for block in [
         ResourceContentBlock(type="resource_link", uri="file:///client/private.txt", name="file"),
         ImageContentBlock(type="image", data="YWJj", mime_type="image/png"),
+        EmbeddedResourceContentBlock(
+            type="resource",
+            resource=BlobResourceContents(uri="file:///client/raw.bin", blob="YWJj"),
+        ),
     ]:
         with pytest.raises(RequestError):
             await agent.prompt(session, [block])
     assert len(backend.posts) == 1
+
+
+async def test_live_and_load_preserve_exact_attachment_links_without_credentials(adapter):
+    agent, backend, peer = adapter
+    backend.auto_end = False
+    session, identity, artifact = backend.session(), str(uuid4()), str(uuid4())
+    version = "a" * 64
+    pending = asyncio.create_task(agent.prompt(session, [text()], **{"yuki.requestId": identity}))
+    await backend.received.wait()
+    output = backend.event(session, "", "outbound")
+    backend.events[session][-1]["attachments"] = [
+        {
+            "kind": "file",
+            "artifact_id": artifact,
+            "version": version,
+            "filename": "real report.txt",
+            "mime_type": "text/plain",
+            "size": 42,
+        }
+    ]
+    backend.requests[session, identity]["result_event_ids"] = [output]
+    backend.finish(session, identity)
+    assert (await asyncio.wait_for(pending, 3)).stop_reason == "end_turn"
+    content = peer.updates[0][1].content
+    assert isinstance(content, ResourceContentBlock)
+    assert content.uri == f"http://yuki/client/v1/artifacts/{artifact}?version={version}"
+    assert content.name == "real report.txt" and content.size == 42
+    assert content.field_meta == {"yuki.conversationId": session, "yuki.eventId": output}
+    assert "test-device-token" not in content.model_dump_json()
+    assert "credentials" in content.description
+    peer.updates.clear()
+    await agent.load_session("/client", session)
+    assert peer.updates[-1][1].content == content
+
+
+async def test_inbound_media_without_download_api_keeps_real_reference_and_no_fake_link(adapter):
+    agent, backend, peer = adapter
+    session, media = backend.session(), str(uuid4())
+    backend.event(session, "", "inbound")
+    backend.events[session][-1]["attachments"] = [
+        {"kind": "file", "media_id": media, "filename": "uploaded.txt"}
+    ]
+    await agent.load_session("/client", session)
+    _, update = peer.updates[0]
+    assert update.session_update == "user_message_chunk"
+    assert isinstance(update.content, TextContentBlock)
+    assert media in update.content.text and "uploaded.txt" in update.content.text
+    assert "download unavailable" in update.content.text
 
 
 async def test_local_disconnect_does_not_cancel_server_work(adapter):

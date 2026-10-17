@@ -217,8 +217,8 @@ ACP 消息号、Work input source key、上传 UUID 与查询同时携带该真�
 Python 参考客户端可用 `entry_conversation_id=` 选择 ACP 会话，每个会话使用独立原 Outbox 文件。
 
 GET 原消息请求仍返回入账与已确认的 Social 结果，另有 `turn.state`（running、ended、unknown）
-与真实 `turn.outcome`；精确关联的原 Work 另以 `work_id/state/revision/reason` 返回。Main 结束、
-Work 完成和消息已发出是不同事实。没有现场任务且缺持久结束事实时保持 unknown；入账 ACK、
+与真实 `turn.outcome`；精确关联的原 Work 另以 `work_id/state/revision/reason/active` 返回。Main 结束、
+Work 完成和消息已发出是不同事实。`work.active` 只反映原 Work 尚未退出的现场 activation，终态也要等该原执行收拢、读取已准入的尾部发送回执后再结束 ACP prompt。没有现场任务且缺持久结束事实时保持 unknown；入账 ACK、
 模型 final、无 activity 或静默时间都不当作完成，不补跑原模型。普通轮结束投影复用原命令回执，
 不建第二套任务、请求日志或完成计数器。
 
@@ -234,7 +234,8 @@ Work 完成和消息已发出是不同事实。没有现场任务且缺持久结
 
 能力按实际实现声明：本轮支持 initialize、new、load、prompt、cancel，不声明 resume/close；
 cwd 是客户端目录资料，不改服务器工作区，也不授予客户端 terminal/设备执行能力。
-文本、嵌入文本与 ResourceLink 保原输入含义；图片/音频及客户端文件读取仅沿真实协商能力处理。
+文本、嵌入文本与 ResourceLink 保原输入含义；图片、音频与嵌入二进制显式不支持，客户端文本文件读取只使用已协商的只读回调。
+已确认的文件出站在 live/load 中保留原 artifact ID 与版本，ResourceLink 指向个人 API 实际下载地址，仍需原设备凭据；链接本身不携 token。旧媒体只有 media ID、没有独立下载 API 时保留原可见引用并说明不能下载，不伪造 URL。
 Yuki 已退役 MCP，本轮只接受空 `mcpServers`，非空显式返回不支持。当前规范要求 stdio MCP，
 因此这是已知互操作限制，不宣称覆盖所有 ACP MUST；不为对接恢复动态工具或新的审批框架。
 

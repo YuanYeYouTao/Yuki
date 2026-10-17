@@ -18,6 +18,7 @@ from qq_ai_bot.conversation.ordinary_admission_db_models import OrdinaryTurnAdmi
 from qq_ai_bot.gateway.providers.app.ingress import AppGateway
 from qq_ai_bot.identity.person_identity import same_person_id
 from qq_ai_bot.persistence.models import AdminOperationEventModel, ChatEventModel
+from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
 from qq_ai_bot.runtime.work_management import manage_work
 from qq_ai_bot.runtime.work_schema_v1 import work
 
@@ -83,9 +84,15 @@ async def associated_work(
 
 
 class ClientPrompts:
-    def __init__(self, identity: ClientIdentityService, gateways: Mapping[str, AppGateway]) -> None:
+    def __init__(
+        self,
+        identity: ClientIdentityService,
+        gateways: Mapping[str, AppGateway],
+        active_bindings: ActiveWorkBindings,
+    ) -> None:
         self.identity = identity
         self.gateways = dict(gateways)
+        self.active_bindings = active_bindings
         for gateway in self.gateways.values():
             gateway.on_finished = self.finish
 
@@ -186,6 +193,7 @@ class ClientPrompts:
                 "state": linked["state"],
                 "revision": linked["revision"],
                 "reason": linked["reason"],
+                "active": bool(self.active_bindings.completions(linked["id"])),
             }
             if linked is not None
             else None,
@@ -206,6 +214,7 @@ class ClientPrompts:
 
         async def stop_original() -> dict[str, Any]:
             cancelled = False
+            completions: tuple[asyncio.Future[None], ...] = ()
             if captured is not None and not captured.done():
                 if not captured.cancelling():
                     captured.cancel()
@@ -218,6 +227,7 @@ class ClientPrompts:
                     raise ClientError("not_found")
                 linked = await associated_work(writer, current, original)
                 if linked is not None:
+                    completions = self.active_bindings.completions(linked["id"])
                     if linked["state"] == "cancelled":
                         cancelled = True
                     elif linked["state"] not in _TERMINAL_WORK:
@@ -229,6 +239,10 @@ class ClientPrompts:
                             reason="client_prompt_cancelled",
                         )
                         cancelled = True
+            # Already claimed effects keep their original execution and receipt.
+            # Join this Work's captured activation, not a conversation batch task.
+            if completions:
+                await asyncio.gather(*(asyncio.shield(completed) for completed in completions))
             result = await requests.get(principal, request_id)
             cancelled = cancelled or result["turn"].get("outcome") == "cancelled"
             return {**result, "cancelled": cancelled}
