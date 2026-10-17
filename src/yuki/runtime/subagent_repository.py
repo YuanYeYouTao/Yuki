@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -24,6 +25,7 @@ from yuki.runtime.work_repository import (
 from yuki.runtime.work_schema_v1 import effects, inputs, journal, work
 from yuki.runtime.work_tree import descendants, rooted_tree
 from yuki.runtime.work_wait_schema import waits
+from yuki.sandbox.resource_cleanup import ResourceCleanupPreparation
 
 
 class SubagentRepository:
@@ -210,13 +212,46 @@ class SubagentRepository:
                 .limit(16)
             )
 
+        async def roots_for_archive(
+            session: AsyncSession, expired: list[str], root_ids: list[str]
+        ) -> list[str]:
+            tree = rooted_tree(work.c.id.in_(root_ids))
+            return list(
+                await session.scalars(
+                    select(work.c.id).where(
+                        work.c.id.in_(select(tree.c.root_id).where(tree.c.work_id.in_(expired))),
+                        work.c.id.not_in(
+                            select(tree.c.root_id)
+                            .join(children, children.c.work_id == tree.c.work_id)
+                            .where(
+                                children.c.archived_at.is_(None),
+                                children.c.work_id.not_in(expired),
+                            )
+                        ),
+                        work.c.state.in_(TERMINAL),
+                        work.c.updated < cutoff,
+                    )
+                )
+            )
+
         # Most passes have nothing to archive. Scan before reserving SQLite's
         # single writer, then check eligibility again after acquiring it.
         async with self.database.sessions() as session:
             candidates = (await session.execute(expired_query())).all()
-        if not candidates:
-            return
-        root_ids = list({root_id for _, root_id in candidates})
+            if not candidates:
+                return
+            root_ids = list({root_id for _, root_id in candidates})
+            original_expired = [identity for identity, _ in candidates]
+            original_roots = await roots_for_archive(session, original_expired, root_ids)
+            original_ids = tuple(sorted({*original_expired, *original_roots}))
+            resources = await ResourceCleanupPreparation.prepare(session, work_ids=original_ids)
+        if resources.has_peers:
+            client = self.database.sandbox_client
+            if client is None:
+                raise ValueError("external_agent_cleanup_unconfirmed")
+            await client.close_peers_for_requests(
+                resources.request_ids, f"work-archive:{','.join(original_ids)}", purge=True
+            )
         async with self.database.immediate_session() as session:
             expired = list(
                 await session.scalars(
@@ -227,6 +262,17 @@ class SubagentRepository:
             )
             if not expired:
                 return
+            expired_roots = await roots_for_archive(session, expired, root_ids)
+            archived_work_ids = [*expired, *expired_roots]
+            current = await ResourceCleanupPreparation.prepare(
+                session, work_ids=tuple(archived_work_ids)
+            )
+            if resources.has_peers:
+                if tuple(sorted(set(archived_work_ids))) != original_ids:
+                    raise ValueError("external_agent_cleanup_source_changed")
+                resources.verify(current)
+            elif current.has_peers:
+                raise ValueError("external_agent_cleanup_source_changed")
             # Result receipts retain summaries, artifact references and per-worker accounting.
             await session.execute(
                 update(children)
@@ -243,22 +289,6 @@ class SubagentRepository:
                 .where(work.c.id.in_(expired))
                 .values(checkpoint_json="{}", source_json="{}")
             )
-            tree = rooted_tree(work.c.id.in_(root_ids))
-            expired_roots = list(
-                await session.scalars(
-                    select(work.c.id).where(
-                        work.c.id.in_(select(tree.c.root_id).where(tree.c.work_id.in_(expired))),
-                        work.c.id.not_in(
-                            select(tree.c.root_id)
-                            .join(children, children.c.work_id == tree.c.work_id)
-                            .where(children.c.archived_at.is_(None))
-                        ),
-                        work.c.state.in_(TERMINAL),
-                        work.c.updated < cutoff,
-                    )
-                )
-            )
-            archived_work_ids = [*expired, *expired_roots]
             from yuki.runtime.protocol_schema import refs as protocol_refs
 
             await session.execute(

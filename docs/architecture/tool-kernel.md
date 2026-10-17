@@ -82,7 +82,7 @@ flowchart LR
 默认部署为 direct：不包含 Monty binding、worker 或 launcher，主 Agent 直接使用部署内固定完整工具清单。启用 Code 必须显式选择 codemode 镜像及配置；以下组合政策只用于已启用 Code 的固定合同。
 
 Code 模式冻结清单包含固定的 `execute_code` 和 `lookup_tools`（`yuki.codemode.api.v2`）。
-`terminal_exec`、`terminal_read`、`terminal_control`、`environment_status` 常驻固定直调视图；
+`terminal_exec`、`terminal_read`、`terminal_control`、`environment_status`、`external_agent` 常驻固定直调视图；
 服务登记经 Code Mode；安装和普通文件读写直接走同一管理员终端。direct 模式声明部署内固定完整工具清单，不生成 ScriptApi 或加载 worker；模式变更只在合法新链应用。直调复用同一 Manager、来源权限、
 原 request/run ID 和未知结果恢复，不建立宿主执行通道，也不自动重提 pending 命令。
 脚本里的 `await yuki_<工具名>({参数})` 是同一 canonical 工具的调用语法，由
@@ -279,9 +279,16 @@ SocialOperation 的 source_conversation_id 仍是原主会话。文件说明沿�
 
 ## 精简后的领域入口
 
-Main 合同21保持每项固定名称、schema和顺序；direct为平台29/App30项，Code完整31/32项、直调26/27项，批准插件另计。数量是本次实际装配结果，不是运行准入条件。
+Main 合同22保持每项固定名称、schema和顺序；direct为平台30/App31项，Code完整32/33项、直调27/28项，批准插件另计。数量是本次实际装配结果，不是运行准入条件。
 
 - `terminal_exec/read/control` 共用原Manager/run/回执。control的input发送原样text；read的wait_seconds只观察，默认不等待，原终态completion与游标同时保留。环境默认无强制期限，显式期限按事实执行。
+- `external_agent(action=list/prompt/get/respond/cancel/close)` 通过 ACP 使用运维配置的 Agent。只有 prompt 在已接纳的原 Work 中登记新执行；peer 是可续用的原会话资源，run 是单次 prompt。查询、权限回答、取消和关闭可管理当前来源有权访问的原资源，不要求另接纳 Work。模型只见 agent_id 目录与原资源 ID，不接收启动命令或凭据。权限请求沿原 Work 私有输入提交后才确认协议游标，回答仍核原来源当前授权；外部输出是待核对材料，最终聊天交付继续走 Social。
+
+`external_agent.get` 使用 `run_id` 或原 `request_id` 二选一。首次 open 确认丢失时仍返回原
+prompt 请求及 resource_request_id；冷恢复沿原 Task 保留这些 ID。按 request_id 查询先核原
+Work/source owner，再读取原 prompt；尚查不到 prompt 时，只读查询原 peer 并嵌入 peer_resource，
+不把 peer 的资源 run_id 当作 prompt 执行，不自动 open 或重发未知 prompt。查回 peer 后可沿原
+owner 显式 close；未知事实继续保持未知。
 - `workspace_inspect/publish` 只负责原生媒体和不可变交付桥；普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。
 - `automation_query(view=list/get/completed/history/diagnose)` 复用原安全目录、人物终态、运行历史与创建审计；`automation_manage(action=create/update/pause/resume/cancel/run_now)` 沿原TaskSpec、owner、版本、创建键与调度回执。
 - `query_chat_history(view=recent/search/around)` 读取原Conversation；search使用start_at/end_at，around使用内部event_id及before/after条数。显式跨Conversation与App本人入口保持独立。

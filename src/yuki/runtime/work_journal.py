@@ -558,7 +558,10 @@ class WorkJournal:
                 capture.evidence = historical_evidence(
                     stored
                     if row is not None and (row["state"] == "accepted" or row["kind"] == "final")
-                    else {"result": result},
+                    else {
+                        "result": result,
+                        **({"invocation": stored["invocation"]} if "invocation" in stored else {}),
+                    },
                     state=row["state"]
                     if row is not None and row["kind"] == "final"
                     else "accepted",
@@ -659,6 +662,32 @@ class WorkJournal:
                         ensure_ascii=False,
                     )
                 )
+            if task is not None:
+                progress = json.loads(task.progress_json)
+                if progress.get("kind") == "acp_prompt":
+                    return recorded_result(
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "data": {
+                                    "error": "execution_outcome_unknown",
+                                    "uncertain": True,
+                                    "request_id": request_id,
+                                    "resource_request_id": progress["resource_request_id"],
+                                    **(
+                                        {"peer_id": progress["peer_id"]}
+                                        if "peer_id" in progress
+                                        else {}
+                                    ),
+                                },
+                                "replay_forbidden": True,
+                                "detail": (
+                                    "查询原资源和请求；peer 会话不是 prompt 执行，不重发未知调用。"
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
         return recorded_result(
             json.dumps(
                 {

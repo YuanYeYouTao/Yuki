@@ -80,6 +80,27 @@ def execution_evidence(
         args = json.loads(arguments)
     except ValueError:
         args = {}
+    if (
+        tool == "external_agent"
+        and isinstance(args, dict)
+        and args.get("action") in {"list", "get"}
+    ):
+        side_effecting = False
+    control: dict[str, Any] | None = None
+    if tool == "external_agent" and isinstance(args, dict):
+        control = (
+            body.get("permission_response")
+            if args.get("action") == "respond"
+            else body.get("close")
+            if args.get("action") == "close"
+            else body
+            if args.get("action") == "cancel"
+            else None
+        )
+    admitted = isinstance(control, dict) and (
+        control.get("admitted") is True or control.get("cancel_requested") is True
+    )
+    effect_body = control if isinstance(control, dict) else body
     delivered: list[str] = []
     caption_delivered = False
     delivered_message = False
@@ -140,11 +161,16 @@ def execution_evidence(
                 else body.get("status") == "succeeded"
             )
         )
-    raw_status = body.get("status")
+    raw_status = "admitted" if admitted else effect_body.get("status")
     status = raw_status if isinstance(raw_status, str) else None
     process = process_receipt(outcome)
     return {
         "tool": tool,
+        **(
+            {"action": args.get("action")}
+            if tool == "external_agent" and isinstance(args, dict)
+            else {}
+        ),
         "side_effecting": side_effecting,
         "artifacts": list(dict.fromkeys(artifacts)),
         "delivered_artifacts": delivered,
@@ -153,19 +179,31 @@ def execution_evidence(
         "delivery_target": body.get("target") if delivered or delivered_message else None,
         "run_id": body.get("run_id"),
         **({"request_id": body["request_id"]} if isinstance(body.get("request_id"), str) else {}),
-        "ok": outcome.ok
-        and not body.get("error")
-        and process.get("succeeded") is not False
-        and status not in {"failed", "cancelled", "uncertain", "unknown"}
-        and body.get("exit_code") in (None, 0),
-        "pending": bool(body.get("pending")) or status in {"running", "queued", "waiting"},
-        "uncertain": outcome.uncertain
-        or bool(body.get("uncertain"))
-        or status in {"uncertain", "unknown"},
+        **(
+            {"resource_request_id": body["resource_request_id"]}
+            if isinstance(body.get("resource_request_id"), str)
+            else {}
+        ),
+        "ok": admitted
+        or (
+            outcome.ok
+            and not effect_body.get("error")
+            and process.get("succeeded") is not False
+            and status not in {"failed", "cancelled", "uncertain", "unknown"}
+            and effect_body.get("exit_code") in (None, 0)
+        ),
+        "pending": not admitted
+        and (bool(effect_body.get("pending")) or status in {"running", "queued", "waiting"}),
+        "uncertain": not admitted
+        and (
+            outcome.uncertain
+            or bool(effect_body.get("uncertain"))
+            or status in {"uncertain", "unknown"}
+        ),
         "status": status,
         "error_code": outcome.error_code,
         "retryable": outcome.retryable,
-        "mutation_committed": outcome.mutation_committed,
+        "mutation_committed": True if admitted else outcome.mutation_committed,
         **(
             {"request_postcondition_satisfied": True}
             if outcome.ok
@@ -344,6 +382,11 @@ def historical_evidence(
         result.update(ok=False, uncertain=True)
     elif result.get("status") in {"running", "queued", "waiting"}:
         result["pending"] = True
+    invocation = receipt.get("invocation", {})
+    if isinstance(invocation, dict) and invocation.get("tool_id") == "external_agent":
+        result["tool"] = "external_agent"
+        if "action" in invocation:
+            result.setdefault("action", invocation["action"])
     if state in {"prepared", "unknown"} and result.get("side_effecting") is not False:
         result["uncertain"] = True
     return result

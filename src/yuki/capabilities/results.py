@@ -311,16 +311,27 @@ def process_receipt(result: ToolExecutionResult) -> dict[str, Any]:
     """A successful status read does not mean the observed process succeeded."""
     if (
         result.provider_id != "core"
-        or result.tool_name not in {"run_python", "get_code_run", "terminal_exec", "terminal_read"}
+        or result.tool_name
+        not in {"run_python", "get_code_run", "terminal_exec", "terminal_read", "external_agent"}
         or not isinstance(result.data, dict)
     ):
         return {}
     body = result.data
+    if result.tool_name == "external_agent" and body.get("kind") != "acp_prompt":
+        return {}
     if isinstance(body.get("completion"), dict):
         body = body["completion"]
     receipt = {
         key: body[key]
-        for key in ("run_id", "status", "pending", "exit_code", "output_lost")
+        for key in (
+            "run_id",
+            "peer_id",
+            "session_id",
+            "status",
+            "pending",
+            "exit_code",
+            "output_lost",
+        )
         if key in body and isinstance(body[key], (str, int, bool))
     }
     status = body.get("status")
@@ -357,6 +368,9 @@ def _workspace_progress(result: ToolExecutionResult) -> dict[str, Any]:
         key: value
         for key in (
             "run_id",
+            "peer_id",
+            "session_id",
+            "permission_requests",
             "status",
             "pending",
             "exit_code",

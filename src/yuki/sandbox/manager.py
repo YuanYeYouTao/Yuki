@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import signal
 import stat
 from pathlib import Path
@@ -37,6 +38,9 @@ async def main() -> None:
     parser.add_argument("--network", default="yuki-sandbox-egress")
     parser.add_argument("--proxy", default="")
     parser.add_argument("--resolv-conf", type=Path)
+    parser.add_argument(
+        "--acp-config", type=Path, default=os.environ.get("YUKI_MANAGER_ACP_CONFIG")
+    )
     args = parser.parse_args()
     from yuki.sandbox.persistent import PersistentManager
 
@@ -48,6 +52,7 @@ async def main() -> None:
         args.proxy,
         args.persistent_home,
         resolv_conf=args.resolv_conf,
+        acp_config=args.acp_config,
     )
     if args.migrate_only:
         print(json.dumps(manager.migrate_files()))

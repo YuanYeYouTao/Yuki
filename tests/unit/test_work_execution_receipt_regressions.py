@@ -189,14 +189,46 @@ async def test_reading_own_running_execution_does_not_remove_original_dependency
         assert receipt["run_id"] == OWNED and not receipt["pending"]
 
 
-async def test_reconnecting_control_cannot_settle_a_still_running_execution(database, tmp_path):
+async def test_reconnecting_control_cannot_settle_a_still_running_execution(
+    database, tmp_path, monkeypatch
+):
     control, session, store = await ready(database, tmp_path)
     await launch(session, store)
-    # Real Manager error branch; only the physical process/connection storage is fake.
-    manager_state = SimpleNamespace(
-        get=lambda _: {"run_id": OWNED, "status": "running", "pending": True}, connections={}
+    # The original terminal job survives reconnect without a live physical connection.
+    manager = PersistentManager(
+        tmp_path / "manager",
+        WorkspaceStore(tmp_path / "artifacts"),
+        "test-image",
+        "test-network",
+        "",
+        tmp_path / "home",
+        testing=True,
     )
-    response = await PersistentManager.control(manager_state, OWNED, "interrupt")
+    # Only physical output files are absent; original job/kind lookup is real SQLite.
+    monkeypatch.setattr(manager, "output", lambda _: {})
+    try:
+        with manager.db:
+            manager.db.execute(
+                "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
+                (
+                    OWNED,
+                    session.call_key("launch-owned"),
+                    "original-proof",
+                    "{}",
+                    "running",
+                    "{}",
+                    0,
+                ),
+            )
+            manager.db.execute(
+                "INSERT INTO environment_jobs VALUES (?,?,?,?,?)",
+                (OWNED, "terminal_exec", None, "original-container", 1),
+            )
+        response = await manager.control(OWNED, "interrupt")
+        assert manager.get(OWNED)["status"] == "running"
+        assert manager.get(OWNED)["pending"] is True
+    finally:
+        await manager.close()
     assert response["error"] == "terminal_reconnecting"
     assert "status" not in response and "pending" not in response
     await execute(

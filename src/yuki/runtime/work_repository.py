@@ -2536,7 +2536,7 @@ class WorkRepository:
     ) -> None:
         """Use an owned run receipt; preserve every original invocation and its mutating role."""
         from yuki.runtime.effect_outcomes import execution_finished
-        from yuki.sandbox.environment_tools import EXECUTION_TOOLS
+        from yuki.sandbox.environment_tools import is_execution
 
         if not execution_finished(outcome) or outcome.get("run_id") != run_id:
             return
@@ -2589,23 +2589,22 @@ class WorkRepository:
                 for row in rows:
                     receipt = json.loads(row["receipt_json"])
                     previous = receipt.get("outcome", {})
+                    name = previous.get("tool", "")
+                    original_action = receipt.get("invocation", {}).get("action")
+                    execution = is_execution(
+                        name, {"action": previous.get("action", original_action)}
+                    ) or name in {"environment_packages", "run_python"}
                     if effect_key is not None and (
                         previous.get("request_id") != request_id
                         or previous.get("run_id") not in (None, run_id)
-                        or previous.get("tool")
-                        not in EXECUTION_TOOLS | {"environment_packages", "run_python"}
+                        or not execution
                     ):
                         continue
-                    if previous.get("tool") not in (
-                        EXECUTION_TOOLS
-                        | {
-                            "environment_packages",
-                            "run_python",
-                            "terminal_write",
-                            "terminal_control",
-                            "cancel_code_run",
-                        }
-                    ):
+                    if not execution and name not in {
+                        "terminal_write",
+                        "terminal_control",
+                        "cancel_code_run",
+                    }:
                         continue
                     merged = {**previous, **outcome}
                     merged["side_effecting"] = True

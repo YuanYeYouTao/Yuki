@@ -93,6 +93,15 @@ class AdminCommands:
         authorize(principal, "identity.person.forget")
         operation = "identity.person.forget"
         bound = fingerprint(operation, person_id, {})
+        async with self.database.sessions() as reader:
+            previous = await self.identities.replay(
+                reader, principal.principal_id.text, request_id, bound
+            )
+        if previous is not None:
+            return previous
+        external = await self.people.prepare_person_forget_resources(
+            person_id, operation_id=f"person-forget:{principal.principal_id.text}:{request_id}"
+        )
 
         async def erase(session: AsyncSession) -> dict[str, Any]:
             previous = await self.identities.replay(
@@ -100,11 +109,15 @@ class AdminCommands:
             )
             if previous is not None:
                 return previous
-            prepared = await self.people.prepare_person_forget(person_id, session=session)
+            prepared = await self.people.prepare_person_forget(
+                person_id, session=session, closed_resources=external
+            )
             if prepared is None:
                 raise ClientError("not_found")
             await self.people.apply_person_forget(session, prepared)
             result: dict[str, JsonValue] = {"person_id": person_id, "deleted": True}
+            if prepared.peer_cleanup_results is not None:
+                result["peer_cleanup"] = prepared.peer_cleanup_results
             await self.receipts.record_personal_command(
                 session,
                 principal_id=principal.principal_id.text,

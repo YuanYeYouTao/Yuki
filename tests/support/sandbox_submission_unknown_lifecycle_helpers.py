@@ -4,7 +4,6 @@ import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 from tests.conftest import build_harness, make_settings
 from tests.unit.test_tool_effect_audit import active_work
@@ -39,12 +38,13 @@ def socket_receipts(monkeypatch, responses):
 
     async def connect(*args, **kwargs):
         reply = next(replies)
-        read = (
-            AsyncMock(side_effect=reply)
-            if isinstance(reply, Exception)
-            else AsyncMock(return_value=json.dumps(reply).encode() + b"\n")
-        )
-        return SimpleNamespace(readline=read), Writer()
+        reader = asyncio.StreamReader()
+        if isinstance(reply, Exception):
+            reader.set_exception(reply)
+        else:
+            reader.feed_data(json.dumps(reply).encode() + b"\n")
+            reader.feed_eof()
+        return reader, Writer()
 
     monkeypatch.setattr(asyncio, "open_unix_connection", connect, raising=False)
     return wire

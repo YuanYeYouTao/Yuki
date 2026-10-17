@@ -62,7 +62,7 @@ from yuki.persistence.repositories import (
     EventLedgerRepository,
 )
 from yuki.runtime.errors import InvalidTurnContextError
-from yuki.sandbox.environment_tools import EXECUTION_TOOLS, SANDBOX_TOOLS
+from yuki.sandbox.environment_tools import SANDBOX_TOOLS, is_execution
 from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.context_compaction import PublicCompactContext
 from yuki.services.evidence_state import evidence_state
@@ -825,7 +825,8 @@ class AgentToolService:
                         arguments,
                         request_id=request_id,
                         source={**runtime.sandbox_source, **self._work_source()}
-                        if runtime.sandbox_source and name in EXECUTION_TOOLS
+                        if runtime.sandbox_source
+                        and (is_execution(name, arguments) or name == "external_agent")
                         else {
                             **self._work_source(),
                             "conversation_id": runtime.effective_conversation_id,
@@ -840,7 +841,7 @@ class AgentToolService:
                             "trigger_event_id": runtime.effective_trigger_event_id,
                             "parent_execution_id": runtime.effective_execution_id,
                         }
-                        if name in EXECUTION_TOOLS
+                        if is_execution(name, arguments) or name == "external_agent"
                         else None,
                     )
                     if result.get("error"):

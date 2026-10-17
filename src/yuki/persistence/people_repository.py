@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from heapq import nsmallest
+from typing import Any
 
 from sqlalchemy import (
     Integer,
@@ -111,6 +112,7 @@ from yuki.plugin_host.db_models import (
 )
 from yuki.runtime.observability import hash_conversation_key
 from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
+from yuki.sandbox.resource_cleanup import ResourceCleanupPreparation
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +194,8 @@ class PersonForgetPreparation:
     sandbox_request_ids: tuple[str, ...]
     initiative_ids: tuple[str, ...]
     reflection_checkpoint_ids: tuple[int, ...]
+    resource_cleanup: ResourceCleanupPreparation
+    peer_cleanup_results: tuple[dict[str, Any], ...] | None = None
 
     @property
     def legacy_aliases(self) -> tuple[str, ...]:
@@ -752,17 +756,49 @@ class PeopleRepository:
             person_id = binding.person_id
         return await self.delete_person_id(person_id, marker=marker)
 
-    async def delete_person_id(self, person_id: str, *, marker: str = "[已删除用户]") -> bool:
+    async def delete_person_id(
+        self,
+        person_id: str,
+        *,
+        marker: str = "[已删除用户]",
+        operation_id: str | None = None,
+    ) -> bool:
+        external = await self.prepare_person_forget_resources(
+            person_id, operation_id=operation_id or f"person-forget:{person_id}", marker=marker
+        )
+
         async def erase(session: AsyncSession) -> bool:
-            prepared = await self.prepare_person_forget(person_id, marker=marker, session=session)
+            prepared = await self.prepare_person_forget(
+                person_id, marker=marker, session=session, closed_resources=external
+            )
             if prepared is None:
                 return False
             return await self.apply_person_forget(session, prepared, marker=marker)
 
         return await self._database.apply_snapshot_write(erase)
 
+    async def prepare_person_forget_resources(
+        self, person_id: str, *, operation_id: str, marker: str = "[已删除用户]"
+    ) -> PersonForgetPreparation | None:
+        client = self._database.sandbox_client
+        if client is None:
+            return None
+        async with self._database.sessions() as reader:
+            prepared = await self.prepare_person_forget(person_id, session=reader, marker=marker)
+        if prepared is None or not prepared.resource_cleanup.has_peers:
+            return None
+        receipts = await client.close_peers_for_requests(
+            prepared.sandbox_request_ids, operation_id, purge=True
+        )
+        return replace(prepared, peer_cleanup_results=tuple(receipts))
+
     async def prepare_person_forget(
-        self, person_id: str, *, session: AsyncSession, marker: str = "[已删除用户]"
+        self,
+        person_id: str,
+        *,
+        session: AsyncSession,
+        marker: str = "[已删除用户]",
+        closed_resources: PersonForgetPreparation | None = None,
     ) -> PersonForgetPreparation | None:
         from yuki.persistence.unit_of_work import optional_session
 
@@ -783,10 +819,12 @@ class PeopleRepository:
             )
             private_ids = tuple(
                 await reader.scalars(
-                    select(CanonicalConversationModel.id).where(
+                    select(CanonicalConversationModel.id)
+                    .where(
                         CanonicalConversationModel.kind == "private",
                         CanonicalConversationModel.person_id.in_(person_ids),
                     )
+                    .order_by(CanonicalConversationModel.id)
                 )
             )
             legacy = tuple(
@@ -890,12 +928,8 @@ class PeopleRepository:
                         ),
                     )
                 )
-            sandbox_ids = tuple(
-                await reader.scalars(
-                    select(SandboxTaskRunModel.request_id).where(
-                        SandboxTaskRunModel.source_conversation_id.in_(affected)
-                    )
-                )
+            resources = await ResourceCleanupPreparation.prepare(
+                reader, conversation_ids=tuple(sorted(affected))
             )
             sources = func.json_each(InitiativeRunModel.sources_json).table_valued("value")
             owned_events = select(ChatEventModel.id).where(owned)
@@ -1074,7 +1108,7 @@ class PeopleRepository:
         rebuild = await self._memory_rebuilds.prepare_forget_people(
             legacy, ownership=ownership, person_id=person_id, session=session
         )
-        return PersonForgetPreparation(
+        prepared = PersonForgetPreparation(
             person_id=person_id,
             person_ids=person_ids,
             ownership=ownership,
@@ -1083,10 +1117,27 @@ class PeopleRepository:
             redactions=tuple(redactions),
             rebuild=rebuild,
             audit_redactions=tuple(audit_redactions),
-            sandbox_request_ids=sandbox_ids,
+            sandbox_request_ids=resources.request_ids,
             initiative_ids=initiative_ids,
             reflection_checkpoint_ids=tuple(sorted(reflection_checkpoint_ids)),
+            resource_cleanup=resources,
         )
+        if closed_resources is not None:
+            if (
+                prepared.person_ids,
+                prepared.ownership,
+                prepared.private_ids,
+                prepared.affected_ids,
+            ) != (
+                closed_resources.person_ids,
+                closed_resources.ownership,
+                closed_resources.private_ids,
+                closed_resources.affected_ids,
+            ):
+                raise ValueError("external_agent_cleanup_source_changed")
+            closed_resources.resource_cleanup.verify(resources)
+            prepared = replace(prepared, peer_cleanup_results=closed_resources.peer_cleanup_results)
+        return prepared
 
     async def apply_person_forget(
         self,
@@ -1101,6 +1152,9 @@ class PeopleRepository:
         person_ids = await person_family_ids(session, person_id)
         if person_ids != prepared.person_ids:
             raise ValueError("privacy_persons_changed")
+        if prepared.resource_cleanup.has_peers:
+            if prepared.peer_cleanup_results is None:
+                raise ValueError("external_agent_cleanup_unconfirmed")
         ownership = prepared.ownership
         legacy = prepared.legacy_aliases
         await self._memory_rebuilds.forget_people(

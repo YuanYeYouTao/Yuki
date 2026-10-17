@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Iterable
+from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from yuki.domain.messages import ChatTool
 from yuki.sandbox.environment_tools import (
-    EXECUTION_TOOLS,
     READ_TOOLS,
     SANDBOX_TOOLS,
     environment_tools,
+    is_execution,
 )
 from yuki.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
 
@@ -37,12 +39,17 @@ class SandboxClient:
         request_id: str,
         source: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if name == "external_agent":
+            from yuki.sandbox.external_agents import execute
+
+            return await execute(self, args, request_id, source)
+        execution = is_execution(name, args)
         message = (
             json.dumps({"method": name, "args": args, "request_id": request_id}).encode() + b"\n"
         )
-        if len(message) > 262144:
+        if not name.startswith("acp_") and len(message) > 262144:
             return {"error": "request_too_large", "retryable": False}
-        if name in EXECUTION_TOOLS and self.tasks is not None:
+        if execution and self.tasks is not None:
             if source is None:
                 return {"error": "missing_task_source", "retryable": False}
             # Must commit before any socket write, including uncertain submissions.
@@ -71,11 +78,14 @@ class SandboxClient:
                     submitted = True
                     writer.write(message)
                     await writer.drain()
-                    result = json.loads(await reader.readline())
+                    from yuki.sandbox.acp_peer import read_protocol_line
+
+                    response = await read_protocol_line(reader)
+                    result = json.loads(response)
                     if not isinstance(result, dict):
                         raise ValueError("invalid_response")
                     if (
-                        name in EXECUTION_TOOLS
+                        execution
                         and self.tasks is not None
                         and not result.get("run_id")
                         and result.get("error")
@@ -89,7 +99,7 @@ class SandboxClient:
                         }
                     ):
                         await self.tasks.reject(request_id, result)
-                    if name in EXECUTION_TOOLS and self.tasks is not None and result.get("run_id"):
+                    if execution and self.tasks is not None and result.get("run_id"):
                         await self.tasks.bind_run(request_id, result["run_id"])
                     await self._stage_result(name, request_id, result)
                     return result
@@ -97,7 +107,7 @@ class SandboxClient:
                     writer.close()
                     await writer.wait_closed()
         except (OSError, ValueError, TimeoutError, NotImplementedError):
-            if name in EXECUTION_TOOLS:
+            if execution:
                 recovered = await self.execute(
                     "get_code_run_by_request",
                     {"request_id": request_id},
@@ -118,19 +128,26 @@ class SandboxClient:
                 "error": "sandbox_unavailable",
                 "retryable": False,
                 "uncertain": submitted
-                and name
-                in (
-                    (SANDBOX_TOOLS - READ_TOOLS)
-                    | (WORKSPACE_TOOLS - WORKSPACE_READ_TOOLS)
-                    | {"workspace_checkout"}
+                and (
+                    name.startswith("acp_")
+                    or name
+                    in (
+                        (SANDBOX_TOOLS - READ_TOOLS)
+                        | (WORKSPACE_TOOLS - WORKSPACE_READ_TOOLS)
+                        | {"workspace_checkout"}
+                    )
                 ),
             }
 
     async def _stage_result(self, name: str, request_id: str, result: dict[str, Any]) -> None:
-        if self.tasks is None or name not in SANDBOX_TOOLS:
+        if (
+            self.tasks is None
+            or not result.get("run_id")
+            or (name not in SANDBOX_TOOLS and not name.startswith("acp_"))
+        ):
             return
         # Cursor views must stage the same terminal receipt as the durable outbox.
-        if name == "terminal_read" and isinstance(result.get("completion"), dict):
+        if isinstance(result.get("completion"), dict):
             result = result["completion"]
         if result.get("pending") is not False or result.get("status") not in {
             "succeeded",
@@ -140,7 +157,7 @@ class SandboxClient:
             return
         row = (
             await self.tasks.get(request_id)
-            if name in EXECUTION_TOOLS
+            if name in {"terminal_exec", "external_agent"}
             else await self.tasks.by_run(str(result.get("run_id")))
         )
         if row is None:
@@ -156,3 +173,35 @@ class SandboxClient:
         if receipts is not None and control is not None and control.current is not None:
             if json.loads(row.source_json).get("work_id") == control.current["id"]:
                 receipts.staged[row.request_id] = self.tasks
+
+    async def close_peers_for_requests(
+        self, request_ids: Iterable[str], operation_id: str, *, purge: bool = True
+    ) -> list[dict[str, Any]]:
+        """Hand precise original resource revocations to Manager before deleting their anchors."""
+        if self.tasks is None:
+            raise ValueError("external_agent_cleanup_unconfirmed")
+        closed: dict[str, dict[str, Any]] = {}
+        for request_id in request_ids:
+            row = await self.tasks.get(request_id)
+            if row is None:
+                continue
+            progress = json.loads(row.progress_json)
+            if progress.get("kind") != "acp_prompt":
+                continue
+            resource = progress.get("resource_request_id", f"{request_id}:peer")
+            peer_id = progress.get("peer_id")
+            identity = peer_id or resource
+            if identity in closed:
+                continue
+            result = await self.execute(
+                "acp_peer_close",
+                {
+                    **({"peer_id": peer_id} if peer_id else {"resource_request_id": resource}),
+                    "purge": purge,
+                },
+                request_id=sha256(f"{operation_id}:{identity}".encode()).hexdigest(),
+            )
+            if result.get("admitted") is not True:
+                raise ValueError("external_agent_cleanup_unconfirmed")
+            closed[identity] = result
+        return list(closed.values())
