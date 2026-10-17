@@ -112,6 +112,8 @@ class CanonicalIdentityProjection(StrictModel):
 class CurrentMessage(CanonicalIdentityProjection):
     """Sanitized current-event projection, never a raw NoneBot event."""
 
+    platform: str = ""
+    mentioned_person_ids: tuple[str, ...] = ()
     message_id: str = Field(min_length=1, max_length=128)
     sender_user_id: str = Field(min_length=1, max_length=64)
     scope_type: str = Field(pattern=r"^(private|group)$")
@@ -141,7 +143,7 @@ class EmojiSelectionCandidate(StrictModel):
 class EmojiSelectionSignalContext(StrictModel):
     goal: str = Field(default="", max_length=300)
     emotion: str = Field(default="", max_length=100)
-    group_id: str | None = Field(default=None, max_length=64)
+    space_id: str | None = None
     candidates: tuple[EmojiSelectionCandidate, ...] = Field(min_length=1, max_length=100)
     text_is_untrusted: bool = True
 
@@ -161,7 +163,9 @@ class PluginResourceLimits(StrictModel):
 
 class NotificationTarget(StrictModel):
     target_type: Literal["group", "private"]
+    # Internal Person/Space identity. Transport account and chat IDs stay in adapters.
     target_id: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = None
 
 
 class PublishNotificationRequest(StrictModel):
@@ -194,6 +198,7 @@ class BackgroundTargetGrantView(StrictModel):
     bot_user_id: str = Field(min_length=1, max_length=64)
     enabled: bool
     created_by_user_id: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = None
 
 
 class MediaArtifactHandle(StrictModel):

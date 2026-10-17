@@ -30,10 +30,20 @@ def _seed_0118(path, monkeypatch):
     identities = []
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO presences VALUES(?,'qq','test',1,1,1,?,?)",
+            (str(uuid4()), now, now),
+        )
         for index in range(3):
             person, conversation, alias, epoch = (str(uuid4()) for _ in range(4))
             identities.append(conversation)
             connection.execute("INSERT INTO persons VALUES(?,1,1,?,?)", (person, now, now))
+            connection.execute(
+                "INSERT INTO identity_bindings(id,person_id,platform,external_account_id,"
+                "display_name,status,revision,first_seen_at,last_seen_at,created_at,updated_at) "
+                "VALUES(?,?,'qq',?,'','active',1,?,?,?,?)",
+                (str(uuid4()), person, str(index), now, now, now, now),
+            )
             connection.execute(
                 "INSERT INTO canonical_conversations("
                 "id,kind,person_id,primary_alias_id,generation,starts_after_event_id,last_event_id,"

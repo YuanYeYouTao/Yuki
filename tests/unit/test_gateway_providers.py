@@ -72,9 +72,9 @@ def test_provider_catalog_is_explicit_and_fail_closed() -> None:
     with pytest.raises(ValueError, match="at least one"):
         GatewayProviderCatalog(())
     builtins = builtin_provider_catalog()
-    assert builtins.describe_connection(_Bot("8000")) == SnowLumaProvider().describe_connection(
-        _Bot("8000")
-    )
+    assert builtins.describe_connection(
+        _Bot("8000"), provider_id="snowluma"
+    ) == SnowLumaProvider().describe_connection(_Bot("8000"))
 
 
 def test_registry_uses_selected_provider_profile_not_constructor_strings() -> None:
@@ -260,38 +260,48 @@ def test_builtin_provider_doctor_freezes_the_core_onebot_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_social_operations_use_custom_provider_connection_without_brand_dispatch() -> None:
+async def test_registered_custom_provider_supplies_native_social_operations() -> None:
     from unittest.mock import AsyncMock
 
+    from qq_ai_bot.gateway.social import TransportMessage, TransportReceipt, TransportTarget
     from qq_ai_bot.identity.routing import ResolvedSend
-    from qq_ai_bot.social.service import SocialService
+
+    class NativeOperations:
+        async def send(self, handle, target, message):
+            reference = await handle.deliver(target.external_id, message.text)
+            return TransportReceipt(reference)
+
+    operations = NativeOperations()
+
+    class NativeProvider(_Provider):
+        @property
+        def social(self):
+            return operations
 
     @dataclass
     class ApiBot(_Bot):
-        call_api: AsyncMock
+        deliver: AsyncMock
 
-    bot = ApiBot("8000", AsyncMock(return_value={"message_id": "accepted"}))
-    registry = GatewayConnectionRegistry(providers=GatewayProviderCatalog((_Provider("custom"),)))
+    bot = ApiBot("8000", AsyncMock(return_value="accepted"))
+    registry = GatewayConnectionRegistry(
+        providers=GatewayProviderCatalog((NativeProvider("custom", platform="native-example"),))
+    )
     registry.connect(bot, presence_id="presence-yuki")
     route = ResolvedSend(
         presence_id="presence-yuki",
         binding_id="binding-peer",
-        platform="qq",
+        platform="native-example",
         external_target_id="1001",
         route_generation=1,
         connection=registry.resolve_active("presence-yuki"),
         kind="person",
         sender_account_id="8000",
     )
-    result = await SocialService._call(
-        route, "send_private_msg", {"user_id": 1001, "message": "hello"}
+    result = await registry.social(route.connection).send(
+        route.connection.bot, TransportTarget("person", "1001"), TransportMessage("hello")
     )
-    assert result == {"message_id": "accepted"}
-    bot.call_api.assert_awaited_with("send_private_msg", user_id=1001, message="hello")
-    bot.call_api.reset_mock()
-    with pytest.raises(ValueError, match="capability_unavailable"):
-        await SocialService._call(route, "provider_private_action", {})
-    bot.call_api.assert_not_awaited()
+    assert result.reference == "accepted"
+    bot.deliver.assert_awaited_once_with("1001", "hello")
 
 
 def test_gateway_doctor_does_not_require_runtime_settings(
@@ -310,44 +320,3 @@ def test_gateway_doctor_does_not_require_runtime_settings(
     administrative_cli.main()
 
     assert json.loads(capsys.readouterr().out)["provider_id"] == "snowluma"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "action",
-    [
-        "get_group_list",
-        "send_private_msg",
-        "send_group_msg",
-        "upload_private_file",
-        "upload_group_file",
-        "send_poke",
-        "get_group_member_list",
-        "get_group_member_info",
-        "delete_msg",
-        "get_friend_msg_history",
-        "get_group_msg_history",
-    ],
-)
-async def test_social_gateway_preserves_explicit_action_and_parameters(action):
-    from unittest.mock import AsyncMock
-
-    from qq_ai_bot.gateway.providers.social import OneBotSocialOperations
-
-    bot = AsyncMock()
-    params = {"group_id": "group", "user_id": "person"}
-    result = await OneBotSocialOperations().social_action(bot, action, params)
-    bot.call_api.assert_awaited_once_with(action, **params)
-    assert result is bot.call_api.return_value
-
-
-@pytest.mark.asyncio
-async def test_social_gateway_rejects_actions_outside_its_whitelist():
-    from unittest.mock import AsyncMock
-
-    from qq_ai_bot.gateway.providers.social import OneBotSocialOperations
-
-    bot = AsyncMock()
-    with pytest.raises(ValueError, match="capability_unavailable"):
-        await OneBotSocialOperations().social_action(bot, "set_group_admin", {})
-    bot.call_api.assert_not_awaited()

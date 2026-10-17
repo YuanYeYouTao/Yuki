@@ -1,15 +1,13 @@
-"""A retired seed profile keeps its real overrides through hot loading and editing."""
+"""Retired seed keys do not erase real parameters during current file hot loading."""
 
 import json
 
-import pytest
-from tests.conftest import make_settings
 from tests.support.semantic_participation_host_helpers import _host
 
-from qq_ai_bot.admin.config_files import ConfigFileError, ConfigFileService
+from qq_ai_bot.services.participation_parameters import AutonomyParameters
 
 
-async def test_old_profile_hot_load_and_versioned_save_preserve_overrides(database, tmp_path):
+async def test_old_profile_hot_load_and_explicit_file_update_preserve_overrides(database, tmp_path):
     path = tmp_path / "autonomous-model.json"
     legacy = {
         "source_interval_seconds": 45.0,
@@ -25,10 +23,6 @@ async def test_old_profile_hot_load_and_versioned_save_preserve_overrides(databa
     }
     path.write_text(json.dumps(legacy), encoding="utf-8")
     host, _ = await _host(database, tmp_path, observer=False)
-    service = ConfigFileService(
-        make_settings(database.url, semantic_participation_model_config_file=path),
-        autonomy_parameters=host.control_model_parameters,
-    )
     try:
         host._refresh_model_parameters()
         loaded = host.control_model_parameters()
@@ -40,31 +34,27 @@ async def test_old_profile_hot_load_and_versioned_save_preserve_overrides(databa
                 "independent_source_factor",
             }:
                 assert getattr(loaded, key) == value
-        initial = await service.read("autonomous_model")
-        assert initial["valid"] and initial["matches_loaded"]
-        assert "recall_source_decay_seconds" not in initial["document"]
-        assert "contact_source_decay_seconds" not in initial["parameter_schema"]["properties"]
-        document = {**initial["document"], "continuation_review_span": 2}
-        revision = await service.save(
-            "autonomous_model", initial["revision"], {"document": document}
+        document = loaded.model_dump(mode="json")
+        assert "recall_source_decay_seconds" not in document
+        assert (
+            "contact_source_decay_seconds"
+            not in AutonomyParameters.model_json_schema()["properties"]
         )
-        assert revision != initial["revision"]
-        saved = json.loads(path.read_text(encoding="utf-8"))
-        assert saved == document
-        assert saved["source_interval_seconds"] == 45
+        document["continuation_review_span"] = 2
+        pending = path.with_suffix(".next")
+        pending.write_text(json.dumps(document), encoding="utf-8")
+        pending.replace(path)
+        assert host.control_model_parameters().continuation_review_span == 4
         host._refresh_model_parameters()
         assert host.control_model_parameters().continuation_review_span == 2
-        assert (await service.read("autonomous_model"))["matches_loaded"]
-        with pytest.raises(ConfigFileError, match="version_conflict"):
-            await service.save(
-                "autonomous_model", initial["revision"], {"document": initial["document"]}
-            )
+        assert host.control_model_parameters().source_interval_seconds == 45
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved == document
 
         # Retiring these three names does not make arbitrary misspellings valid.
         path.write_text(json.dumps({**saved, "continuation_review_spam": 5}), encoding="utf-8")
         host._refresh_model_parameters()
         assert host._model_config_error == "ValidationError"
         assert host.control_model_parameters().continuation_review_span == 2
-        assert not (await service.read("autonomous_model"))["valid"]
     finally:
         await host.close()

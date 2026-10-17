@@ -73,7 +73,8 @@ def bootstrap(settings: Settings | None = None) -> None:
         )
     configure_logging(app_settings.log_level)
     driver = nonebot.get_driver()
-    driver.register_adapter(SnowLumaOneBotAdapter)
+    if app_settings.onebot_access_token:
+        driver.register_adapter(SnowLumaOneBotAdapter)
     application_lock = SQLiteApplicationLock(app_settings.sqlite_path)
 
     @driver.on_bot_connect
@@ -135,11 +136,14 @@ def bootstrap(settings: Settings | None = None) -> None:
     if not isinstance(driver, FastAPIDriver):
         raise RuntimeError("FastAPI driver is required")
     register_health_routes(driver.server_app)
-    from qq_ai_bot.webui.http import attach_webui
+    from qq_ai_bot.admin_api.http import attach_admin_api
 
-    attach_webui(driver.server_app, app_settings, lambda: get_container().control_plane)
+    attach_admin_api(driver.server_app, lambda: get_container().admin_api)
+    from qq_ai_bot.client_api.http import attach_client_api
 
-    nonebot.load_plugin("qq_ai_bot.plugins.ai_chat")
+    attach_client_api(driver.server_app, lambda: get_container().client_api)
+    if app_settings.onebot_access_token:
+        nonebot.load_plugin("qq_ai_bot.plugins.ai_chat")
 
 
 def run() -> None:

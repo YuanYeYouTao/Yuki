@@ -16,10 +16,6 @@ from qq_ai_bot.memory.dream.repository import DreamRepository
 from qq_ai_bot.memory.dream.service import DreamService
 from qq_ai_bot.memory.dream.worker import DreamWorker
 from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
-from qq_ai_bot.memory.evidence_compaction import (
-    EvidenceCompactionService,
-    EvidenceCompactionWorker,
-)
 from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
 from qq_ai_bot.memory.mutation.service import MemoryMutationService
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
@@ -54,7 +50,6 @@ class ConversationBundle:
     memory_maintenance_worker: MemoryMaintenanceWorker
     memory_self_reflection_worker: SelfReflectionWorker
     memory_dream_worker: DreamWorker
-    memory_evidence_compaction_worker: EvidenceCompactionWorker
 
 
 class ConversationModule:
@@ -169,14 +164,6 @@ class ConversationModule:
             ),
         )
         memory_dream_repository = DreamRepository(persistence.database)
-        memory_evidence_compaction_worker = EvidenceCompactionWorker(
-            settings=settings,
-            service=EvidenceCompactionService(
-                settings=settings,
-                database=persistence.database,
-                facts=persistence.memories,
-            ),
-        )
         memory_dream_worker = DreamWorker(
             settings=settings,
             repository=memory_dream_repository,
@@ -203,7 +190,6 @@ class ConversationModule:
             memory_maintenance_worker,
             memory_self_reflection_worker,
             memory_dream_worker,
-            memory_evidence_compaction_worker,
         )
 
     @staticmethod
@@ -233,9 +219,4 @@ class ConversationModule:
             start=bundle.memory_dream_worker.start,
             close=bundle.memory_dream_worker.close,
             health=bundle.memory_dream_worker.health,
-        )
-        lifecycle.register(
-            "memory_evidence_compaction_worker",
-            start=bundle.memory_evidence_compaction_worker.start,
-            close=bundle.memory_evidence_compaction_worker.close,
         )

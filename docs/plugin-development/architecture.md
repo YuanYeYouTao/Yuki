@@ -1,6 +1,6 @@
 # 架构
 
-Plugin API 3.5 把“可声明的扩展”和“可使用的运行时服务”分开：
+Plugin API 4.0 把“可声明的扩展”和“可使用的运行时服务”分开：
 
 ```text
 plugin.toml
@@ -56,8 +56,7 @@ plugin.toml
 
 所有 Facade 都是能力边界，不是 Repository 的别名；插件永远不能获得 SQLAlchemy Session。
 
-独立会话创建、追加和重置在首次 DML 前解析 canonical owner、消息发送者与返回 DTO 的
-Binding 投影。投影只读取确定排序后的首个可展示绑定，不用它选择业务所有者。
+独立会话创建、追加和重置在首次 DML 前解析 canonical owner 与实际消息发送者；返回 DTO 直接保留内部 Person/Space，不通过 QQ 绑定投影重建所有者。SELF 或无 Person 的插件计算保留真实 group/plugin 作用域，不伪造人类发送者。
 追加的序号分配与消息写入仍在同一短事务内；身份拒绝不会消耗序号。
 插件 KV 的 CAS 同样先核验所有权并准备展示字段，再按原版本条件写入。
 

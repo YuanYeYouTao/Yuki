@@ -33,9 +33,7 @@ class SocialOperationModel(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     source_turn_id: Mapped[str] = mapped_column(String(128), nullable=False)
     tool_call_id: Mapped[str] = mapped_column(String(128), nullable=False)
-    source_conversation_id: Mapped[str] = mapped_column(
-        ForeignKey("canonical_conversations.id", ondelete="RESTRICT"), nullable=False
-    )
+    source_conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
     action: Mapped[str] = mapped_column(String(32), nullable=False)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     target_kind: Mapped[str] = mapped_column(String(16), nullable=False)

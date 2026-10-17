@@ -177,6 +177,8 @@ class MemoryMutationContext:
     initiative_run_id: str | None = None
     source_occurred_at: datetime | None = None
     source_group_id: str | None = None
+    operation_id: str | None = None
+    actor_person_id: str | None = None
 
     @property
     def occurred_at(self) -> datetime:

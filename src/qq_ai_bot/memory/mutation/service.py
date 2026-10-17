@@ -18,6 +18,7 @@ from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationMode
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.memory_config import MemoryConfigScope
 from qq_ai_bot.event_prompt import ChatEventPromptRenderer
+from qq_ai_bot.identity.person_identity import same_person_condition, same_person_id
 from qq_ai_bot.memory.claim_processor import (
     MemoryClaimProcessor,
     MemoryClaimResolution,
@@ -79,9 +80,15 @@ from qq_ai_bot.memory.mutation.repository import MemoryMutationReceiptRepository
 from qq_ai_bot.memory.partition import (
     MemoryFactCanonicalOwners,
     MemoryPartitionResolutionError,
+    resolve_canonical_memory_partition_for_event,
 )
 from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.subjects import ResolvedSubject, SubjectResolver
+from qq_ai_bot.memory.subjects import (
+    ResolvedSubject,
+    SubjectContextBuilder,
+    SubjectResolutionContext,
+    SubjectResolver,
+)
 from qq_ai_bot.memory.temporal import MemoryTemporalResolver
 from qq_ai_bot.memory.validation import (
     ValidatedMemoryClaim,
@@ -89,6 +96,7 @@ from qq_ai_bot.memory.validation import (
 )
 from qq_ai_bot.persistence.models import (
     ChatEventModel,
+    MembershipModel,
     MemoryEvidenceModel,
     MemoryFactRelationModel,
     MemorySelfReflectionResultModel,
@@ -169,6 +177,7 @@ class MemoryMutationService:
         self._ledger = ledger
         self._receipts = receipts or MemoryMutationReceiptRepository(facts.repository.database)
         self._subjects = subject_resolver or SubjectResolver()
+        self._subject_context = SubjectContextBuilder(database=facts.repository.database)
         self._temporal = temporal_resolver or MemoryTemporalResolver()
 
     async def mutate(
@@ -178,6 +187,9 @@ class MemoryMutationService:
     ) -> MemoryMutationResult:
         """Validate, resolve, commit, and receipt one requested mutation."""
 
+        original = await self._original_operation(request, context)
+        if original is not None:
+            return original
         try:
             prepared = await self._prepare(request, context)
         except MemoryMutationRejected as exc:
@@ -187,6 +199,23 @@ class MemoryMutationService:
                 candidates=exc.candidates,
             )
         return await self._commit_prepared(prepared)
+
+    async def _original_operation(
+        self, request: MemoryMutationRequest, context: MemoryMutationContext
+    ) -> MemoryMutationResult | None:
+        if context.operation_id is None:
+            return None
+        receipt = await self._receipts.find(
+            idempotency_key=_fingerprint({"operation_id": context.operation_id}),
+            claim_fingerprint="",
+        )
+        if receipt is None:
+            return None
+        if receipt.claim_fingerprint != _request_fingerprint(request, context):
+            return self._rejected(request.operation, "memory_operation_payload_conflict")
+        return MemoryMutationResult.from_receipt(
+            receipt, deduplicated=True, requested_operation=request.operation
+        )
 
     @staticmethod
     def select_dream_anchor(facts: tuple[MemoryFact, ...]) -> MemoryFact:
@@ -235,7 +264,9 @@ class MemoryMutationService:
             session=session,
         )
         partition = self._dream_partition(sources[0])
-        if any(self._dream_partition(item) != partition for item in sources[1:]):
+        if any(
+            item.kind != sources[0].kind for item in sources[1:]
+        ) or not await self._facts.same_targets(sources, session=session):
             raise ValueError("dream mutation cannot cross memory partitions")
         if operation_type is DreamOperationType.RECOMPOSE:
             if any(not 1 <= output.importance <= 5 for output in recompose_outputs):
@@ -965,6 +996,9 @@ class MemoryMutationService:
     ) -> MemoryMutationResult:
         """Apply a trusted command/admin/plugin target through the same boundary."""
 
+        original = await self._original_operation(request, context)
+        if original is not None:
+            return original
         if additional_evidence and not self._trusted_self_reflection(context):
             return self._rejected(request.operation, "evidence_bundle_requires_self_reflection")
         if additional_evidence and context.initiative_run_id is not None:
@@ -1106,6 +1140,8 @@ class MemoryMutationService:
                 )
             ):
                 raise MemoryMutationRejected("initiative_memory_scope_forbidden")
+            if target.visibility_type is SelfMemoryVisibility.GROUP:
+                target = replace(target, canonical_visibility_space_id=source.space_id)
             owners = await self._facts.requested_target_owners(target, session=session)
         context = replace(
             context,
@@ -1117,7 +1153,7 @@ class MemoryMutationService:
             config_scope=MemoryConfigScope(space_id=source.space_id),
         )
         self._validate_self_request(request, target, None, fact=fact, merge_fact=merge_fact)
-        self._validate_fact_requirements(
+        await self._validate_fact_requirements(
             request,
             target,
             owners,
@@ -1159,6 +1195,12 @@ class MemoryMutationService:
             "fact_id": request.fact_id,
             "merge_fact_id": request.merge_fact_id,
         }
+        fingerprint = _request_fingerprint(request, context)
+        identity = (
+            _fingerprint({"operation_id": context.operation_id})
+            if context.operation_id is not None
+            else _fingerprint({**common, "request": request.model_dump(mode="json")})
+        )
         return _PreparedMutation(
             request,
             context,
@@ -1171,8 +1213,8 @@ class MemoryMutationService:
             merge_fact,
             evidence,
             claim,
-            _fingerprint(common),
-            _fingerprint(common),
+            identity,
+            fingerprint,
             _fingerprint(target_payload),
         )
 
@@ -1234,13 +1276,13 @@ class MemoryMutationService:
                 current_owners = (
                     self._facts.persisted_target_owners(prepared.fact)
                     if request.target is None and prepared.fact is not None
-                    else await self._facts.requested_target_owners(
-                        prepared.target, session=session
-                    )
+                    else await self._facts.requested_target_owners(prepared.target, session=session)
                 )
                 current_actor = (
                     await self._facts.resolve_person_id(
-                        context.trigger_actor_user_id, session=session
+                        context.trigger_actor_user_id,
+                        session=session,
+                        person_id=context.actor_person_id or context.event.author_person_id,
                     )
                     if context.event is not None
                     else None
@@ -1256,9 +1298,7 @@ class MemoryMutationService:
                 != source_snapshot
             ):
                 raise MemoryMutationRejected("memory_resolution_snapshot_changed")
-            facts = tuple(
-                fact for fact in (prepared.fact, prepared.merge_fact) if fact is not None
-            )
+            facts = tuple(fact for fact in (prepared.fact, prepared.merge_fact) if fact is not None)
             targets: tuple[MemoryFact | MemoryFactCreate, ...] = facts
             if prepared.claim is not None:
                 targets = (*targets, prepared.claim.fact)
@@ -1558,7 +1598,7 @@ class MemoryMutationService:
             event is None
             or event.direction != "inbound"
             or not event.author_is_human()
-            or not self._validated_claim_matches_event(claim, event)
+            or not await self._validated_claim_matches_event(claim, event)
         ):
             return self._rejected(operation, "untrusted_trigger_event")
         if job.event_id != event.id:
@@ -1570,7 +1610,9 @@ class MemoryMutationService:
                     session=identity_session,
                 )
                 actor_person_id = await self._facts.resolve_person_id(
-                    event.sender_user_id, session=identity_session
+                    event.sender_user_id,
+                    session=identity_session,
+                    person_id=event.author_person_id,
                 )
                 source_snapshot = await self._mutation_source_snapshot(
                     event, (claim.evidence,), session=identity_session
@@ -1590,8 +1632,14 @@ class MemoryMutationService:
                 claim.fact.content,
             ).casefold(),
         }
-        claim_fingerprint = _fingerprint(common)
-        idempotency_key = _fingerprint({**common, "operation": operation.value})
+        claim_fingerprint = _fingerprint(
+            {
+                **common,
+                "claim": claim.fact.model_dump(mode="json"),
+                "evidence": claim.evidence.model_dump(mode="json"),
+            }
+        )
+        idempotency_key = _fingerprint({"automatic_claim": claim_fingerprint})
         target_fingerprint = _fingerprint(target_payload)
         existing = await self._receipts.find(
             idempotency_key=idempotency_key,
@@ -1623,18 +1671,20 @@ class MemoryMutationService:
                     claim.fact, session=session
                 )
                 current_actor = await self._facts.resolve_person_id(
-                    event.sender_user_id, session=session
+                    event.sender_user_id,
+                    session=session,
+                    person_id=event.author_person_id,
                 )
             except MemoryPartitionResolutionError:
                 raise MemoryMutationRejected("memory_resolution_snapshot_changed") from None
             if (
                 current_owners != target_owners
                 or current_actor != actor_person_id
-                or await self._mutation_source_snapshot(
-                    event, (claim.evidence,), session=session
-                )
+                or await self._mutation_source_snapshot(event, (claim.evidence,), session=session)
                 != source_snapshot
             ):
+                raise MemoryMutationRejected("memory_resolution_snapshot_changed")
+            if not await self._validated_claim_matches_event(claim, event, session=session):
                 raise MemoryMutationRejected("memory_resolution_snapshot_changed")
             await self._facts.prepare_evidence_write(
                 (),
@@ -1710,6 +1760,7 @@ class MemoryMutationService:
         *,
         target_override: ResolvedSubject | None = None,
     ) -> _PreparedMutation:
+        request_fingerprint = _request_fingerprint(request, context)
         event = context.event
         if event is None:
             return await self._prepare_self_origin(request, context, target_override)
@@ -1744,11 +1795,13 @@ class MemoryMutationService:
             subject_ref = "existing_fact"
             target = target_override or self._target_from_fact(fact)
         else:
-            subject_ref = self._normalize_subject_ref(request.target.subject_ref, event)
+            subject_context = await self._subject_context.build(event)
+            subject_ref = self._normalize_subject_ref(request.target.subject_ref, subject_context)
             resolved_target = target_override or self._subjects.resolve(
                 event,
                 subject_ref=subject_ref,
                 scope_type=request.target.scope_type,
+                context=subject_context,
             )
             if resolved_target is None:
                 raise MemoryMutationRejected("target_not_available_in_current_event")
@@ -1757,6 +1810,7 @@ class MemoryMutationService:
                 raise MemoryMutationRejected("target_scope_mismatch")
         request = self._normalize_visibility_hint(request, target)
         target = self._resolve_visibility(request, target, event, fact=fact)
+        target = await self._subject_context.resolve_target(event, target)
         try:
             async with self._facts.repository.transaction() as identity_session:
                 target_owners = (
@@ -1770,14 +1824,18 @@ class MemoryMutationService:
                 actor_person_id = await self._facts.resolve_person_id(
                     context.trigger_actor_user_id,
                     session=identity_session,
+                    person_id=context.actor_person_id or event.author_person_id,
+                )
+                actor_owns_target = bool(
+                    actor_person_id
+                    and target_owners.subject_person_id
+                    and await same_person_id(
+                        identity_session, actor_person_id, target_owners.subject_person_id
+                    )
                 )
         except MemoryPartitionResolutionError as exc:
             raise MemoryMutationRejected("canonical_identity_unavailable") from exc
-        actor_owns_target = bool(
-            actor_person_id
-            and target_owners.subject_person_id
-            and actor_person_id == target_owners.subject_person_id
-        )
+
         self._authorize(
             request.operation,
             target,
@@ -1807,7 +1865,7 @@ class MemoryMutationService:
                 update={"merge_fact_id": merge_fact.id, "merge_selector": None}
             )
         self._validate_self_request(request, target, event, fact=fact, merge_fact=merge_fact)
-        self._validate_fact_requirements(
+        await self._validate_fact_requirements(
             request,
             target,
             target_owners,
@@ -1821,7 +1879,7 @@ class MemoryMutationService:
         elif trusted_self_reflection:
             quote = self._self_reflection_evidence_quote(request, event)
         else:
-            quote = self._evidence_quote(request, event.content)
+            quote = self._evidence_quote(request, event.evidence_content)
         if not quote:
             raise MemoryMutationRejected("memory_evidence_quote_required")
         authority, source_type = self._provenance(
@@ -1877,14 +1935,11 @@ class MemoryMutationService:
             MemoryDecisionActorType.SYSTEM,
         }:
             common["decision_namespace"] = context.delegation_mode
-        claim_fingerprint = _fingerprint(common)
-        idempotency_key = _fingerprint(
-            {
-                **common,
-                "operation": request.operation.value,
-                "fact_id": request.fact_id,
-                "merge_fact_id": request.merge_fact_id,
-            }
+        claim_fingerprint = request_fingerprint
+        idempotency_key = (
+            _fingerprint({"operation_id": context.operation_id})
+            if context.operation_id is not None
+            else _fingerprint({**common, "request": request.model_dump(mode="json")})
         )
         return _PreparedMutation(
             request=request,
@@ -2058,18 +2113,7 @@ class MemoryMutationService:
         fact = self._required_fact(prepared)
         request = prepared.request
         reassign = request.operation is MemoryMutationOperation.REASSIGN
-        target = (
-            prepared.target
-            if reassign
-            else ResolvedSubject(
-                fact.scope_type,
-                fact.subject_user_id,
-                fact.group_id,
-                fact.visibility_type,
-                fact.visibility_user_id,
-                fact.visibility_group_id,
-            )
-        )
+        target = prepared.target if reassign else self._target_from_fact(fact)
         authority, source_type = self._provenance(
             target,
             prepared.context,
@@ -2096,6 +2140,10 @@ class MemoryMutationService:
             visibility_type=target.visibility_type,
             visibility_user_id=target.visibility_user_id,
             visibility_group_id=target.visibility_group_id,
+            canonical_subject_person_id=target.canonical_subject_person_id,
+            canonical_subject_space_id=target.canonical_subject_space_id,
+            canonical_visibility_person_id=target.canonical_visibility_person_id,
+            canonical_visibility_space_id=target.canonical_visibility_space_id,
             kind=request.kind or fact.kind,
             memory_key=normalize_memory_text(
                 request.memory_key or fact.memory_key,
@@ -2205,6 +2253,10 @@ class MemoryMutationService:
                 visibility_type=resolved_target.visibility_type,
                 visibility_user_id=resolved_target.visibility_user_id,
                 visibility_group_id=resolved_target.visibility_group_id,
+                canonical_subject_person_id=resolved_target.canonical_subject_person_id,
+                canonical_subject_space_id=resolved_target.canonical_subject_space_id,
+                canonical_visibility_person_id=resolved_target.canonical_visibility_person_id,
+                canonical_visibility_space_id=resolved_target.canonical_visibility_space_id,
                 kind=request.kind or (fact.kind if fact else MemoryKind.FACT),
                 memory_key=key,
                 category=category,
@@ -2263,6 +2315,10 @@ class MemoryMutationService:
                 visibility_type=target.visibility_type,
                 visibility_user_id=target.visibility_user_id,
                 visibility_group_id=target.visibility_group_id,
+                canonical_subject_person_id=target.canonical_subject_person_id,
+                canonical_subject_space_id=target.canonical_subject_space_id,
+                canonical_visibility_person_id=target.canonical_visibility_person_id,
+                canonical_visibility_space_id=target.canonical_visibility_space_id,
             ),
             memory_key=memory_key,
             normalized_content=normalized_content,
@@ -2332,14 +2388,7 @@ class MemoryMutationService:
             and fact is not None
             and fact.scope_type is MemoryScopeType.SELF
         ):
-            return ResolvedSubject(
-                MemoryScopeType.SELF,
-                None,
-                None,
-                fact.visibility_type,
-                fact.visibility_user_id,
-                fact.visibility_group_id,
-            )
+            return self._target_from_fact(fact)
         mode = request.visibility or SelfMemoryVisibilityMode.CURRENT_SCOPE
         if mode is SelfMemoryVisibilityMode.GLOBAL:
             return ResolvedSubject(
@@ -2403,8 +2452,8 @@ class MemoryMutationService:
             }:
                 raise MemoryMutationRejected("private_self_fact_cannot_be_global")
 
-    @staticmethod
-    def _validate_fact_requirements(
+    async def _validate_fact_requirements(
+        self,
         request: MemoryMutationRequest,
         target: ResolvedSubject,
         target_owners: MemoryFactCanonicalOwners,
@@ -2435,19 +2484,9 @@ class MemoryMutationService:
             and fact.status is not request.expected_fact_state
         ):
             raise MemoryMutationRejected("expected_fact_state_mismatch")
-        fact_target = MemoryFactService.target_signature(
-            scope_type=fact.scope_type,
-            visibility_type=fact.visibility_type,
-            owners=MemoryFactService.persisted_target_owners(fact),
-        )
-        requested_target = MemoryFactService.target_signature(
-            scope_type=target.scope_type,
-            visibility_type=target.visibility_type,
-            owners=target_owners,
-        )
         if (
             request.operation is not MemoryMutationOperation.REASSIGN
-            and fact_target != requested_target
+            and not await self._facts.same_targets((fact, target))
         ):
             raise MemoryMutationRejected("fact_target_mismatch")
         if request.operation is MemoryMutationOperation.REASSIGN:
@@ -2461,19 +2500,14 @@ class MemoryMutationService:
                 raise MemoryMutationRejected("reassign_must_remain_in_current_group")
             if (
                 not context.actor_is_superuser
-                and fact.canonical_subject_person_id != actor_person_id
+                and not await self._facts.person_owns_fact(fact, actor_person_id=actor_person_id)
                 and fact.authority in {MemoryAuthority.EXPLICIT, MemoryAuthority.SELF_REPORT}
             ):
                 raise MemoryMutationRejected("third_party_cannot_reassign_subject_owned_fact")
         if request.operation is MemoryMutationOperation.MERGE:
             if merge_fact is None:
                 raise MemoryMutationRejected("merge_fact_required")
-            merge_target = MemoryFactService.target_signature(
-                scope_type=merge_fact.scope_type,
-                visibility_type=merge_fact.visibility_type,
-                owners=MemoryFactService.persisted_target_owners(merge_fact),
-            )
-            if merge_target != requested_target:
+            if not await self._facts.same_targets((merge_fact, target)):
                 raise MemoryMutationRejected("merge_target_mismatch")
         elif merge_fact is not None:
             raise MemoryMutationRejected("merge_fact_id_only_valid_for_merge")
@@ -2536,7 +2570,7 @@ class MemoryMutationService:
             raise MemoryMutationRejected("operation_not_allowed_for_target")
 
     @staticmethod
-    def _normalize_subject_ref(subject_ref: str, event: EventRecord) -> str:
+    def _normalize_subject_ref(subject_ref: str, subject_context: SubjectResolutionContext) -> str:
         normalized = subject_ref.strip().casefold()
         aliases = {
             "current_speaker": "speaker",
@@ -2547,7 +2581,7 @@ class MemoryMutationService:
         if normalized == "mentioned_user":
             available = tuple(
                 item
-                for item in SubjectResolver.available(event)
+                for item in subject_context.available_subjects
                 if item.subject_ref.startswith("member_")
             )
             if len(available) != 1:
@@ -2592,7 +2626,7 @@ class MemoryMutationService:
     ) -> tuple[MemoryAuthority, MemorySourceType]:
         if target.scope_type is MemoryScopeType.SELF:
             return MemoryAuthority.AGENT_REFLECTION, MemorySourceType.AUTOMATIC
-        if target.subject_user_id and not actor_owns_target:
+        if (target.canonical_subject_person_id or target.subject_user_id) and not actor_owns_target:
             return MemoryAuthority.THIRD_PARTY, MemorySourceType.AUTOMATIC
         if target.scope_type is MemoryScopeType.GROUP:
             return MemoryAuthority.GROUP_REPORT, MemorySourceType.AUTOMATIC
@@ -2679,6 +2713,10 @@ class MemoryMutationService:
             fact.visibility_type,
             fact.visibility_user_id,
             fact.visibility_group_id,
+            fact.canonical_subject_person_id,
+            fact.canonical_subject_space_id,
+            fact.canonical_visibility_person_id,
+            fact.canonical_visibility_space_id,
         )
 
     @staticmethod
@@ -2741,30 +2779,56 @@ class MemoryMutationService:
             return MemoryMutationOperation.INVALIDATE
         return MemoryMutationOperation.CREATE
 
-    @staticmethod
-    def _validated_claim_matches_event(
+    async def _validated_claim_matches_event(
+        self,
         claim: ValidatedMemoryClaim,
         event: EventRecord,
+        *,
+        session: AsyncSession | None = None,
     ) -> bool:
         if (
             claim.evidence.event_id != event.id
             or claim.evidence.source_speaker_user_id != event.sender_user_id
         ):
             return False
-        fact = claim.fact
-        if fact.scope_type is MemoryScopeType.PERSON:
-            return fact.subject_user_id == event.sender_user_id and fact.group_id is None
-        if fact.scope_type is MemoryScopeType.GROUP:
-            return fact.subject_user_id is None and fact.group_id == event.group_id
-        referenced = {*event.mentioned_user_ids}
-        if event.reply_sender_user_id:
-            referenced.add(event.reply_sender_user_id)
-        return bool(
-            fact.scope_type is MemoryScopeType.PERSON_GROUP
-            and fact.group_id is not None
-            and fact.group_id == event.group_id
-            and fact.subject_user_id != event.bot_user_id
-            and fact.subject_user_id in {event.sender_user_id, *referenced}
+        if session is None:
+            async with self._facts.repository.database.sessions() as owned:
+                return await self._validated_claim_matches_event(claim, event, session=owned)
+        try:
+            owners = await self._facts.requested_target_owners(claim.fact, session=session)
+            source = await resolve_canonical_memory_partition_for_event(session, event)
+        except MemoryPartitionResolutionError:
+            return False
+        if claim.fact.scope_type is MemoryScopeType.PERSON:
+            return bool(
+                owners.subject_person_id
+                and event.author_person_id
+                and await same_person_id(session, owners.subject_person_id, event.author_person_id)
+            )
+        if owners.subject_space_id is None or owners.subject_space_id != source.space_id:
+            return False
+        if claim.fact.scope_type is MemoryScopeType.GROUP:
+            return True
+        if claim.fact.scope_type is not MemoryScopeType.PERSON_GROUP:
+            return False
+        if (
+            owners.subject_person_id
+            and event.author_person_id
+            and await same_person_id(session, owners.subject_person_id, event.author_person_id)
+        ):
+            return True
+        # Named-member aliases, mentions and replies all resolve to actual members
+        # of the source Space before a claim reaches this private boundary.
+        return (
+            await session.scalar(
+                select(MembershipModel.canonical_person_id).where(
+                    same_person_condition(
+                        MembershipModel.canonical_person_id, owners.subject_person_id
+                    ),
+                    MembershipModel.canonical_space_id == source.space_id,
+                )
+            )
+            is not None
         )
 
     @staticmethod
@@ -2833,3 +2897,14 @@ def _canonical_target_payload(
 def _fingerprint(payload: object) -> str:
     encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _request_fingerprint(request: MemoryMutationRequest, context: MemoryMutationContext) -> str:
+    return _fingerprint(
+        {
+            "request": request.model_dump(mode="json"),
+            "event_id": context.event.id if context.event is not None else None,
+            "initiative_run_id": context.initiative_run_id,
+            "execution_id": context.decision_actor_id,
+        }
+    )

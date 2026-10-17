@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from qq_ai_bot.control_plane.decision import decide
-from qq_ai_bot.control_plane.principal import ControlPrincipal
-from qq_ai_bot.control_plane.targets import PersonControlTarget
+from qq_ai_bot.admin.authority.decision import decide
+from qq_ai_bot.admin.authority.principal import ControlPrincipal
+from qq_ai_bot.admin.authority.targets import PersonControlTarget
 from qq_ai_bot.domain.control import DecisionContext
 
 SUPERUSER_ONLY_MESSAGE = "只有当前真实超级管理员可以执行该操作"
@@ -42,10 +42,7 @@ def is_self(context: object, audit: ControlAuditSubject) -> bool:
     target = context.canonical_target
     if type(principal) is not ControlPrincipal or type(target) is not PersonControlTarget:
         return False
-    if principal.person_id is not None and target.person_id is not None:
-        if principal.person_id == target.person_id:
-            return True
-    return audit.user_id == target.storage_user_id
+    return principal.person_id is not None and principal.person_id == target.person_id
 
 
 def require_self_or_capability(
@@ -71,4 +68,6 @@ def person_storage_id(context: object) -> str:
     target = getattr(context, "canonical_target", None)
     if type(target) is not PersonControlTarget:
         raise TypeError("canonical_target must be PersonControlTarget")
-    return target.storage_user_id
+    if target.person_id is None:
+        raise ValueError("missing_canonical_owner")
+    return target.person_id.text

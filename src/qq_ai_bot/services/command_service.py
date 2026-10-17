@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -23,9 +22,11 @@ from qq_ai_bot.conversation.projections import current_checkpoint_query
 from qq_ai_bot.conversation.scope import runtime_conversation_key
 from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.identity import PersonId
 from qq_ai_bot.domain.messages import InboundMessage, OutboundMessage
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.admin import EmojiAdminService
+from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
@@ -42,13 +43,10 @@ from qq_ai_bot.services.admin.private_access_admin import PrivateAccessAdminServ
 from qq_ai_bot.services.automation_commands import AutomationCommandHandler
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.config_commands import ConfigCommandHandler
-from qq_ai_bot.services.media_resolver import OneBotMediaGateway
 from qq_ai_bot.services.policies import CommandName, command_requires_superuser
 from qq_ai_bot.services.profile_commands import ProfileCommandHandler
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.services.vision_service import VisionService
-
-_NUMERIC_PLATFORM_ID = re.compile(r"[1-9][0-9]{4,19}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -136,8 +134,8 @@ class CommandService:
         if self._plugin_commands is None:
             return CommandExecution("插件直达命令当前不可用。")
         runtime = await self._runtime_config.snapshot(
-            user_id=message.sender.user_id,
-            group_id=message.group_id,
+            user_id=message.person_id,
+            group_id=message.space_id,
         )
         text = await self._plugin_commands.execute_direct(
             message=message,
@@ -187,9 +185,12 @@ class CommandService:
         profile: UserProfileSnapshot,
         argument: str,
         started: float,
-        gateway: OneBotMediaGateway | None = None,
+        gateway: PlatformMediaGateway | None = None,
     ) -> CommandExecution:
-        is_superuser = message.sender.user_id in self._settings.superusers
+        principal = await self._control.principal_for_person(message.person_id)
+        assert principal.person_id is not None
+        person_id = principal.person_id.text
+        is_superuser = "superuser" in principal.roles
         conversation_key = runtime_conversation_key(identity=identity, inbound=message)
         actor = AdminActor(
             user_id=message.sender.user_id,
@@ -201,6 +202,9 @@ class CommandService:
             conversation_key=conversation_key,
             current_group_id=message.group_id,
             bot_user_id=message.bot_user_id,
+            person_id=person_id,
+            space_id=message.space_id,
+            platform=message.platform,
         )
         record_reply = command is not CommandName.FORGETME
         if command_requires_superuser(command) and not is_superuser:
@@ -309,15 +313,14 @@ class CommandService:
                 )
             text = "已取消当前 AI 请求。" if cancelled else "当前没有正在处理的 AI 请求。"
         elif command in {CommandName.ON, CommandName.OFF}:
-            if message.scope_type is not ScopeType.GROUP or message.group_id is None:
+            if message.scope_type is not ScopeType.GROUP or message.space_id is None:
                 text = "该命令只能在群聊中使用。"
             else:
                 enabled = command is CommandName.ON
                 try:
-                    principal = await self._control.principal_for_qq(message.sender.user_id)
                     context = self._control.context(
                         principal,
-                        await self._control.space_target(message.group_id),
+                        await self._control.space_target(message.space_id),
                     )
                     audit = audit_ref_from_actor(actor)
                     if enabled:
@@ -331,12 +334,11 @@ class CommandService:
         elif command in {CommandName.PRIVATE, CommandName.GROUP}:
             parsed = self._parse_access_switch(argument)
             if parsed is None:
-                noun = "QQ号" if command is CommandName.PRIVATE else "群号"
+                noun = "Person ID" if command is CommandName.PRIVATE else "Space ID"
                 text = f"格式错误，请使用 /ai {command.value} <{noun}> on|off。"
             else:
                 target_id, enabled = parsed
                 try:
-                    principal = await self._control.principal_for_qq(message.sender.user_id)
                     audit = audit_ref_from_actor(actor)
                     if command is CommandName.PRIVATE:
                         person_context = self._control.context(
@@ -352,9 +354,9 @@ class CommandService:
                                 person_context, audit=audit
                             )
                         text = (
-                            "已开启指定 QQ 用户的私聊权限。"
+                            "已开启指定人物的私聊权限。"
                             if enabled
-                            else "已关闭指定 QQ 用户的私聊权限。"
+                            else "已关闭指定人物的私聊权限。"
                         )
                     else:
                         space_context = self._control.context(
@@ -378,11 +380,11 @@ class CommandService:
             if argument:
                 text = "该命令不接受参数，只能删除发送者本人数据。"
             else:
-                deleted = await self._people.delete_person(message.sender.user_id)
+                deleted = await self._people.delete_person_id(person_id)
                 text = (
-                    "已彻底删除与你 QQ 号关联的人物、记忆、成员关系和可归属聊天事件。"
+                    "已彻底删除与你当前人物关联的人物、记忆、成员关系和可归属聊天事件。"
                     if deleted
-                    else "没有找到与你 QQ 号关联的数据。"
+                    else "没有找到与你当前人物关联的数据。"
                 )
         elif command is CommandName.MEMORY:
             text = await self._profile_commands.memory(
@@ -395,7 +397,7 @@ class CommandService:
                 argument=argument,
             )
         elif command is CommandName.CAPABILITIES:
-            text = self._config_commands.capabilities(message, argument)
+            text = self._config_commands.capabilities(message, argument, is_superuser=is_superuser)
         elif command is CommandName.CONFIG:
             text = await self._config_commands.config(actor, argument)
         elif command is CommandName.AUTOMATION:
@@ -413,8 +415,8 @@ class CommandService:
                     identity=identity,
                     argument=argument,
                     runtime=await self._runtime_config.snapshot(
-                        user_id=message.sender.user_id,
-                        group_id=message.group_id,
+                        user_id=message.person_id,
+                        group_id=message.space_id,
                     ),
                 )
         elif command is CommandName.EMOJI:
@@ -475,7 +477,7 @@ class CommandService:
     @staticmethod
     def _help_text() -> str:
         return (
-            "QQ AI 助手命令：\n"
+            "Yuki 助手命令：\n"
             "/ai help | new | compact [重点] | status | stop | ping | whoami | forgetme\n"
             "/ai compact [重点] 压缩当前会话公共历史；群内仅超级管理员可用。\n"
             "/ai new 重置当前 Conversation；群内影响全部参与者，仅超级管理员可用。\n"
@@ -484,17 +486,17 @@ class CommandService:
             "共同群可读 Person（含私聊来源事实），不开放原始私聊/他人证据；写入权限不变。\n"
             "普通自动提取最长等待一小时，空提取正常；明确记忆修改仍即时执行。\n"
             "/ai memory show|explain|history <fact_id>\n"
-            "/ai memory conflicts [user <QQ号>] | correct | invalidate | restore\n"
+            "/ai memory conflicts [user <Person ID>] | correct | invalidate | restore\n"
             "/ai memory merge|resolve|doctor|maintenance（超级管理员操作按权限执行）\n"
             "/ai memory self-reflection run | status [run_id] [页码]（超级管理员后台自省）\n"
             "/ai memory dream plan|start|list|status|show|preview|cancel|resume|retry|rollback"
             "（超级管理员）\n"
-            "/ai memory search person <QQ号> <query>（超级管理员）\n"
-            "/ai memory search group <群号> <query>（超级管理员）\n"
+            "/ai memory search person <Person ID> <query>（超级管理员）\n"
+            "/ai memory search group <Space ID> <query>（超级管理员）\n"
             "/ai memory index status|rebuild（超级管理员）\n"
             "/ai memory embedding status|doctor|retry|rebuild|purge-old（超级管理员）\n"
             "/ai preference list|set|delete\n"
-            "/ai capabilities [类别]（查看当前 QQ 的完整权限与可改范围）\n"
+            "/ai capabilities [类别]（查看当前主体的完整权限与可改范围）\n"
             "/ai config list|get|set|unset|history|rollback（超级管理员）\n"
             "/ai automation list|show|pause|resume|cancel|run|history <任务ID>\n"
             "/ai plugin list|show|permissions|approve|enable|disable|doctor|run\n"
@@ -502,16 +504,20 @@ class CommandService:
             "/ai emoji stats|cleanup|doctor|import\n"
             "/ai model stats（超级管理员）\n"
             "/ai on|off（超级管理员，当前群；on 可恢复暂停的群路由）\n"
-            "/ai group <群号> on|off（超级管理员）\n"
-            "/ai private <QQ号> on|off（超级管理员；阻止/恢复私聊）\n"
-            "超级管理员可在 memory/preference 操作名后加 user <QQ号>。"
+            "/ai group <Space ID> on|off（超级管理员）\n"
+            "/ai private <Person ID> on|off（超级管理员；阻止/恢复私聊）\n"
+            "超级管理员可在 memory/preference 操作名后加 user <Person ID>。"
         )
 
     @staticmethod
     def _parse_access_switch(argument: str) -> tuple[str, bool] | None:
-        parts = argument.casefold().split()
-        if len(parts) != 2 or _NUMERIC_PLATFORM_ID.fullmatch(parts[0]) is None:
+        parts = argument.split()
+        if len(parts) != 2:
             return None
-        if parts[1] not in {"on", "off"}:
+        try:
+            target = PersonId.parse(parts[0]).text
+        except (TypeError, ValueError):
             return None
-        return parts[0], parts[1] == "on"
+        if parts[1].casefold() not in {"on", "off"}:
+            return None
+        return target, parts[1].casefold() == "on"

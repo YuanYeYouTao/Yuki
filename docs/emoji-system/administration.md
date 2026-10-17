@@ -1,7 +1,7 @@
 # 管理
 
 以下 QQ 修改命令只接受当前 OneBot 事件中真实发送者属于 `SUPERUSERS` 的调用。
-Control/WebUI 修改由可信 operator 的 `control.emoji.mutate` 授权，仍经同一业务服务执行。
+表情管理继续通过 `/ai` 调用原领域服务；资源上传等管理界面能力本期不另设入口。
 
 ```text
 /ai emoji list [状态]

@@ -1,8 +1,8 @@
 # 模型配置单一路径迁移
 
 模型连接的部署文件统一为 `webui-config/model_profiles.toml`；同目录的
-`model_profiles.secrets.json` 保存 WebUI 输入的 API Key。基础 Compose 将目录只读挂入
-`/app/webui-config`，WebUI overlay 对同一目录提供热配置所需的写权限。
+`model_profiles.secrets.json` 保存管理入口写入的 API Key。基础 Compose 将目录只读挂入
+`/app/webui-config`，本地 Compose override 可将同一目录挂载为可写，供管理 API 热应用。
 `config/model_profiles.toml` 是旧部署路径，不再作为新部署的模型路由来源。
 
 ## 从旧部署迁移

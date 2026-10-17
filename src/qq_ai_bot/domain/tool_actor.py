@@ -26,9 +26,12 @@ class ToolActor:
     conversation_id: str | None = None
     presence_id: str | None = None
     mentioned_user_ids: tuple[str, ...] = ()
+    mentioned_person_ids: tuple[str, ...] = ()
     principal_kind: Literal["person", "self"] = "person"
     initiative_run_id: str | None = None
     automation_run_id: int | None = None
+    platform: str = "qq"
+    space_id: str | None = None
 
     def __post_init__(self) -> None:
         if self.principal_kind == "self":
@@ -55,6 +58,7 @@ class ToolActor:
                 or self.event_id is not None
                 or self.platform_message_id
                 or self.mentioned_user_ids
+                or self.mentioned_person_ids
             ):
                 raise ValueError("invalid_self_tool_actor")
         elif (
@@ -102,4 +106,7 @@ class ToolActor:
             conversation_id=inbound.conversation_id,
             presence_id=inbound.presence_id,
             mentioned_user_ids=inbound.mentioned_user_ids,
+            mentioned_person_ids=inbound.mentioned_person_ids,
+            platform=inbound.platform,
+            space_id=inbound.space_id,
         )

@@ -185,8 +185,6 @@ class PluginCommandAdapter:
             return f"插件命令参数错误：{type(exc).__name__}"
         tool_runtime = ToolRuntime(
             inbound=message,
-            gateway=None,
-            allow_generic_onebot=False,
             conversation_key=plugin_conversation_key(message, identity),
             trigger_message_id=message.message_id,
             trigger_event_id=message.source_event_id,

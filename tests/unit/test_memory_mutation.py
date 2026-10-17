@@ -706,7 +706,7 @@ async def test_bot_event_cannot_become_user_memory_evidence(database: Database) 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("has_event_id", [True, False])
-async def test_agent_tool_and_worker_share_one_claim_receipt(
+async def test_agent_tool_and_worker_keep_independent_operation_receipts(
     database: Database, has_event_id: bool
 ) -> None:
     service, facts, ledger, processor = _service(database)
@@ -736,8 +736,6 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(
     )
     runtime = ToolRuntime(
         inbound=inbound,
-        gateway=None,
-        allow_generic_onebot=False,
         conversation_key="private:1001",
         trigger_message_id=event.platform_message_id,
         trigger_event_id=event.id if has_event_id else None,
@@ -802,9 +800,13 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(
     )
 
     assert worker_result.ok
-    assert worker_result.deduplicated
-    assert worker_result.mutation_id == response["data"]["mutation_id"]
-    assert len(await facts.list_person("1001", limit=20)) == 1
+    assert not worker_result.deduplicated
+    assert worker_result.mutation_id != response["data"]["mutation_id"]
+    assert len(await facts.list_person("1001", limit=20)) == 2
+    replay = await service.mutate_validated_claim(
+        validated, MemoryProcessingContext(event=event), conversation_key="private:1001", job=job
+    )
+    assert replay.deduplicated and replay.mutation_id == worker_result.mutation_id
 
 
 @pytest.mark.asyncio
@@ -1475,6 +1477,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
             source_type=MemorySourceType.AUTOMATIC,
         )
     )
+    from tests.unit.test_memory_partition import _owners
+
+    people_ids, space_ids = await _owners(database)
     inbound = InboundMessage(
         message_id="member-read",
         event_type="message:group:normal",
@@ -1484,6 +1489,11 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         bot_user_id="8000",
         group_id="3001",
         mentioned_user_ids=("2002",),
+        mentioned_person_ids=(people_ids["2002"],),
+        person_id=people_ids["1001"],
+        space_id=space_ids["3001"],
+        conversation_id=current_group_event.canonical_conversation_id,
+        presence_id=current_group_event.ingress_presence_id,
     )
     tools = AgentToolService(
         settings=make_settings("sqlite+aiosqlite:///:memory:"),
@@ -1492,8 +1502,6 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     )
     runtime = ToolRuntime(
         inbound=inbound,
-        gateway=None,
-        allow_generic_onebot=False,
     )
     definitions = tools.definitions(runtime)
     assert not {"get_person_memories", "get_group_memories", "get_self_memories"} & {
@@ -1502,7 +1510,8 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     definition = next(tool for tool in definitions if tool.name == "search_memory")
     properties = definition.parameters["properties"]
     assert definition.parameters["required"] == ["query"]
-    assert set(properties) >= {"query", "target", "purpose", "entities"}  # type: ignore[arg-type]
+    assert set(properties) >= {"query", "target", "purpose"}
+    assert not {"entities", "preferred_kinds"} & set(properties)  # type: ignore[arg-type]
 
     global_search = (
         await tools.execute("search_memory", json.dumps({"query": "喜欢天文"}), runtime)
@@ -1606,6 +1615,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         presence_id="self-memory-presence",
         principal_kind="self",
         initiative_run_id="self-memory-run",
+        space_id=space_ids["3001"],
     )
     self_runtime = replace(
         runtime,
@@ -1637,7 +1647,12 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "喜欢天文", "target": {"scope": "person", "user_id": "2002"}}),
+            json.dumps(
+                {
+                    "query": "喜欢天文",
+                    "target": {"scope": "person", "person_id": people_ids["2002"]},
+                }
+            ),
             group_only,
         )
     ).model_payload()["error_code"] == "permission_denied"
@@ -1647,7 +1662,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
             json.dumps(
                 {
                     "query": "喜欢天文",
-                    "target": {"scope": "person", "subject_ref": "member_2002"},
+                    "target": {"scope": "person", "subject_ref": f"member_{people_ids['2002']}"},
                 }
             ),
             runtime,
@@ -1658,7 +1673,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     denied_search = (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "喜欢围棋", "target": {"scope": "group", "group_id": "3002"}}),
+            json.dumps(
+                {"query": "喜欢围棋", "target": {"scope": "group", "space_id": space_ids["3002"]}}
+            ),
             runtime,
         )
     ).model_payload()
@@ -1693,7 +1710,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     # even after a Presence change. It never grants evidence or transitive access.
     private_runtime = replace(
         runtime,
-        inbound=replace(inbound, scope_type=ScopeType.PRIVATE, group_id=None, bot_user_id="8001"),
+        inbound=replace(
+            inbound, scope_type=ScopeType.PRIVATE, group_id=None, space_id=None, bot_user_id="8001"
+        ),
         actor_context=None,
     )
     evidence = (
@@ -1705,7 +1724,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     background = (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "天文", "target": {"scope": "person", "user_id": "2002"}}),
+            json.dumps(
+                {"query": "天文", "target": {"scope": "person", "person_id": people_ids["2002"]}}
+            ),
             replace(private_runtime, origin=TurnOrigin.PLUGIN_BACKGROUND, actor_context=None),
         )
     ).model_payload()
@@ -1713,10 +1734,13 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     # still applies the same person and scope read authorization.
     assert background["ok"]
     await people.observe(user_id="2003", nickname="间接关系", group_id="3002")
+    people_ids, space_ids = await _owners(database)
     indirect = (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "天文", "target": {"scope": "person", "user_id": "2003"}}),
+            json.dumps(
+                {"query": "天文", "target": {"scope": "person", "person_id": people_ids["2003"]}}
+            ),
             private_runtime,
         )
     ).model_payload()
@@ -1724,7 +1748,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     unrelated_group = (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "群活动", "target": {"scope": "group", "group_id": "3002"}}),
+            json.dumps(
+                {"query": "群活动", "target": {"scope": "group", "space_id": space_ids["3002"]}}
+            ),
             private_runtime,
         )
     ).model_payload()
@@ -1732,7 +1758,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     historical_group = (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "群活动", "target": {"scope": "group", "group_id": "3001"}}),
+            json.dumps(
+                {"query": "群活动", "target": {"scope": "group", "space_id": space_ids["3001"]}}
+            ),
             private_runtime,
         )
     ).model_payload()
@@ -1751,13 +1779,19 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     ).model_payload()
     assert complete_search["data"]["partial_reason"] == "semantic_not_configured"
     assert complete_search["data"]["partial_reason"] != "owner_projection_unavailable"
-    cross_group = replace(runtime, inbound=replace(inbound, group_id="3002"), actor_context=None)
+    cross_group = replace(
+        runtime,
+        inbound=replace(inbound, group_id="3002", space_id=space_ids["3002"]),
+        actor_context=None,
+    )
     assert (
         await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), cross_group)
     ).model_payload()["ok"]
     private_runtime = replace(
         private_runtime,
-        runtime_config=await tools._runtime_config.snapshot(user_id="1001", group_id=None),
+        runtime_config=await tools._runtime_config.snapshot(
+            user_id=people_ids["1001"], group_id=None
+        ),
     )
     assert await people.delete_person("1001")
     forgotten = (

@@ -60,9 +60,10 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
             SenderIdentity("1001"),
             "observatory",
             bot_user_id="8000",
+            person_id=event.author_person_id,
+            conversation_id=event.canonical_conversation_id,
+            presence_id=event.ingress_presence_id,
         ),
-        gateway=None,
-        allow_generic_onebot=False,
         trigger_event_id=event.id,
     )
     search = await tools.execute("search_memory", '{"query":"observatory"}', runtime)

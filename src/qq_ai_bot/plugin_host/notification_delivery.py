@@ -3,18 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
 from qq_ai_bot.automation.gateway import ProactiveGatewayError
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.identity.routing import PresenceRouter, ResolvedSend, RouteSendError
+from qq_ai_bot.gateway.social import TransportMedia, TransportMessage, TransportTarget
+from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
+from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.persistence.worker_recovery import recover_database_loop
 from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
 from qq_ai_bot.plugin_host.notification_repository import (
@@ -41,6 +41,9 @@ class NotificationDeliveryReceipt:
     route_kind: str
     presence_id: str = ""
     binding_id: str = ""
+    platform: str = "qq"
+    conversation_id: str | None = None
+    thread_id: str | None = None
 
 
 class NotificationTransport(Protocol):
@@ -51,6 +54,9 @@ class NotificationTransport(Protocol):
         text: str,
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
+        canonical_conversation_id: str | None = None,
+        canonical_presence_id: str | None = None,
+        source_event_id: int | None = None,
     ) -> NotificationDeliveryReceipt: ...
 
     async def send_media(
@@ -60,17 +66,20 @@ class NotificationTransport(Protocol):
         local_path: Path,
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
+        canonical_conversation_id: str | None = None,
+        canonical_presence_id: str | None = None,
+        source_event_id: int | None = None,
     ) -> NotificationDeliveryReceipt: ...
 
 
-class OneBotNotificationTransport:
+class PlatformNotificationTransport:
+    """Send the existing outbox effect through the same platform Social adapter."""
+
     def __init__(
         self,
-        registry: GatewayConnectionRegistry | None = None,
         *,
         router: PresenceRouter | None = None,
     ) -> None:
-        self._registry = registry
         self._router = router
 
     async def send_text(
@@ -80,12 +89,18 @@ class OneBotNotificationTransport:
         text: str,
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
+        canonical_conversation_id: str | None = None,
+        canonical_presence_id: str | None = None,
+        source_event_id: int | None = None,
     ) -> NotificationDeliveryReceipt:
         return await self._send(
             target_type=target_type,
-            message=text,
+            message=TransportMessage(text=text),
             canonical_target_person_id=canonical_target_person_id,
             canonical_target_space_id=canonical_target_space_id,
+            canonical_conversation_id=canonical_conversation_id,
+            canonical_presence_id=canonical_presence_id,
+            source_event_id=source_event_id,
         )
 
     async def send_media(
@@ -95,105 +110,90 @@ class OneBotNotificationTransport:
         local_path: Path,
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
+        canonical_conversation_id: str | None = None,
+        canonical_presence_id: str | None = None,
+        source_event_id: int | None = None,
     ) -> NotificationDeliveryReceipt:
         content = await asyncio.to_thread(local_path.read_bytes)
-        encoded = base64.b64encode(content).decode("ascii")
-        del content
-        try:
-            return await self._send(
-                target_type=target_type,
-                message=[{"type": "image", "data": {"file": f"base64://{encoded}"}}],
-                canonical_target_person_id=canonical_target_person_id,
-                canonical_target_space_id=canonical_target_space_id,
-            )
-        finally:
-            del encoded
+        return await self._send(
+            target_type=target_type,
+            message=TransportMessage(
+                media=TransportMedia(
+                    kind="image",
+                    content=content,
+                    filename=local_path.name,
+                    mime_type="image/png",
+                )
+            ),
+            canonical_target_person_id=canonical_target_person_id,
+            canonical_target_space_id=canonical_target_space_id,
+            canonical_conversation_id=canonical_conversation_id,
+            canonical_presence_id=canonical_presence_id,
+            source_event_id=source_event_id,
+        )
 
     async def _send(
         self,
         *,
         target_type: str,
-        message: object,
+        message: TransportMessage,
         canonical_target_person_id: str | None,
         canonical_target_space_id: str | None,
+        canonical_conversation_id: str | None,
+        canonical_presence_id: str | None,
+        source_event_id: int | None,
     ) -> NotificationDeliveryReceipt:
-        resolved = await self._resolve(
-            target_type=target_type,
-            canonical_target_person_id=canonical_target_person_id,
-            canonical_target_space_id=canonical_target_space_id,
-        )
-        bot = resolved.connection.bot
-        if bot is None:
-            raise ProactiveGatewayError("bot_unavailable")
-        onebot_target = resolved.external_target_id
-        action = "send_group_msg" if target_type == "group" else "send_private_msg"
-        key = "group_id" if target_type == "group" else "user_id"
-        call_api = getattr(bot, "call_api", None)
-        if not callable(call_api):
-            raise ProactiveGatewayError("bot_unavailable")
+        if self._router is None:
+            raise ProactiveGatewayError("none")
         try:
-            result = await call_api(action, **{key: onebot_target, "message": message})
+            if canonical_conversation_id is not None:
+                resolved = await self._router.resolve_send_for_conversation(
+                    canonical_conversation_id,
+                    presence_id=canonical_presence_id,
+                    source_event_id=source_event_id,
+                )
+            elif canonical_target_person_id is not None:
+                # Genuine old outbox records may predate the Conversation column.
+                resolved = await self._router.resolve_send_for_person(canonical_target_person_id)
+            elif canonical_target_space_id is not None:
+                resolved = await self._router.resolve_send_for_space(canonical_target_space_id)
+            else:
+                raise RouteSendError("none")
+        except RouteSendError as exc:
+            category = (
+                "gateway_disconnected"
+                if exc.category in {"disconnected", "original_presence_unavailable"}
+                else exc.category
+            )
+            raise ProactiveGatewayError(category) from exc
+        operations = self._router.operations(resolved)
+        try:
+            result = await operations.send(
+                resolved.connection.bot,
+                TransportTarget(
+                    kind="space" if target_type == "group" else "person",
+                    external_id=resolved.external_target_id,
+                    thread_id=resolved.thread_id,
+                ),
+                message,
+            )
         except Exception as exc:
-            raise ProactiveGatewayError("onebot_transport_uncertain", uncertain=True) from exc
-        message_id: object | None = None
-        if isinstance(result, str | int):
-            message_id = result
-        elif isinstance(result, dict):
-            message_id = result.get("message_id") or result.get("id")
-        if message_id is None or not str(message_id).strip():
-            raise ProactiveGatewayError("onebot_receipt_missing", uncertain=True)
+            raise ProactiveGatewayError(
+                "platform_transport_error", uncertain=getattr(exc, "uncertain", True)
+            ) from exc
+        if result.reference is None:
+            raise ProactiveGatewayError("platform_receipt_missing", uncertain=True)
         return NotificationDeliveryReceipt(
-            message_id=str(message_id)[:128],
+            message_id=result.reference,
             sender_account_id=resolved.sender_account_id,
-            external_target_id=onebot_target,
+            external_target_id=resolved.external_target_id,
             route_kind=resolved.kind,
             presence_id=resolved.presence_id,
             binding_id=resolved.binding_id,
+            platform=resolved.platform,
+            conversation_id=resolved.conversation_id,
+            thread_id=resolved.thread_id,
         )
-
-    async def _resolve(
-        self,
-        *,
-        target_type: str,
-        canonical_target_person_id: str | None,
-        canonical_target_space_id: str | None,
-    ) -> ResolvedSend:
-        has_person = bool(canonical_target_person_id)
-        has_space = bool(canonical_target_space_id)
-        if self._router is None or has_person == has_space:
-            raise ProactiveGatewayError("none")
-        try:
-            resolved = await self._resolve_via_router(
-                canonical_target_person_id=canonical_target_person_id,
-                canonical_target_space_id=canonical_target_space_id,
-            )
-        except RouteSendError as exc:
-            # Resolution failed before entering the transport: retry certainty
-            # is explicit here, including the registry's actual disconnect code.
-            category = "gateway_disconnected" if exc.category == "disconnected" else exc.category
-            raise ProactiveGatewayError(category) from exc
-        if resolved.kind == "person" and target_type == "group":
-            raise ProactiveGatewayError("capability")
-        if resolved.kind == "space" and target_type != "group":
-            raise ProactiveGatewayError("capability")
-        return resolved
-
-    async def _resolve_via_router(
-        self,
-        *,
-        canonical_target_person_id: str | None,
-        canonical_target_space_id: str | None,
-    ) -> ResolvedSend:
-        assert self._router is not None
-        has_person = bool(canonical_target_person_id)
-        has_space = bool(canonical_target_space_id)
-        if has_person and has_space:
-            raise RouteSendError("none")
-        if has_person:
-            return await self._router.resolve_send_for_person(canonical_target_person_id or "")
-        if has_space:
-            return await self._router.resolve_send_for_space(canonical_target_space_id or "")
-        raise RouteSendError("none")
 
 
 class PluginNotificationOutboxWorker:
@@ -210,7 +210,7 @@ class PluginNotificationOutboxWorker:
         self._repository = repository
         self._artifacts = artifacts
         self._ledger = ledger
-        self._transport = transport or OneBotNotificationTransport()
+        self._transport = transport or PlatformNotificationTransport()
         self._effect_gate = effect_gate
         self._effect_gate_timeout_seconds = effect_gate_timeout_seconds
         self._stop = asyncio.Event()
@@ -265,6 +265,7 @@ class PluginNotificationOutboxWorker:
                 plugin_id=item.plugin_id,
                 person_id=item.canonical_target_person_id,
                 space_id=item.canonical_target_space_id,
+                conversation_id=item.canonical_conversation_id,
             )
             is None
         ):
@@ -325,6 +326,9 @@ class PluginNotificationOutboxWorker:
                     local_path=artifact.local_path,
                     canonical_target_person_id=person_id,
                     canonical_target_space_id=space_id,
+                    canonical_conversation_id=item.canonical_conversation_id,
+                    canonical_presence_id=item.canonical_presence_id,
+                    source_event_id=item.source_event_id,
                 )
             else:
                 receipt = await self._transport.send_text(
@@ -332,6 +336,9 @@ class PluginNotificationOutboxWorker:
                     text=item.text,
                     canonical_target_person_id=person_id,
                     canonical_target_space_id=space_id,
+                    canonical_conversation_id=item.canonical_conversation_id,
+                    canonical_presence_id=item.canonical_presence_id,
+                    source_event_id=item.source_event_id,
                 )
         except (PluginPermanentDeliveryError, PluginPermissionError) as exc:
             category = (
@@ -459,21 +466,36 @@ class PluginNotificationOutboxWorker:
         target = receipt.external_target_id
         if not sender or not target or not receipt.presence_id:
             raise PluginPermanentDeliveryError("none")
-        appended = await self._ledger.append(
-            bot_user_id=sender,
+        identity = (
+            ConversationScope.group(
+                sender,
+                target,
+                platform=receipt.platform,
+                presence_id=receipt.presence_id,
+                conversation_id=item.canonical_conversation_id,
+                thread_id=receipt.thread_id,
+            )
+            if scope is ScopeType.GROUP
+            else ConversationScope.private(
+                sender,
+                target,
+                platform=receipt.platform,
+                presence_id=receipt.presence_id,
+                conversation_id=item.canonical_conversation_id,
+            )
+        )
+        appended = await ScopedEventLedgerUnitOfWork(self._ledger._database).append(
+            scope=identity,
             platform_message_id=receipt.message_id,
-            scope_type=scope,
             sender_user_id=sender,
             direction="outbound",
             content=content,
             segments=segments,
-            group_id=target if scope is ScopeType.GROUP else None,
-            private_peer_user_id=target if scope is ScopeType.PRIVATE else None,
             sender_is_bot=True,
             origin="plugin_background",
             caused_by_event_id=item.source_event_id,
         )
-        event = appended[0] if isinstance(appended, tuple) else None
+        event = appended.event
         if event is None:
             return
         if event.author_kind != AuthorKind.YUKI.value:

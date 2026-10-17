@@ -1,13 +1,16 @@
 #!/bin/sh
 set -eu
 
-mkdir -p /app/data /app/snowluma-data/config
+mkdir -p /app/data
 mkdir -p /app/workspace /app/social-transfer
 chown bot:bot /app/workspace /app/social-transfer
 chmod 755 /app/social-transfer
 chown -R bot:bot /app/data
 
-if [ -n "${SNOWLUMA_CONFIG_OUTPUT:-}" ]; then
+case ",${COMPOSE_PROFILES:-}," in
+  *,snowluma,*)
+    if [ -n "${SNOWLUMA_CONFIG_OUTPUT:-}" ]; then
+    mkdir -p /app/snowluma-data/config
     snowluma_uid=${SNOWLUMA_UID:-1000}
     snowluma_gid=${SNOWLUMA_GID:-1000}
     case "$snowluma_uid" in
@@ -19,7 +22,9 @@ if [ -n "${SNOWLUMA_CONFIG_OUTPUT:-}" ]; then
     qq-ai-bot-cli render-snowluma-config --output "$SNOWLUMA_CONFIG_OUTPUT"
     chown -R "$snowluma_uid:$snowluma_gid" /app/snowluma-data/config
     chmod 600 "$SNOWLUMA_CONFIG_OUTPUT"
-fi
+    fi
+    ;;
+esac
 
 setpriv --reuid=10001 --regid=10001 --init-groups qq-ai-bot-cli init-db
 exec setpriv --reuid=10001 --regid=10001 --init-groups qq-ai-bot

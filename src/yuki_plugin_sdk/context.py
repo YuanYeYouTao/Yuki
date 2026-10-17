@@ -22,6 +22,8 @@ from yuki_plugin_sdk.sessions import AgentSessionFacade
 
 
 class MessageFacade(Protocol):
+    """Targets are internal Person/Space IDs; images use owned media artifact handles."""
+
     async def get_current(self) -> CurrentMessage | None: ...
 
     async def get_reply(self) -> CurrentMessage | None: ...
@@ -42,6 +44,8 @@ class MessageFacade(Protocol):
 
 
 class PeopleFacade(Protocol):
+    """user_id parameters identify a canonical Person, independent of platform accounts."""
+
     async def get_current(self) -> Mapping[str, JsonValue] | None: ...
 
     async def get(self, user_id: str) -> Mapping[str, JsonValue] | None: ...
@@ -52,6 +56,8 @@ class PeopleFacade(Protocol):
 
 
 class GroupFacade(Protocol):
+    """group_id parameters identify a canonical Space; member coverage is observed."""
+
     async def get_current(self) -> Mapping[str, JsonValue] | None: ...
 
     async def get(self, group_id: str) -> Mapping[str, JsonValue] | None: ...
@@ -66,6 +72,8 @@ class GroupFacade(Protocol):
 
 
 class MemoryFacade(Protocol):
+    """Subjects and visibility use internal Person/Space IDs, not transport accounts."""
+
     async def list_person(
         self, user_id: str, limit: int = 20
     ) -> tuple[Mapping[str, JsonValue], ...]: ...

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-from sqlalchemy import column, func, literal_column, select, table, text
+from sqlalchemy import column, func, literal, literal_column, or_, select, table, text
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,6 +39,11 @@ class SafeLexicalQuery:
     terms: tuple[str, ...]
     fts_expression: str
     short_term: str | None
+    short_terms: tuple[str, ...] = ()
+
+    @property
+    def like_terms(self) -> tuple[str, ...]:
+        return self.short_terms or ((self.short_term,) if self.short_term else ())
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,9 +59,14 @@ def build_safe_lexical_query(value: str, *, term_limit: int) -> SafeLexicalQuery
 
     normalized = normalize_query_text(value)
     terms: list[str] = []
+    short_terms: list[str] = []
     for raw in _WORD.findall(unicodedata.normalize("NFKC", normalized)):
         token = raw.casefold()
         if len(token) < 3:
+            if token not in short_terms:
+                short_terms.append(token)
+            if len(terms) + len(short_terms) >= term_limit:
+                break
             continue
         has_cjk = any("\u3400" <= character <= "\u9fff" for character in token)
         generated = (
@@ -67,17 +77,18 @@ def build_safe_lexical_query(value: str, *, term_limit: int) -> SafeLexicalQuery
         for term in generated:
             if term not in terms:
                 terms.append(term)
-            if len(terms) >= term_limit:
+            if len(terms) + len(short_terms) >= term_limit:
                 break
-        if len(terms) >= term_limit:
+        if len(terms) + len(short_terms) >= term_limit:
             break
     expression = " OR ".join(f'"{term}"' for term in terms)
     short = normalized if 0 < len(normalized) < 3 else None
     return SafeLexicalQuery(
         normalized_text=normalized,
-        terms=tuple(terms),
+        terms=tuple((*terms, *short_terms)),
         fts_expression=expression,
         short_term=short,
+        short_terms=tuple(short_terms),
     )
 
 
@@ -114,7 +125,7 @@ class SQLiteMemoryFTSIndex:
         temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[tuple[AuthorizedLexicalCandidate, ...], bool]:
         """One global FTS order over all SQL-authorized canonical owners."""
-        if not query.fts_expression and not query.short_term:
+        if not query.fts_expression and not query.like_terms:
             return (), False
         mf = MemoryFactModel
         conditions = [
@@ -132,6 +143,7 @@ class SQLiteMemoryFTSIndex:
         fts = table("memory_facts_fts", column("rowid"))
         try:
             async with self._database.sessions() as session:
+                rows: list[Any] = []
                 if query.fts_expression:
                     statement = (
                         select(
@@ -145,28 +157,36 @@ class SQLiteMemoryFTSIndex:
                         .order_by(text("fts_rank ASC"), mf.id.asc())
                         .limit(candidate_limit + 1)
                     )
-                    rows = (
+                    rows.extend(
                         (await session.execute(statement, {"fts_query": query.fts_expression}))
                         .mappings()
                         .all()
                     )
-                else:
-                    assert query.short_term is not None
-                    pattern = f"%{self._escape_like(query.short_term)}%"
+                if query.like_terms:
+                    patterns = tuple(f"%{self._escape_like(term)}%" for term in query.like_terms)
                     statement = (
-                        select(*fields)
+                        select(*fields, literal(1000.0).label("fts_rank"))
                         .where(
                             *conditions,
-                            (mf.normalized_content.like(pattern, escape="\\"))
-                            | (mf.memory_key.like(pattern, escape="\\"))
-                            | (mf.category.like(pattern, escape="\\")),
+                            or_(
+                                *(
+                                    mf.normalized_content.like(pattern, escape="\\")
+                                    | mf.memory_key.like(pattern, escape="\\")
+                                    | mf.category.like(pattern, escape="\\")
+                                    for pattern in patterns
+                                )
+                            ),
                         )
                         .order_by(mf.id.asc())
                         .limit(candidate_limit + 1)
                     )
-                    rows = (await session.execute(statement)).mappings().all()
+                    rows.extend((await session.execute(statement)).mappings().all())
         except DatabaseError as exc:
             raise MemoryRetrievalError("memory_index_unavailable") from exc
+        rows_by_id: dict[int, Any] = {}
+        for row in rows:
+            rows_by_id.setdefault(int(row["id"]), row)
+        rows = list(rows_by_id.values())
         truncated = len(rows) > candidate_limit
         candidates = []
         for row in rows[:candidate_limit]:
@@ -177,7 +197,7 @@ class SQLiteMemoryFTSIndex:
             candidates.append(
                 AuthorizedLexicalCandidate(
                     fact_id=int(row["id"]),
-                    fts_rank=float(row["fts_rank"]) if query.fts_expression else 1000.0,
+                    fts_rank=float(row["fts_rank"]),
                     exact_match=query.normalized_text in {key, category, content},
                     matched_terms=tuple(term for term in query.terms if term in haystack),
                 )
@@ -194,7 +214,7 @@ class SQLiteMemoryFTSIndex:
         short_query_fallback_enabled: bool = True,
         temporal: MemoryTemporalIntent | None = None,
     ) -> tuple[MemoryLexicalCandidate, ...]:
-        if not query.fts_expression and not (query.short_term and short_query_fallback_enabled):
+        if not query.fts_expression and not (query.like_terms and short_query_fallback_enabled):
             return ()
         try:
             async with self._database.sessions() as session:
@@ -245,11 +265,16 @@ class SQLiteMemoryFTSIndex:
                             )
                         ).mappings()
                     )
-                if query.short_term and short_query_fallback_enabled:
-                    like_params = {
-                        **params,
-                        "pattern": f"%{self._escape_like(query.short_term)}%",
-                    }
+                if query.like_terms and short_query_fallback_enabled:
+                    like_params = dict(params)
+                    short_clauses: list[str] = []
+                    for index, term in enumerate(query.like_terms):
+                        parameter = f"short_term_{index}"
+                        like_params[parameter] = f"%{self._escape_like(term)}%"
+                        short_clauses.extend(
+                            f"mf.{field} LIKE :{parameter} ESCAPE '\\'"
+                            for field in ("normalized_content", "memory_key", "category")
+                        )
                     rows.extend(
                         (
                             await session.execute(
@@ -260,12 +285,10 @@ class SQLiteMemoryFTSIndex:
                                     FROM memory_facts AS mf
                                     WHERE mf.status = 'active'
                                       AND (mf.valid_until IS NULL OR mf.valid_until > :now)
-                                      AND (
-                                        mf.normalized_content LIKE :pattern ESCAPE '\\'
-                                        OR mf.memory_key LIKE :pattern ESCAPE '\\'
-                                        OR mf.category LIKE :pattern ESCAPE '\\'
-                                      )
                                     """
+                                    + " AND ("
+                                    + " OR ".join(short_clauses)
+                                    + ")"
                                     + scope_sql
                                     + time_sql
                                     + kind_sql

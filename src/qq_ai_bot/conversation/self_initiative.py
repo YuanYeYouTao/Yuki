@@ -46,7 +46,6 @@ async def validate_self_initiative(
             or not space.enabled
             or presence is None
             or not presence.enabled
-            or presence.platform != "qq"
         ):
             raise PermissionError("self_initiative_scene_changed")
     return run

@@ -26,6 +26,10 @@ class ConversationScope:
     key: str
     private_peer_user_id: str | None = None
     group_id: str | None = None
+    platform: str = "qq"
+    presence_id: str | None = None
+    conversation_id: str | None = None
+    thread_id: str | None = None
 
     def __post_init__(self) -> None:
         bot_user_id = self.bot_user_id.strip()
@@ -43,6 +47,12 @@ class ConversationScope:
             if not group_id or private_peer_user_id is not None:
                 raise ValueError("group scope requires only group_id")
             expected = f"bot:{bot_user_id}:group:{group_id}"
+        if self.platform != "qq":
+            expected = f"{self.platform}:{expected}"
+        if self.thread_id is not None:
+            expected += f":thread:{self.thread_id}"
+        if self.conversation_id is not None:
+            expected = f"conversation:{self.conversation_id}"
         if self.key != expected:
             raise ValueError("conversation scope key does not match its identity")
         object.__setattr__(self, "bot_user_id", bot_user_id)
@@ -50,16 +60,34 @@ class ConversationScope:
         object.__setattr__(self, "group_id", group_id)
 
     @classmethod
-    def private(cls, bot_user_id: str, peer_user_id: str) -> ConversationScope:
+    def private(
+        cls,
+        bot_user_id: str,
+        peer_user_id: str,
+        *,
+        platform: str = "qq",
+        presence_id: str | None = None,
+        conversation_id: str | None = None,
+        thread_id: str | None = None,
+    ) -> ConversationScope:
         """Create a bot-aware private conversation scope."""
 
         bot = bot_user_id.strip()
         peer = peer_user_id.strip()
+        key = f"bot:{bot}:private:{peer}"
+        if platform != "qq":
+            key = f"{platform}:{key}"
+        if thread_id is not None:
+            key += f":thread:{thread_id}"
         return cls(
             bot_user_id=bot,
             scope_type=ScopeType.PRIVATE,
-            key=f"bot:{bot}:private:{peer}",
+            key=f"conversation:{conversation_id}" if conversation_id else key,
             private_peer_user_id=peer,
+            platform=platform,
+            presence_id=presence_id,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
         )
 
     @classmethod
@@ -67,16 +95,30 @@ class ConversationScope:
         cls,
         bot_user_id: str,
         group_id: str,
+        *,
+        platform: str = "qq",
+        presence_id: str | None = None,
+        conversation_id: str | None = None,
+        thread_id: str | None = None,
     ) -> ConversationScope:
         """Create the single conversation scope shared by all actors in a group."""
 
         bot = bot_user_id.strip()
         group = group_id.strip()
+        key = f"bot:{bot}:group:{group}"
+        if platform != "qq":
+            key = f"{platform}:{key}"
+        if thread_id is not None:
+            key += f":thread:{thread_id}"
         return cls(
             bot_user_id=bot,
             scope_type=ScopeType.GROUP,
-            key=f"bot:{bot}:group:{group}",
+            key=f"conversation:{conversation_id}" if conversation_id else key,
             group_id=group,
+            platform=platform,
+            presence_id=presence_id,
+            conversation_id=conversation_id,
+            thread_id=thread_id,
         )
 
     @classmethod

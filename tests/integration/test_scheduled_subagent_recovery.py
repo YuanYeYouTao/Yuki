@@ -185,7 +185,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             settings=case.settings,
         )
         assert recovered.actor_person_id == source["actor_person_id"]
-        assert recovered.actor_user_id == "10001"
+        assert recovered.actor_user_id == "old-derived-account"
     for changed in (
         {"generation": source["generation"] + 1},
         {"automation_run_id": case.run.id + 1},
@@ -209,14 +209,15 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             )
             .values(status="disabled")
         )
-    with pytest.raises(ValueError, match="task_space_binding_unavailable"):
-        await recover_execution_source(
-            database,
-            child["conversation_id"],
-            source,
-            request_id=child["id"],
-            settings=case.settings,
-        )
+    recovered = await recover_execution_source(
+        database,
+        child["conversation_id"],
+        source,
+        request_id=child["id"],
+        settings=case.settings,
+    )
+    assert recovered.generation == source["generation"]
+    assert recovered.presence_id == source["presence_id"]
     async with database.sessions() as session, session.begin():
         await session.execute(
             update(SpaceBindingModel)
@@ -698,8 +699,8 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
             )
         elif len(case.provider.requests) == 3:
             name, args = (
-                "call_onebot_api",
-                {"action": "get_status", "params": {}},
+                "update_short_state",
+                {"slot": 1, "text": "this original authority was revoked in flight"},
             )
         else:
             name, args = "task_control", {"action": "complete", "result": "checked"}
@@ -734,7 +735,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     first = await case.dispatch()
     assert first.status is RunStatus.SUCCEEDED
     assert len(case.provider.requests) == 2
-    assert "call_onebot_api" in {tool.name for tool in case.provider.requests[0].tools}
+    assert "update_short_state" in {tool.name for tool in case.provider.requests[0].tools}
     repository = WorkRepository(database)
     async with database.sessions() as reader:
         rows = list((await reader.execute(select(work))).mappings())
@@ -748,7 +749,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
             account, permission = await resolve_execution_identity(
                 reader, settings, owner_id=case.env.person
             )
-            assert account == "10001" and permission is PermissionLevel.SUPERUSER
+            assert account == "" and permission is PermissionLevel.SUPERUSER
         return await case.chat.generate_origin_turn(**kwargs)
 
     resumer = make_work_resumer(
@@ -769,7 +770,11 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     scheduler._last_reclaim = time.monotonic()
     await scheduler.drain_once()
     assert resumed_runtime[0].actor_is_superuser
-    assert not any(action == "get_status" for action, _ in case.env.bot.calls)
+    assert not any(action.startswith("send_") for action, _ in case.env.bot.calls)
+    assert not any(
+        item["text"] == "this original authority was revoked in flight"
+        for item in case.chat.runtime.runner.main_contract.state.snapshot()
+    )
     final = await repository.get(child["id"])
     assert final["state"] == "failed" and final["model_requests"] == 1
     assert len(case.provider.requests) == 3
@@ -780,7 +785,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
         account, permission = await resolve_execution_identity(
             reader, settings, owner_id=case.env.person
         )
-        assert account == "10001" and permission is PermissionLevel.USER
+        assert account == "" and permission is PermissionLevel.USER
         assert (
             await reader.scalar(select(budgets.c.models).where(budgets.c.root_id == parent["id"]))
             == 3

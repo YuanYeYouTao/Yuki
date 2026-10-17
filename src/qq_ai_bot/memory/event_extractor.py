@@ -265,7 +265,11 @@ class MemoryEventExtractor:
             and not event.sender_nickname.strip()
         ):
             return self._bot_display_name
-        return event.sender_display_name
+        return (
+            event.sender_group_card or event.sender_nickname or f"Person {event.author_person_id}"
+            if event.author_person_id
+            else "发言者"
+        )
 
     async def subject_context(self, event: EventRecord) -> SubjectResolutionContext:
         """Rebuild trusted aliases for staged/rebuild validation without model state."""
@@ -276,6 +280,6 @@ class MemoryEventExtractor:
     def _speaker_role(primary: EventRecord, row: EventRecord) -> str:
         if row.direction == "outbound" or row.author_is_yuki():
             return "bot"
-        if row.sender_user_id == primary.sender_user_id:
+        if row.author_person_id is not None and row.author_person_id == primary.author_person_id:
             return "current_speaker"
         return "other_member"

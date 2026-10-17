@@ -37,8 +37,6 @@ async def query_environment(database):
     )
     runtime = ToolRuntime(
         inbound=inbound,
-        gateway=None,
-        allow_generic_onebot=False,
         runtime_config=config,
         conversation_key="query-test",
     )
@@ -157,8 +155,6 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
             runtime,
             remaining_calls=8,
             max_parallel_calls=1,
-            reusable_results={},
-            cacheable_names=frozenset(),
             declared_names=frozenset({"task_control"}),
         )
 

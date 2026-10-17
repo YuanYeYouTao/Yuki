@@ -684,8 +684,8 @@ async def test_new_group_original_control_request_recovers_receipt_and_rejects_r
     app, bot, presence, _space, _binding = await stack(database)
     bot.groups |= {NEW_GROUP}
     access = ControlAccess(database, superuser_ids=frozenset({"9000"}))
-    principal = await access.principal_for_qq("9000")
-    context = access.context(principal, await access.space_target(NEW_GROUP))
+    principal = await access.qq_recovery_principal("9000")
+    context = access.context(principal, await access.qq_recovery_space_target(NEW_GROUP))
     assert context.canonical_target.space_id is None
     connection_id = app.gateway_registry.resolve_active(presence).snapshot.connection_id
     audit = ControlAuditRef(

@@ -21,7 +21,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "type": "string",
             "enum": ["image", "file"],
             "description": (
-                "提供 artifact_id 时必填。普通文件用 file；可附 text，文件成功后另发说明。"
+                "提供 artifact_id 时必填。普通文件用 file；可附 text，平台分步交付时分别返回确认。"
                 "图片用 image。部分成功不要重发文件。"
             ),
         },
@@ -41,7 +41,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
     ) -> ChatTool:
         return ChatTool(
             name=name,
-            schema_version="2" if name == "send_message" else "1",
+            schema_version="3" if name == "send_message" else "1",
             description=description,
             parameters={
                 "type": "object",
@@ -55,18 +55,16 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         ChatTool(
             name="read_conversation_history",
             description=(
-                "用当前会话的内部 event_id 显式读取原消息的一层合并转发 raw；"
-                "不自动读取内层引用或媒体。"
-                "也可从 OneBot 实时读取明确的人或群的最近会话。主动发信后可用发送回执 operation_id "
-                "查看原账号上的后续消息；回执本身不表示对方回复。也可用 kind=person/space "
-                "配合 target_id/display_name/subject_ref；"
-                "多 QQ Binding 或多个在线账号必须明确选择。"
-                "返回有界历史和来源，不会发送消息，也不把其他私聊记进当前群。"
+                "读取已入账的会话历史，返回内部事件和人物编号。默认当前入口；"
+                "跨入口使用内部 conversation_id 或明确人物/群，多个入口时从候选中选择。"
+                "operation_id 沿原发送回执读取真实出站会话，event_id 只读当前会话原事件。"
+                "coverage=observed 仅代表已观察资料，不冒充平台完整历史或转发内容。"
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     **selector,
+                    "conversation_id": {"type": "string", "format": "uuid"},
                     "event_id": {
                         "type": "integer",
                         "minimum": 1,
@@ -82,7 +80,9 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                     "presence_id": {
                         "type": "string",
                         "format": "uuid",
-                        "description": "读取哪个 Yuki QQ 账号的会话；歧义时从返回候选中选择",
+                        "description": (
+                            "原私聊入口的内部 Presence ID；歧义时选择内部 Conversation ID"
+                        ),
                     },
                     "limit": {"type": "integer", "minimum": 1, "maximum": 50},
                 },
@@ -107,6 +107,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "确有需要时可多次调用，遵循发言节奏；发送后仍可继续工作。"
             "省略 target 默认当前群或当前私聊；发给其他人或群时用 canonical 目标，"
             "由后端选择私聊或群聊及发送账号。结果 uncertain 时不要重发。"
+            "App 主会话显式指定 person 目标时需带 binding_id；省略 target 只回复本入口。"
             "群内真正 @某人使用 mentions，正文中的 @名字不会产生提醒。",
             {
                 "target": {
@@ -116,6 +117,14 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                     ),
                     "properties": {
                         "kind": {"type": "string", "enum": ["person", "space"]},
+                        "binding_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": (
+                                "person 的指定入口绑定；从 App 向其他入口发送必须明确指定，"
+                                "不能以主动路由猜测"
+                            ),
+                        },
                         **selector,
                     },
                     "required": ["kind"],
@@ -135,13 +144,14 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                 "reply_to_event_id": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "可选；当前上下文中可见的内部 #EventRecord.id，非 QQ 消息号。",
+                    "description": "可选；当前上下文中可见的内部 #EventRecord.id，非平台消息号。",
                 },
                 "mentions": {
                     "type": "array",
                     "maxItems": 20,
                     "description": (
-                        "真实 @成员，按顺序放在正文前；每项只选一种人物标识。不能用文字 @名字代替。"
+                        "真实提及成员，按顺序放在正文前；每项只选一种人物标识。"
+                        "不能用文字 @名字代替。"
                         "@当前发言人用 mentions=[{subject_ref:current_speaker}]，顶层不填人物。"
                     ),
                     "items": {
@@ -152,7 +162,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                             "binding_id": {
                                 "type": "string",
                                 "format": "uuid",
-                                "description": "多 QQ 账号时明确指定有效 Binding",
+                                "description": "同平台多入口有歧义时明确指定内部 Binding",
                             },
                         },
                     },
@@ -160,34 +170,10 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             },
         ),
         tool(
-            "poke_person",
-            "戳一戳认识的人。默认在当前群操作，私聊中默认私聊；"
-            "scene=private 可明确选择私聊。群戳不依赖对方私聊主动路由。失败不连续重试。",
-            {
-                **selector,
-                "binding_id": {
-                    "type": "string",
-                    "format": "uuid",
-                    "description": "人物的 QQ Binding；多账号有歧义时必须明确",
-                },
-                "space_id": {
-                    "type": "string",
-                    "format": "uuid",
-                    "description": "可选 canonical 群 UUID，不是 QQ 群号；省略使用当前群",
-                },
-                "scene": {"type": "string", "enum": ["current", "private"]},
-            },
-        ),
-        tool(
             "get_group_members",
-            "分页查询 Yuki 当前实际可访问群的成员，不会提供私聊历史。",
+            "分页读取本群已观察到的内部人物目录；coverage=observed，不代表平台完整名册。",
             {
                 **group_selector,
-                "space_binding_id": {
-                    "type": "string",
-                    "format": "uuid",
-                    "description": "多个 QQ 群 Binding 时必须明确",
-                },
                 "cursor": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
             },

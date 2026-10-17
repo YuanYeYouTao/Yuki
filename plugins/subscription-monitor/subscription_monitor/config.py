@@ -59,7 +59,10 @@ class Subscription(StrictModel):
 
     @model_validator(mode="after")
     def unique_targets(self) -> Self:
-        keys = [(target.target_type, target.target_id) for target in self.targets]
+        keys = [
+            (target.target_type, target.target_id, target.conversation_id)
+            for target in self.targets
+        ]
         if len(set(keys)) != len(keys):
             raise ValueError("subscription targets must be unique")
         return self

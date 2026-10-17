@@ -8,7 +8,7 @@
 
 <h1>Yuki</h1>
 
-<p>A persistent social AI agent in real QQ conversations</p>
+<p>A persistent social AI agent in real conversations</p>
 
 <p>
   <a href="https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0"><img src="https://img.shields.io/badge/Release-3.9.0-blue" alt="Yuki 3.9.0"></a>
@@ -31,7 +31,7 @@ See the [3.9.0 release notes](docs/releases/v3.9.0.md) for features, fixes, cont
 ## Main changes in 3.9.0
 
 - **Direct build by default:** The same main-agent loop exposes the fixed complete tool declaration. The default image contains no Monty binding, worker, or launcher. Code Mode is an optional tool-calling mode using a separately built `codemode` target and explicit opt-in; both modes share tool implementations and the execution backend.
-- **Management WebUI and a shared execution runtime:** The journal-style interface shows actual conversations, execution traces, tool receipts, model usage, and workspace files, and manages model connections and task routes. Chat, SELF, plugins, automation, and Work resumption share the main agent. WebUI is disabled by default.
+- **Management API and shared execution runtime:** The operator CLI uses Bearer HTTP to access the original identity, plugin, model configuration, diagnostics and Work services. Chat, SELF, plugins, automation and Work resumption share the main agent.
 - **Group participation controls:** Automatic replies, proactive wakeups, and autonomous participation default to enabled in current source and can be controlled separately through configuration. Ordinary message bursts are combined over a configurable wait before starting a new reply; explicit calls and original Work inputs bypass it. Disabling new opportunities does not cancel accepted tasks or schedules. The optional Jev semantic controller remains disabled by default.
 - **Resumable tasks and subagents:** Work retains goals, parent-child relationships, cumulative budgets, checkpoints, and real receipts. Completion, waiting, and input requests let the original tool batch or Code program finish before unified settlement. Cancellation or failure of the current task, or revoked authorization, still stops new effects. Subagents share Main's full tool capabilities; real questions can wake a resumable parent, and the foreground agent can manage authorized existing children without opening another parent task. Recovery does not repeat confirmed effects or reopen completed ancestors.
 - **Simpler memory policy:** Independent facts can share a key; changes and deletion use fact IDs. Attribution/reinforcement scoring, automatic promotion, capacity-driven eviction, and the old affection/trust scores are removed. Extraction, SELF, and Dream can use separate model profiles, with partial and unresolved results retained. Automatic extraction accepts new factual assertions.
@@ -47,7 +47,9 @@ See the [3.9.0 release notes](docs/releases/v3.9.0.md) for features, fixes, cont
 
 The release notes cover migration steps, compatibility changes, and the scope of validation. Actual experience still depends on model responses, tool requests, and host resources; the version does not promise fixed latency, cost, or cache rates.
 
-**Future plan: The current WebUI in 3.9.0 is temporary; the next major release will completely redesign it around multiple clients.**
+**Current development branch:** Personal clients, QQ and Telegram share one runtime through native platform adapters. Private entries use Binding + Presence; groups use SpaceBinding + topic. Person memory remains shared through internal identities. Default model tools retire arbitrary OneBot actions, pokes and remote forward expansion; history and member directories report observed ledger coverage. Plugin API is **4.0**, Main contract **20**, and migration head **0128**. See [platform adapters and upgrades](docs/architecture/platform-adapters.md) and the [implementation record](docs/architecture/Yuki-299与多平台解耦实施记录-2026-10-16.md). This is separate from the historical 3.9.0 release described above.
+
+The Kun game now lives in the independent [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game) repository. Game source and dedicated migrations are no longer bundled here. The independent plugin requires a Plugin API 4.0 Host; installation and offline save migration are documented in that repository.
 
 [Conversation compact](docs/architecture/conversation-compact.md) ([#417](https://github.com/YuanYeYouTao/Yuki/issues/417), [#418](https://github.com/YuanYeYouTao/Yuki/issues/418)) uses the current Main model to condense public history or private execution context when the complete request exceeds its actual capacity. Subagents share Main's tool contract and execute under their own real source and authorization. The independent Rollup and Work/ordinary summary pipelines are retired.
 
@@ -56,8 +58,8 @@ The release notes cover migration steps, compatibility changes, and the scope of
 | Capability | How it is used |
 | --- | --- |
 | Conversation and long-term memory | Chat in groups or privately, look up past events, and explicitly ask Yuki to remember, correct, or delete facts |
-| Images, voice, and attachments | Receive images, voice, video, or documents, ask follow-up questions without quoting the attachment, and read forwarded messages on demand |
-| QQ social actions | Look up members, use structured mentions and pokes, send group/private messages, and recall Yuki's own messages; the backend checks targets and permissions |
+| Images, voice, and attachments | Receive images, voice, video, or documents, ask follow-up questions without quoting the attachment, with observed ledger history |
+| Cross-platform social actions | Read observed members, use structured mentions, send group/private messages, and recall Yuki's own messages; shared internal targets and permissions route through native adapters |
 | Search and plugins | Use configured online tools and approved plugins |
 | Persistent workspace | Save projects and files, run Python, Node.js, or Shell, install dependencies, and deliver results |
 | Background work and automation | Start work while continuing the conversation, check progress later, and run scheduled work within granted permissions |
@@ -72,7 +74,7 @@ When enabled, Yuki gets a shared Linux working directory across conversations. D
 - Bash, Python, Node.js, Git, and basic build tools are preinstalled. The workspace supports pip and npm, plus Manager-controlled apt installation and environment checkpoints.
 - Terminals support interactive input, incremental output, cancellation, and background execution. Yuki can start a task, continue chatting, and return to its result.
 - Processes can continue while Bot or Manager restarts. A workspace restart interrupts ordinary tasks; registered services recover according to policy.
-- Selected files are delivered to QQ as immutable snapshots. Legacy `artifact_id` references remain compatible.
+- Selected files are delivered through the matching platform as immutable snapshots. Legacy `artifact_id` references remain compatible.
 
 The default home-directory quota is 2 GiB and container memory limit is 512 MiB, with at most one primary execution task, four terminal sessions, and two internal services. The workspace has no browser or desktop and does not mount the Bot database, QQ credentials, or host Docker control interface.
 
@@ -91,7 +93,7 @@ Memory reads have a specific privacy boundary: a past shared-group relationship 
 - **Images and video:** Current, quoted, and historical attachments, along with agent-selected workspace and authorized tool images, share the original main model's native image input. Historical reads check internal event IDs, conversation ownership, and cache expiry. A model without image input reports the material as unread; Yuki does not silently switch models or request a separate Qwen visual summary. MP4/MOV video is sampled into frames by FFmpeg for the same main agent. Audio tracks are not analyzed, and sampling may miss moments. Background sticker classification and explicit plugin vision capabilities can still use a separate vision connection.
 - **Incoming voice:** Private messages, group messages that meet the reply policy, and quoted voice can be transcribed with Qwen ASR and included in chat history, search, and public compact. Recognized text and sources are retained in attachment order, including completed transcriptions when another attachment fails. Qwen connectivity can be reused; speech synthesis and sending are retired. See [speech recognition](docs/speech/recognition.md).
 - **Files:** Bounded extraction supports text, code, CSV/JSON, PDF text, DOCX, and XLSX. Scanned PDFs do not receive OCR; spreadsheet formulas are not recalculated; reading does not execute macros or embedded code. Within the same conversation, later questions can read the original attachment's 24-hour temporary cache without quoting it.
-- **Web:** New installations default to `WEB_MODE=native`; explicit `disabled` remains disabled. Select the main model and search connection independently: top-level `search_backend="model"` with `search_connection` supports native Gemini, Anthropic Messages, and Responses search while a Chat main agent retains its full function contract. Explicit Tavily search remains available, but failed model searches never fall back to Tavily; Tavily may also extract webpages. Legacy `deepseek_anthropic` settings preserve their original search source. DeepSeek Responses search is not automatically enabled. See [independent native search](docs/deepseek-search-bridge.md) and the [provider contract](docs/architecture/model-providers.md) for configuration and verification boundaries.
+- **Web:** Setup and Admin/CLI share model search defaults without requiring a Tavily key. DeepSeek Chat/Responses keeps its main protocol and uses a separate Messages search connection with the same key; Gemini defaults to an independent search bridge and Anthropic Messages to native search. An omitted web mode and legacy `WEB_ENABLED=true` both mean `native`; explicit disabling, external backends, and selected connections retain their choices. Failed model searches return their actual errors; their webpage reading uses direct HTTP. Only an explicitly selected Tavily service requires its key. Custom gateways keep their configured endpoints and credentials; legacy `deepseek_anthropic` preserves its original search source. See [independent native search](docs/deepseek-search-bridge.md) and the [provider contract](docs/architecture/model-providers.md) for configuration and verification boundaries.
 
 Chat, plugin wakeups, automation, and task resumption use the same main agent with its complete tool declarations. The tool schema stays fixed within a deployment; permissions and budgets are checked at execution time. This reduces request-prefix variation but does not guarantee provider cache hits.
 
@@ -101,7 +103,7 @@ Historical Gemini / DeepSeek samples, accounting coverage, and experiment limits
 
 Basic deployment requires Linux amd64 or arm64 (including Linux VMs on Apple Silicon), or Docker Desktop running Linux containers, Docker Engine with Compose v2, and a configured model service using one of the supported Chat Completions or Responses integrations. Yuki uses a logged-in SnowLuma QQ gateway. NapCat support is retired, while the existing gateway abstraction remains available for other implementations.
 
-3.9.0 supports Chat Completions, Responses, Claude Messages, Gemini GenerateContent, and common vendor parameter dialects. Profiles explicitly select models, reasoning, structured output, and search; message content does not secretly select a provider. After WebUI saves a connection, new tasks use it, while dispatched requests retain their original connection and protocol state.
+Current source supports Chat Completions, Responses, Claude Messages, Gemini GenerateContent, and common vendor parameter dialects. Profiles explicitly select models, reasoning, structured output, and search; message content does not secretly select a provider. After the management API saves a connection, new tasks use it, while dispatched requests retain their original connection and protocol state.
 See the [protocol contract](docs/architecture/model-providers.md) and [multi-provider example](config/model_profiles.providers.example.toml) for capabilities, configuration, and recovery boundaries.
 
 Download the deployment bundle from the [3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0). After extraction, fill in `.env` and model configuration manually or use the guided setup.
@@ -125,7 +127,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 **The wizard configures only.** In an empty directory it downloads and verifies the deployment bundle; for an existing deployment it preserves Compose, plugins, and data, then backs up and writes configuration after confirmation. It does not stop services, migrate the database, start services, or switch gateways.
 
-3.9.0 stores model connections in `webui-config/model_profiles.toml`. When upgrading an older deployment with only `config/model_profiles.toml`, follow the [path migration guide](docs/operations/model-profile-path-migration.md) first. The wizard does not overwrite current WebUI connections; a missing selected file causes an explicit startup failure.
+3.9.0 stores model connections in `webui-config/model_profiles.toml`. When upgrading an older deployment with only `config/model_profiles.toml`, follow the [path migration guide](docs/operations/model-profile-path-migration.md) first. The wizard does not overwrite current model connections; a missing selected file causes an explicit startup failure.
 
 After configuring a fresh deployment, run from its deployment directory:
 
@@ -166,7 +168,7 @@ Read the [shared development contract](docs/architecture/development-contract.md
 
 One database represents one long-lived Yuki. People, groups, QQ accounts, and gateway connections are modeled separately, so conversation history and memories are not tied to a single login. The backend checks tool permissions, budgets, idempotency, and audit records.
 
-Yuki provides QQ interaction, a CLI, and a shared Control Plane. The 3.9.0 journal-style WebUI and same-origin admin HTTP are disabled by default. Build instructions, authorization, and remaining scope are documented in [WebUI](docs/architecture/webui-console.md).
+The current development branch provides QQ, Telegram, personal clients and an operator CLI. The old browser interface and control implementation are retired in source. The [management API](docs/architecture/admin-api.md) uses the original domain services and receipts. The personal-client API and reference CLI have completed local implementation and validation under #299; see the [delivery record](docs/operations/issue-299-delivery-2026-10-15.md). Merge and production deployment are tracked separately.
 
 ```bash
 uv sync --extra dev
@@ -176,7 +178,7 @@ uv run mypy --platform linux src
 uv run pytest
 ```
 
-Use checks matching the change. Quality runs source checks, frontend tests/build, and retained regressions. Release validates identity, amd64/arm64 direct images, and the source-free deployment bundle; retired Memory quality gates and parallel release paths are removed.
+Use checks matching the change. Quality runs source checks and retained regressions. Release validates identity, amd64/arm64 direct images, and the source-free deployment bundle; retired frontend checks, Memory quality gates, and parallel release paths are removed.
 Routine regressions use fake providers and isolated databases. Paid Gemini and DeepSeek cache comparisons run separately, with cold rounds, warm rounds, and missing accounting reported explicitly; they are not ordinary tests or fixed cache-hit thresholds.
 
 | Document | Topic |
@@ -186,7 +188,7 @@ Routine regressions use fake providers and isolated databases. Paid Gemini and D
 | [Development contract](docs/architecture/development-contract.md) | Event IDs, boundaries, fixed tools, resumption, and transactions |
 | [Conversation compact](docs/architecture/conversation-compact.md) | Long-conversation condensation |
 | [Memory](docs/architecture/memory-v2.md) | Extraction, retrieval, and permissions |
-| [Plugin API 3.5](docs/plugin-development/index.md) | Plugin development and capability boundaries |
+| [Plugin API 4.0](docs/plugin-development/index.md) | Plugin development and capability boundaries |
 | [Persistent subagents](docs/architecture/persistent-subagents.md) | Task trees, parent-child questions, full tool capabilities, and recovery |
 | [Tool results](docs/architecture/tool-results.md) | Result budgets, media, and durable receipts |
 | [Versioned releases](docs/operations/versioned-docker-release.md) | Images, bundles, and the release process |

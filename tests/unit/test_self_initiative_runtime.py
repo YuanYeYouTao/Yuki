@@ -123,8 +123,6 @@ def test_snapshot_and_authority_require_exactly_one_real_principal():
 
     source = ToolRuntime(
         inbound=None,
-        gateway=None,
-        allow_generic_onebot=False,
         actor_context=actor(),
         origin=TurnOrigin.SELF_INITIATIVE,
         initiative_run_id="initiative",
@@ -162,9 +160,7 @@ def test_snapshot_and_authority_require_exactly_one_real_principal():
     with pytest.raises(RuntimeError):
         replace(person, scope_type=None).validate_source()
     # Declaration-only construction is not execution and is not tightened.
-    declaration = ToolRuntime(
-        inbound=None, gateway=None, allow_generic_onebot=False, declaration_only=True
-    )
+    declaration = ToolRuntime(inbound=None, declaration_only=True)
     assert declaration.declaration_only
 
 
@@ -462,7 +458,7 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
     )
     await resumer.resume(item)
     chat.generate_self_initiative.assert_awaited_once()
-    app.runtime_config.snapshot.assert_awaited_once_with(group_id="2001")
+    app.runtime_config.snapshot.assert_awaited_once_with(group_id=source["space_id"])
     bot.call_api.assert_not_awaited()
     assert (await repo.get(item["id"]))["state"] == "completed"
 
@@ -499,7 +495,7 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
         },
     )
     await repo.release(lease)
-    memory = SimpleNamespace(close=AsyncMock())
+    memory = SimpleNamespace()
     provider = FakeLLMProvider(lambda _: "checked")
     profiles = load_model_profile_catalog(
         write_fake_profiles(tmp_path / "profiles.toml"), environment={}
@@ -577,7 +573,6 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
         await models.close()
     runner.run.assert_awaited_once()
     chat.open_memory_session.assert_not_called()
-    memory.close.assert_awaited_once()
     assert (await repo.get(child_id))["state"] == "completed"
     assert (await repo.get(child_id))["model_requests"] == 1
     async with database.sessions() as db:

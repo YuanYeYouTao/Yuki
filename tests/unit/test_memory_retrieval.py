@@ -368,8 +368,6 @@ async def test_strict_time_filters_before_candidate_limits(database: Database) -
     assert parse_memory_tool_intent({"query": "camera"}).mode.value == "hybrid"
     for invalid in (
         {"purpose": "invented"},
-        {"preferred_kinds": ["invented"]},
-        {"entities": "camera"},
         {"mode": "none"},
         {"start_at": "2026-09-09"},
         {"start_at": "invalid"},

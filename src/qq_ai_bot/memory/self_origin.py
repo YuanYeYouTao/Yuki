@@ -143,7 +143,13 @@ async def resolve_self_origin(
                     SpaceBindingModel.space_id == space_id,
                     SpaceBindingModel.platform == presence.platform,
                     SpaceBindingModel.status == "active",
-                    *([SpaceBindingModel.external_space_id == group_id] if group_id else []),
+                    *(
+                        [SpaceBindingModel.id == conversation.space_binding_id]
+                        if conversation.space_binding_id is not None
+                        else [SpaceBindingModel.external_space_id == group_id]
+                        if group_id
+                        else []
+                    ),
                 )
             )
         )

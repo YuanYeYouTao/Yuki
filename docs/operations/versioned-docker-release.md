@@ -6,7 +6,7 @@
 
 ## 仓库与 CI
 
-Quality workflow 检查 Python 的 Ruff、Mypy、pytest 与 Node 24 前端测试及构建。
+当前开发分支的 Quality workflow 检查 Python 的 Ruff、Mypy 和 pytest；旧 WebUI 前端已退役。3.9.0 发行时的检查范围保留在原发布记录中。
 正式 tag 发布使用 `scripts/release_validate.py` 核对 tag、项目版本、运行时版本、锁文件、安装器及 main 祖先关系；不再运行 Memory synthetic quality/baseline/release-check 或独立迁移矩阵。迁移与启动由实际构建镜像的 release smoke 核验。
 
 ## 发布流程
@@ -48,14 +48,16 @@ Code Mode 是显式可选构建：使用 `docker build --target codemode`，按 
 明确选择 `search_mode="bridge"`，通过独立请求检索真实来源；支持原生搜索的
 OpenAI Responses / Anthropic 主连接选择 `native` 并声明 `native_web_search`。
 所选模型及接入服务仍须实际支持该能力；向导的本地验证不等于真实 API 验收。
-默认 DeepSeek 示例保留 Responses 主对话，另以 `search_mode="external"`、
-`search_connection="primary_agent"` 和 `WEB_SEARCH_BACKEND=deepseek_anthropic`
-明确使用官方独立搜索，不宣称主对话具备原生搜索。
+默认 DeepSeek 示例保留 Responses 主对话，以 `search_backend="model"` 和独立 Messages
+搜索连接共用原 DeepSeek 密钥引用，不宣称主对话具备内联原生搜索，也不需要 Claude 账户。
+安装向导与 Admin API / CLI 共用搜索默认配置生成；Gemini 默认桥接自身连接，Anthropic
+Messages 默认内联原生搜索。自定义网关沿其真实地址与凭据配置，不按品牌转发密钥。
 
 向导仍允许选择“关闭”；不支持模型搜索的主连接需选择 Tavily 并提供密钥，
-或明确配置可用的搜索连接。Gemini 搜索桥返回服务提供的检索来源，未配置 Tavily
-时网页提取不可用会如实报错。现有 `.env` 的显式关闭和模型档案的搜索选择不会
-被新默认覆盖。已有模型档案由 WebUI 或文件入口调整；再次运行向导保留该档案，不因选择 `basic` / `flash` 重建全部连接。
+或明确配置可用的搜索连接。Gemini 搜索桥返回服务提供的检索来源，网页读取使用直接
+HTTP 提取，不需要 Tavily 密钥。缺省后端为 `model`；旧 `WEB_ENABLED=true` 表示模型搜索，
+`false` 仍关闭，显式 Tavily 后端继续有效。现有 `.env` 的显式关闭和模型档案的搜索选择不会
+被新默认覆盖。已有模型档案由管理 API／CLI 或文件入口调整；再次运行向导保留该档案，不因选择 `basic` / `flash` 重建全部连接。
 
 ## 现有服务器
 

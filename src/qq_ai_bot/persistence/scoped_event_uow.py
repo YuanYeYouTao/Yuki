@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -15,21 +15,29 @@ from qq_ai_bot.conversation.canonical_db_models import (
     CanonicalEventReceiptModel,
 )
 from qq_ai_bot.conversation.hydrate import (
+    HydratedConversation,
     ensure_canonical_conversation,
     hydrate_scope_state_from_canonical,
+    require_primary_alias_for_conversation,
     touch_canonical_watermarks,
 )
 from qq_ai_bot.conversation.initiative_sources import source_revision
+from qq_ai_bot.conversation.media_index import prepare_event_media
 from qq_ai_bot.conversation.scope_models import ConversationScopeState
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
+from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.identity.canonical_repository import (
     apply_event_identity,
     external_id,
     find_identity_binding,
-    find_presence,
     find_space_binding,
 )
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
+from qq_ai_bot.identity.db_models import (
+    CanonicalPersonModel,
+    CanonicalSpaceModel,
+    IdentityBindingModel,
+    PresenceModel,
+)
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.receipt_compat import (
     load_claimed_keeper,
@@ -39,7 +47,7 @@ from qq_ai_bot.identity.receipt_compat import (
     require_reply_source,
 )
 from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel
+from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
 from qq_ai_bot.persistence.repository_helpers import _event_record
 from qq_ai_bot.persistence.repository_records import EventRecord
 
@@ -146,6 +154,8 @@ class ScopedEventLedgerUnitOfWork:
         external_target_id: str | None = None,
         caused_by_event_id: int | None = None,
         session: AsyncSession | None = None,
+        identity_binding_id: str | None = None,
+        source_event_id: int | None = None,
     ) -> ScopedAppendResult:
         timestamp = occurred_at or datetime.now(UTC)
         observed_at = datetime.now(UTC)
@@ -176,6 +186,8 @@ class ScopedEventLedgerUnitOfWork:
                 external_payload=external_payload,
                 external_target_id=external_target_id,
                 caused_by_event_id=caused_by_event_id,
+                identity_binding_id=identity_binding_id,
+                source_event_id=source_event_id,
             )
         async with self._database.immediate_session() as session:
             result = await self._append_canonical(
@@ -204,6 +216,8 @@ class ScopedEventLedgerUnitOfWork:
                 external_payload=external_payload,
                 external_target_id=external_target_id,
                 caused_by_event_id=caused_by_event_id,
+                identity_binding_id=identity_binding_id,
+                source_event_id=source_event_id,
             )
         return result
 
@@ -213,6 +227,131 @@ class ScopedEventLedgerUnitOfWork:
         if "data:image/" in lowered or "base64://" in lowered:
             raise ValueError("visual_summary must not contain image or Base64 payloads")
         return await self._set_derived_text(event_id, normalized, audio=False)
+
+    async def update_platform_message(
+        self,
+        event_id: int,
+        message: InboundMessage,
+        *,
+        presence_id: str,
+        edited_at: datetime,
+        revision: int,
+    ) -> None:
+        """Apply an authenticated edit to its original event, never a new turn."""
+        while True:
+            async with self._database.sessions() as reader:
+                original = await reader.get(ChatEventModel, event_id)
+                if (
+                    original is None
+                    or original.ingress_presence_id != presence_id
+                    or original.platform_message_id != message.message_id
+                    or original.sender_user_id != message.sender.user_id
+                    or original.direction != "inbound"
+                ):
+                    raise CanonicalIdentityError("receipt_conflict")
+                source_segments, source_content = original.segments_json, original.content
+                conversation_id = original.canonical_conversation_id
+                conversation = await reader.get(CanonicalConversationModel, conversation_id)
+                presence = await reader.get(PresenceModel, presence_id)
+                if (
+                    conversation is None
+                    or presence is None
+                    or presence.platform != message.platform
+                ):
+                    raise CanonicalIdentityError("no_conversation")
+                generation = conversation.generation
+                mentions_query = (
+                    select(
+                        IdentityBindingModel.external_account_id,
+                        IdentityBindingModel.person_id,
+                        IdentityBindingModel.revision,
+                    )
+                    .where(
+                        IdentityBindingModel.platform == presence.platform,
+                        IdentityBindingModel.external_account_id.in_(message.mentioned_user_ids),
+                        IdentityBindingModel.status == "active",
+                    )
+                    .order_by(IdentityBindingModel.external_account_id)
+                )
+                mention_facts = tuple((await reader.execute(mentions_query)).all())
+                original_at = original.occurred_at.replace(tzinfo=UTC).timestamp()
+            # Parse/prepare outside the SQLite writer, preserving Host identity metadata.
+            decoded = json.loads(source_segments)
+            metadata = [part for part in decoded if part.get("type") == "yuki_context"]
+            context = metadata[0]["data"] if metadata else {}
+            if (
+                float(context.get("platform_edit_date", original_at)),
+                int(context.get("platform_update_id", -1)),
+            ) >= (edited_at.timestamp(), revision):
+                return
+            mentions = {account: person for account, person, _revision in mention_facts}
+            context.update(
+                mentioned_user_ids=list(message.mentioned_user_ids),
+                mentioned_person_ids=list(
+                    dict.fromkeys(
+                        mentions[account]
+                        for account in message.mentioned_user_ids
+                        if account in mentions
+                    )
+                ),
+                reply_sender_user_id=message.reply_sender_user_id,
+                platform_edit_date=edited_at.timestamp(),
+            )
+            context["platform_update_id"] = revision
+            if not metadata:
+                metadata.append({"type": "yuki_context", "data": context})
+            segments = json.dumps(
+                [*message.segments, *metadata], ensure_ascii=False, separators=(",", ":")
+            )
+            media = prepare_event_media(
+                event_id=event_id,
+                conversation_id=conversation_id,
+                generation=generation,
+                segments=message.segments,
+            )
+            async with self._database.immediate_session() as session:
+                event = await session.get(ChatEventModel, event_id)
+                if event is None:
+                    raise CanonicalIdentityError("receipt_conflict")
+                if event.segments_json != source_segments or event.content != source_content:
+                    continue
+                conversation = await session.get(CanonicalConversationModel, conversation_id)
+                if conversation is None:
+                    raise CanonicalIdentityError("no_conversation")
+                if (
+                    conversation.generation != generation
+                    or tuple((await session.execute(mentions_query)).all()) != mention_facts
+                ):
+                    continue
+                current_media = {
+                    item.attachment_index: item
+                    for item in await session.scalars(
+                        select(ConversationMediaItemModel).where(
+                            ConversationMediaItemModel.source_event_id == event_id
+                        )
+                    )
+                }
+                for prepared in media:
+                    current = current_media.pop(prepared.attachment_index, None)
+                    if current is None:
+                        session.add(prepared)
+                        continue
+                    if decoded[current.segment_index] != message.segments[prepared.segment_index]:
+                        current.cache_status = "uncached"
+                        current.content_sha256 = current.cache_name = None
+                        current.cached_at = current.expires_at = None
+                        current.created_at = prepared.created_at
+                    current.segment_index = prepared.segment_index
+                    current.kind = prepared.kind
+                    current.display_name = prepared.display_name
+                    current.declared_size = prepared.declared_size
+                for removed in current_media.values():
+                    await session.delete(removed)
+                event.content, event.segments_json = message.text, segments
+                event.visual_summary, event.audio_transcript = "", ""
+                conversation.prompt_source_revision += 1
+                conversation.revision += 1
+            return
 
     async def set_audio_transcript(
         self,
@@ -380,6 +519,7 @@ class ScopedEventLedgerUnitOfWork:
                         ChatEventModel.event_kind == "external_event",
                         ChatEventModel.source_plugin_id == source_plugin_id,
                         ChatEventModel.external_event_key == external_event_key,
+                        ChatEventModel.canonical_conversation_id == scope.conversation_id,
                         ChatEventModel.scope_type == scope.scope_type.value,
                         ChatEventModel.external_target_id == external_target_id,
                     )
@@ -465,13 +605,17 @@ class ScopedEventLedgerUnitOfWork:
         from qq_ai_bot.domain.identity import AuthorKind
         from qq_ai_bot.identity.event_author import project_event_author
 
-        del scope, presence_id
+        del scope
+        presence = await session.get(PresenceModel, presence_id)
+        if presence is None:
+            raise CanonicalIdentityError("no_presence")
         author = await project_event_author(
             session,
             sender_user_id=sender_user_id,
             sender_is_bot=sender_is_bot,
             event_kind=event_kind,
             direction=direction,
+            platform=presence.platform,
         )
         if author.author_kind == AuthorKind.PERSON.value and author.author_person_id is None:
             raise CanonicalIdentityError("receipt_conflict")
@@ -628,6 +772,8 @@ class ScopedEventLedgerUnitOfWork:
         external_payload: dict[str, Any] | None,
         external_target_id: str | None,
         caused_by_event_id: int | None,
+        identity_binding_id: str | None = None,
+        source_event_id: int | None = None,
     ) -> ScopedAppendResult:
         return await self._append_canonical(
             session,
@@ -655,6 +801,8 @@ class ScopedEventLedgerUnitOfWork:
             external_payload=external_payload,
             external_target_id=external_target_id,
             caused_by_event_id=caused_by_event_id,
+            identity_binding_id=identity_binding_id,
+            source_event_id=source_event_id,
         )
 
     async def _append_canonical(
@@ -685,49 +833,146 @@ class ScopedEventLedgerUnitOfWork:
         external_payload: dict[str, Any] | None,
         external_target_id: str | None,
         caused_by_event_id: int | None,
+        identity_binding_id: str | None = None,
+        source_event_id: int | None = None,
     ) -> ScopedAppendResult:
         from uuid import uuid4
 
         from sqlalchemy.exc import IntegrityError
 
-        presence = await find_presence(session, external_id(scope.bot_user_id))
+        presence = (
+            await session.get(PresenceModel, scope.presence_id)
+            if scope.presence_id
+            else (
+                await session.execute(
+                    select(PresenceModel).where(
+                        PresenceModel.external_account_id == external_id(scope.bot_user_id),
+                        PresenceModel.platform == scope.platform,
+                    )
+                )
+            ).scalar_one_or_none()
+        )
         if presence is None:
             raise CanonicalIdentityError("no_presence")
         presence_id = presence.id
-        if scope.scope_type is ScopeType.GROUP:
-            if scope.group_id is None:
-                raise CanonicalIdentityError("no_space_binding")
-            space_binding = await find_space_binding(session, external_id(scope.group_id))
-            space = (
-                None
-                if space_binding is None or space_binding.status != "active"
-                else await session.get(CanonicalSpaceModel, space_binding.space_id)
-            )
-            if space is None or not space.enabled:
-                raise CanonicalIdentityError("no_space_binding")
-            hydrated = await ensure_canonical_conversation(
-                session,
-                kind="space",
-                primary_scope_key=scope.key,
-                space_id=space.id,
+        if scope.conversation_id is not None:
+            original = await session.get(CanonicalConversationModel, scope.conversation_id)
+            if original is None:
+                raise CanonicalIdentityError("no_conversation")
+            if original.kind == "private":
+                binding = await session.get(IdentityBindingModel, original.identity_binding_id)
+                from qq_ai_bot.conversation.legacy_entries import legacy_private_entry_matches
+
+                legacy_entry = (
+                    binding is not None
+                    and direction == "outbound"
+                    and await legacy_private_entry_matches(
+                        session, original, binding, presence, source_event_id or caused_by_event_id
+                    )
+                )
+                if (
+                    scope.scope_type is not ScopeType.PRIVATE
+                    or binding is None
+                    or binding.person_id != original.person_id
+                    or binding.platform != presence.platform
+                    or binding.external_account_id != scope.private_peer_user_id
+                    or (
+                        original.entry_presence_id is not None
+                        and original.entry_presence_id != presence.id
+                        and not legacy_entry
+                    )
+                ):
+                    raise CanonicalIdentityError("canonical_owner_mismatch")
+            else:
+                from qq_ai_bot.identity.db_models import SpaceBindingModel
+
+                if scope.scope_type is not ScopeType.GROUP or scope.group_id is None:
+                    raise CanonicalIdentityError("canonical_owner_mismatch")
+                entry_space_binding = (
+                    await session.get(SpaceBindingModel, original.space_binding_id)
+                    if original.space_binding_id
+                    else await find_space_binding(
+                        session, scope.group_id, platform=presence.platform
+                    )
+                )
+                if (
+                    scope.scope_type is not ScopeType.GROUP
+                    or entry_space_binding is None
+                    or entry_space_binding.space_id != original.space_id
+                    or entry_space_binding.platform != presence.platform
+                    or entry_space_binding.external_space_id != scope.group_id
+                    or original.thread_id != scope.thread_id
+                ):
+                    raise CanonicalIdentityError("canonical_owner_mismatch")
+            hydrated = HydratedConversation(
+                original.id,
+                original.kind,
+                original.person_id,
+                original.space_id,
+                await require_primary_alias_for_conversation(session, original.id),
+                original.generation,
             )
         else:
-            person_binding = await find_identity_binding(
-                session, external_id(scope.private_peer_user_id or sender_user_id)
-            )
-            person = (
-                None
-                if person_binding is None or person_binding.status != "active"
-                else await session.get(CanonicalPersonModel, person_binding.person_id)
-            )
-            if person is None or not person.enabled:
-                raise CanonicalIdentityError("no_person")
-            hydrated = await ensure_canonical_conversation(
-                session,
-                kind="private",
-                primary_scope_key=scope.key,
-                person_id=person.id,
-            )
+            if scope.scope_type is ScopeType.GROUP:
+                if scope.group_id is None:
+                    raise CanonicalIdentityError("no_space_binding")
+                space_binding = await find_space_binding(
+                    session, external_id(scope.group_id), platform=presence.platform
+                )
+                space = (
+                    None
+                    if space_binding is None or space_binding.status != "active"
+                    else await session.get(CanonicalSpaceModel, space_binding.space_id)
+                )
+                if space is None or not space.enabled or space_binding is None:
+                    raise CanonicalIdentityError("no_space_binding")
+                hydrated = await ensure_canonical_conversation(
+                    session,
+                    kind="space",
+                    primary_scope_key=scope.key,
+                    space_id=space.id,
+                    space_binding_id=space_binding.id,
+                    thread_id=scope.thread_id,
+                )
+            else:
+                person_binding = (
+                    await session.get(IdentityBindingModel, identity_binding_id)
+                    if identity_binding_id is not None
+                    else await find_identity_binding(
+                        session,
+                        external_id(scope.private_peer_user_id or sender_user_id),
+                        platform=presence.platform,
+                    )
+                )
+                if identity_binding_id is not None and (
+                    direction != "outbound"
+                    or person_binding is None
+                    or person_binding.platform != presence.platform
+                    or person_binding.external_account_id != scope.private_peer_user_id
+                ):
+                    raise CanonicalIdentityError("canonical_owner_mismatch")
+                person = (
+                    None
+                    if person_binding is None
+                    or (identity_binding_id is None and person_binding.status != "active")
+                    else await session.get(CanonicalPersonModel, person_binding.person_id)
+                )
+                if person is None or (identity_binding_id is None and not person.enabled):
+                    raise CanonicalIdentityError("no_person")
+                assert person_binding is not None
+                hydrated = await ensure_canonical_conversation(
+                    session,
+                    kind="private",
+                    primary_scope_key=scope.key,
+                    person_id=person.id,
+                    identity_binding_id=person_binding.id,
+                    presence_id=presence.id,
+                )
+        scope = replace(
+            scope,
+            conversation_id=hydrated.conversation_id,
+            key=f"conversation:{hydrated.conversation_id}",
+        )
         receipt_event_type = (external_event_type or "message")[:64]
         existing, receipt = await self._find_existing_live(
             session,
@@ -863,7 +1108,7 @@ class ScopedEventLedgerUnitOfWork:
             occurred_at=timestamp,
             observed_at=observed_at,
         )
-        await apply_event_identity(session, row, sender_is_bot=sender_is_bot)
+        await apply_event_identity(session, row, sender_is_bot=sender_is_bot, ingress=presence)
         row.canonical_event_id = canonical_event_id
         row.canonical_conversation_id = hydrated.conversation_id
         row.suppression_status = "keeper"

@@ -112,9 +112,8 @@ class InvocationService:
             # A child is keyed by its parent and Host admission ordinal only.
             raise ValueError("invocation_journal_identity_conflict")
         # Direct sends retain the original boundary for responding to steer.
-        allow_pending = (
-            call.function.name in WORK_CONTROL_NAMES
-            or (call.function.name == "send_message" and identity.parent_operation_id is None)
+        allow_pending = call.function.name in WORK_CONTROL_NAMES or (
+            call.function.name == "send_message" and identity.parent_operation_id is None
         )
         journal = session.journal
         # The original Host operation, including a composition child's identity.
@@ -180,13 +179,10 @@ class InvocationService:
             await control.repository.validate_invocation(key, invocation.durable_metadata())
             # The exact original T1 intent may continue to T2. Dispatched,
             # settled and legacy calls only return their original receipt.
-            if not (
-                await control.repository.undispatched_intent(control.current["id"], key)
-            ):
+            if not (await control.repository.undispatched_intent(control.current["id"], key)):
                 return await journal.effect_result(key)
-        charged = (
-            call.function.name not in WORK_CONTROL_NAMES
-            and counts_toward_business_limit(call.function.name)
+        charged = call.function.name not in WORK_CONTROL_NAMES and counts_toward_business_limit(
+            call.function.name
         )
         try:
             if not await control.repository.admit_dispatch(

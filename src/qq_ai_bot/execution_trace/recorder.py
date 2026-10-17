@@ -572,6 +572,7 @@ async def trace_span(
         origin=scope.origin,
         started_at=datetime.now(UTC),
     )
+    recorder.database.commit_hints.publish()
     failures_before = scope.coverage.failures
     try:
         await record_trace(f"{family}_start", payload)
@@ -602,6 +603,7 @@ async def trace_span(
             )
     finally:
         recorder._live_spans.pop(scope.operation_id, None)
+        recorder.database.commit_hints.publish()
         current_trace.reset(token)
         if metric_token is not None:
             current_metrics.reset(metric_token)

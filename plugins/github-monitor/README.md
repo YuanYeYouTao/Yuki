@@ -46,7 +46,7 @@ Token 可省略，但不要把真实 Token 写入 `plugin.toml`、提交到 Git�
 如果已有其他直达命令，应合并到同一个 JSON 对象，例如：
 
 ```dotenv
-PLUGIN_DIRECT_COMMAND_BINDINGS={"/github":"github-monitor:github","*":"io.github.yuanyeyoutao.kun-game:play"}
+PLUGIN_DIRECT_COMMAND_BINDINGS={"/github":"github-monitor:github","/monitor":"subscription-monitor:monitor"}
 ```
 
 ### 2. 重建 Bot
@@ -111,10 +111,10 @@ docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin enable github-monito
 |---|---|
 | `/github status` | 查看仓库数量、轮询状态、连续失败和 Outbox 状态 |
 | `/github repos` | 列出仓库、启停状态和全部 QQ 投递目标 |
-| `/github add owner/repo group:<群号>` | 添加群聊目标 |
-| `/github add owner/repo private:<QQ号>` | 添加私聊目标 |
-| `/github remove owner/repo group:<群号>` | 移除群聊目标 |
-| `/github remove owner/repo private:<QQ号>` | 移除私聊目标 |
+| `/github add owner/repo group:<Space-ID>` | 添加群聊目标 |
+| `/github add owner/repo private:<Person-ID>` | 添加私聊目标 |
+| `/github remove owner/repo group:<Space-ID>` | 移除群聊目标 |
+| `/github remove owner/repo private:<Person-ID>` | 移除私聊目标 |
 | `/github pause owner/repo` | 暂停仓库轮询，保留配置和 cursor |
 | `/github resume owner/repo` | 恢复仓库轮询 |
 | `/github sync owner/repo baseline` | 清除旧 cursor，按当前最新事件重新建立基线 |
@@ -266,14 +266,15 @@ doctor。
 
 ## 开发验证
 
-启用 WebUI 后，可在「插件」打开 GitHub Monitor 的配置、仓库 queue/cursor/诊断
-及 Host 通知 outbox。配置来自已批准注册的 schema；修改保存原 Host 配置表，插件按
-自身读取逻辑生效。只读状态使用 SDK 的可选 `observe`，不访问 GitHub、不轮询或封口，
-不返回 prepared 通知内容。队列未建立或状态损坏会明确显示，不当作零。
+使用 `qq-ai-bot-cli plugin configuration` 读取配置，`plugin configure` 按原 revision
+保存；使用 `plugin observe` 查看仓库 queue/cursor/诊断及 Host 通知 outbox。配置来自已批准
+注册的 schema，修改保存原 Host 配置表，插件按自身读取逻辑生效。只读状态使用 SDK 的
+`observe`，不访问 GitHub、不轮询或封口，不返回 prepared 通知内容。队列未建立或状态损坏
+会明确显示，不当作零。
 
-页面重试复用原 Host 管理入口，仅允许确认未发送、有原内部归属和剩余预算的失败。
+`plugin retry-outbox` 复用原 Host 管理入口，仅允许确认未发送、有原内部归属和剩余预算的失败。
 `uncertain`、有平台回执或缺少 canonical owner 的旧记录不能重发。配置/状态正文与
-修改能力须在 operator 声明中分别授权；参见 [WebUI 合同](../../docs/architecture/webui-console.md)。
+修改能力须在 operator 声明中分别授权；参见[管理 API 与 CLI](../../docs/architecture/admin-api.md)。
 
 ```bash
 uv run ruff check plugins/github-monitor
@@ -282,3 +283,7 @@ uv run qq-ai-bot-cli plugin test plugins/github-monitor
 ```
 
 插件契约测试使用 Fake Host，不需要真实 GitHub Token，也不会访问网络。
+
+## Plugin API 4.0 的通知目标
+
+`target_id` 是内部 Person/Space，不是 QQ/TG 外部账号或群号。目标可带 `conversation_id` 指定原私聊 Bot 或群 topic；短命令也接受 `group:<Space-ID>:conversation:<Conversation-ID>` / `private:<Person-ID>:conversation:<Conversation-ID>`。未指定时仅接受当前或唯一真实入口，保存 Host 返回的 Conversation；有多个入口时显式选择。已有排队事件保留原来源、游标和回执，迁移不会重发已接纳通知。

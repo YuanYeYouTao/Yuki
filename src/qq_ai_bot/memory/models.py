@@ -124,7 +124,7 @@ class MemoryFact(_MemoryModel):
 
     @property
     def user_id(self) -> str | None:
-        """External account projection used by the Plugin memory facade."""
+        """External account projection for historical readers."""
 
         return self.subject_user_id
 
@@ -173,6 +173,10 @@ class MemoryFactCreate(_MemoryModel):
     visibility_type: SelfMemoryVisibility | None = None
     visibility_user_id: str | None = None
     visibility_group_id: str | None = None
+    canonical_subject_person_id: str | None = None
+    canonical_subject_space_id: str | None = None
+    canonical_visibility_person_id: str | None = None
+    canonical_visibility_space_id: str | None = None
     kind: MemoryKind = MemoryKind.FACT
     memory_key: str = Field(min_length=1)
     category: str = Field(min_length=1)
@@ -206,6 +210,10 @@ class MemoryFactCreate(_MemoryModel):
             visibility_type=self.visibility_type,
             visibility_user_id=self.visibility_user_id,
             visibility_group_id=self.visibility_group_id,
+            canonical_subject_person_id=self.canonical_subject_person_id,
+            canonical_subject_space_id=self.canonical_subject_space_id,
+            canonical_visibility_person_id=self.canonical_visibility_person_id,
+            canonical_visibility_space_id=self.canonical_visibility_space_id,
         )
         _validate_fact_lifecycle(
             status=self.status,
@@ -296,6 +304,10 @@ class MemoryFactQuery(_MemoryModel):
     visibility_type: SelfMemoryVisibility | None = None
     visibility_user_id: str | None = None
     visibility_group_id: str | None = None
+    canonical_subject_person_id: str | None = None
+    canonical_subject_space_id: str | None = None
+    canonical_visibility_person_id: str | None = None
+    canonical_visibility_space_id: str | None = None
     kind: MemoryKind | None = None
     status: MemoryStatus = MemoryStatus.ACTIVE
 
@@ -308,6 +320,10 @@ class MemoryFactQuery(_MemoryModel):
             visibility_type=self.visibility_type,
             visibility_user_id=self.visibility_user_id,
             visibility_group_id=self.visibility_group_id,
+            canonical_subject_person_id=self.canonical_subject_person_id,
+            canonical_subject_space_id=self.canonical_subject_space_id,
+            canonical_visibility_person_id=self.canonical_visibility_person_id,
+            canonical_visibility_space_id=self.canonical_visibility_space_id,
             kind=self.kind or MemoryKind.FACT,
             memory_key="query",
             category="query",
@@ -428,24 +444,12 @@ class MemoryQueryIntent(_MemoryModel):
     mode: MemoryContextMode = MemoryContextMode.LEXICAL
     purpose: MemoryRecallPurpose = MemoryRecallPurpose.BACKGROUND
     subjects: tuple[MemorySubjectRole, ...] = Field(default=())
-    entities: tuple[str, ...] = Field(default=())
     temporal: MemoryTemporalIntent = MemoryTemporalIntent()
-    preferred_kinds: tuple[MemoryKind, ...] = Field(default=())
 
-    @field_validator("subjects", "preferred_kinds", mode="after")
+    @field_validator("subjects", mode="after")
     @classmethod
     def _deduplicate_enums(cls, value: tuple[object, ...]) -> tuple[object, ...]:
         return tuple(dict.fromkeys(value))
-
-    @field_validator("entities", mode="after")
-    @classmethod
-    def _normalize_entities(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        normalized: list[str] = []
-        for item in value:
-            clean = " ".join(item.split()).strip()
-            if clean and clean not in normalized:
-                normalized.append(clean)
-        return tuple(normalized)
 
     @property
     def self_recall(self) -> bool:

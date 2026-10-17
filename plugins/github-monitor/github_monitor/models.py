@@ -69,13 +69,14 @@ class TargetPolicySnapshot(StrictModel):
 
     target_type: Literal["group", "private"]
     target_id: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = None
     send_text: bool
     send_card: bool
     ask_agent: bool
 
     @property
     def target_key(self) -> str:
-        return delivery_target_key(self.target_type, self.target_id)
+        return delivery_target_key(self.target_type, self.target_id, self.conversation_id)
 
 
 class QueuedSourceEvent(StrictModel):
@@ -123,6 +124,7 @@ class PreparedNotification(StrictModel):
     external_source: str = Field(min_length=1, max_length=64)
     target_type: Literal["group", "private"]
     target_id: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = None
     occurred_at: datetime
     summary: str = Field(min_length=1, max_length=4_000)
     payload_json: str
@@ -162,6 +164,7 @@ class TargetDelivery(StrictModel):
     target_key: str = Field(min_length=1, max_length=160)
     target_type: Literal["group", "private"]
     target_id: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = None
     send_text: bool
     send_card: bool
     ask_agent: bool
@@ -174,7 +177,9 @@ class TargetDelivery(StrictModel):
 
     @model_validator(mode="after")
     def delivery_state_is_consistent(self) -> Self:
-        if self.target_key != delivery_target_key(self.target_type, self.target_id):
+        if self.target_key != delivery_target_key(
+            self.target_type, self.target_id, self.conversation_id
+        ):
             raise ValueError("delivery target key mismatch")
         if self.status == "pending" and self.prepared is not None:
             raise ValueError("pending delivery cannot contain a prepared request")
@@ -184,6 +189,7 @@ class TargetDelivery(StrictModel):
             if (
                 self.prepared.target_type != self.target_type
                 or self.prepared.target_id != self.target_id
+                or self.prepared.conversation_id != self.conversation_id
             ):
                 raise ValueError("prepared request target mismatch")
         if self.status == "completed" and not self.notification_id:
@@ -325,8 +331,11 @@ def canonical_json(value: object) -> str:
     )
 
 
-def delivery_target_key(target_type: str, target_id: str) -> str:
-    return f"{target_type}:{target_id}"
+def delivery_target_key(
+    target_type: str, target_id: str, conversation_id: str | None = None
+) -> str:
+    key = f"{target_type}:{target_id}"
+    return key if conversation_id is None else f"{key}:conversation:{conversation_id}"
 
 
 def prepared_request_hash(request: PreparedNotification) -> str:
@@ -352,6 +361,8 @@ def prepared_request_hash(request: PreparedNotification) -> str:
         "ask_agent": request.ask_agent,
         "agent_intent": request.agent_intent,
     }
+    if request.conversation_id is not None:
+        payload["conversation_id"] = request.conversation_id
     return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
 
 
@@ -361,6 +372,7 @@ def build_prepared_notification(
     event_type: str,
     target_type: Literal["group", "private"],
     target_id: str,
+    conversation_id: str | None = None,
     occurred_at: datetime,
     summary: str,
     payload: dict[str, JsonValue],
@@ -381,6 +393,7 @@ def build_prepared_notification(
         external_source="github",
         target_type=target_type,
         target_id=target_id,
+        conversation_id=conversation_id,
         occurred_at=normalized_at,
         summary=summary,
         payload_json=payload_json,
@@ -396,6 +409,7 @@ def build_prepared_notification(
         external_source="github",
         target_type=target_type,
         target_id=target_id,
+        conversation_id=conversation_id,
         occurred_at=normalized_at,
         summary=summary,
         payload_json=payload_json,

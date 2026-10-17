@@ -144,7 +144,8 @@ async def test_sdk_message_child_keeps_original_plugin_origin_and_delegation(dat
     chat._tools.social_service = env.service
     database.subagents_enabled = True
     async with database.sessions() as reader:
-        event = await reader.scalar(select(ChatEventModel))
+        event_id = await reader.scalar(select(ChatEventModel.id))
+    event = await harness.ledger.get_event(event_id)
     recovered = await recover_source(
         database,
         env.context.conversation_id,
@@ -160,8 +161,6 @@ async def test_sdk_message_child_keeps_original_plugin_origin_and_delegation(dat
     )
     source_runtime = ToolRuntime(
         inbound=recovered.inbound(event, legacy_conversation_key="bot:80001:group:20001"),
-        gateway=None,
-        allow_generic_onebot=False,
         runtime_config=await chat._runtime_config.snapshot(),
     )
     host = HostPluginContext(

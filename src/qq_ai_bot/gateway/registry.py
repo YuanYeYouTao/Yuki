@@ -6,12 +6,14 @@ import threading
 from dataclasses import dataclass
 from uuid import uuid4
 
+from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.gateway.models import (
     ConnectionHealth,
     ConnectionSnapshot,
     PresenceConnectionSnapshot,
 )
 from qq_ai_bot.gateway.provider import GatewayProviderCatalog
+from qq_ai_bot.gateway.social import PlatformSocialOperations
 
 
 class RegistryClosed(RuntimeError):
@@ -77,6 +79,14 @@ class GatewayConnectionRegistry:
         self._account_generation: dict[tuple[str, str], int] = {}
         self._account_presence: dict[tuple[str, str], str] = {}
         self._pins: dict[str, str] = {}
+
+    def project_inbound(
+        self, resolution: ConnectionResolution, message: InboundMessage, yuki_ids: frozenset[str]
+    ) -> InboundMessage:
+        return self._providers.project_inbound(resolution.snapshot.provider, message, yuki_ids)
+
+    def social(self, resolution: ConnectionResolution) -> PlatformSocialOperations:
+        return self._providers.social(resolution.snapshot.provider)
 
     def connect(
         self,
@@ -281,9 +291,14 @@ class GatewayConnectionRegistry:
                 capabilities=chosen.capabilities,
             )
 
-    def has_any_active(self) -> bool:
+    def has_any_active(self, *, platform: str | None = None) -> bool:
         with self._lock:
-            return any(item.healthy and item.bot is not None for item in self._by_id.values())
+            return any(
+                item.healthy
+                and item.bot is not None
+                and (platform is None or item.platform == platform)
+                for item in self._by_id.values()
+            )
 
     def connected_presence_ids(self, platform: str) -> tuple[str, ...]:
         """Finite live connection identities for route preparation, not ownership."""

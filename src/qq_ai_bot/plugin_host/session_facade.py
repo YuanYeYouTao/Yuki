@@ -30,7 +30,7 @@ class BoundAgentSessionFacade:
         *,
         service: PluginAgentSessionService,
         plugin_id: str,
-        actor_user_id: str,
+        actor_user_id: str | None,
         current_group_id: str | None,
         approved_permissions: Iterable[PluginPermission | str],
         conversation_id: str | None = None,

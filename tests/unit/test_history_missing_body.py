@@ -57,7 +57,7 @@ def metadata_rows(statements):
 async def scene(database, count):
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     admitted = await resolver.pre_admit(bot, _message(message_id="missing-history-seed"))
     assert admitted is not None and not admitted.dropped
     receipt = await uow.append_inbound(admitted.message, admitted)
@@ -87,9 +87,7 @@ async def scene(database, count):
         owner = await writer.get(CanonicalConversationModel, admitted.conversation_id)
         owner.last_event_id = current
     ledger = EventLedgerRepository(database)
-    version, rows = await ledger.read_scope_context(
-        ConversationScope.parse(admitted.primary_alias), limit=count + 2
-    )
+    version, rows = await ledger.read_scope_context(admitted.message.scope(), limit=count + 2)
     parts = tuple(((row.id,), ChatMessage("user", row.content)) for row in rows[:-1])
     context = AssembledContext(
         metadata_payload={},
@@ -471,7 +469,7 @@ async def test_missing_bodies_are_parameter_bounded_on_real_sqlite(database, mon
     assert body_rows(statements) == 600 and metadata_rows(statements) == 601
 
 
-async def test_missing_history_rejects_removed_alias_before_reading_any_event(database):
+async def test_missing_history_uses_saved_conversation_after_alias_removal(database):
     from qq_ai_bot.conversation.canonical_db_models import ConversationLegacyAliasModel
 
     ledger, context, _seed = await scene(database, 16)
@@ -502,8 +500,9 @@ async def test_missing_history_rejects_removed_alias_before_reading_any_event(da
             frozen_event_ids=frozenset(),
             current_event_id=context.current_event_id,
         )
-    assert version.conversation_id is None and version != context.read_version
-    assert records == () and body_rows(statements) == metadata_rows(statements) == 0
+    assert version == expected
+    assert {row.id for row in records} == context.visible_event_ids - {context.current_event_id}
+    assert body_rows(statements) == len(records)
 
 
 async def test_missing_history_filters_duplicate_ids_and_keeps_explicit_keeper(database):

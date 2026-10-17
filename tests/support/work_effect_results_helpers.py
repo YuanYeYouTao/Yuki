@@ -26,9 +26,7 @@ async def owned_session(database, tmp_path):
     )
     session = WorkSession(control, "result-test")
     task = ChatMessage("user", "execute once")
-    await session.restore(
-        TurnTranscript((ChatMessage("system", "fixed"), task))
-    )
+    await session.restore(TurnTranscript((ChatMessage("system", "fixed"), task)))
     store = ToolArtifactRepository(database, tmp_path / "results", retention_seconds=60)
     return control, session, store
 

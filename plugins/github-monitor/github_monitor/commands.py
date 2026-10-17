@@ -20,7 +20,7 @@ from .config import (
     save_repositories,
 )
 from .events import stable_event_key
-from .models import NormalizedGitHubEvent
+from .models import NormalizedGitHubEvent, delivery_target_key
 from .polling import GitHubPoller
 from .state import load_queue_state, load_repository_state
 
@@ -118,7 +118,10 @@ class GitHubCommands:
             return CommandResult(text="尚未配置监控仓库。")
         lines = []
         for item in config.repositories:
-            targets = ", ".join(f"{t.target_type}:{t.target_id}" for t in item.targets)
+            targets = ", ".join(
+                delivery_target_key(t.target_type, t.target_id, t.conversation_id)
+                for t in item.targets
+            )
             lines.append(f"{item.repository} [{'on' if item.enabled else 'off'}] → {targets}")
         return CommandResult(text="\n".join(lines))
 
@@ -132,6 +135,15 @@ class GitHubCommands:
         async with self._poller().configuration_guard(repository):
             config = await load_config(context)
             target = _parse_target(raw_target)
+            grant = await context.notifications.grant_target(
+                NotificationTarget(
+                    target_type=target.target_type,
+                    target_id=target.target_id,
+                    conversation_id=target.conversation_id,
+                ),
+                bot_user_id="",
+            )
+            target = target.model_copy(update={"conversation_id": grant.conversation_id})
             candidate = RepositorySubscription(repository=repository, targets=(target,))
             rows = list(config.repositories)
             index = next(
@@ -147,15 +159,12 @@ class GitHubCommands:
             else:
                 existing = rows[index]
                 if any(
-                    item.target_type == target.target_type and item.target_id == target.target_id
+                    (item.target_type, item.target_id, item.conversation_id)
+                    == (target.target_type, target.target_id, target.conversation_id)
                     for item in existing.targets
                 ):
                     return CommandResult(text="该仓库目标已经存在。")
                 rows[index] = existing.model_copy(update={"targets": (*existing.targets, target)})
-            await context.notifications.grant_target(
-                NotificationTarget(target_type=target.target_type, target_id=target.target_id),
-                bot_user_id="",
-            )
             await save_repositories(context, tuple(rows))
         return CommandResult(
             text=f"已添加 {candidate.repository} → {raw_target}；首次同步默认只建立基线。"
@@ -177,11 +186,22 @@ class GitHubCommands:
                 if item.repository.casefold() != repository.casefold():
                     rows.append(item)
                     continue
+                if target.conversation_id is None:
+                    matches = tuple(
+                        value
+                        for value in item.targets
+                        if (value.target_type, value.target_id)
+                        == (target.target_type, target.target_id)
+                    )
+                    if len(matches) > 1:
+                        raise ValueError("select the original Conversation for this target")
+                    if matches:
+                        target = matches[0]
                 targets = tuple(
                     value
                     for value in item.targets
-                    if (value.target_type, value.target_id)
-                    != (target.target_type, target.target_id)
+                    if (value.target_type, value.target_id, value.conversation_id)
+                    != (target.target_type, target.target_id, target.conversation_id)
                 )
                 removed = len(targets) != len(item.targets)
                 if removed:
@@ -198,13 +218,18 @@ class GitHubCommands:
                 return _error("github.not_found", "没有找到该仓库目标。")
             await save_repositories(context, tuple(rows))
             still_used = any(
-                value.target_type == target.target_type and value.target_id == target.target_id
+                (value.target_type, value.target_id, value.conversation_id)
+                == (target.target_type, target.target_id, target.conversation_id)
                 for item in rows
                 for value in item.targets
             )
             if not still_used:
                 await context.notifications.revoke_target(
-                    NotificationTarget(target_type=target.target_type, target_id=target.target_id)
+                    NotificationTarget(
+                        target_type=target.target_type,
+                        target_id=target.target_id,
+                        conversation_id=target.conversation_id,
+                    )
                 )
         return CommandResult(text=f"已移除 {repository} → {raw_target}。")
 
@@ -324,7 +349,10 @@ def _parse_target(value: str) -> NotificationTargetConfig:
     target_type, separator, target_id = value.partition(":")
     if not separator or target_type not in {"group", "private"}:
         raise ValueError("target must use group:<id> or private:<id>")
-    return NotificationTargetConfig(target_type=target_type, target_id=target_id)
+    target_id, _, conversation_id = target_id.partition(":conversation:")
+    return NotificationTargetConfig(
+        target_type=target_type, target_id=target_id, conversation_id=conversation_id or None
+    )
 
 
 def _find(config: GitHubMonitorConfig, repository: str) -> RepositorySubscription:

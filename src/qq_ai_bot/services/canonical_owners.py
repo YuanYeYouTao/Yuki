@@ -1,4 +1,4 @@
-"""Resolve external QQ identifiers to live canonical owners."""
+"""Validate canonical owners. Transport identities are resolved at ingress."""
 
 from __future__ import annotations
 
@@ -6,13 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.identity.canonical_repository import (
     assert_same_shadow,
-    find_identity_binding,
-    find_presence,
-    find_space_binding,
     optional_external_id,
 )
 from qq_ai_bot.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, PresenceModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
+from qq_ai_bot.identity.person_identity import current_person_id
 
 MISSING_CANONICAL_OWNER = "missing_canonical_owner"
 CANONICAL_OWNER_DISABLED = "canonical_owner_disabled"
@@ -36,6 +34,10 @@ async def require_live_person(session: AsyncSession, person_id: str | None) -> s
         raise CanonicalIdentityError(MISSING_CANONICAL_OWNER)
     if not person.enabled:
         raise CanonicalIdentityError(CANONICAL_OWNER_DISABLED)
+    person = await session.get(CanonicalPersonModel, await current_person_id(session, person.id))
+    assert person is not None
+    if not person.enabled:
+        raise CanonicalIdentityError(CANONICAL_OWNER_DISABLED)
     return person.id
 
 
@@ -56,42 +58,11 @@ async def require_live_space(session: AsyncSession, space_id: str | None) -> str
 
 
 async def resolve_live_person_id(session: AsyncSession, raw: str | None) -> str:
-    external = _external(raw)
-    if external is None:
-        raise CanonicalIdentityError(MISSING_CANONICAL_OWNER)
-    if await session.get(CanonicalPersonModel, external) is not None:
-        return await require_live_person(session, external)
-    if (
-        await session.get(PresenceModel, external) is not None
-        or await session.get(CanonicalSpaceModel, external) is not None
-        or await find_presence(session, external) is not None
-    ):
-        raise CanonicalIdentityError(CANONICAL_KIND_MISMATCH)
-    binding = await find_identity_binding(session, external)
-    if binding is None:
-        raise CanonicalIdentityError(MISSING_CANONICAL_OWNER)
-    if binding.status != "active":
-        raise CanonicalIdentityError(CANONICAL_OWNER_DISABLED)
-    return await require_live_person(session, binding.person_id)
+    return await require_live_person(session, raw)
 
 
 async def resolve_live_space_id(session: AsyncSession, raw: str | None) -> str:
-    external = _external(raw)
-    if external is None:
-        raise CanonicalIdentityError(MISSING_CANONICAL_OWNER)
-    if await session.get(CanonicalSpaceModel, external) is not None:
-        return await require_live_space(session, external)
-    if (
-        await session.get(PresenceModel, external) is not None
-        or await session.get(CanonicalPersonModel, external) is not None
-    ):
-        raise CanonicalIdentityError(CANONICAL_KIND_MISMATCH)
-    binding = await find_space_binding(session, external)
-    if binding is None:
-        raise CanonicalIdentityError(MISSING_CANONICAL_OWNER)
-    if binding.status != "active":
-        raise CanonicalIdentityError(CANONICAL_OWNER_DISABLED)
-    return await require_live_space(session, binding.space_id)
+    return await require_live_space(session, raw)
 
 
 async def try_live_person_id(session: AsyncSession, raw: str | None) -> str | None:

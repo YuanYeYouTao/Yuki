@@ -119,7 +119,6 @@ async def setup_run(
         runtime_config=chat._runtime_config,
         conversation_scopes=chat._conversation_scopes,
         turns=chat._turn_coordinator,
-        router=env.router,
         work_repository=works,
         bindings=chat.runtime.bindings,
     )

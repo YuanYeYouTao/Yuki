@@ -10,11 +10,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import Table, false, func, or_, select, text, update
+from sqlalchemy import Table, and_, false, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qq_ai_bot.identity.person_identity import current_person_ids, same_person_condition
 from qq_ai_bot.memory.dream.db_models import (
     MemoryDreamClusterModel,
     MemoryDreamClusterPreviewModel,
@@ -71,6 +72,7 @@ class DreamCandidate:
     bot_user_id: str
     vector: EmbeddingVector
     signature: str
+    current_owner: tuple[str | None, str | None, str | None, str | None] | None = None
 
     @property
     def partition_identity(self) -> tuple[object, ...]:
@@ -80,10 +82,15 @@ class DreamCandidate:
         if not dream_canonical_owner_complete(fact):
             raise ValueError("incomplete_dream_owner")
         return (
-            fact.canonical_subject_person_id,
-            fact.canonical_subject_space_id,
-            fact.canonical_visibility_person_id,
-            fact.canonical_visibility_space_id,
+            *(
+                self.current_owner
+                or (
+                    fact.canonical_subject_person_id,
+                    fact.canonical_subject_space_id,
+                    fact.canonical_visibility_person_id,
+                    fact.canonical_visibility_space_id,
+                )
+            ),
             fact.kind.value,
         )
 
@@ -174,6 +181,18 @@ class DreamRepository:
                 facts = {
                     fact.id: fact for fact in await self._facts.get_facts(fact_ids, session=active)
                 }
+                roots = await current_person_ids(
+                    active,
+                    (
+                        person
+                        for fact in facts.values()
+                        for person in (
+                            fact.canonical_subject_person_id,
+                            fact.canonical_visibility_person_id,
+                        )
+                        if person is not None
+                    ),
+                )
                 legacy_ids: set[int] = set()
                 bots: dict[int, set[str]] = defaultdict(set)
                 # These are the original, unfiltered provenance chains. A hidden
@@ -245,6 +264,16 @@ class DreamRepository:
                                 bytes(row.vector_blob), dimensions=dimensions
                             ),
                             signature=fact_signature(fact),
+                            current_owner=(
+                                roots.get(fact.canonical_subject_person_id)
+                                if fact.canonical_subject_person_id
+                                else None,
+                                fact.canonical_subject_space_id,
+                                roots.get(fact.canonical_visibility_person_id)
+                                if fact.canonical_visibility_person_id
+                                else None,
+                                fact.canonical_visibility_space_id,
+                            ),
                         )
                     )
                 after_id = fact_ids[-1]
@@ -304,6 +333,21 @@ class DreamRepository:
             MemoryFactModel.canonical_visibility_space_id,
         ).where(MemoryFactModel.id.in_(fact_ids))
 
+    async def person_roots(self, facts: tuple[Any, ...]) -> dict[str, str]:
+        async with self.database.sessions() as reader:
+            return await current_person_ids(
+                reader,
+                (
+                    person
+                    for fact in facts
+                    for person in (
+                        fact.canonical_subject_person_id,
+                        fact.canonical_visibility_person_id,
+                    )
+                    if person is not None
+                ),
+            )
+
     async def prepare_clusters(
         self, clusters: tuple[DreamClusterSpec, ...]
     ) -> tuple[PreparedDreamCluster, ...]:
@@ -319,7 +363,9 @@ class DreamRepository:
                         )
                     ).all()
                 )
-        return prepare_clusters_from_facts(clusters, tuple(rows))
+        return prepare_clusters_from_facts(
+            clusters, tuple(rows), person_roots=await self.person_roots(tuple(rows))
+        )
 
     async def create_run(
         self,
@@ -344,7 +390,7 @@ class DreamRepository:
         for cluster in prepared:
             if (
                 tuple(fact.id for fact in cluster.facts) != cluster.spec[4]
-                or optional_dream_owner_from_facts(cluster.facts) != cluster.owner
+                or any(optional_dream_owner_from_facts((fact,)) is None for fact in cluster.facts)
                 or any(fact.kind != cluster.spec[3] for fact in cluster.facts)
             ):
                 raise ValueError("incomplete_dream_owner")
@@ -400,6 +446,26 @@ class DreamRepository:
                 current.update({row.id: PreparedDreamFact.from_fact(row) for row in rows})
             if current != sources:
                 raise ValueError("dream_plan_source_changed")
+            ownership = []
+            for cluster in prepared:
+                for fact in cluster.facts:
+                    if (fact.canonical_subject_space_id, fact.canonical_visibility_space_id) != (
+                        cluster.owner[1],
+                        cluster.owner[3],
+                    ):
+                        raise ValueError("incomplete_dream_owner")
+                    for left, right in (
+                        (fact.canonical_subject_person_id, cluster.owner[0]),
+                        (fact.canonical_visibility_person_id, cluster.owner[2]),
+                    ):
+                        if left is None or right is None:
+                            if left != right:
+                                raise ValueError("incomplete_dream_owner")
+                        elif left != right:
+                            ownership.append(same_person_condition(left, right))
+            if ownership and not await active.scalar(select(and_(*ownership))):
+                raise ValueError("dream_plan_source_changed")
+
             # Keep a failed bulk INSERT out of the caller's surrounding transaction.
             async with active.begin_nested():
                 row = MemoryDreamRunModel(
@@ -1085,11 +1151,25 @@ class DreamRepository:
             )
         return public_id
 
+    async def ready_preview_fingerprints(self, cluster_id: int) -> tuple[str, ...]:
+        async with self.database.sessions() as reader:
+            return tuple(
+                await reader.scalars(
+                    select(MemoryDreamClusterPreviewModel.source_fingerprint).where(
+                        MemoryDreamClusterPreviewModel.cluster_id == cluster_id,
+                        MemoryDreamClusterPreviewModel.status == "ready",
+                        MemoryDreamClusterPreviewModel.schema_version
+                        == _DREAM_PREVIEW_SCHEMA_VERSION,
+                    )
+                )
+            )
+
     async def ready_preview(
         self,
         *,
         cluster_id: int,
         source_fingerprint: str,
+        compatible_fingerprints: frozenset[str] = frozenset(),
     ) -> tuple[int, str, DreamOutput] | None:
         """Return the exact ready proposal, marking incompatible snapshots stale."""
 
@@ -1108,7 +1188,7 @@ class DreamRepository:
             )
             for row in rows:
                 if (
-                    row.source_fingerprint != source_fingerprint
+                    row.source_fingerprint not in compatible_fingerprints | {source_fingerprint}
                     or row.schema_version != _DREAM_PREVIEW_SCHEMA_VERSION
                 ):
                     row.status = "stale"

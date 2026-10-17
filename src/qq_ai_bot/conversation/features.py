@@ -110,9 +110,7 @@ class AdmissionFeatureBuilder:
             if row[0] == "message" and row[1] == AuthorKind.PERSON
         )
         last_time = (
-            AdmissionFeatureBuilder._aware_utc(messages[-1][2])
-            if messages
-            else normalized_now
+            AdmissionFeatureBuilder._aware_utc(messages[-1][2]) if messages else normalized_now
         )
         last_bot_time = AdmissionFeatureBuilder._aware_utc(bot[-1][2]) if bot else None
         return _ConversationMetrics(

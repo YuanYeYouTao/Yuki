@@ -13,7 +13,6 @@ from qq_ai_bot.automation.tools import AutomationToolService
 from qq_ai_bot.automation.worker import AutomationWorker
 from qq_ai_bot.config import Settings
 from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-from qq_ai_bot.identity.routing import PresenceRouter
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.runtime.work_repository import WorkRepository
 from qq_ai_bot.services.chat import ChatService
@@ -39,7 +38,6 @@ class AutomationModule:
         runtime_config: RuntimeConfigService,
         time_service: TimeContextService,
         admin_audit: AdminAuditService,
-        presence_router: PresenceRouter,
         conversation_scopes: ConversationScopeRepository,
         turns: ConversationTurnCoordinator,
         work_repository: WorkRepository,
@@ -50,7 +48,6 @@ class AutomationModule:
         self._config = runtime_config
         self._time = time_service
         self._audit = admin_audit
-        self._router = presence_router
         self._scopes = conversation_scopes
         self._turns = turns
         self._works = work_repository
@@ -75,7 +72,6 @@ class AutomationModule:
                 runtime_config=self._config,
                 conversation_scopes=self._scopes,
                 turns=self._turns,
-                router=self._router,
                 work_repository=self._works,
                 bindings=self._chat.runtime.bindings,
             ),

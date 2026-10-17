@@ -48,7 +48,7 @@ PLUGIN_DIRECT_COMMAND_BINDINGS={"/monitor":"subscription-monitor:monitor"}
 ```
 
 `add` 默认每 300 秒检查该源，首次只建立基线，之后处理新条目。无新条目时不调用模型。
-目标可使用 `group:群号` 或 `private:QQ号`。命令返回配置回执；运行中的监控通知只通过主 Agent。
+目标可使用 `group:<Space-ID>` 或 `private:<Person-ID>`。命令返回配置回执；运行中的监控通知只通过主 Agent。
 
 复杂配置用 `set` 传完整订阅 JSON，或先 `show` 读取后编辑。以下是单条订阅示例：
 
@@ -132,3 +132,7 @@ normal Main Agent, which owns all visible notifications through `send_message`. 
 separate judge model or direct delivery path. The first fetch creates a silent baseline by default;
 pending requests survive restart and reuse Host notification idempotency. Copy the plugin directory,
 approve its manifest, then manage subscriptions with the `monitor` administrator command.
+
+## Plugin API 4.0 的通知目标
+
+`target_id` 是内部 Person/Space，不是 QQ/TG 外部账号或群号。目标可带 `conversation_id` 指定原私聊 Bot 或群 topic；短命令也接受 `group:<Space-ID>:conversation:<Conversation-ID>` / `private:<Person-ID>:conversation:<Conversation-ID>`。未指定时仅接受当前或唯一真实入口，保存 Host 返回的 Conversation；有多个入口时显式选择。已有排队事件保留原来源、游标和回执，迁移不会重发已接纳通知。

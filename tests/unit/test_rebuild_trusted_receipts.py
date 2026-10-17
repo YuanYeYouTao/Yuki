@@ -7,13 +7,12 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
-from sqlalchemy import delete, select, update
+from sqlalchemy import select, update
 from tests.unit.test_rebuild_receipt_finalization import _seed
 
 from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
+from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from qq_ai_bot.memory.extraction import source_event_fingerprint
-from qq_ai_bot.memory.rebuild import receipt_finalization
 from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
 from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
 from qq_ai_bot.persistence.database import Database
@@ -67,7 +66,7 @@ async def _trusted_page(database: Database, *, target_active: bool = True):
                 .values(status="disabled")
             )
     hydrated = await ledger.hydrate_rebuild_subjects(mentioned)
-    assert hydrated.mentioned_user_ids == (("3003",) if target_active else ())
+    assert hydrated.mentioned_user_ids == ("3003",)
     selection = MemoryRebuildSelection(all_events=True, third_party_mode="trusted_metadata")
     async with database.sessions() as session, session.begin():
         binding = await session.scalar(
@@ -104,7 +103,7 @@ async def _assert_only_unreferenced_event_completed(database: Database, seed) ->
 
 
 @pytest.mark.asyncio
-async def test_disabled_trusted_mention_does_not_abort_other_items_in_receipt_page(
+async def test_disabled_mentioned_person_does_not_block_original_receipt_completion(
     database: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seed, (_binding_id, person_id) = await _trusted_page(database)
@@ -119,25 +118,18 @@ async def test_disabled_trusted_mention_does_not_abort_other_items_in_receipt_pa
             .where(CanonicalPersonModel.id == person_id)
             .values(enabled=False, revision=CanonicalPersonModel.revision + 1)
         )
-    original_fingerprint = receipt_finalization.source_event_fingerprint
-
-    def fingerprint_without_fallback(event):
-        # Failed trusted hydration must not clear references and compare a
-        # disabled-mode fingerprint as if it were the reviewed source.
-        assert event.id != seed.event_ids[0]
-        return original_fingerprint(event)
-
-    monkeypatch.setattr(
-        receipt_finalization, "source_event_fingerprint", fingerprint_without_fallback
-    )
     assert (
         await MemoryRebuildRepository(database).complete_item_receipts(
             seed.public_id, include_failed_live_jobs=False
         )
-        == 1
+        == 2
     )
-    await _assert_only_unreferenced_event_completed(database, seed)
     async with database.sessions() as session:
+        assert set(
+            await session.scalars(
+                select(MemoryJobModel.event_id).where(MemoryJobModel.rebuild_run_id == seed.run_id)
+            )
+        ) == set(seed.event_ids)
         assert (
             await session.scalar(
                 select(MemoryRebuildItemModel.source_event_hash).where(
@@ -158,8 +150,8 @@ async def test_disabled_trusted_mention_does_not_abort_other_items_in_receipt_pa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["person", "binding", "presence"])
-async def test_trusted_reference_change_after_hydration_rejects_old_receipt(
+@pytest.mark.parametrize("change", ["person", "binding", "rename", "merge", "transfer", "forget"])
+async def test_original_reference_survives_current_changes_but_not_real_erasure(
     database: Database, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
     seed, (binding_id, person_id) = await _trusted_page(database)
@@ -172,51 +164,70 @@ async def test_trusted_reference_change_after_hydration_rejects_old_receipt(
         if event.id == seed.event_ids[0] and not injected:
             injected = True
             assert hydrated.mentioned_user_ids == ("3003",)
-            async with database.immediate_session() as writer:
-                if change == "person":
-                    await writer.execute(
-                        update(CanonicalPersonModel)
-                        .where(CanonicalPersonModel.id == person_id)
-                        .values(enabled=False, revision=CanonicalPersonModel.revision + 1)
-                    )
-                elif change == "binding":
-                    await writer.execute(
-                        update(IdentityBindingModel)
-                        .where(IdentityBindingModel.id == binding_id)
-                        .values(status="disabled", revision=IdentityBindingModel.revision + 1)
-                    )
-                else:
-                    await writer.execute(
-                        delete(IdentityBindingModel).where(IdentityBindingModel.id == binding_id)
-                    )
-                    now = datetime.now(UTC)
-                    writer.add(
-                        PresenceModel(
-                            id=str(uuid.uuid4()),
-                            platform="qq",
-                            external_account_id="3003",
-                            enabled=True,
-                            ingest_eligible=True,
-                            revision=1,
-                            created_at=now,
-                            updated_at=now,
+            if change == "transfer":
+                from tests.support.memory_identity import transfer_account
+
+                await transfer_account(database, "3003")
+            elif change == "forget":
+                from qq_ai_bot.persistence.people_repository import PeopleRepository
+
+                assert await PeopleRepository(database).delete_person_id(person_id)
+            else:
+                async with database.immediate_session() as writer:
+                    if change == "person":
+                        await writer.execute(
+                            update(CanonicalPersonModel)
+                            .where(CanonicalPersonModel.id == person_id)
+                            .values(enabled=False, revision=CanonicalPersonModel.revision + 1)
                         )
-                    )
+                    elif change == "binding":
+                        await writer.execute(
+                            update(IdentityBindingModel)
+                            .where(IdentityBindingModel.id == binding_id)
+                            .values(status="disabled", revision=IdentityBindingModel.revision + 1)
+                        )
+                    elif change == "rename":
+                        from qq_ai_bot.identity.person_identity import rename_person
+
+                        await rename_person(
+                            writer, person_id, "新的当前名字", now=datetime.now(UTC)
+                        )
+                    else:
+                        from qq_ai_bot.identity.canonical_repository import find_identity_binding
+                        from qq_ai_bot.identity.person_identity import merge_persons
+
+                        target = (await find_identity_binding(writer, "1002")).person_id
+                        await merge_persons(writer, person_id, target)
         return hydrated
 
     monkeypatch.setattr(EventLedgerRepository, "hydrate_rebuild_subjects", hydrate_and_change)
-    assert (
-        await MemoryRebuildRepository(database).complete_item_receipts(
-            seed.public_id, include_failed_live_jobs=False
-        )
-        == 1
-    )
+    assert await MemoryRebuildRepository(database).complete_item_receipts(
+        seed.public_id, include_failed_live_jobs=False
+    ) == (0 if change == "forget" else 2)
     assert injected
-    await _assert_only_unreferenced_event_completed(database, seed)
+    if change == "forget":
+        # Erasure also advances the actual group source generation; prepare the
+        # page again before completing its unaffected item.
+        assert (
+            await MemoryRebuildRepository(database).complete_item_receipts(
+                seed.public_id, include_failed_live_jobs=False
+            )
+            == 1
+        )
+        await _assert_only_unreferenced_event_completed(database, seed)
+    else:
+        async with database.sessions() as session:
+            assert set(
+                await session.scalars(
+                    select(MemoryJobModel.event_id).where(
+                        MemoryJobModel.rebuild_run_id == seed.run_id
+                    )
+                )
+            ) == set(seed.event_ids)
 
 
 @pytest.mark.asyncio
-async def test_filtered_raw_reference_becoming_active_requires_fresh_preparation(
+async def test_original_historical_reference_not_reclassified_when_account_reactivates(
     database: Database, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seed, (binding_id, _person_id) = await _trusted_page(database, target_active=False)
@@ -228,7 +239,7 @@ async def test_filtered_raw_reference_becoming_active_requires_fresh_preparation
         hydrated = await original(self, event)
         if event.id == seed.event_ids[0] and not injected:
             injected = True
-            assert hydrated.mentioned_user_ids == ()
+            assert hydrated.mentioned_user_ids == ("3003",)
             async with database.immediate_session() as writer:
                 await writer.execute(
                     update(IdentityBindingModel)
@@ -242,7 +253,12 @@ async def test_filtered_raw_reference_becoming_active_requires_fresh_preparation
         await MemoryRebuildRepository(database).complete_item_receipts(
             seed.public_id, include_failed_live_jobs=False
         )
-        == 1
+        == 2
     )
     assert injected
-    await _assert_only_unreferenced_event_completed(database, seed)
+    async with database.sessions() as session:
+        assert set(
+            await session.scalars(
+                select(MemoryJobModel.event_id).where(MemoryJobModel.rebuild_run_id == seed.run_id)
+            )
+        ) == set(seed.event_ids)

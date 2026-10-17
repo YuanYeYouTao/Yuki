@@ -7,6 +7,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Protocol, final
 
+from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.gateway.social import PlatformSocialOperations
+
 
 def _provider_token(value: str, *, name: str) -> str:
     token = value.strip().casefold()
@@ -61,6 +64,13 @@ class GatewayProvider(Protocol):
     @property
     def provider_id(self) -> str: ...
 
+    @property
+    def social(self) -> PlatformSocialOperations: ...
+
+    def project_inbound(
+        self, message: InboundMessage, yuki_ids: frozenset[str]
+    ) -> InboundMessage: ...
+
     def describe_connection(self, handle: object) -> GatewayConnectionProfile: ...
 
 
@@ -82,6 +92,14 @@ class GatewayProviderCatalog:
     @property
     def provider_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._providers))
+
+    def project_inbound(
+        self, provider_id: str, message: InboundMessage, yuki_ids: frozenset[str]
+    ) -> InboundMessage:
+        return self._providers[provider_id].project_inbound(message, yuki_ids)
+
+    def social(self, provider_id: str) -> PlatformSocialOperations:
+        return self._providers[provider_id].social
 
     def describe_connection(
         self,

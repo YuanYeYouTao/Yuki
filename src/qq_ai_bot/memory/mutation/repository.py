@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.memory.mutation.models import (
@@ -29,19 +29,17 @@ class MemoryMutationReceiptRepository:
         claim_fingerprint: str,
         session: AsyncSession | None = None,
     ) -> MemoryMutationReceipt | None:
+        del claim_fingerprint  # Content is not an operation identity.
         if session is None:
             async with self._database.sessions() as owned:
                 return await self.find(
                     idempotency_key=idempotency_key,
-                    claim_fingerprint=claim_fingerprint,
+                    claim_fingerprint="",
                     session=owned,
                 )
         row = await session.scalar(
             select(MemoryMutationReceiptModel).where(
-                or_(
-                    MemoryMutationReceiptModel.idempotency_key == idempotency_key,
-                    MemoryMutationReceiptModel.claim_fingerprint == claim_fingerprint,
-                )
+                MemoryMutationReceiptModel.idempotency_key == idempotency_key
             )
         )
         return _receipt(row) if row is not None else None

@@ -14,7 +14,11 @@ from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
 from qq_ai_bot.conversation.canonical_db_models import SpaceBindingIngestRouteModel
 from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
 from qq_ai_bot.identity import canonical_uow
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
+from qq_ai_bot.identity.canonical_repository import (
+    ensure_person,
+    ensure_presence,
+    find_identity_binding,
+)
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.social.db_models import SocialOperationModel
 from qq_ai_bot.social.models import OperationStatus, SocialError, SocialTarget
@@ -25,7 +29,11 @@ async def social(database):
     async with database.immediate_session() as writer:
         person = await ensure_person(writer, "1001")
         conversation = await ensure_canonical_conversation(
-            writer, kind="private", primary_scope_key="private:8000:1001", person_id=person
+            writer,
+            kind="private",
+            primary_scope_key="private:8000:1001",
+            person_id=person,
+            identity_binding_id=(await find_identity_binding(writer, "1001")).id,
         )
     repository = SocialOperationRepository(database)
     args = dict(
@@ -70,10 +78,7 @@ async def test_social_read_reuse_preserves_payload_plan_source_and_target_confli
     else:
         args["target"] = SocialTarget(kind="person", id=UUID(int=0))
     async with other_writer_and_read_only(database):
-        with pytest.raises(
-            SocialError,
-            match=("target_not_found" if change == "target" else "idempotency_conflict"),
-        ):
+        with pytest.raises(SocialError, match="idempotency_conflict"):
             await repository.prepare(**args)
 
 
@@ -94,7 +99,7 @@ async def canonical(database, group=False):
     bot = _Bot("8000")
     async with database.immediate_session() as writer:
         presence = await ensure_presence(writer, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     admitted = await resolver.pre_admit(
         bot, _message(message_id="readonly-duplicate", group_id="2001" if group else None)
@@ -140,7 +145,7 @@ async def test_canonical_input_encoding_hash_and_event_dto_precede_writer(databa
     bot = _Bot("8000")
     async with database.immediate_session() as writer:
         presence = await ensure_presence(writer, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     admitted = await resolver.pre_admit(bot, _message(message_id="prepared-dto"))
     held = False

@@ -1,7 +1,8 @@
 """Generic canonical publication identity for plugin notification idempotency.
 
-Host compares this immutable manifest on the existing-event path. Media identity
-is ordered ``(index, sha256)``; handle ids are not part of the request identity.
+Host compares this immutable manifest on the existing-event path. Modern media
+identity is ordered ``(index, sha256)``. A legacy receipt whose bytes were cleaned
+can still prove the exact original handle, without claiming an unknown digest.
 This module has no plugin-vendor or source-specific concepts.
 """
 
@@ -20,10 +21,11 @@ _MEDIA_PART_PREFIX = "media:"
 
 @dataclass(frozen=True, slots=True)
 class MediaIdentity:
-    """One publication media slot. Identity is index plus stored artifact digest."""
+    """A stored digest, or an exact legacy handle when bytes are no longer retained."""
 
     index: int
-    sha256: str
+    sha256: str | None
+    legacy_handle_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,7 +80,7 @@ def media_part_key(*, index: int, sha256: str) -> str:
 
 
 def legacy_media_part_key(*, index: int, handle_id: str) -> str:
-    """Pre-C3 outbox key. Dual-read only when the stored artifact proves SHA."""
+    """Pre-C3 outbox identity; compare its digest when available, otherwise its original handle."""
 
     if index < 0 or not handle_id:
         raise ValueError("legacy media part key is invalid")

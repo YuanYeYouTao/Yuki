@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from tests.conftest import make_settings
 
 from qq_ai_bot.vision.base import VisionError
-from qq_ai_bot.vision.models import PreparedFrame, PreparedVisualInput
+from qq_ai_bot.vision.models import PreparedFrame, PreparedVisualInput, VisionAnalysisOptions
 from qq_ai_bot.vision.qwen import QwenVisionProvider
 
 
@@ -96,3 +96,28 @@ async def test_authentication_rejection_does_not_buy_retries():
 def test_negative_retry_setting_is_rejected():
     with pytest.raises(ValidationError):
         _ = make_settings("sqlite+aiosqlite:///:memory:", vision_max_retries=-1).vision
+
+
+@pytest.mark.parametrize("thinking", [False, True])
+async def test_explicit_thinking_choice_reaches_actual_vision_request(thinking):
+    observed = []
+
+    def respond(request):
+        observed.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": '{"items":[{"index":1,"description":"seen"}]}'}}
+                ]
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        provider = QwenVisionProvider(
+            base_url="https://vision.test/v1", api_key="fixture", client=client
+        )
+        await provider.analyze(
+            visual(), "describe", options=VisionAnalysisOptions(thinking_enabled=thinking)
+        )
+    assert observed[0]["enable_thinking"] is thinking

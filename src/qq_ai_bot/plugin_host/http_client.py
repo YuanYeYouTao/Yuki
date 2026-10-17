@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
-import logging
 import socket
 from collections.abc import Awaitable, Callable, Iterable, Mapping
-from contextvars import ContextVar
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
+from qq_ai_bot.services.http_logging import redact_httpx_url
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.results import PluginResult
@@ -35,27 +34,6 @@ _SAFE_RESPONSE_HEADERS = frozenset(
         "x-github-request-id",
     }
 )
-_REDACT_HTTPX_URL: ContextVar[bool] = ContextVar("plugin_http_redact_url", default=False)
-
-
-class _HttpxUrlRedactionFilter(logging.Filter):
-    """Hide plugin request URLs from httpx's otherwise full request log line."""
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if (
-            _REDACT_HTTPX_URL.get()
-            and isinstance(record.msg, str)
-            and record.msg.startswith("HTTP Request:")
-            and isinstance(record.args, tuple)
-            and len(record.args) >= 2
-        ):
-            arguments = list(record.args)
-            arguments[1] = "[plugin-url-redacted]"
-            record.args = tuple(arguments)
-        return True
-
-
-_HTTPX_URL_FILTER = _HttpxUrlRedactionFilter()
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,14 +71,6 @@ class SafeHttpClient:
         self._resolver = resolver or _resolve_public_addresses
         self._timeout = httpx.Timeout(timeout_seconds)
         self._timeout_seconds = timeout_seconds
-        httpx_logger = logging.getLogger("httpx")
-        # NoneBot and test/application logging reconfiguration may disable
-        # third-party loggers.  Re-enable this logger before installing the
-        # redaction filter so plugin requests can never silently bypass the
-        # host's sanitized audit-visible request line.
-        httpx_logger.disabled = False
-        if _HTTPX_URL_FILTER not in httpx_logger.filters:
-            httpx_logger.addFilter(_HTTPX_URL_FILTER)
 
     async def request(
         self,
@@ -156,16 +126,13 @@ class SafeHttpClient:
                     content=body if caller_data_allowed else None,
                     extensions=extensions,
                 )
-                redaction_token = _REDACT_HTTPX_URL.set(True)
-                try:
+                with redact_httpx_url("[plugin-url-redacted]"):
                     response = await self._client.send(
                         request,
                         auth=None,
                         follow_redirects=False,
                         stream=True,
                     )
-                finally:
-                    _REDACT_HTTPX_URL.reset(redaction_token)
                 if response.status_code in _REDIRECT_STATUSES:
                     location = response.headers.get("location")
                     if not location or redirect_index >= 5:

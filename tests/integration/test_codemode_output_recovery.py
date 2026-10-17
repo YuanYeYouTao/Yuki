@@ -15,11 +15,11 @@ from tests.support.codemode_cases import (
 )
 from tests.support.work_session import WorkSession
 
+from qq_ai_bot.admin.authority.json_types import freeze_json_object
 from qq_ai_bot.codemode.driver import CodeCompositionYield, CodeModeDriver
 from qq_ai_bot.codemode.driver_types import EngineCall, EngineOutcome, HostCounters
 from qq_ai_bot.codemode.engine_monty import strict_json
 from qq_ai_bot.codemode.limits import CodeModeLimits
-from qq_ai_bot.control_plane.json_types import freeze_json_object
 from qq_ai_bot.domain.messages import ChatMessage
 from qq_ai_bot.runtime.work_control import WorkControl
 from qq_ai_bot.runtime.work_repository import WorkRepository

@@ -18,12 +18,10 @@ from qq_ai_bot.adapters.onebot.group_recovery import QQGroupRecovery
 from qq_ai_bot.admin.config_service import RuntimeConfigService
 from qq_ai_bot.admin.models import RuntimeConfigSnapshot
 from qq_ai_bot.admin.permission_catalog import PermissionCatalogService
-from qq_ai_bot.application.control_health import control_runtime_health
 from qq_ai_bot.application.lifecycle import LifecycleRegistry
 from qq_ai_bot.application.modules import (
     AdminModule,
     AutomationModule,
-    ControlPlaneModule,
     ConversationModule,
     EmojiModule,
     MediaModule,
@@ -57,7 +55,7 @@ from qq_ai_bot.plugin_host.http_client import BoundHttpFacade
 from qq_ai_bot.plugin_host.manifest import PluginManifest
 from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
 from qq_ai_bot.plugin_host.notification_delivery import (
-    OneBotNotificationTransport,
+    PlatformNotificationTransport,
     PluginNotificationOutboxWorker,
 )
 from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
@@ -108,7 +106,10 @@ class ApplicationContainer:
         self.persistence = persistence
         self.database = persistence.database
         self.runtime_config = persistence.runtime_config
-        self.gateway_providers = builtin_provider_catalog()
+        self.gateway_providers = builtin_provider_catalog(
+            qq_transfer_root=settings.social_transfer_directory,
+            qq_gateway_root=settings.social_gateway_transfer_directory,
+        )
         self.gateway_registry = GatewayConnectionRegistry(providers=self.gateway_providers)
         configure_process_registry(self.gateway_registry)
         self.presence_router = PresenceRouter(self.database, self.gateway_registry)
@@ -163,6 +164,7 @@ class ApplicationContainer:
             settings.model_runtime,
             self.database,
             lifecycle=self.lifecycle,
+            web_settings=settings.web,
         ).build()
         self.model_runtime = model_runtime
         self.tool_invocations.writer = model_runtime.invocations.writer
@@ -285,13 +287,7 @@ class ApplicationContainer:
         self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)
         self.workspace_service.sandbox = self.sandbox_client
         self.agent_tools.sandbox_client = self.sandbox_client
-        from qq_ai_bot.social.transfer import ArtifactTransfer
-
-        self.social_service.transfer = ArtifactTransfer(
-            self.workspace_service.store,
-            settings.social_transfer_directory,
-            settings.social_gateway_transfer_directory,
-        )
+        self.social_service.workspace = self.workspace_service.store
         self.chat = conversation.chat
         self.runtime = self.chat.runtime
         from qq_ai_bot.services.main_agent_contract import MainAgentContract
@@ -305,7 +301,6 @@ class ApplicationContainer:
         self.agent_tools.short_state = self.main_agent_contract.state
         self.runtime.runner.main_contract = self.main_agent_contract
         self.runtime.runner.code_mode_settings = settings
-        from qq_ai_bot.adapters.onebot.sender import OneBotRouteSender
         from qq_ai_bot.runtime.subagent_repository import SubagentRepository
         from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
         from qq_ai_bot.runtime.work_repository import WorkRepository
@@ -336,7 +331,6 @@ class ApplicationContainer:
                 ledger=self.ledger,
                 conversation_scopes=self.conversation_scopes,
                 turn_coordinator=self.turn_coordinator,
-                presence_router=self.presence_router,
                 runtime_config=self.runtime_config,
                 sandbox_tasks=self.sandbox_tasks,
                 active_bindings=self.runtime.bindings,
@@ -368,11 +362,7 @@ class ApplicationContainer:
                 open_memory=self.chat.open_memory_session,
                 open_self_memory=self.chat.open_self_memory_session,
                 static_messages=self.chat._prompt_composer.static_messages,
-                presence_router=self.presence_router,
                 lookup_plugin_host=self._plugin_contexts.get,
-                gateway_factory=lambda bot, group, target: OneBotRouteSender(
-                    bot, group=group, target_id=target
-                ),
                 backend_factory=lambda runtime, allowed: MainAgentBackend(
                     self.chat, runtime, allowed_tools=allowed
                 ),
@@ -396,7 +386,6 @@ class ApplicationContainer:
         self.memory_self_reflection_worker = conversation.memory_self_reflection_worker
         self.memory_self_reflection_worker.social = self.social_service
         self.memory_dream_worker = conversation.memory_dream_worker
-        self.memory_evidence_compaction_worker = conversation.memory_evidence_compaction_worker
         admin = AdminModule(
             settings=settings,
             database=self.database,
@@ -434,7 +423,6 @@ class ApplicationContainer:
             runtime_config=self.runtime_config,
             time_service=self.time_context,
             admin_audit=self.admin_audit,
-            presence_router=self.presence_router,
             conversation_scopes=self.conversation_scopes,
             turns=self.turn_coordinator,
             work_repository=works,
@@ -455,8 +443,7 @@ class ApplicationContainer:
             repository=self.plugin_notification_repository,
             artifacts=self.plugin_media_artifacts,
             ledger=self.ledger,
-            transport=OneBotNotificationTransport(
-                self.gateway_registry,
+            transport=PlatformNotificationTransport(
                 router=self.presence_router,
             ),
             effect_gate=self.conversation_effect_gate,
@@ -470,7 +457,6 @@ class ApplicationContainer:
             turns=self.turn_coordinator,
             conversation_scopes=self.conversation_scopes,
             turn_observations=self.turn_observations,
-            router=self.presence_router,
         )
         self.plugin_module = PluginModule(
             settings=settings.plugins,
@@ -505,28 +491,23 @@ class ApplicationContainer:
         self.plugin_direct_commands = plugins.direct_commands
         self.plugin_commands = plugins.commands
         self.plugin_admission_signals = plugins.admission_signals
-        self.control_plane = ControlPlaneModule.build(
-            settings=settings,
-            database=self.database,
-            runtime_config=self.runtime_config,
-            connections=self.gateway_registry,
-            automation=self.automation,
-            memories=self.memories,
-            maintenance=self.memory_maintenance_worker,
-            embeddings=self.memory_embeddings,
-            plugins=self.plugin_manager,
-            workspace=self.workspace_service.store,
-            workspace_service=self.workspace_service,
-            rebuild_service=self.memory_rebuild_service,
-            conversation_media=self.conversation_media,
-            model_catalog=self.model_profiles,
+        from qq_ai_bot.admin.config_files import ConfigFileService
+
+        self.config_files = ConfigFileService(
+            settings,
+            self.model_profiles,
             model_executor=self.models,
             web_module=self.web_module,
-            participation_snapshot=lambda: self.semantic_participation.control_snapshot(),
-            autonomy_parameters=lambda: self.semantic_participation.control_model_parameters(),
-            runtime_health=lambda: control_runtime_health(self),
-            trace_recorder=self.models.traces,
         )
+        from qq_ai_bot.application.modules.admin_api import build_admin_api
+
+        self.admin_api = build_admin_api(self)
+        from qq_ai_bot.client_api.http import ClientApi
+
+        self.client_api = ClientApi(self.admin_api.commands.identities)
+        from qq_ai_bot.services.client_link import ClientLinkCommands
+
+        self.client_links = ClientLinkCommands(self.client_api.identity, self.gateway_registry)
         self.emoji_collector.set_event_publisher(self.plugin_events)
         self.emoji_lifecycle.set_event_publisher(self.plugin_events)
         self.emoji_selector.set_event_publisher(self.plugin_events)
@@ -606,6 +587,7 @@ class ApplicationContainer:
             concurrency=self.concurrency,
             onebot_connected=self.onebot_connected,
             canonical_ingress=self.canonical_ingress,
+            client_links=self.client_links,
             group_recovery=QQGroupRecovery(
                 settings, self.database, self.gateway_registry, self.presence_router
             ),
@@ -635,6 +617,44 @@ class ApplicationContainer:
             turn_observations=self.turn_observations,
         )
         self.processor.set_participation(self.semantic_participation)
+        from qq_ai_bot.client_api.files import ClientFiles
+        from qq_ai_bot.client_api.messages import ClientMessages
+        from qq_ai_bot.client_api.views import ClientViews
+        from qq_ai_bot.client_api.works import ClientWorks
+        from qq_ai_bot.conversation.uploads import ConversationUploads
+        from qq_ai_bot.gateway.providers.app.ingress import AppGateway
+
+        self.app_gateway = AppGateway(
+            self.database, self.gateway_registry, self.processor, self.social_service
+        )
+        self.telegram_gateway = None
+        if settings.telegram_bot_token.get_secret_value():
+            from qq_ai_bot.gateway.providers.telegram import TelegramClient
+            from qq_ai_bot.gateway.providers.telegram_ingress import TelegramGateway
+
+            self.telegram_gateway = TelegramGateway(
+                self.database,
+                self.gateway_registry,
+                self.presence_router,
+                self.processor,
+                self.scoped_events,
+                TelegramClient(settings.telegram_bot_token.get_secret_value()),
+                poll_interval=settings.telegram_poll_interval_seconds,
+            )
+        client_works = ClientWorks(self.client_api.identity, self.app_gateway)
+        client_views = ClientViews(self.client_api.identity, client_works, self.models.traces)
+        client_files = ClientFiles(
+            ConversationUploads(self.client_api.identity, self.conversation_media),
+            client_views,
+            self.workspace_service.store,
+        )
+        self.client_api = ClientApi(
+            self.client_api.identity,
+            ClientMessages(self.client_api.identity, self.app_gateway, client_files),
+            client_works,
+            client_views,
+            client_files,
+        )
         self.semantic_participation.set_promoter(
             partial(self.processor.promote_committed_event, reason="semantic_invitation")
         )
@@ -672,8 +692,8 @@ class ApplicationContainer:
             return BoundAgentSessionFacade(
                 service=self.plugin_sessions,
                 plugin_id=manifest.id,
-                actor_user_id=invocation.actor_user_id,
-                current_group_id=invocation.current_group_id,
+                actor_user_id=invocation.actor_person_id,
+                current_group_id=invocation.space_id,
                 approved_permissions=permissions,
                 conversation_id=invocation.conversation_id,
             )
@@ -717,6 +737,7 @@ class ApplicationContainer:
                 self.settings.plugin_background_task_limit,
             ),
             services=PluginFacadeServices(
+                social=self.social_service,
                 approval_revision=manifest.manifest_hash,
                 bot_display_name=self.settings.bot_display_name,
                 ledger=self.ledger,
@@ -842,12 +863,14 @@ class ApplicationContainer:
             raise
 
     def onebot_connected(self) -> bool:
-        """Return whether the Registry currently has at least one active connection."""
+        """App's always-local connection is not evidence of a live QQ gateway."""
 
-        return self.gateway_registry.has_any_active()
+        return self.gateway_registry.has_any_active(platform="qq")
 
     def _register_lifecycle(self) -> None:
-        self.lifecycle.register("control_recovery", start=self.control_plane.recover_interrupted)
+        self.lifecycle.register(
+            "control_recovery", start=self.admin_api.commands.receipts.recover_interrupted_controls
+        )
         self.lifecycle.register(
             "social_recovery", start=self.social_service.receipts.recover_interrupted
         )
@@ -892,6 +915,9 @@ class ApplicationContainer:
             health=self.sandbox_continuations.health,
         )
         self.lifecycle.register(
+            "app_gateway", start=self.app_gateway.start, close=self.app_gateway.close
+        )
+        self.lifecycle.register(
             "yuki_runtime",
             start=self.runtime.start,
             close=self.runtime.close,
@@ -903,6 +929,13 @@ class ApplicationContainer:
             close=self.plugin_background_turns.close,
             health=self.plugin_background_turns.health,
         )
+        if self.telegram_gateway is not None:
+            self.lifecycle.register(
+                "telegram_gateway",
+                start=self.telegram_gateway.start,
+                close=self.telegram_gateway.close,
+                health=self.telegram_gateway.health,
+            )
         self.lifecycle.register("application_event", start=self._publish_started)
         self.lifecycle.register(
             "maintenance",
@@ -957,6 +990,7 @@ class ApplicationContainer:
                 if emoji_deleted:
                     logger.info("emoji_assets_cleaned count=%d", emoji_deleted)
                 plugin_state_deleted = await self.plugin_state.cleanup_expired()
+                await self.client_api.identity.cleanup_expired()
                 media_artifacts_deleted = await self.plugin_media_artifacts.cleanup()
                 if media_artifacts_deleted:
                     logger.info(

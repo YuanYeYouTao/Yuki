@@ -52,12 +52,13 @@ class ConfigAdminService:
         scope_type: str,
         scope_id: str,
     ) -> ConfigChangeResult:
+        assert actor.person_id is not None
         return await self._runtime_config.set_override(
             key,
             value,
             scope_type=scope_type,
             scope_id=scope_id,
-            actor_user_id=actor.user_id,
+            actor_user_id=actor.person_id,
             trigger_message_id=actor.trigger_message_id,
             conversation_key=actor.conversation_key,
         )
@@ -70,11 +71,12 @@ class ConfigAdminService:
         scope_type: str,
         scope_id: str,
     ) -> ConfigChangeResult:
+        assert actor.person_id is not None
         return await self._runtime_config.delete_override(
             key,
             scope_type=scope_type,
             scope_id=scope_id,
-            actor_user_id=actor.user_id,
+            actor_user_id=actor.person_id,
             trigger_message_id=actor.trigger_message_id,
             conversation_key=actor.conversation_key,
         )
@@ -97,9 +99,10 @@ class ConfigAdminService:
         actor: AdminActor,
         change_id: int,
     ) -> ConfigChangeResult:
+        assert actor.person_id is not None
         return await self._runtime_config.rollback(
             change_id,
-            actor_user_id=actor.user_id,
+            actor_user_id=actor.person_id,
             trigger_message_id=actor.trigger_message_id,
             conversation_key=actor.conversation_key,
         )

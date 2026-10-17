@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.dialects.sqlite import insert
 
+from qq_ai_bot.identity.person_identity import same_person_condition
 from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope, authorized_fact_condition
 from qq_ai_bot.memory.embedding.models import (
     EmbeddingProviderProfile,
@@ -170,7 +171,9 @@ class MemoryEmbeddingRepository:
                 return ()
             conditions.extend(
                 (
-                    MemoryFactModel.canonical_subject_person_id == owners.subject_person_id
+                    same_person_condition(
+                        MemoryFactModel.canonical_subject_person_id, owners.subject_person_id
+                    )
                     if owners.subject_person_id is not None
                     else MemoryFactModel.canonical_subject_person_id.is_(None),
                     MemoryFactModel.canonical_subject_space_id == owners.subject_space_id
@@ -183,8 +186,10 @@ class MemoryEmbeddingRepository:
                     MemoryFactModel.visibility_type
                     == (target.visibility_type.value if target.visibility_type else ""),
                     (
-                        MemoryFactModel.canonical_visibility_person_id
-                        == owners.visibility_person_id
+                        same_person_condition(
+                            MemoryFactModel.canonical_visibility_person_id,
+                            owners.visibility_person_id,
+                        )
                         if owners.visibility_person_id is not None
                         else MemoryFactModel.canonical_visibility_person_id.is_(None)
                     ),

@@ -147,12 +147,18 @@ class ToolArtifactRepository:
             )
             if source.get("privacy_generation") != privacy:
                 return False
-            return all(
+            from qq_ai_bot.identity.person_identity import same_person_id
+
+            actor_matches = source.get("actor_person_id") == access.actor_person_id or (
+                access.principal_kind == "person"
+                and bool(source.get("actor_person_id"))
+                and await same_person_id(session, source["actor_person_id"], access.actor_person_id)
+            )
+            return actor_matches and all(
                 source.get(key) == value
                 for key, value in (
                     ("conversation_id", access.conversation_id),
                     ("generation", access.generation),
-                    ("actor_person_id", access.actor_person_id),
                     ("principal_kind", access.principal_kind),
                     ("read_scope", access.read_scope),
                 )
@@ -177,8 +183,19 @@ class ToolArtifactRepository:
         ):
             return False
         source = json.loads(original.source_json)
+        from qq_ai_bot.identity.person_identity import same_person_id
+
         return bool(
-            source.get("actor_person_id") == access.actor_person_id
+            (
+                source.get("actor_person_id") == access.actor_person_id
+                or (
+                    access.principal_kind == "person"
+                    and source.get("actor_person_id")
+                    and await same_person_id(
+                        session, source["actor_person_id"], access.actor_person_id
+                    )
+                )
+            )
             and source.get("principal_kind", "person") == access.principal_kind
             and source.get("read_scope", "") == access.read_scope
         )

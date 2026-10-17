@@ -70,119 +70,29 @@ doctor 是只读检查，不发送消息、不调用私有 action，也不输出
 
 ## 模型配置
 
-模型可在 WebUI 的「模型与用量」中配置，也可用 `qq-ai-bot-cli setup` 完成初始引导。
-WebUI 选择供应商和协议，直接填写 API Base URL、模型 ID 与 API Key，然后按用途选择模型连接。
-新输入的密钥保存在服务器私有文件，不会在页面回显；在线模型管理保存后热应用新连接与搜索后端，已开始的激活继续使用原固定 Profile。手工修改文件或启动环境时按页面提示与部署流程重新加载。
+使用 `qq-ai-bot-cli setup` 完成初始引导；后续在模型 TOML 中明确选择供应商、协议、
+API Base URL、模型与任务路由，通过 `admin model apply` 保存并热应用。
+新增密钥使用 `admin model secret set`，密钥进入服务器私有文件，不回显。
+连接配置与命令见[管理 API](architecture/admin-api.md)。
+
+验证一项新连接时：
+
+1. 用 `admin model show` 读取当前配置与 revision；先只修改主对话的路由。
+2. 通过 `admin model apply <file> --revision <revision>` 应用并确认返回的实际状态。
+3. 在明确授权的测试会话发送消息，按需测试图片与工具；用 `admin trace` 查询原轮次，
+   用 `model stats` 查看原调用记录。配置保存本身不调用模型。
+4. 需要恢复时，用同一入口将路由改回并确认应用。
+
 支持 Chat Completions、Responses、Claude Messages 和原生 Gemini GenerateContent；
-具体思考、工具、图片、结构化输出与缓存能力取决于供应商和模型。
-
-测试 Gemini 3.8 Flash：
-
-1. 在「模型与用量」选择「添加模型连接」，供应商选「Google Gemini」。页面预填
-   `gemini-3.8-flash`、`https://generativelanguage.googleapis.com/v1beta` 和原生 Gemini 协议。
-2. 在 API Key 输入框粘贴 Google 提供的密钥。先仅把「主对话」指向新连接，其他用途沿用现有模型。
-3. 点击「检查并保存」，确认页面提示已应用，再确认健康状态和实际已加载路由。
-4. 用明确授权的测试会话发一条文字消息，按需再测图片及工具。到「轨迹与审计」查看该轮的请求、响应、
-   工具与投递步骤；到「模型与用量」查看 Gemini 调用次数、输入/输出 Token 及缓存命中报告。
-5. 测试后若要恢复原路由，在 WebUI 将「主对话」选回原连接并保存，确认已应用。
-
-这套配置不会在保存时发出模型请求；真实模型效果、密钥有效性和上游可用性需第 4 步验证。
-Gemini 的 Google 搜索通过 `search_mode="bridge"` 的独立请求接入，主对话保留本地 `web_search` 工具；该连接与上游仍须实际支持搜索。Interactions、Live 和 TTS 尚未接入。用量是 Yuki 入账的调用，
-不是供应商账单；没有可靠单价时页面不估算费用。
-
-通用原则：
-
-- 不在聊天、日志、Issue 或 Git 中粘贴 API key。
-- Responses 请求默认不发送 `temperature`。
-- 思考与结构化模式沿显式 Profile/请求设置，不强制开启、设置最低档位或自动抬档。
-  各协议参数及真实能力见[模型供应商合同](architecture/model-providers.md)。
-- Web、Embedding 和 Vision 都是可选能力；不可用时应有界降级，不影响纯文本主路径。
-- secret 只能写入或查询“是否已配置”，不能通过控制面读回。
-
-修改启动环境或需重启的配置后先检查，沿用原项目名及全部 Compose 覆盖文件：
-
-```bash
-docker compose config --quiet
-docker compose up -d --no-deps --force-recreate bot
-docker compose logs --tail 200 bot
-```
-
-## Conversation 与群聊
-
-- 私聊 Conversation 属于 Person；同一 Person 的多个 QQ Binding 共用会话。
-- 群聊 Conversation 属于 Space；更换 Yuki Presence 不会产生新的群会话。
-- `/ai new` 重置当前 canonical Conversation 的上下文并取消其未结束的 Work。群内影响全部参与者，
-  仅超级管理员可用；私聊重置本人的会话。原始聊天、长期 Memory 与全局 short_state 保留。
-  它不会停止运行资料的 producer，也不会重置其他会话。
-- 群 ingest 路由决定哪个 Presence 处理某个外部群。路由暂停或不匹配时，消息在 Agent 和 Memory
-  之前失败关闭。
-- 切换账号时，不在当前账号群列表中的旧群只是暂时不可达，不应删除群设置或按共同群交集关闭。
-  切回旧账号后，未手动暂停的旧路由可继续使用。
-- 历史遗留的暂停路由可由超级管理员在**目标群内**单独发送 `/ai on` 恢复。该命令经过真实连接、
-  canonical 身份和实时群成员校验，在同一事务中启用群并修复必要的入站/发送路由，保留健康的
-  既有路由。不需要 `/ai new`，不会重置会话或记忆，也不进入聊天历史。
-  暂停群中的其他 `/ai` 命令只向超管提示恢复方法，不执行原命令；普通用户不能绕过路由围栏。
-  多个候选账号且没有健康接入 pin 时拒绝恢复；仅私聊发送 `/ai group <群号> on` 只修改群启用设置，
-  不能替代目标群的连接证明。
-- 当前事件回复优先使用 ingress 连接；自动化和主动通知读取持久路由。
-- @、reply 与 mention-only 消息从 OneBot `original_message` 保序投影；任一 Yuki Presence 都
-  被识别为 Yuki。
-
-会话 compact 替换 Main 已覆盖的输入窗口，原始 `chat_events` 与私有执行回执继续保存。
-公共检查点是不可信输入，不进入 Memory。手动 `/ai compact` 与自动整理共用当前 Main 路径。
-详见 [会话 Compact](architecture/conversation-compact.md)。
-
-## Memory
-
-Memory owner：
-
-- SELF：永久 Yuki 自身。
-- PERSON：永久 Person。
-- GROUP：永久 Space。
-- PERSON_GROUP：某 Person 与某 Space 的共同经历。
-
-结构化读取按后端记录的历史共同群关系授权：本人 Person 始终可读；他人 Person 需要直接历史
-共同群；Group 需要请求者的历史 membership；PersonGroup 需要双方都曾属于该群。退群、群停用、
-Provider 离线或 Presence 切换不会自动撤销这项历史关系。共同群授权允许读取 Person 中来自私聊的
-结构化事实，但不开放原始私聊、他人 evidence/private SELF，也不扩大 mutation 权限。群聊可直接
-查询其他历史共同群，私聊查询群记忆时必须指定群名或兼容 ID；同名歧义会要求澄清，无结果则正常
-返回空结果。
-
-普通自动提取按同一 canonical owner 聚合；达到 12 条、8,000 字符或最老事件等待一小时中的任一
-条件才领取。显式记住、纠正与删除仍立即执行；没有足够价值的新事实时 noop 是健康结果。只自动
-保留稳定事实、持续偏好及有意义的一次性共同经历。
-
-`memory_change.visibility` 只对 SELF 生效。PERSON、PERSON_GROUP 和 GROUP 目标若带合法的
-`current_scope` 或 `global` hint，会忽略该 hint 后继续授权与 mutation；非法 visibility 仍会
-被拒绝。Memory 事实保留 Evidence、authority、confidence、状态、冲突和版本链。
-
-同一 Person 的多个 Binding 共享偏好、人物记忆和历史。Yuki Presence 与第三方机器人不
-创建人物资料。`/ai forgetme` 按 Person 删除其拥有的数据，删除后旧 Binding 不再能读取其Memory。
-
-更多资料：
-
-- [Memory V2](architecture/memory-v2.md)
-- [Memory 变更](architecture/memory-change.md)
-- [Memory 质量运维](operations/memory-quality.md)
-- [Memory 重建](architecture/memory-v2-rebuild.md)
-
-## 接收语音
-
-私聊可以直接发送 QQ 语音。群聊仍按原有启用状态、@、引用和触发规则决定是否回复；
-不会把群里的每条语音都提交识别。触发回复的消息可以包含语音，也可以引用一条语音。
-Yuki 会根据转写内容回复，之后可以回忆或搜索这条语音。识别不成功会明确提示，不会猜测。
-
-`ASR_ENABLED` 控制入站和引用语音识别；Genie 合成及专属语音发送功能已退出，通用管理员 OneBot 接口仍遵守原权限合同。默认使用 `qwen3-asr-flash`，复用现有千问
-连接。缺少可用连接时会说明服务未配置。详见 [配置与验收](speech/recognition.md)。
-
-## 工具、权限与控制面
+思考、图片、工具、结构化输出与缓存取决于所选连接。真实密钥和上游可用性通过实际请求验证。
+Google 搜索沿显式搜索连接与 `search_mode="bridge"`，不根据消息内容暗中切换 Provider。
+用量是 Yuki 入账记录，不是供应商账单。
 
 主 Agent 在启动时冻结工具合同，执行处按当前 Principal 核验授权。默认 direct 模式直接声明部署内固定完整工具清单；显式启用 Code Mode 时，固定直调工具保留终端、联网搜索和网页读取，其余工具经 Code Mode 调用。
 Capability 决定 metadata、外部 ID、正文、mutation 与 destructive 操作的不同权限。
 
-Control Plane 提供 CLI、QQ command 和 WebUI 共用的 Query/Command 服务。WebUI
-把登录身份转换为 `ControlPrincipal` 与 `DecisionContext`，不直接访问 ORM、数据库或
-Gateway；当前功能边界见 [WebUI 合同](architecture/webui-console.md)。
+管理 CLI 通过 Bearer API 调用原领域服务，权限来自服务器 operator 声明；
+QQ 管理仍使用 `/ai`。当前范围见[管理 API](architecture/admin-api.md)。
 
 高风险边界：
 

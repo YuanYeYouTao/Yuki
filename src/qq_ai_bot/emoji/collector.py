@@ -13,7 +13,8 @@ from qq_ai_bot.emoji.detector import EmojiCandidateDetector
 from qq_ai_bot.emoji.models import EmojiAsset, EmojiCollectionMode
 from qq_ai_bot.emoji.repository import EmojiRepository
 from qq_ai_bot.emoji.storage import EmojiStorage
-from qq_ai_bot.services.media_resolver import MediaResolver, OneBotMediaGateway
+from qq_ai_bot.gateway.media import PlatformMediaGateway
+from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.services.plugin_events import LifecycleEventPublisher, publish_notification
 from qq_ai_bot.vision.models import MediaReference
 from yuki_plugin_sdk.events import EventName
@@ -57,7 +58,7 @@ class EmojiCollector:
         *,
         source_event_id: int | None,
         runtime: EmojiRuntimeConfig,
-        gateway: OneBotMediaGateway | None,
+        gateway: PlatformMediaGateway | None,
     ) -> None:
         """Start collection without delaying the current text-chat pipeline."""
 
@@ -94,7 +95,7 @@ class EmojiCollector:
         *,
         source_event_id: int | None,
         runtime: EmojiRuntimeConfig,
-        gateway: OneBotMediaGateway | None,
+        gateway: PlatformMediaGateway | None,
     ) -> EmojiCollectionResult:
         if not runtime.enabled or not runtime.collection_enabled:
             return EmojiCollectionResult(0, 0, 0, 0)
@@ -139,7 +140,7 @@ class EmojiCollector:
         message: InboundMessage,
         source_event_id: int | None,
         runtime: EmojiRuntimeConfig,
-        gateway: OneBotMediaGateway | None,
+        gateway: PlatformMediaGateway | None,
     ) -> tuple[EmojiAsset, bool, bool]:
         reference = MediaReference(
             message_id=message.message_id,
@@ -166,6 +167,8 @@ class EmojiCollector:
             source_event_id=source_event_id,
             user_id=message.sender.user_id,
             group_id=message.group_id,
+            person_id=message.person_id,
+            space_id=message.space_id,
             source_sub_type=attachment.sub_type or "",
             source_emoji_id=attachment.emoji_id or "",
             source_package_id=attachment.emoji_package_id or "",

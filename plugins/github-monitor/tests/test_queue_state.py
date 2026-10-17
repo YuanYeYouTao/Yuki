@@ -386,3 +386,47 @@ def test_dequeue_requires_terminal_delivery_and_cursor_advance() -> None:
                 committed_fingerprint=FINGERPRINT,
             ),
         )
+
+
+def test_topic_is_part_of_frozen_delivery_identity_but_legacy_hash_is_unchanged():
+    import hashlib
+
+    from github_monitor.config import RepositorySubscription
+    from github_monitor.models import PreparedNotification, canonical_json, prepared_request_hash
+    from github_monitor.polling import GitHubPoller
+
+    base = _prepared()
+    legacy = base.model_dump(mode="json", exclude={"request_hash", "conversation_id"})
+    # The original v1 hash uses datetime.isoformat rather than model JSON's Z.
+    legacy["occurred_at"] = base.occurred_at.isoformat()
+    legacy["media"][0]["expires_at"] = base.media[0].expires_at.isoformat()
+    assert base.request_hash == hashlib.sha256(canonical_json(legacy).encode()).hexdigest()
+    requests = []
+    subscription = RepositorySubscription(
+        repository="owner/repo",
+        targets=tuple(
+            {"target_type": "group", "target_id": "original-space", "conversation_id": topic}
+            for topic in ("original-topic-a", "original-topic-b")
+        ),
+    )
+    assert len(subscription.targets) == 2
+    for target in subscription.targets:
+        fields = {
+            **base.model_dump(),
+            "target_id": target.target_id,
+            "conversation_id": target.conversation_id,
+        }
+        provisional = base.model_copy(
+            update={"target_id": target.target_id, "conversation_id": target.conversation_id}
+        )
+        fields["request_hash"] = prepared_request_hash(provisional)
+        prepared = PreparedNotification.model_validate(fields)
+        assert (
+            GitHubPoller._publish_request(prepared).target.conversation_id == target.conversation_id
+        )
+        delivery = GitHubPoller._target_delivery(target)
+        assert delivery.target_key == delivery_target_key(
+            "group", target.target_id, target.conversation_id
+        )
+        requests.append(prepared)
+    assert requests[0].request_hash != requests[1].request_hash

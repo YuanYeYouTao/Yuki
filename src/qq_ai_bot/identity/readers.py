@@ -6,7 +6,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.identity.canonical_repository import (
     find_identity_binding,
-    find_space_binding,
 )
 from qq_ai_bot.identity.db_models import (
     CanonicalPersonModel,
@@ -18,8 +17,10 @@ from qq_ai_bot.services.policies import EffectiveGroupPolicy, EffectivePrivatePo
 async def canonical_private_policy(
     session: AsyncSession,
     user_id: str,
+    *,
+    platform: str = "qq",
 ) -> EffectivePrivatePolicy:
-    binding = await find_identity_binding(session, user_id)
+    binding = await find_identity_binding(session, user_id, platform=platform)
     if binding is None or binding.status != "active":
         return EffectivePrivatePolicy(enabled=False)
     person = await session.get(CanonicalPersonModel, binding.person_id)
@@ -30,12 +31,9 @@ async def canonical_private_policy(
 
 async def canonical_group_policy(
     session: AsyncSession,
-    group_id: str,
+    space_id: str,
 ) -> EffectiveGroupPolicy:
-    binding = await find_space_binding(session, group_id)
-    if binding is None or binding.status != "active":
-        return EffectiveGroupPolicy(enabled=False)
-    space = await session.get(CanonicalSpaceModel, binding.space_id)
+    space = await session.get(CanonicalSpaceModel, space_id)
     if space is None:
         return EffectiveGroupPolicy(enabled=False)
     return EffectiveGroupPolicy(

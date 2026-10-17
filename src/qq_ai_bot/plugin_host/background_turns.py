@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from contextlib import AsyncExitStack
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import select
 
@@ -16,7 +16,6 @@ from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
 from qq_ai_bot.conversation.scope_models import ConversationCoverageError
 from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
 from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
 from qq_ai_bot.persistence.event_repository import EventLedgerRepository
 from qq_ai_bot.plugin_host.db_models import PluginBackgroundTurnJobModel
 from qq_ai_bot.plugin_host.notification_repository import (
@@ -75,7 +74,6 @@ class PluginBackgroundTurnWorker:
         turns: ConversationTurnCoordinator,
         conversation_scopes: ConversationScopeRepository,
         turn_observations: TurnObservationRecorder | None = None,
-        router: PresenceRouter | None = None,
     ) -> None:
         self._repository = repository
         self._ledger = ledger
@@ -84,7 +82,6 @@ class PluginBackgroundTurnWorker:
         self._turns = turns
         self._conversation_scopes = conversation_scopes
         self._turn_observations = turn_observations
-        self._router = router
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -276,55 +273,30 @@ class PluginBackgroundTurnWorker:
                 error_category="source_event_invalid",
             )
             return
-        if self._router is None:
-            if work_item is not None:
-                raise RouteSendError("none")
-            await self._repository.fail_turn(
-                job.id,
-                attempt=job.attempts,
-                error_category="none",
-            )
-            return
-        try:
-            if context.person_id and context.space_id:
-                raise RouteSendError("none")
-            if context.person_id:
-                resolved = await self._router.resolve_send_for_person(context.person_id)
-            elif context.space_id:
-                resolved = await self._router.resolve_send_for_space(context.space_id)
-            else:
-                raise RouteSendError("none")
-        except RouteSendError as exc:
-            if work_item is not None:
-                raise
-            await self._repository.fail_turn(
-                job.id,
-                attempt=job.attempts,
-                error_category=exc.category,
-            )
-            return
-        if job.target_type == "group":
-            transport = ConversationScope.group(
-                resolved.sender_account_id, resolved.external_target_id
-            )
-        else:
-            transport = ConversationScope.private(
-                resolved.sender_account_id, resolved.external_target_id
-            )
-        try:
-            await self._repository.ensure_resolved_transport_alias(
+        from qq_ai_bot.identity.db_models import PresenceModel
+
+        async with self._repository._database.sessions() as reader:
+            presence = await reader.get(PresenceModel, context.provenance_presence_id)
+        if presence is None:
+            raise WorkConflict("plugin_turn_presence_missing")
+        assert event.group_id is not None or event.private_peer_user_id is not None
+        transport = (
+            ConversationScope.group(
+                event.bot_user_id,
+                event.group_id,
+                platform=presence.platform,
+                presence_id=presence.id,
                 conversation_id=context.conversation_id,
-                transport_key=transport.key,
             )
-        except PluginOwnershipError as exc:
-            if work_item is not None:
-                raise
-            await self._repository.fail_turn(
-                job.id,
-                attempt=job.attempts,
-                error_category=queued_work_error_category(exc, job),
+            if event.group_id is not None
+            else ConversationScope.private(
+                event.bot_user_id,
+                cast(str, event.private_peer_user_id),
+                platform=presence.platform,
+                presence_id=presence.id,
+                conversation_id=context.conversation_id,
             )
-            return
+        )
         conversation_key = context.primary_alias
         if resolved_key is not None:
             resolved_key[0] = conversation_key
@@ -401,7 +373,7 @@ class PluginBackgroundTurnWorker:
                         plugin_id=job.plugin_id,
                         source_event_id=event.id,
                         target_type=job.target_type,
-                        target_id=resolved.external_target_id,
+                        target_id=event.group_id or event.private_peer_user_id or "",
                         agent_intent=work_item["goal"]
                         if work_item is not None
                         else job.agent_intent,
@@ -410,14 +382,10 @@ class PluginBackgroundTurnWorker:
                     runtime=runtime,
                     turn_token=token,
                     turn_snapshot=turn_snapshot,
-                    gateway=(
-                        resolved.connection.bot
-                        if callable(getattr(resolved.connection.bot, "call_api", None))
-                        else None
-                    ),
+                    gateway=None,
                     person_id=context.person_id,
                     space_id=context.space_id,
-                    presence_id=resolved.presence_id,
+                    presence_id=presence.id,
                     conversation_id=context.conversation_id,
                     before_model_request=validate,
                     plugin_turn=None

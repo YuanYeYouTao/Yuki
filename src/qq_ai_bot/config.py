@@ -57,42 +57,7 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
-    webui_enabled: bool = False
-    webui_origin: str = "http://127.0.0.1:18765"
-    webui_session_seconds: int = Field(default=21600, ge=300, le=86400)
-    webui_max_body_bytes: int = Field(default=1048576, ge=1024, le=16777216)
-
-    @field_validator("webui_origin")
-    @classmethod
-    def valid_webui_origin(cls, value: str) -> str:
-        from urllib.parse import urlsplit
-
-        if any(char.isspace() or ord(char) < 32 for char in value) or "\\" in value:
-            raise ValueError("WEBUI_ORIGIN must be an HTTP(S) origin")
-        parsed = urlsplit(value)
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username
-            or parsed.password
-            or parsed.query
-            or parsed.fragment
-            or parsed.path not in {"", "/"}
-        ):
-            raise ValueError("WEBUI_ORIGIN must be an HTTP(S) origin")
-        if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
-            raise ValueError("non-local WebUI origins require HTTPS")
-        port = parsed.port
-        if port is not None and not 1 <= port <= 65535:
-            raise ValueError("WEBUI_ORIGIN has an invalid port")
-        host = parsed.hostname.encode("idna").decode("ascii").lower()
-        if "%" in host:
-            raise ValueError("WEBUI_ORIGIN has an invalid host")
-        authority = f"[{host}]" if ":" in host else host
-        if port is not None and port != (443 if parsed.scheme == "https" else 80):
-            authority += f":{port}"
-        return f"{parsed.scheme}://{authority}"
-
+    admin_api_url: str = "http://127.0.0.1:8080"
     app_host: str = "0.0.0.0"
     app_port: int = 8080
     log_level: str = "INFO"
@@ -116,6 +81,9 @@ class Settings(BaseSettings):
     code_mode_request_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
     code_mode_max_worker_processes: int = Field(default=1, ge=1, le=32)
     code_mode_foreground_reserved_processes: int = Field(default=0, ge=0, le=31)
+
+    telegram_bot_token: SecretStr = SecretStr("")
+    telegram_poll_interval_seconds: float = Field(default=1.0, gt=0)
 
     onebot_access_token: str = ""
     superusers_csv: str = Field(default="", validation_alias="SUPERUSERS")
@@ -156,7 +124,7 @@ class Settings(BaseSettings):
     model_profiles_file: Path = Path("webui-config/model_profiles.toml")
     model_stats_recent_error_limit: int = 5
     system_prompt: str = (
-        "你是一个运行在 QQ 中的 AI 助手。请只输出给用户的最终回答，不要输出隐藏的推理过程。"
+        "你是 AI 助手 Yuki。请只输出给用户的最终回答，不要输出隐藏的推理过程。"
         "不要声称执行了未实际成功的工具、代码、命令或文件访问。"
         "只有联网工具实际成功时，才能说明已经搜索或读取网页。"
     )
@@ -236,8 +204,6 @@ class Settings(BaseSettings):
     memory_dream_max_output_tokens: int = Field(default=4096, gt=0)
     memory_dream_evidence_per_fact: int = Field(default=2, ge=1)
     memory_dream_evidence_excerpt_characters: int = Field(default=300, gt=0)
-    memory_evidence_compaction_enabled: bool = True
-    memory_evidence_compaction_batch_size: int = Field(default=20, ge=1)
     memory_maintenance_enabled: bool = True
     memory_maintenance_interval_seconds: float = 300.0
     memory_maintenance_batch_limit: int = 100
@@ -325,7 +291,7 @@ class Settings(BaseSettings):
     web_enabled: bool = True
     web_mode: WebMode | None = None
     tavily_api_key: str = Field(default="", repr=False)
-    web_search_backend: Literal["tavily", "model", "deepseek_anthropic"] = "tavily"
+    web_search_backend: Literal["tavily", "model", "deepseek_anthropic"] = "model"
     web_search_bridge_state_path: Path = Path("data/web-search-bridge.sqlite3")
     web_search_depth: str = "advanced"
     web_search_max_results: int = 5
@@ -351,7 +317,6 @@ class Settings(BaseSettings):
     vision_max_output_tokens: int = 8192
     vision_thinking_enabled: bool = True
     vision_thinking_budget: int = 6144
-    vision_low_confidence_retry_threshold: float = 0.65
     vision_max_images_per_turn: int = 5
     vision_max_frames_per_turn: int = 16
     vision_gif_max_frames: int = 8
@@ -394,9 +359,6 @@ class Settings(BaseSettings):
     emoji_worker_retry_delay_seconds: float = 30.0
     emoji_analysis_version: str = "emoji-v1"
     emoji_storage_root: Path = Path("data/emoji")
-    # Optional read-only mount of the existing Manager's /workspace, for WebUI
-    # binary preview. This never creates a second writable workspace.
-    webui_workspace_directory: Path | None = None
     emoji_preview_max_dimension: int = 512
 
     # Incoming speech recognition remains independent of outgoing media delivery.
@@ -587,11 +549,16 @@ class Settings(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _default_web_strategy(cls, value: object) -> object:
-        """New installs use model search; explicitly supplied legacy switches stay legacy."""
+        """Enabled web uses model search unless the operator selects an external backend."""
         if isinstance(value, dict):
             supplied = {str(key).casefold() for key in value}
             if not {"web_mode", "web_enabled"}.intersection(supplied):
                 value = {**value, "web_mode": WebMode.NATIVE}
+            if (
+                str(value.get("web_mode", value.get("WEB_MODE", ""))) == "tavily"
+                and "web_search_backend" not in supplied
+            ):
+                value = {**value, "web_search_backend": "tavily"}
         return value
 
     @model_validator(mode="after")

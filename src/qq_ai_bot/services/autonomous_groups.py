@@ -196,7 +196,7 @@ class AutonomousGroupService:
                 if group_id is None:
                     return
                 ordinary = state.ordinary_attempt is not None
-                runtime = await self._runtime_config.snapshot(group_id=group_id)
+                runtime = await self._runtime_config.snapshot(group_id=state.message.space_id)
                 policy = _conversation_policy(runtime)
                 # Ordinary admission is Host policy; only legacy scoring needs autonomy.
                 if not ordinary and not policy.autonomous_enabled:

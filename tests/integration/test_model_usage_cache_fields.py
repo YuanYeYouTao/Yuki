@@ -1,4 +1,4 @@
-"""Real usage queries preserve returned cache fields across supplier names."""
+"""Real usage records preserve returned cache fields across supplier names."""
 
 import httpx
 import pytest
@@ -9,7 +9,6 @@ from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
 from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
 from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
-from qq_ai_bot.persistence.control_activity_query import ControlActivityQueryAdapter
 
 
 @pytest.mark.parametrize(
@@ -69,7 +68,7 @@ async def test_claude_cache_statistics_use_returned_fields_across_supplier_names
     repository = ModelInvocationRepository(database)
     async with httpx.AsyncClient(
         base_url="https://model.invalid/v1",
-        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body))
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, json=body)),
     ) as client:
         for supplier in ("anthropic", "agm"):
             provider = AnthropicMessagesProvider(
@@ -107,28 +106,17 @@ async def test_claude_cache_statistics_use_returned_fields_across_supplier_names
                 error_category=None,
             )
 
-    query = ControlActivityQueryAdapter(database.sessions, workspace=None)
-    summary = (await query.read_model_usage_summary("24h")).fields
-    write, five_minutes, one_hour = expected
-    fields = {
-        "cache_write_input_tokens": write,
-        "cache_write_classified_input_tokens": write,
-        "cache_write_5m_input_tokens": five_minutes,
-        "cache_write_1h_input_tokens": one_hour,
-        "cache_write_unreported_calls": int(write is None),
-        "cache_write_ttl_unreported_calls": ttl_missing,
-        "cache_write_5m_reported_calls": int(five_minutes is not None),
-        "cache_write_1h_reported_calls": int(one_hour is not None),
-    }
-    assert {row["provider"] for row in summary["models"]} == {"anthropic", "agm"}
-    for dimension in ("models", "profiles", "model_buckets"):
-        for row in summary[dimension]:
-            assert {key: row[key] for key in fields} == fields
-    combined = {key: value * 2 if value is not None else None for key, value in fields.items()}
-    assert {key: summary[key] for key in fields} == combined
-    for dimension in ("tasks", "buckets"):
-        assert len(summary[dimension]) == 1
-        assert {key: summary[dimension][0][key] for key in fields} == combined
+    summary, tasks, profiles = await repository.stats_summary()
+    write = expected[0]
+    assert set(profiles) == {"anthropic", "agm"}
+    for row in profiles.values():
+        assert (
+            row.cache_creation_input_tokens,
+            row.cache_creation_5m_input_tokens,
+            row.cache_creation_1h_input_tokens,
+        ) == tuple(value or 0 for value in expected)
+    assert summary.cache_creation_input_tokens == (write or 0) * 2
+    assert tasks[ModelTask.CHAT_AGENT.value].cache_creation_input_tokens == (write or 0) * 2
 
     async with database.sessions() as session:
         rows = (await session.scalars(select(ModelInvocationModel))).all()
@@ -144,7 +132,7 @@ async def test_claude_cache_statistics_use_returned_fields_across_supplier_names
 
 
 @pytest.mark.parametrize("supplier", ["gemini", "deepseek"])
-async def test_absent_cache_creation_is_unknown_in_usage_statistics(database, supplier):
+async def test_absent_cache_creation_is_unknown_in_usage_records(database, supplier):
     await ModelInvocationRepository(database).record(
         task=ModelTask.CHAT_AGENT,
         profile_id=supplier,
@@ -158,13 +146,10 @@ async def test_absent_cache_creation_is_unknown_in_usage_statistics(database, su
         latency_seconds=0,
         error_category=None,
     )
-    query = ControlActivityQueryAdapter(database.sessions, workspace=None)
-    summary = (await query.read_model_usage_summary("24h")).fields
-    for row in (summary, *summary["models"], *summary["profiles"], *summary["buckets"]):
-        assert row["cache_write_input_tokens"] is None
-        assert row["cache_write_classified_input_tokens"] is None
-        assert row["cache_write_5m_input_tokens"] is None
-        assert row["cache_write_1h_input_tokens"] is None
-        assert row["cache_write_unreported_calls"] == 1
-        assert row["cache_write_5m_reported_calls"] == 0
-        assert row["cache_write_1h_reported_calls"] == 0
+    async with database.sessions() as session:
+        row = await session.scalar(
+            select(ModelInvocationModel).where(ModelInvocationModel.provider == supplier)
+        )
+        assert row.cache_creation_input_tokens is None
+        assert row.cache_creation_5m_input_tokens is None
+        assert row.cache_creation_1h_input_tokens is None

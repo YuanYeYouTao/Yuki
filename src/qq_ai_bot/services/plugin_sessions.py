@@ -35,7 +35,7 @@ class PluginSessionAuthority:
     """Authority fixed by the Host from one real plugin invocation context."""
 
     plugin_id: str
-    actor_user_id: str
+    actor_user_id: str | None
     current_group_id: str | None
     approved_permissions: frozenset[str]
     conversation_id: str | None = None
@@ -100,8 +100,14 @@ class PluginAgentSessionService:
             declared=allowed_capabilities,
             requested=None,
         )
-        scope_type = "group" if authority.current_group_id else "user"
-        scope_id = authority.current_group_id or authority.actor_user_id
+        scope_type = (
+            "group"
+            if authority.current_group_id
+            else "user"
+            if authority.actor_user_id is not None
+            else "plugin"
+        )
+        scope_id = authority.current_group_id or authority.actor_user_id or ""
         record = await self._repository.create(
             plugin_id=authority.plugin_id,
             owner_user_id=authority.actor_user_id,
@@ -182,7 +188,7 @@ class PluginAgentSessionService:
                 messages,
                 AgentRuntime(
                     origin=TurnOrigin.PLUGIN_SESSION,
-                    actor_user_id=authority.actor_user_id,
+                    actor_user_id=authority.actor_user_id or "",
                     actor_is_superuser=False,
                     delegated_authority=None,
                     conversation_key=conversation_key,
@@ -293,6 +299,8 @@ class PluginAgentSessionService:
         if context_profile == "none":
             return
         if context_profile == "current_user":
+            if authority.actor_user_id is None:
+                raise PluginSessionPermissionError("current_user context requires a real Person")
             if _CURRENT_USER_PERMISSION not in authority.approved_permissions:
                 raise PluginSessionPermissionError(
                     "current_user context requires person.current.read"
@@ -357,6 +365,8 @@ class PluginAgentSessionService:
         context_profile: str,
     ) -> str:
         if context_profile == "current_user":
+            if authority.actor_user_id is None:
+                raise PluginSessionPermissionError("current_user context requires a real Person")
             return (
                 "以下是 Host 提供的可信当前调用者元数据，仅用于本插件会话："
                 f"user_id={authority.actor_user_id}。不包含主聊天历史或人物记忆。"

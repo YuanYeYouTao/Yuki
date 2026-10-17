@@ -22,6 +22,7 @@ from qq_ai_bot.identity.db_models import (
     PresenceModel,
     SpaceBindingModel,
 )
+from qq_ai_bot.identity.person_identity import current_person_id, person_root_id
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_helpers import _event_record
@@ -190,6 +191,12 @@ class OrdinaryAdmissionRepository:
                 presence.enabled.is_(True),
                 presence.external_account_id == e.bot_user_id,
                 identity.status == "active",
+                p.enabled.is_(True),
+                select(p.enabled)
+                .where(p.id == person_root_id(a.actor_person_id))
+                .correlate(a)
+                .scalar_subquery()
+                .is_(True),
                 or_(
                     and_(c.kind == "private", c.person_id == p.id, p.enabled.is_(True)),
                     and_(c.kind == "space", space.enabled.is_(True), binding.status == "active"),
@@ -424,7 +431,10 @@ async def _identity_allowed(
 ) -> bool:
     person = await session.get(CanonicalPersonModel, event.author_person_id)
     presence = await session.get(PresenceModel, event.ingress_presence_id)
-    if person is None or presence is None or not presence.enabled:
+    if person is None or not person.enabled or presence is None or not presence.enabled:
+        return False
+    root = await session.get(CanonicalPersonModel, await current_person_id(session, person.id))
+    if root is None or not root.enabled:
         return False
     identity = await session.scalar(
         select(IdentityBindingModel.id).where(

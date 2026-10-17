@@ -59,7 +59,13 @@ async def test_cached_refresh_keeps_name_without_separate_observation_writer(dat
             harness.processor._observe_group_metadata(message, policy, resolver), timeout=0.5
         )
     assert resolver.calls == 1
-    assert (await harness.groups.get("2001")).name == "current name"
+    async with database.sessions() as reader:
+        space_id = await reader.scalar(
+            select(SpaceBindingModel.space_id).where(
+                SpaceBindingModel.platform == "qq", SpaceBindingModel.external_space_id == "2001"
+            )
+        )
+    assert (await harness.groups.get(space_id)).name == "current name"
     # Actual person observation retains the group's last-seen fact.
     before = datetime.now(UTC).replace(tzinfo=None)
     await harness.profiles.observe(user_id="1001", nickname="caller", group_id="2001")
@@ -82,7 +88,13 @@ async def test_optional_group_refresh_busy_does_not_abort_chat_entry(database, m
         EffectiveGroupPolicy(enabled=True),
         GroupResolver("new name"),
     )
-    assert (await harness.groups.get("2001")).name == "test-2001"
+    async with database.sessions() as reader:
+        space_id = await reader.scalar(
+            select(SpaceBindingModel.space_id).where(
+                SpaceBindingModel.platform == "qq", SpaceBindingModel.external_space_id == "2001"
+            )
+        )
+    assert (await harness.groups.get(space_id)).name == "test-2001"
 
 
 async def test_group_refresh_acquires_writer_before_reading_current_owner(database):

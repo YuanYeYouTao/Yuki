@@ -21,7 +21,7 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.0.36,<3",
     "tenacity>=9,<10",
     "tzdata>=2025.2",
-    "yuki-semantic-participation @ https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/d85bb39a5d16e1846390489b95fc3af8bc2f5627.tar.gz",
+    "yuki-semantic-participation @ https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/961155ca3f7c29ea75fe08077e13f4cd1e6881f3.tar.gz",
     "tomlkit>=0.13,<1",
 ]
 
@@ -36,6 +36,7 @@ dev = [
 ]
 
 [project.scripts]
+yuki = "qq_ai_bot.cli:main"
 qq-ai-bot = "qq_ai_bot.main:run"
 qq-ai-bot-cli = "qq_ai_bot.cli:main"
 
@@ -45,7 +46,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/qq_ai_bot", "src/yuki_plugin_sdk"]
-artifacts = ["src/qq_ai_bot/webui/assets/**"]
 
 [tool.hatch.metadata]
 allow-direct-references = true

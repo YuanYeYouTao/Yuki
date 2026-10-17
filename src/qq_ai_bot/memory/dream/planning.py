@@ -1,5 +1,6 @@
 """Short-lived Dream plan sources; canonical facts remain the owner/version authority."""
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -52,7 +53,10 @@ class PreparedDreamCluster:
 
 
 def prepare_clusters_from_facts(
-    clusters: tuple[DreamClusterSpec, ...], facts: tuple[Any, ...]
+    clusters: tuple[DreamClusterSpec, ...],
+    facts: tuple[Any, ...],
+    *,
+    person_roots: Mapping[str, str] | None = None,
 ) -> tuple[PreparedDreamCluster, ...]:
     sources = {fact.id: PreparedDreamFact.from_fact(fact) for fact in facts}
     if len({cluster[0] for cluster in clusters}) != len(clusters):
@@ -63,8 +67,23 @@ def prepare_clusters_from_facts(
         if not fact_ids or not set(fact_ids).issubset(sources):
             raise ValueError("incomplete_dream_owner")
         selected = tuple(sources[identity] for identity in fact_ids)
-        shape = optional_dream_owner_from_facts(selected)
-        if shape is None or any(fact.kind != spec[3] for fact in selected):
+        shapes = tuple(optional_dream_owner_from_facts((fact,)) for fact in selected)
+        if any(shape is None for shape in shapes) or any(fact.kind != spec[3] for fact in selected):
             raise ValueError("incomplete_dream_owner")
+        roots = person_roots or {}
+        semantic = {
+            (
+                roots.get(shape[0], shape[0]) if shape[0] is not None else None,
+                shape[1],
+                roots.get(shape[2], shape[2]) if shape[2] is not None else None,
+                shape[3],
+            )
+            for shape in shapes
+            if shape is not None
+        }
+        if len(semantic) != 1:
+            raise ValueError("incomplete_dream_owner")
+        shape = shapes[0]
+        assert shape is not None
         prepared.append(PreparedDreamCluster(spec, shape, selected))
     return tuple(prepared)
