@@ -36,6 +36,7 @@ async def main() -> None:
     parser.add_argument("--migrate-only", action="store_true")
     parser.add_argument("--network", default="yuki-sandbox-egress")
     parser.add_argument("--proxy", default="")
+    parser.add_argument("--resolv-conf", type=Path)
     args = parser.parse_args()
     from qq_ai_bot.sandbox.persistent import PersistentManager
 
@@ -46,6 +47,7 @@ async def main() -> None:
         args.network,
         args.proxy,
         args.persistent_home,
+        resolv_conf=args.resolv_conf,
     )
     if args.migrate_only:
         print(json.dumps(manager.migrate_files()))

@@ -48,11 +48,13 @@ class PersistentManager:
         home: Path,
         *,
         runtime: str = "runsc",
+        resolv_conf: Path | None = None,
         testing: bool = False,
         name: str = "yuki-environment",
     ) -> None:
         self.root, self.store, self.image = root.resolve(), store, image
         self.network, self.proxy = network, proxy
+        self.resolv_conf = resolv_conf.resolve() if resolv_conf is not None else None
         self.queue: asyncio.Queue[str] = asyncio.Queue()
         self._waiters: dict[str, set[asyncio.Event]] = {}
         self.ready = False
@@ -392,6 +394,8 @@ class PersistentManager:
                 "--env",
                 f"EXECD_ACCESS_TOKEN={token}",
             ]
+            if self.resolv_conf is not None:
+                args.extend(("--mount", f"type=bind,src={self.resolv_conf},dst=/etc/resolv.conf"))
             # Rootfs snapshots retain their old container configuration. Override
             # its former user/proxy defaults without discarding installed files.
             for value in ("HOME=/home/yuki", "USER=root", "LOGNAME=root"):

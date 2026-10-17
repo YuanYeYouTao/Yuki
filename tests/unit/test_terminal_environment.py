@@ -22,7 +22,7 @@ SUPERVISOR_PATH = (
 NETWORK_GUARD_PATH = Path(__file__).resolve().parents[2] / "deploy/sandbox/network-guard.sh"
 
 
-def manager_at(tmp_path):
+def manager_at(tmp_path, *, resolv_conf=None):
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     manager = PersistentManager(
@@ -32,6 +32,7 @@ def manager_at(tmp_path):
         "egress",
         "",
         home,
+        resolv_conf=resolv_conf,
         testing=True,
     )
     manager.ready = True
@@ -220,10 +221,17 @@ async def test_new_terminal_uses_one_execd_path_and_no_implicit_lifetime(tmp_pat
         await manager.close()
 
 
-async def test_recovery_preserves_installed_image_and_uses_admin_execd(tmp_path, monkeypatch):
+@pytest.mark.parametrize("custom_resolver", [False, True])
+async def test_recovery_preserves_installed_image_and_uses_admin_execd(
+    tmp_path, monkeypatch, custom_resolver
+):
     from qq_ai_bot.sandbox import persistent
 
-    manager = manager_at(tmp_path)
+    resolv_conf = tmp_path / "home" / ".config" / "resolv.conf" if custom_resolver else None
+    if resolv_conf is not None:
+        await asyncio.to_thread(resolv_conf.parent.mkdir, parents=True)
+        await asyncio.to_thread(resolv_conf.write_text, "nameserver 198.51.100.53\n")
+    manager = manager_at(tmp_path, resolv_conf=resolv_conf)
     manager.set_setting("checkpoint_image", "saved-rootfs:original-installations")
     current = {
         "Id": "original-environment",
@@ -245,6 +253,13 @@ async def test_recovery_preserves_installed_image_and_uses_admin_execd(tmp_path,
         assert command[-1] == "saved-rootfs:original-installations"
         assert f"type=bind,src={manager.home},dst=/home/yuki" in command
         assert f"type=bind,src={manager.runtime_root},dst=/var/lib/yuki-runtime" in command
+        resolver_mounts = [arg for arg in command if "dst=/etc/resolv.conf" in arg]
+        assert resolver_mounts == (
+            [f"type=bind,src={resolv_conf},dst=/etc/resolv.conf"] if custom_resolver else []
+        )
+        if resolv_conf is not None:
+            assert await asyncio.to_thread(resolv_conf.read_text) == "nameserver 198.51.100.53\n"
+            await asyncio.to_thread(resolv_conf.write_text, "nameserver 203.0.113.53\n")
         assert (
             f"type=bind,src={SUPERVISOR_PATH},dst=/opt/yuki-runtime/supervisor.py,readonly"
             in command
@@ -253,6 +268,8 @@ async def test_recovery_preserves_installed_image_and_uses_admin_execd(tmp_path,
         for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
             assert f"{name}=" in command
         assert manager.container_id == "original-environment:original-start"
+        if resolv_conf is not None:
+            assert await asyncio.to_thread(resolv_conf.read_text) == "nameserver 203.0.113.53\n"
 
         # Updating the Manager alone must leave the existing environment intact.
         manager.inspect_container = AsyncMock(return_value=current)

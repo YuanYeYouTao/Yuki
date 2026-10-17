@@ -36,6 +36,8 @@ Manager 在派发前持久化原请求、执行意图和 execd 会话标识。�
 
 新环境接入现有 `yuki-sandbox-egress` 公网 Docker bridge。宿主防火墙阻止环境主动访问宿主、私网、链路本地及其他非公网 IPv4 目标；普通公网 TCP/UDP（包括 SSH）不按端口白名单限制。execd 不发布宿主端口，只允许回应宿主已建立的控制连接。环境不挂 Docker socket、Bot 配置/数据库、QQ 凭据或私有 artifact 索引。该 bridge 关闭 IPv6。默认不强制 HTTP 代理，仅运维显式 `--proxy` 配置代理。旧内网 Squid bridge 可为部署过渡保留，新环境不依靠它出公网。
 
+Docker 自定义 bridge 的 `127.0.0.11` loopback DNS 无法由 gVisor 访问，单加 `--dns` 也不能绕过。Manager 可指定 `--resolv-conf /var/lib/yuki-sandbox/home/.config/resolv.conf`，将该普通文件挂载到 `/etc/resolv.conf`。创建环境前填入部署现场可达的 DNS；程序没有内置解析器或自动兜底。文件可由环境 root 从 `/home/yuki/.config/resolv.conf` 修改，随原持久 HOME 保留。此选项仅作用于容器创建，不替换已存在环境。见 [gVisor DNS 说明](https://gvisor.dev/docs/user_guide/faq/#dns-doesnt-work-on-a-docker-user-defined-bridge-network-including-docker-compose)。
+
 所有 Main 入口、自动化和子 Agent 使用固定能力合同。工具目录不修改已提交声明，环境管理员能力不扩大人物、发送、委托或插件领域授权。可选 Code Mode 的 Monty 仍是无文件系统/网络的编排环境，不能当作持久终端别名。
 
 ## 安装、升级与回退
