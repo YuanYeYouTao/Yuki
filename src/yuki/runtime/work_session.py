@@ -250,6 +250,11 @@ class WorkSession:
                         "tool": call["name"],
                         "effect_key": key,
                         "run_id": run_id,
+                        **{
+                            key: outcome[key]
+                            for key in ("request_id", "resource_request_id")
+                            if key in outcome
+                        },
                         "status": status,
                         "replay_forbidden": True,
                     }

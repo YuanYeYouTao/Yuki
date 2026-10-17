@@ -360,7 +360,9 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 ## 预算、等待与异常
 
 外部 Agent 的 ACP peer 与单次 prompt 分开管理。`external_agent.prompt` 沿原 Work 的调用键登记
-SandboxTaskRun，重启和确认丢失查询原请求，不新建 peer 或重发未知 prompt。同一 Work 可用
+SandboxTaskRun，重启和确认丢失查询原请求，不新建 peer 或重发未知 prompt。Main 可用
+原 request_id 在未取得 run_id 时查询；若仅查回原 peer，结果作为 peer_resource 保留，
+不作为 prompt 完成回执，也不自动接续尚未确认的原调用。同一 Work 可用
 peer_id 续用原会话；空闲 peer 不阻止工作完成，显式关闭、真实归档或隐私清退才回收。
 真实权限请求先写原 Work 私有输入再 ACK；它可打断 any/all 的 owned_run 等待，唤醒原因是
 requires_action，不把未完成 run 标为完成，也不复活 suspended、waiting_user 或终态 Work。

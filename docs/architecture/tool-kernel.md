@@ -283,6 +283,12 @@ Main 合同22保持每项固定名称、schema和顺序；direct为平台30/App3
 
 - `terminal_exec/read/control` 共用原Manager/run/回执。control的input发送原样text；read的wait_seconds只观察，默认不等待，原终态completion与游标同时保留。环境默认无强制期限，显式期限按事实执行。
 - `external_agent(action=list/prompt/get/respond/cancel/close)` 通过 ACP 使用运维配置的 Agent。只有 prompt 在已接纳的原 Work 中登记新执行；peer 是可续用的原会话资源，run 是单次 prompt。查询、权限回答、取消和关闭可管理当前来源有权访问的原资源，不要求另接纳 Work。模型只见 agent_id 目录与原资源 ID，不接收启动命令或凭据。权限请求沿原 Work 私有输入提交后才确认协议游标，回答仍核原来源当前授权；外部输出是待核对材料，最终聊天交付继续走 Social。
+
+`external_agent.get` 使用 `run_id` 或原 `request_id` 二选一。首次 open 确认丢失时仍返回原
+prompt 请求及 resource_request_id；冷恢复沿原 Task 保留这些 ID。按 request_id 查询先核原
+Work/source owner，再读取原 prompt；尚查不到 prompt 时，只读查询原 peer 并嵌入 peer_resource，
+不把 peer 的资源 run_id 当作 prompt 执行，不自动 open 或重发未知 prompt。查回 peer 后可沿原
+owner 显式 close；未知事实继续保持未知。
 - `workspace_inspect/publish` 只负责原生媒体和不可变交付桥；普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。
 - `automation_query(view=list/get/completed/history/diagnose)` 复用原安全目录、人物终态、运行历史与创建审计；`automation_manage(action=create/update/pause/resume/cancel/run_now)` 沿原TaskSpec、owner、版本、创建键与调度回执。
 - `query_chat_history(view=recent/search/around)` 读取原Conversation；search使用start_at/end_at，around使用内部event_id及before/after条数。显式跨Conversation与App本人入口保持独立。

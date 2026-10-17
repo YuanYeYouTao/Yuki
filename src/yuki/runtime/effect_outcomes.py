@@ -179,6 +179,11 @@ def execution_evidence(
         "delivery_target": body.get("target") if delivered or delivered_message else None,
         "run_id": body.get("run_id"),
         **({"request_id": body["request_id"]} if isinstance(body.get("request_id"), str) else {}),
+        **(
+            {"resource_request_id": body["resource_request_id"]}
+            if isinstance(body.get("resource_request_id"), str)
+            else {}
+        ),
         "ok": admitted
         or (
             outcome.ok

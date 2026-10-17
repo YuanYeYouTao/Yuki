@@ -54,7 +54,7 @@ def environment_tools() -> tuple[ChatTool, ...]:
         tool(
             "external_agent",
             "使用已配置的外部 Agent：list 查看目录；prompt 在原 Work 中委托工作，"
-            "peer_id 续用本 Work 原会话；get 按 run_id 查原进展与结果。"
+            "peer_id 续用本 Work 原会话；get 按 run_id 或原 request_id 查原进展与结果。"
             "respond 以原 permission_id/option_id 回答权限，必要时才询问用户；"
             "cancel 停止原 prompt，close 释放原 peer。pending 后等待或查询原执行，不重复提交。",
             {
@@ -66,6 +66,7 @@ def environment_tools() -> tuple[ChatTool, ...]:
                 "prompt": text,
                 "peer_id": text,
                 **run,
+                "request_id": text,
                 "permission_id": text,
                 "option_id": text,
                 "outcome": {"type": "string", "enum": ["cancelled"]},

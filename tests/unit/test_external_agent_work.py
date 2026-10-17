@@ -58,7 +58,13 @@ class ManagerClient(SandboxClient):
                 },
             )
         if name == "acp_prompt_query":
-            return next(view for view in self.runs.values() if view["run_id"] == args["run_id"])
+            if "run_id" in args:
+                return next(view for view in self.runs.values() if view["run_id"] == args["run_id"])
+            if args["request_id"] in self.runs:
+                return self.runs[args["request_id"]]
+            if args["request_id"] in self.opened:
+                return {"kind": "acp_peer", **self.opened[args["request_id"]]}
+            return {"error": "unknown_request"}
         if name == "acp_peer_close":
             return {
                 "admitted": True,
@@ -200,6 +206,139 @@ async def test_confirmed_pre_admission_rejection_is_preserved_without_new_submis
     assert original.status == "completed" and original.run_id is None
     assert await prompt(case) == first
     assert len(attempts) == 1
+
+
+@pytest.mark.parametrize("receipt_state", ["accepted", "unknown"])
+async def test_lost_open_ack_recovers_original_request_and_peer_without_prompt_replay(
+    case, monkeypatch, receipt_state
+):
+    from hashlib import sha256
+
+    from yuki.domain.messages import ChatMessage, ToolCall, ToolFunction
+    from yuki.runtime.effect_outcomes import ResultCapture, current_result_capture
+    from yuki.runtime.work_journal import WorkJournal
+    from yuki.runtime.work_session import WorkSession
+    from yuki.services.turn_transcript import TurnTranscript
+
+    first = WorkSession(case.control, "original-contract")
+    await first.restore(
+        TurnTranscript((ChatMessage("system", "fixed"), ChatMessage("user", "delegate")))
+    )
+    call = ToolCall(
+        "lost-open",
+        ToolFunction(
+            "external_agent", '{"action":"prompt","agent_id":"configured","prompt":"work"}'
+        ),
+    )
+    key = first.call_key(call.id)
+    request_id = sha256(key.encode()).hexdigest()
+    resource_id = request_id + ":peer"
+    repo, lease, owner = case.control.repository, case.control.lease, case.control.current["id"]
+    await repo.prepare_effect(
+        lease,
+        owner,
+        key,
+        "tool",
+        invocation={
+            "version": 1,
+            "tool_id": "external_agent",
+            "action": "prompt",
+            "revision": 0,
+            "dispatch_started": False,
+        },
+    )
+    assert await repo.admit_dispatch(lease, owner, key)
+    execute = case.client.execute
+
+    async def lose_ack(name, args, *, request_id, source=None):
+        if name == "acp_peer_open":
+            await execute(name, args, request_id=request_id, source=source)
+            return {"error": "sandbox_unavailable", "uncertain": True, "retryable": False}
+        return await execute(name, args, request_id=request_id, source=source)
+
+    monkeypatch.setattr(case.client, "execute", lose_ack)
+    result = await prompt(case, request_id)
+    assert result["request_id"] == request_id and result["resource_request_id"] == resource_id
+    evidence = execution_evidence(
+        ToolExecutionResult(ok=False, data=result, provider_id="core", tool_name="external_agent"),
+        tool="external_agent",
+        side_effecting=True,
+        arguments='{"action":"prompt"}',
+    )
+    assert evidence["request_id"] == request_id and evidence["resource_request_id"] == resource_id
+    await repo.record_effect(
+        key,
+        receipt_state,
+        {"outcome": evidence, "result": json.dumps({"ok": False, "data": result})}
+        if receipt_state == "accepted"
+        else {"error": "execution_interrupted"},
+    )
+    capture = ResultCapture(owner, key)
+    token = current_result_capture.set(capture)
+    try:
+        await WorkJournal(repo).effect_result(key)
+    finally:
+        current_result_capture.reset(token)
+    assert capture.evidence["request_id"] == request_id
+    assert capture.evidence["resource_request_id"] == resource_id
+    assert capture.evidence["uncertain"] is True
+    assert await repo.completed_children(lease, owner, [], request_ids=[request_id]) == []
+    await first.save("response", (call,))
+    resumed = WorkSession(case.control, "updated-contract")
+    recovered = await resumed.restore(
+        TurnTranscript((ChatMessage("system", "new fixed contract"), ChatMessage("user", "resume")))
+    )
+    assert any(
+        request_id in (message.content or "") and resource_id in (message.content or "")
+        for message in recovered.request().messages
+    )
+
+    case.control.current = None
+    observed = await case.client.execute(
+        "external_agent", {"action": "get", "request_id": request_id}, request_id="inspect-original"
+    )
+    assert observed["request_id"] == request_id and observed["uncertain"] is True
+    peer = observed["peer_resource"]
+    assert peer["kind"] == "acp_peer" and "run_id" not in observed
+    task = await case.tasks.get(request_id)
+    assert task.run_id is None and task.status == "waiting"
+    assert json.loads(task.progress_json)["peer_id"] == peer["peer_id"]
+    assert len(case.client.opened) == 1 and not case.client.runs
+    assert [name for name, _, _ in case.client.calls].count("acp_peer_open") == 1
+    assert not any(name == "acp_prompt_submit" for name, _, _ in case.client.calls)
+    await case.client.execute(
+        "external_agent",
+        {"action": "close", "peer_id": peer["peer_id"]},
+        request_id="close-original",
+    )
+
+
+async def test_get_by_original_request_recovers_confirmed_prompt_and_checks_original_owner(case):
+    original = await prompt(case)
+    async with case.db.sessions() as session, session.begin():
+        await session.execute(update(SandboxTaskRunModel).values(run_id=None))
+    observed = await case.client.execute(
+        "external_agent",
+        {"action": "get", "request_id": original["request_id"]},
+        request_id="get-original",
+    )
+    assert observed == original
+    assert (await case.tasks.get(original["request_id"])).run_id == original["run_id"]
+    assert len(case.client.runs) == len(case.client.opened) == 1
+    case.control.source = {**case.control.source, "actor_person_id": str(uuid4())}
+    with pytest.raises(ValueError, match="external_agent_not_found"):
+        await case.client.execute(
+            "external_agent",
+            {"action": "get", "request_id": original["request_id"]},
+            request_id="other-owner",
+        )
+    case.control.source = case.source
+    for args in [
+        {"action": "get"},
+        {"action": "get", "request_id": "original", "run_id": original["run_id"]},
+    ]:
+        with pytest.raises(ValueError, match="run_id_or_request_id_required"):
+            await case.client.execute("external_agent", args, request_id="invalid-read")
 
 
 @pytest.mark.parametrize("mode", ["any", "all"])

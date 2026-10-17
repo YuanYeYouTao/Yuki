@@ -662,6 +662,32 @@ class WorkJournal:
                         ensure_ascii=False,
                     )
                 )
+            if task is not None:
+                progress = json.loads(task.progress_json)
+                if progress.get("kind") == "acp_prompt":
+                    return recorded_result(
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "data": {
+                                    "error": "execution_outcome_unknown",
+                                    "uncertain": True,
+                                    "request_id": request_id,
+                                    "resource_request_id": progress["resource_request_id"],
+                                    **(
+                                        {"peer_id": progress["peer_id"]}
+                                        if "peer_id" in progress
+                                        else {}
+                                    ),
+                                },
+                                "replay_forbidden": True,
+                                "detail": (
+                                    "查询原资源和请求；peer 会话不是 prompt 执行，不重发未知调用。"
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
         return recorded_result(
             json.dumps(
                 {

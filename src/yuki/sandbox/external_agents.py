@@ -19,7 +19,7 @@ async def execute(
     fields = {
         "list": {"action"},
         "prompt": {"action", "agent_id", "prompt", "peer_id"},
-        "get": {"action", "run_id", "cursor"},
+        "get": {"action", "run_id", "request_id", "cursor"},
         "respond": {"action", "run_id", "permission_id", "option_id", "outcome"},
         "cancel": {"action", "run_id"},
         "close": {"action", "peer_id"},
@@ -41,9 +41,23 @@ async def execute(
     if peer_id is not None:
         row = await client.tasks.by_peer(peer_id)
     elif action != "prompt":
-        if not isinstance(args.get("run_id"), str):
+        if action == "get":
+            references = {
+                key: args[key]
+                for key in ("run_id", "request_id")
+                if isinstance(args.get(key), str) and args[key]
+            }
+            if len(references) != 1:
+                raise ValueError("run_id_or_request_id_required")
+            row = (
+                await client.tasks.get(references["request_id"])
+                if "request_id" in references
+                else await client.tasks.by_run(references["run_id"])
+            )
+        elif not isinstance(args.get("run_id"), str):
             raise ValueError("run_id_required")
-        row = await client.tasks.by_run(args["run_id"])
+        else:
+            row = await client.tasks.by_run(args["run_id"])
     if action != "prompt" or peer_id is not None:
         if row is None:
             raise ValueError("external_agent_not_found")
@@ -53,8 +67,11 @@ async def execute(
         )
         if original is None:
             raise ValueError("external_agent_not_found")
-        peer_id = json.loads(row.progress_json).get("peer_id")
-        if not peer_id:
+        original_progress = json.loads(row.progress_json)
+        if action == "get" and original_progress.get("kind") != "acp_prompt":
+            raise ValueError("external_agent_not_found")
+        peer_id = original_progress.get("peer_id")
+        if not peer_id and action != "get":
             raise ValueError("external_agent_peer_unconfirmed")
     if action == "prompt":
         if control.current is None:
@@ -95,6 +112,11 @@ async def execute(
                 "acp_peer_open", {"agent_id": args["agent_id"]}, request_id=f"{request_id}:peer"
             )
             if "peer_id" not in opened:
+                opened = {
+                    **opened,
+                    "request_id": request_id,
+                    "resource_request_id": progress["resource_request_id"],
+                }
                 if opened.get("executed") is False:
                     await client.tasks.reject(request_id, opened)
                 return opened
@@ -145,14 +167,48 @@ async def execute(
         return result
     assert row is not None
     if action == "get":
-        return await client.execute(
+        view = await client.execute(
             "acp_prompt_query",
             {
-                "run_id": row.run_id,
+                **({"run_id": row.run_id} if row.run_id else {"request_id": row.request_id}),
                 **({"after_cursor": args["cursor"]} if "cursor" in args else {}),
             },
             request_id=request_id,
         )
+        if view.get("kind") == "acp_prompt":
+            await client.tasks.bind_run(row.request_id, view["run_id"])
+            await client.tasks.checkpoint(
+                row.request_id,
+                {
+                    **original_progress,
+                    "peer_id": view["peer_id"],
+                    "session_id": view.get("session_id"),
+                },
+            )
+            await client._stage_result("acp_prompt_query", row.request_id, view)
+            return view
+        result = {
+            **view,
+            "request_id": row.request_id,
+            "resource_request_id": original_progress["resource_request_id"],
+        }
+        if view.get("error") == "unknown_request":
+            peer = await client.execute(
+                "acp_prompt_query",
+                {"request_id": original_progress["resource_request_id"]},
+                request_id=request_id,
+            )
+            if peer.get("kind") == "acp_peer":
+                await client.tasks.checkpoint(
+                    row.request_id,
+                    {
+                        **original_progress,
+                        "peer_id": peer["peer_id"],
+                        "session_id": peer.get("session_id"),
+                    },
+                )
+            result.update(peer_resource=peer, uncertain=True)
+        return result
     if action == "close":
         closed = await client.execute("acp_peer_close", {"peer_id": peer_id}, request_id=request_id)
         return {"peer_id": peer_id, "close": closed}
