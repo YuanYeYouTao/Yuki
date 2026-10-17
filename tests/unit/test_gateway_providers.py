@@ -36,6 +36,9 @@ class _Provider:
     provider_id: str
     platform: str = "qq"
 
+    def media(self, handle: object) -> None:
+        return None
+
     def describe_connection(self, handle: object) -> GatewayConnectionProfile:
         return GatewayConnectionProfile(
             provider_id=self.provider_id,

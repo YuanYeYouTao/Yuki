@@ -38,6 +38,8 @@ Bot 在消息入账后异步预取原件，不调用视觉模型。缓存目录�
 
 主 Agent 的 `query_chat_history` 按 recent/search/around 返回真实内部事件 ID，并受当前 generation floor 约束。插件在当前会话的历史搜索也遵守同一 floor。模型可按语义、发送者和消息顺序选择候选，再调用 `inspect_conversation_attachment`。执行处从本轮运行时取得当前 canonical Conversation；入站消息使用已接纳的会话 ID，不依赖主动轮专用字段。随后核验事件为该会话的入站 keeper、generation 未变化且文件未过期；模型不能提供路径、平台消息 ID 或别的会话 ID 代替来源。图片和视频帧进入原主 Agent 的原生图片输入；文档仍由本地有界 reader 解析。历史工具不调用独立 Qwen，也不扣辅助模型请求；结果标明真实来源、hash 和处理模式。
 
+附件工具命中缓存时直接读取原件；未缓存的原生文件按原事件的 `ingress_presence_id` 取得原接收连接，由 Provider 的 `media(handle)` 下载。当前工具所在账号不能替代原接收账号；公共 URL、内联资料和已有缓存不要求原连接在线。
+
 ## 已观察媒体与历史
 
 合并转发在外层原事件保留标记、原 segments 和内部事件 ID。默认模型不再请求远端

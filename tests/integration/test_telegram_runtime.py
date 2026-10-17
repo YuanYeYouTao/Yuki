@@ -244,6 +244,9 @@ async def test_another_platform_uses_the_same_processor_and_social_contract(tele
         provider_id = "extra"
         social = NativeOperations()
 
+        def media(self, handle):
+            return None
+
         def project_inbound(self, message, yuki_ids):
             return message
 

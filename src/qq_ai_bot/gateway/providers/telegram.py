@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 from urllib.parse import quote
 
 import httpx
@@ -45,9 +45,7 @@ class TelegramClient:
     ) -> None:
         self._token = token
         self._base_url = api_base_url.rstrip("/")
-        self._client = client or httpx.AsyncClient(
-            timeout=60, follow_redirects=False, trust_env=False
-        )
+        self._client = client or httpx.AsyncClient(timeout=60, follow_redirects=False)
         self._owns_client = client is None
         self.self_id = ""
         self.username = ""
@@ -148,6 +146,9 @@ class TelegramClient:
 
 
 class TelegramProvider:
+    def media(self, handle: object) -> TelegramClient:
+        return cast(TelegramClient, handle)
+
     def project_inbound(self, message: InboundMessage, yuki_ids: frozenset[str]) -> InboundMessage:
         return message
 

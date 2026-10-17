@@ -10,23 +10,15 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from qq_ai_bot.conversation.media_service import ConversationMediaError, ConversationMediaService
 from qq_ai_bot.domain.messages import ChatImage
-from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.sandbox.client import SandboxClient
-from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.workspace.inspect import WorkspaceInspector
 from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 from qq_ai_bot.workspace.tools import workspace_tools as workspace_tools
 
 
 class WorkspaceService:
-    def __init__(
-        self,
-        store: WorkspaceStore,
-        resolver: MediaResolver | None = None,
-        database: Database | None = None,
-    ) -> None:
-        self.store, self.resolver = store, resolver
-        self.database = database
+    def __init__(self, store: WorkspaceStore) -> None:
+        self.store = store
         self.sandbox: SandboxClient | None = None
         self.visual_inspector: WorkspaceInspector | None = None
         self.conversation_media: ConversationMediaService | None = None
@@ -125,7 +117,6 @@ class WorkspaceService:
                     attachment_index=int(args["attachment_index"]),
                     conversation_id=scope_id,
                     generation=runtime.turn_snapshot.generation if runtime.turn_snapshot else None,
-                    gateway=runtime.gateway,
                 )
                 if name == "inspect_conversation_attachment":
                     return await media.inspect(

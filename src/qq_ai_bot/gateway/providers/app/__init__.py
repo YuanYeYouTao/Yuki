@@ -12,6 +12,9 @@ class AppHandle:
 
 
 class AppProvider:
+    def media(self, handle: object) -> None:
+        return None
+
     def project_inbound(self, message: InboundMessage, yuki_ids: frozenset[str]) -> InboundMessage:
         return message
 

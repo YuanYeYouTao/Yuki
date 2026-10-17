@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.gateway.models import (
     ConnectionHealth,
     ConnectionSnapshot,
@@ -87,6 +88,9 @@ class GatewayConnectionRegistry:
 
     def social(self, resolution: ConnectionResolution) -> PlatformSocialOperations:
         return self._providers.social(resolution.snapshot.provider)
+
+    def media(self, resolution: ConnectionResolution) -> PlatformMediaGateway | None:
+        return self._providers.media(resolution.snapshot.provider, resolution.bot)
 
     def connect(
         self,

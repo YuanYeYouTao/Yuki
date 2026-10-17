@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Protocol, final
 
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.gateway.social import PlatformSocialOperations
 
 
@@ -73,6 +74,8 @@ class GatewayProvider(Protocol):
 
     def describe_connection(self, handle: object) -> GatewayConnectionProfile: ...
 
+    def media(self, handle: object) -> PlatformMediaGateway | None: ...
+
 
 @final
 class GatewayProviderCatalog:
@@ -100,6 +103,9 @@ class GatewayProviderCatalog:
 
     def social(self, provider_id: str) -> PlatformSocialOperations:
         return self._providers[provider_id].social
+
+    def media(self, provider_id: str, handle: object) -> PlatformMediaGateway | None:
+        return self._providers[provider_id].media(handle)
 
     def describe_connection(
         self,

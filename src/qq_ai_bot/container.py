@@ -257,9 +257,7 @@ class ApplicationContainer:
         from qq_ai_bot.workspace.service import WorkspaceService
         from qq_ai_bot.workspace.store import WorkspaceStore
 
-        self.workspace_service = WorkspaceService(
-            WorkspaceStore(settings.workspace_directory), self.media_resolver, self.database
-        )
+        self.workspace_service = WorkspaceService(WorkspaceStore(settings.workspace_directory))
         from qq_ai_bot.conversation.media_service import ConversationMediaService
 
         self.conversation_media = ConversationMediaService(
@@ -267,6 +265,7 @@ class ApplicationContainer:
             settings.conversation_media_cache_directory,
             self.media_resolver,
             self.image_preprocessor,
+            gateway_registry=self.gateway_registry,
             max_prepared_bytes=settings.vision_max_prepared_bytes,
         )
         self.workspace_service.conversation_media = self.conversation_media

@@ -51,6 +51,9 @@ class _Bot:
 
 
 class _LagrangeProvider:
+    def media(self, handle: object) -> None:
+        return None
+
     def project_inbound(self, message, yuki_ids):
         from qq_ai_bot.adapters.onebot.normalizer import reproject_inbound_mentions
 

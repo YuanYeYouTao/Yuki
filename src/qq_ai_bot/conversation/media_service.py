@@ -23,7 +23,8 @@ from qq_ai_bot.admin.models import VisionRuntimeConfig
 from qq_ai_bot.capabilities.media import PreparedMediaData
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.messages import ChatImage
-from qq_ai_bot.gateway.media import PlatformMediaGateway
+from qq_ai_bot.gateway.media import MediaKind, PlatformMediaFile, PlatformMediaGateway
+from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
@@ -128,6 +129,31 @@ class ConversationMediaError(RuntimeError):
     """Public category without a raw gateway URL or host path."""
 
 
+@dataclass(frozen=True)
+class _EventMediaGateway:
+    database: Database
+    registry: GatewayConnectionRegistry | None
+    event_id: int
+
+    async def resolve_media_file(
+        self, file: str, kind: MediaKind, *, max_download_bytes: int
+    ) -> PlatformMediaFile:
+        async with self.database.sessions() as session:
+            presence_id = await session.scalar(
+                select(ChatEventModel.ingress_presence_id).where(ChatEventModel.id == self.event_id)
+            )
+        if presence_id is None or self.registry is None:
+            raise MediaResolutionError("resource_unavailable", "附件原接收连接不可用")
+        try:
+            connection = self.registry.resolve_active(presence_id)
+        except RegistryClosed as exc:
+            raise MediaResolutionError("resource_unavailable", "附件原接收连接不可用") from exc
+        gateway = self.registry.media(connection)
+        if gateway is None:
+            raise MediaResolutionError("resource_unavailable", "附件缺少原生下载接口")
+        return await gateway.resolve_media_file(file, kind, max_download_bytes=max_download_bytes)
+
+
 def _aware(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
 
@@ -183,12 +209,14 @@ class ConversationMediaService:
         resolver: MediaResolver,
         preprocessor: ImagePreprocessor,
         *,
+        gateway_registry: GatewayConnectionRegistry | None = None,
         max_prepared_bytes: int = 6_291_456,
     ) -> None:
         self.database = database
         self.root = root / "v1"
         self.resolver = resolver
         self.preprocessor = preprocessor
+        self.gateway_registry = gateway_registry
         self.preparer = NativeMediaPreparer(preprocessor, max_bytes=max_prepared_bytes)
         self._lock = asyncio.Lock()
         self._cleanup_lock = asyncio.Lock()
@@ -356,6 +384,7 @@ class ConversationMediaService:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         temporary = directory / f"{uuid4().hex}.part"
         reference = MediaReference(file=data.get("file"), url=data.get("url"), source="current")
+        gateway = gateway or _EventMediaGateway(self.database, self.gateway_registry, event_id)
         try:
             if item.kind == "image":
                 result = await self.resolver.resolve(reference, gateway)
@@ -449,7 +478,6 @@ class ConversationMediaService:
         attachment_index: int,
         conversation_id: str,
         generation: int | None,
-        gateway: PlatformMediaGateway | None,
     ) -> tuple[ConversationMediaItemModel, Path]:
         key = (event_id, attachment_index)
         source = (await self._sources((key,)))[key]
@@ -463,7 +491,7 @@ class ConversationMediaService:
             or (generation is not None and generation != current_generation)
         ):
             raise ConversationMediaError("attachment_scope_denied")
-        path = await self._cache(event_id, attachment_index, gateway, source=source)
+        path = await self._cache(event_id, attachment_index, None, source=source)
         # Recheck after network work: /ai new may have advanced during download.
         async with self.database.sessions() as session:
             conversation = await session.get(CanonicalConversationModel, conversation_id)
