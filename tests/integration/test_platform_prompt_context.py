@@ -68,7 +68,6 @@ async def test_shared_entrypoints_put_platform_only_in_current_context(platform,
     )
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
-    runtime.context.window_tokens = 96_000
     if entry == "plugin":
         assembler._ledger.read_scope_context = AsyncMock(return_value=(None, ()))
         metadata = {"plugin": "fixture", "platform": "untrusted-placeholder"}

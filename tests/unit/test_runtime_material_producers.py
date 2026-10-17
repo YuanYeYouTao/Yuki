@@ -102,9 +102,8 @@ def test_registered_long_plugin_fragment_stays_structured_and_complete() -> None
     )
     request = ChatRequest(model="primary", messages=compiled.messages)
     assert content in (compiled.messages[-1].content or "")
-    assert estimate_request_tokens(request) < ModelCapacity(input_tokens=96_000).input_budget(
-        96_000
-    )
+    budget = ModelCapacity(input_tokens=96_000).input_budget()
+    assert budget is not None and estimate_request_tokens(request) < budget
 
 
 def test_prompt_registration_still_checks_actual_permission() -> None:

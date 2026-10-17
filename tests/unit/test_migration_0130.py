@@ -1,93 +1,98 @@
-"""Search retirement removes active settings, preserving original execution data."""
+"""Retiring Host capacities changes current overrides, never historical execution facts."""
 
+import asyncio
+import json
 import sqlite3
 from uuid import uuid4
 
+import pytest
 from alembic import command
 from alembic.config import Config
+from tests.conftest import make_settings
 from tests.unit.test_migration_0119 import _seed_0118
 
-
-def test_full_empty_upgrade_reaches_0130(tmp_path, monkeypatch):
-    path = tmp_path / "empty.db"
-    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{path}")
-    command.upgrade(Config("alembic.ini"), "0130")
-    with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0130",)
-        assert not db.execute("PRAGMA foreign_key_check").fetchall()
+from qq_ai_bot.admin.config_service import RuntimeConfigService
+from qq_ai_bot.persistence.database import Database
 
 
-def test_0129_upgrade_retires_all_scopes_without_rewriting_history(tmp_path, monkeypatch):
-    path = tmp_path / "retirement.db"
-    _seed_0118(path, monkeypatch)
+@pytest.mark.parametrize("existing_trigger", [None, 70000])
+def test_0130_deletes_only_current_capacity_overrides_in_every_scope(
+    tmp_path, monkeypatch, existing_trigger
+):
+    path = tmp_path / "trigger-upgrade.db"
+    url, _ = _seed_0118(path, monkeypatch)
     config = Config("alembic.ini")
     command.upgrade(config, "0129")
-    now = "2026-10-17 00:00:00"
-    with sqlite3.connect(path) as db:
-        db.execute("PRAGMA foreign_keys=ON")
-        person = db.execute("SELECT id FROM persons LIMIT 1").fetchone()[0]
+    with sqlite3.connect(path) as connection:
+        connection.execute("PRAGMA foreign_keys=ON")
+        person = connection.execute("SELECT id FROM persons LIMIT 1").fetchone()[0]
         space = str(uuid4())
-        db.execute(
+        connection.execute(
             "INSERT INTO spaces(id,name,enabled,autonomous_enabled,require_mention,revision,"
-            "created_at,updated_at) VALUES(?,'original',1,1,1,1,?,?)",
-            (space, now, now),
+            "created_at,updated_at) VALUES(?,'original space',1,1,1,1,'2026-10-17','2026-10-17')",
+            (space,),
         )
-        for key in (
-            "web.extract_max_results",
-            "web.source_max_runs_per_conversation",
-            "web.search_max_results",
-        ):
-            for scope, owner, shared in (
-                ("global", None, None),
-                ("user", person, None),
-                ("group", None, space),
-            ):
-                db.execute(
-                    "INSERT INTO runtime_config_overrides(config_key,scope_type,value_json,"
-                    "value_type,apply_mode,version,created_at,updated_at,updated_by,"
-                    "canonical_person_id,canonical_space_id) "
-                    "VALUES(?,?,'3','integer','hot',7,?,?,'original-operator',?,?)",
-                    (key, scope, now, now, owner, shared),
-                )
-        db.execute(
+        overrides = [
+            (key, scope, person if scope == "user" else None, space if scope == "group" else None)
+            for key in ("context.window_tokens", "context.work_window_tokens")
+            for scope in ("global", "user", "group")
+        ]
+        overrides.append(("context.window_tokens_extra", "global", None, None))
+        for key, scope, person_id, space_id in overrides:
+            connection.execute(
+                "INSERT INTO runtime_config_overrides(config_key,scope_type,canonical_person_id,"
+                "canonical_space_id,value_json,value_type,apply_mode,version,created_at,"
+                "updated_at,updated_by) VALUES(?,?,?,?,'524288','integer','hot',3,"
+                "'2026-10-02','2026-10-02','original operator')",
+                (key, scope, person_id, space_id),
+            )
+        if existing_trigger is not None:
+            connection.execute(
+                "INSERT INTO runtime_config_overrides(config_key,scope_type,value_json,"
+                "value_type,apply_mode,version,created_at,updated_at,updated_by) VALUES("
+                "'context.compact_trigger_tokens','global',?,'integer','hot',1,"
+                "'2026-10-17','2026-10-17','new policy operator')",
+                (json.dumps(existing_trigger),),
+            )
+        connection.execute(
             "INSERT INTO admin_operation_events(actor_user_id,trigger_message_id,conversation_key,"
             "capability,operation,target_type,target_id,before_json,after_json,success,"
-            "duration_seconds,created_at) VALUES('original-operator','','','config.set','set',"
-            "'config','web.extract_max_results','1','3',1,0,?)",
-            (now,),
+            "duration_seconds,created_at) VALUES('original operator','','','runtime_config',"
+            "'set_override','config.global','context.window_tokens','null',"
+            "'{\"value\":524288}',1,0,'2026-10-02')"
         )
-        conversation = db.execute("SELECT id FROM canonical_conversations LIMIT 1").fetchone()[0]
-        db.execute(
-            "INSERT INTO web_search_runs(id,conversation_key,trigger_message_id,execution_id,"
-            "query,provider,created_at,partial_failure,canonical_conversation_id) "
-            "VALUES(69,'original-conversation','original-platform-message','original-execution',"
-            "'original query','original-provider',?,0,?)",
-            (now, conversation),
-        )
-        db.execute(
-            "INSERT INTO web_search_sources(id,run_id,ordinal,title,url,domain,snippet,created_at) "
-            "VALUES(70,69,1,'Original source','https://example.com/original','example.com',"
-            "'original retained source',?)",
-            (now,),
-        )
+        tables = [
+            row[0]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            if row[0] not in {"runtime_config_overrides", "alembic_version"}
+        ]
         before = {
-            table: db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall()
-            for table in (
-                "chat_events",
-                "runtime_work",
-                "admin_operation_events",
-                "web_search_runs",
-                "web_search_sources",
-            )
+            table: connection.execute(f'SELECT * FROM "{table}"').fetchall() for table in tables
         }
-        live = db.execute(
-            "SELECT * FROM runtime_config_overrides WHERE config_key='web.search_max_results' "
-            "ORDER BY id"
+        remaining = connection.execute(
+            "SELECT * FROM runtime_config_overrides WHERE config_key NOT IN (?,?) ORDER BY id",
+            ("context.window_tokens", "context.work_window_tokens"),
         ).fetchall()
+
     command.upgrade(config, "0130")
-    with sqlite3.connect(path) as db:
-        assert db.execute("SELECT version_num FROM alembic_version").fetchone() == ("0130",)
-        assert db.execute("SELECT * FROM runtime_config_overrides ORDER BY id").fetchall() == live
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0130",)
+        assert (
+            connection.execute("SELECT * FROM runtime_config_overrides ORDER BY id").fetchall()
+            == remaining
+        )
         for table, rows in before.items():
-            assert db.execute(f"SELECT * FROM {table} ORDER BY id").fetchall() == rows
-        assert not db.execute("PRAGMA foreign_key_check").fetchall()
+            assert connection.execute(f'SELECT * FROM "{table}"').fetchall() == rows
+        assert not connection.execute("PRAGMA foreign_key_check").fetchall()
+
+    async def snapshot():
+        database = Database(url)
+        try:
+            runtime = RuntimeConfigService(settings=make_settings(url), database=database)
+            return await runtime.snapshot()
+        finally:
+            await database.close()
+
+    assert asyncio.run(snapshot()).context.compact_trigger_tokens == (
+        96000 if existing_trigger is None else existing_trigger
+    )

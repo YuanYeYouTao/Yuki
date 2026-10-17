@@ -96,8 +96,7 @@ class ModelRuntimeSettings(DomainSettings):
 
 
 class ConversationSettings(DomainSettings):
-    context_window_tokens: int = Field(default=96000, ge=8192)
-    work_context_window_tokens: int = Field(default=128000, ge=8192)
+    context_compact_trigger_tokens: int = Field(default=96000, gt=0)
     processed_event_cleanup_seconds: int = Field(gt=0)
     per_user_requests_per_minute: int = Field(gt=0)
     per_group_requests_per_minute: int = Field(gt=0)

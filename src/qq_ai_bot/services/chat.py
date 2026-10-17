@@ -39,7 +39,6 @@ from qq_ai_bot.domain.messages import (
     AttachmentKind,
     ChatImage,
     ChatMessage,
-    ChatRequest,
     ChatTool,
     InboundMessage,
     LocalDeliveryReceipt,
@@ -64,7 +63,6 @@ from qq_ai_bot.memory.runtime.turn_session import (
 from qq_ai_bot.memory.service import MemoryFactService
 from qq_ai_bot.memory.targets import MemoryTargetResolver
 from qq_ai_bot.model_runtime.executor import ModelExecutor
-from qq_ai_bot.model_runtime.models import ModelTask
 from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
@@ -321,51 +319,6 @@ class ChatService:
         """Attach approved plugin tools without a parallel chat router."""
 
         self._plugin_tools = service
-
-    def _history_input_budget(
-        self,
-        runtime: RuntimeConfigSnapshot,
-        *,
-        allowed_capabilities: frozenset[str] | None = None,
-    ) -> int:
-        from qq_ai_bot.model_runtime.capacity import (
-            ModelCapacity,
-            estimate_request_tokens,
-        )
-
-        getter = getattr(self._models, "capacity", None)
-        capacity = getter(ModelTask.CHAT_AGENT) if callable(getter) else ModelCapacity()
-        budget = capacity.input_budget(
-            runtime.context.window_tokens, output_tokens=runtime.llm.max_output_tokens
-        )
-        contract = getattr(self.runtime.runner, "main_contract", None)
-        tools = getattr(contract, "_tools", None)
-        if tools:
-            definitions, native_tools = self.runtime.runner.prepare_request_tools(
-                tools,
-                runtime_config=runtime,
-                allowed_capabilities=(
-                    self.web_capabilities(runtime)
-                    if allowed_capabilities is None
-                    else allowed_capabilities
-                ),
-            )
-        else:
-            definitions, native_tools = (), ()
-        template = self.runtime.runner._capacity_request(
-            ChatRequest(
-                messages=self._prompt_composer.static_messages(),
-                model=runtime.llm.model or "fake",
-                temperature=runtime.llm.temperature,
-                max_output_tokens=runtime.llm.max_output_tokens,
-                thinking_enabled=runtime.llm.thinking_enabled,
-                tools=definitions,
-                native_tools=native_tools,
-                tool_choice="auto" if definitions or native_tools else None,
-            )
-        )
-        fixed = estimate_request_tokens(template) + (0 if tools else 32768)
-        return max(1, budget - fixed)
 
     def _build_tool_registry(self, runtime: ToolRuntime) -> ToolProviderRegistry:
         """Adapt every domain service once; execution later uses bindings only."""

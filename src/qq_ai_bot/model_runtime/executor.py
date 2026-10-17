@@ -518,16 +518,13 @@ class TaskModelExecutor:
             > profile.max_output_tokens_limit
         ):
             raise LLMUnsupportedFeatureError("request exceeds configured provider output limit")
-        if profile.max_input_tokens is not None or profile.context_window_tokens is not None:
-            capacity = ModelCapacity(
-                input_tokens=profile.max_input_tokens,
-                context_tokens=profile.context_window_tokens,
-                output_tokens=profile.default_max_output_tokens,
-            )
-            budget = capacity.input_budget(
-                profile.max_input_tokens or profile.context_window_tokens or 1,
-                output_tokens=request.max_output_tokens,
-            )
+        capacity = ModelCapacity(
+            input_tokens=profile.max_input_tokens,
+            context_tokens=profile.context_window_tokens,
+            output_tokens=profile.default_max_output_tokens,
+        )
+        budget = capacity.input_budget(output_tokens=request.max_output_tokens)
+        if budget is not None:
             with model_detail("token_estimation"):
                 estimated = estimate_request_tokens(_profile_request(request, profile))
             if estimated > budget:
