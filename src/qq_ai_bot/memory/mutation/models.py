@@ -130,10 +130,7 @@ class MemoryMutationRequest(_MutationModel):
     memory_key: str | None = Field(default=None)
     category: str | None = Field(default=None)
     kind: MemoryKind | None = None
-    reason: str = Field(
-        default="agent_requested_memory_change",
-        min_length=1,
-    )
+    reason: str = "agent_requested_memory_change"
     confidence: float = Field(default=0.9, ge=0, le=1)
     importance: int | None = Field(default=None, ge=1, le=5)
     evidence_event_id: int | None = Field(default=None, ge=1)

@@ -60,7 +60,6 @@ async def test_nine_original_tool_sources_survive_completed_reflection_and_recei
     service = SelfReflectionService(
         settings=make_settings(database.url, self_memory_enabled=True),
         repository=repository,
-        facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
     )

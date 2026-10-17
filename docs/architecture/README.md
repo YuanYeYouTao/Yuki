@@ -22,7 +22,7 @@
 | [聊天媒体](chat-media-workspace.md) | 附件索引、缓存、工作区提升与发送 |
 | [Memory](memory-v2.md) | 独立事实、证据、读取和写入权限 |
 | [记忆变更](memory-change.md) | 按 fact ID 的日常修改和原回执 |
-| [Self Reflection](self-reflection.md) | Profile 输出、周期、工具回执、预算与原批次恢复 |
+| [Self Reflection](self-reflection.md) | 本批新证据创建SELF、工具回执、周期预算与原批次恢复 |
 | [语义参与宿主](semantic-participation.md) | 普通持续接话、SELF 自主行动、Jev 与真实反馈 |
 | [自主参与模型](autonomous-participation-model.md) | 连续状态、回执与机会参数 |
 | [管理控制面](control-plane-foundation.md) | 管理主体、装配、原回执与领域服务 |
@@ -35,6 +35,7 @@
 
 ## 设计报告与后续计划
 
+- [10-17 #452自省职责删减实施与审查记录](Yuki-452自省职责删减实施与审查记录-2026-10-17.md)：删除旧正式记忆回灌、事实维护与SELF候选运行链，保统一Mutation、Dream、原checkpoint与隐私清退；实际验证、PR、合并和上线分别记录。
 - [10-17 搜索与网页读取解耦任务书](Yuki-搜索与网页读取解耦任务书-2026-10-17.md)：对照 Memoh/pi 梳理搜索、读取与重复来源链。标准环境代理、本地/容器加载和独立 Web 超时已本地实施，见[代理配置](../operations/http-proxy.zh-CN.md)与[实施验证](../operations/web-proxy-implementation-20261017.md)；搜索自动抓页、URL 门槛和重复来源索引的删除尚未实施，交付状态分别记录。
 - [10-17 #299与后续任务状态索引](Yuki-299与后续任务状态索引-2026-10-17.md)：集中对应已实现未交付、人物/回执本地实施、工具候选、搜索PR #457及两种ACP的issue与文档；ACP A/B均未实现，原本明确后置，不能把首期实现当作全篇完成。
 - [10-17 人物身份解耦与原回执修复任务书](Yuki-人物身份解耦与原回执修复任务书-2026-10-17.md)：人物资料认Person、上下文认Conversation、平台收发认Binding/Presence/适配器、已发生效果认原事件与回执；区分账号关联/转移/Person合并，扩展人物全消费者及独立名称计划，删除SDK媒体TTL、sequence父状态及旧会话floor对原结果的错误裁定。五轮计划复审后18项实现已本地落地，21项矩阵的证据和Linux/PR/部署边界见实施报告。

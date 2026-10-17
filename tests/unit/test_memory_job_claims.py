@@ -193,7 +193,7 @@ async def test_stale_queue_transition_cannot_overwrite_new_owner(
         assert after[0] == "pending" and after[2] == 1 and after[5] == "CurrentError"
 
 
-@pytest.mark.parametrize("result_kind", ["fact", "candidate", "no_claims", "failure"])
+@pytest.mark.parametrize("result_kind", ["fact", "low_confidence_fact", "no_claims", "failure"])
 async def test_reclaim_during_extraction_discards_all_old_worker_results(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
@@ -216,7 +216,9 @@ async def test_reclaim_during_extraction_discards_all_old_worker_results(
                 else (
                     BatchMemoryClaim(
                         source_event_id=event.id,
-                        claim=_claim(confidence=0.5 if result_kind == "candidate" else 0.9),
+                        claim=_claim(
+                            confidence=0.5 if result_kind == "low_confidence_fact" else 0.9
+                        ),
                     ),
                 )
             )

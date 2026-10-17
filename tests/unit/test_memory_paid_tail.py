@@ -41,7 +41,7 @@ from qq_ai_bot.services.concurrency import ConcurrencyManager
 async def test_reflection_checkpoint_finishes_after_the_original_daily_request_is_spent(
     database, merge_owner
 ):
-    mutations, facts, ledger, _ = _service(database, self_memory_enabled=True)
+    mutations, _, ledger, _ = _service(database, self_memory_enabled=True)
     repository = SelfReflectionRepository(database)
     await repository.scan_new_events()
     source = await _event(
@@ -72,16 +72,14 @@ async def test_reflection_checkpoint_finishes_after_the_original_daily_request_i
     service = SelfReflectionService(
         settings=settings,
         repository=repository,
-        facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
     )
-    payload, fact_map, candidate_map, event_map, tool_map = await service._input(batch)
+    _, event_map, tool_map = await service._input(batch)
     output = SelfReflectionOutput.model_validate(
         {
             "proposals": [
                 {
-                    "operation": "create",
                     "category": "self_preference",
                     "kind": "preference",
                     "memory_key": "self:verify",
@@ -98,7 +96,7 @@ async def test_reflection_checkpoint_finishes_after_the_original_daily_request_i
     await repository.save_checkpoint(
         batch.run_id,
         _CHECKPOINT.dump_json(
-            ReflectionCheckpoint(output, payload, fact_map, candidate_map, event_map, tool_map)
+            ReflectionCheckpoint(output.model_dump(mode="json"), event_map, tool_map)
         ).decode(),
     )
     worker = SelfReflectionWorker(settings=settings, repository=repository, service=service)

@@ -44,12 +44,16 @@ Worker、Main Agent、自省和 Dream 的新事实复用 [变更合同](memory-c
 事实正文使用真实身份或名片。历史引用继续匹配原实际来源，不用当前展示名改写旧 quote。
 同 owner/key 可以创建独立 active 事实；纠正和撤回按实际 fact ID 执行。0102 只删除四个单 active
 唯一索引，保留已部署 0101 的全部事实与历史回执。
-自动提取与 Rebuild 只生成新事实，不声明确认、纠正或撤回操作；这些操作仍由实际 fact ID 的变更入口执行。
+自动提取与 Rebuild 只生成 Person、PersonGroup、Group 新事实，不声明 SELF、确认、纠正或撤回操作。
+SELF 的新资料由当前自省或 Main 的明确变更入口创建；普通提取不再暂存 SELF 候选或等待自省裁决。
+纠正和撤回仍由实际 fact ID 的完整变更入口执行。
 
 提取、自省和 Dream 分别绑定 `memory_extraction`、`memory_self_reflection`、`memory_dream`
 任务，可各自选择 Profile，也可共享配置；Rebuild 复用提取，Embedding 独立配置。结构化
 输出沿 Profile 显式模式，不按 Provider 或 Memory 任务强制 JSON Schema。
 自省生成结构与实际来源预算见 [自省](self-reflection.md)，Dream 运行见 [运维](../operations/memory-quality.md)。
+自省只消费本批新事件、工具回执、核心人格与必要衔接上下文，不回灌正式旧事实或旧 Episode。
+Dream 对已有正式记忆做去重、合并与重组，不接管历史 pending candidate，也不负责恢复失效事实。
 自省所有结果都可保存完整真实引用，
 不强制把同一来源复制成 episode 和 proposal。SELF kind/category/key 不设固定标签白名单；
 私聊资料向 global 传播继续核验真实可见范围。
@@ -157,8 +161,12 @@ Rebuild 提案保存经原 Claim 校验的 canonical Person/Space 目标，第�
 然后直接升级短 writer 清退；纯数据库竞争整体回滚后才重备，不以全库隐私 token 或 run 目录变化拒绝无关写入。
 删除覆盖无 Binding 的归并人物，跨平台同号或账号后来的其他真人不扩大删除范围。
 Sandbox 的原私有任务和 continuation 随实际来源清退；其他作者的引用断开但正文保留。
+退役的 SELF 候选保留历史读取；显式遗忘按实际事件和证据引用清退相关候选正文，
+不会只删除 evidence 留下父候选，也不按旧外部数字标签扩大到其他平台同号人物。
+群自省检查点中的实际被擦来源及旧事实/候选副本同样清退：首写前按内部来源准备 run ID，
+短 writer 只清其 checkpoint JSON，保原请求、运行状态、累计预算及已提交结果，不清同群无关原件。
 主动任务的实际被擦除来源及其敏感回执清退；只有 target_person_id 命中时置空目标，保留其他群 SELF 原经历、证据与反馈。迁移 `0127` 仅凭原内部作者、提及目标、同会话引用或已提交 fact 回填旧目标，不用今日账号绑定猜测旧提案归属。
 
 Dream 新预览指纹使用实际模型输入、canonical fact 与原证据。旧已付预览的传输标签只通过原主体历史绑定重建旧编码，并精确匹配完整指纹；真实证据变化仍使原预览失效。Rebuild 已提交提案的数据库收尾核原来源和回执，不要求今日外部 Binding 继续属于原人物；两者均不重置预算或重复购买模型结果。
 
-当前检索结果按归并后的人物组织展示与排序，原 fact/evidence 对象及 ID 保留。名称只是当前查找与展示资料，不参与原已付模型输入的证明。自省仍按原 raw Person/Space 的源水位独立扫描和恢复，当前可见 Memory 读取才使用归并语义；不拼接已执行 batch、游标或回执。
+当前检索结果按归并后的人物组织展示与排序，原 fact/evidence 对象及 ID 保留。名称只是当前查找与展示资料，不参与原已付模型输入的证明。自省仍按原 raw Person/Space 的源水位独立扫描和恢复，Main、工具和 Dream 的当前可见 Memory 读取使用归并语义；不拼接已执行 batch、游标或回执。

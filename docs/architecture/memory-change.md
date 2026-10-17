@@ -13,6 +13,10 @@
 CREATE 不搜索同 key 的旧事实，不调用关系分类模型，不争议化、替换或淘汰已有事实。
 事实的 confidence、authority 和各条 evidence 的原始值保留，不经固定权重、权威等级或证据乘积重算。
 
+普通提取与 Rebuild 只创建 Person、PersonGroup、Group 事实；自省只以本批新证据创建 SELF 记忆和 Episode，
+模型输出不再携带旧 fact 操作或候选裁决。以下完整领域操作仍供 Main、命令和管理入口显式使用，
+Dream 仍整理已有正式记忆；收窄自省不删除共享操作、SELF 主体解析或原执行授权。
+
 Dream 可按实际内容重组 fact、preference 或 episode，不要求 focus、正文和 key 唯一，
 不限制固定输出条数。部分整理只替换输出实际引用的来源；其余事实保持原样，不提前写处理
 checkpoint。新事实复制全部获准原证据，模型输入采样不裁剪持久来源；回滚沿原签名和回执。

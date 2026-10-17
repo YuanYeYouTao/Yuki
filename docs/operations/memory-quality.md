@@ -13,9 +13,14 @@ qq-ai-bot-cli memory hygiene rebuild-fts <fingerprint> --database-url <database-
 apply 和全量 FTS 重建是明确的维护动作；先查 scan，再核对原指纹和备份。不要通过清库、重置预算或重新调用模型掩盖已提交效果和历史缺链。
 
 自省和 Dream 的请求登记发生在实际 HTTP 派发前。payload 构造失败不产生请求计数，HTTP 重试逐次登记，累计请求账本不因重启重置。
+自省只从本批新事件和工具回执创建 SELF 资料，不加载全量旧事实或裁决 SELF 候选；
+Dream 沿既有正式记忆、证据和分区做整理。普通提取不再生产 SELF 候选，历史行和原检查点不自动清空、解隔离或重跑。
 额度只约束真实新派发：自省已有 ReflectionCheckpoint、Dream 已有来源指纹匹配的 ready preview 时，
 直接沿原 run 和原 mutation/operation 回执完成纯数据库收尾，满额不要求重新调用模型。
 未保存的输出不能由 usage 重建，来源失效或提交未决仍按真实事实处理。
+新自省检查点不含旧版必填的 payload/fact_map/candidate_map；镜像回退前核对未完成的原已付输出及可用 reader，
+不恢复旧数据库覆盖新事实，也不重新购买输出。显式隐私擦除会按实际来源清退敏感 checkpoint JSON，
+保原 run、请求账本、已提交结果和预算；迟到返回不能将已擦正文写回。
 未选择事实不自动写处理 checkpoint，批准的 Rebuild 子集可提交，未决项保持 REVIEW。
 
 Dream 模型以本簇的局部事实别名、正文、scope/visibility/kind、事实元数据与证据摘录作判断。

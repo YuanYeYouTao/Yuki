@@ -37,8 +37,6 @@ class MemoryClaimValidationResult:
 
     claim: ValidatedMemoryClaim | None
     reason_code: str
-    candidate_type: str | None = None
-    raw_claim: MemoryClaim | None = None
 
     @property
     def ok(self) -> bool:
@@ -51,12 +49,6 @@ class _MemoryClaimRejected(ValueError):
     def __init__(self, reason_code: str) -> None:
         super().__init__(reason_code)
         self.reason_code = reason_code
-
-
-class _MemoryClaimCandidate(_MemoryClaimRejected):
-    def __init__(self, reason_code: str, candidate_type: str) -> None:
-        super().__init__(reason_code)
-        self.candidate_type = candidate_type
 
 
 def normalize_memory_text(value: str) -> str:
@@ -119,16 +111,9 @@ class MemoryClaimValidator:
                 event,
                 subject_context=subject_context,
             )
-        except _MemoryClaimCandidate as exc:
-            return MemoryClaimValidationResult(
-                None,
-                exc.reason_code,
-                candidate_type=exc.candidate_type,
-                raw_claim=claim,
-            )
         except _MemoryClaimRejected as exc:
-            return MemoryClaimValidationResult(None, exc.reason_code, raw_claim=claim)
-        return MemoryClaimValidationResult(validated, "validated", raw_claim=claim)
+            return MemoryClaimValidationResult(None, exc.reason_code)
+        return MemoryClaimValidationResult(validated, "validated")
 
     def _validate_claim(
         self,
@@ -149,8 +134,6 @@ class MemoryClaimValidator:
             scope_type=claim.scope_type,
             context=subject_context,
         )
-        if claim.scope_type is MemoryScopeType.SELF:
-            raise _MemoryClaimCandidate("self_candidate_requires_agent_judgment", "self")
         if resolved is None:
             raise _MemoryClaimRejected("subject_unresolved")
         key = normalize_memory_text(claim.memory_key)

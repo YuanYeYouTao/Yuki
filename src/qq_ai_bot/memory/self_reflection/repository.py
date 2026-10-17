@@ -6,9 +6,11 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+from pydantic import TypeAdapter
 from sqlalchemy import and_, func, or_, select, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
@@ -18,6 +20,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.memory.extraction import source_event_fingerprint
 from qq_ai_bot.memory.partition import (
     MemoryPartitionResolutionError,
     format_canonical_memory_partition,
@@ -44,6 +47,10 @@ from qq_ai_bot.persistence.models import (
     MemoryToolReceiptModel,
 )
 from qq_ai_bot.persistence.repository_helpers import _event_record, keeper_event_clause
+from qq_ai_bot.persistence.repository_records import EventRecord
+
+_CHECKPOINT_EVENTS = TypeAdapter(dict[str, EventRecord])
+_CHECKPOINT_TOOLS = TypeAdapter(dict[str, StoredToolReceipt])
 
 
 class SelfReflectionRepository:
@@ -1076,13 +1083,93 @@ class SelfReflectionRepository:
                 )
             )
 
-    async def save_checkpoint(self, run_id: int, value: str) -> None:
-        async with self._database.sessions() as session, session.begin():
-            await session.execute(
+    async def save_checkpoint(
+        self, run_id: int, value: str, *, expected: str | None = None
+    ) -> None:
+        event_map: dict[str, EventRecord] = {}
+        tool_map: dict[str, StoredToolReceipt] = {}
+        if expected is None:
+            original = json.loads(value)
+            event_map = _CHECKPOINT_EVENTS.validate_python(original.get("event_map", {}))
+            tool_map = _CHECKPOINT_TOOLS.validate_python(original.get("tool_map", {}))
+
+        async def publish(session: AsyncSession) -> None:
+            session.autoflush = False
+            run = await session.get(MemorySelfReflectionRunModel, run_id)
+            if run is None or run.checkpoint_json != expected:
+                raise MemoryPartitionResolutionError("checkpoint_changed")
+            if expected is None:
+                events = {
+                    row.id: _event_record(row)
+                    for row in await session.scalars(
+                        select(ChatEventModel).where(
+                            ChatEventModel.id.in_(tuple(event.id for event in event_map.values())),
+                            keeper_event_clause(),
+                        )
+                    )
+                }
+                for source in event_map.values():
+                    current = events.get(source.id)
+                    if current is None or _checkpoint_event_source(
+                        current
+                    ) != _checkpoint_event_source(source):
+                        raise MemoryPartitionResolutionError("checkpoint_source_changed")
+                receipts = {
+                    row.id: row
+                    for row in await session.scalars(
+                        select(MemoryToolReceiptModel).where(
+                            MemoryToolReceiptModel.id.in_(
+                                tuple(receipt.id for receipt in tool_map.values())
+                            )
+                        )
+                    )
+                }
+                for tool_source in tool_map.values():
+                    receipt = receipts.get(tool_source.id)
+                    if (
+                        receipt is None
+                        or (
+                            receipt.trigger_event_id,
+                            receipt.tool_name,
+                            receipt.success,
+                            receipt.result_excerpt,
+                            receipt.initiative_run_id,
+                            receipt.canonical_person_id,
+                            receipt.canonical_space_id,
+                        )
+                        != (
+                            tool_source.trigger_event_id,
+                            tool_source.tool_name,
+                            tool_source.success,
+                            tool_source.result_excerpt,
+                            tool_source.initiative_run_id,
+                            run.canonical_person_id,
+                            run.canonical_space_id,
+                        )
+                        or (
+                            tool_source.bot_user_id
+                            and tool_source.bot_user_id != receipt.bot_user_id
+                        )
+                        or (
+                            tool_source.occurred_at is not None
+                            and _utc(tool_source.occurred_at) != _utc(receipt.created_at)
+                        )
+                    ):
+                        raise MemoryPartitionResolutionError("checkpoint_source_changed")
+            changed = await session.execute(
                 update(MemorySelfReflectionRunModel)
-                .where(MemorySelfReflectionRunModel.id == run_id)
+                .where(
+                    MemorySelfReflectionRunModel.id == run_id,
+                    MemorySelfReflectionRunModel.checkpoint_json.is_(None)
+                    if expected is None
+                    else MemorySelfReflectionRunModel.checkpoint_json == expected,
+                )
                 .values(checkpoint_json=value)
             )
+            if not cast(CursorResult[Any], changed).rowcount:
+                raise MemoryPartitionResolutionError("checkpoint_changed")
+
+        await self._database.apply_snapshot_write(publish)
 
     async def committed_results(self, run_id: int) -> set[tuple[str, int]]:
         async with self._database.sessions() as session:
@@ -1174,3 +1261,17 @@ class SelfReflectionRepository:
 
 def _utc(value: datetime) -> datetime:
     return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _checkpoint_event_source(event: EventRecord) -> tuple[object, ...]:
+    return (
+        source_event_fingerprint(replace(event, occurred_at=_utc(event.occurred_at))),
+        event.canonical_conversation_id,
+        event.canonical_event_id,
+        event.author_kind,
+        event.author_person_id,
+        event.author_presence_id,
+        event.ingress_presence_id,
+        event.visual_summary,
+        event.external_payload,
+    )

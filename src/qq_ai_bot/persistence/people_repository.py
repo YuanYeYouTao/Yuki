@@ -11,7 +11,20 @@ from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from heapq import nsmallest
 
-from sqlalchemy import Integer, String, and_, case, cast, delete, false, func, or_, select, update
+from sqlalchemy import (
+    Integer,
+    String,
+    and_,
+    case,
+    cast,
+    delete,
+    false,
+    func,
+    or_,
+    select,
+    true,
+    update,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute
 from sqlalchemy.sql.elements import ColumnElement
@@ -70,6 +83,9 @@ from qq_ai_bot.persistence.models import (
     AutomationModel,
     ChatEventModel,
     MembershipModel,
+    MemoryClaimCandidateEvidenceModel,
+    MemoryClaimCandidateModel,
+    MemoryEvidenceModel,
     MemoryFactModel,
     MemoryJobModel,
     MemorySelfReflectionRunModel,
@@ -176,6 +192,7 @@ class PersonForgetPreparation:
     audit_redactions: tuple[tuple[int, dict[str, str]], ...]
     sandbox_request_ids: tuple[str, ...]
     initiative_ids: tuple[str, ...]
+    reflection_checkpoint_ids: tuple[int, ...]
 
     @property
     def legacy_aliases(self) -> tuple[str, ...]:
@@ -940,6 +957,121 @@ class PeopleRepository:
                     )
                 )
             )
+            erased_events = select(ChatEventModel.id).where(or_(owned, mentions))
+            erased_tools = select(MemoryToolReceiptModel.id).where(
+                or_(
+                    MemoryToolReceiptModel.canonical_person_id.in_(person_ids),
+                    MemoryToolReceiptModel.trigger_event_id.in_(erased_events),
+                    MemoryToolReceiptModel.initiative_run_id.in_(initiative_ids),
+                )
+            )
+            affected_facts = select(MemoryFactModel.id).where(
+                or_(
+                    MemoryFactModel.id.in_(owned_facts),
+                    MemoryFactModel.id.in_(
+                        select(MemoryEvidenceModel.fact_id).where(
+                            or_(
+                                MemoryEvidenceModel.event_id.in_(erased_events),
+                                MemoryEvidenceModel.tool_receipt_id.in_(erased_tools),
+                            )
+                        )
+                    ),
+                )
+            )
+            affected_candidates = select(MemoryClaimCandidateEvidenceModel.candidate_id).where(
+                MemoryClaimCandidateEvidenceModel.event_id.in_(erased_events)
+            )
+            checkpoint = MemorySelfReflectionRunModel.checkpoint_json
+            copied_sources = []
+            for field, source_ids in (
+                ("event_map", erased_events),
+                ("tool_map", erased_tools),
+                ("fact_map", affected_facts),
+                ("candidate_map", affected_candidates),
+            ):
+                copies = func.json_each(checkpoint, f"$.{field}").table_valued("value")
+                copy_erased: ColumnElement[bool] = cast(
+                    func.json_extract(copies.c.value, "$.id"), Integer
+                ).in_(source_ids)
+                if field == "event_map":
+                    copied_mentions = func.json_each(
+                        copies.c.value, "$.mentioned_person_ids"
+                    ).table_valued("value")
+                    copy_erased = or_(
+                        copy_erased,
+                        func.json_extract(copies.c.value, "$.author_person_id").in_(person_ids),
+                        func.json_extract(copies.c.value, "$.canonical_conversation_id").in_(
+                            private_ids
+                        ),
+                        select(copied_mentions.c.value)
+                        .where(copied_mentions.c.value.in_(person_ids))
+                        .exists(),
+                    )
+                elif field == "tool_map":
+                    copy_erased = or_(
+                        copy_erased,
+                        cast(func.json_extract(copies.c.value, "$.trigger_event_id"), Integer).in_(
+                            erased_events
+                        ),
+                        func.json_extract(copies.c.value, "$.initiative_run_id").in_(
+                            initiative_ids
+                        ),
+                    )
+                elif field == "fact_map":
+                    copy_erased = or_(
+                        copy_erased,
+                        func.json_extract(copies.c.value, "$.canonical_subject_person_id").in_(
+                            person_ids
+                        ),
+                        func.json_extract(copies.c.value, "$.canonical_visibility_person_id").in_(
+                            person_ids
+                        ),
+                    )
+                copied_sources.append(select(copies.c.value).where(copy_erased).exists())
+            reflection_checkpoint_ids = set(
+                await reader.scalars(
+                    select(MemorySelfReflectionRunModel.id).where(
+                        checkpoint.is_not(None), or_(*copied_sources)
+                    )
+                )
+            )
+            # Old checkpoints stored rendered context without a separate event map.
+            # Read only the program's original envelope, never a body/platform label.
+            context = func.json_each(checkpoint, "$.payload.context_events").table_valued("value")
+            erased_context_ids = set(await reader.scalars(erased_events))
+            event_conversations = select(ChatEventModel.canonical_conversation_id).where(
+                ChatEventModel.id.in_(erased_events)
+            )
+            context_owners = select(CanonicalConversationModel).where(
+                CanonicalConversationModel.id.in_(event_conversations)
+            )
+            owners = tuple(await reader.scalars(context_owners))
+            for run_id, rendered in await reader.execute(
+                select(
+                    MemorySelfReflectionRunModel.id,
+                    func.json_extract(context.c.value, "$.rendered"),
+                )
+                .select_from(MemorySelfReflectionRunModel)
+                .join(context, true())
+                .where(
+                    checkpoint.is_not(None),
+                    or_(
+                        MemorySelfReflectionRunModel.canonical_person_id.in_(
+                            tuple(item.person_id for item in owners if item.person_id)
+                        ),
+                        MemorySelfReflectionRunModel.canonical_space_id.in_(
+                            tuple(item.space_id for item in owners if item.space_id)
+                        ),
+                    ),
+                )
+            ):
+                envelope = re.match(
+                    r"^\[发送者:.{0,128}\|(?:person:[^|]+|presence:[^|]+|[a-z_]+)"
+                    r"\|事件:#([1-9]\d*)(?=[|\]])",
+                    rendered,
+                )
+                if envelope and int(envelope[1]) in erased_context_ids:
+                    reflection_checkpoint_ids.add(run_id)
         rebuild = await self._memory_rebuilds.prepare_forget_people(
             legacy, ownership=ownership, person_id=person_id, session=session
         )
@@ -954,6 +1086,7 @@ class PeopleRepository:
             audit_redactions=tuple(audit_redactions),
             sandbox_request_ids=sandbox_ids,
             initiative_ids=initiative_ids,
+            reflection_checkpoint_ids=tuple(sorted(reflection_checkpoint_ids)),
         )
 
     async def apply_person_forget(
@@ -974,9 +1107,23 @@ class PeopleRepository:
         await self._memory_rebuilds.forget_people(
             legacy, prepared=prepared.rebuild, session=session
         )
+        await session.execute(
+            update(MemorySelfReflectionRunModel)
+            .where(MemorySelfReflectionRunModel.id.in_(prepared.reflection_checkpoint_ids))
+            .values(checkpoint_json=None)
+        )
         owned = _privacy_owned_events(person_ids, prepared.private_ids, ownership)
         event_ids = select(ChatEventModel.id).where(
             or_(owned, _privacy_mentions(person_ids, ownership))
+        )
+        await session.execute(
+            delete(MemoryClaimCandidateModel).where(
+                MemoryClaimCandidateModel.id.in_(
+                    select(MemoryClaimCandidateEvidenceModel.candidate_id).where(
+                        MemoryClaimCandidateEvidenceModel.event_id.in_(event_ids)
+                    )
+                )
+            )
         )
         await session.execute(
             delete(WebSearchRunModel).where(
