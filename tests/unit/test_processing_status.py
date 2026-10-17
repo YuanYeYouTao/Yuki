@@ -112,17 +112,13 @@ async def test_actual_main_starts_typing_while_model_is_pending_and_stops_on_exi
         )
         if outcome == "cancel":
             task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+            assert task.cancelled()
         else:
             release.set()
-        result = await asyncio.wait_for(task, 5)
-        assert (
-            result.reason
-            == {
-                "success": "chat",
-                "error": "send_or_storage_failure",
-                "cancel": "turn_interrupted",
-            }[outcome]
-        )
+            result = await asyncio.wait_for(task, 5)
+            assert result.reason == {"success": "chat", "error": "send_or_storage_failure"}[outcome]
         await service.close()
         assert activity.stops == 1 and sender.calls == 0
         assert not service._active and not service._tasks
