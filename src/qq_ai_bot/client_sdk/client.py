@@ -40,12 +40,14 @@ class PersonalClient:
         *,
         http: httpx.AsyncClient | None = None,
         entry_binding_id: str | None = None,
+        entry_conversation_id: str | None = None,
     ) -> None:
         self.url, self.token, self.outbox = url.rstrip("/"), token, outbox
         self.http = http or httpx.AsyncClient(timeout=30, trust_env=False)
         self._owns_http = http is None
         self._me: dict[str, Any] | None = None
         self._entry_binding_id = entry_binding_id
+        self._entry_conversation_id = entry_conversation_id
         self.snapshot: dict[str, Any] = {}
         self.events: dict[str, list[dict[str, Any]]] = {}
 
@@ -61,6 +63,11 @@ class PersonalClient:
         return {
             "Authorization": f"Bearer {self.token}",
             **({"X-Yuki-Entry": self._entry_binding_id} if self._entry_binding_id else {}),
+            **(
+                {"X-Yuki-Conversation": self._entry_conversation_id}
+                if self._entry_conversation_id
+                else {}
+            ),
         }
 
     @staticmethod
@@ -80,7 +87,11 @@ class PersonalClient:
         if self._me is None or "request_person_id" not in self._me:
             me = await self.get("me")
             owner = self.outbox.owner()
-            if owner is not None and self._entry_binding_id is None:
+            if (
+                owner is not None
+                and self._entry_binding_id is None
+                and self._entry_conversation_id is None
+            ):
                 binding = next(
                     (
                         row["binding_id"]
@@ -115,6 +126,12 @@ class PersonalClient:
             "messages",
             {"request_id": identity, "text": text.strip(), "attachments": list(attachments)},
         )
+        return identity
+
+    async def prepare_acp_session(self, *, request_id: str | None = None) -> str:
+        await self._bind()
+        identity = request_id or str(uuid4())
+        self.outbox.prepare(identity, "acp/sessions", {"request_id": identity})
         return identity
 
     async def prepare_input(self, work_id: str, text: str, *, request_id: str | None = None) -> str:
@@ -157,15 +174,23 @@ class PersonalClient:
         )
         return identity
 
+    async def query(self, identity: str) -> dict[str, Any]:
+        """Read the authoritative original receipt without changing local state."""
+        await self._bind()
+        row = self.outbox.get(identity)
+        original = await self.get(f"requests/{identity}")
+        if original["found"]:
+            self._verify(row, original)
+        return original
+
     async def resolve(self, identity: str) -> dict[str, Any]:
         await self._bind()
         row = self.outbox.get(identity)
         if row["state"] == "draft":
             return row
-        original = await self.get(f"requests/{identity}")
+        original = await self.query(identity)
         if not original["found"]:
             return row
-        self._verify(row, original)
         resolved = {**original, **(original.get("result") or {})}
         resolved.pop("result", None)
         if original.get("problem_code"):
@@ -195,8 +220,10 @@ class PersonalClient:
         }
         if row["path"] == "messages":
             operation, target = "message", owner["conversation_id"]
+        elif row["path"] == "acp/sessions":
+            operation, target = "client.acp_session_new", owner["binding_id"]
         elif row["path"] == "uploads":
-            operation, target = "client.upload", owner["person"]
+            operation, target = "client.upload", self._entry_conversation_id or owner["person"]
         else:
             _, target, action = row["path"].split("/")
             operation = "client.work_input" if action == "inputs" else "client.work_cancel"

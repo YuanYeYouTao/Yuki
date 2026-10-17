@@ -92,6 +92,12 @@ class IdentityBindingModel(Base):
             unique=True,
             sqlite_where=text("platform='app' AND status <> 'transferred'"),
         ),
+        Index(
+            "uq_identity_bindings_acp_person",
+            "person_id",
+            unique=True,
+            sqlite_where=text("platform='acp' AND status <> 'transferred'"),
+        ),
         CheckConstraint(uuid4_text36_sql("id"), name="ck_identity_bindings_id"),
         CheckConstraint(uuid4_text36_sql("person_id"), name="ck_identity_bindings_person_id"),
         CheckConstraint(canonical_platform_sql("platform"), name="ck_identity_bindings_platform"),

@@ -240,6 +240,7 @@ class CommandReceiptRepository:
         conversation_key: str = "",
         problem_code: str | None = None,
         request_person_id: str | None = None,
+        request_conversation_id: str | None = None,
     ) -> ControlCommandReceiptModel:
         """Write a personal command and its audit in the caller's short transaction.
 
@@ -271,6 +272,7 @@ class CommandReceiptRepository:
             principal_id=principal_id,
             request_id=request_id,
             request_person_id=request_person_id,
+            request_conversation_id=request_conversation_id,
             payload_hash=payload_hash,
             status="failed" if problem_code else "succeeded",
             problem_code=problem_code,

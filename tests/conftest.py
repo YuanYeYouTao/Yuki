@@ -291,6 +291,9 @@ async def database(tmp_path: Path) -> Database:
         await create_presence(
             session, external_account_id="yuki-app", platform="app", now=datetime.now(UTC)
         )
+        await create_presence(
+            session, external_account_id="yuki-acp", platform="acp", now=datetime.now(UTC)
+        )
         for group_id in (
             "2001",
             "2002",

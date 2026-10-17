@@ -967,6 +967,7 @@ class ScopedEventLedgerUnitOfWork:
                     person_id=person.id,
                     identity_binding_id=person_binding.id,
                     presence_id=presence.id,
+                    thread_id=scope.thread_id,
                 )
         scope = replace(
             scope,

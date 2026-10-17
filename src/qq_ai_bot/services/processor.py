@@ -53,6 +53,7 @@ from qq_ai_bot.domain.messages import (
 from qq_ai_bot.domain.profiles import UserProfileSnapshot
 from qq_ai_bot.emoji.collector import EmojiCollector
 from qq_ai_bot.emoji.worker import EmojiWorker
+from qq_ai_bot.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
 from qq_ai_bot.identity.errors import CanonicalIdentityError
@@ -718,7 +719,7 @@ class MessageProcessor:
             try:
                 if (
                     self._client_links is not None
-                    and message.platform != "app"
+                    and message.platform not in LOCAL_CLIENT_PLATFORMS
                     and self._client_links.is_request(message)
                 ):
                     link_response = await self._client_links.execute(

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from qq_ai_bot.client_api.files import ClientFiles
+    from qq_ai_bot.client_api.prompts import ClientPrompts
 
 from qq_ai_bot.client_api.errors import ClientError
 from qq_ai_bot.client_api.identity import ClientIdentityService, ClientPrincipal
@@ -19,10 +21,18 @@ from qq_ai_bot.identity.errors import CanonicalIdentityError
 
 class ClientMessages:
     def __init__(
-        self, identity: ClientIdentityService, gateway: AppGateway, files: ClientFiles | None = None
+        self,
+        identity: ClientIdentityService,
+        gateway: AppGateway | Mapping[str, AppGateway],
+        files: ClientFiles | None = None,
+        *,
+        prompts: ClientPrompts | None = None,
     ) -> None:
-        self.identity, self.gateway = identity, gateway
-        self.requests = ClientRequests(identity)
+        self.identity = identity
+        self.gateways = (
+            dict(gateway) if isinstance(gateway, Mapping) else {gateway.platform: gateway}
+        )
+        self.requests = ClientRequests(identity, prompts=prompts)
         self.files = files
 
     async def _previous(
@@ -33,13 +43,19 @@ class ClientMessages:
         references: tuple[str, ...],
     ) -> dict[str, Any] | None:
         async with self.identity.database.sessions() as session:
-            principal = await self.identity.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
+            principal = await self.identity.require_principal(session, principal)
+            command = await personal_command(
+                session,
+                principal.request_person_id,
+                request_id,
+                conversation_id=principal.request_conversation_id,
             )
-            if await personal_command(session, principal.request_person_id, request_id) is not None:
+            if command is not None and command.operation_kind != "client.message":
                 raise ClientError("request_conflict")
             event = await self.requests.message(session, principal, request_id)
             if event is None:
+                if command is not None:
+                    raise ClientError("not_found")
                 return None
             payload_segments = [
                 part for part in json.loads(event.segments_json) if part["type"] != "yuki_context"
@@ -90,14 +106,19 @@ class ClientMessages:
                 for index, part in enumerate(media_segments)
             )
         async with self.identity.database.sessions() as session:
-            principal = await self.identity.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            principal = await self.identity.require_principal(session, principal)
             binding = await session.get(IdentityBindingModel, principal.binding_id)
             assert binding is not None
         try:
-            appended = await self.gateway.receive(
-                binding, principal.conversation_id, request_id, rendered, segments, transient
+            appended = await self.gateways[principal.platform].receive(
+                binding,
+                principal.conversation_id,
+                request_id,
+                rendered,
+                segments,
+                transient,
+                principal=principal,
+                thread_id=principal.thread_id,
             )
         except AppMessageRejected as exc:
             raise ClientError(
@@ -111,6 +132,11 @@ class ClientMessages:
             previous = await self._previous(principal, request_id, text, attachments)
             if previous is None:
                 raise ClientError("request_conflict") from exc
+            return previous
+        if not appended.created:
+            previous = await self._previous(principal, request_id, text, attachments)
+            if previous is None:
+                raise ClientError("request_conflict")
             return previous
         return {
             "event_id": appended.event.id,

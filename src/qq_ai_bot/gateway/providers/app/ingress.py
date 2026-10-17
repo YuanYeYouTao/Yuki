@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -25,7 +27,8 @@ from qq_ai_bot.persistence.scoped_event_uow import ScopedAppendResult
 from qq_ai_bot.social.service import SocialContext, SocialService
 
 if TYPE_CHECKING:
-    from qq_ai_bot.services.processor import MessageProcessor
+    from qq_ai_bot.client_api.identity import ClientPrincipal
+    from qq_ai_bot.services.processor import MessageProcessor, ProcessResult
 
 
 class AppMessageRejected(Exception):
@@ -54,7 +57,9 @@ class AppSender:
             "send_message",
             {"text": message.text},
             SocialContext(
-                f"app:{self.binding.id}:{self.request_id}",
+                f"{self.binding.platform}:{self.binding.id}:"
+                + (f"{self.conversation_id}:" if self.binding.platform == "acp" else "")
+                + self.request_id,
                 f"reply:{self.sequence}",
                 self.conversation_id,
                 person_refs={"current_speaker": self.binding.person_id},
@@ -70,6 +75,12 @@ class AppSender:
         return LocalDeliveryReceipt(result["event_id"])
 
 
+@dataclass
+class _Request:
+    task: asyncio.Task[Any]
+    acknowledged: asyncio.Future[ScopedAppendResult]
+
+
 class AppGateway:
     def __init__(
         self,
@@ -77,6 +88,8 @@ class AppGateway:
         registry: GatewayConnectionRegistry,
         processor: MessageProcessor,
         social: SocialService,
+        *,
+        platform: str = "app",
     ) -> None:
         self.database, self.registry, self.processor, self.social = (
             database,
@@ -84,26 +97,43 @@ class AppGateway:
             processor,
             social,
         )
-        self.handle = AppHandle()
-        self.tasks: set[asyncio.Task[Any]] = set()
+        self.platform = platform
+        self.handle = AppHandle(platform)
+        self._requests: dict[tuple[str, str], _Request] = {}
+        self.on_finished: (
+            Callable[
+                [ClientPrincipal, str, int, ProcessResult | None, BaseException | None],
+                Awaitable[None],
+            ]
+            | None
+        ) = None
+
+    @property
+    def tasks(self) -> set[asyncio.Task[Any]]:
+        return {request.task for request in self._requests.values()}
+
+    def request_task(self, conversation_id: str, request_id: str) -> asyncio.Task[Any] | None:
+        request = self._requests.get((conversation_id, request_id))
+        return request.task if request is not None else None
 
     async def start(self) -> None:
         async with self.database.sessions() as session:
             presence = await session.scalar(
                 select(PresenceModel).where(
-                    PresenceModel.platform == "app",
+                    PresenceModel.platform == self.platform,
                     PresenceModel.external_account_id == self.handle.self_id,
                 )
             )
         if presence is None or not presence.enabled:
-            raise RuntimeError("app Presence unavailable; apply migration 0121")
-        self.registry.connect(self.handle, provider_id="app", presence_id=presence.id)
+            raise RuntimeError(f"{self.platform} Presence unavailable; apply migrations")
+        self.registry.connect(self.handle, provider_id=self.platform, presence_id=presence.id)
 
     async def close(self) -> None:
         self.registry.disconnect(self.handle)
         tasks = tuple(self.tasks)
         for task in tasks:
-            task.cancel()
+            if not task.cancelling():
+                task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -114,11 +144,20 @@ class AppGateway:
         text: str,
         segments: tuple[dict[str, Any], ...],
         attachments: tuple[MessageAttachment, ...] = (),
+        *,
+        thread_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> InboundMessage:
+        from qq_ai_bot.client_api.identity import request_message_key
+
         return InboundMessage(
-            message_id=f"{binding.external_account_id}:{request_id}",
-            event_type="message:app",
-            platform="app",
+            message_id=request_message_key(
+                binding.external_account_id,
+                request_id,
+                conversation_id=(conversation_id or thread_id) if self.platform == "acp" else None,
+            ),
+            event_type=f"message:{self.platform}",
+            platform=self.platform,
             scope_type=ScopeType.PRIVATE,
             sender=SenderIdentity(
                 binding.external_account_id,
@@ -129,6 +168,7 @@ class AppGateway:
             bot_user_id=self.handle.self_id,
             segments=segments,
             attachments=attachments,
+            thread_id=thread_id,
         )
 
     async def receive(
@@ -139,8 +179,23 @@ class AppGateway:
         text: str,
         segments: tuple[dict[str, Any], ...],
         attachments: tuple[MessageAttachment, ...] = (),
+        *,
+        principal: ClientPrincipal | None = None,
+        thread_id: str | None = None,
     ) -> ScopedAppendResult:
-        inbound = self.message(binding, request_id, text, segments, attachments)
+        key = (conversation_id, request_id)
+        existing = self._requests.get(key)
+        if existing is not None:
+            return replace(await asyncio.shield(existing.acknowledged), created=False)
+        inbound = self.message(
+            binding,
+            request_id,
+            text,
+            segments,
+            attachments,
+            thread_id=thread_id,
+            conversation_id=conversation_id,
+        )
         sender = AppSender(self.handle, self.social, binding, conversation_id, request_id)
         acknowledged: asyncio.Future[ScopedAppendResult] = (
             asyncio.get_running_loop().create_future()
@@ -149,19 +204,52 @@ class AppGateway:
             lambda future: future.exception() if not future.cancelled() else None
         )
 
+        created = False
+
         def committed(result: ScopedAppendResult) -> None:
+            nonlocal created
+            created = result.created
             sender.event_id = result.event.id
             if not acknowledged.done():
                 acknowledged.set_result(result)
 
-        task = asyncio.create_task(
-            self.processor.handle(inbound, sender, on_committed=committed),
-            name=f"app-message:{uuid4()}",
-        )
-        self.tasks.add(task)
+        async def process() -> ProcessResult:
+            result = None
+            error = None
+            try:
+                result = await self.processor.handle(inbound, sender, on_committed=committed)
+                owner = asyncio.current_task()
+                if result.reason == "turn_interrupted" and owner is not None and owner.cancelling():
+                    # The shared turn coordinator translates task cancellation
+                    # into an interruption; retain the local request's cancellation.
+                    raise asyncio.CancelledError
+                return result
+            except BaseException as exc:
+                error = exc
+                raise
+            finally:
+                if created and sender.event_id is not None and principal is not None:
+                    if self.on_finished is not None:
+                        settlement = asyncio.ensure_future(
+                            self.on_finished(principal, request_id, sender.event_id, result, error)
+                        )
+                        try:
+                            await asyncio.shield(settlement)
+                        except asyncio.CancelledError:
+                            while not settlement.done():
+                                try:
+                                    await asyncio.shield(settlement)
+                                except asyncio.CancelledError:
+                                    continue
+                            settlement.result()
+                            raise
+
+        task = asyncio.create_task(process(), name=f"{self.platform}-message:{uuid4()}")
+        self._requests[key] = _Request(task, acknowledged)
 
         def finished(completed: asyncio.Task[Any]) -> None:
-            self.tasks.discard(completed)
+            if self._requests.get(key) is not None and self._requests[key].task is completed:
+                self._requests.pop(key)
             error: BaseException | None = (
                 asyncio.CancelledError() if completed.cancelled() else completed.exception()
             )
@@ -169,7 +257,7 @@ class AppGateway:
                 acknowledged.set_exception(error or AppMessageRejected(completed.result().reason))
             elif error is not None and not isinstance(error, asyncio.CancelledError):
                 logging.getLogger(__name__).error(
-                    "app_processing_failed category=%s", type(error).__name__
+                    "client_processing_failed category=%s", type(error).__name__
                 )
 
         task.add_done_callback(finished)

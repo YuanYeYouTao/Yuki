@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from qq_ai_bot.identity.db_models import IdentityBindingModel
 from qq_ai_bot.persistence.models import ConversationMediaItemModel
 
@@ -82,7 +83,7 @@ async def index_event_media(
                 if conversation
                 else None
             )
-            if binding is not None and binding.platform == "app":
+            if binding is not None and binding.platform in LOCAL_CLIENT_PLATFORMS:
                 uploaded = await owned_upload(session, binding.person_id, data["media_id"])
                 item.cache_status = "cached"
                 item.content_sha256 = uploaded["sha256"]

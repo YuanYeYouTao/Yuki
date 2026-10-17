@@ -76,13 +76,11 @@ class ConversationUploads:
         operation = "client.upload"
         bound = fingerprint(
             operation,
-            principal.request_person_id,
+            principal.request_scope,
             {"sha256": sha256, "size": size, "filename": filename, "kind": kind},
         )
         async with self.identity.database.sessions() as session:
-            principal = await self.identity.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            principal = await self.identity.require_principal(session, principal)
             previous = await self.identity.replay(
                 session, principal.device_id, request_id, bound, principal=principal
             )
@@ -90,7 +88,9 @@ class ConversationUploads:
                 return previous
         async with self._staging:
             self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-            temporary = self.root / f"{principal.device_id}-{request_id}.part"
+            temporary = self.root / (
+                f"{principal.device_id}-{principal.request_scope}-{request_id}.part"
+            )
             digest = hashlib.sha256()
             length = 0
             try:
@@ -120,7 +120,7 @@ class ConversationUploads:
                         "media_id": str(
                             uuid5(
                                 NAMESPACE_URL,
-                                f"yuki:upload:{principal.request_person_id}:{request_id}",
+                                f"yuki:upload:{principal.request_scope}:{request_id}",
                             )
                         ),
                         "sha256": sha256,
@@ -130,9 +130,7 @@ class ConversationUploads:
                         "expires_at": (datetime.now(UTC) + timedelta(hours=24)).timestamp(),
                     }
                     async with self.identity.database.immediate_session() as writer:
-                        principal = await self.identity.require_device(
-                            writer, principal.device_id, binding_id=principal.binding_id
-                        )
+                        principal = await self.identity.require_principal(writer, principal)
                         previous = await self.identity.replay(
                             writer, principal.device_id, request_id, bound, principal=principal
                         )
@@ -145,11 +143,12 @@ class ConversationUploads:
                             person_id=principal.person_id,
                             request_id=request_id,
                             operation=operation,
-                            operation_ref=principal.request_person_id,
+                            operation_ref=principal.request_scope,
                             payload_hash=bound,
                             resource_id=str(result["media_id"]),
                             result=result,
                             request_person_id=principal.request_person_id,
+                            request_conversation_id=principal.request_conversation_id,
                         )
                 return {**result, "replay": False}
             finally:

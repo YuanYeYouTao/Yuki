@@ -9,6 +9,8 @@ from qq_ai_bot.persistence.models import Base
 
 APP_PLATFORM = "app"
 APP_ACCOUNT_ID = "yuki-app"
+ACP_PLATFORM = "acp"
+ACP_ACCOUNT_ID = "yuki-acp"
 
 
 class ClientDeviceModel(Base):

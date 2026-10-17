@@ -1,10 +1,13 @@
 """Authorized projections of original event and command receipts across devices."""
 
-import json
-from typing import Any, cast
+from __future__ import annotations
 
-from sqlalchemy import and_, or_, select
+import json
+from typing import TYPE_CHECKING, Any, cast
+
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from qq_ai_bot.client_api.db_models import ClientDeviceModel
 from qq_ai_bot.client_api.errors import ClientError
@@ -17,10 +20,31 @@ from qq_ai_bot.identity.db_models import PresenceModel
 from qq_ai_bot.identity.person_identity import person_family_condition, same_person_id
 from qq_ai_bot.persistence.models import ChatEventModel
 
+if TYPE_CHECKING:
+    from qq_ai_bot.client_api.prompts import ClientPrompts
+
 
 async def personal_command(
-    session: AsyncSession, person_id: str, request_id: str
+    session: AsyncSession,
+    person_id: str,
+    request_id: str,
+    *,
+    conversation_id: str | None = None,
 ) -> ControlCommandReceiptModel | None:
+    scope = (
+        ControlCommandReceiptModel.request_conversation_id == conversation_id
+        if conversation_id is not None
+        else and_(
+            ControlCommandReceiptModel.request_conversation_id.is_(None),
+            or_(
+                ControlCommandReceiptModel.request_person_id == person_id,
+                and_(
+                    ControlCommandReceiptModel.request_person_id.is_(None),
+                    ClientDeviceModel.person_id == person_id,
+                ),
+            ),
+        )
+    )
     return cast(
         ControlCommandReceiptModel | None,
         await session.scalar(
@@ -29,13 +53,7 @@ async def personal_command(
                 ClientDeviceModel, ClientDeviceModel.id == ControlCommandReceiptModel.principal_id
             )
             .where(
-                or_(
-                    ControlCommandReceiptModel.request_person_id == person_id,
-                    and_(
-                        ControlCommandReceiptModel.request_person_id.is_(None),
-                        ClientDeviceModel.person_id == person_id,
-                    ),
-                ),
+                scope,
                 ControlCommandReceiptModel.request_id == request_id,
             )
         ),
@@ -43,23 +61,26 @@ async def personal_command(
 
 
 class ClientRequests:
-    def __init__(self, identity: ClientIdentityService) -> None:
+    def __init__(
+        self, identity: ClientIdentityService, *, prompts: ClientPrompts | None = None
+    ) -> None:
         self.identity = identity
+        self.prompts = prompts
 
     async def message(
         self, session: AsyncSession, principal: ClientPrincipal, request_id: str
     ) -> ChatEventModel | None:
         presence = await session.scalar(
             select(PresenceModel.id).where(
-                PresenceModel.platform == "app", PresenceModel.external_account_id == "yuki-app"
+                PresenceModel.platform == principal.platform,
+                PresenceModel.external_account_id == f"yuki-{principal.platform}",
             )
         )
         receipt = await session.scalar(
             select(CanonicalEventReceiptModel).where(
                 CanonicalEventReceiptModel.ingress_presence_id == presence,
-                CanonicalEventReceiptModel.event_type == "message:app",
-                CanonicalEventReceiptModel.platform_message_id
-                == f"{principal.external_account_id}:{request_id}",
+                CanonicalEventReceiptModel.event_type == f"message:{principal.platform}",
+                CanonicalEventReceiptModel.platform_message_id == principal.message_key(request_id),
             )
         )
         if receipt is None:
@@ -82,11 +103,14 @@ class ClientRequests:
 
     async def get(self, principal: ClientPrincipal, request_id: str) -> dict[str, Any]:
         async with self.identity.database.sessions() as session:
-            principal = await self.identity.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
+            principal = await self.identity.require_principal(session, principal)
+            command = await personal_command(
+                session,
+                principal.request_person_id,
+                request_id,
+                conversation_id=principal.request_conversation_id,
             )
-            command = await personal_command(session, principal.request_person_id, request_id)
-            if command is not None:
+            if command is not None and command.operation_kind != "client.message":
                 result = (
                     json.loads(command.effective_state_json)
                     if command.effective_state_json
@@ -131,6 +155,45 @@ class ClientRequests:
             from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
             from qq_ai_bot.social.db_models import SocialOperationModel
 
+            status = (
+                await self.prompts.projection(session, principal, request_id, event, command)
+                if self.prompts is not None
+                else {"turn": {"state": "unknown", "outcome": None}, "work": None}
+            )
+            sources: list[ColumnElement[bool]] = [
+                SocialOperationModel.source_turn_id.in_(
+                    (
+                        f"{principal.conversation_id}:event:{event.id}",
+                        f"{principal.platform}:{principal.binding_id}:"
+                        + (f"{principal.conversation_id}:" if principal.platform == "acp" else "")
+                        + request_id,
+                    )
+                )
+            ]
+            if status["work"] is not None:
+                from qq_ai_bot.runtime.work_recovery_schema import deliveries
+                from qq_ai_bot.runtime.work_schema_v1 import effects
+
+                work_id = status["work"]["work_id"]
+                sources.extend(
+                    (
+                        select(deliveries.c.id)
+                        .where(
+                            deliveries.c.work_id == work_id,
+                            deliveries.c.id == SocialOperationModel.id,
+                        )
+                        .exists(),
+                        select(effects.c.effect_key)
+                        .where(
+                            effects.c.work_id == work_id,
+                            func.json_extract(
+                                effects.c.receipt_json, "$.invocation.original_domain_ref"
+                            )
+                            == "social:" + SocialOperationModel.id,
+                        )
+                        .exists(),
+                    )
+                )
             result_ids = list(
                 await session.scalars(
                     select(ChatEventModel.id)
@@ -141,12 +204,7 @@ class ClientRequests:
                     )
                     .where(
                         SocialOperationModel.source_conversation_id == principal.conversation_id,
-                        SocialOperationModel.source_turn_id.in_(
-                            (
-                                f"{principal.conversation_id}:event:{event.id}",
-                                f"app:{principal.binding_id}:{request_id}",
-                            )
-                        ),
+                        or_(*sources),
                         SocialOperationModel.status == "succeeded",
                         ChatEventModel.direction == "outbound",
                         ChatEventModel.suppression_status == "keeper",
@@ -154,10 +212,17 @@ class ClientRequests:
                         person_family_condition(
                             CanonicalConversationModel.person_id, principal.person_id
                         ),
+                        *(
+                            (ChatEventModel.canonical_conversation_id == principal.conversation_id,)
+                            if principal.platform == "acp"
+                            else ()
+                        ),
                     )
                     .order_by(ChatEventModel.id)
                 )
             )
+            from qq_ai_bot.client_api.prompts import message_payload
+
             return {
                 "found": True,
                 "operation_kind": "message",
@@ -168,13 +233,7 @@ class ClientRequests:
                 "payload_hash": fingerprint(
                     "message",
                     principal.conversation_id,
-                    {
-                        "text": json.loads(event.segments_json)[0]["data"]["text"],
-                        "attachments": [
-                            part["data"]["media_id"]
-                            for part in json.loads(event.segments_json)
-                            if part.get("data", {}).get("media_id")
-                        ],
-                    },
+                    message_payload(event),
                 ),
+                **status,
             }

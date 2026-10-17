@@ -623,6 +623,7 @@ class ApplicationContainer:
         self.processor.set_participation(self.semantic_participation)
         from qq_ai_bot.client_api.files import ClientFiles
         from qq_ai_bot.client_api.messages import ClientMessages
+        from qq_ai_bot.client_api.prompts import ClientPrompts
         from qq_ai_bot.client_api.views import ClientViews
         from qq_ai_bot.client_api.works import ClientWorks
         from qq_ai_bot.conversation.uploads import ConversationUploads
@@ -631,6 +632,15 @@ class ApplicationContainer:
         self.app_gateway = AppGateway(
             self.database, self.gateway_registry, self.processor, self.social_service
         )
+        self.acp_gateway = AppGateway(
+            self.database,
+            self.gateway_registry,
+            self.processor,
+            self.social_service,
+            platform="acp",
+        )
+        client_gateways = {"app": self.app_gateway, "acp": self.acp_gateway}
+        client_prompts = ClientPrompts(self.client_api.identity, client_gateways)
         self.telegram_gateway = None
         if settings.telegram_bot_token.get_secret_value():
             from qq_ai_bot.gateway.providers.telegram import TelegramClient
@@ -645,7 +655,7 @@ class ApplicationContainer:
                 TelegramClient(settings.telegram_bot_token.get_secret_value()),
                 poll_interval=settings.telegram_poll_interval_seconds,
             )
-        client_works = ClientWorks(self.client_api.identity, self.app_gateway)
+        client_works = ClientWorks(self.client_api.identity, client_gateways)
         client_views = ClientViews(self.client_api.identity, client_works, self.models.traces)
         client_files = ClientFiles(
             ConversationUploads(self.client_api.identity, self.conversation_media),
@@ -654,10 +664,13 @@ class ApplicationContainer:
         )
         self.client_api = ClientApi(
             self.client_api.identity,
-            ClientMessages(self.client_api.identity, self.app_gateway, client_files),
+            ClientMessages(
+                self.client_api.identity, client_gateways, client_files, prompts=client_prompts
+            ),
             client_works,
             client_views,
             client_files,
+            client_prompts,
         )
         self.semantic_participation.set_promoter(
             partial(self.processor.promote_committed_event, reason="semantic_invitation")
@@ -893,6 +906,9 @@ class ApplicationContainer:
         )
         self.lifecycle.register(
             "app_gateway", start=self.app_gateway.start, close=self.app_gateway.close
+        )
+        self.lifecycle.register(
+            "acp_gateway", start=self.acp_gateway.start, close=self.acp_gateway.close
         )
         self.lifecycle.register("processing_status", close=self.processing_status.close)
         self.lifecycle.register(

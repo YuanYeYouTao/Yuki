@@ -216,6 +216,7 @@ class CanonicalConversationModel(Base):
             "uq_canonical_conversations_binding",
             "identity_binding_id",
             "entry_presence_id",
+            text("coalesce(thread_id, '')"),
             unique=True,
             sqlite_where=text("kind = 'private'"),
         ),
@@ -529,14 +530,27 @@ class ControlCommandReceiptModel(Base):
             "principal_id",
             "request_id",
             unique=True,
-            sqlite_where=text("request_person_id IS NULL"),
+            sqlite_where=text("request_person_id IS NULL AND request_conversation_id IS NULL"),
         ),
         Index(
             "uq_control_command_receipts_person_request",
             "request_person_id",
             "request_id",
             unique=True,
-            sqlite_where=text("request_person_id IS NOT NULL"),
+            sqlite_where=text("request_person_id IS NOT NULL AND request_conversation_id IS NULL"),
+        ),
+        Index(
+            "uq_control_command_receipts_conversation_request",
+            "request_conversation_id",
+            "request_id",
+            unique=True,
+            sqlite_where=text("request_conversation_id IS NOT NULL"),
+        ),
+        ForeignKeyConstraint(
+            ["request_conversation_id"],
+            ["canonical_conversations.id"],
+            name="fk_control_command_receipts_request_conversation",
+            ondelete="RESTRICT",
         ),
         CheckConstraint(
             uuid4_text36_sql("principal_id"),
@@ -619,6 +633,7 @@ class ControlCommandReceiptModel(Base):
     request_id: Mapped[str] = mapped_column(String(36), nullable=False)
     # Original App namespace, independent of current human and actual device actor.
     request_person_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    request_conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     result_resource_id: Mapped[str | None] = mapped_column(String(255), nullable=True)

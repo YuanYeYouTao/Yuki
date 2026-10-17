@@ -89,11 +89,16 @@ async def binding_for_scope(
 
 
 async def conversation_for_binding(
-    session: AsyncSession, identity_binding_id: str, *, presence_id: str | None = None
+    session: AsyncSession,
+    identity_binding_id: str,
+    *,
+    presence_id: str | None = None,
+    thread_id: str | None = None,
 ) -> CanonicalConversationModel | None:
     query = select(CanonicalConversationModel).where(
         CanonicalConversationModel.kind == "private",
         CanonicalConversationModel.identity_binding_id == identity_binding_id,
+        CanonicalConversationModel.thread_id == thread_id,
     )
     if presence_id is not None:
         query = query.where(CanonicalConversationModel.entry_presence_id == presence_id)
@@ -116,7 +121,9 @@ async def conversation_for_scope(
                 )
             )
         return (
-            await conversation_for_binding(session, binding.id, presence_id=presence_id)
+            await conversation_for_binding(
+                session, binding.id, presence_id=presence_id, thread_id=scope.thread_id
+            )
             if binding
             else None
         )
@@ -146,7 +153,9 @@ async def conversation_for_owner(
     if kind == "private":
         if not identity_binding_id:
             raise CanonicalIdentityError("unclassified")
-        return await conversation_for_binding(session, identity_binding_id, presence_id=presence_id)
+        return await conversation_for_binding(
+            session, identity_binding_id, presence_id=presence_id, thread_id=thread_id
+        )
     if not space_id:
         raise CanonicalIdentityError("unclassified")
     query = select(CanonicalConversationModel).where(
@@ -207,6 +216,7 @@ async def ensure_canonical_conversation(
                 kind == "private"
                 and legacy.identity_binding_id == identity_binding_id
                 and legacy.entry_presence_id is None
+                and legacy.thread_id == thread_id
             )
             or (
                 kind == "space"

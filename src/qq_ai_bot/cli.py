@@ -571,7 +571,14 @@ def main() -> None:
     from qq_ai_bot.client_sdk.cli import add_client_parser
 
     add_client_parser(subparsers)
+    from qq_ai_bot.acp_adapter.cli import add_acp_parser
+
+    add_acp_parser(subparsers)
     args = parser.parse_args()
+    if args.command == "acp":
+        from qq_ai_bot.acp_adapter.cli import run_acp_command
+
+        raise SystemExit(run_acp_command(args))
     if args.command == "client":
         from qq_ai_bot.client_sdk.cli import run_client_command
 

@@ -24,6 +24,7 @@ from qq_ai_bot.conversation.hydrate import (
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from qq_ai_bot.identity.canonical_repository import trip
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.ingress import IngressPreAdmit
@@ -206,12 +207,19 @@ class CanonicalIngressUnitOfWork:
                     segments=segments,
                     normalized_segments=normalized_segments,
                 )
-            if message.platform == "app" and admitted.author_person_id is not None:
+            if message.platform in LOCAL_CLIENT_PLATFORMS and admitted.author_person_id is not None:
                 from qq_ai_bot.client_api.requests import personal_command
 
                 request_id = message.message_id.rsplit(":", 1)[-1]
                 if (
-                    await personal_command(session, admitted.author_person_id, request_id)
+                    await personal_command(
+                        session,
+                        admitted.author_person_id,
+                        request_id,
+                        conversation_id=(
+                            admitted.conversation_id if message.platform == "acp" else None
+                        ),
+                    )
                     is not None
                 ):
                     raise CanonicalIdentityError("receipt_conflict")

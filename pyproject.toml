@@ -25,6 +25,7 @@ dependencies = [
     "tzdata>=2025.2",
     "yuki-semantic-participation @ https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/961155ca3f7c29ea75fe08077e13f4cd1e6881f3.tar.gz",
     "tomlkit>=0.13,<1",
+    "agent-client-protocol==0.12.1",
 ]
 
 [project.optional-dependencies]

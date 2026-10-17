@@ -33,9 +33,7 @@ class ClientFiles:
     ) -> tuple[tuple[dict[str, Any], ...], tuple[MessageAttachment, ...]]:
         segments, attachments = [], []
         async with self.identity.database.sessions() as session:
-            principal = await self.identity.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            principal = await self.identity.require_principal(session, principal)
             for index, identity in enumerate(references):
                 item = await owned_upload(session, principal.person_id, identity)
                 kind = item["kind"]
@@ -64,9 +62,7 @@ class ClientFiles:
     async def _authorized(self, principal: ClientPrincipal, identity: str, version: str) -> None:
         async with self.identity.database.sessions() as session:
             await session.execute(text("BEGIN"))
-            principal = await self.identity.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            principal = await self.identity.require_principal(session, principal)
             # The exact artifact and content version must occur together in a visible outbound.
             rows = await session.scalars(
                 select(ChatEventModel.segments_json)

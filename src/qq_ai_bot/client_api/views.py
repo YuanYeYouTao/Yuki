@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.client_api.errors import ClientError
@@ -21,6 +21,7 @@ from qq_ai_bot.identity.db_models import IdentityBindingModel
 from qq_ai_bot.identity.person_identity import person_family_condition
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_schema_v1 import work
+from qq_ai_bot.social.db_models import SocialOperationModel
 
 
 async def personal_conversation(
@@ -120,9 +121,7 @@ class ClientViews:
     async def home(self, principal: ClientPrincipal) -> dict[str, Any]:
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
-            principal = await self.identity.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            principal = await self.identity.require_principal(session, principal)
             entries = await self._entries(session, principal)
             rows = (
                 (
@@ -163,9 +162,7 @@ class ClientViews:
             raise ClientError("validation_error")
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
-            principal = await self.identity.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            principal = await self.identity.require_principal(session, principal)
             conversation = await personal_conversation(session, principal.person_id, identity)
             binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
             assert binding is not None
@@ -174,6 +171,19 @@ class ClientViews:
                 ChatEventModel.suppression_status == "keeper",
                 ChatEventModel.id > after,
             )
+            if binding.platform == "acp":
+                query = query.where(
+                    or_(
+                        ChatEventModel.direction == "inbound",
+                        select(SocialOperationModel.id)
+                        .where(
+                            SocialOperationModel.event_id == ChatEventModel.id,
+                            SocialOperationModel.status == "succeeded",
+                            ChatEventModel.direction == "outbound",
+                        )
+                        .exists(),
+                    )
+                )
             if before is not None:
                 query = query.where(ChatEventModel.id < before).order_by(ChatEventModel.id.desc())
             else:
@@ -194,9 +204,7 @@ class ClientViews:
 
     async def activity(self, principal: ClientPrincipal, identity: str) -> dict[str, Any]:
         async with self.database.sessions() as session:
-            principal = await self.identity.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            principal = await self.identity.require_principal(session, principal)
             await personal_conversation(session, principal.person_id, identity)
             return await self._activity(session, identity)
 
@@ -241,9 +249,7 @@ class ClientViews:
     async def sync(self, principal: ClientPrincipal) -> dict[str, Any]:
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
-            principal = await self.identity.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            principal = await self.identity.require_principal(session, principal)
             entries = await self._entries(session, principal)
             rows = (
                 await session.execute(

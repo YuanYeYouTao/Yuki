@@ -17,7 +17,12 @@ def builtin_provider_catalog(
     """Return the built-in QQ gateway providers."""
 
     return GatewayProviderCatalog(
-        (SnowLumaProvider(qq_transfer_root, qq_gateway_root), AppProvider(), TelegramProvider())
+        (
+            SnowLumaProvider(qq_transfer_root, qq_gateway_root),
+            AppProvider(),
+            AppProvider("acp"),
+            TelegramProvider(),
+        )
     )
 
 

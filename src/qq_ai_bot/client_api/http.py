@@ -15,6 +15,8 @@ from qq_ai_bot.client_api.files import ClientFiles
 from qq_ai_bot.client_api.http_errors import install_identity_errors
 from qq_ai_bot.client_api.identity import ClientIdentityService, ClientPrincipal
 from qq_ai_bot.client_api.messages import ClientMessages
+from qq_ai_bot.client_api.prompts import ClientPrompts
+from qq_ai_bot.client_api.sessions import ClientSessions
 from qq_ai_bot.client_api.views import ClientViews
 from qq_ai_bot.client_api.works import ClientWorks
 
@@ -26,6 +28,7 @@ class ClientApi:
     works: ClientWorks | None = None
     views: ClientViews | None = None
     files: ClientFiles | None = None
+    prompts: ClientPrompts | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -64,13 +67,48 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
     async def principal(
         authorization: Annotated[str | None, Header()] = None,
         x_yuki_entry: Annotated[str | None, Header()] = None,
+        x_yuki_conversation: Annotated[str | None, Header()] = None,
     ) -> ClientPrincipal:
         scheme, _, token = (authorization or "").partition(" ")
         if scheme.casefold() != "bearer" or not token:
             raise ClientError("unauthenticated")
-        return await resolve().identity.authenticate(token, binding_id=x_yuki_entry)
+        return await resolve().identity.authenticate(
+            token, binding_id=x_yuki_entry, conversation_id=x_yuki_conversation
+        )
 
     Actor = Annotated[ClientPrincipal, Depends(principal)]
+
+    async def base_principal(
+        authorization: Annotated[str | None, Header()] = None,
+        x_yuki_entry: Annotated[str | None, Header()] = None,
+    ) -> ClientPrincipal:
+        return await principal(authorization, x_yuki_entry, None)
+
+    BaseActor = Annotated[ClientPrincipal, Depends(base_principal)]
+
+    @router.post("/acp/sessions")
+    async def new_session(body: PersonalRequest, actor: BaseActor) -> Any:
+        return {
+            "data": await ClientSessions(resolve().identity).create(actor, str(body.request_id))
+        }
+
+    @router.get("/acp/sessions/{session_id}")
+    async def load_session(session_id: UUID4, actor: Actor) -> Any:
+        return {"data": await ClientSessions(resolve().identity).load(actor, str(session_id))}
+
+    @router.post("/acp/sessions/{session_id}/requests/{request_id}/cancel")
+    async def cancel_prompt(session_id: UUID4, request_id: UUID4, actor: Actor) -> Any:
+        service = resolve().prompts
+        if service is None:
+            raise ClientError("unavailable")
+        async with resolve().identity.database.sessions() as session:
+            actor = await resolve().identity.require_device(
+                session,
+                actor.device_id,
+                binding_id=actor.binding_id if actor.platform == "acp" else None,
+                conversation_id=str(session_id),
+            )
+        return {"data": await service.cancel(actor, str(request_id))}
 
     def works() -> ClientWorks:
         service = resolve().works
@@ -174,7 +212,11 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
     async def original_request(request_id: UUID4, actor: Actor) -> Any:
         from qq_ai_bot.client_api.requests import ClientRequests
 
-        return {"data": await ClientRequests(resolve().identity).get(actor, str(request_id))}
+        return {
+            "data": await ClientRequests(resolve().identity, prompts=resolve().prompts).get(
+                actor, str(request_id)
+            )
+        }
 
     @router.post("/pair")
     async def pair(body: PairBody, authorization: Annotated[str | None, Header()] = None) -> Any:

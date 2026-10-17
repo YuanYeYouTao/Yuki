@@ -47,7 +47,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 升级步骤、兼容性变化与各项验证范围见发布说明。模型响应、工具请求与宿主资源仍会影响实际体验；版本更新不保证固定的延迟、费用或缓存命中率。
 
-**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence、群按 SpaceBinding＋topic 隔离会话；人物记忆仍沿内部 Person。默认模型退役任意 OneBot action、戳一戳和远端转发历史展开，公共历史及成员目录只声明已观察账本。Plugin API **4.0**、Main 合同 **21**、迁移 **0131**；配置、升级及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地实施/验证进度见[实施记录](docs/architecture/Yuki-299与多平台解耦实施记录-2026-10-16.md)，正式 3.9.0 的历史说明保留如上。
+**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence＋子会话、群按 SpaceBinding＋topic 隔离；人物记忆仍沿内部 Person。`yuki acp` 让外部 ACP 客户端连接服务器，每个 session 有独立 Conversation，沿原 Main、固定工具和发送回执，见[个人 API](docs/architecture/client-api.md#acp-方向-a)。Plugin API **4.0**、Main 合同 **21**、迁移 **0132**；配置及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地验证、合并和上线分别记录，正式 3.9.0 的历史说明保留如上。
 
 养鲲已移至独立仓库 [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game)，本仓库不再附带游戏源码或专用迁移。独立版需要 Plugin API 4.0 Host；安装与旧存档离线升级见插件仓库。
 
@@ -188,7 +188,7 @@ uv run mypy --platform linux src
 uv run pytest
 ```
 
-开发时按改动范围选择定向验证。Quality 执行源码检查、前端测试/构建与保留回归；Release 验证版本身份、amd64/arm64 direct 镜像和无源码部署包，不再运行旧 Memory 质量门或重复发布链。
+开发时按改动范围选择定向验证。Quality 执行源码检查与保留回归；Release 验证版本身份、amd64/arm64 direct 镜像和无源码部署包，不再运行旧前端、Memory 质量门或重复发布链。
 常驻回归使用 fake Provider 和隔离数据库；Gemini、DeepSeek 等付费 API 的缓存对照单独手动执行，
 报告区分冷轮、热轮和缺失计量，不作为普通测试或固定命中率门槛。
 

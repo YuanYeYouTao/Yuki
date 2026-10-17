@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from sqlalchemy import and_, func, or_, select, text
@@ -91,8 +92,8 @@ async def input_result(
         or event.origin != "work_input"
         or event.direction != "inbound"
         or event.suppression_status != "keeper"
-        or event.platform_message_id != f"{principal.external_account_id}:{request_id}"
-        or mailbox["source_key"] != f"client-input:{principal.external_account_id}:{request_id}"
+        or event.platform_message_id != principal.message_key(request_id)
+        or mailbox["source_key"] != f"client-input:{principal.message_key(request_id)}"
         or fingerprint("client.work_input", target, {"text": event.content.strip()}) != bound
     ):
         raise ClientError("not_found")
@@ -113,8 +114,11 @@ async def input_result(
 
 
 class ClientWorks:
-    def __init__(self, identity: ClientIdentityService, gateway: AppGateway) -> None:
-        self.identity, self.gateway = identity, gateway
+    def __init__(
+        self, identity: ClientIdentityService, gateway: AppGateway | Mapping[str, AppGateway]
+    ) -> None:
+        self.identity = identity
+        self.gateways = dict(gateway) if isinstance(gateway, Mapping) else {"app": gateway}
         self.database = identity.database
         self.repository = WorkRepository(self.database)
 
@@ -242,9 +246,7 @@ class ClientWorks:
     async def get(self, principal: ClientPrincipal, identity: str) -> dict[str, Any]:
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
-            principal = await self.identity.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            principal = await self.identity.require_principal(session, principal)
             return await self._public(
                 session, await personal_work(session, principal.person_id, identity)
             )
@@ -275,6 +277,7 @@ class ClientWorks:
             result=result,
             problem_code=problem,
             request_person_id=principal.request_person_id,
+            request_conversation_id=principal.request_conversation_id,
         )
 
     async def _replay_input(
@@ -304,9 +307,7 @@ class ClientWorks:
             lease = None
             try:
                 async with self.database.sessions() as reader:
-                    principal = await self.identity.require_device(
-                        reader, principal.device_id, binding_id=principal.binding_id
-                    )
+                    principal = await self.identity.require_principal(reader, principal)
                     row = await personal_work(reader, principal.person_id, identity)
                     actor = json.loads(row["source_json"]).get("actor_person_id")
                     if not actor or not await same_person_id(reader, actor, principal.person_id):
@@ -325,7 +326,8 @@ class ClientWorks:
                 async with self.database.sessions() as reader:
                     binding = await reader.get(IdentityBindingModel, principal.binding_id)
                 assert binding is not None
-                message = self.gateway.message(
+                gateway = self.gateways[principal.platform]
+                message = gateway.message(
                     binding,
                     request_id,
                     body,
@@ -333,17 +335,17 @@ class ClientWorks:
                         {"type": "text", "data": {"text": body}},
                         {"type": "work_input", "data": {"work_id": identity}},
                     ),
+                    conversation_id=principal.request_conversation_id,
+                    thread_id=principal.thread_id,
                 )
-                admitted = await self.gateway.processor._canonical_ingress.pre_admit(
-                    self.gateway.handle, message
+                admitted = await gateway.processor._canonical_ingress.pre_admit(
+                    gateway.handle, message
                 )
                 if admitted.dropped:
                     raise ClientError("unauthenticated")
                 failure = None
                 async with self.database.immediate_session() as writer:
-                    principal = await self.identity.require_device(
-                        writer, principal.device_id, binding_id=principal.binding_id
-                    )
+                    principal = await self.identity.require_principal(writer, principal)
                     current = await personal_work(writer, principal.person_id, identity)
                     actor = json.loads(current["source_json"]).get("actor_person_id")
                     if not actor or not await same_person_id(writer, actor, principal.person_id):
@@ -375,7 +377,7 @@ class ClientWorks:
                         }
                         if waiting and lease is None:
                             continue
-                        appended = await self.gateway.processor._canonical_uow.append_inbound(
+                        appended = await gateway.processor._canonical_uow.append_inbound(
                             admitted.message, admitted, session=writer, origin="work_input"
                         )
                         payload = {
@@ -387,7 +389,7 @@ class ClientWorks:
                         input_id = await self.repository.enqueue(
                             current["conversation_id"],
                             current["generation"],
-                            f"client-input:{principal.external_account_id}:{request_id}",
+                            f"client-input:{principal.message_key(request_id)}",
                             kind="message",
                             event_id=appended.event.id,
                             work_id=identity,
@@ -424,9 +426,7 @@ class ClientWorks:
         bound = fingerprint(operation, identity, {"expected_revision": revision})
         failure = None
         async with self.database.immediate_session() as writer:
-            principal = await self.identity.require_device(
-                writer, principal.device_id, binding_id=principal.binding_id
-            )
+            principal = await self.identity.require_principal(writer, principal)
             row = await personal_work(writer, principal.person_id, identity)
             previous = await self.identity.replay(
                 writer, principal.device_id, request_id, bound, principal=principal

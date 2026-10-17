@@ -499,6 +499,7 @@ async def _hydrate_for_message(
             message.sender.user_id,
             platform=message.platform,
             presence_id=presence_id,
+            thread_id=message.thread_id,
         )
         binding = await binding_for_scope(session, scope)
         if binding is None or binding.person_id != person_id:
@@ -510,6 +511,7 @@ async def _hydrate_for_message(
             person_id=person_id,
             identity_binding_id=binding.id,
             presence_id=presence_id,
+            thread_id=message.thread_id,
         )
     if space_id is None or message.group_id is None:
         raise CanonicalIdentityError("unclassified")

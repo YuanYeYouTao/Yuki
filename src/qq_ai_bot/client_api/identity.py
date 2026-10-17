@@ -7,7 +7,7 @@ import json
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from sqlalchemy import delete, select
@@ -15,12 +15,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from qq_ai_bot.admin.authority.json_types import JsonValue
 from qq_ai_bot.client_api.db_models import (
+    ACP_ACCOUNT_ID,
+    ACP_PLATFORM,
     APP_PLATFORM,
     ClientDeviceModel,
     ClientLinkCodeModel,
 )
 from qq_ai_bot.client_api.errors import ClientError
 from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
     ControlCommandReceiptModel,
     PersonActiveRouteModel,
 )
@@ -47,6 +50,14 @@ def fingerprint(operation: str, target: str, payload: object) -> str:
     )
 
 
+def request_message_key(
+    external_account_id: str, request_id: str, *, conversation_id: str | None = None
+) -> str:
+    if conversation_id is not None:
+        return f"{external_account_id}:{conversation_id}:{request_id}"
+    return f"{external_account_id}:{request_id}"
+
+
 @dataclass(frozen=True, slots=True)
 class ClientPrincipal:
     device_id: str
@@ -56,6 +67,24 @@ class ClientPrincipal:
     conversation_id: str
     source_person_id: str
     request_person_id: str
+    platform: str = APP_PLATFORM
+    presence_id: str | None = None
+    thread_id: str | None = None
+
+    @property
+    def request_conversation_id(self) -> str | None:
+        return self.conversation_id if self.platform == ACP_PLATFORM else None
+
+    @property
+    def request_scope(self) -> str:
+        return self.request_conversation_id or self.request_person_id
+
+    def message_key(self, request_id: str) -> str:
+        return request_message_key(
+            self.external_account_id,
+            request_id,
+            conversation_id=self.request_conversation_id,
+        )
 
 
 class ClientIdentityService:
@@ -63,7 +92,13 @@ class ClientIdentityService:
         self.database = database
         self.receipts = CommandReceiptRepository(database)
 
-    async def authenticate(self, token: str, *, binding_id: str | None = None) -> ClientPrincipal:
+    async def authenticate(
+        self,
+        token: str,
+        *,
+        binding_id: str | None = None,
+        conversation_id: str | None = None,
+    ) -> ClientPrincipal:
         async with self.database.sessions() as session, session.begin():
             device = await session.scalar(
                 select(ClientDeviceModel).where(
@@ -73,12 +108,19 @@ class ClientIdentityService:
             )
             if device is None:
                 raise ClientError("unauthenticated")
-            principal = await self.require_device(session, device.id, binding_id=binding_id)
+            principal = await self.require_device(
+                session, device.id, binding_id=binding_id, conversation_id=conversation_id
+            )
             device.last_used_at = datetime.now(UTC)
             return principal
 
     async def require_device(
-        self, session: AsyncSession, device_id: str, *, binding_id: str | None = None
+        self,
+        session: AsyncSession,
+        device_id: str,
+        *,
+        binding_id: str | None = None,
+        conversation_id: str | None = None,
     ) -> ClientPrincipal:
         device = await session.get(ClientDeviceModel, device_id)
         if device is None or device.revoked_at is not None:
@@ -90,22 +132,44 @@ class ClientIdentityService:
         root = await session.get(CanonicalPersonModel, root_id)
         if root is None or not root.enabled:
             raise ClientError("unauthenticated")
-        binding = await session.scalar(
-            select(IdentityBindingModel).where(
-                IdentityBindingModel.id == binding_id
-                if binding_id is not None
-                else IdentityBindingModel.person_id == device.person_id,
-                IdentityBindingModel.platform == APP_PLATFORM,
+        if conversation_id is not None:
+            conversation = await session.get(CanonicalConversationModel, conversation_id)
+            binding = (
+                await session.get(IdentityBindingModel, conversation.identity_binding_id)
+                if conversation is not None and conversation.kind == "private"
+                else None
             )
-        )
-        if binding is None or not await same_person_id(session, binding.person_id, root_id):
-            raise ClientError("unauthenticated")
-        presence = await find_presence(session, "yuki-app", platform=APP_PLATFORM)
-        if presence is None:
-            raise ClientError("unavailable")
-        conversation = await conversation_for_binding(session, binding.id, presence_id=presence.id)
-        if conversation is None:
-            raise ClientError("unauthenticated")
+            presence = await find_presence(session, ACP_ACCOUNT_ID, platform=ACP_PLATFORM)
+            if (
+                conversation is None
+                or binding is None
+                or binding.platform != ACP_PLATFORM
+                or (binding_id is not None and binding.id != binding_id)
+                or presence is None
+                or conversation.entry_presence_id != presence.id
+                or not await same_person_id(session, binding.person_id, root_id)
+                or not await same_person_id(session, cast(str, conversation.person_id), root_id)
+            ):
+                raise ClientError("not_found")
+        else:
+            binding = await session.scalar(
+                select(IdentityBindingModel).where(
+                    IdentityBindingModel.id == binding_id
+                    if binding_id is not None
+                    else IdentityBindingModel.person_id == device.person_id,
+                    IdentityBindingModel.platform == APP_PLATFORM,
+                )
+            )
+            if binding is None or not await same_person_id(session, binding.person_id, root_id):
+                raise ClientError("unauthenticated")
+            presence = await find_presence(session, "yuki-app", platform=APP_PLATFORM)
+            if presence is None:
+                raise ClientError("unavailable")
+            conversation = await conversation_for_binding(
+                session, binding.id, presence_id=presence.id
+            )
+            if conversation is None:
+                raise ClientError("unauthenticated")
         return ClientPrincipal(
             device.id,
             root_id,
@@ -114,6 +178,19 @@ class ClientIdentityService:
             conversation.id,
             person.id,
             binding.person_id,
+            binding.platform,
+            presence.id,
+            conversation.thread_id,
+        )
+
+    async def require_principal(
+        self, session: AsyncSession, principal: ClientPrincipal
+    ) -> ClientPrincipal:
+        return await self.require_device(
+            session,
+            principal.device_id,
+            binding_id=principal.binding_id,
+            conversation_id=principal.request_conversation_id,
         )
 
     async def replay(
@@ -130,7 +207,12 @@ class ClientIdentityService:
             from qq_ai_bot.client_api.requests import ClientRequests, personal_command
 
             principal = principal or await self.require_device(session, device.id)
-            row = await personal_command(session, principal.request_person_id, request_id)
+            row = await personal_command(
+                session,
+                principal.request_person_id,
+                request_id,
+                conversation_id=principal.request_conversation_id,
+            )
             if row is None:
                 if await ClientRequests(self).message(session, principal, request_id) is not None:
                     raise ClientError("request_conflict")
@@ -248,14 +330,15 @@ class ClientIdentityService:
             result=result,
             trigger_message_id=trigger_message_id,
             request_person_id=principal.request_person_id if principal is not None else None,
+            request_conversation_id=(
+                principal.request_conversation_id if principal is not None else None
+            ),
         )
         return {**result, "code": raw, "request_id": request_id, "replay": False}
 
     async def issue_for_device(self, principal: ClientPrincipal, request_id: str) -> dict[str, Any]:
         async with self.database.immediate_session() as session:
-            current = await self.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            current = await self.require_principal(session, principal)
             return await self._issue_code(
                 session,
                 person_id=current.request_person_id,
@@ -344,7 +427,7 @@ class ClientIdentityService:
         self, session: AsyncSession, binding: IdentityBindingModel, to_person: str, *, now: datetime
     ) -> IdentityBindingModel:
         await self._person(session, to_person)
-        if binding.platform == APP_PLATFORM or binding.status != "active":
+        if binding.platform in {APP_PLATFORM, ACP_PLATFORM} or binding.status != "active":
             raise ClientError("precondition_failed")
         to_person = await current_person_id(session, to_person)
         if await same_person_id(session, binding.person_id, to_person):
@@ -381,9 +464,7 @@ class ClientIdentityService:
 
     async def me(self, principal: ClientPrincipal) -> dict[str, Any]:
         async with self.database.sessions() as session:
-            principal = await self.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            principal = await self.require_principal(session, principal)
             bindings = list(
                 await session.scalars(
                     select(IdentityBindingModel)
@@ -408,6 +489,11 @@ class ClientIdentityService:
                 "person_id": principal.person_id,
                 "source_person_id": principal.source_person_id,
                 "request_person_id": principal.request_person_id,
+                "request_conversation_id": principal.request_conversation_id,
+                "request_scope": principal.request_scope,
+                "platform": principal.platform,
+                "presence_id": principal.presence_id,
+                "thread_id": principal.thread_id,
                 "binding_id": principal.binding_id,
                 "display_name": person.display_name or "本人",
                 "conversation_id": principal.conversation_id,
@@ -463,6 +549,9 @@ class ClientIdentityService:
             resource_id=device.id,
             result=result,
             request_person_id=principal.request_person_id if principal is not None else None,
+            request_conversation_id=(
+                principal.request_conversation_id if principal is not None else None
+            ),
         )
         return {**result, "replay": False}
 
@@ -470,9 +559,7 @@ class ClientIdentityService:
         self, principal: ClientPrincipal, device_id: str, request_id: str
     ) -> dict[str, Any]:
         async with self.database.immediate_session() as session:
-            current = await self.require_device(
-                session, principal.device_id, binding_id=principal.binding_id
-            )
+            current = await self.require_principal(session, principal)
             device = await session.get(ClientDeviceModel, device_id)
             if device is None or not await same_person_id(
                 session, device.person_id, current.person_id
@@ -580,7 +667,9 @@ class ClientIdentityService:
             return await self.database.apply_snapshot_write(operation)
         now = datetime.now(UTC)
         code = await self._code(session, raw_code, now)
-        if platform == APP_PLATFORM or await find_presence(session, account, platform=platform):
+        if platform in {APP_PLATFORM, ACP_PLATFORM} or await find_presence(
+            session, account, platform=platform
+        ):
             raise ClientError("precondition_failed")
         old = await find_identity_binding(session, account, platform=platform)
         merged = old is not None and not await same_person_id(
