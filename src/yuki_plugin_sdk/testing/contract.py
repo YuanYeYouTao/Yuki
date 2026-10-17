@@ -24,11 +24,11 @@ async def run_plugin_contract_tests(
 ) -> PluginContractReport:
     """Load, register, start, and stop one trusted local plugin without core services."""
 
-    # Imports stay local so yuki_plugin_sdk itself remains independent of qq_ai_bot.
-    from qq_ai_bot.plugin_host.approval import InMemoryApprovalStore, PluginApprovalService
-    from qq_ai_bot.plugin_host.extension_registry import ExtensionRegistry
-    from qq_ai_bot.plugin_host.loader import PluginLoader
-    from qq_ai_bot.plugin_host.manifest import load_manifest
+    # Imports stay local so yuki_plugin_sdk itself remains independent of yuki.
+    from yuki.plugin_host.approval import InMemoryApprovalStore, PluginApprovalService
+    from yuki.plugin_host.extension_registry import ExtensionRegistry
+    from yuki.plugin_host.loader import PluginLoader
+    from yuki.plugin_host.manifest import load_manifest
 
     checks: list[str] = []
     loaded = None

@@ -3,12 +3,12 @@
 from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession, invoke_tool
 
-from qq_ai_bot.capabilities.results import ToolResultBudgeter
-from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.capabilities.results import ToolResultBudgeter
+from yuki.domain.messages import ChatMessage, ToolCall, ToolFunction
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.tool_results.artifacts import ToolArtifactRepository
 
 
 async def owned_session(database, tmp_path):

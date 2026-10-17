@@ -10,13 +10,13 @@ from tests.conftest import MemorySender
 from tests.unit.test_current_activation_material import _saved
 from tests.unit.test_history_dispatch_ownership import _scene
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.domain.conversations import ConversationScope
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.llm.gemini import GeminiProvider
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.effect_outcomes import execution_evidence
 
 
 def _gemini_reply(send_text=None):

@@ -8,11 +8,11 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select, text
 
-from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiUsageEventModel
-from qq_ai_bot.identity.canonical_repository import ensure_person
-from qq_ai_bot.identity.db_models import CanonicalPersonModel
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.people_repository import PeopleRepository
+from yuki.emoji.db_models import EmojiAssetModel, EmojiUsageEventModel
+from yuki.identity.canonical_repository import ensure_person
+from yuki.identity.db_models import CanonicalPersonModel
+from yuki.persistence.database import Database
+from yuki.persistence.people_repository import PeopleRepository
 
 
 @pytest.mark.asyncio

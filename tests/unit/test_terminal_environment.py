@@ -12,13 +12,11 @@ from uuid import uuid4
 
 import pytest
 
-from qq_ai_bot.sandbox.persistent import PersistentManager
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.sandbox.persistent import PersistentManager
+from yuki.workspace.store import WorkspaceStore
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX environment runtime")
-SUPERVISOR_PATH = (
-    Path(__file__).resolve().parents[2] / "src/qq_ai_bot/sandbox/environment_supervisor.py"
-)
+SUPERVISOR_PATH = Path(__file__).resolve().parents[2] / "src/yuki/sandbox/environment_supervisor.py"
 NETWORK_GUARD_PATH = Path(__file__).resolve().parents[2] / "deploy/sandbox/network-guard.sh"
 
 
@@ -225,7 +223,7 @@ async def test_new_terminal_uses_one_execd_path_and_no_implicit_lifetime(tmp_pat
 async def test_recovery_preserves_installed_image_and_uses_admin_execd(
     tmp_path, monkeypatch, custom_resolver
 ):
-    from qq_ai_bot.sandbox import persistent
+    from yuki.sandbox import persistent
 
     resolv_conf = tmp_path / "home" / ".config" / "resolv.conf" if custom_resolver else None
     if resolv_conf is not None:
@@ -285,7 +283,7 @@ async def test_recovery_preserves_installed_image_and_uses_admin_execd(
 async def test_recovery_observes_legacy_package_intent_without_new_dispatch(
     tmp_path, monkeypatch, native
 ):
-    from qq_ai_bot.sandbox import persistent
+    from yuki.sandbox import persistent
 
     manager = manager_at(tmp_path)
     identity = str(uuid4())

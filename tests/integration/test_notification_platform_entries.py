@@ -6,25 +6,25 @@ import pytest
 from sqlalchemy import select
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-from qq_ai_bot.gateway.providers.telegram import TelegramClient
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.conversation.hydrate import ensure_canonical_conversation
+from yuki.gateway.providers.telegram import TelegramClient
+from yuki.identity.canonical_repository import (
     create_person_binding,
     create_presence,
     create_space_binding,
     find_identity_binding,
 )
-from qq_ai_bot.identity.routing import RouteSendError
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.plugin_host.db_models import PluginNotificationOutboxModel
-from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
-from qq_ai_bot.plugin_host.notification_delivery import (
+from yuki.identity.routing import RouteSendError
+from yuki.persistence.models import ChatEventModel
+from yuki.plugin_host.db_models import PluginNotificationOutboxModel
+from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
+from yuki.plugin_host.notification_delivery import (
     PlatformNotificationTransport,
     PluginNotificationOutboxWorker,
 )
-from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
-from qq_ai_bot.services.effect_gate import ConversationEffectGate
+from yuki.plugin_host.notification_repository import PluginNotificationRepository
+from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki.services.effect_gate import ConversationEffectGate
 from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
 

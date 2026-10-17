@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from qq_ai_bot.adapters.onebot.media import OneBotMediaAdapter
-from qq_ai_bot.gateway.media import MediaResolutionError, PlatformMediaFile
-from qq_ai_bot.gateway.providers.telegram import TelegramAPIError, TelegramClient, TelegramProvider
-from qq_ai_bot.services.media_resolver import MediaResolver
-from qq_ai_bot.vision.models import MediaReference
+from yuki.adapters.onebot.media import OneBotMediaAdapter
+from yuki.gateway.media import MediaResolutionError, PlatformMediaFile
+from yuki.gateway.providers.telegram import TelegramAPIError, TelegramClient, TelegramProvider
+from yuki.services.media_resolver import MediaResolver
+from yuki.vision.models import MediaReference
 
 
 @pytest.mark.parametrize("kind", ["image", "audio"])

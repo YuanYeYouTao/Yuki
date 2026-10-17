@@ -164,10 +164,10 @@ async def verify_parent_death(launcher: Path) -> dict[str, Any]:
 
 
 async def verify_host_policy(worker: Path, launcher: Path) -> dict[str, Any]:
-    from qq_ai_bot.codemode.capacity import runtime_capacity
-    from qq_ai_bot.codemode.driver_types import EngineAnswer
-    from qq_ai_bot.codemode.engine_monty import MontyEngine, PinnedWorker
-    from qq_ai_bot.codemode.limits import CodeModeLimits
+    from yuki.codemode.capacity import runtime_capacity
+    from yuki.codemode.driver_types import EngineAnswer
+    from yuki.codemode.engine_monty import MontyEngine, PinnedWorker
+    from yuki.codemode.limits import CodeModeLimits
 
     pinned = PinnedWorker(worker, digest(worker), launcher, digest(launcher))
     limits = CodeModeLimits(max_feed_seconds=0.1, request_timeout_seconds=0.5)

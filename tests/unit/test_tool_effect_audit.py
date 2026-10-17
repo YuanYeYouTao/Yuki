@@ -15,41 +15,41 @@ from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_self_initiative_memory import record, seed
 
-from qq_ai_bot.capabilities import (
+from yuki.capabilities import (
     CapabilityTrustSource,
     InProcessToolProvider,
     ToolProviderRegistry,
 )
-from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
-from qq_ai_bot.capabilities.invocation import current_invocation, direct_invocations
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.capabilities.coordinator import ToolInvocationCoordinator
+from yuki.capabilities.invocation import current_invocation, direct_invocations
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
-from qq_ai_bot.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunction
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_space
-from qq_ai_bot.identity.db_models import SpaceBindingModel
-from qq_ai_bot.memory.partition import MemoryPartitionResolutionError
-from qq_ai_bot.persistence.diagnostic_writer import DiagnosticWriter
-from qq_ai_bot.persistence.models import ChatEventModel, MemoryToolReceiptModel, ToolInvocationModel
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.runtime.observability import RuntimeTurnCorrelation, bind_runtime_turn
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.chat import ChatService
-from qq_ai_bot.services.invocation_service import defer_tool_audit
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
+from yuki.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunction
+from yuki.domain.tool_actor import ToolActor
+from yuki.execution_trace.db_models import ExecutionTraceStateModel
+from yuki.identity.canonical_repository import ensure_person, ensure_space
+from yuki.identity.db_models import SpaceBindingModel
+from yuki.memory.partition import MemoryPartitionResolutionError
+from yuki.persistence.diagnostic_writer import DiagnosticWriter
+from yuki.persistence.models import ChatEventModel, MemoryToolReceiptModel, ToolInvocationModel
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.runtime.observability import RuntimeTurnCorrelation, bind_runtime_turn
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.chat import ChatService
+from yuki.services.invocation_service import defer_tool_audit
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.social.db_models import SocialOperationModel
+from yuki.tool_results.recorder import ToolInvocationRepository
 
 
 async def active_work(database, tmp_path, *, reporting=None):

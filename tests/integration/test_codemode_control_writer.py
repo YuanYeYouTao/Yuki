@@ -9,14 +9,14 @@ from sqlalchemy import select
 from tests.integration.test_codemode_lifecycle_recovery import FakeEngine, environment
 from tests.support.codemode_cases import TOOLS, FakeDomain, build_host, effect_rows, requires_worker
 
-from qq_ai_bot.codemode.api_projection import project
-from qq_ai_bot.codemode.driver import ChildClass, is_control_tool
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_tools import subagent_tools
-from qq_ai_bot.runtime.work_control import WorkControl, work_control_tools
+from yuki.codemode.api_projection import project
+from yuki.codemode.driver import ChildClass, is_control_tool
+from yuki.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_tools import subagent_tools
+from yuki.runtime.work_control import WorkControl, work_control_tools
 
 
 @pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])

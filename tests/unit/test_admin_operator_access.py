@@ -7,10 +7,10 @@ from uuid import uuid4
 
 import pytest
 
-from qq_ai_bot.admin.authority.capabilities import is_protocol_capability
-from qq_ai_bot.admin.authority.operators import ControlOperatorAccess
-from qq_ai_bot.admin.authority.principal import PrincipalSource
-from qq_ai_bot.admin.authority.problems import ControlQueryError, ProblemCode
+from yuki.admin.authority.capabilities import is_protocol_capability
+from yuki.admin.authority.operators import ControlOperatorAccess
+from yuki.admin.authority.principal import PrincipalSource
+from yuki.admin.authority.problems import ControlQueryError, ProblemCode
 
 
 def operator_file(

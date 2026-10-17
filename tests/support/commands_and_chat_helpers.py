@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import (
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import (
     InboundMessage,
     SenderIdentity,
 )
@@ -18,7 +18,7 @@ def inbound(
     mentions_bot: bool = False,
     unsupported: bool = False,
 ) -> InboundMessage:
-    from qq_ai_bot.domain.messages import AttachmentKind, MessageAttachment
+    from yuki.domain.messages import AttachmentKind, MessageAttachment
 
     return InboundMessage(
         message_id=message_id,

@@ -11,24 +11,24 @@ from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import insert, select, update
 from tests.unit.test_memory_rebuild import _service
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.memory.enums import MemoryRebuildRunStatus
-from qq_ai_bot.memory.extraction import MemoryClaim, source_event_fingerprint
-from qq_ai_bot.memory.rebuild import receipt_finalization
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildPlanStatistics, MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-from qq_ai_bot.memory.repository import MemoryJobRepository
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.conversations import ScopeType
+from yuki.memory.enums import MemoryRebuildRunStatus
+from yuki.memory.extraction import MemoryClaim, source_event_fingerprint
+from yuki.memory.rebuild import receipt_finalization
+from yuki.memory.rebuild.models import MemoryRebuildPlanStatistics, MemoryRebuildSelection
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.memory.repository import MemoryJobRepository
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryJobModel,
     MemoryRebuildItemModel,
     MemoryRebuildProposalModel,
     MemoryRebuildRunModel,
 )
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.persistence.repository_helpers import _event_record
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.persistence.repository_helpers import _event_record
 
 
 @dataclass(frozen=True)

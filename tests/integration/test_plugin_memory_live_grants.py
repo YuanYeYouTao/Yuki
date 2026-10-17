@@ -8,11 +8,11 @@ from sqlalchemy import select
 from tests.integration.test_plugin_agent_domain_grants import source_host
 from tests.unit.test_history_dispatch_ownership import _tool
 
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.enums import MemoryEvidenceRelation, MemoryScopeType, MemorySourceType
-from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
-from qq_ai_bot.persistence.models import ChatEventModel
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.enums import MemoryEvidenceRelation, MemoryScopeType, MemorySourceType
+from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
+from yuki.persistence.models import ChatEventModel
 from yuki_plugin_sdk.permissions import PluginPermission
 
 
@@ -143,7 +143,7 @@ async def test_memory_search_uses_only_current_plugin_scope(database, tmp_path, 
 
 
 async def test_parallel_memory_reads_keep_local_runtime_scopes(database, tmp_path, monkeypatch):
-    from qq_ai_bot.plugin_host import main_turn
+    from yuki.plugin_host import main_turn
 
     provider = FakeLLMProvider()
     _, source, host, person, group = await memory_scene(database, tmp_path, provider, "both")
@@ -197,7 +197,7 @@ async def test_parallel_memory_reads_keep_local_runtime_scopes(database, tmp_pat
 
 
 async def test_memory_live_scope_does_not_change_original_result_artifact_proof(database, tmp_path):
-    from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+    from yuki.tool_results.artifacts import ToolArtifactRepository
 
     provider = FakeLLMProvider()
     chat, source, host, person, _ = await memory_scene(

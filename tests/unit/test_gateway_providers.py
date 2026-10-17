@@ -8,17 +8,17 @@ from dataclasses import dataclass
 import pytest
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
-from qq_ai_bot import cli as administrative_cli
-from qq_ai_bot.adapters.onebot.provider_adapter import SnowLumaOneBotAdapter
-from qq_ai_bot.gateway.compatibility import CORE_ONEBOT_ACTIONS, provider_doctor_payload
-from qq_ai_bot.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.providers.snowluma import (
+from yuki import cli as administrative_cli
+from yuki.adapters.onebot.provider_adapter import SnowLumaOneBotAdapter
+from yuki.gateway.compatibility import CORE_ONEBOT_ACTIONS, provider_doctor_payload
+from yuki.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.providers.snowluma import (
     SNOWLUMA_CAPABILITIES,
     SNOWLUMA_PROVIDER_ID,
     SnowLumaProvider,
 )
-from qq_ai_bot.gateway.registry import (
+from yuki.gateway.registry import (
     GatewayConnectionConflict,
     GatewayConnectionRegistry,
     RegistryClosed,
@@ -267,8 +267,8 @@ def test_builtin_provider_doctor_freezes_the_core_onebot_contract() -> None:
 async def test_registered_custom_provider_supplies_native_social_operations() -> None:
     from unittest.mock import AsyncMock
 
-    from qq_ai_bot.gateway.social import TransportMessage, TransportReceipt, TransportTarget
-    from qq_ai_bot.identity.routing import ResolvedSend
+    from yuki.gateway.social import TransportMessage, TransportReceipt, TransportTarget
+    from yuki.identity.routing import ResolvedSend
 
     class NativeOperations:
         async def send(self, handle, target, message):
@@ -318,7 +318,7 @@ def test_gateway_doctor_does_not_require_runtime_settings(
     monkeypatch.setattr(administrative_cli, "Settings", _settings_forbidden)
     monkeypatch.setattr(
         "sys.argv",
-        ["qq-ai-bot-cli", "gateway", "doctor", "--provider", "snowluma"],
+        ["yuki", "gateway", "doctor", "--provider", "snowluma"],
     )
 
     administrative_cli.main()

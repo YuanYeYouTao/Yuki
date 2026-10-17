@@ -1,0 +1,848 @@
+"""Configuration, validation, persistence, and post-start setup services."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import time
+import tomllib
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
+from typing import Any, get_origin
+from urllib.parse import urlsplit
+
+import httpx
+import tomlkit
+from pydantic import AliasChoices, AliasPath, ValidationError
+from sqlalchemy.exc import SQLAlchemyError
+
+from yuki import __version__
+from yuki.config import Settings
+from yuki.model_runtime import ModelCapability, ModelTask
+from yuki.model_runtime.models import ModelSearchMode
+from yuki.model_runtime.profiles import parse_model_profile_catalog
+from yuki.model_runtime.search_defaults import normalize_model_search_document
+from yuki.model_runtime.secrets import read_model_secrets
+from yuki.persistence.database import Database
+from yuki.plugin_host.discovery import PluginDiscovery
+from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki.web.models import WebMode
+from yuki.web.search_config import effective_search_profile
+from yuki_plugin_sdk.api import PLUGIN_API_VERSION
+
+_ENV_LINE = re.compile(r"^(?P<prefix>\s*(?:export\s+)?)(?P<key>[A-Za-z_][A-Za-z0-9_]*)=")
+_SAFE_ENV_VALUE = re.compile(r"^[A-Za-z0-9_./:@+,-]*$")
+GATEWAY_PROVIDER_IDS = ("snowluma",)
+_GATEWAY_PROFILE_SET = frozenset(GATEWAY_PROVIDER_IDS)
+_FLASH_TASKS = frozenset(
+    {
+        ModelTask.MEMORY_EXTRACTION,
+        ModelTask.MEMORY_SELF_REFLECTION,
+        ModelTask.MEMORY_DREAM,
+        ModelTask.EMOJI_REPLACEMENT,
+        ModelTask.UTILITY_STRUCTURED,
+    }
+)
+
+
+class SetupValidationError(ValueError):
+    """A user-facing setup configuration error with no secret material."""
+
+
+@dataclass(frozen=True, slots=True)
+class SetupPaths:
+    root: Path
+
+    @property
+    def env_example(self) -> Path:
+        return self.root / ".env.example"
+
+    @property
+    def env(self) -> Path:
+        return self.root / ".env"
+
+    @property
+    def model_profiles(self) -> Path:
+        return self.root / "webui-config/model_profiles.toml"
+
+    @property
+    def legacy_model_profiles(self) -> Path:
+        return self.root / "config/model_profiles.toml"
+
+    @property
+    def pending(self) -> Path:
+        return self.root / "data/setup/pending.json"
+
+    @property
+    def backups(self) -> Path:
+        return self.root / ".yuki/backups"
+
+    @property
+    def restart_required(self) -> Path:
+        return self.root / "data/setup/restart-required"
+
+
+@dataclass(frozen=True, slots=True)
+class SetupConfiguration:
+    environment: dict[str, str]
+    model_profiles: str
+    pending_plugins: tuple[str, ...] | None
+    write_model_profiles: bool = True
+
+
+def require_migrated_model_profiles(paths: SetupPaths) -> None:
+    """Never regenerate a fresh catalog over an existing legacy deployment."""
+    if paths.model_profiles.is_file() or not paths.legacy_model_profiles.is_file():
+        return
+    raise SetupValidationError(
+        "发现旧 config/model_profiles.toml，但新 webui-config/model_profiles.toml 不存在；"
+        "先按 Model-Profile-Path-Migration.md 核对并迁移模型文件及同目录 secrets，再运行 setup。"
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class PluginSetupState:
+    enabled: bool
+    approved_permissions: tuple[str, ...] | None
+
+
+class EnvironmentDocument:
+    """Line-preserving .env reader and managed-value merger."""
+
+    def __init__(self, text: str) -> None:
+        self._lines = text.splitlines()
+
+    @classmethod
+    def load(cls, paths: SetupPaths) -> EnvironmentDocument:
+        source = paths.env if paths.env.is_file() else paths.env_example
+        if not source.is_file():
+            raise SetupValidationError("部署目录缺少 .env.example")
+        try:
+            return cls(source.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError) as exc:
+            raise SetupValidationError("无法读取环境变量模板") from exc
+
+    def values(self) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for line in self._lines:
+            match = _ENV_LINE.match(line)
+            if match is None:
+                continue
+            raw = line[match.end() :]
+            values[match.group("key").upper()] = _decode_env_value(raw)
+        return values
+
+    def merge(self, updates: Mapping[str, str]) -> str:
+        normalized = {key.upper(): value for key, value in updates.items()}
+        written: set[str] = set()
+        output: list[str] = []
+        for line in self._lines:
+            match = _ENV_LINE.match(line)
+            if match is None:
+                output.append(line)
+                continue
+            key = match.group("key").upper()
+            if key not in normalized:
+                output.append(line)
+                continue
+            if key in written:
+                continue
+            _raw_value, comment = _split_env_comment(line[match.end() :])
+            output.append(
+                f"{match.group('prefix')}{match.group('key')}="
+                f"{_encode_env_value(normalized[key])}{comment}"
+            )
+            written.add(key)
+        missing = [key for key in normalized if key not in written]
+        if missing and output and output[-1]:
+            output.append("")
+        output.extend(f"{key}={_encode_env_value(normalized[key])}" for key in missing)
+        return "\n".join(output).rstrip() + "\n"
+
+
+def build_model_profiles(
+    *,
+    main_protocol: str,
+    flash_enabled: bool,
+    main_provider: str | None = None,
+    main_search_mode: ModelSearchMode | None = None,
+    environment: Mapping[str, str] | None = None,
+    web_mode: WebMode = WebMode.NATIVE,
+    search_backend: str = "model",
+) -> str:
+    if main_protocol not in {"chat_completions", "responses", "anthropic_messages", "gemini"}:
+        raise SetupValidationError("主模型协议无效")
+    provider = (
+        main_provider
+        or {
+            "responses": "deepseek",
+            "chat_completions": "openai_compatible",
+            "anthropic_messages": "anthropic",
+            "gemini": "gemini",
+        }[main_protocol]
+    )
+    main_capabilities = ["tools", "structured_output", "long_context", "reasoning"]
+    if main_search_mode in {ModelSearchMode.NATIVE, ModelSearchMode.BOTH}:
+        main_capabilities.append("native_web_search")
+    # Protocol alone proves neither native web search nor image support.
+    # image_input is an explicit profile capability, enabled after model validation.
+    lines = [
+        "schema_version = 3",
+        "",
+        "# Generated by yuki setup. Secrets remain in .env.",
+        "[profiles.primary_agent]",
+        f'provider = "{provider}"',
+        f'protocol = "{main_protocol}"',
+        'base_url_env = "LLM_BASE_URL"',
+        'api_key_env = "LLM_API_KEY"',
+        'model_env = "LLM_MODEL"',
+        "timeout_seconds = 120.0",
+        "max_retries = 2",
+        "default_temperature = 0.7",
+        "default_max_output_tokens = 8192",
+        'thinking_mode = "enabled"',
+        'reasoning_effort = "medium"',
+        'reasoning_effort_env = "LLM_REASONING_EFFORT"',
+        'structured_output_mode = "function_tool"',
+        f"capabilities = {json.dumps(main_capabilities)}",
+        *([f'search_mode = "{main_search_mode.value}"'] if main_search_mode is not None else []),
+    ]
+    if flash_enabled:
+        lines.extend(
+            (
+                "",
+                "[profiles.background_tasks]",
+                'provider = "openai_compatible"',
+                'protocol = "chat_completions"',
+                'base_url_env = "LLM_FLASH_BASE_URL"',
+                'api_key_env = "LLM_FLASH_API_KEY"',
+                'model_env = "LLM_FLASH_MODEL"',
+                "timeout_seconds = 30.0",
+                "max_retries = 1",
+                "default_temperature = 0.1",
+                "default_max_output_tokens = 4096",
+                'thinking_mode = "enabled"',
+                'reasoning_effort = "medium"',
+                'structured_output_mode = "function_tool"',
+                'capabilities = ["structured_output", "reasoning"]',
+            )
+        )
+    lines.extend(("", "[routes]"))
+    for task in ModelTask:
+        profile = "background_tasks" if flash_enabled and task in _FLASH_TASKS else "primary_agent"
+        lines.append(f'{task.value} = "{profile}"')
+    return tomlkit.dumps(
+        normalize_model_search_document(
+            tomllib.loads("\n".join(lines)),
+            environment=environment,
+            web_mode=web_mode,
+            search_backend=search_backend,
+        )
+    )
+
+
+def main_protocol(profile_path: Path, environment: Mapping[str, str]) -> str:
+    if not profile_path.is_file():
+        return "chat_completions"
+    catalog = parse_model_profile_catalog(
+        profile_path.read_text(encoding="utf-8"), environment=environment
+    )
+    return catalog.profiles[catalog.routes[ModelTask.CHAT_AGENT].profile_id].protocol.value
+
+
+def model_profiles_use_flash(profile_path: Path) -> bool:
+    if not profile_path.is_file():
+        return False
+    payload = tomllib.loads(profile_path.read_text(encoding="utf-8"))
+    routes = payload["routes"]
+    return bool(routes["memory_extraction"] != routes["chat_agent"])
+
+
+def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration) -> Settings:
+    environment = dict(configuration.environment)
+    environment["BOT_PERSONA_FILE"] = str((paths.root / "config/persona.md").resolve())
+    environment["MODEL_PROFILES_FILE"] = str(paths.model_profiles.resolve())
+    environment["YUKI_VERSION"] = __version__
+    _validate_gateway_configuration(environment)
+    _validate_credentials_and_endpoints(
+        environment,
+        flash_enabled=any(
+            marker in configuration.model_profiles
+            for marker in ("[profiles.background_tasks]", "[profiles.flash]")
+        ),
+    )
+    payload = _settings_payload(environment)
+    try:
+        settings = Settings.model_validate(payload)
+    except ValidationError as exc:
+        raise SetupValidationError(_validation_summary(exc)) from exc
+
+    try:
+        catalog = parse_model_profile_catalog(
+            configuration.model_profiles,
+            environment=environment,
+            web_mode=settings.web.mode,
+            search_backend=settings.web_search_backend,
+        )
+        if settings.web.mode is not WebMode.DISABLED:
+            backend = catalog.search_backend or settings.web_search_backend
+            _, secrets = read_model_secrets(paths.model_profiles)
+            tool_profiles = [
+                catalog.profiles[route.profile_id]
+                for route in catalog.routes.values()
+                if ModelCapability.TOOLS in route.required_capabilities
+            ]
+            search_profiles = [
+                effective_search_profile(catalog, backend, profile)
+                for profile in tool_profiles
+                if profile.search_mode is ModelSearchMode.BRIDGE
+                or (
+                    profile.search_connection is not None
+                    and profile.search_mode is not ModelSearchMode.NATIVE
+                )
+            ]
+            needs_default = any(
+                profile.search_connection is None
+                and profile.search_mode in {None, ModelSearchMode.EXTERNAL, ModelSearchMode.BOTH}
+                for profile in tool_profiles
+            )
+            if (
+                needs_default
+                and catalog.search_connection
+                and backend in {"model", "deepseek_anthropic"}
+            ):
+                search_profiles.append(effective_search_profile(catalog, backend))
+            for profile in search_profiles:
+                if not _configured_value(
+                    secrets.get(profile.api_key_env, environment.get(profile.api_key_env, ""))
+                ):
+                    raise SetupValidationError("独立搜索连接缺少 API Key")
+            if (
+                backend == "tavily"
+                and needs_default
+                and not _configured_value(settings.tavily_api_key or "")
+            ):
+                raise SetupValidationError("外部搜索需要 Tavily 密钥")
+    except ValueError as exc:
+        raise SetupValidationError(str(exc)) from exc
+    return settings
+
+
+def commit_configuration(
+    paths: SetupPaths,
+    document: EnvironmentDocument,
+    configuration: SetupConfiguration,
+) -> Path | None:
+    existing_deployment = paths.env.is_file()
+    targets: dict[Path, bytes] = {
+        paths.env: document.merge(configuration.environment).encode("utf-8"),
+    }
+    if configuration.write_model_profiles:
+        targets[paths.model_profiles] = configuration.model_profiles.encode("utf-8")
+    if configuration.pending_plugins is not None:
+        targets[paths.pending] = (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "selected_plugins": list(configuration.pending_plugins),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n"
+        ).encode("utf-8")
+    previous = {path: path.read_bytes() if path.is_file() else None for path in targets}
+    restart_sensitive = {paths.env, paths.model_profiles}
+    configuration_changed = any(
+        path in restart_sensitive and previous[path] != content for path, content in targets.items()
+    )
+    if existing_deployment and configuration_changed:
+        targets[paths.restart_required] = b"configuration-changed\n"
+    for path in targets:
+        previous.setdefault(path, path.read_bytes() if path.is_file() else None)
+    backup = _create_backup(
+        paths,
+        tuple(
+            path
+            for path, value in previous.items()
+            if value is not None and path != paths.restart_required
+        ),
+    )
+    try:
+        for path, content in targets.items():
+            _atomic_write(path, content, private=path == paths.env)
+    except OSError:
+        for path, previous_content in previous.items():
+            if previous_content is None:
+                path.unlink(missing_ok=True)
+            else:
+                _atomic_write(
+                    path,
+                    previous_content,
+                    private=path == paths.env,
+                )
+        raise
+    _prune_backups(paths.backups, keep=5)
+    return backup
+
+
+def _truthy(value: str) -> bool:
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+def selected_gateway_providers(environment: Mapping[str, str]) -> tuple[str, ...]:
+    """Return only explicitly selected bundled gateway profiles."""
+
+    profiles = _compose_profile_tokens(environment.get("COMPOSE_PROFILES", ""))
+    return tuple(item for item in GATEWAY_PROVIDER_IDS if item in profiles)
+
+
+def compose_profiles_with_features(
+    environment: Mapping[str, str],
+    *,
+    gateways: Iterable[str],
+) -> str:
+    """Replace managed profiles while retaining deployment-local extension profiles."""
+
+    selected = frozenset(str(item).strip().casefold() for item in gateways)
+    if not selected <= _GATEWAY_PROFILE_SET:
+        raise SetupValidationError("QQ Gateway Provider 选择无效")
+    existing = _compose_profile_tokens(environment.get("COMPOSE_PROFILES", ""))
+    unmanaged = existing.difference(_GATEWAY_PROFILE_SET | {"speech"})
+    ordered = [item for item in GATEWAY_PROVIDER_IDS if item in selected]
+    ordered.extend(sorted(unmanaged))
+    return ",".join(ordered)
+
+
+def _compose_profile_tokens(value: str) -> frozenset[str]:
+    return frozenset(item.strip().casefold() for item in value.split(",") if item.strip())
+
+
+def _validate_gateway_configuration(environment: Mapping[str, str]) -> None:
+    providers = selected_gateway_providers(environment)
+    if "snowluma" not in providers:
+        return
+    for name in ("SNOWLUMA_IMAGE", "SNOWLUMA_VNC_PASSWORD"):
+        value = environment.get(name, "").strip()
+        if not value or value.casefold().startswith("replace-with-"):
+            raise SetupValidationError(f"SnowLuma 模式必须配置 {name}")
+    password = environment["SNOWLUMA_VNC_PASSWORD"].strip()
+    if len(password) < 8:
+        raise SetupValidationError("SNOWLUMA_VNC_PASSWORD 至少需要 8 个字符")
+    for name in ("SNOWLUMA_UID", "SNOWLUMA_GID"):
+        value = environment.get(name, "1000").strip()
+        if not value.isdigit() or not 0 <= int(value) <= 2_147_483_647:
+            raise SetupValidationError(f"{name} 必须是有效的非负整数")
+    ports: dict[str, int] = {}
+    for name, default in (
+        ("SNOWLUMA_NOVNC_PORT", "6081"),
+        ("SNOWLUMA_WEBUI_HOST_PORT", "5099"),
+    ):
+        value = environment.get(name, default).strip()
+        if not value.isdigit() or not 1 <= int(value) <= 65535:
+            raise SetupValidationError(f"{name} 必须是 1 到 65535 之间的端口")
+        ports[name] = int(value)
+    occupied = set(ports.values())
+    if len(occupied) != len(ports):
+        raise SetupValidationError("QQ Gateway Provider 的宿主端口不能重复")
+    homes = tuple(
+        item for item in re.split(r"[\s,]+", environment.get("SNOWLUMA_EXTRA_QQ_HOMES", "")) if item
+    )
+    if len(set(homes)) != len(homes):
+        raise SetupValidationError("SNOWLUMA_EXTRA_QQ_HOMES 不能包含重复目录")
+    for home in homes:
+        path = PurePosixPath(home)
+        if (
+            not path.is_absolute()
+            or path.parts[:3] != ("/", "app", "qq-accounts")
+            or len(path.parts) < 4
+            or ".." in path.parts
+        ):
+            raise SetupValidationError("SnowLuma 额外 QQ HOME 必须位于 /app/qq-accounts 下")
+
+
+async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
+    from yuki.admin_api.client import admin_client, plugin_mutation, read
+    from yuki.persistence.instance_lock import (
+        ApplicationAlreadyActiveError,
+        SQLiteApplicationLock,
+    )
+
+    if not paths.pending.is_file():
+        return 0
+    lock = SQLiteApplicationLock(settings.sqlite_path)
+    try:
+        lock.acquire()
+    except ApplicationAlreadyActiveError:
+        payload = json.loads(paths.pending.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != 1 or not isinstance(
+            payload.get("selected_plugins"), list
+        ):
+            raise SetupValidationError("待应用插件配置无效") from None
+        selected = set(payload["selected_plugins"])
+        async with admin_client(settings) as client:
+            await plugin_mutation(client, "yuki", "discover")
+            rows = await read(client, "plugins")
+            if selected - {row["plugin_id"] for row in rows}:
+                raise SetupValidationError("选择的插件已不存在或 Manifest 无效") from None
+            changed = 0
+            for row in rows:
+                plugin_id = row["plugin_id"]
+                if plugin_id in selected:
+                    fields = await read(client, f"plugins/{plugin_id}")
+                    if (
+                        fields["status"] == "pending_approval"
+                        or not fields["manifest_hash_matches"]
+                        or set(fields["approved_permissions"])
+                        != set(fields["requested_permissions"])
+                    ):
+                        await plugin_mutation(
+                            client,
+                            plugin_id,
+                            "approve",
+                            permissions=fields["requested_permissions"],
+                        )
+                    if not row["enabled"]:
+                        await plugin_mutation(client, plugin_id, "enable")
+                        changed += 1
+                elif row["enabled"]:
+                    await plugin_mutation(client, plugin_id, "disable")
+                    changed += 1
+        paths.pending.unlink(missing_ok=True)
+        return changed
+    else:
+        try:
+            return await _bootstrap_pending_plugins(paths, settings)
+        finally:
+            lock.release()
+
+
+async def _bootstrap_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
+    if not paths.pending.is_file():
+        return 0
+    try:
+        payload = json.loads(paths.pending.read_text(encoding="utf-8"))
+        if payload.get("schema_version") != 1:
+            raise ValueError
+        raw_selected = payload.get("selected_plugins", [])
+        if not isinstance(raw_selected, list):
+            raise ValueError
+        selected = frozenset(str(item) for item in raw_selected)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise SetupValidationError("待应用插件配置无效") from exc
+    discovery = PluginDiscovery(
+        settings.plugin_directory,
+        yuki_version=__version__,
+        plugin_api=PLUGIN_API_VERSION,
+    )
+    database = Database(settings.database_url)
+    repository = PluginInstallationRepository(database)
+    changed = 0
+    try:
+        manifests = tuple(
+            item.manifest for item in discovery.discover() if item.manifest is not None
+        )
+        known_ids = {manifest.id for manifest in manifests}
+        unknown = selected.difference(known_ids)
+        if unknown:
+            raise SetupValidationError("选择的插件已不存在或 Manifest 无效")
+        for manifest in manifests:
+            previous = await repository.get(manifest.id)
+            record = await repository.upsert_discovered(
+                plugin_id=manifest.id,
+                name=manifest.name,
+                version=manifest.version,
+                plugin_api=manifest.plugin_api,
+                yuki_requires=manifest.yuki_requires,
+                manifest_hash=manifest.manifest_hash,
+                entrypoint=manifest.entrypoint,
+                requested_permissions=(permission.value for permission in manifest.permissions),
+            )
+            if manifest.id in selected:
+                requested = frozenset(permission.value for permission in manifest.permissions)
+                requires_change = (
+                    not record.enabled or frozenset(record.approved_permissions) != requested
+                )
+                if requires_change:
+                    await repository.approve(manifest.id)
+                    await repository.set_enabled(manifest.id, enabled=True)
+                    changed += 1
+            elif record.enabled:
+                await repository.set_enabled(manifest.id, enabled=False)
+                changed += 1
+            elif previous is not None and previous.enabled:
+                # A changed manifest revokes approval and disables itself during discovery.
+                changed += 1
+    finally:
+        await database.close()
+    paths.pending.unlink(missing_ok=True)
+    return changed
+
+
+async def load_plugin_setup_states(
+    paths: SetupPaths,
+    *,
+    database_url: str,
+) -> dict[str, PluginSetupState]:
+    """Read current or pending plugin choices without importing plugin code."""
+
+    if paths.pending.is_file():
+        try:
+            payload = json.loads(paths.pending.read_text(encoding="utf-8"))
+            if payload.get("schema_version") != 1:
+                raise ValueError
+            raw_selected = payload.get("selected_plugins", [])
+            if not isinstance(raw_selected, list):
+                raise ValueError
+            return {
+                str(plugin_id): PluginSetupState(
+                    enabled=True,
+                    approved_permissions=None,
+                )
+                for plugin_id in raw_selected
+            }
+        except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise SetupValidationError("待应用插件配置损坏；未执行任何插件状态变更") from exc
+
+    database: Database | None = None
+    try:
+        database = Database(database_url)
+        repository = PluginInstallationRepository(database)
+        records = await repository.list_all()
+    except (OSError, SQLAlchemyError, ValueError) as exc:
+        raise SetupValidationError("无法读取当前插件批准状态；未执行任何插件状态变更") from exc
+    finally:
+        if database is not None:
+            await database.close()
+    return {
+        record.plugin_id: PluginSetupState(
+            enabled=record.enabled,
+            approved_permissions=tuple(record.approved_permissions),
+        )
+        for record in records
+    }
+
+
+def verify_health(url: str, *, timeout_seconds: float = 180.0) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_seconds
+    last_category = "unavailable"
+    with httpx.Client(timeout=3.0) as client:
+        while time.monotonic() < deadline:
+            try:
+                response = client.get(url)
+                response.raise_for_status()
+                payload = response.json()
+                if isinstance(payload, dict) and payload.get("status") == "ok":
+                    return payload
+                last_category = "unhealthy"
+            except (httpx.HTTPError, ValueError):
+                last_category = "unavailable"
+            time.sleep(2)
+    raise SetupValidationError(f"Bot 健康检查超时（{last_category}）")
+
+
+def _settings_payload(environment: Mapping[str, str]) -> dict[str, object]:
+    upper = {key.upper(): value for key, value in environment.items()}
+    payload: dict[str, object] = {}
+    for name, field in Settings.model_fields.items():
+        aliases: list[str] = [name.upper()]
+        alias = field.validation_alias
+        if isinstance(alias, str):
+            aliases.insert(0, alias.upper())
+        elif isinstance(alias, AliasChoices):
+            aliases = [
+                str(item).upper() for item in alias.choices if isinstance(item, str)
+            ] + aliases
+        elif isinstance(alias, AliasPath) and alias.path and isinstance(alias.path[0], str):
+            aliases.insert(0, alias.path[0].upper())
+        value = next((upper[item] for item in aliases if item in upper), None)
+        if value is not None:
+            if isinstance(value, str) and get_origin(field.annotation) in {
+                dict,
+                list,
+                set,
+                tuple,
+            }:
+                try:
+                    payload[name] = json.loads(value)
+                except json.JSONDecodeError:
+                    payload[name] = value
+            else:
+                payload[name] = value
+    return payload
+
+
+def _validation_summary(error: ValidationError) -> str:
+    rows = error.errors(include_url=False, include_input=False)
+    if not rows:
+        return "配置验证失败"
+    row = rows[0]
+    location = ".".join(str(item) for item in row.get("loc", ())) or "配置"
+    return f"{location}: {row.get('msg', '配置验证失败')}"
+
+
+def _create_backup(paths: SetupPaths, existing: Iterable[Path]) -> Path | None:
+    files = tuple(existing)
+    if not files:
+        return None
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
+    destination = paths.backups / stamp
+    for path in files:
+        target = destination / path.relative_to(paths.root)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        if os.name != "nt":
+            target.chmod(0o600)
+        else:
+            _restrict_windows_acl(target)
+    return destination
+
+
+def _prune_backups(root: Path, *, keep: int) -> None:
+    if not root.is_dir():
+        return
+    directories = tuple(sorted((item for item in root.iterdir() if item.is_dir()), reverse=True))
+    for directory in directories[keep:]:
+        resolved = directory.resolve()
+        if resolved.parent != root.resolve():
+            raise SetupValidationError("备份目录越界")
+        shutil.rmtree(resolved)
+
+
+def _atomic_write(path: Path, content: bytes, *, private: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        if os.name == "nt":
+            if private:
+                _restrict_windows_acl(temporary)
+        else:
+            temporary.chmod(0o600 if private else 0o644)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _decode_env_value(value: str) -> str:
+    raw_value, _comment = _split_env_comment(value)
+    stripped = raw_value.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] == '"':
+        try:
+            decoded = json.loads(stripped)
+            return decoded if isinstance(decoded, str) else stripped
+        except json.JSONDecodeError:
+            return stripped[1:-1]
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] == "'":
+        return stripped[1:-1]
+    return stripped
+
+
+def _encode_env_value(value: str) -> str:
+    if _SAFE_ENV_VALUE.fullmatch(value):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _split_env_comment(value: str) -> tuple[str, str]:
+    quote = ""
+    escaped = False
+    for index, character in enumerate(value):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and quote == '"':
+            escaped = True
+            continue
+        if quote:
+            if character == quote:
+                quote = ""
+            continue
+        if character in {'"', "'"}:
+            quote = character
+            continue
+        if character == "#" and index > 0 and value[index - 1].isspace():
+            head = value[:index].rstrip()
+            return head, value[len(head) :]
+    return value, ""
+
+
+def _validate_credentials_and_endpoints(
+    environment: Mapping[str, str],
+    *,
+    flash_enabled: bool,
+) -> None:
+    required = ("LLM_BASE_URL", "LLM_API_KEY", "LLM_MODEL")
+    missing = [name for name in required if not _configured_value(environment.get(name, ""))]
+    if missing:
+        raise SetupValidationError("基础配置本地验证失败，缺少：" + ", ".join(missing))
+    endpoint_names = ["LLM_BASE_URL"]
+    if flash_enabled:
+        missing_flash = [
+            name
+            for name in ("LLM_FLASH_BASE_URL", "LLM_FLASH_API_KEY", "LLM_FLASH_MODEL")
+            if not _configured_value(environment.get(name, ""))
+        ]
+        if missing_flash:
+            raise SetupValidationError("Flash 本地验证失败，缺少：" + ", ".join(missing_flash))
+        endpoint_names.append("LLM_FLASH_BASE_URL")
+    if environment.get("MEMORY_EMBEDDING_ENABLED", "false").casefold() == "true":
+        missing_embedding = [
+            name
+            for name in (
+                "MEMORY_EMBEDDING_BASE_URL",
+                "MEMORY_EMBEDDING_API_KEY",
+                "MEMORY_EMBEDDING_MODEL",
+            )
+            if not _configured_value(environment.get(name, ""))
+        ]
+        if missing_embedding:
+            raise SetupValidationError(
+                "Embedding 本地验证失败，缺少：" + ", ".join(missing_embedding)
+            )
+        endpoint_names.append("MEMORY_EMBEDDING_BASE_URL")
+    if environment.get("VISION_ENABLED", "false").casefold() == "true":
+        missing_vision = [
+            name
+            for name in ("VISION_BASE_URL", "VISION_API_KEY", "VISION_MODEL")
+            if not _configured_value(environment.get(name, ""))
+        ]
+        if missing_vision:
+            raise SetupValidationError("Vision 本地验证失败，缺少：" + ", ".join(missing_vision))
+        endpoint_names.append("VISION_BASE_URL")
+    for name in endpoint_names:
+        value = environment.get(name, "").strip()
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise SetupValidationError(f"{name} 必须是绝对 HTTP(S) 地址")
+
+
+def _configured_value(value: str) -> str:
+    normalized = value.strip()
+    return "" if normalized.casefold().startswith("replace-with-") else normalized
+
+
+def _restrict_windows_acl(path: Path) -> None:
+    domain = os.getenv("USERDOMAIN", "").strip()
+    username = os.getenv("USERNAME", "").strip()
+    identity = f"{domain}\\{username}" if domain and username else username
+    if not identity:
+        raise OSError("无法确定当前 Windows 用户，不能安全写入密钥文件")
+    completed = subprocess.run(
+        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{identity}:(F)"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        raise OSError("无法限制 Windows 密钥文件 ACL")

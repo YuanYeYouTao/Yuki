@@ -12,14 +12,14 @@ from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_mutation import _context, _event, _service
 from tests.unit.test_memory_worker_shutdown import _Provider as ExtractionProvider
 
-from qq_ai_bot.identity.canonical_repository import ensure_person
-from qq_ai_bot.identity.db_models import IdentityBindingModel
-from qq_ai_bot.memory.models import MemoryFactQuery
-from qq_ai_bot.memory.mutation.models import MemoryMutationRequest
-from qq_ai_bot.memory.repository import MemoryJobRepository
-from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.persistence.models import ChatEventModel, MemoryJobModel
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.identity.canonical_repository import ensure_person
+from yuki.identity.db_models import IdentityBindingModel
+from yuki.memory.models import MemoryFactQuery
+from yuki.memory.mutation.models import MemoryMutationRequest
+from yuki.memory.repository import MemoryJobRepository
+from yuki.memory.worker import MemoryWorker
+from yuki.persistence.models import ChatEventModel, MemoryJobModel
+from yuki.services.concurrency import ConcurrencyManager
 
 
 async def test_native_telegram_and_qq_same_number_write_manual_and_automatic_facts(

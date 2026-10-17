@@ -11,27 +11,27 @@ from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession, invoke_tool
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall, ToolFunction
-from qq_ai_bot.gateway.registry import RegistryClosed
-from qq_ai_bot.identity.routing import RouteSendError
-from qq_ai_bot.llm.base import LLMUnavailableError
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
-from qq_ai_bot.model_runtime.models import ModelTask
-from qq_ai_bot.runtime.activation_outcome import ExitReason
-from qq_ai_bot.runtime.delivery_intents import record, reserve
-from qq_ai_bot.runtime.lease_heartbeat import supervise_lease
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_journal import JournalUnavailable
-from qq_ai_bot.runtime.work_recovery_schema import deliveries, recovery
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, journal, scope
-from qq_ai_bot.runtime.work_supervisor import recover_failure
-from qq_ai_bot.services.concurrency import RequestCancelledError
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.capabilities.results import ToolExecutionResult, ToolResultBudgeter
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import ChatMessage, ChatRequest, ToolCall, ToolFunction
+from yuki.gateway.registry import RegistryClosed
+from yuki.identity.routing import RouteSendError
+from yuki.llm.base import LLMUnavailableError
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.dispatch_guard import model_dispatch_guard
+from yuki.model_runtime.models import ModelTask
+from yuki.runtime.activation_outcome import ExitReason
+from yuki.runtime.delivery_intents import record, reserve
+from yuki.runtime.lease_heartbeat import supervise_lease
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_journal import JournalUnavailable
+from yuki.runtime.work_recovery_schema import deliveries, recovery
+from yuki.runtime.work_repository import WorkConflict, WorkRepository
+from yuki.runtime.work_schema_v1 import effects, journal, scope
+from yuki.runtime.work_supervisor import recover_failure
+from yuki.services.concurrency import RequestCancelledError
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.tool_results.artifacts import ToolArtifactRepository
 
 
 async def setup(database, tmp_path):
@@ -219,7 +219,7 @@ async def test_artifact_publication_failure_preserves_typed_effect_without_repla
             data={"actual_result": "already committed"},
         )
         if failure == "cancel":
-            from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+            from yuki.runtime.effect_outcomes import current_result_capture
 
             current_result_capture.get().outcome = outcome
             raise asyncio.CancelledError("cancelled after confirmed effect")

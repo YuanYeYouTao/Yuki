@@ -70,8 +70,8 @@ SQLAlchemy 的 `asyncio` extra（`pyproject.toml`/`uv.lock`）。
 
 ## P03：Pi 内核 Python 移植，已完成
 
-- 新增 `src/qq_ai_bot/agent_core/{__init__,loop,types,state,events,model_boundary}.py`，
-  均带 Pi MIT 署名与源符号/行范围；只依赖 `qq_ai_bot.domain.messages`（有测试强制）。
+- 新增 `src/yuki/agent_core/{__init__,loop,types,state,events,model_boundary}.py`，
+  均带 Pi MIT 署名与源符号/行范围；只依赖 `yuki.domain.messages`（有测试强制）。
 - `AgentRunner._run` 的 `for request_index` 循环删除，改由 `run_agent_loop` 驱动；
   原循环体按职责拆为 `Callbacks` 的 9 个边界闭包。截断响应的非执行回执改由核心
   `fail_truncated_calls` 生成（字节不变）。Work 会话下重复批次计数只读持久 `repeats`，
@@ -100,7 +100,7 @@ uv run --frozen pytest -q -p no:warnings tests
 `FutureSnapshot.resume({call_id: …})`、`dump`/`load_snapshot` 与类型化限额错误。只用手动接口：
 不用 `resume_auto`、`feed_run`、`external_lookup`、mount、`os=` 回调、WebSocket/remote 或宿主 exec。
 
-**新增模块 `src/qq_ai_bot/codemode/`：**
+**新增模块 `src/yuki/codemode/`：**
 
 - `engine_monty.py`：`PinnedWorker`（绝对路径＋sha256＋平台核验，不经 PATH/wheel 发现）；
   `MontyEngine`（每个 worker 只服务一次 checkout）；`MontyRun` 的 start/answer/settle/dump/

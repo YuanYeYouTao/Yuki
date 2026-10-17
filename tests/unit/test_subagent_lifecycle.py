@@ -8,15 +8,15 @@ import pytest
 from sqlalchemy import select
 from tests.support.work_runner_helpers import case, run, tool
 
-from qq_ai_bot.domain.messages import ChatResponse
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_schema import children
-from qq_ai_bot.runtime.subagent_tools import execute_subagent
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_schema_v1 import inputs, work
-from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+from yuki.domain.messages import ChatResponse
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_schema import children
+from yuki.runtime.subagent_tools import execute_subagent
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_schema_v1 import inputs, work
+from yuki.runtime.work_wait import WorkWaitRepository
 
 
 async def worker_case(database, tmp_path, calls, *, close_parent=False, wait_parent=False):

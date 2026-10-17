@@ -1,0 +1,103 @@
+"""Compile stable and dynamic prompt contributions once."""
+
+from __future__ import annotations
+
+import hashlib
+import math
+from dataclasses import replace
+
+from yuki.domain.messages import ChatMessage
+from yuki.prompting.models import (
+    CompiledPrompt,
+    PromptContribution,
+    PromptMetrics,
+    PromptProgram,
+    PromptStability,
+)
+from yuki.prompting.serializer import (
+    serialize_dynamic,
+    serialized_messages_hash,
+)
+
+
+class PromptCompiler:
+    """Order and serialize a prompt program with unique contribution identities."""
+
+    def compile(
+        self,
+        program: PromptProgram,
+        *,
+        history: tuple[ChatMessage, ...] = (),
+        current_message: ChatMessage | None = None,
+    ) -> CompiledPrompt:
+        by_id: dict[str, PromptContribution] = {}
+        for contribution in program.contributions:
+            if contribution.id in by_id:
+                raise ValueError(f"duplicate prompt contribution: {contribution.id}")
+            by_id[contribution.id] = contribution
+        ordered = tuple(
+            sorted(
+                by_id.values(),
+                key=lambda item: (
+                    _stability_rank(item.stability),
+                    -item.priority,
+                    item.id,
+                ),
+            )
+        )
+        static = tuple(item for item in ordered if item.stability is PromptStability.STATIC)
+        dynamic = tuple(item for item in ordered if item.stability is PromptStability.TURN)
+        stable_text = "\n\n".join(item.content or "" for item in static)
+        dynamic_text = serialize_dynamic(dynamic)
+        messages: list[ChatMessage] = []
+        if stable_text:
+            messages.append(ChatMessage(role="system", content=stable_text))
+        messages.extend(history)
+        if current_message is not None:
+            messages.append(_with_current_material(current_message, dynamic_text))
+        elif dynamic_text:
+            messages.append(ChatMessage(role="user", content=dynamic_text))
+        stable_hash = hashlib.sha256(stable_text.encode("utf-8")).hexdigest()
+        prefix_messages = (
+            tuple(messages[:-1]) if current_message or dynamic_text else tuple(messages)
+        )
+        conversation_prefix_hash = (
+            serialized_messages_hash(prefix_messages) if prefix_messages else ""
+        )
+        history_characters = sum(len(item.content or "") for item in history)
+        current_message_characters = len(current_message.content or "") if current_message else 0
+        total_characters = sum(len(message.content or "") for message in messages)
+        return CompiledPrompt(
+            messages=tuple(messages),
+            selected=static + dynamic,
+            metrics=PromptMetrics(
+                static_characters=len(stable_text),
+                dynamic_characters=len(dynamic_text),
+                history_characters=history_characters,
+                current_message_characters=current_message_characters,
+                total_characters=total_characters,
+                estimated_tokens=math.ceil(total_characters / 4),
+                contribution_count=len(static) + len(dynamic),
+                message_count=len(messages),
+                stable_prefix_hash=stable_hash,
+                conversation_prefix_hash=conversation_prefix_hash,
+            ),
+        )
+
+
+def _stability_rank(stability: PromptStability) -> int:
+    if stability is PromptStability.STATIC:
+        return 0
+    return 1
+
+
+def _with_current_material(message: ChatMessage, dynamic_text: str) -> ChatMessage:
+    """Keep Responses `input` append-only by not inserting a mid-history system turn."""
+
+    if not dynamic_text:
+        return message
+    body = message.content or ""
+    return replace(
+        message,
+        content=f"{dynamic_text}\n\n{body}" if body else dynamic_text,
+    )

@@ -9,24 +9,24 @@ from tests.support.memory_identity import transfer_account
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
-from qq_ai_bot.domain.messages import SenderIdentity
-from qq_ai_bot.identity import canonical_uow
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
+from yuki.domain.messages import SenderIdentity
+from yuki.identity import canonical_uow
+from yuki.identity.canonical_repository import (
     ensure_person,
     ensure_presence,
     find_identity_binding,
     set_identity_failpoint,
 )
-from qq_ai_bot.identity.db_models import (
+from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.identity.person_identity import merge_persons
-from qq_ai_bot.persistence.models import ChatEventModel, MembershipModel, PersonAliasModel
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.identity.person_identity import merge_persons
+from yuki.persistence.models import ChatEventModel, MembershipModel, PersonAliasModel
 
 
 @pytest.fixture

@@ -7,7 +7,7 @@ import pytest
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 from tests.support.work_session import WorkSession, invoke_tool
 
-from qq_ai_bot.domain.messages import (
+from yuki.domain.messages import (
     ChatMessage,
     ChatRequest,
     ChatResponse,
@@ -15,13 +15,13 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-from qq_ai_bot.runtime.work_repository import WorkCapacityError
-from qq_ai_bot.services.context_compaction import EXECUTION_COMPACT_INSTRUCTION
-from qq_ai_bot.services.turn_execution import TurnExecution
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.capacity import estimate_request_tokens
+from yuki.model_runtime.models import ModelExecutionPriority
+from yuki.runtime.work_repository import WorkCapacityError
+from yuki.services.context_compaction import EXECUTION_COMPACT_INSTRUCTION
+from yuki.services.turn_execution import TurnExecution
+from yuki.services.turn_transcript import TurnTranscript
 
 
 async def _paid_root(database, tmp_path):

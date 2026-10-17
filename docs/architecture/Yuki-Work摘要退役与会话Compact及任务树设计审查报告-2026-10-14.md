@@ -295,7 +295,7 @@ Pi 的 steer 在 postTools 接入原 generation，followUp 等最终回答；它
 
 ### 9.1 需要顺着调用清退的精确索引
 
-下表 `S/` 表示 `src/qq_ai_bot/`。数字是固定基线的源码行号，不是新设计要求的阈值。与 D01–D16 合并执行。
+下表 `S/` 表示 `src/yuki/`。数字是固定基线的源码行号，不是新设计要求的阈值。与 D01–D16 合并执行。
 
 | 对应项 | 精确消费者索引 | 核查要点 |
 | --- | --- | --- |
@@ -562,7 +562,7 @@ Pi 的 steer 在 postTools 接入原 generation，followUp 等最终回答；它
 
 主声明来源是 [MainAgentContract.definitions，55–96](https://github.com/YuanYeYouTao/Yuki/blob/fb8823f53f2134e4029bc6f5f206e7eb87a468d1/src/qq_ai_bot/services/main_agent_contract.py#L55)。以下列的是已定位差集，不是未来允许继承的封闭名单：
 
-| Main 已有而当前 worker 静态名单排除 | 声明索引，`S/` = `src/qq_ai_bot/` |
+| Main 已有而当前 worker 静态名单排除 | 声明索引，`S/` = `src/yuki/` |
 | --- | --- |
 | `get_my_capabilities` | `S/services/agent_tools.py:450` |
 | `read_conversation_history`、`send_message`、`poke_person`、`get_group_members`、`recall_own_message` | `S/social/tools.py:56,104,163,182,196`；`S/services/agent_tools.py:823` |

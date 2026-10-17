@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.exc import OperationalError
 
-from qq_ai_bot.emoji.worker import EmojiWorker
-from qq_ai_bot.plugin_host.background_turns import PluginBackgroundTurnWorker
-from qq_ai_bot.plugin_host.notification_delivery import PluginNotificationOutboxWorker
+from yuki.emoji.worker import EmojiWorker
+from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
+from yuki.plugin_host.notification_delivery import PluginNotificationOutboxWorker
 
 
 @pytest.mark.asyncio

@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from qq_ai_bot.config import Settings
+from yuki.config import Settings
 
 from .models import QueueState, RepositoryState
 from .state import (

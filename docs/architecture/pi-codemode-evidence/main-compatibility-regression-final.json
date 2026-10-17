@@ -89,7 +89,7 @@
         "=========================== short test summary info ============================",
         "SKIPPED [1] tests/integration/test_legacy_profile_backup_replay.py:122: private production backup paths not provided",
         "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! KeyboardInterrupt !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!",
-        "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/qq_ai_bot/automation/service.py:271: KeyboardInterrupt",
+        "/Users/huangjiawei/.codex/worktrees/d0aa/Yuki/src/yuki/automation/service.py:271: KeyboardInterrupt",
         "(to show a full traceback on KeyboardInterrupt use --full-trace)",
         "361 passed, 1 skipped in 128.15s (0:02:08)"
       ]

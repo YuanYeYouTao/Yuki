@@ -7,16 +7,16 @@ from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.domain.messages import ChatResponse
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.capacity import ModelCapacity
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
-from qq_ai_bot.plugin_host.session_facade import BoundAgentSessionFacade
-from qq_ai_bot.plugin_host.session_repository import PluginAgentSessionRepository
-from qq_ai_bot.runtime.work_repository import WorkCapacityError
-from qq_ai_bot.services.concurrency import ConcurrencyManager
-from qq_ai_bot.services.plugin_sessions import PluginAgentSessionService, PluginSessionAuthority
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.domain.messages import ChatResponse
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.capacity import ModelCapacity
+from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki.plugin_host.session_facade import BoundAgentSessionFacade
+from yuki.plugin_host.session_repository import PluginAgentSessionRepository
+from yuki.runtime.work_repository import WorkCapacityError
+from yuki.services.concurrency import ConcurrencyManager
+from yuki.services.plugin_sessions import PluginAgentSessionService, PluginSessionAuthority
 from yuki_plugin_sdk.sessions import CreateAgentSessionRequest, RunAgentSessionRequest
 
 
@@ -114,7 +114,7 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
     # Changing the real caller does not change private ownership or manufacture
     # access to the selected history.
     authority = PluginSessionAuthority(plugin_id, env.person, None, frozenset({"agent.session"}))
-    from qq_ai_bot.services.plugin_sessions import PluginSessionNotFoundError
+    from yuki.services.plugin_sessions import PluginSessionNotFoundError
 
     with pytest.raises(PluginSessionNotFoundError):
         await service.run(
@@ -129,7 +129,7 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
 
 @pytest.mark.parametrize("group", [False, True])
 async def test_actorless_session_keeps_real_group_or_plugin_scope(database, tmp_path, group):
-    from qq_ai_bot.services.plugin_sessions import PluginSessionPermissionError
+    from yuki.services.plugin_sessions import PluginSessionPermissionError
 
     env = await social_env(database, tmp_path)
     plugin_id = "integrity.actorless"

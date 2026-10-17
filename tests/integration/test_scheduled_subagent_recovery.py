@@ -10,16 +10,16 @@ from sqlalchemy import select, update
 from tests.support.automation_unified_delivery_helpers import setup_run
 from tests.support.runtime_execution import make_child_executor
 
-from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.db_models import IdentityBindingModel, SpaceBindingModel
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.runtime.work_wait import WorkWaitRepository
-from qq_ai_bot.services.execution_sources import recover_execution_source
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.automation.models import RunStatus
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.db_models import IdentityBindingModel, SpaceBindingModel
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_scheduler import SubagentScheduler
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import work
+from yuki.runtime.work_wait import WorkWaitRepository
+from yuki.services.execution_sources import recover_execution_source
+from yuki.tool_results.artifacts import ToolArtifactRepository
 
 UPDATED_GOAL = "Check original scheduled history"
 
@@ -271,7 +271,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     await WorkWaitRepository(repository).deliver_due()
     from tests.support.runtime_execution import make_work_resumer
 
-    from qq_ai_bot.runtime.work_scheduler import WorkScheduler
+    from yuki.runtime.work_scheduler import WorkScheduler
 
     resumer = make_work_resumer(
         repository,
@@ -304,7 +304,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     unchanged_parent = await repository.get(parent["id"])
     assert unchanged_parent["state"] == "completed"
     assert unchanged_parent["model_requests"] == original_parent["model_requests"]
-    from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
+    from yuki.persistence.models import AutomationModel, AutomationRunModel
 
     async with database.sessions() as session:
         assert (await session.get(AutomationRunModel, case.run.id)).status == "succeeded"
@@ -318,9 +318,9 @@ async def test_self_child_runs_and_continues_after_parent_and_original_initiativ
     from tests.support.fixed_contract_fixture import bind_main_contract
     from tests.unit.test_self_initiative_runtime import self_source
 
-    from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.runtime.work_budget_schema import budgets
+    from yuki.conversation.autonomy_db_models import InitiativeRunModel
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.runtime.work_budget_schema import budgets
 
     source, admissions, _ = await self_source(database)
 
@@ -431,11 +431,11 @@ async def test_expired_worker_does_not_repurchase_response_lost_with_process(dat
     from tests.support.fixed_contract_fixture import bind_main_contract
     from tests.unit.test_self_initiative_runtime import self_source
 
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.runtime.subagent_schema import children
-    from qq_ai_bot.runtime.work_budget_schema import budgets
-    from qq_ai_bot.runtime.work_recovery_schema import recovery
-    from qq_ai_bot.runtime.work_schema_v1 import journal
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.runtime.subagent_schema import children
+    from yuki.runtime.work_budget_schema import budgets
+    from yuki.runtime.work_recovery_schema import recovery
+    from yuki.runtime.work_schema_v1 import journal
 
     source, _admissions, _binding = await self_source(database)
     repository = WorkRepository(database)
@@ -457,11 +457,11 @@ async def test_expired_worker_does_not_repurchase_response_lost_with_process(dat
         from tests.conftest import build_harness, make_settings
         from tests.support.fixed_contract_fixture import bind_main_contract
         from tests.support.runtime_execution import make_child_executor
-        from qq_ai_bot.domain.messages import ChatResponse
-        from qq_ai_bot.llm.fake import FakeLLMProvider
-        from qq_ai_bot.persistence.database import Database
-        from qq_ai_bot.runtime.work_repository import WorkRepository
-        from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+        from yuki.domain.messages import ChatResponse
+        from yuki.llm.fake import FakeLLMProvider
+        from yuki.persistence.database import Database
+        from yuki.runtime.work_repository import WorkRepository
+        from yuki.tool_results.artifacts import ToolArtifactRepository
 
         async def run():
             database = Database(sys.argv[1])
@@ -552,7 +552,7 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
     from tests.support.fixed_contract_fixture import bind_main_contract
     from tests.unit.test_self_initiative_runtime import self_source
 
-    from qq_ai_bot.llm.fake import FakeLLMProvider
+    from yuki.llm.fake import FakeLLMProvider
 
     source, _admissions, _binding = await self_source(database)
     repository = WorkRepository(database)
@@ -641,10 +641,10 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
 
     from tests.support.runtime_execution import make_work_resumer
 
-    from qq_ai_bot.automation.authority import PermissionLevel
-    from qq_ai_bot.automation.control_context import resolve_execution_identity
-    from qq_ai_bot.runtime.work_budget_schema import budgets
-    from qq_ai_bot.runtime.work_scheduler import WorkScheduler
+    from yuki.automation.authority import PermissionLevel
+    from yuki.automation.control_context import resolve_execution_identity
+    from yuki.runtime.work_budget_schema import budgets
+    from yuki.runtime.work_scheduler import WorkScheduler
 
     case = await setup_run(
         database, tmp_path, delivery="none", mode="silent", superusers_csv="10001"

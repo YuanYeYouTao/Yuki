@@ -15,14 +15,14 @@ from tests.unit.test_migration_0126 import (
     test_monitor_upgrade_parses_new_models_and_replays_original_publication as seed_upgrade,
 )
 
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.plugin_host import notification_repository as publication
-from qq_ai_bot.plugin_host.db_models import (
+from yuki.persistence.models import ChatEventModel
+from yuki.plugin_host import notification_repository as publication
+from yuki.plugin_host.db_models import (
     PluginBackgroundTurnJobModel,
     PluginNotificationOutboxModel,
     PluginStateModel,
 )
-from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
+from yuki.plugin_host.notification_repository import PluginNotificationRepository
 
 
 @pytest.mark.parametrize("activation", [False, True])

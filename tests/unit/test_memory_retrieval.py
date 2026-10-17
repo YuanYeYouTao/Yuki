@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import text
 
-from qq_ai_bot.memory.enums import (
+from yuki.memory.enums import (
     MemoryAuthority,
     MemoryKind,
     MemoryRetrievalMode,
@@ -16,18 +16,18 @@ from qq_ai_bot.memory.enums import (
     MemoryTargetRole,
     SelfMemoryVisibility,
 )
-from qq_ai_bot.memory.errors import MemoryRetrievalError
-from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex, build_safe_lexical_query
-from qq_ai_bot.memory.models import (
+from yuki.memory.errors import MemoryRetrievalError
+from yuki.memory.fts import SQLiteMemoryFTSIndex, build_safe_lexical_query
+from yuki.memory.models import (
     MemoryEntityTarget,
     MemoryFact,
     MemoryFactCreate,
     MemoryQuery,
 )
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.retrieval import MemoryRetriever
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.database import Database
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.retrieval import MemoryRetriever
+from yuki.memory.service import MemoryFactService
+from yuki.persistence.database import Database
 
 
 def _target(
@@ -274,13 +274,13 @@ async def test_short_query_and_unsafe_symbols_stay_inside_subject(database: Data
 
 
 async def test_strict_time_filters_before_candidate_limits(database: Database) -> None:
-    from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
-    from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile, EmbeddingVector
-    from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
-    from qq_ai_bot.memory.embedding.semantic import MemorySemanticIndex
-    from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
-    from qq_ai_bot.memory.tool_intent import parse_memory_tool_intent
-    from qq_ai_bot.persistence.models import MemoryEmbeddingModel
+    from yuki.memory.embedding.codec import Float32VectorCodec
+    from yuki.memory.embedding.models import EmbeddingProviderProfile, EmbeddingVector
+    from yuki.memory.embedding.repository import MemoryEmbeddingRepository
+    from yuki.memory.embedding.semantic import MemorySemanticIndex
+    from yuki.memory.embedding.text import EmbeddingDocumentBuilder
+    from yuki.memory.tool_intent import parse_memory_tool_intent
+    from yuki.persistence.models import MemoryEmbeddingModel
 
     facts, retriever = _retriever(database)
     old = await _remember(facts, user_id="1001", memory_key="camera", content="camera old")

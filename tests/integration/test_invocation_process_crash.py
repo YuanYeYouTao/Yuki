@@ -13,12 +13,12 @@ from pathlib import Path
 import pytest
 from tests.integration.test_invocation_crash_windows import facts, prepared
 
-from qq_ai_bot.runtime.work_repository import WorkLease, WorkRepository
+from yuki.runtime.work_repository import WorkLease, WorkRepository
 
 CHILD = r"""
 import asyncio, json, os, sys
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.runtime.work_repository import WorkLease, WorkRepository
+from yuki.persistence.database import Database
+from yuki.runtime.work_repository import WorkLease, WorkRepository
 
 url, lease_json, identity, key, log, stop = sys.argv[1:]
 

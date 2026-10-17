@@ -11,8 +11,8 @@ from sqlalchemy import select, text
 from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversations
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
+from yuki.persistence.database import Database
+from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
 
 
 def test_upgrade_only_retires_old_claimed_continuations(tmp_path, monkeypatch):

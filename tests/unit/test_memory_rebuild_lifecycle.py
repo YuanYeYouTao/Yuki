@@ -7,9 +7,9 @@ from types import SimpleNamespace
 import pytest
 from tests.unit.test_memory_rebuild import _admin, _event, _service
 
-from qq_ai_bot.memory.enums import MemoryRebuildRunStatus
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
+from yuki.memory.enums import MemoryRebuildRunStatus
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.service import MemoryRebuildService
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 # 管理 API 与 CLI
 
-管理入口为原 Bot HTTP 服务的 `/admin/v1`。`qq-ai-bot-cli admin` 与在线
-`qq-ai-bot-cli plugin` 调用这个入口，不启动另一个 Bot 或直接写运行中的数据库。
+管理入口为原 Bot HTTP 服务的 `/admin/v1`。`yuki admin` 与在线
+`yuki plugin` 调用这个入口，不启动另一个 Bot 或直接写运行中的数据库。
 CLI 的 `ADMIN_API_URL` 默认 `http://127.0.0.1:8080`；它只决定客户端连接地址，
 HTTP 监听与部署端口继续沿原服务器配置。
 
@@ -93,12 +93,12 @@ Messages 搜索连接，Gemini 使用自身独立桥，Anthropic Messages 使用
 例如，先读取 `admin model show` 的 revision，再执行：
 
 ```sh
-qq-ai-bot-cli admin model apply ./models.toml --revision <revision>
-qq-ai-bot-cli admin model secret set MY_MODEL_KEY --from-env NEW_MODEL_SECRET --revision <revision>
-qq-ai-bot-cli admin person create --display-name "人物名称"
-qq-ai-bot-cli admin person merge <source-person-id> --to-person <target-person-id>
-qq-ai-bot-cli admin person rename <person-id> "新名称"
-qq-ai-bot-cli admin binding attach --person <person-id> --platform qq --account <account> --revision <revision>
+yuki admin model apply ./models.toml --revision <revision>
+yuki admin model secret set MY_MODEL_KEY --from-env NEW_MODEL_SECRET --revision <revision>
+yuki admin person create --display-name "人物名称"
+yuki admin person merge <source-person-id> --to-person <target-person-id>
+yuki admin person rename <person-id> "新名称"
+yuki admin binding attach --person <person-id> --platform qq --account <account> --revision <revision>
 ```
 
 `--request-id` 可显式保留原请求；不要在未知结果后换 ID 重做。密钥从命令进程环境读取，

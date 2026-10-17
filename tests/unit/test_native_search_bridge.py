@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from qq_ai_bot.domain.messages import (
+from yuki.domain.messages import (
     ChatResponse,
     CitationOrigin,
     ModelResponseStatus,
@@ -17,15 +17,15 @@ from qq_ai_bot.domain.messages import (
     NativeToolType,
     ResponseCitation,
 )
-from qq_ai_bot.llm.base import LLMTimeoutError
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
-from qq_ai_bot.web.base import WebSearchError
-from qq_ai_bot.web.bridge_state import BridgeState
-from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
-from qq_ai_bot.web.native_bridge import NativeSearchBridge
-from qq_ai_bot.web.page_extractor import DirectPageExtractor
+from yuki.llm.base import LLMTimeoutError
+from yuki.llm.fake import FakeLLMProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.model_runtime.models import ModelProfile, ModelProtocol
+from yuki.web.base import WebSearchError
+from yuki.web.bridge_state import BridgeState
+from yuki.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
+from yuki.web.native_bridge import NativeSearchBridge
+from yuki.web.page_extractor import DirectPageExtractor
 
 
 def _profile(**updates):

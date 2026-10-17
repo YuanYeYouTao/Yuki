@@ -7,7 +7,7 @@ import pytest
 from tests.conftest import MemorySender
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-from qq_ai_bot.llm.fake import FakeLLMProvider
+from yuki.llm.fake import FakeLLMProvider
 
 
 @pytest.mark.parametrize("active_work", [False, True])

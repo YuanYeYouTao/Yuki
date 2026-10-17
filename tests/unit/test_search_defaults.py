@@ -7,20 +7,20 @@ from copy import deepcopy
 import pytest
 import tomlkit
 
-from qq_ai_bot.config import Settings
-from qq_ai_bot.model_runtime.models import (
+from yuki.config import Settings
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProtocol,
     ModelSearchMode,
     ModelTask,
 )
-from qq_ai_bot.model_runtime.profiles import (
+from yuki.model_runtime.profiles import (
     ModelRuntimeConfigurationError,
     normalize_model_profile_document,
     parse_model_profile_catalog,
 )
-from qq_ai_bot.web.models import WebMode
-from qq_ai_bot.web.search_config import effective_search_profile
+from yuki.web.models import WebMode
+from yuki.web.search_config import effective_search_profile
 
 
 def _profile(provider="deepseek", protocol="responses", **updates):

@@ -5,8 +5,8 @@
 
 ## 配对与账号绑定
 
-第一台设备可由 operator 执行 `qq-ai-bot-cli admin person create`，再执行
-`qq-ai-bot-cli admin client pair --person <id>` 取得绑定码；已有 QQ 或 Telegram 用户也可在自己的私聊
+第一台设备可由 operator 执行 `yuki admin person create`，再执行
+`yuki admin client pair --person <id>` 取得绑定码；已有 QQ 或 Telegram 用户也可在自己的私聊
 发送 `/ai link`。码有效期十分钟，仅存 SHA-256，一次兑换。过期码沿原维护循环清理。
 
 | 请求 | 授权与结果 |
@@ -144,7 +144,7 @@ kind 为 file、image、video 或 record。服务器流式写设备／请求暂�
 ## Python 参考客户端与 CLI
 
 主包提供 client_sdk.PersonalClient，所有操作经 HTTP；不直接访问服务器数据库、模型或工具。
-yuki client（同一入口也保留 qq-ai-bot-cli client）支持 pair、me、home、send、input、cancel、upload、artifact、request、
+yuki client（同一入口也保留 yuki client）支持 pair、me、home、send、input、cancel、upload、artifact、request、
 retry、pending、watch、link-code、revoke。URL 取 YUKI_CLIENT_URL，设备凭据取
 YUKI_CLIENT_TOKEN；配对码取 YUKI_CLIENT_CODE，pair 的首次响应返回设备 token。
 凭据不放命令参数或 outbox。--state 选择本地 outbox 文件，文件权限为 0600。
@@ -152,12 +152,12 @@ YUKI_CLIENT_TOKEN；配对码取 YUKI_CLIENT_CODE，pair 的首次响应返回�
 Python 构造器对应 `entry_binding_id=`。每个入口使用自己的 outbox 文件。
 
 ```sh
-qq-ai-bot-cli client --state ./phone.sqlite send '继续这项任务' --draft
-qq-ai-bot-cli client --state ./phone.sqlite retry <原请求UUID>
-qq-ai-bot-cli client --state ./phone.sqlite request <原请求UUID>
-qq-ai-bot-cli client --state ./phone.sqlite input <WorkID> '补充要求'
-qq-ai-bot-cli client --state ./phone.sqlite watch
-qq-ai-bot-cli client --entry-binding <AppBindingID> --state ./other-entry.sqlite home
+yuki client --state ./phone.sqlite send '继续这项任务' --draft
+yuki client --state ./phone.sqlite retry <原请求UUID>
+yuki client --state ./phone.sqlite request <原请求UUID>
+yuki client --state ./phone.sqlite input <WorkID> '补充要求'
+yuki client --state ./phone.sqlite watch
+yuki client --entry-binding <AppBindingID> --state ./other-entry.sqlite home
 ```
 
 首次提交前持久保存 UUID、目标、规范化正文及附件引用；同号修改正文／操作会拒绝。
@@ -183,7 +183,64 @@ watch 每次连接先消费 sync，再用公开 GET／事件 keyset 重建本人
 重传前检查本地原件，下载核对收到字节的原版本摘要。
 
 本地验收使用假模型、假 QQ 与临时服务；生产迁移、真实 QQ／模型和部署另行执行。
-ACP 适配器、个人 UI、设备执行器与真机阶段按原任务书的后续边界保留。
+个人 UI、设备执行器与真机阶段按原任务书的后续边界保留。ACP 方向 A 的接入见下节；方向 B 仍由 #456 跟踪。
 
 App 主会话直接回复时，沿原 mailbox 匹配本会话、本人最近的 waiting_user Work；
 其他入口的等待不会因此被匹配，跨入口接续仍使用明确的 Work inputs 接口。
+
+## ACP 方向 A
+
+`yuki acp`是本地 stdio Agent，使用官方 Python SDK
+`agent-client-protocol==0.12.1`、稳定 wire `protocolVersion=1`。它持现有个人设备凭据连接服务器，
+不在客户端进程加载 Bot 数据库、模型或服务器工具。凭据沿 `YUKI_CLIENT_TOKEN`，地址沿
+`YUKI_CLIENT_URL` 或 `--url`；原请求 Outbox 放在 `--state-dir` 指定的私有目录。
+
+```sh
+yuki acp --url https://yuki.example --state-dir ~/.local/state/yuki/acp
+```
+
+| API | 真实语义 |
+| --- | --- |
+| `POST /acp/sessions {request_id}` | 现有设备凭据与原 App 请求空间创建独立 ACP Conversation，返回 session_id、conversation_id、binding_id、generation；同原请求号只读取原创建回执 |
+| `GET /acp/sessions/{id}` | 核当前本人、实际 ACP Binding 和该 Conversation，不接受本人 QQ/App 会话冒充 ACP session |
+| `X-Yuki-Conversation: <session_id>` | 让已有消息、请求、上传、事件与 SSE 使用指定本人 ACP 会话；与 X-Yuki-Entry 同时提供时须对应同一实际 Binding |
+| `POST /acp/sessions/{id}/requests/{request_id}/cancel` | 收拢该原 prompt 的现场执行及精确关联 Work，返回原请求投影和实际取消结果，不取消本人其他会话或所有 Work |
+
+这里的路径均位于 `/client/v1`。`sessionId` 就是服务器的内部 Conversation UUID；每个原 Person
+有自己的稳定 ACP Binding，每次 new 只建立一个新 Conversation。私聊唯一性沿 Binding、Presence
+和已有 `thread_id`，各 session 的 generation、历史、Work、检查点与模型协议独立。人物归并保留
+原入口，设备撤销使后续认证和读取失效，不把设备 token 当作 Person 或全部 Work 的生命周期。
+
+ACP 的命令请求在原回执表使用 `request_conversation_id` 保存 Conversation＋原 UUID 空间；
+原 App/旧设备回执保留 NULL scope、原 `request_person_id`、指纹和真实 device actor。
+ACP 消息号、Work input source key、上传 UUID 与查询同时携带该真实 scope，不能只改某一层。
+Python 参考客户端可用 `entry_conversation_id=` 选择 ACP 会话，每个会话使用独立原 Outbox 文件。
+
+GET 原消息请求仍返回入账与已确认的 Social 结果，另有 `turn.state`（running、ended、unknown）
+与真实 `turn.outcome`；精确关联的原 Work 另以 `work_id/state/revision/reason/active` 返回。Main 结束、
+Work 完成和消息已发出是不同事实。`work.active` 只反映原 Work 及其后代尚未退出的现场 activation，终态也要等该原执行收拢、读取已准入的尾部发送回执后再结束 ACP prompt。没有现场任务且缺持久结束事实时保持 unknown；入账 ACK、
+模型 final、无 activity 或静默时间都不当作完成，不补跑原模型。普通轮结束投影复用原命令回执，
+不建第二套任务、请求日志或完成计数器。
+
+适配器 live 只发送本 session 中已确认 Social 出站，原模型 final、思考、提示、工具参数不作为
+用户消息。`session/load` 分页回放完整当前可见账本中的用户与确认出站，完成回放后才返回；
+它不执行 Main、不重启 Work、不推进 generation。`session/prompt` 等原 turn，必要时继续读原 Work；
+等待用户、暂停、失败与 unknown 如实处理。cancel 等后台实际收拢并读完已有确认输出后，
+原 prompt 才返回 cancelled；关闭 stdio 或 HTTP 连接不自动发取消命令。
+
+取消按原事件关联的 Work 子树撤权；父 Work 已完成或失败时保留其终态，只取消仍可运行的后代。
+现场模型请求按原 activation owner 捕获，不能按当前同名 scope 取消后来接管的新 Work。
+已 claim 的 Social 发送继续沿原回执结算；外部精确取消保留 CancelledError，不冒充新消息替换。
+
+首次提交前适配器持久保存原 Yuki UUID；HTTP 确认丢失先查同号，重传仍用原正文和原 UUID。
+标准 ACP prompt 没有跨重启业务请求号，JSON-RPC id 只关联一次连接；相同文字的新 RPC 可能是
+新意图，不按内容去重。可选 `_meta["yuki.requestId"]` 传回原 UUID，标准客户端不强制使用该扩展。
+
+能力按实际实现声明：本轮支持 initialize、new、load、prompt、cancel，不声明 resume/close；
+cwd 是客户端目录资料，不改服务器工作区，也不授予客户端 terminal/设备执行能力。
+文本、嵌入文本与 ResourceLink 保原输入含义；图片、音频与嵌入二进制显式不支持，客户端文本文件读取只使用已协商的只读回调。
+已确认的文件出站在 live/load 中保留原 artifact ID 与版本，ResourceLink 指向个人 API 实际下载地址，仍需原设备凭据；链接本身不携 token。旧媒体只有 media ID、没有独立下载 API 时保留原可见引用并说明不能下载，不伪造 URL。
+Yuki 已退役 MCP，本轮只接受空 `mcpServers`，非空显式返回不支持。当前规范要求 stdio MCP，
+因此这是已知互操作限制，不宣称覆盖所有 ACP MUST；不为对接恢复动态工具或新的审批框架。
+
+实施范围与两轮审查直接记录在[原控制面任务书 §10](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。

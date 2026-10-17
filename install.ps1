@@ -6,8 +6,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$Repository = "YuanYeYouTao/Yuki-QQbot"
-$BotImage = "ghcr.io/yuanyeyoutao/yuki-qqbot"
+$Repository = "YuanYeYouTao/Yuki"
+# This source installer targets the matching future Yuki release artifacts.
+# Published releases retain their own installers and immutable image names.
+$BotImage = "ghcr.io/yuanyeyoutao/yuki"
 
 function Fail([string]$Message) {
     throw $Message
@@ -107,7 +109,7 @@ try {
 
     & docker run --rm -it `
         --platform $Platform `
-        --entrypoint qq-ai-bot-cli `
+        --entrypoint yuki `
         --volume "${InstallDir}:/deploy" `
         --workdir /deploy `
         $Image setup --deployment-root /deploy
@@ -144,7 +146,7 @@ try {
     Write-Host "After preparing the persistent-environment prerequisites, explicitly run on that Linux host:"
     Write-Host "sudo /opt/yuki-sandbox/deploy/sandbox/install-manager.sh --deployment-root /absolute/deployment/path"
     Write-Host "Use the Linux host deployment root; a Windows client path is not the Docker host path."
-    Write-Host "Then check: docker compose exec --user 10001:10001 bot qq-ai-bot-cli setup environment-check"
+    Write-Host "Then check: docker compose exec --user 10001:10001 bot yuki setup environment-check"
 } finally {
     $ResolvedTemporary = [System.IO.Path]::GetFullPath($Temporary)
     if ([System.IO.Path]::GetDirectoryName($ResolvedTemporary).TrimEnd([System.IO.Path]::DirectorySeparatorChar) -ne $TemporaryRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar)) {

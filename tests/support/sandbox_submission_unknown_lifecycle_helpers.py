@@ -9,14 +9,14 @@ from unittest.mock import AsyncMock
 from tests.conftest import build_harness, make_settings
 from tests.unit.test_tool_effect_audit import active_work
 
-from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.sandbox.client import SandboxClient
-from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+from yuki.capabilities.coordinator import ToolInvocationCoordinator
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_activation import current_work_control
+from yuki.sandbox.client import SandboxClient
+from yuki.sandbox.task_repository import SandboxTaskRepository
+from yuki.services.main_agent_backend import MainAgentBackend
 
 
 def socket_receipts(monkeypatch, responses):

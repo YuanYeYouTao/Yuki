@@ -20,12 +20,12 @@ from yuki_participation.models import Snapshot
 from yuki_participation.participation import ParticipationCheckpoint
 from yuki_participation.self_report import SelfDelta, SelfReport
 
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.models import MemoryFactCreate
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.self_origin import read_self_initiative_facts
-from qq_ai_bot.persistence.models import ChatEventModel, MemoryEvidenceModel, MemoryFactModel
-from qq_ai_bot.services.participation_feedback import admission_unit_binding
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.models import MemoryFactCreate
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.self_origin import read_self_initiative_facts
+from yuki.persistence.models import ChatEventModel, MemoryEvidenceModel, MemoryFactModel
+from yuki.services.participation_feedback import admission_unit_binding
 
 
 async def _relationship(database, tmp_path, *, engage="stay"):

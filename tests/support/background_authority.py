@@ -1,7 +1,7 @@
 """Real installation and canonical target approval for offline background turns."""
 
-from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
+from yuki.plugin_host.notification_repository import PluginNotificationRepository
+from yuki.plugin_host.repository import PluginInstallationRepository
 from yuki_plugin_sdk.models import NotificationTarget
 
 
@@ -21,9 +21,9 @@ async def approve_background_plugin(database, *, plugin_id, bot_user_id, group_i
     await installations.set_enabled(plugin_id, enabled=True)
     await installations.set_status(plugin_id, status="running")
     notifications = PluginNotificationRepository(database)
-    from qq_ai_bot.conversation.hydrate import conversation_for_scope
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.identity.canonical_repository import person_id_for, presence_id_for, space_id_for
+    from yuki.conversation.hydrate import conversation_for_scope
+    from yuki.domain.conversations import ConversationScope
+    from yuki.identity.canonical_repository import person_id_for, presence_id_for, space_id_for
 
     async with database.sessions() as session:
         person = await person_id_for(session, creator_user_id)

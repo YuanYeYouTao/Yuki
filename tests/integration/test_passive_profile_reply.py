@@ -8,12 +8,12 @@ from nonebot.adapters.onebot.v11.event import Sender
 from sqlalchemy import select
 from tests.integration.test_current_material_main_contract import _deployment
 
-from qq_ai_bot.adapters.onebot.normalizer import normalize_event
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel, MembershipModel, PersonAliasModel
-from qq_ai_bot.social.db_models import SocialOperationModel
+from yuki.adapters.onebot.normalizer import normalize_event
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel, MembershipModel, PersonAliasModel
+from yuki.social.db_models import SocialOperationModel
 
 
 def _mention(identifier, **sender_fields):

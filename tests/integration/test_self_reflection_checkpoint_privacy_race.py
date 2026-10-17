@@ -12,23 +12,23 @@ from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_mutation import _event, _service
 from tests.unit.test_memory_v2 import _append_event
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.partition import MemoryPartitionResolutionError
-from qq_ai_bot.memory.self_reflection.models import StoredToolReceipt
-from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-from qq_ai_bot.memory.self_reflection.service import (
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.partition import MemoryPartitionResolutionError
+from yuki.memory.self_reflection.models import StoredToolReceipt
+from yuki.memory.self_reflection.repository import SelfReflectionRepository
+from yuki.memory.self_reflection.service import (
     _CHECKPOINT,
     ReflectionCheckpoint,
     SelfReflectionService,
 )
-from qq_ai_bot.persistence.models import (
+from yuki.persistence.models import (
     ChatEventModel,
     MemorySelfReflectionRunModel,
     MemoryToolReceiptModel,
 )
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.repositories import EventLedgerRepository
 
 
 async def checkpoint_source(database, *, tool=False):

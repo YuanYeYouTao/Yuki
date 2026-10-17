@@ -1,0 +1,37 @@
+"""Aggregate every SQLAlchemy model into the deployment metadata.
+
+Domain-owned tables live beside their repositories.  Importing this module is
+the single supported way for Alembic and test schema creation to discover all
+of them without turning :mod:`yuki.persistence.models` into a monolith.
+"""
+
+# These imports are intentionally side-effectful: defining each mapped class
+# registers its table on ``Base.metadata``.
+from yuki.client_api import db_models as _client_db_models  # noqa: F401
+from yuki.conversation import autonomy_db_models as _autonomy_db_models  # noqa: F401
+from yuki.conversation import (  # noqa: F401
+    canonical_db_models as _canonical_conversation_db_models,
+)
+from yuki.conversation import observation_models as _observation_models  # noqa: F401
+from yuki.conversation import (
+    ordinary_admission_db_models as _ordinary_admission_db_models,  # noqa: F401
+)
+from yuki.conversation import projection_models as _projection_models  # noqa: F401
+from yuki.emoji import db_models as _emoji_db_models  # noqa: F401
+from yuki.execution_trace import db_models as _execution_trace_db_models  # noqa: F401
+from yuki.identity import db_models as _identity_db_models  # noqa: F401
+from yuki.memory.dream import db_models as _memory_dream_db_models  # noqa: F401
+from yuki.memory.self_reflection import db_models as _self_reflection_db_models  # noqa: F401
+from yuki.model_runtime import db_models as _model_runtime_db_models  # noqa: F401
+from yuki.persistence.models import Base
+from yuki.plugin_host import db_models as _plugin_db_models  # noqa: F401
+from yuki.runtime import protocol_schema as _protocol_schema  # noqa: F401
+from yuki.runtime import work_observation_schema as _work_observation_schema  # noqa: F401
+from yuki.runtime import work_query_schema as _work_query_schema  # noqa: F401
+from yuki.runtime import work_schema_v1 as _work_schema_v1  # noqa: F401
+from yuki.runtime import work_wait_schema as _work_wait_schema  # noqa: F401
+from yuki.sandbox import db_models as _sandbox_db_models  # noqa: F401
+from yuki.social import db_models as _social_db_models  # noqa: F401
+from yuki.tool_results import schema as _artifact_schema  # noqa: F401
+
+__all__ = ["Base"]

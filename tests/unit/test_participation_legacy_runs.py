@@ -19,18 +19,18 @@ from tests.unit.test_participation_feedback import social
 from yuki_participation.models import CandidateKind, Proposal, Snapshot, SourceRef, Support
 from yuki_participation.self_report import SelfDelta, SelfReport
 
-from qq_ai_bot.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
-from qq_ai_bot.conversation.initiative_sources import memory_revision
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.memory.self_origin import read_self_initiative_facts
-from qq_ai_bot.persistence.models import MemoryEvidenceModel, MemoryFactModel
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.services.participation_feedback import (
+from yuki.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
+from yuki.conversation.initiative_sources import memory_revision
+from yuki.domain.conversations import ScopeType
+from yuki.memory.self_origin import read_self_initiative_facts
+from yuki.persistence.models import MemoryEvidenceModel, MemoryFactModel
+from yuki.runtime.work_schema_v1 import work
+from yuki.services.participation_feedback import (
     admission_unit_binding,
     reconcile_page,
     sync_scope_effects,
 )
-from qq_ai_bot.social.db_models import SocialOperationModel
+from yuki.social.db_models import SocialOperationModel
 
 
 @pytest.mark.parametrize("accepted", [False, True])

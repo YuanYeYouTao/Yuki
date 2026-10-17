@@ -9,17 +9,17 @@ import pytest
 from nonebot.adapters.onebot.v11 import NoticeEvent
 from sqlalchemy import event, select
 
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry, RegistryClosed
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
+from yuki.identity.canonical_repository import (
     create_presence,
     create_space_binding,
     find_space_binding,
 )
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
-from qq_ai_bot.identity.space_metadata import observe_space_name
-from qq_ai_bot.persistence.metadata import Base
-from qq_ai_bot.plugins.ai_chat import metadata
+from yuki.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
+from yuki.identity.space_metadata import observe_space_name
+from yuki.persistence.metadata import Base
+from yuki.plugins.ai_chat import metadata
 
 
 async def existing_group(database, *, platform="qq", group_id="40001", account="80001"):

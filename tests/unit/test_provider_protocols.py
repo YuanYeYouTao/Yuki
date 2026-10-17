@@ -9,8 +9,8 @@ import pytest
 from tests.support.model_profiles import write_fake_profiles
 
 # P10: explicit backend/Invocation fixture; original behavioral assertions retained.
-from qq_ai_bot.config import Settings
-from qq_ai_bot.domain.messages import (
+from yuki.config import Settings
+from yuki.domain.messages import (
     ChatImage,
     ChatMessage,
     ChatRequest,
@@ -23,20 +23,20 @@ from qq_ai_bot.domain.messages import (
     ProviderContinuation,
     ReasoningEffort,
 )
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.base import (
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.base import (
     LLMInvalidRequestError,
     LLMInvalidResponseError,
 )
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import model_profile_environment, parse_model_profile_catalog
-from qq_ai_bot.runtime.work_journal import decode_transcript, encode_transcript
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.llm.openai_compatible import OpenAICompatibleProvider
+from yuki.llm.openai_responses import OpenAIResponsesProvider
+from yuki.model_runtime.models import ModelProfile, ModelProtocol
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import model_profile_environment, parse_model_profile_catalog
+from yuki.runtime.work_journal import decode_transcript, encode_transcript
+from yuki.services.turn_transcript import TurnTranscript
 
 
 @pytest.mark.parametrize("effort", ["low", "high", "none"])
@@ -741,7 +741,7 @@ async def test_claude_native_search_pause_requires_explicit_continuation():
     async with httpx.AsyncClient(
         base_url="https://wire.invalid/v1/", transport=httpx.MockTransport(transport)
     ) as client:
-        from qq_ai_bot.model_runtime.request_accounting import (
+        from yuki.model_runtime.request_accounting import (
             ProviderAttemptCounter,
             current_provider_attempts,
         )

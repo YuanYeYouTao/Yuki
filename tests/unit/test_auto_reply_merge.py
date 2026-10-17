@@ -11,28 +11,28 @@ from sqlalchemy import select, update
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.admin.models import ConversationRuntimeConfig
-from qq_ai_bot.asr.service import AudioInput
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.conversation.ordinary_admission_db_models import OrdinaryTurnAdmissionModel
-from qq_ai_bot.conversation.scope import runtime_conversation_key
-from qq_ai_bot.domain.audio import AudioTranscript, serialize_transcripts
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import (
+from yuki.admin.models import ConversationRuntimeConfig
+from yuki.asr.service import AudioInput
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.ordinary_admission_db_models import OrdinaryTurnAdmissionModel
+from yuki.conversation.scope import runtime_conversation_key
+from yuki.domain.audio import AudioTranscript, serialize_transcripts
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import (
     AttachmentKind,
     InboundMessage,
     MessageAttachment,
     SenderIdentity,
 )
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import MemoryJobModel
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import inputs
-from qq_ai_bot.runtime.work_wait import WorkWaitRepository
-from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
-from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
+from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import MemoryJobModel
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import inputs
+from yuki.runtime.work_wait import WorkWaitRepository
+from yuki.services.autonomous_groups import AutonomousGroupService
+from yuki.services.turn_coordinator import ConversationTurnCoordinator
 
 
 def _policy(*, debounce: float, autonomous: bool = False) -> ConversationRuntimeConfig:
@@ -316,8 +316,8 @@ async def test_signal_with_visible_anchor_keeps_wait_payload(database) -> None:
 
 
 async def test_open_floor_input_reaches_original_wait_without_waiting_window(database, tmp_path):
-    from qq_ai_bot.runtime.work_repository import WorkRepository
-    from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+    from yuki.runtime.work_repository import WorkRepository
+    from yuki.runtime.work_wait import WorkWaitRepository
 
     provider = FakeLLMProvider()
     env, harness, autonomous, message = await _open_group_scene(

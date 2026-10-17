@@ -12,14 +12,14 @@ from tests.support.social_identity_cases import social_env
 from tests.unit.test_plugin_native_media import environment
 from yuki_participation.models import CandidateKind, Proposal
 
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.social.service import SocialContext
+from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+from yuki.conversation.autonomy_repository import AutonomyRepository
+from yuki.domain.conversations import ScopeType
+from yuki.domain.tool_actor import ToolActor
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.runtime.origin import TurnOrigin
+from yuki.services.agent_tools import ToolRuntime
+from yuki.social.service import SocialContext
 from yuki_plugin_sdk.models import TurnOrigin as SdkTurnOrigin
 from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -166,7 +166,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
         assert automation.create_task.await_args.kwargs["actor"] is actor
         receipt = await env.service.receipts.get(music.data["operation_id"])
         assert receipt.event_id is not None and receipt.status.value == "succeeded"
-        from qq_ai_bot.social.db_models import SocialOperationModel
+        from yuki.social.db_models import SocialOperationModel
 
         async with database.sessions() as session:
             saved = await session.get(SocialOperationModel, receipt.operation_id)
@@ -221,8 +221,8 @@ async def test_self_sdk_main_reads_original_result_and_keeps_real_sources_distin
 ):
     from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.runtime.work_repository import WorkRepository
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.runtime.work_repository import WorkRepository
 
     provider = FakeLLMProvider()
     env, harness, chat, _, _ = await _scene(database, tmp_path, provider)
@@ -243,7 +243,7 @@ async def test_self_sdk_main_reads_original_result_and_keeps_real_sources_distin
     )
     actor = await self_actor(database, env)
     source = replace(runtime(actor, env), runtime_config=await chat._runtime_config.snapshot())
-    from qq_ai_bot.plugin_host import main_turn
+    from yuki.plugin_host import main_turn
 
     original_backend = main_turn.MainAgentBackend
     actors = []
@@ -287,10 +287,10 @@ async def test_self_sdk_main_isolates_existing_work_and_reports_actual_scope_lea
 ):
     from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.runtime.work_activation import activate_work, current_work_control
-    from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+    from yuki.domain.conversations import ConversationScope
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.runtime.work_activation import activate_work, current_work_control
+    from yuki.runtime.work_repository import WorkConflict, WorkRepository
 
     provider = FakeLLMProvider(
         responder=lambda _: _tool("task_control", {"action": "complete", "result": "done"}, "done")
@@ -353,10 +353,10 @@ async def test_self_sdk_main_isolates_existing_work_and_reports_actual_scope_lea
 async def test_self_sdk_main_resume_keeps_original_actor_source_and_work(database, tmp_path):
     from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.plugin_host.main_turn import resume_plugin_work
-    from qq_ai_bot.runtime.work_repository import WorkRepository
-    from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.plugin_host.main_turn import resume_plugin_work
+    from yuki.runtime.work_repository import WorkRepository
+    from yuki.runtime.work_wait import WorkWaitRepository
 
     provider = FakeLLMProvider(
         responder=lambda _: _tool(

@@ -6,24 +6,24 @@ from tests.support.user_profiles_helpers import observe_members
 from tests.unit.test_memory_partition import _owners
 from tests.unit.test_memory_retrieval import _query
 
-from qq_ai_bot.identity.db_models import IdentityBindingModel
-from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
-from qq_ai_bot.memory.embedding.fake import FakeEmbeddingProvider
-from qq_ai_bot.memory.embedding.metrics import MemoryEmbeddingMetrics
-from qq_ai_bot.memory.embedding.models import EmbeddingUsage
-from qq_ai_bot.memory.embedding.provider import EmbeddingProviderError
-from qq_ai_bot.memory.embedding.query_cache import QueryEmbeddingCache
-from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
-from qq_ai_bot.memory.embedding.semantic import MemorySemanticIndex
-from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder, EmbeddingQueryBuilder
-from qq_ai_bot.memory.enums import MemoryScopeType
-from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.models import MemoryFactCreate
-from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.retrieval import MemoryRetriever
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.models import MembershipModel
+from yuki.identity.db_models import IdentityBindingModel
+from yuki.memory.authorized_scope import AuthorizedMemoryScope
+from yuki.memory.embedding.fake import FakeEmbeddingProvider
+from yuki.memory.embedding.metrics import MemoryEmbeddingMetrics
+from yuki.memory.embedding.models import EmbeddingUsage
+from yuki.memory.embedding.provider import EmbeddingProviderError
+from yuki.memory.embedding.query_cache import QueryEmbeddingCache
+from yuki.memory.embedding.repository import MemoryEmbeddingRepository
+from yuki.memory.embedding.semantic import MemorySemanticIndex
+from yuki.memory.embedding.text import EmbeddingDocumentBuilder, EmbeddingQueryBuilder
+from yuki.memory.enums import MemoryScopeType
+from yuki.memory.fts import SQLiteMemoryFTSIndex
+from yuki.memory.models import MemoryFactCreate
+from yuki.memory.read_scope import MemoryReadScopeResolver
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.retrieval import MemoryRetriever
+from yuki.memory.service import MemoryFactService
+from yuki.persistence.models import MembershipModel
 
 
 async def remember(facts, person_id, text):

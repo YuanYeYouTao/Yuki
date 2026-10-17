@@ -70,9 +70,7 @@ HIGH_RISK_PERMISSIONS: frozenset[PluginPermission] = frozenset(
     }
 )
 
-RESERVED_PLUGIN_NAMESPACES: frozenset[str] = frozenset(
-    {"qq_ai_bot", "qq-ai-bot", "yuki", "core", "system"}
-)
+RESERVED_PLUGIN_NAMESPACES: frozenset[str] = frozenset({"yuki", "core", "system"})
 
 
 def parse_permissions(values: list[str] | tuple[str, ...]) -> tuple[PluginPermission, ...]:

@@ -13,18 +13,18 @@ from sqlalchemy import delete, select
 from tests.integration.test_telegram_runtime import drain, update
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 
-from qq_ai_bot.conversation import media_service
-from qq_ai_bot.conversation.media_service import ConversationMediaError, ConversationMediaService
-from qq_ai_bot.domain.messages import AttachmentKind, ChatMessage
-from qq_ai_bot.gateway.media import PlatformMediaFile
-from qq_ai_bot.gateway.provider import GatewayProviderCatalog
-from qq_ai_bot.gateway.providers.telegram import TelegramProvider
-from qq_ai_bot.gateway.providers.telegram_ingress import normalize_message
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
-from qq_ai_bot.persistence.repository_helpers import _event_record
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
-from qq_ai_bot.services.media_resolver import MediaResolver
+from yuki.conversation import media_service
+from yuki.conversation.media_service import ConversationMediaError, ConversationMediaService
+from yuki.domain.messages import AttachmentKind, ChatMessage
+from yuki.gateway.media import PlatformMediaFile
+from yuki.gateway.provider import GatewayProviderCatalog
+from yuki.gateway.providers.telegram import TelegramProvider
+from yuki.gateway.providers.telegram_ingress import normalize_message
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
+from yuki.persistence.repository_helpers import _event_record
+from yuki.services.image_preprocessor import ImagePreprocessor
+from yuki.services.media_resolver import MediaResolver
 
 
 def _edit(identifier, text="", *, message_id=1, edited_at=1792070010, chat=42):

@@ -8,7 +8,7 @@ import tempfile
 from pathlib import Path
 
 KEY = "YUKI_MANAGER_WORKSPACE_STORE"
-DEFAULT_STORE = Path("/opt/yuki-qqbot/workspace")
+DEFAULT_STORE = Path("/opt/yuki/workspace")
 
 
 def _store_value(value: str) -> str:

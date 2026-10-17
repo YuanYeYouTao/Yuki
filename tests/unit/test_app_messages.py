@@ -13,31 +13,31 @@ from tests.conftest import build_harness, make_settings
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_client_api import bearer, pair, person_and_code
 
-from qq_ai_bot.admin_api.http import attach_admin_api
-from qq_ai_bot.client_api.files import ClientFiles
-from qq_ai_bot.client_api.http import ClientApi, attach_client_api
-from qq_ai_bot.client_api.messages import ClientMessages
-from qq_ai_bot.client_api.views import ClientViews
-from qq_ai_bot.client_api.works import ClientWorks
-from qq_ai_bot.conversation.media_service import ConversationMediaService
-from qq_ai_bot.conversation.uploads import ConversationUploads
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.providers.app.ingress import AppGateway
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.identity.canonical_repository import find_presence
-from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
-from qq_ai_bot.identity.ingress import CanonicalIngressResolver
-from qq_ai_bot.identity.routing import PresenceRouter
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.attachment_inputs import AttachmentInputService
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.services.media_resolver import MediaResolver
-from qq_ai_bot.social.service import SocialService
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.admin_api.http import attach_admin_api
+from yuki.client_api.files import ClientFiles
+from yuki.client_api.http import ClientApi, attach_client_api
+from yuki.client_api.messages import ClientMessages
+from yuki.client_api.views import ClientViews
+from yuki.client_api.works import ClientWorks
+from yuki.conversation.media_service import ConversationMediaService
+from yuki.conversation.uploads import ConversationUploads
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.providers.app.ingress import AppGateway
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.identity.canonical_repository import find_presence
+from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
+from yuki.identity.ingress import CanonicalIngressResolver
+from yuki.identity.routing import PresenceRouter
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.services.attachment_inputs import AttachmentInputService
+from yuki.services.image_preprocessor import ImagePreprocessor
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.services.media_resolver import MediaResolver
+from yuki.social.service import SocialService
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 
 admin = admin_fixture
 
@@ -239,7 +239,7 @@ async def test_competing_requests_in_different_minutes_recheck_original_body(
 ):
     from datetime import UTC, datetime, timedelta
 
-    import qq_ai_bot.domain.messages as message_models
+    import yuki.domain.messages as message_models
 
     env = app_env
     _, code = await person_and_code(env.client)
@@ -284,7 +284,7 @@ async def test_http_connection_lifetime_does_not_own_main_execution(app_env, mon
     _, code = await person_and_code(env.client)
     device = await pair(env.client, code)
     entered, release = asyncio.Event(), asyncio.Event()
-    from qq_ai_bot.llm.fake import FakeLLMProvider
+    from yuki.llm.fake import FakeLLMProvider
 
     complete = FakeLLMProvider.complete
 
@@ -316,9 +316,9 @@ async def test_local_commit_ack_loss_reads_original_social_receipt(app_env, data
     from sqlalchemy.exc import OperationalError
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from qq_ai_bot.adapters.onebot.social import OneBotSocialOperations
-    from qq_ai_bot.social.db_models import SocialOperationModel
-    from qq_ai_bot.social.models import OperationStatus
+    from yuki.adapters.onebot.social import OneBotSocialOperations
+    from yuki.social.db_models import SocialOperationModel
+    from yuki.social.models import OperationStatus
 
     env = app_env
     _, code = await person_and_code(env.client)
@@ -365,9 +365,9 @@ async def test_local_commit_ack_loss_reads_original_social_receipt(app_env, data
 
 
 async def test_app_source_recovers_original_platform_and_memory_owner(app_env, database):
-    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-    from qq_ai_bot.persistence.models import MemoryJobModel
-    from qq_ai_bot.services.execution_sources import recover_source
+    from yuki.persistence.event_repository import EventLedgerRepository
+    from yuki.persistence.models import MemoryJobModel
+    from yuki.services.execution_sources import recover_source
 
     env = app_env
     person, code = await person_and_code(env.client)
@@ -406,8 +406,8 @@ async def test_qq_delivery_in_flight_during_transfer_keeps_original_recipient_hi
     from tests.support.social_identity_cases import social_env
     from tests.unit.test_client_identity import code_for
 
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.identity.canonical_repository import find_identity_binding
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.identity.canonical_repository import find_identity_binding
 
     env = await social_env(database, tmp_path)
     assert await env.router.cas_takeover_person(env.person) == "taken"
@@ -477,9 +477,9 @@ async def test_messages_and_device_commands_share_person_request_namespace(app_e
 async def test_app_execution_preserves_entry_and_uses_only_its_persons_real_grant(
     app_env, database, monkeypatch
 ):
-    from qq_ai_bot.automation.authority import PermissionLevel
-    from qq_ai_bot.automation.control_context import resolve_execution_identity
-    from qq_ai_bot.identity.canonical_repository import find_identity_binding
+    from yuki.automation.authority import PermissionLevel
+    from yuki.automation.control_context import resolve_execution_identity
+    from yuki.identity.canonical_repository import find_identity_binding
 
     env = app_env
     person, code = await person_and_code(env.client)
@@ -521,7 +521,7 @@ async def test_app_execution_preserves_entry_and_uses_only_its_persons_real_gran
 
 
 async def test_app_memory_read_scope_uses_canonical_owner_without_qq_alias(app_env, database):
-    from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
+    from yuki.memory.read_scope import MemoryReadScopeResolver
 
     env = app_env
     person, code = await person_and_code(env.client)
@@ -538,7 +538,7 @@ async def test_local_gateway_does_not_claim_qq_connectivity(app_env):
 
 
 async def test_app_text_does_not_execute_platform_control_commands(app_env, database):
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
     env = app_env
     _, code = await person_and_code(env.client)

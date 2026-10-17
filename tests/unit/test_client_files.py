@@ -15,10 +15,10 @@ from tests.unit.test_app_messages import drain
 from tests.unit.test_client_api import bearer, pair, person_and_code
 from tests.unit.test_client_works import owner, seeded
 
-from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
-from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
-from qq_ai_bot.services.media_resolver import MediaResolutionError, read_local_media
-from qq_ai_bot.social.service import SocialContext
+from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
+from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
+from yuki.services.media_resolver import MediaResolutionError, read_local_media
+from yuki.social.service import SocialContext
 
 admin = admin_fixture
 app_env = app_fixture
@@ -249,13 +249,11 @@ async def test_local_audio_uses_original_asr_and_does_not_store_bytes(
 
     from tests.conftest import make_settings
 
-    from qq_ai_bot.asr.service import ASRService
+    from yuki.asr.service import ASRService
 
     env = app_env
     device, _ = await owner(env, database)
-    monkeypatch.setattr(
-        "qq_ai_bot.asr.service.prepare_audio", AsyncMock(return_value=b"normalized")
-    )
+    monkeypatch.setattr("yuki.asr.service.prepare_audio", AsyncMock(return_value=b"normalized"))
     provider = SimpleNamespace(transcribe=AsyncMock(return_value="recognized original voice"))
     service = ASRService(
         settings=make_settings(database.url, asr_enabled=True).asr,
@@ -267,7 +265,7 @@ async def test_local_audio_uses_original_asr_and_does_not_store_bytes(
         await upload(env, device, b"local audio bytes", name="voice.mp3", kind="record")
     ).json()["data"]
     segments, attachments = await env.files.attachments(principal, (uploaded["media_id"],))
-    from qq_ai_bot.identity.db_models import IdentityBindingModel
+    from yuki.identity.db_models import IdentityBindingModel
 
     async with database.sessions() as session:
         binding = await session.get(IdentityBindingModel, principal.binding_id)
@@ -283,9 +281,9 @@ async def test_group_result_file_is_readable_only_through_owned_work(app_env, da
 
     from sqlalchemy import insert
 
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.runtime.work_schema_v1 import effects
-    from qq_ai_bot.social.db_models import SocialOperationModel
+    from yuki.domain.conversations import ConversationScope
+    from yuki.runtime.work_schema_v1 import effects
+    from yuki.social.db_models import SocialOperationModel
 
     env = app_env
     device, _ = await owner(env, database)

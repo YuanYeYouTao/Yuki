@@ -1,0 +1,51 @@
+"""Claim completed work once; uncertainty never grants permission to repeat effects."""
+
+from datetime import UTC, datetime
+
+from sqlalchemy import select, update
+
+from yuki.persistence.database import Database
+from yuki.sandbox.db_models import SandboxTaskContinuationModel
+
+
+class SandboxContinuationRepository:
+    def __init__(self, database: Database) -> None:
+        self.database = database
+
+    async def get(self, request_id: str) -> SandboxTaskContinuationModel | None:
+        async with self.database.sessions() as session:
+            return await session.get(SandboxTaskContinuationModel, request_id)
+
+    async def ready(self, *, limit: int = 20) -> tuple[str, ...]:
+        if not 1 <= limit <= 20:
+            raise ValueError("invalid_continuation_limit")
+        async with self.database.sessions() as session:
+            return tuple(
+                await session.scalars(
+                    select(SandboxTaskContinuationModel.request_id)
+                    .where(SandboxTaskContinuationModel.state == "ready")
+                    .order_by(
+                        SandboxTaskContinuationModel.updated_at,
+                        SandboxTaskContinuationModel.request_id,
+                    )
+                    .limit(limit)
+                )
+            )
+
+    async def observed(self, request_id: str) -> bool:
+        """The original Agent consumed the terminal result; no extra turn is needed."""
+        from yuki.runtime.work_repository import WorkRepository
+
+        return await WorkRepository(self.database).confirm_child_completion(request_id)
+
+    async def rotate(self, request_id: str) -> None:
+        """Busy or invalid sources cannot starve later completions in a bounded scan."""
+        async with self.database.sessions() as session, session.begin():
+            await session.execute(
+                update(SandboxTaskContinuationModel)
+                .where(
+                    SandboxTaskContinuationModel.request_id == request_id,
+                    SandboxTaskContinuationModel.state == "ready",
+                )
+                .values(updated_at=datetime.now(UTC))
+            )

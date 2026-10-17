@@ -4,23 +4,23 @@ import json
 
 from sqlalchemy import select
 
-from qq_ai_bot.persistence.models import ChatEventModel
+from yuki.persistence.models import ChatEventModel
 
 
 async def history_agent_loop(env, *, same_batch=False):
     from tests.conftest import MemorySender, build_harness, make_settings
 
-    from qq_ai_bot.domain.conversations import ScopeType
-    from qq_ai_bot.domain.messages import (
+    from yuki.domain.conversations import ScopeType
+    from yuki.domain.messages import (
         ChatResponse,
         InboundMessage,
         SenderIdentity,
         ToolCall,
         ToolFunction,
     )
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
-    from qq_ai_bot.workspace.short_state import ShortState
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.services.main_agent_contract import MainAgentContract
+    from yuki.workspace.short_state import ShortState
 
     calls = 0
     arguments = "{}"

@@ -5,8 +5,8 @@ from uuid import uuid4
 
 from sqlalchemy import text
 
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
-from qq_ai_bot.persistence.database import Database
+from yuki.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
+from yuki.persistence.database import Database
 
 
 async def enable_history_column_for_legacy_seed(database: Database) -> None:
@@ -30,9 +30,7 @@ async def enable_history_column_for_legacy_seed(database: Database) -> None:
                     text("ALTER TABLE identity_bindings DROP COLUMN history_starts_at")
                 )
                 await writer.execute(text("ALTER TABLE persons DROP COLUMN display_name"))
-                await writer.execute(
-                    text("ALTER TABLE persons DROP COLUMN merged_into_person_id")
-                )
+                await writer.execute(text("ALTER TABLE persons DROP COLUMN merged_into_person_id"))
         finally:
             await original_close()
 

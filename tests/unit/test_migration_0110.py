@@ -16,16 +16,16 @@ from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversa
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.automation.models import AutomationStatus, RunStatus
-from qq_ai_bot.automation.repository import AutomationRepository
-from qq_ai_bot.automation.service import AutomationService
-from qq_ai_bot.automation.task_spec import TaskSpec, canonical_task_hash
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.models import (
+from yuki.automation.models import AutomationStatus, RunStatus
+from yuki.automation.repository import AutomationRepository
+from yuki.automation.service import AutomationService
+from yuki.automation.task_spec import TaskSpec, canonical_task_hash
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.executor import TaskModelExecutor
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
@@ -33,23 +33,23 @@ from qq_ai_bot.model_runtime.models import (
     ModelSearchMode,
     ModelTask,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-from qq_ai_bot.model_runtime.routes import ModelRouter
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import AutomationModel, AutomationVersionModel
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.runtime.protocol_store import ProtocolStore
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_recovery_schema import invocations
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_scheduler import WorkScheduler
-from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
-from qq_ai_bot.services.execution_sources import recover_automation_source
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.time.service import TimeContextService
-from qq_ai_bot.web.models import WebMode
-from qq_ai_bot.workspace.short_state import ShortState
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import ModelProfileCatalog
+from yuki.model_runtime.routes import ModelRouter
+from yuki.persistence.database import Database
+from yuki.persistence.models import AutomationModel, AutomationVersionModel
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.runtime.protocol_store import ProtocolStore
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_recovery_schema import invocations
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_scheduler import WorkScheduler
+from yuki.runtime.work_schema_v1 import effects, journal, work
+from yuki.services.execution_sources import recover_automation_source
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.time.service import TimeContextService
+from yuki.web.models import WebMode
+from yuki.workspace.short_state import ShortState
 
 
 def bind_native_model(chat, provider):
@@ -709,7 +709,7 @@ def test_legacy_publication_keeps_hash_receipts_and_resumes_original_main_work(
                 generate_origin=chat.generate_origin_turn,
             )
             if not paused_read:
-                from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+                from yuki.runtime.work_wait import WorkWaitRepository
 
                 waits = WorkWaitRepository(works)
                 waiting = await waits.describe(work_id)

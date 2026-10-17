@@ -8,9 +8,9 @@ from tests.support.codemode_cases import build_host, requires_worker, run_code
 from tests.unit.test_memory_mutation import _context, _service
 from tests.unit.test_tool_effect_audit import active_work
 
-from qq_ai_bot.memory.mutation.models import MemoryMutationRequest
-from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.runtime.work_schema_v1 import effects
+from yuki.memory.mutation.models import MemoryMutationRequest
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_schema_v1 import effects
 
 pytestmark = requires_worker
 

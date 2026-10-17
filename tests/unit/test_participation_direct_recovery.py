@@ -3,8 +3,8 @@
 from sqlalchemy import select, update
 from tests.support.semantic_participation_host_helpers import _event_and_route, _host, _item
 
-from qq_ai_bot.runtime.work_schema_v1 import inputs, work
-from qq_ai_bot.services.participation_snapshot import AsyncSnapshotStore
+from yuki.runtime.work_schema_v1 import inputs, work
+from yuki.services.participation_snapshot import AsyncSnapshotStore
 
 
 async def test_restart_recovers_only_committed_direct_work(database, tmp_path):
@@ -71,8 +71,8 @@ async def test_dispatch_binding_changed_after_validation_records_terminal_feedba
 ):
     from tests.unit.test_self_initiative_runtime import self_source
 
-    from qq_ai_bot.identity.db_models import SpaceBindingModel
-    from qq_ai_bot.services import semantic_participation
+    from yuki.identity.db_models import SpaceBindingModel
+    from yuki.services import semantic_participation
 
     source, admissions, _ = await self_source(database)
     host, _ = await _host(database, tmp_path, observer=False)

@@ -13,23 +13,23 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from tests.conftest import make_settings
 
-from qq_ai_bot.admin.audit import AdminAuditService
-from qq_ai_bot.admin.models import AdminActor
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.identity.canonical_repository import active_space_id_for, ensure_person, ensure_space
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-from qq_ai_bot.memory.audit import MemoryAuditService
-from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
-from qq_ai_bot.memory.embedding.fake import FakeEmbeddingProvider
-from qq_ai_bot.memory.embedding.jobs import MemoryEmbeddingJobRepository
-from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile
-from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
-from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
-from qq_ai_bot.memory.embedding.worker import MemoryEmbeddingWorker
-from qq_ai_bot.memory.enums import (
+from yuki.admin.audit import AdminAuditService
+from yuki.admin.models import AdminActor
+from yuki.automation.models import TurnOrigin
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.domain.tool_actor import ToolActor
+from yuki.identity.canonical_repository import active_space_id_for, ensure_person, ensure_space
+from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.memory.audit import MemoryAuditService
+from yuki.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
+from yuki.memory.embedding.fake import FakeEmbeddingProvider
+from yuki.memory.embedding.jobs import MemoryEmbeddingJobRepository
+from yuki.memory.embedding.models import EmbeddingProviderProfile
+from yuki.memory.embedding.repository import MemoryEmbeddingRepository
+from yuki.memory.embedding.text import EmbeddingDocumentBuilder
+from yuki.memory.embedding.worker import MemoryEmbeddingWorker
+from yuki.memory.enums import (
     MemoryAuthority,
     MemoryClaimOperation,
     MemoryConflictState,
@@ -41,14 +41,14 @@ from qq_ai_bot.memory.enums import (
     MemoryStatus,
     SelfMemoryVisibility,
 )
-from qq_ai_bot.memory.extraction import MemoryClaim
-from qq_ai_bot.memory.models import (
+from yuki.memory.extraction import MemoryClaim
+from yuki.memory.models import (
     MemoryEvidenceCreate,
     MemoryFactCreate,
     MemoryFactQuery,
     MemoryResolutionPlan,
 )
-from qq_ai_bot.memory.mutation.models import (
+from yuki.memory.mutation.models import (
     MemoryDecisionActorType,
     MemoryMutationAppliedOperation,
     MemoryMutationContext,
@@ -59,28 +59,28 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationTarget,
     SelfMemoryVisibilityMode,
 )
-from qq_ai_bot.memory.mutation.service import MemoryMutationService
-from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
-from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
-from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
-from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.subjects import ResolvedSubject
-from qq_ai_bot.memory.validation import ValidatedMemoryClaim
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.memory.mutation.service import MemoryMutationService
+from yuki.memory.quality.audit import MemoryProductionQualityAudit
+from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
+from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
+from yuki.memory.self_reflection.repository import SelfReflectionRepository
+from yuki.memory.service import MemoryFactService
+from yuki.memory.subjects import ResolvedSubject
+from yuki.memory.validation import ValidatedMemoryClaim
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     MemoryEmbeddingJobModel,
     MemoryFactModel,
     MemoryMutationReceiptModel,
     MemoryToolReceiptModel,
 )
-from qq_ai_bot.persistence.repositories import (
+from yuki.persistence.repositories import (
     EventLedgerRepository,
     PeopleRepository,
 )
-from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
-from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
+from yuki.persistence.repository_records import EventRecord
+from yuki.services.admin.memory_admin import MemoryAdminService
+from yuki.services.agent_tools import AgentToolService, ToolRuntime
 
 
 def _service(
@@ -1555,7 +1555,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert inaccessible_fact.id not in historical_ids
     assert "memory_grounding_policy" not in historical_search
     # A historical canonical owner remains searchable after its transport Binding ends.
-    from qq_ai_bot.identity.db_models import IdentityBindingModel
+    from yuki.identity.db_models import IdentityBindingModel
 
     async with database.sessions() as session, session.begin():
         await session.execute(

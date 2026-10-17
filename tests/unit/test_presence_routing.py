@@ -10,27 +10,27 @@ import pytest
 from sqlalchemy import select
 from tests.support.gateway import builtin_registry
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     PersonActiveRouteModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.identity.canonical_repository import (
     ensure_presence as ensure_v2_presence,
 )
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.identity.canonical_repository import (
     ensure_space as ensure_v2_space,
 )
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.identity.canonical_repository import (
     find_identity_binding,
 )
-from qq_ai_bot.identity.routing import PresenceRouter, RouteMonitor, RouteSendError
-from qq_ai_bot.identity.write_settings import (
+from yuki.identity.routing import PresenceRouter, RouteMonitor, RouteSendError
+from yuki.identity.write_settings import (
     IdentityWriteSettings,
     configure_identity_write_settings,
 )
-from qq_ai_bot.persistence.database import Database
+from yuki.persistence.database import Database
 
 _NOW = datetime(2026, 8, 24, tzinfo=UTC)
 
@@ -49,7 +49,7 @@ async def _true(*_args: object, **_kwargs: object) -> bool:
 
 @pytest.mark.asyncio
 async def test_takeover_zero_one_many_and_route_pause(database: Database) -> None:
-    from qq_ai_bot.identity.ingress import _ensure_person_id
+    from yuki.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     registry = builtin_registry(gateway_instance_id="gw-route")
@@ -101,9 +101,9 @@ async def test_takeover_zero_one_many_and_route_pause(database: Database) -> Non
 async def test_transient_disconnect_preserves_routes_until_same_presence_reconnects(
     database: Database,
 ) -> None:
-    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-    from qq_ai_bot.identity.db_models import SpaceBindingModel
-    from qq_ai_bot.identity.ingress import _ensure_person_id
+    from yuki.conversation.hydrate import ensure_canonical_conversation
+    from yuki.identity.db_models import SpaceBindingModel
+    from yuki.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     registry = builtin_registry(gateway_instance_id="gw-gen")
@@ -296,7 +296,7 @@ async def test_space_takeover_zero_one_many_and_membership_probe(database: Datab
 
 @pytest.mark.asyncio
 async def test_authoritative_ingest_survives_second_presence(database: Database) -> None:
-    from qq_ai_bot.identity.db_models import SpaceBindingModel
+    from yuki.identity.db_models import SpaceBindingModel
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     registry = builtin_registry(gateway_instance_id="gw-ingest")
@@ -349,7 +349,7 @@ async def test_authoritative_ingest_survives_second_presence(database: Database)
 async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.ingress import _ensure_person_id
+    from yuki.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     registry = builtin_registry(gateway_instance_id="gw-pause")
@@ -412,8 +412,8 @@ async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
 async def test_ingest_eligible_does_not_block_person_or_space_send(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.db_models import PresenceModel
-    from qq_ai_bot.identity.ingress import _ensure_person_id
+    from yuki.identity.db_models import PresenceModel
+    from yuki.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     registry = builtin_registry(gateway_instance_id="gw-elig")
@@ -451,8 +451,8 @@ def _hold_pair() -> tuple[asyncio.Event, asyncio.Event, object]:
 async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.db_models import IdentityBindingModel
-    from qq_ai_bot.identity.ingress import _ensure_person_id
+    from yuki.identity.db_models import IdentityBindingModel
+    from yuki.identity.ingress import _ensure_person_id
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     registry = builtin_registry(gateway_instance_id="gw-cas-person")
@@ -563,7 +563,7 @@ async def test_space_takeover_cas_does_not_overwrite_concurrent_write(
 async def test_ingest_provision_cas_does_not_overwrite_concurrent_write(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.db_models import SpaceBindingModel
+    from yuki.identity.db_models import SpaceBindingModel
 
     configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
     registry = builtin_registry(gateway_instance_id="gw-cas-ingest")

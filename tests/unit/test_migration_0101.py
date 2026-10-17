@@ -9,7 +9,7 @@ from alembic.operations import Operations
 from sqlalchemy import text
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.runtime.work_repository import WorkRepository
+from yuki.runtime.work_repository import WorkRepository
 
 MIGRATION = "migrations.versions.0101_canonical_effect_outcome"
 

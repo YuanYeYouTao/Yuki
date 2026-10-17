@@ -6,15 +6,15 @@ import json
 import httpx
 import pytest
 
-from qq_ai_bot.domain.messages import ChatResponse, CitationOrigin, ResponseCitation
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
-from qq_ai_bot.web.bridge_state import BridgeState
-from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
-from qq_ai_bot.web.native_bridge import NativeSearchBridge
-from qq_ai_bot.web.page_extractor import DirectPageExtractor
-from qq_ai_bot.web.tavily import TavilyWebSearchProvider
+from yuki.domain.messages import ChatResponse, CitationOrigin, ResponseCitation
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.models import ModelProfile, ModelProtocol
+from yuki.web.bridge_state import BridgeState
+from yuki.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
+from yuki.web.native_bridge import NativeSearchBridge
+from yuki.web.page_extractor import DirectPageExtractor
+from yuki.web.tavily import TavilyWebSearchProvider
 
 
 async def test_tavily_passes_requested_counts_and_preserves_all_returned_evidence():
@@ -191,10 +191,10 @@ async def test_main_history_search_archives_original_requested_page(
 ):
     from tests.support.automation_unified_delivery_helpers import setup_run
 
-    from qq_ai_bot.automation.models import RunStatus
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.domain.messages import ToolCall, ToolFunction
-    from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+    from yuki.automation.models import RunStatus
+    from yuki.domain.conversations import ConversationScope
+    from yuki.domain.messages import ToolCall, ToolFunction
+    from yuki.tool_results.artifacts import ToolArtifactRepository
 
     case = await setup_run(database, tmp_path, delivery="none", mode="silent")
     case.settings.runtime_work_enabled = work_enabled

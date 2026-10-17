@@ -7,19 +7,19 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import select
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.plugin_host.db_models import (
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.persistence.database import Database
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.plugin_host.db_models import (
     PluginBackgroundTurnJobModel,
     PluginInstallationModel,
     PluginNotificationOutboxModel,
 )
-from qq_ai_bot.plugin_host.notification_repository import (
+from yuki.plugin_host.notification_repository import (
     TURN_ERROR_LATER_HUMAN,
     TURN_ERROR_SUPERSEDED_COVERED,
     PluginNotificationRepository,

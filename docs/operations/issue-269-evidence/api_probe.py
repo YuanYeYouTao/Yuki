@@ -19,23 +19,23 @@ async def main():
     from tests.support.fixed_contract_fixture import bind_main_contract
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.conversation.ordinary_admission_db_models import OrdinaryTurnAdmissionModel
-    from qq_ai_bot.domain.conversations import ScopeType
-    from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-    from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-    from qq_ai_bot.identity.write_settings import (
+    from yuki.conversation.ordinary_admission_db_models import OrdinaryTurnAdmissionModel
+    from yuki.domain.conversations import ScopeType
+    from yuki.domain.messages import InboundMessage, SenderIdentity
+    from yuki.identity.db_models import CanonicalSpaceModel
+    from yuki.identity.write_settings import (
         IdentityWriteSettings,
         configure_identity_write_settings,
     )
-    from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-    from qq_ai_bot.model_runtime.models import ModelCapability, ModelProfile, ModelRoute, ModelTask
-    from qq_ai_bot.model_runtime.pool import ModelClientPool
-    from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-    from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
-    from qq_ai_bot.model_runtime.routes import ModelRouter
-    from qq_ai_bot.persistence.database import Database
-    from qq_ai_bot.services.autonomous_groups import AutonomousGroupService
-    from qq_ai_bot.social.db_models import SocialOperationModel
+    from yuki.model_runtime.executor import TaskModelExecutor
+    from yuki.model_runtime.models import ModelCapability, ModelProfile, ModelRoute, ModelTask
+    from yuki.model_runtime.pool import ModelClientPool
+    from yuki.model_runtime.profiles import ModelProfileCatalog
+    from yuki.model_runtime.repository import ModelInvocationRepository
+    from yuki.model_runtime.routes import ModelRouter
+    from yuki.persistence.database import Database
+    from yuki.services.autonomous_groups import AutonomousGroupService
+    from yuki.social.db_models import SocialOperationModel
 
     issue = int(sys.argv[1])
     report = {
@@ -154,7 +154,7 @@ async def main():
                         disabled_requests=len(report["requests"]), disabled_admissions=len(disabled)
                     )
                     async with db.immediate_session() as writer:
-                        from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
+                        from yuki.persistence.models import RuntimeConfigOverrideModel
 
                         await writer.execute(
                             update(RuntimeConfigOverrideModel)

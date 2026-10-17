@@ -15,14 +15,14 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
-from qq_ai_bot.memory.enums import MemoryRetrievalMode, MemoryScopeType
-from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.models import MemoryQuery
-from qq_ai_bot.memory.query import normalize_query_text
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.retrieval import MemoryRetriever
-from qq_ai_bot.persistence.database import Database
+from yuki.memory.authorized_scope import AuthorizedMemoryScope
+from yuki.memory.enums import MemoryRetrievalMode, MemoryScopeType
+from yuki.memory.fts import SQLiteMemoryFTSIndex
+from yuki.memory.models import MemoryQuery
+from yuki.memory.query import normalize_query_text
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.retrieval import MemoryRetriever
+from yuki.persistence.database import Database
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:

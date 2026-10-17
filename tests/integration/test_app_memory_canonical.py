@@ -14,24 +14,24 @@ from tests.unit.test_memory_mutation import _service
 from tests.unit.test_memory_rebuild import _admin
 from tests.unit.test_memory_rebuild import _service as rebuild_service
 
-from qq_ai_bot.identity.db_models import IdentityBindingModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.models import MemoryFactQuery
-from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
-from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.worker import MemoryRebuildWorker
-from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
-from qq_ai_bot.persistence.models import (
+from yuki.identity.db_models import IdentityBindingModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.models import MemoryFactQuery
+from yuki.memory.quality.audit import MemoryProductionQualityAudit
+from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.worker import MemoryRebuildWorker
+from yuki.memory.self_reflection.repository import SelfReflectionRepository
+from yuki.memory.self_reflection.service import SelfReflectionService
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryJobModel,
     MemoryRebuildItemModel,
     MemoryRebuildProposalModel,
     MemoryRebuildRunModel,
 )
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.services.agent_tools import AgentToolService
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.services.agent_tools import AgentToolService
 
 
 async def test_app_memory_write_search_detail_and_correction_keep_original_person(

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.registry import GatewayConnectionRegistry
 
 
 def builtin_registry(*, gateway_instance_id: str | None = None) -> GatewayConnectionRegistry:

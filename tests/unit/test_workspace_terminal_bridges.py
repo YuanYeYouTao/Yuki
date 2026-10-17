@@ -11,10 +11,10 @@ from uuid import uuid4
 import pytest
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from qq_ai_bot.deployment_setup.environment_check import check_environment
-from qq_ai_bot.workspace.service import WorkspaceService
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
+from yuki.deployment_setup.environment_check import check_environment
+from yuki.workspace.service import WorkspaceService
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
 @pytest.mark.parametrize(
@@ -87,11 +87,11 @@ def test_cleanup_keeps_original_referenced_blob_and_removes_missing_metadata(tmp
 
 async def test_environment_check_uses_existing_status_without_file_rpc(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "qq_ai_bot.deployment_setup.environment_check.os.geteuid", lambda: 10001, raising=False
+        "yuki.deployment_setup.environment_check.os.geteuid", lambda: 10001, raising=False
     )
     execute = AsyncMock(return_value={"ready": True, "workspace": "/workspace"})
     monkeypatch.setattr(
-        "qq_ai_bot.deployment_setup.environment_check.SandboxClient",
+        "yuki.deployment_setup.environment_check.SandboxClient",
         lambda _socket: SimpleNamespace(execute=execute),
     )
     assert (await check_environment(Path("unused.sock"), tmp_path))["ok"]

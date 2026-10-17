@@ -9,17 +9,17 @@ from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_self_initiative_memory import claim, finish, record, seed
 
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.dream.db_models import (
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.dream.db_models import (
     MemoryEvidenceCompactionItemModel,
     MemoryEvidenceCompactionRunModel,
 )
-from qq_ai_bot.memory.dream.repository import DreamRepository
-from qq_ai_bot.memory.enums import MemoryScopeType, SelfMemoryVisibility
-from qq_ai_bot.memory.models import MemoryFactQuery
-from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
-from qq_ai_bot.persistence.models import MemoryToolReceiptModel
+from yuki.memory.dream.repository import DreamRepository
+from yuki.memory.enums import MemoryScopeType, SelfMemoryVisibility
+from yuki.memory.models import MemoryFactQuery
+from yuki.memory.self_reflection.repository import SelfReflectionRepository
+from yuki.memory.self_reflection.service import SelfReflectionService
+from yuki.persistence.models import MemoryToolReceiptModel
 
 
 async def test_nine_original_tool_sources_survive_completed_reflection_and_receipt_cleanup(

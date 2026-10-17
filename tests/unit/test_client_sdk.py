@@ -10,7 +10,7 @@ from tests.unit.test_app_messages import drain
 from tests.unit.test_client_api import bearer, pair, person_and_code
 from tests.unit.test_client_works import owner
 
-from qq_ai_bot.client_sdk import ClientProblem, Outbox, PersonalClient
+from yuki.client_sdk import ClientProblem, Outbox, PersonalClient
 
 admin = admin_fixture
 app_env = app_fixture
@@ -190,7 +190,7 @@ async def test_interrupted_upload_has_no_registration_and_same_id_can_retry(app_
 
     from sqlalchemy import func, select
 
-    from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
+    from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 
     env = app_env
     device, _ = await owner(env, database)

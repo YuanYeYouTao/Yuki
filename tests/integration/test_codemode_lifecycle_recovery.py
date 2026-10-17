@@ -20,9 +20,9 @@ from tests.support.work_effect_results_helpers import execute
 from tests.support.work_runner_helpers import case
 from tests.support.work_session import WorkSession
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.codemode.api_projection import project
-from qq_ai_bot.codemode.driver import (
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.codemode.api_projection import project
+from yuki.codemode.driver import (
     ChildClass,
     CodeCompositionYield,
     CodeModeDriver,
@@ -30,15 +30,15 @@ from qq_ai_bot.codemode.driver import (
     _State,
     is_control_tool,
 )
-from qq_ai_bot.codemode.driver_types import EngineCall, EngineOutcome, HostCounters
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatMessage, ChatTool
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_tools import subagent_tools
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import scope
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.codemode.driver_types import EngineCall, EngineOutcome, HostCounters
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import ChatMessage, ChatTool
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_tools import subagent_tools
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import scope
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.tool_results.artifacts import ToolArtifactRepository
 
 
 async def environment(database, tmp_path, *, reporting=None):
@@ -145,7 +145,7 @@ async def test_control_receipt_crash_restores_decision_and_valid_tail(
     if action == "accept":
         from sqlalchemy import select
 
-        from qq_ai_bot.persistence.models import ChatEventModel
+        from yuki.persistence.models import ChatEventModel
 
         async with database.sessions() as reader:
             event = await reader.scalar(
@@ -189,7 +189,7 @@ async def test_control_receipt_crash_restores_decision_and_valid_tail(
         await CodeModeDriver(env.host, outer).run()
     assert env.domain.log == before_log
     # Recreate the activation objects and use the real journal restore path.
-    from qq_ai_bot.runtime.work_control import WorkControl
+    from yuki.runtime.work_control import WorkControl
 
     old = env.control
     restored_control = WorkControl(
@@ -364,7 +364,7 @@ async def test_completion_proposal_survives_segment_yield_until_original_tail_se
     assert env.control.ending == "completed"
     assert env.control.current["state"] == "running"
     assert env.domain.log == [("lookup", {"q": "before completion"})]
-    from qq_ai_bot.runtime.work_control import WorkControl
+    from yuki.runtime.work_control import WorkControl
 
     old = env.control
     restored_control = WorkControl(
@@ -439,7 +439,7 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     lease = await workers.acquire(identity)
     assert lease is not None
     row = await parent_env.control.repository.get(identity)
-    from qq_ai_bot.runtime.work_control import WorkControl
+    from yuki.runtime.work_control import WorkControl
 
     async def validate():
         assert await parent_env.control.repository.valid(lease)
@@ -603,7 +603,7 @@ async def test_single_tool_refusal_keeps_valid_tail_on_run_and_restore(
         with pytest.raises(asyncio.CancelledError):
             await CodeModeDriver(env.host, outer).run()
         assert env.domain.log == []
-        from qq_ai_bot.runtime.work_control import WorkControl
+        from yuki.runtime.work_control import WorkControl
 
         old = env.control
         control = WorkControl(old.repository, old.lease, old.source_key, old.source, old.validate)
@@ -731,7 +731,7 @@ async def test_runner_restores_original_program_with_unavailable_current_code_co
 ):
     from tests.support.codemode_runner_helpers import Backend
 
-    from qq_ai_bot.runtime.work_control import WorkControl
+    from yuki.runtime.work_control import WorkControl
 
     env = await environment(database, tmp_path)
     env.host.tool_limit = 1

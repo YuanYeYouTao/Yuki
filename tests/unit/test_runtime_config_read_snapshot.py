@@ -8,17 +8,17 @@ from sqlalchemy import event, select, update
 from sqlalchemy.exc import IntegrityError
 from tests.conftest import make_settings
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.domain.memory_config import MemoryConfigScope
-from qq_ai_bot.identity.db_models import (
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.domain.memory_config import MemoryConfigScope
+from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     PresenceModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.persistence.models import RuntimeConfigOverrideModel
 
 
 async def _owners(database):
@@ -131,7 +131,7 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
 async def test_snapshot_matches_previous_complete_config_and_resolves_once(
     database, monkeypatch, scope
 ):
-    from qq_ai_bot.admin import config_service as module
+    from yuki.admin import config_service as module
 
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
     person, _, space, _ = await _owners(database)
@@ -190,7 +190,7 @@ async def test_snapshot_matches_previous_complete_config_and_resolves_once(
 async def test_rebind_and_override_commit_between_queries_cannot_mix_snapshot_owners(
     database, monkeypatch
 ):
-    from qq_ai_bot.admin import config_service as module
+    from yuki.admin import config_service as module
 
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
     old, new, _, _ = await _owners(database)

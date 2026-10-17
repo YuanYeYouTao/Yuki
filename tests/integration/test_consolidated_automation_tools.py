@@ -5,8 +5,8 @@ from dataclasses import replace
 
 from tests.support.automation_unified_delivery_helpers import setup_run
 
-from qq_ai_bot.automation.models import AutomationStatus
-from qq_ai_bot.services.agent_tools import ToolRuntime
+from yuki.automation.models import AutomationStatus
+from yuki.services.agent_tools import ToolRuntime
 
 
 async def test_query_and_manage_use_original_task_version_owner_and_receipts(database, tmp_path):

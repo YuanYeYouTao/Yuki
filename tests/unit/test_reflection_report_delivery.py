@@ -8,10 +8,10 @@ from sqlalchemy import select
 from tests.conftest import make_settings
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
-from qq_ai_bot.persistence.models import ChatEventModel, MemorySelfReflectionCycleModel
+from yuki.domain.conversations import ConversationScope
+from yuki.memory.self_reflection.repository import SelfReflectionRepository
+from yuki.memory.self_reflection.worker import SelfReflectionWorker
+from yuki.persistence.models import ChatEventModel, MemorySelfReflectionCycleModel
 
 
 @pytest.mark.parametrize("failure", ["source_missing", "target_disabled"])
@@ -27,8 +27,8 @@ async def test_failed_reports_settle_and_allow_later_real_delivery(database, tmp
         content="original manual source",
     )
     bad = bad.event
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.identity.db_models import CanonicalSpaceModel
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.identity.db_models import CanonicalSpaceModel
 
     async with database.immediate_session() as writer:
         conversation = await writer.get(CanonicalConversationModel, bad.canonical_conversation_id)
@@ -89,8 +89,8 @@ async def test_delivery_error_preserves_receipt_created_during_preparation(
 ):
     from unittest.mock import AsyncMock
 
-    from qq_ai_bot.memory.self_reflection.reporting import deliver_report
-    from qq_ai_bot.social.models import SocialError
+    from yuki.memory.self_reflection.reporting import deliver_report
+    from yuki.social.models import SocialError
 
     await social_env(database, tmp_path)
     async with database.sessions() as reader:

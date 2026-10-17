@@ -12,14 +12,14 @@ from tests.conftest import make_settings
 from tests.support.semantic_participation_host_helpers import _event_and_route, _host, _message
 from yuki_participation.models import CandidateKind, Proposal
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.conversation.autonomy_binding import AutonomyOwner
-from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.identity.canonical_repository import ensure_space
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.runtime.work_control import WorkControl
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.conversation.autonomy_binding import AutonomyOwner
+from yuki.conversation.autonomy_db_models import InitiativeRunModel
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.identity.canonical_repository import ensure_space
+from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.runtime.work_control import WorkControl
 
 
 async def test_tick_keeps_held_scopes_and_admits_another_without_duplicate_controller(

@@ -8,17 +8,17 @@ from sqlalchemy import select, update
 from tests.unit.test_rebuild_privacy_preparation import _selection
 from tests.unit.test_rebuild_receipt_finalization import _seed
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-from qq_ai_bot.persistence.models import (
+from yuki.domain.conversations import ScopeType
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.persistence.models import (
     AdminOperationEventModel,
     ChatEventModel,
     MemoryRebuildRunModel,
 )
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.repositories import EventLedgerRepository
 
 
 @pytest.fixture(autouse=True)

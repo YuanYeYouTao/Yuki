@@ -6,7 +6,7 @@ from dataclasses import asdict
 
 from tests.unit.test_native_search_bridge import _bridge
 
-from qq_ai_bot.domain.messages import (
+from yuki.domain.messages import (
     ChatResponse,
     CitationOrigin,
     NativeToolEvent,
@@ -14,7 +14,7 @@ from qq_ai_bot.domain.messages import (
     NativeToolType,
     ResponseCitation,
 )
-from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
+from yuki.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
 
 
 async def test_new_search_does_not_reuse_old_extracted_result_but_keeps_page_cache(tmp_path):
@@ -43,7 +43,7 @@ async def test_new_search_does_not_reuse_old_extracted_result_but_keeps_page_cac
     page_key = hashlib.sha256(f"direct-page-v2:{source.url}:read question".encode()).hexdigest()
     page = WebSearchResponse("read question", (source,), None, 0, provider="direct_http")
     bridge.state.access(page_key, page)
-    from qq_ai_bot.web.page_extractor import DirectPageExtractor
+    from yuki.web.page_extractor import DirectPageExtractor
 
     reader = DirectPageExtractor(state=bridge.state, timeout_seconds=1)
     try:

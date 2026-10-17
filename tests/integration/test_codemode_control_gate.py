@@ -14,20 +14,20 @@ from tests.support.codemode_cases import (
     run_code,
 )
 
-from qq_ai_bot.codemode.driver import CodeModeDriver
+from yuki.codemode.driver import CodeModeDriver
 
 pytestmark = requires_worker
 
 CRASH_CHILD = r"""
 import asyncio, json, os, sys
 from tests.support.codemode_cases import build_host, outer_call
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkLease, WorkRepository
-from qq_ai_bot.runtime.work_session import WorkSession
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.codemode.driver import CodeModeDriver
+from yuki.persistence.database import Database
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkLease, WorkRepository
+from yuki.runtime.work_session import WorkSession
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.domain.messages import ChatMessage
+from yuki.codemode.driver import CodeModeDriver
 
 url, lease_json, identity, chain_id, arguments, log = sys.argv[1:]
 
@@ -219,7 +219,7 @@ async def test_memory_after_another_side_effect_runs_and_returns_original_receip
 async def test_new_input_settles_partial_and_stops(database, tmp_path, monkeypatch):
     env = await environment(database, tmp_path)
     calls = 0
-    from qq_ai_bot.runtime.work_control import WorkControl
+    from yuki.runtime.work_control import WorkControl
 
     original = WorkControl.has_pending_business_inputs
 

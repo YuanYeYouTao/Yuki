@@ -11,11 +11,11 @@ from unittest.mock import AsyncMock
 import pytest
 from PIL import Image
 
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
-from qq_ai_bot.services.native_media import NativeMediaPreparer
-from qq_ai_bot.workspace.inspect import WorkspaceInspector
-from qq_ai_bot.workspace.service import WorkspaceService
-from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
+from yuki.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
+from yuki.services.native_media import NativeMediaPreparer
+from yuki.workspace.inspect import WorkspaceInspector
+from yuki.workspace.service import WorkspaceService
+from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
 def _image(*, animated=False):
@@ -49,7 +49,7 @@ def test_shared_preparer_preserves_gif_pixels_and_budgets():
 async def test_video_runtime_settings_and_actual_timestamps(tmp_path, monkeypatch):
     frame = NativeMediaPreparer(ImagePreprocessor()).prepare_image(_image(), source="history")[0]
     sample = AsyncMock(return_value=(replace(frame, video_timestamp_seconds=3.25),))
-    monkeypatch.setattr("qq_ai_bot.services.native_media.sample_video", sample)
+    monkeypatch.setattr("yuki.services.native_media.sample_video", sample)
     runtime = SimpleNamespace(
         max_frames_per_turn=7,
         video_max_frames=5,
@@ -108,8 +108,8 @@ async def test_selected_manager_file_pixels_and_dispatch_version_guard(tmp_path)
 
 @pytest.mark.skipif(os.name != "posix", reason="Manager safe workspace FDs require POSIX")
 def test_manager_media_read_has_fixed_bound_versions_and_no_publication(tmp_path):
-    from qq_ai_bot.sandbox.persistent import PersistentManager
-    from qq_ai_bot.workspace.files import FileWorkspace
+    from yuki.sandbox.persistent import PersistentManager
+    from yuki.workspace.files import FileWorkspace
 
     manager = object.__new__(PersistentManager)
     manager.files = FileWorkspace(tmp_path)

@@ -7,15 +7,15 @@ from dataclasses import replace
 
 import pytest
 
-from qq_ai_bot.capabilities.catalog import (
+from yuki.capabilities.catalog import (
     DescriptorRegistrySnapshot,
     UnifiedToolCatalog,
     UnifiedToolCatalogEntry,
 )
-from qq_ai_bot.capabilities.exposure import (
+from yuki.capabilities.exposure import (
     NO_LONGER_AUTHORIZED,
 )
-from qq_ai_bot.capabilities.models import (
+from yuki.capabilities.models import (
     AuthorityContext,
     CapabilityDescriptor,
     CapabilityEffect,
@@ -23,14 +23,14 @@ from qq_ai_bot.capabilities.models import (
     CapabilityRisk,
     CapabilityTrustSource,
 )
-from qq_ai_bot.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
-from qq_ai_bot.capabilities.runtime import TurnCapabilityRuntime
-from qq_ai_bot.capabilities.validation import (
+from yuki.capabilities.policy import CapabilityPolicyContext, CapabilityPolicyEngine
+from yuki.capabilities.runtime import TurnCapabilityRuntime
+from yuki.capabilities.validation import (
     TOOL_INPUT_VALIDATION_FAILED,
     JsonSchemaCapabilityValidator,
 )
-from qq_ai_bot.runtime.contracts import MemoryCapabilityView
-from qq_ai_bot.services.agent_runner import AgentRuntime
+from yuki.runtime.contracts import MemoryCapabilityView
+from yuki.services.agent_runner import AgentRuntime
 
 
 def _descriptor(
@@ -120,11 +120,11 @@ async def test_compilable_schemas_execute_once_through_real_catalog_and_original
     from tests.support.work_session import invoke_tool
     from tests.unit.test_tool_effect_audit import active_work
 
-    from qq_ai_bot.capabilities.binding import InProcessToolBinding
-    from qq_ai_bot.capabilities.invocation import direct_invocations
-    from qq_ai_bot.capabilities.results import ToolExecutionResult
-    from qq_ai_bot.domain.messages import ToolCall, ToolFunction
-    from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+    from yuki.capabilities.binding import InProcessToolBinding
+    from yuki.capabilities.invocation import direct_invocations
+    from yuki.capabilities.results import ToolExecutionResult
+    from yuki.domain.messages import ToolCall, ToolFunction
+    from yuki.services.main_agent_backend import MainAgentBackend
 
     if case == "depth":
         schema, payload = {"type": "string"}, "leaf"
@@ -208,10 +208,10 @@ async def test_memory_failure_can_continue_and_reuse_original_effect(database, t
     from tests.unit.test_memory_mutation import _service
     from tests.unit.test_tool_effect_audit import active_work
 
-    from qq_ai_bot.capabilities.invocation import direct_invocations
-    from qq_ai_bot.domain.conversations import ScopeType
-    from qq_ai_bot.domain.messages import ToolCall, ToolFunction
-    from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+    from yuki.capabilities.invocation import direct_invocations
+    from yuki.domain.conversations import ScopeType
+    from yuki.domain.messages import ToolCall, ToolFunction
+    from yuki.services.main_agent_backend import MainAgentBackend
 
     env, owner, tools = await active_work(database, tmp_path)
     mutations, facts, _, _ = _service(database)

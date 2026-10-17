@@ -15,11 +15,11 @@ from tests.unit.test_client_files import upload
 from tests.unit.test_client_sdk import DropAcknowledgement
 from tests.unit.test_client_works import owner, seeded
 
-from qq_ai_bot.client_sdk import Outbox, PersonalClient
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.execution_trace.recorder import TraceRecorder, trace_span
-from qq_ai_bot.identity.db_models import IdentityBindingModel
-from qq_ai_bot.persistence.models import ChatEventModel
+from yuki.client_sdk import Outbox, PersonalClient
+from yuki.domain.conversations import ConversationScope
+from yuki.execution_trace.recorder import TraceRecorder, trace_span
+from yuki.identity.db_models import IdentityBindingModel
+from yuki.persistence.models import ChatEventModel
 
 admin = admin_fixture
 app_env = app_fixture

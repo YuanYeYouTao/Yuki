@@ -23,26 +23,26 @@ from sqlalchemy.orm import declarative_base
 from tests.support.legacy_conversation_seed import enable_binding_column_for_legacy_seed
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
-from qq_ai_bot.conversation.observation_models import ContextObservationModel, ContextSelectionModel
-from qq_ai_bot.conversation.observation_schema import PROJECTION_TRIGGERS_0089
-from qq_ai_bot.conversation.observations import (
+from yuki.conversation.observation_models import ContextObservationModel, ContextSelectionModel
+from yuki.conversation.observation_schema import PROJECTION_TRIGGERS_0089
+from yuki.conversation.observations import (
     encode,
     validate_observations,
 )
-from qq_ai_bot.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import ensure_space
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
+from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.domain.conversations import ConversationScope
+from yuki.identity.canonical_repository import ensure_space
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     ChatEventModel,
     RuntimeConfigOverrideModel,
     ToolArtifactModel,
 )
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 HEADER = "本轮运行资料（按 trust 字段区分可信度）："
 VIEW = "a" * 64
@@ -599,9 +599,7 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
             table: before.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
             for table in private
         }
-    cli = Path(sys.executable).parent / (
-        "qq-ai-bot-cli.exe" if os.name == "nt" else "qq-ai-bot-cli"
-    )
+    cli = Path(sys.executable).parent / ("yuki.exe" if os.name == "nt" else "yuki")
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     env["DATABASE_URL"] = f"sqlite+aiosqlite:///{copied.as_posix()}"
@@ -624,7 +622,7 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
     reset_argv = [
         sys.executable,
         "-m",
-        "qq_ai_bot.operations.reset_conversations",
+        "yuki.operations.reset_conversations",
         "--batch-id",
         "original-context-reset",
         "--apply-offline",

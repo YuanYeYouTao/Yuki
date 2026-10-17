@@ -3,6 +3,18 @@ revision = 3
 requires-python = "==3.12.*"
 
 [[package]]
+name = "agent-client-protocol"
+version = "0.12.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9d/95/2c28ca34e545ce0282e88272aa3a8abdf8f3f926a0492f567ea11acd071b/agent_client_protocol-0.12.1.tar.gz", hash = "sha256:9963ccb590ed96d7dc542c9c023e90676fc76b1c6562e21a9ee112f4fbcb0095", size = 130605, upload-time = "2026-08-16T14:08:22.545Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/61/0a2186c8ca53cf464767d4c4fb7fd9e23f48ce4547c2fa0d1c83a4d52410/agent_client_protocol-0.12.1-py3-none-any.whl", hash = "sha256:aaf3cc301ed87d9e2c4ccb91adfe1cd58784355f6ce7e513f50e7ca2391862ef", size = 85929, upload-time = "2026-08-16T14:08:21.307Z" },
+]
+
+[[package]]
 name = "aiosqlite"
 version = "0.22.1"
 source = { registry = "https://pypi.org/simple" }
@@ -728,72 +740,6 @@ wheels = [
 ]
 
 [[package]]
-name = "qq-ai-bot"
-version = "3.9.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aiosqlite" },
-    { name = "alembic" },
-    { name = "defusedxml" },
-    { name = "httpcore" },
-    { name = "httpx", extra = ["socks"] },
-    { name = "jsonschema" },
-    { name = "nonebot-adapter-onebot" },
-    { name = "nonebot2", extra = ["fastapi"] },
-    { name = "packaging" },
-    { name = "pillow" },
-    { name = "pydantic-settings" },
-    { name = "pypdf" },
-    { name = "python-dotenv" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "tenacity" },
-    { name = "tomlkit" },
-    { name = "tzdata" },
-    { name = "yuki-semantic-participation" },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "mypy" },
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-    { name = "ruff" },
-    { name = "trustme" },
-    { name = "types-defusedxml" },
-    { name = "types-jsonschema" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiosqlite", specifier = ">=0.20,<1" },
-    { name = "alembic", specifier = ">=1.14,<2" },
-    { name = "defusedxml", specifier = ">=0.7,<1" },
-    { name = "httpcore", specifier = ">=1.0.9,<2" },
-    { name = "httpx", extras = ["socks"], specifier = ">=0.28.1,<1" },
-    { name = "jsonschema", specifier = ">=4.23,<5" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13,<2" },
-    { name = "nonebot-adapter-onebot", specifier = ">=2.4,<3" },
-    { name = "nonebot2", extras = ["fastapi"], specifier = ">=2.4,<3" },
-    { name = "packaging", specifier = ">=24,<27" },
-    { name = "pillow", specifier = ">=11,<13" },
-    { name = "pydantic-settings", specifier = ">=2.7,<3" },
-    { name = "pypdf", specifier = ">=6,<7" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<9" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24,<1" },
-    { name = "python-dotenv", specifier = ">=1,<2" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8,<1" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36,<3" },
-    { name = "tenacity", specifier = ">=9,<10" },
-    { name = "tomlkit", specifier = ">=0.13,<1" },
-    { name = "trustme", marker = "extra == 'dev'", specifier = ">=1.2,<2" },
-    { name = "types-defusedxml", marker = "extra == 'dev'", specifier = ">=0.7,<1" },
-    { name = "types-jsonschema", marker = "extra == 'dev'", specifier = ">=4.23,<5" },
-    { name = "tzdata", specifier = ">=2025.2" },
-    { name = "yuki-semantic-participation", url = "https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/961155ca3f7c29ea75fe08077e13f4cd1e6881f3.tar.gz" },
-]
-provides-extras = ["dev"]
-
-[[package]]
 name = "referencing"
 version = "0.37.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1111,6 +1057,74 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/3c/25/b2553764b3d65db711d8f45416351ec4f420847558eb669edcbcaadf5780/yarl-1.24.5-cp312-cp312-win_arm64.whl", hash = "sha256:7ce27823052e2013b597e0c738b13e7e36b8ccb9400df8959417b052ab0fd92c", size = 93018, upload-time = "2026-07-20T02:05:57.554Z" },
     { url = "https://files.pythonhosted.org/packages/61/02/962c1cbfc401a30c1d034dc67ff395f64b52302c6d62de556c1fca99acc0/yarl-1.24.5-py3-none-any.whl", hash = "sha256:a33700d13d9b7d84fd10947b09ff69fb9a792e519c8cb9764a3ca70baa6c23a7", size = 58612, upload-time = "2026-07-20T02:07:43.461Z" },
 ]
+
+[[package]]
+name = "yuki"
+version = "3.9.0"
+source = { editable = "." }
+dependencies = [
+    { name = "agent-client-protocol" },
+    { name = "aiosqlite" },
+    { name = "alembic" },
+    { name = "defusedxml" },
+    { name = "httpcore" },
+    { name = "httpx", extra = ["socks"] },
+    { name = "jsonschema" },
+    { name = "nonebot-adapter-onebot" },
+    { name = "nonebot2", extra = ["fastapi"] },
+    { name = "packaging" },
+    { name = "pillow" },
+    { name = "pydantic-settings" },
+    { name = "pypdf" },
+    { name = "python-dotenv" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "tenacity" },
+    { name = "tomlkit" },
+    { name = "tzdata" },
+    { name = "yuki-semantic-participation" },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "mypy" },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "ruff" },
+    { name = "trustme" },
+    { name = "types-defusedxml" },
+    { name = "types-jsonschema" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "agent-client-protocol", specifier = "==0.12.1" },
+    { name = "aiosqlite", specifier = ">=0.20,<1" },
+    { name = "alembic", specifier = ">=1.14,<2" },
+    { name = "defusedxml", specifier = ">=0.7,<1" },
+    { name = "httpcore", specifier = ">=1.0.9,<2" },
+    { name = "httpx", extras = ["socks"], specifier = ">=0.28.1,<1" },
+    { name = "jsonschema", specifier = ">=4.23,<5" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13,<2" },
+    { name = "nonebot-adapter-onebot", specifier = ">=2.4,<3" },
+    { name = "nonebot2", extras = ["fastapi"], specifier = ">=2.4,<3" },
+    { name = "packaging", specifier = ">=24,<27" },
+    { name = "pillow", specifier = ">=11,<13" },
+    { name = "pydantic-settings", specifier = ">=2.7,<3" },
+    { name = "pypdf", specifier = ">=6,<7" },
+    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3,<9" },
+    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.24,<1" },
+    { name = "python-dotenv", specifier = ">=1,<2" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8,<1" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.36,<3" },
+    { name = "tenacity", specifier = ">=9,<10" },
+    { name = "tomlkit", specifier = ">=0.13,<1" },
+    { name = "trustme", marker = "extra == 'dev'", specifier = ">=1.2,<2" },
+    { name = "types-defusedxml", marker = "extra == 'dev'", specifier = ">=0.7,<1" },
+    { name = "types-jsonschema", marker = "extra == 'dev'", specifier = ">=4.23,<5" },
+    { name = "tzdata", specifier = ">=2025.2" },
+    { name = "yuki-semantic-participation", url = "https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/archive/961155ca3f7c29ea75fe08077e13f4cd1e6881f3.tar.gz" },
+]
+provides-extras = ["dev"]
 
 [[package]]
 name = "yuki-semantic-participation"

@@ -16,25 +16,25 @@ from tests.integration.test_plugin_frozen_binding import write_plugin
 from tests.support.model_profiles import write_fake_profiles
 from tests.unit.test_admin_operator_access import operator_file
 
-from qq_ai_bot import __version__
-from qq_ai_bot.admin.authority.operators import ControlOperatorAccess
-from qq_ai_bot.admin.config_files import ConfigFileService
-from qq_ai_bot.admin_api.commands import AdminCommands
-from qq_ai_bot.admin_api.http import AdminApi, attach_admin_api
-from qq_ai_bot.admin_api.queries import AdminQueries
-from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
-from qq_ai_bot.execution_trace.db_models import ExecutionTraceEntryModel
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import load_model_profile_catalog, model_profile_environment
-from qq_ai_bot.model_runtime.routes import ModelRouter
-from qq_ai_bot.plugin_host.discovery import PluginDiscovery
-from qq_ai_bot.plugin_host.event_bus import PluginEventBus
-from qq_ai_bot.plugin_host.extension_registry import ExtensionRegistry
-from qq_ai_bot.plugin_host.loader import PluginLoader
-from qq_ai_bot.plugin_host.manager import PluginManager
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
+from yuki import __version__
+from yuki.admin.authority.operators import ControlOperatorAccess
+from yuki.admin.config_files import ConfigFileService
+from yuki.admin_api.commands import AdminCommands
+from yuki.admin_api.http import AdminApi, attach_admin_api
+from yuki.admin_api.queries import AdminQueries
+from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
+from yuki.execution_trace.db_models import ExecutionTraceEntryModel
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.model_runtime.executor import TaskModelExecutor
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import load_model_profile_catalog, model_profile_environment
+from yuki.model_runtime.routes import ModelRouter
+from yuki.plugin_host.discovery import PluginDiscovery
+from yuki.plugin_host.event_bus import PluginEventBus
+from yuki.plugin_host.extension_registry import ExtensionRegistry
+from yuki.plugin_host.loader import PluginLoader
+from yuki.plugin_host.manager import PluginManager
+from yuki.plugin_host.repository import PluginInstallationRepository
 
 TOKEN = "test-admin-" + "a" * 48
 READER = "test-reader-" + "b" * 48
@@ -372,7 +372,7 @@ class Fixture:
 
 
 async def test_cli_client_uses_new_api_and_stops_on_unknown_result(admin, monkeypatch):
-    from qq_ai_bot.admin_api.client import mutate, plugin_mutation
+    from yuki.admin_api.client import mutate, plugin_mutation
 
     client, _, manager, *_ = admin
     approved = await plugin_mutation(
@@ -405,10 +405,10 @@ async def test_cli_client_uses_new_api_and_stops_on_unknown_result(admin, monkey
 async def test_notification_retry_preserves_original_delivery_evidence(admin, database, status):
     from tests.unit.test_plugin_notification_idempotency import _install, _request
 
-    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-    from qq_ai_bot.identity.canonical_repository import find_identity_binding, find_presence
-    from qq_ai_bot.persistence.unit_of_work import state_revision
-    from qq_ai_bot.plugin_host.db_models import PluginNotificationOutboxModel
+    from yuki.conversation.hydrate import ensure_canonical_conversation
+    from yuki.identity.canonical_repository import find_identity_binding, find_presence
+    from yuki.persistence.unit_of_work import state_revision
+    from yuki.plugin_host.db_models import PluginNotificationOutboxModel
     from yuki_plugin_sdk.models import NotificationTarget
 
     client, *_ = admin
@@ -463,8 +463,8 @@ async def test_work_management_keeps_original_work_and_replays_one_revision(
 ):
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.runtime.work_repository import WorkRepository
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.runtime.work_repository import WorkRepository
 
     client, *_ = admin
     env = await social_env(database, tmp_path)

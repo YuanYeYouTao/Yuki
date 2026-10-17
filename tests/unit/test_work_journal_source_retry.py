@@ -9,18 +9,18 @@ from tests.support.semantic_participation_host_helpers import _event_and_route
 from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_source_guard import _guard
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
-from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
-from qq_ai_bot.identity.canonical_repository import ensure_space
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_journal import decode_transcript
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_schema_v1 import journal
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.domain.messages import ChatMessage, ToolCall, ToolFunction
+from yuki.identity.canonical_repository import ensure_space
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_journal import decode_transcript
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_schema_v1 import journal
+from yuki.services.turn_transcript import TurnTranscript
 
 
 async def _session(database, initial=None):

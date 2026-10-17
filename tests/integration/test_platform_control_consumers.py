@@ -11,15 +11,15 @@ from tests.unit.test_app_messages import drain as drain_app
 from tests.unit.test_client_api import bearer, pair, person_and_code
 from tests.unit.test_client_identity import code_for
 
-from qq_ai_bot.adapters.onebot.sender import OneBotSender
-from qq_ai_bot.client_api.db_models import ClientLinkCodeModel
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.gateway.providers.telegram_ingress import TelegramSender
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.client_link import ClientLinkCommands
-from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
+from yuki.adapters.onebot.sender import OneBotSender
+from yuki.client_api.db_models import ClientLinkCodeModel
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.gateway.providers.telegram_ingress import TelegramSender
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.persistence.models import ChatEventModel
+from yuki.services.client_link import ClientLinkCommands
+from yuki.services.rate_limit import SlidingWindowRateLimiter
 
 
 async def test_telegram_link_consumes_code_without_chat_or_model(telegram_env, database):

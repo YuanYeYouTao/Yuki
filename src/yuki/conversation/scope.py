@@ -1,0 +1,118 @@
+"""Immutable scope and turn-generation contracts."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import InboundMessage
+
+
+@dataclass(frozen=True, slots=True)
+class ConversationTurnSnapshot:
+    """Database and in-process versions captured when a turn is admitted.
+
+    ``scope_key`` is the canonical conversation's fixed primary alias.
+    ``transport_scope_key`` is the current
+    ingress alias when it differs; ledger ``bot_user_id`` stays on transport.
+    """
+
+    conversation_id: str
+    scope_key: str
+    generation: int
+    trigger_event_id: int | None
+    coordinator_version: int
+    transport_scope_key: str | None = None
+    initiative_run_id: str | None = None
+    automation_run_id: int | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.conversation_id, str) or not self.conversation_id.strip():
+            raise ValueError("conversation_id must be nonempty")
+        if not self.scope_key:
+            raise ValueError("scope_key must not be empty")
+        if self.generation < 1:
+            raise ValueError("generation must be positive")
+        if (
+            sum(
+                value is not None
+                for value in (self.trigger_event_id, self.initiative_run_id, self.automation_run_id)
+            )
+            != 1
+        ):
+            raise ValueError("turn requires exactly one event, initiative or scheduled run anchor")
+        if self.trigger_event_id is not None and self.trigger_event_id < 1:
+            raise ValueError("trigger_event_id must be positive")
+        if self.initiative_run_id is not None and not self.initiative_run_id.strip():
+            raise ValueError("initiative_run_id must not be empty")
+        if self.automation_run_id is not None and self.automation_run_id < 1:
+            raise ValueError("automation_run_id must be positive")
+        if self.coordinator_version < 1:
+            raise ValueError("coordinator_version must be positive")
+        if self.transport_scope_key is not None and not self.transport_scope_key:
+            raise ValueError("transport_scope_key must not be empty")
+
+
+def runtime_conversation_key(
+    *,
+    identity: ConversationScope,
+    turn: ConversationTurnSnapshot | None = None,
+    inbound: InboundMessage | None = None,
+    primary_alias: str | None = None,
+) -> str:
+    """Single projection for coordinator, locks, hydrate, tools, and plugins."""
+
+    if turn is not None:
+        return turn.scope_key
+    if primary_alias:
+        return primary_alias
+    if inbound is not None and inbound.legacy_conversation_key:
+        return inbound.legacy_conversation_key
+    if inbound is not None and inbound.conversation_id:
+        raise ValueError("v2 conversation is missing primary runtime key")
+    return identity.key
+
+
+def plugin_conversation_key(message: InboundMessage, identity: ConversationScope) -> str:
+    """SDK conversation_key: the canonical conversation's fixed primary alias."""
+
+    return runtime_conversation_key(identity=identity, inbound=message)
+
+
+def turn_covers_scope_key(turn: ConversationTurnSnapshot, scope_key: str) -> bool:
+    """True when ``scope_key`` is this turn's runtime identity or its transport alias."""
+
+    if scope_key == turn.scope_key:
+        return True
+    return turn.transport_scope_key is not None and scope_key == turn.transport_scope_key
+
+
+def snapshot_transport_key(turn: ConversationTurnSnapshot) -> str:
+    return turn.transport_scope_key or turn.scope_key
+
+
+def turn_matches_hydrated_scope(
+    turn: ConversationTurnSnapshot,
+    *,
+    conversation_id: str,
+    generation: int,
+    runtime_key: str | None,
+) -> bool:
+    """Match the original internal conversation, generation and frozen primary alias."""
+
+    return (
+        turn.conversation_id == conversation_id
+        and turn.generation == generation
+        and turn.scope_key == runtime_key
+    )
+
+
+__all__ = [
+    "ConversationScope",
+    "ConversationTurnSnapshot",
+    "plugin_conversation_key",
+    "runtime_conversation_key",
+    "snapshot_transport_key",
+    "turn_covers_scope_key",
+    "turn_matches_hydrated_scope",
+]

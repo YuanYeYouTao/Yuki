@@ -10,14 +10,14 @@ from tests.support.agent_backend import StubAgentBackend
 from tests.support.codemode_cases import BINARY, TOOLS, requires_worker, worker
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.codemode.api_projection import project
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.runtime.work_control import WorkControl, work_control_tools
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.tool_results.access import ArtifactAccess
+from yuki.automation.models import TurnOrigin
+from yuki.codemode.api_projection import project
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.work_control import WorkControl, work_control_tools
+from yuki.runtime.work_repository import WorkRepository
+from yuki.services.agent_runner import AgentRuntime
+from yuki.tool_results.access import ArtifactAccess
 
 pytestmark = requires_worker
 FIXED_TOOLS = tuple(

@@ -9,11 +9,11 @@ from tests.conftest import make_settings
 from tests.integration import test_telegram_runtime as native
 from tests.unit.test_external_event_prompt_isolation import _assembler, _external
 
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
-from qq_ai_bot.services.context_assembler import _HistoryPromptWindow
-from qq_ai_bot.services.prompt_composer import PromptComposer
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ConversationScope
+from yuki.runtime.trigger import ExternalEventTurnTrigger
+from yuki.services.context_assembler import _HistoryPromptWindow
+from yuki.services.prompt_composer import PromptComposer
 
 telegram_env = native.telegram_env
 

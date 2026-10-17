@@ -19,11 +19,11 @@ from tests.unit.test_auto_reply_merge import (
     _wait_for_worker,
 )
 
-from qq_ai_bot.asr.service import AudioInput
-from qq_ai_bot.conversation.initiative_sources import source_revision
-from qq_ai_bot.conversation.ordinary_admission import OrdinaryParticipationBinding
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.domain.messages import (
+from yuki.asr.service import AudioInput
+from yuki.conversation.initiative_sources import source_revision
+from yuki.conversation.ordinary_admission import OrdinaryParticipationBinding
+from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.domain.messages import (
     AttachmentKind,
     ChatImage,
     ChatResponse,
@@ -33,19 +33,19 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.identity.canonical_repository import ensure_person
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.services.attachment_inputs import NativeInput
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.identity.canonical_repository import ensure_person
+from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.runtime.turn_session import TurnMemorySession
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_schema_v1 import work
+from yuki.services.attachment_inputs import NativeInput
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.social.db_models import SocialOperationModel
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 
 A = "A：先看原来的问题"
 B = "B：补充一个背景"

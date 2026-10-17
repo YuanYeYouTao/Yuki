@@ -8,9 +8,9 @@ from alembic.config import Config
 from sqlalchemy import select, text
 from tests.conftest import make_settings
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.persistence.database import Database
+from yuki.persistence.models import RuntimeConfigOverrideModel
 
 
 def test_0114_moves_disabled_spaces_to_editable_config(tmp_path, monkeypatch):
@@ -20,8 +20,8 @@ def test_0114_moves_disabled_spaces_to_editable_config(tmp_path, monkeypatch):
     command.upgrade(config, "0113")
 
     async def verify():
-        from qq_ai_bot.identity.canonical_repository import ensure_space
-        from qq_ai_bot.identity.db_models import CanonicalSpaceModel
+        from yuki.identity.canonical_repository import ensure_space
+        from yuki.identity.db_models import CanonicalSpaceModel
 
         database = Database(url)
         try:

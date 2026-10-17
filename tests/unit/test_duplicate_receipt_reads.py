@@ -11,18 +11,18 @@ from sqlalchemy import event, update
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
 
-from qq_ai_bot.conversation.canonical_db_models import SpaceBindingIngestRouteModel
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-from qq_ai_bot.identity import canonical_uow
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.conversation.canonical_db_models import SpaceBindingIngestRouteModel
+from yuki.conversation.hydrate import ensure_canonical_conversation
+from yuki.identity import canonical_uow
+from yuki.identity.canonical_repository import (
     ensure_person,
     ensure_presence,
     find_identity_binding,
 )
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.social.models import OperationStatus, SocialError, SocialTarget
-from qq_ai_bot.social.repository import SocialOperationRepository
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.social.db_models import SocialOperationModel
+from yuki.social.models import OperationStatus, SocialError, SocialTarget
+from yuki.social.repository import SocialOperationRepository
 
 
 async def social(database):

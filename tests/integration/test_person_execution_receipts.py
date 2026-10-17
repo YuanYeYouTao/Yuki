@@ -13,25 +13,25 @@ from tests.integration.test_native_social_delivery import sends
 from tests.support.automation_unified_delivery_helpers import setup_run
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.client_api.identity import ClientIdentityService
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.conversation.hydrate import require_primary_alias_for_conversation
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.gateway.providers.telegram import TelegramAPIError
-from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.plugin_host.db_models import PluginMediaArtifactModel
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
-from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.social.models import OperationStatus, SocialError
+from yuki.automation.models import RunStatus
+from yuki.client_api.identity import ClientIdentityService
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.hydrate import require_primary_alias_for_conversation
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.domain.tool_actor import ToolActor
+from yuki.gateway.providers.telegram import TelegramAPIError
+from yuki.identity.db_models import IdentityBindingModel, PresenceModel
+from yuki.persistence.models import ChatEventModel
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.plugin_host.db_models import PluginMediaArtifactModel
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
+from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
+from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki.runtime.origin import TurnOrigin
+from yuki.social.db_models import SocialOperationModel
+from yuki.social.models import OperationStatus, SocialError
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
 

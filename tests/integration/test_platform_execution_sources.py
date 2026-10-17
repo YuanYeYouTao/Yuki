@@ -14,18 +14,18 @@ from tests.unit.test_client_api import bearer
 from tests.unit.test_client_works import owner
 from tests.unit.test_personal_entry_contract import admin as admin
 
-from qq_ai_bot.automation.repository import AutomationRepository
-from qq_ai_bot.automation.service import AutomationService
-from qq_ai_bot.automation.tools import AutomationToolService
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.db_models import PresenceModel
-from qq_ai_bot.persistence.models import AutomationModel
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.time.service import TimeContextService
-from qq_ai_bot.workspace.short_state import ShortState
+from yuki.automation.repository import AutomationRepository
+from yuki.automation.service import AutomationService
+from yuki.automation.tools import AutomationToolService
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.db_models import PresenceModel
+from yuki.persistence.models import AutomationModel
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.work_repository import WorkRepository
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.time.service import TimeContextService
+from yuki.workspace.short_state import ShortState
 from yuki_plugin_sdk.permissions import PluginPermission
 
 
@@ -101,7 +101,7 @@ async def test_app_automation_create_keeps_canonical_owner_and_original_scene(ap
         json.loads(row.authority_snapshot_json)["canonical_conversation_id"]
         == principal.conversation_id
     )
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
     async with database.sessions() as reader:
         conversation = await reader.get(CanonicalConversationModel, principal.conversation_id)
@@ -156,10 +156,10 @@ async def test_telegram_host_continuation_quiet_keeps_topics_independent(
     from tests.support.semantic_participation_host_helpers import _host
     from yuki_participation.self_report import SelfDelta, SelfReport
 
-    from qq_ai_bot.admin.config_service import RuntimeConfigService
-    from qq_ai_bot.identity.canonical_repository import create_space_binding
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.services.participation_feedback import admission_unit_binding
+    from yuki.admin.config_service import RuntimeConfigService
+    from yuki.identity.canonical_repository import create_space_binding
+    from yuki.persistence.models import ChatEventModel
+    from yuki.services.participation_feedback import admission_unit_binding
 
     env = telegram_env
     host, _ = await _host(database, tmp_path)
@@ -357,7 +357,7 @@ async def test_app_child_keeps_entry_contract_and_runs_without_connection_gate(
 
 
 async def test_unknown_sdk_send_does_not_block_next_explicit_send(app_env, database, monkeypatch):
-    from qq_ai_bot.gateway.providers.app.social import AppSocialOperations
+    from yuki.gateway.providers.app.social import AppSocialOperations
 
     env = app_env
     chat, source = await app_source(env, database, monkeypatch)
@@ -411,7 +411,7 @@ async def test_telegram_sdk_current_profiles_use_original_person_and_space(
     await drain_telegram(env)
     assert len(captured) == 1
     runtime = captured[0]
-    from qq_ai_bot.memory.models import MemoryFactCreate
+    from yuki.memory.models import MemoryFactCreate
 
     facts = chat._memories
     personal_fact = await facts.remember(
@@ -500,8 +500,8 @@ async def test_group_migration_preserves_original_work_and_native_send(
     from tests.integration.test_telegram_runtime import drain as drain_telegram
     from tests.integration.test_telegram_runtime import update
 
-    from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-    from qq_ai_bot.services.execution_sources import recover_execution_source
+    from yuki.conversation.autonomy_repository import AutonomyRepository
+    from yuki.services.execution_sources import recover_execution_source
 
     env = telegram_env
     env.model._responder = lambda _: "original internal activation"
@@ -512,8 +512,8 @@ async def test_group_migration_preserves_original_work_and_native_send(
     chat = env.harness.processor._chat
     chat.runtime.runner.code_mode_settings = chat._settings  # application container binding
     async with database.sessions() as session:
-        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-        from qq_ai_bot.persistence.models import ChatEventModel
+        from yuki.conversation.canonical_db_models import CanonicalConversationModel
+        from yuki.persistence.models import ChatEventModel
 
         event = await session.scalar(
             select(ChatEventModel).where(ChatEventModel.direction == "inbound")
@@ -525,7 +525,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
         person, space = event.author_person_id, conversation.space_id
         binding_id = conversation.space_binding_id
     record = await env.harness.ledger.get_event(event_id)
-    from qq_ai_bot.services.execution_sources import recover_source
+    from yuki.services.execution_sources import recover_source
 
     base = {
         "origin": "user_message",
@@ -565,7 +565,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
             "instruction": "original self purpose",
         }
     elif origin == "scheduled_automation":
-        from qq_ai_bot.domain.tool_actor import ToolActor
+        from yuki.domain.tool_actor import ToolActor
 
         repository = AutomationRepository(database)
         settings = make_settings(database.url, automation_enabled=True)
@@ -654,7 +654,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
         load_tools=chat.runtime.runner.main_contract.definitions,
     )
     if origin == "self_initiative":
-        from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
+        from yuki.tool_results.recorder import ToolInvocationRepository
 
         chat._tool_invocations = ToolInvocationRepository(database)
     requests_before_worker = len(env.model.requests)
@@ -662,7 +662,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
     final = await works.get(child_id)
     assert final["state"] == "completed" and final["source_json"] == before["source_json"]
     assert final["model_requests"] == 1 and final["tool_calls"] == 1
-    from qq_ai_bot.runtime.work_budget_schema import budgets
+    from yuki.runtime.work_budget_schema import budgets
 
     async with database.sessions() as reader:
         shared = (
@@ -679,7 +679,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
     sends = [params for method, params in env.wire if method == "sendMessage"]
     assert len(sends) == 1 and sends[0]["chat_id"] == "-10042"
     if origin == "self_initiative":
-        from qq_ai_bot.persistence.models import MemoryToolReceiptModel
+        from yuki.persistence.models import MemoryToolReceiptModel
 
         async with database.sessions() as session:
             receipt = (
@@ -715,13 +715,13 @@ async def test_app_sdk_admin_grants_an_explicit_telegram_topic(
     from tests.integration.test_telegram_runtime import drain as drain_telegram
     from tests.integration.test_telegram_runtime import update
 
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
-    from qq_ai_bot.plugin_host.notification_delivery import (
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
+    from yuki.plugin_host.notification_delivery import (
         PlatformNotificationTransport,
         PluginNotificationOutboxWorker,
     )
-    from qq_ai_bot.services.effect_gate import ConversationEffectGate
+    from yuki.services.effect_gate import ConversationEffectGate
     from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
     tg = telegram_env

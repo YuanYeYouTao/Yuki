@@ -10,14 +10,14 @@ import pytest
 from sqlalchemy import select, update
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.execution_sources import recover_source
-from qq_ai_bot.web.models import WebMode, WebSearchResponse, WebSearchSource
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.runtime.work_repository import WorkConflict, WorkRepository
+from yuki.runtime.work_schema_v1 import work
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.execution_sources import recover_source
+from yuki.web.models import WebMode, WebSearchResponse, WebSearchSource
 from yuki_plugin_sdk.permissions import PluginPermission
 
 
@@ -239,8 +239,8 @@ async def test_cold_retry_keeps_original_work_after_retired_name_subset_is_remov
 async def test_notification_entry_keeps_its_own_approval_and_environment_needs_agent_run(
     database, tmp_path
 ):
-    from qq_ai_bot.plugin_host.facades import _agent_dependencies
-    from qq_ai_bot.plugin_host.main_turn import run_plugin_main_turn
+    from yuki.plugin_host.facades import _agent_dependencies
+    from yuki.plugin_host.main_turn import run_plugin_main_turn
 
     provider = FakeLLMProvider()
     _, harness, chat, source, host = await source_host(database, tmp_path, provider, ())
@@ -292,12 +292,12 @@ async def test_notification_entry_keeps_its_own_approval_and_environment_needs_a
     "permission", [PluginPermission.AGENT_RUN, PluginPermission.NOTIFICATION_AGENT]
 )
 async def test_main_clock_does_not_require_automation_approval(database, tmp_path, permission):
-    from qq_ai_bot.automation.repository import AutomationRepository
-    from qq_ai_bot.automation.service import AutomationService
-    from qq_ai_bot.automation.tools import AutomationToolService
-    from qq_ai_bot.plugin_host.facades import _agent_dependencies
-    from qq_ai_bot.plugin_host.main_turn import run_plugin_main_turn
-    from qq_ai_bot.time.service import TimeContextService
+    from yuki.automation.repository import AutomationRepository
+    from yuki.automation.service import AutomationService
+    from yuki.automation.tools import AutomationToolService
+    from yuki.plugin_host.facades import _agent_dependencies
+    from yuki.plugin_host.main_turn import run_plugin_main_turn
+    from yuki.time.service import TimeContextService
 
     provider = FakeLLMProvider()
     _, harness, chat, source, host = await source_host(database, tmp_path, provider, ())
@@ -350,7 +350,7 @@ async def test_self_main_memory_write_and_delete_keep_existing_sdk_approvals(
     from tests.integration.test_self_common_capabilities import runtime, self_actor
     from tests.unit.test_self_initiative_memory import _service
 
-    from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
+    from yuki.tool_results.recorder import ToolInvocationRepository
 
     provider = FakeLLMProvider()
     env, harness, chat, _, _ = await _scene(database, tmp_path, provider)

@@ -1,0 +1,158 @@
+"""Bounded Unix-socket client and deployment-stable tool contracts."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
+
+from yuki.domain.messages import ChatTool
+from yuki.sandbox.environment_tools import (
+    EXECUTION_TOOLS,
+    READ_TOOLS,
+    SANDBOX_TOOLS,
+    environment_tools,
+)
+from yuki.workspace.tools import WORKSPACE_READ_TOOLS, WORKSPACE_TOOLS
+
+if TYPE_CHECKING:
+    from yuki.sandbox.task_repository import SandboxTaskRepository
+
+
+def sandbox_tools() -> tuple[ChatTool, ...]:
+    return environment_tools()
+
+
+class SandboxClient:
+    def __init__(self, socket: Path, *, tasks: SandboxTaskRepository | None = None) -> None:
+        self.socket = socket
+        self.tasks = tasks
+
+    async def execute(
+        self,
+        name: str,
+        args: dict[str, Any],
+        *,
+        request_id: str,
+        source: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        message = (
+            json.dumps({"method": name, "args": args, "request_id": request_id}).encode() + b"\n"
+        )
+        if len(message) > 262144:
+            return {"error": "request_too_large", "retryable": False}
+        if name in EXECUTION_TOOLS and self.tasks is not None:
+            if source is None:
+                return {"error": "missing_task_source", "retryable": False}
+            # Must commit before any socket write, including uncertain submissions.
+            # Source never crosses into the execution container/Manager payload.
+            prepared = await self.tasks.prepare(
+                request_id,
+                {"tool": name, "arguments": args},
+                source,
+            )
+            if prepared is not None and prepared.status == "completed" and prepared.run_id is None:
+                return cast(dict[str, Any], json.loads(prepared.completion_json or "{}"))
+        submitted = False
+        try:
+            observation_wait = args.get("wait_seconds", 0) if name == "terminal_read" else 0
+            async with asyncio.timeout(
+                (25 if name == "workspace_media_read" else 7) + observation_wait
+            ):
+                connect = getattr(asyncio, "open_unix_connection", None)
+                if connect is None:
+                    return {"error": "sandbox_unavailable", "retryable": False}
+                reader, writer = await connect(
+                    str(self.socket),
+                    limit=(28 * 1024 * 1024 if name == "workspace_media_read" else 262144),
+                )
+                try:
+                    submitted = True
+                    writer.write(message)
+                    await writer.drain()
+                    result = json.loads(await reader.readline())
+                    if not isinstance(result, dict):
+                        raise ValueError("invalid_response")
+                    if (
+                        name in EXECUTION_TOOLS
+                        and self.tasks is not None
+                        and not result.get("run_id")
+                        and result.get("error")
+                        in {
+                            "environment_unavailable",
+                            "sandbox_unavailable",
+                            "invalid_command",
+                            "invalid_tty",
+                            "invalid_cwd",
+                            "invalid_timeout",
+                        }
+                    ):
+                        await self.tasks.reject(request_id, result)
+                    if name in EXECUTION_TOOLS and self.tasks is not None and result.get("run_id"):
+                        await self.tasks.bind_run(request_id, result["run_id"])
+                    await self._stage_result(name, request_id, result)
+                    return result
+                finally:
+                    writer.close()
+                    await writer.wait_closed()
+        except (OSError, ValueError, TimeoutError, NotImplementedError):
+            if name in EXECUTION_TOOLS:
+                recovered = await self.execute(
+                    "get_code_run_by_request",
+                    {"request_id": request_id},
+                    request_id=request_id,
+                )
+                if recovered.get("run_id"):
+                    if self.tasks is not None:
+                        await self.tasks.bind_run(request_id, recovered["run_id"])
+                    await self._stage_result(name, request_id, recovered)
+                    return recovered
+                return {
+                    "error": "sandbox_submission_unknown",
+                    "uncertain": True,
+                    "retryable": False,
+                    "request_id": request_id,
+                }
+            return {
+                "error": "sandbox_unavailable",
+                "retryable": False,
+                "uncertain": submitted
+                and name
+                in (
+                    (SANDBOX_TOOLS - READ_TOOLS)
+                    | (WORKSPACE_TOOLS - WORKSPACE_READ_TOOLS)
+                    | {"workspace_checkout"}
+                ),
+            }
+
+    async def _stage_result(self, name: str, request_id: str, result: dict[str, Any]) -> None:
+        if self.tasks is None or name not in SANDBOX_TOOLS:
+            return
+        # Cursor views must stage the same terminal receipt as the durable outbox.
+        if name == "terminal_read" and isinstance(result.get("completion"), dict):
+            result = result["completion"]
+        if result.get("pending") is not False or result.get("status") not in {
+            "succeeded",
+            "failed",
+            "cancelled",
+        }:
+            return
+        row = (
+            await self.tasks.get(request_id)
+            if name in EXECUTION_TOOLS
+            else await self.tasks.by_run(str(result.get("run_id")))
+        )
+        if row is None:
+            return
+        await self.tasks.receive(
+            {"request_id": row.request_id, "run_id": result["run_id"], "result": result}
+        )
+        from yuki.runtime.execution_receipts import current_receipts
+        from yuki.runtime.work_activation import current_work_control
+
+        receipts = current_receipts.get()
+        control = current_work_control.get()
+        if receipts is not None and control is not None and control.current is not None:
+            if json.loads(row.source_json).get("work_id") == control.current["id"]:
+                receipts.staged[row.request_id] = self.tasks

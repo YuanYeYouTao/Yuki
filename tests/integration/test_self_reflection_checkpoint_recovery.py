@@ -10,16 +10,16 @@ from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_self_initiative_memory import claim, finish, record, seed
 
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.self_reflection.control import ReflectionControlRepository
-from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-from qq_ai_bot.memory.self_reflection.service import (
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.self_reflection.control import ReflectionControlRepository
+from yuki.memory.self_reflection.repository import SelfReflectionRepository
+from yuki.memory.self_reflection.service import (
     _CHECKPOINT,
     ReflectionCheckpoint,
     SelfReflectionMutationError,
     SelfReflectionService,
 )
-from qq_ai_bot.persistence.models import (
+from yuki.persistence.models import (
     MemoryClaimCandidateEvidenceModel,
     MemoryClaimCandidateModel,
     MemoryFactModel,

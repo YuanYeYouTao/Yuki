@@ -10,14 +10,14 @@ import pytest
 from sqlalchemy import select, update
 from tests.unit.test_rebuild_receipt_finalization import _seed
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from qq_ai_bot.memory.extraction import source_event_fingerprint
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import (
+from yuki.domain.conversations import ScopeType
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.memory.extraction import source_event_fingerprint
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.persistence.database import Database
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import (
     MemoryJobModel,
     MemoryRebuildItemModel,
     MemoryRebuildRunModel,
@@ -169,7 +169,7 @@ async def test_original_reference_survives_current_changes_but_not_real_erasure(
 
                 await transfer_account(database, "3003")
             elif change == "forget":
-                from qq_ai_bot.persistence.people_repository import PeopleRepository
+                from yuki.persistence.people_repository import PeopleRepository
 
                 assert await PeopleRepository(database).delete_person_id(person_id)
             else:
@@ -187,14 +187,14 @@ async def test_original_reference_survives_current_changes_but_not_real_erasure(
                             .values(status="disabled", revision=IdentityBindingModel.revision + 1)
                         )
                     elif change == "rename":
-                        from qq_ai_bot.identity.person_identity import rename_person
+                        from yuki.identity.person_identity import rename_person
 
                         await rename_person(
                             writer, person_id, "新的当前名字", now=datetime.now(UTC)
                         )
                     else:
-                        from qq_ai_bot.identity.canonical_repository import find_identity_binding
-                        from qq_ai_bot.identity.person_identity import merge_persons
+                        from yuki.identity.canonical_repository import find_identity_binding
+                        from yuki.identity.person_identity import merge_persons
 
                         target = (await find_identity_binding(writer, "1002")).person_id
                         await merge_persons(writer, person_id, target)

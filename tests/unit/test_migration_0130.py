@@ -11,8 +11,8 @@ from alembic.config import Config
 from tests.conftest import make_settings
 from tests.unit.test_migration_0119 import _seed_0118
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.persistence.database import Database
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.persistence.database import Database
 
 
 @pytest.mark.parametrize("existing_trigger", [None, 70000])

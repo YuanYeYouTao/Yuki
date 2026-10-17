@@ -12,22 +12,22 @@ from tests.support.runtime_execution import make_work_resumer
 from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-from qq_ai_bot.admin.authority.commands import ControlCommand
-from qq_ai_bot.admin.authority.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.admin_api.commands import AdminCommands
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.identity import PrincipalId, RequestId
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.llm.base import LLMUnavailableError
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_recovery_schema import recovery
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
-from qq_ai_bot.runtime.work_scheduler import WorkScheduler
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, scope, work
-from qq_ai_bot.runtime.work_wait import WorkWaitRepository
-from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.admin.authority.commands import ControlCommand
+from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
+from yuki.admin_api.commands import AdminCommands
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.identity import PrincipalId, RequestId
+from yuki.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
+from yuki.llm.base import LLMUnavailableError
+from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_recovery_schema import recovery
+from yuki.runtime.work_repository import WorkConflict, WorkRepository
+from yuki.runtime.work_scheduler import WorkScheduler
+from yuki.runtime.work_schema_v1 import effects, inputs, journal, scope, work
+from yuki.runtime.work_wait import WorkWaitRepository
+from yuki.services.rate_limit import SlidingWindowRateLimiter
+from yuki.services.turn_transcript import TurnTranscript
 
 
 async def public_action(database, row, action):
@@ -257,8 +257,8 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
         )
     deferred = None
     if action.startswith("deferred-"):
-        from qq_ai_bot.runtime.activation_outcome import WorkRecoveryDeferred
-        from qq_ai_bot.runtime.work_activation import bind_work_activation
+        from yuki.runtime.activation_outcome import WorkRecoveryDeferred
+        from yuki.runtime.work_activation import bind_work_activation
 
         owner = await repository.acquire(original["conversation_id"], original["generation"])
 
@@ -557,7 +557,7 @@ async def test_persistent_maintenance_errors_do_not_block_original_work_selectio
 ):
     from tests.unit.test_work_settlement_writer import _running_work
 
-    from qq_ai_bot.runtime.protocol_store import ProtocolStore
+    from yuki.runtime.protocol_store import ProtocolStore
 
     repository, lease, control = await _running_work(database, tmp_path)
     row = await repository.transition(
@@ -592,7 +592,7 @@ async def test_persistent_maintenance_errors_do_not_block_original_work_selectio
 
 
 async def test_message_recovery_uses_original_event_account_and_canonical_owner(database, tmp_path):
-    from qq_ai_bot.services.execution_sources import recover_source
+    from yuki.services.execution_sources import recover_source
 
     provider = FakeLLMProvider()
     provider._responder = original_responses(provider)
@@ -627,10 +627,10 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
 ):
     from tests.support.automation_unified_delivery_helpers import sent, setup_run
 
-    from qq_ai_bot.automation.models import RunStatus
-    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-    from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
-    from qq_ai_bot.runtime.work_activation import current_work_control
+    from yuki.automation.models import RunStatus
+    from yuki.domain.conversations import ConversationScope, ScopeType
+    from yuki.persistence.models import AutomationModel, AutomationRunModel
+    from yuki.runtime.work_activation import current_work_control
 
     wait_for_timer = principal == "person" and not promoted
     case = await setup_run(
@@ -683,9 +683,9 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
     if promoted:
         from uuid import uuid4
 
-        from qq_ai_bot.automation.authority import PermissionLevel
-        from qq_ai_bot.automation.control_context import resolve_execution_identity
-        from qq_ai_bot.identity.db_models import IdentityBindingModel
+        from yuki.automation.authority import PermissionLevel
+        from yuki.automation.control_context import resolve_execution_identity
+        from yuki.identity.db_models import IdentityBindingModel
 
         assert "9000" in case.settings.superusers
         case.settings.superusers_csv = "9000,9001"
@@ -781,7 +781,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         assert owner_before["claimed_by"] == "independent-original-owner"
     await scheduler.drain_once()
     if wait_for_timer:
-        from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+        from yuki.runtime.work_wait import WorkWaitRepository
 
         assert (await repository.get(child["id"]))["state"] == "waiting_external"
         waits = WorkWaitRepository(repository)
@@ -820,15 +820,15 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
 async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
     database, tmp_path, authority, monkeypatch
 ):
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.plugin_host.facades import (
+    from yuki.persistence.models import ChatEventModel
+    from yuki.plugin_host.facades import (
         HostPluginContext,
         PluginFacadeServices,
         PluginInvocation,
     )
-    from qq_ai_bot.plugin_host.main_turn import resume_plugin_work
-    from qq_ai_bot.plugin_host.manifest import PluginManifest
-    from qq_ai_bot.runtime.origin import TurnOrigin
+    from yuki.plugin_host.main_turn import resume_plugin_work
+    from yuki.plugin_host.manifest import PluginManifest
+    from yuki.runtime.origin import TurnOrigin
     from yuki_plugin_sdk.api import PLUGIN_API_VERSION
     from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -1043,9 +1043,9 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
 
     from tests.support.background_authority import approve_background_plugin
 
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.plugin_host.background_turns import PluginBackgroundTurnWorker
-    from qq_ai_bot.plugin_host.db_models import PluginBackgroundTurnJobModel
+    from yuki.persistence.models import ChatEventModel
+    from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
+    from yuki.plugin_host.db_models import PluginBackgroundTurnJobModel
     from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
     provider = FakeLLMProvider()

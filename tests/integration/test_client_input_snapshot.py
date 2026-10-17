@@ -9,12 +9,12 @@ from tests.unit.test_admin_api import admin as admin
 from tests.unit.test_client_works import app_env as app_env
 from tests.unit.test_client_works import owner, seeded
 
-from qq_ai_bot.client_api.errors import ClientError
-from qq_ai_bot.client_api.works import ClientWorks
-from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
-from qq_ai_bot.identity import canonical_uow
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_schema_v1 import inputs, work
+from yuki.client_api.errors import ClientError
+from yuki.client_api.works import ClientWorks
+from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
+from yuki.identity import canonical_uow
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_schema_v1 import inputs, work
 
 
 async def test_work_completed_during_preparation_keeps_receipt_without_accepting_input(

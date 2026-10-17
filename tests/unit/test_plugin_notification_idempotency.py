@@ -12,18 +12,18 @@ import pytest
 from sqlalchemy import event, func, select
 from sqlalchemy.exc import IntegrityError
 
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.plugin_host import notification_repository as notification_repository_module
-from qq_ai_bot.plugin_host.db_models import (
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.persistence.database import Database
+from yuki.persistence.models import ChatEventModel
+from yuki.plugin_host import notification_repository as notification_repository_module
+from yuki.plugin_host.db_models import (
     PluginBackgroundTurnJobModel,
     PluginInstallationModel,
     PluginMediaArtifactModel,
     PluginNotificationOutboxModel,
 )
-from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
-from qq_ai_bot.plugin_host.notification_manifest import (
+from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
+from yuki.plugin_host.notification_manifest import (
     canonical_json,
     canonical_occurred_at,
     is_sha256_digest,
@@ -31,7 +31,7 @@ from qq_ai_bot.plugin_host.notification_manifest import (
     media_part_key,
     parse_media_part_key,
 )
-from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
+from yuki.plugin_host.notification_repository import PluginNotificationRepository
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
@@ -45,8 +45,8 @@ _PRESENCE = ""
 
 @pytest.fixture(autouse=True)
 async def canonical_notification_targets(database, monkeypatch):
-    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-    from qq_ai_bot.identity.canonical_repository import (
+    from yuki.conversation.hydrate import ensure_canonical_conversation
+    from yuki.identity.canonical_repository import (
         find_identity_binding,
         find_presence,
         find_space_binding,

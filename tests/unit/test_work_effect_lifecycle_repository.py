@@ -11,12 +11,12 @@ from sqlalchemy import event, select, update
 from tests.support.semantic_participation_host_helpers import _event_and_route
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository, encode_json
-from qq_ai_bot.runtime.work_schema_v1 import effects, scope, work
-from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkConflict, WorkRepository, encode_json
+from yuki.runtime.work_schema_v1 import effects, scope, work
+from yuki.sandbox.task_repository import SandboxTaskRepository
 
 
 @pytest_asyncio.fixture
@@ -757,8 +757,8 @@ async def test_legacy_nondict_data_preserves_root_lifecycle_facts(owned, data, r
 async def test_native_final_receipts_keep_domain_proof_without_exempting_tools(
     owned, kind, state, stored, proven
 ):
-    from qq_ai_bot.runtime.effect_outcomes import ResultCapture, current_result_capture
-    from qq_ai_bot.runtime.work_journal import WorkJournal
+    from yuki.runtime.effect_outcomes import ResultCapture, current_result_capture
+    from yuki.runtime.work_journal import WorkJournal
 
     repo, lease, identity = owned
     await repo.prepare_effect(lease, identity, "native-final", kind)

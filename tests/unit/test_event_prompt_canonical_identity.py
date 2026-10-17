@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.persistence.repository_records import EventRecord
+from yuki.conversation.frozen_fragments import FrozenFragments
+from yuki.domain.conversations import ScopeType
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.persistence.repository_records import EventRecord
 
 PERSON_A = "00000000-0000-4000-8000-000000000001"
 PERSON_B = "00000000-0000-4000-8000-000000000002"

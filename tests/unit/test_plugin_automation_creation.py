@@ -4,8 +4,8 @@ import pytest
 from tests.integration.test_self_common_capabilities import runtime
 from tests.support.automation_unified_delivery_helpers import setup_run
 
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
 from yuki_plugin_sdk.permissions import PluginPermission
 
 

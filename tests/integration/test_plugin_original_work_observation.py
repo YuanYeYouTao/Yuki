@@ -11,11 +11,11 @@ from sqlalchemy import func, select, update
 from tests.integration.test_plugin_agent_domain_grants import source_host
 from tests.unit.test_history_dispatch_ownership import _tool
 
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.plugin_host import main_turn
-from qq_ai_bot.plugin_host.facades import HostPluginContext
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import work
+from yuki.llm.fake import FakeLLMProvider
+from yuki.plugin_host import main_turn
+from yuki.plugin_host.facades import HostPluginContext
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import work
 from yuki_plugin_sdk.permissions import PluginPermission
 
 

@@ -17,8 +17,8 @@ plugin.toml
 ## SDK 与 Host
 
 - `yuki_plugin_sdk`：稳定、依赖轻的公开 Protocol、Pydantic 模型、枚举和测试 Fake。
-- `qq_ai_bot.plugin_host`：Host 私有实现，负责发现、批准、名称冲突、事件超时、数据隔离和权限校验。
-- 插件：只能依赖 SDK。不要导入 `qq_ai_bot`、访问 `_` 开头属性或保存 Host 内部对象。
+- `yuki.plugin_host`：Host 私有实现，负责发现、批准、名称冲突、事件超时、数据隔离和权限校验。
+- 插件：只能依赖 SDK。不要导入 `yuki`、访问 `_` 开头属性或保存 Host 内部对象。
 
 `register()` 得到的是声明型 `PluginRegistrar`，没有运行时 Facade；`start()` 才得到已绑定
 `plugin_id`、真实运行主体/场景和已批准权限的 `PluginContext`。SELF 不需要真人 Inbound；

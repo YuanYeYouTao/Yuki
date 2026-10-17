@@ -10,8 +10,8 @@ from sqlalchemy import text
 from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversations
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
+from yuki.persistence.database import Database
+from yuki.sandbox.db_models import SandboxTaskRunModel
 
 QUERY = """EXPLAIN QUERY PLAN
 SELECT s.run_id FROM sandbox_task_runs s JOIN runtime_work w

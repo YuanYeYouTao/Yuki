@@ -11,13 +11,13 @@ from sqlalchemy.exc import OperationalError
 from tests.support.work_runner_helpers import case, run, tool
 from tests.unit.test_work_journal_source_retry import _change, _saved, _session
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse
-from qq_ai_bot.llm.base import LLMUnavailableError
-from qq_ai_bot.runtime.activation_outcome import WorkRecoveryDeferred
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_journal import JournalUnavailable, WorkJournal
-from qq_ai_bot.runtime.work_repository import WorkConflict
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import ChatMessage, ChatResponse
+from yuki.llm.base import LLMUnavailableError
+from yuki.runtime.activation_outcome import WorkRecoveryDeferred
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_journal import JournalUnavailable, WorkJournal
+from yuki.runtime.work_repository import WorkConflict
 
 
 def fail_publications(
@@ -122,7 +122,7 @@ async def test_paid_checkpoint_busy_exits_on_original_cancellation_or_lost_lease
     persisted = await test_case.repository.get(test_case.control.current["id"])
     assert persisted["model_requests"] == 1
     assert persisted["tool_calls"] == (0 if phase == "response" else 1)
-    from qq_ai_bot.runtime.work_schema_v1 import journal
+    from yuki.runtime.work_schema_v1 import journal
 
     async with test_case.repository.database.sessions() as reader:
         record = (

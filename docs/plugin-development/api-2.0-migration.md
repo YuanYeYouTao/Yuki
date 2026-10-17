@@ -68,5 +68,5 @@ ToolMetadata(
 3. 需要自主群提示时改为 `register_admission_signal`。
 4. Prompt `target` 只保留 `agent`；独立插件会话仍使用 `agent_sessions`。
 5. 为工具补 namespace/aliases/use_when/tags（可选，但名称冲突由 Host 拒绝）。
-6. `uv run qq-ai-bot-cli plugin validate <path>`，再 `plugin test`。
+6. `uv run yuki plugin validate <path>`，再 `plugin test`。
 7. 部署后重新 `discover` / 审阅 / `approve` / `enable`，或通过 Guided Setup 的 pending 一次应用。

@@ -7,16 +7,16 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from tests.conftest import make_settings
 
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-from qq_ai_bot.capabilities.models import CapabilityEffect
-from qq_ai_bot.capabilities.results import resolve_mutation_commit
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.sandbox.client import SandboxClient
-from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
+from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+from yuki.capabilities.models import CapabilityEffect
+from yuki.capabilities.results import resolve_mutation_commit
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.service import MemoryFactService
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.sandbox.client import SandboxClient
+from yuki.services.agent_tools import AgentToolService, ToolRuntime
 
 
 @pytest.mark.parametrize(

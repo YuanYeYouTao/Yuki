@@ -8,17 +8,17 @@ from sqlalchemy import select
 from tests.unit.test_dream_owner_projection import _scene
 from tests.unit.test_memory_rebuild import _admin, _service
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.dream.db_models import MemoryDreamClusterPreviewModel
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.persistence.models import MemoryRebuildProposalModel
-from qq_ai_bot.persistence.people_repository import PeopleRepository
+from yuki.domain.conversations import ScopeType
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.dream.db_models import MemoryDreamClusterPreviewModel
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.persistence.models import MemoryRebuildProposalModel
+from yuki.persistence.people_repository import PeopleRepository
 
 
 async def merge_people(database, source, target):
-    from qq_ai_bot.identity.person_identity import merge_persons
+    from yuki.identity.person_identity import merge_persons
 
     return await database.apply_snapshot_write(
         lambda session: merge_persons(session, source, target)
@@ -32,12 +32,12 @@ async def test_forget_whole_family_preserves_original_social_receipt_and_other_p
 
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.identity.db_models import CanonicalPersonModel
-    from qq_ai_bot.persistence.models import ChatEventModel, PersonAliasModel
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-    from qq_ai_bot.social.db_models import SocialOperationModel
-    from qq_ai_bot.social.service import SocialContext
+    from yuki.domain.conversations import ConversationScope
+    from yuki.identity.db_models import CanonicalPersonModel
+    from yuki.persistence.models import ChatEventModel, PersonAliasModel
+    from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+    from yuki.social.db_models import SocialOperationModel
+    from yuki.social.service import SocialContext
 
     env = await social_env(database, tmp_path)
     incoming = (
@@ -98,11 +98,11 @@ async def test_forget_whole_family_preserves_original_social_receipt_and_other_p
 
 
 async def test_forget_cleans_sandbox_and_detaches_other_authors_event_references(database):
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-    from qq_ai_bot.sandbox.db_models import SandboxTaskContinuationModel
-    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+    from yuki.domain.conversations import ConversationScope
+    from yuki.persistence.models import ChatEventModel
+    from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+    from yuki.sandbox.db_models import SandboxTaskContinuationModel
+    from yuki.sandbox.task_repository import SandboxTaskRepository
 
     ledger = ScopedEventLedgerUnitOfWork(database)
     origin = (
@@ -181,8 +181,8 @@ async def test_forget_cleans_sandbox_and_detaches_other_authors_event_references
 async def test_current_memory_scope_reads_merged_person_and_private_self_without_new_binding(
     database,
 ):
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.memory.enums import (
+    from yuki.domain.conversations import ConversationScope
+    from yuki.memory.enums import (
         MemoryAuthority,
         MemoryEvidenceRelation,
         MemoryKind,
@@ -190,11 +190,11 @@ async def test_current_memory_scope_reads_merged_person_and_private_self_without
         MemorySourceType,
         SelfMemoryVisibility,
     )
-    from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate, MemoryFactQuery
-    from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
-    from qq_ai_bot.memory.repository import MemoryFactRepository
-    from qq_ai_bot.memory.service import MemoryFactService
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+    from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate, MemoryFactQuery
+    from yuki.memory.read_scope import MemoryReadScopeResolver
+    from yuki.memory.repository import MemoryFactRepository
+    from yuki.memory.service import MemoryFactService
+    from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
     async with database.sessions() as reader:
         source = (await find_identity_binding(reader, "1001")).person_id
@@ -263,13 +263,13 @@ async def test_current_memory_scope_reads_merged_person_and_private_self_without
 
 @pytest.mark.parametrize("owner", ["person_group", "self_private"])
 async def test_paid_dream_preview_survives_person_merge_with_original_proof(database, owner):
-    from qq_ai_bot.memory.dream.service import DreamBudgetExhausted
+    from yuki.memory.dream.service import DreamBudgetExhausted
 
     provider = FakeLLMProvider(
         lambda _: '{"actions":[{"operation":"keep","source_refs":["memory_1","memory_2"]}]}'
     )
     service, facts, dreams, run, cluster, rows = await _scene(database, provider, owner=owner)
-    from qq_ai_bot.model_runtime.request_accounting import before_provider_request
+    from yuki.model_runtime.request_accounting import before_provider_request
 
     async def reserve_paid_request():
         assert await dreams.reserve_model_call(
@@ -378,7 +378,7 @@ async def test_rebuild_keeps_original_legacy_mention_after_account_transfer(data
     )
     run = await service.commit(run.public_id, actor_user_id=await _admin(database))
     assert await service.process_commit_once(run) == 1
-    from qq_ai_bot.persistence.models import MemoryFactModel
+    from yuki.persistence.models import MemoryFactModel
 
     async with database.sessions() as reader:
         fact = await reader.scalar(select(MemoryFactModel))
@@ -392,17 +392,17 @@ async def test_new_dream_merges_same_person_original_facts_without_rewriting_sou
     from tests.unit.test_dream_owner_projection import _service as dream_service
     from tests.unit.test_memory_dream import _empty_dream_statistics
 
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.memory.dream.models import DreamRunMode
-    from qq_ai_bot.memory.enums import (
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.memory.dream.models import DreamRunMode
+    from yuki.memory.enums import (
         MemoryAuthority,
         MemoryEvidenceRelation,
         MemoryKind,
         MemoryScopeType,
         MemorySourceType,
     )
-    from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
-    from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
+    from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
+    from yuki.memory.quality.audit import MemoryProductionQualityAudit
 
     provider = FakeLLMProvider(
         lambda _: (
@@ -453,9 +453,9 @@ async def test_new_dream_merges_same_person_original_facts_without_rewriting_sou
     )
     from tests.unit.test_memory_retrieval import _query
 
-    from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-    from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
-    from qq_ai_bot.memory.retrieval import MemoryRetriever
+    from yuki.memory.fts import SQLiteMemoryFTSIndex
+    from yuki.memory.read_scope import MemoryReadScopeResolver
+    from yuki.memory.retrieval import MemoryRetriever
 
     lexical = SQLiteMemoryFTSIndex(database)
     await lexical.rebuild()
@@ -533,24 +533,24 @@ async def test_forget_target_only_keeps_other_group_self_experience_and_tool_rec
     from tests.unit.test_memory_mutation import _service as mutation_service
     from tests.unit.test_self_initiative_memory import claim, record
 
-    from qq_ai_bot.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
-    from qq_ai_bot.conversation.autonomy_db_models import (
+    from yuki.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
+    from yuki.conversation.autonomy_db_models import (
         InitiativeFeedbackModel,
         InitiativeRunModel,
     )
-    from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.conversation.initiative_sources import source_revision
-    from qq_ai_bot.memory.enums import MemoryKind, MemoryScopeType, SelfMemoryVisibility
-    from qq_ai_bot.memory.mutation.models import (
+    from yuki.conversation.autonomy_repository import AutonomyRepository
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.conversation.initiative_sources import source_revision
+    from yuki.memory.enums import MemoryKind, MemoryScopeType, SelfMemoryVisibility
+    from yuki.memory.mutation.models import (
         MemoryDecisionActorType,
         MemoryMutationContext,
         MemoryMutationOperation,
         MemoryMutationRequest,
         MemoryMutationTarget,
     )
-    from qq_ai_bot.memory.subjects import ResolvedSubject
-    from qq_ai_bot.persistence.models import ChatEventModel, MemoryToolReceiptModel
+    from yuki.memory.subjects import ResolvedSubject
+    from yuki.persistence.models import ChatEventModel, MemoryToolReceiptModel
 
     service, facts, ledger, _processor = mutation_service(database, self_memory_enabled=True)
     event, _ = await ledger.append(
@@ -637,17 +637,17 @@ async def test_forget_removes_initiative_receipts_with_actually_erased_source(
 ):
     from tests.unit.test_self_initiative_memory import record
 
-    from qq_ai_bot.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
-    from qq_ai_bot.conversation.autonomy_db_models import (
+    from yuki.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
+    from yuki.conversation.autonomy_db_models import (
         InitiativeFeedbackModel,
         InitiativeRunModel,
     )
-    from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.conversation.initiative_sources import source_revision
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.persistence.models import ChatEventModel, MemoryToolReceiptModel
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+    from yuki.conversation.autonomy_repository import AutonomyRepository
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.conversation.initiative_sources import source_revision
+    from yuki.domain.conversations import ConversationScope
+    from yuki.persistence.models import ChatEventModel, MemoryToolReceiptModel
+    from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
     ledger = ScopedEventLedgerUnitOfWork(database)
     events = []
@@ -704,9 +704,9 @@ async def test_forget_removes_initiative_receipts_with_actually_erased_source(
 
 
 async def test_reflection_keeps_each_original_person_stream_after_merge(database):
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+    from yuki.domain.conversations import ConversationScope
+    from yuki.memory.self_reflection.repository import SelfReflectionRepository
+    from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
     repository = SelfReflectionRepository(database)
     await repository.scan_new_events()

@@ -9,14 +9,14 @@ import pytest
 import tomlkit
 from tests.conftest import make_settings
 
-from qq_ai_bot.admin.config_files import ConfigFileService
-from qq_ai_bot.application.lifecycle import LifecycleRegistry
-from qq_ai_bot.application.modules import web as web_module
-from qq_ai_bot.application.modules.web import HotWebSearchProvider, WebModule
-from qq_ai_bot.domain.messages import ChatResponse, CitationOrigin, ResponseCitation
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.models import (
+from yuki.admin.config_files import ConfigFileService
+from yuki.application.lifecycle import LifecycleRegistry
+from yuki.application.modules import web as web_module
+from yuki.application.modules.web import HotWebSearchProvider, WebModule
+from yuki.domain.messages import ChatResponse, CitationOrigin, ResponseCitation
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.executor import TaskModelExecutor
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
@@ -24,15 +24,15 @@ from qq_ai_bot.model_runtime.models import (
     ModelSearchMode,
     ModelTask,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog, parse_model_profile_catalog
-from qq_ai_bot.model_runtime.routes import ModelRouter
-from qq_ai_bot.web.base import WebSearchError
-from qq_ai_bot.web.models import WebMode, WebSearchRequest, WebSearchResponse, WebSearchSource
-from qq_ai_bot.web.native_bridge import NativeSearchBridge
-from qq_ai_bot.web.page_extractor import DirectPageExtractor
-from qq_ai_bot.web.route_context import current_web_model_task
-from qq_ai_bot.web.search_config import effective_search_profile
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import ModelProfileCatalog, parse_model_profile_catalog
+from yuki.model_runtime.routes import ModelRouter
+from yuki.web.base import WebSearchError
+from yuki.web.models import WebMode, WebSearchRequest, WebSearchResponse, WebSearchSource
+from yuki.web.native_bridge import NativeSearchBridge
+from yuki.web.page_extractor import DirectPageExtractor
+from yuki.web.route_context import current_web_model_task
+from yuki.web.search_config import effective_search_profile
 
 
 def profile(name, protocol, *, provider="agm", search_mode=None):

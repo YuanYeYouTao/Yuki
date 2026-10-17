@@ -9,21 +9,21 @@ from sqlalchemy import func, select
 from tests.support.automation_unified_delivery_helpers import sent, setup_run
 from tests.support.runtime_execution import make_work_resumer
 
-from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
-from qq_ai_bot.memory.models import MemoryScopeType
-from qq_ai_bot.memory.self_origin import read_self_initiative_facts
-from qq_ai_bot.persistence.models import (
+from yuki.automation.models import RunStatus
+from yuki.conversation.autonomy_repository import AutonomyRepository
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.domain.tool_actor import ToolActor
+from yuki.memory.authorized_scope import AuthorizedMemoryScope
+from yuki.memory.models import MemoryScopeType
+from yuki.memory.self_origin import read_self_initiative_facts
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryMutationReceiptModel,
     MemoryToolReceiptModel,
 )
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_schema_v1 import work
+from yuki.tool_results.recorder import ToolInvocationRepository
 
 
 async def self_actor(database, env):
@@ -216,11 +216,11 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
 async def test_self_schedule_sdk_read_records_its_actual_call_and_original_source(
     database, tmp_path, monkeypatch, caplog, work_enabled
 ):
-    from qq_ai_bot.memory.self_origin import resolve_self_origin
-    from qq_ai_bot.plugin_host import main_turn
-    from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-    from qq_ai_bot.runtime.work_schema_v1 import effects
-    from qq_ai_bot.workspace.service import WorkspaceService
+    from yuki.memory.self_origin import resolve_self_origin
+    from yuki.plugin_host import main_turn
+    from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+    from yuki.runtime.work_schema_v1 import effects
+    from yuki.workspace.service import WorkspaceService
     from yuki_plugin_sdk.permissions import PluginPermission
 
     case = await setup_run(

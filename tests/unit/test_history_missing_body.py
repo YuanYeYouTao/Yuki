@@ -11,16 +11,16 @@ from sqlalchemy import delete, event, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-from qq_ai_bot.conversation.projections import ProjectionConflict, PromptProjectionRepository
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.context_assembler import AssembledContext, ContextMetrics
-from qq_ai_bot.services.history_projection import prepare_history
-from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.frozen_fragments import FrozenFragments
+from yuki.conversation.projections import ProjectionConflict, PromptProjectionRepository
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatMessage
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.services.context_assembler import AssembledContext, ContextMetrics
+from yuki.services.history_projection import prepare_history
+from yuki.services.turn_coordinator import HistorySourceChangedError
 
 
 @contextmanager
@@ -470,7 +470,7 @@ async def test_missing_bodies_are_parameter_bounded_on_real_sqlite(database, mon
 
 
 async def test_missing_history_uses_saved_conversation_after_alias_removal(database):
-    from qq_ai_bot.conversation.canonical_db_models import ConversationLegacyAliasModel
+    from yuki.conversation.canonical_db_models import ConversationLegacyAliasModel
 
     ledger, context, _seed = await scene(database, 16)
     secondary = ConversationScope.private(context.read_version.scope.bot_user_id, "secondary")

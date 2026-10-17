@@ -9,14 +9,14 @@ from pathlib import Path
 import pytest
 import tomlkit
 
-from qq_ai_bot.deployment_setup.command import (
+from yuki.deployment_setup.command import (
     _configure,
     _page_gateway,
     _page_web,
     _review_and_commit,
     _SetupDraft,
 )
-from qq_ai_bot.deployment_setup.service import (
+from yuki.deployment_setup.service import (
     EnvironmentDocument,
     SetupConfiguration,
     SetupPaths,
@@ -28,10 +28,10 @@ from qq_ai_bot.deployment_setup.service import (
     selected_gateway_providers,
     validate_configuration,
 )
-from qq_ai_bot.deployment_setup.terminal import TerminalUI
-from qq_ai_bot.model_runtime.models import ModelProtocol, ModelSearchMode
-from qq_ai_bot.model_runtime.profiles import parse_model_profile_catalog
-from qq_ai_bot.model_runtime.secrets import encode_model_secrets, model_secrets_path
+from yuki.deployment_setup.terminal import TerminalUI
+from yuki.model_runtime.models import ModelProtocol, ModelSearchMode
+from yuki.model_runtime.profiles import parse_model_profile_catalog
+from yuki.model_runtime.secrets import encode_model_secrets, model_secrets_path
 
 
 @pytest.mark.parametrize("profiles", ["", "external", "custom-a,custom-b"])

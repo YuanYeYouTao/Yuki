@@ -8,14 +8,14 @@ import pytest
 from sqlalchemy import select, update
 from tests.support.social_identity_cases import Bot, social_env
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.social.models import OperationStatus, SocialError, SocialTarget
-from qq_ai_bot.social.repository import SocialOperationRepository
-from qq_ai_bot.social.source_keys import social_call_key, social_source_key
+from yuki.domain.conversations import ScopeType
+from yuki.identity.canonical_repository import ensure_person, ensure_presence
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.social.db_models import SocialOperationModel
+from yuki.social.models import OperationStatus, SocialError, SocialTarget
+from yuki.social.repository import SocialOperationRepository
+from yuki.social.source_keys import social_call_key, social_source_key
 
 
 def test_source_digest_is_stable_and_includes_the_complete_identity():

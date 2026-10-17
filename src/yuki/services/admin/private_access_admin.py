@@ -1,0 +1,83 @@
+"""Unified private-chat access administration."""
+
+from __future__ import annotations
+
+import time
+
+from yuki.admin.audit import AdminAuditService
+from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
+from yuki.admin.authority.targets import PersonControlTarget
+from yuki.admin.models import ControlAuditRef
+from yuki.domain.control import DecisionContext
+from yuki.persistence.repositories import (
+    PrivateUserSetting,
+    PrivateUserSettingsRepository,
+)
+from yuki.services.admin.control_auth import person_storage_id, require_capability
+
+type PersonAdminContext = DecisionContext[ControlPrincipal, PrincipalSource, PersonControlTarget]
+
+
+class PrivateAccessAdminService:
+    """Block or restore private access without allowing superuser lockout."""
+
+    def __init__(
+        self,
+        *,
+        private_users: PrivateUserSettingsRepository,
+        audit: AdminAuditService,
+    ) -> None:
+        self._private_users = private_users
+        self._audit = audit
+
+    async def enable_user(
+        self,
+        context: PersonAdminContext,
+        *,
+        audit: ControlAuditRef,
+    ) -> PrivateUserSetting:
+        return await self._set(context, True, audit=audit)
+
+    async def disable_user(
+        self,
+        context: PersonAdminContext,
+        *,
+        audit: ControlAuditRef,
+    ) -> PrivateUserSetting:
+        target = context.canonical_target
+        if type(target) is not PersonControlTarget:
+            raise TypeError("canonical_target must be PersonControlTarget")
+        if target.lockout_protected:
+            raise ValueError("不能关闭超级用户的私聊权限。")
+        return await self._set(context, False, audit=audit)
+
+    async def _set(
+        self,
+        context: PersonAdminContext,
+        enabled: bool,
+        *,
+        audit: ControlAuditRef,
+    ) -> PrivateUserSetting:
+        require_capability(context, "control.private_access.mutate")
+        target_user_id = person_storage_id(context)
+        started = time.perf_counter()
+        async with self._audit.transaction() as session:
+            before = await self._private_users.get(target_user_id, session=session)
+            after = await self._private_users.set_enabled(
+                target_user_id,
+                enabled,
+                session=session,
+            )
+            await self._audit.record(
+                actor=audit,
+                capability="private_access",
+                operation="enable" if enabled else "disable",
+                target_type="user",
+                target_id=target_user_id,
+                before={"enabled": before.enabled if before else None},
+                after={"enabled": enabled},
+                success=True,
+                duration_seconds=time.perf_counter() - started,
+                session=session,
+            )
+        return after

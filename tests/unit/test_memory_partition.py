@@ -12,30 +12,30 @@ from tests.conftest import make_settings
 from tests.support.canonical_ingress import fixture_ingress
 from tests.support.user_profiles_helpers import inbound, observe_members
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ConversationLegacyAliasModel,
 )
-from qq_ai_bot.identity.canonical_repository import IDENTITY_PLATFORM, ensure_person, ensure_space
-from qq_ai_bot.identity.db_models import (
+from yuki.identity.canonical_repository import IDENTITY_PLATFORM, ensure_person, ensure_space
+from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.memory.enums import MemoryScopeType, MemoryTargetRole
-from qq_ai_bot.memory.extraction import MemoryClaim
-from qq_ai_bot.memory.partition import (
+from yuki.memory.enums import MemoryScopeType, MemoryTargetRole
+from yuki.memory.extraction import MemoryClaim
+from yuki.memory.partition import (
     MemoryPartitionResolutionError,
     format_canonical_memory_partition,
     parse_canonical_memory_partition,
     resolve_memory_partition_for_event,
 )
-from qq_ai_bot.memory.read_scope import MemoryReadScopeResolver
-from qq_ai_bot.memory.subjects import SubjectContextBuilder
-from qq_ai_bot.memory.targets import MemoryTargetResolver
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel, MembershipModel
+from yuki.memory.read_scope import MemoryReadScopeResolver
+from yuki.memory.subjects import SubjectContextBuilder
+from yuki.memory.targets import MemoryTargetResolver
+from yuki.persistence.database import Database
+from yuki.persistence.models import ChatEventModel, MembershipModel
 
 _NOW = datetime(2026, 8, 24, tzinfo=UTC)
 
@@ -422,7 +422,7 @@ async def test_normalized_claim_names_resolve_complete_exact_candidates_without_
         database,
         inbound("declarations", message_id="claims", group_id="2001", nickname="event nickname"),
     )
-    from qq_ai_bot.persistence.repositories import EventLedgerRepository
+    from yuki.persistence.repositories import EventLedgerRepository
 
     event = await EventLedgerRepository(database).get_event(message.source_event_id)
     assert event is not None
@@ -455,10 +455,10 @@ async def test_normalized_claim_names_resolve_complete_exact_candidates_without_
 async def test_exact_tool_ambiguity_reports_all_authorized_people_and_groups(
     database: Database,
 ) -> None:
-    from qq_ai_bot.memory.repository import MemoryFactRepository
-    from qq_ai_bot.memory.service import MemoryFactService
-    from qq_ai_bot.persistence.repositories import EventLedgerRepository
-    from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime, _ToolFailure
+    from yuki.memory.repository import MemoryFactRepository
+    from yuki.memory.service import MemoryFactService
+    from yuki.persistence.repositories import EventLedgerRepository
+    from yuki.services.agent_tools import AgentToolService, ToolRuntime, _ToolFailure
 
     user_ids = tuple(str(62081 + index) for index in range(8))
     people = await observe_members(database, ("1001", *user_ids))

@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  BOT_IMAGE: ghcr.io/yuanyeyoutao/yuki-qqbot
+  BOT_IMAGE: ghcr.io/yuanyeyoutao/yuki
 
 jobs:
   release:

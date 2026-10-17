@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_space
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.people_repository import PeopleRepository
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.identity.canonical_repository import ensure_person, ensure_space
+from yuki.persistence.database import Database
+from yuki.persistence.people_repository import PeopleRepository
 
 
 async def observe_members(

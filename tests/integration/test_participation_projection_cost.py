@@ -19,10 +19,10 @@ from yuki_participation.models import Snapshot
 from yuki_participation.participation import ParticipationUnit, UnitBinding
 from yuki_participation.self_report import SelfDelta, SelfReport
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.canonical_repository import ensure_person
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.participation_feedback import admission_unit_binding, sync_scope_effects
+from yuki.domain.conversations import ScopeType
+from yuki.identity.canonical_repository import ensure_person
+from yuki.persistence.models import ChatEventModel
+from yuki.services.participation_feedback import admission_unit_binding, sync_scope_effects
 
 
 async def _append(host, *, author="1001", reply_to=None, cause=None, age=20):

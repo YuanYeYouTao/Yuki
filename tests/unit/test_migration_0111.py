@@ -10,20 +10,20 @@ from tests.support.automation_unified_delivery_helpers import setup_run
 from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversations
 from tests.unit.test_self_initiative_memory import _service, record
 
-from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.memory.mutation.models import (
+from yuki.automation.models import RunStatus
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.memory.mutation.models import (
     MemoryDecisionActorType,
     MemoryMutationContext,
     MemoryMutationRequest,
 )
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryMutationReceiptModel,
     MemoryToolReceiptModel,
 )
-from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
+from yuki.tool_results.recorder import ToolInvocationRepository
 
 
 def test_0111_preserves_original_receipts_and_writes_real_scheduled_self_source(

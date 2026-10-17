@@ -22,7 +22,7 @@
 
 </div>
 
-Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She currently runs in QQ private chats and groups, remembers people and shared experiences, uses tools and a persistent workspace to carry work across messages. Her identity and memory live in Yuki's own database and can survive a change of model, QQ account, or gateway.
+Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She joins conversations through QQ, Telegram and personal clients, remembers people and shared experiences, uses tools and a persistent workspace to carry work across messages. Her identity and memory live in Yuki's own database and can survive a change of model, platform account, or gateway.
 
 **The current release is 3.9.0.** Chat, SELF initiative, schedules, plugins, and task resumption share one main agent. A journal-style management WebUI shows conversations, execution traces, model usage, and workspace files. The current Main model condenses long conversations, while tasks continue from their original checkpoints and receipts. Completion and waiting decisions settle after the original tool batch or Code program finishes; parent and child tasks can continue asking questions and delivering results. The default image uses direct mode. Code Mode and the persistent workspace are optional deployments; the management WebUI is disabled by default.
 
@@ -47,7 +47,9 @@ See the [3.9.0 release notes](docs/releases/v3.9.0.md) for features, fixes, cont
 
 The release notes cover migration steps, compatibility changes, and the scope of validation. Actual experience still depends on model responses, tool requests, and host resources; the version does not promise fixed latency, cost, or cache rates.
 
-**Current development branch:** Personal clients, QQ and Telegram share one runtime through native platform adapters. Private entries use Binding + Presence; groups use SpaceBinding + topic. Person memory remains shared through internal identities. Default model tools retire arbitrary OneBot actions, pokes and remote forward expansion; history and member directories report observed ledger coverage. Plugin API is **4.0**, Main contract **21**, and migration head **0131**. See [platform adapters and upgrades](docs/architecture/platform-adapters.md) and the [implementation record](docs/architecture/Yuki-299与多平台解耦实施记录-2026-10-16.md). This is separate from the historical 3.9.0 release described above.
+**Current development branch:** Personal clients, QQ and Telegram share one runtime through native adapters. Private entries use Binding + Presence + sub-session; groups use SpaceBinding + topic. Person memory stays shared through internal identities. `yuki acp` connects external ACP clients to the server, with a separate Conversation for every session and the existing Main, fixed tools and delivery receipts; see the [personal API](docs/architecture/client-api.md#acp-方向-a). Plugin API is **4.0**, Main contract **21**, and migration head **0132**. See [platform adapters and upgrades](docs/architecture/platform-adapters.md). Local validation, merge and deployment are recorded separately from the historical 3.9.0 release above.
+
+The current source uses `yuki` for both the Python package and distribution. Administration, personal clients and ACP share the `yuki` command; the server uses `yuki-bot`. Legacy command aliases are removed. Use `uv sync --all-extras` or a local Docker build for source development. Future release images use `ghcr.io/yuanyeyoutao/yuki`; this change does not publish a new version. The stable 3.9.0 downloads, image and installation steps below retain their original release artifacts.
 
 The Kun game now lives in the independent [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game) repository. Game source and dedicated migrations are no longer bundled here. The independent plugin requires a Plugin API 4.0 Host; installation and offline save migration are documented in that repository.
 
@@ -130,6 +132,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 3.9.0 stores model connections in `webui-config/model_profiles.toml`. When upgrading an older deployment with only `config/model_profiles.toml`, follow the [path migration guide](docs/operations/model-profile-path-migration.md) first. The wizard does not overwrite current model connections; a missing selected file causes an explicit startup failure.
 
 After configuring a fresh deployment, run from its deployment directory:
+
+These commands target the original stable 3.9.0 image and use its actual legacy CLI name. Current source builds use `yuki`.
 
 ```bash
 docker compose config --quiet

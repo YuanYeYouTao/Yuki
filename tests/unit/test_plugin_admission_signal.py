@@ -5,12 +5,12 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from tests.conftest import make_settings
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.plugin_host.admission_adapter import PluginAdmissionSignalAdapter
-from qq_ai_bot.plugin_host.extension_registry import ExtensionRegistry
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.automation.models import TurnOrigin
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.plugin_host.admission_adapter import PluginAdmissionSignalAdapter
+from yuki.plugin_host.extension_registry import ExtensionRegistry
 from yuki_plugin_sdk.models import AdmissionSignal
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import AdmissionSignalRegistration

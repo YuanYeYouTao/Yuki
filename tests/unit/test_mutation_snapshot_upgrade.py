@@ -14,17 +14,17 @@ from sqlalchemy.exc import OperationalError
 from tests.unit.test_memory_mutation import _context, _event, _service
 from tests.unit.test_memory_v2 import _claim
 
-from qq_ai_bot.memory.claim_processor import MemoryProcessingContext
-from qq_ai_bot.memory.enums import MemoryScopeType
-from qq_ai_bot.memory.mutation import service as mutation_service
-from qq_ai_bot.memory.mutation.models import (
+from yuki.memory.claim_processor import MemoryProcessingContext
+from yuki.memory.enums import MemoryScopeType
+from yuki.memory.mutation import service as mutation_service
+from yuki.memory.mutation.models import (
     MemoryMutationOperation,
     MemoryMutationRequest,
     MemoryMutationTarget,
 )
-from qq_ai_bot.memory.mutation.service import MemoryMutationRejected
-from qq_ai_bot.memory.repository import MemoryJobRepository
-from qq_ai_bot.persistence.models import MemoryFactModel, MemoryMutationReceiptModel
+from yuki.memory.mutation.service import MemoryMutationRejected
+from yuki.memory.repository import MemoryJobRepository
+from yuki.persistence.models import MemoryFactModel, MemoryMutationReceiptModel
 
 
 @pytest.mark.parametrize("entry", ["tool", "worker"])

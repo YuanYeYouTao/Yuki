@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
-from qq_ai_bot.domain.messages import (
+from yuki.domain.messages import (
     ChatMessage,
     ChatRequest,
     ChatResponse,
@@ -14,23 +14,23 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-from qq_ai_bot.runtime.work_journal import JournalUnavailable
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_session import WorkSession
-from qq_ai_bot.services.context_compaction import CompactReceipt, execution_compact_plan
-from qq_ai_bot.services.turn_execution import TurnExecution
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+from yuki.model_runtime.models import ModelExecutionPriority
+from yuki.runtime.work_journal import JournalUnavailable
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_session import WorkSession
+from yuki.services.context_compaction import CompactReceipt, execution_compact_plan
+from yuki.services.turn_execution import TurnExecution
+from yuki.services.turn_transcript import TurnTranscript
 
 
 async def _public_context(database, control, initial):
-    from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-    from qq_ai_bot.conversation.projections import PromptProjectionRepository
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-    from qq_ai_bot.services.context_compaction import PublicCompactContext
+    from yuki.conversation.frozen_fragments import FrozenFragments
+    from yuki.conversation.projections import PromptProjectionRepository
+    from yuki.domain.conversations import ConversationScope
+    from yuki.persistence.event_repository import EventLedgerRepository
+    from yuki.services.context_compaction import PublicCompactContext
 
     version, events = await EventLedgerRepository(database).read_scope_context(
         ConversationScope.group("80001", "20001"),
@@ -42,7 +42,7 @@ async def _public_context(database, control, initial):
     )
 
     async def adopt(summary, coverage, retained):
-        from qq_ai_bot.services.context_compaction import render_context_checkpoint
+        from yuki.services.context_compaction import render_context_checkpoint
 
         context.messages = (
             initial[0],
@@ -65,7 +65,7 @@ async def _public_context(database, control, initial):
 
 
 async def test_public_prefix_excludes_current_and_private_material(database, tmp_path):
-    from qq_ai_bot.services.context_compaction import public_compact_plan
+    from yuki.services.context_compaction import public_compact_plan
 
     control, _, initial = await _session(database, tmp_path)
     context = await _public_context(database, control, initial)
@@ -95,9 +95,9 @@ async def test_ordinary_paid_response_recovers_without_rebuy_or_source_mutation(
 ):
     from sqlalchemy import func, select
 
-    import qq_ai_bot.services.context_compaction as compaction
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.conversation.observation_models import ContextObservationModel
+    import yuki.services.context_compaction as compaction
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.conversation.observation_models import ContextObservationModel
 
     control, _, initial = await _session(database, tmp_path)
     context = await _public_context(database, control, initial)
@@ -155,8 +155,8 @@ async def test_short_work_does_not_buy_summary_at_soft_watermark(database, tmp_p
 
 
 async def _append_public(database, text):
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+    from yuki.domain.conversations import ConversationScope
+    from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
     return await ScopedEventLedgerUnitOfWork(database).append(
         scope=ConversationScope.group("80001", "20001"),
@@ -212,7 +212,7 @@ async def test_ordinary_cold_compact_keeps_new_history_and_fresh_runtime_materia
 async def test_privacy_erases_compact_body_without_authorising_repurchase(database, tmp_path):
     from sqlalchemy import select, text
 
-    from qq_ai_bot.conversation.observation_models import ContextObservationModel
+    from yuki.conversation.observation_models import ContextObservationModel
 
     control, _, initial = await _session(database, tmp_path)
     context = await _public_context(database, control, initial)
@@ -253,7 +253,7 @@ async def test_privacy_erases_compact_body_without_authorising_repurchase(databa
 async def test_work_cold_public_compact_adopts_paid_prefix_before_business_rebase(
     database, tmp_path, monkeypatch
 ):
-    import qq_ai_bot.services.context_compaction as compaction
+    import yuki.services.context_compaction as compaction
 
     control, session, initial = await _session(database, tmp_path)
     context = await _public_context(database, control, initial)
@@ -318,7 +318,7 @@ def test_compact_prefix_retains_real_tool_pairs_and_main_settings():
 async def test_actual_overflow_compacts_paired_prefix_and_keeps_fitting_tail(
     database, tmp_path, monkeypatch
 ):
-    from qq_ai_bot.web.models import WebMode
+    from yuki.web.models import WebMode
 
     control, session, initial = await _session(database, tmp_path)
     for index in range(30):
@@ -421,10 +421,10 @@ async def test_manual_compact_uses_public_main_and_existing_authority(
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.commands_and_chat_helpers import inbound
 
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
-    from qq_ai_bot.workspace.short_state import ShortState
-    from qq_ai_bot.workspace.store import WorkspaceStore
+    from yuki.domain.conversations import ConversationScope
+    from yuki.services.main_agent_contract import MainAgentContract
+    from yuki.workspace.short_state import ShortState
+    from yuki.workspace.store import WorkspaceStore
 
     provider = FakeLLMProvider(lambda request: "Keep the public decision.")
     harness = build_harness(database, make_settings(database.url), provider)
@@ -470,7 +470,7 @@ async def test_manual_compact_uses_public_main_and_existing_authority(
 async def test_incomplete_ordinary_compact_restores_fresh_history_and_runtime_material(
     database, tmp_path, monkeypatch, phase
 ):
-    from qq_ai_bot.services.context_compaction import CompactReceipt
+    from yuki.services.context_compaction import CompactReceipt
 
     control, _, initial = await _session(database, tmp_path)
     context = await _public_context(database, control, initial)
@@ -581,7 +581,7 @@ async def test_ordinary_e_cold_keeps_checkpoint_and_fresh_material(
 
 @pytest.mark.asyncio
 async def test_work_p_response_keeps_fresh_extras(database, tmp_path, monkeypatch):
-    import qq_ai_bot.services.context_compaction as compaction
+    import yuki.services.context_compaction as compaction
 
     control, session, initial = await _session(database, tmp_path)
     context = await _public_context(database, control, initial)

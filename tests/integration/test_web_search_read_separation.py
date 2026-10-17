@@ -16,22 +16,22 @@ from tests.unit.test_app_messages import app_env as app_env
 from tests.unit.test_app_messages import drain
 from tests.unit.test_client_api import bearer, pair, person_and_code
 
-from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.codemode.driver import CodeHost
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.persistence.models import (
+from yuki.automation.models import RunStatus
+from yuki.codemode.driver import CodeHost
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.persistence.models import (
     ChatEventModel,
     ToolArtifactModel,
     WebSearchRunModel,
     WebSearchSourceModel,
 )
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.persistence.web_repository import WebSearchSourceRepository
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
-from qq_ai_bot.web.base import WebSearchError
-from qq_ai_bot.web.models import WebMode, WebSearchResponse, WebSearchSource
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.web_repository import WebSearchSourceRepository
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.tool_results.artifacts import ToolArtifactRepository
+from yuki.web.base import WebSearchError
+from yuki.web.models import WebMode, WebSearchResponse, WebSearchSource
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -138,7 +138,7 @@ async def test_code_composition_calls_real_search_reader_and_social_once(
     web.extract.assert_awaited_once_with(old_url, "读取用户指定的网页")
     assert len(sent(case.env)) == 1
     assert {tool.name for tool in case.provider.requests[0].tools}.isdisjoint({"yuki_web_search"})
-    from qq_ai_bot.runtime.work_schema_v1 import effects
+    from yuki.runtime.work_schema_v1 import effects
 
     async with database.sessions() as session:
         rows = (await session.execute(select(effects))).mappings().all()

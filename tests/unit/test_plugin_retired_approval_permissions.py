@@ -6,15 +6,15 @@ import pytest
 from sqlalchemy import select
 from tests.integration.test_plugin_frozen_binding import write_plugin
 
-from qq_ai_bot import __version__
-from qq_ai_bot.plugin_host.db_models import PluginInstallationModel
-from qq_ai_bot.plugin_host.discovery import PluginDiscovery
-from qq_ai_bot.plugin_host.event_bus import PluginEventBus
-from qq_ai_bot.plugin_host.extension_registry import ExtensionRegistry
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.plugin_host.loader import PluginLoader
-from qq_ai_bot.plugin_host.manager import PluginManager
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
+from yuki import __version__
+from yuki.plugin_host.db_models import PluginInstallationModel
+from yuki.plugin_host.discovery import PluginDiscovery
+from yuki.plugin_host.event_bus import PluginEventBus
+from yuki.plugin_host.extension_registry import ExtensionRegistry
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.plugin_host.loader import PluginLoader
+from yuki.plugin_host.manager import PluginManager
+from yuki.plugin_host.repository import PluginInstallationRepository
 from yuki_plugin_sdk.permissions import PluginPermission
 
 

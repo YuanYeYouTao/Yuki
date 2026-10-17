@@ -31,7 +31,7 @@
 | 核验范围 | 实现、类型、原测试和示例；三名 gpt-6.1-sol/high 分别复核生命周期、Pi/树/存储、工具/提示/消费者。前轮 Yuki 定向测试 38 例通过，本轮源码终审，Pi 测试未运行；详见全景盘点 §§16–18 |
 | 生产证据 | 研究阶段前轮21:00:21快照：Work/subagents开启，Code关闭，保留3个child；详见全景盘点§2。实施后的真实QQ和上线记录见§10 |
 
-后文 Yuki runtime/services 等索引相对 `src/qq_ai_bot`；Pi 索引相对 `packages/durable`。研究章节行号固定于以上提交，实施索引已更新为当前函数名。Pi README 明示 Experimental；不把“架构看起来稳”当作本项目验收。
+后文 Yuki runtime/services 等索引相对 `src/yuki`；Pi 索引相对 `packages/durable`。研究章节行号固定于以上提交，实施索引已更新为当前函数名。Pi README 明示 Experimental；不把“架构看起来稳”当作本项目验收。
 
 ## 2. 双侧对应后的设计结论
 
@@ -445,7 +445,7 @@ PR290：https://github.com/YuanYeYouTao/Yuki/pull/290 ，UTC19:01:06合并，mai
 
 沿当时真实Compose全部文件只更新Bot，镜像 `ghcr.io/yuanyeyoutao/yuki-qqbot:ops-cef02cda`，imageID `sha256:cf29a926241d0bc45ae59288dfb381c2222dfb005f1161edf6ef8b98418aeb63`；Bot ID `5aa3d9a3d8aa0364df7ce265d4ababc8f5114970d59a836b124a7b592f712241`，UTC19:04:03.632979043启动。生产head保持0105，没有再备份、迁移或恢复数据库。运维回执 `/opt/yuki-qqbot/ops/work-completed-read-cef02cda-20261010T190351Z/rollout.json`。
 
-在Bot原边界停止后确认Manager queued/running均0，只替换 `/opt/yuki-sandbox/src/qq_ai_bot/sandbox/persistent.py` 并重启原systemd服务。UTC19:04:01.613870，新模块原字节SHA256 `0eef71b8623978c25d8e1c9c8a2ba4c512b3fdc1b06e324fd7a53a68e2b3b37c`；原environment ID `78a71ac5fa3eb593b3438d11aa4c63f4078745903e408abd70057653b0ab7695`、StartedAt `2026-10-09T04:17:34.878037247Z`完全未变，SL原ID/启动时间也未变。上线后只读核实际模块hash、Manager active、socket environment_status ready=true、jobs0。
+在Bot原边界停止后确认Manager queued/running均0，只替换 `/opt/yuki-sandbox/src/yuki/sandbox/persistent.py` 并重启原systemd服务。UTC19:04:01.613870，新模块原字节SHA256 `0eef71b8623978c25d8e1c9c8a2ba4c512b3fdc1b06e324fd7a53a68e2b3b37c`；原environment ID `78a71ac5fa3eb593b3438d11aa4c63f4078745903e408abd70057653b0ab7695`、StartedAt `2026-10-09T04:17:34.878037247Z`完全未变，SL原ID/启动时间也未变。上线后只读核实际模块hash、Manager active、socket environment_status ready=true、jobs0。
 
 UTC19:05:23新Bot HTTP200/status及database ok、OOM=false/restarts0，最初onebot_connected=false；启动日志19:05:14完成startup，19:05:27原SL反向WS accepted/connected，首次采样比连接建立早4秒。19:08:43只读复核HTTP200/status/database ok、onebot_connected=true，DNS bot匹配新Bot IP且原SL→Bot TCP ESTABLISHED；无握手拒绝证据、未重启SL。活动进程停止仍另验收，不根据healthy勾V02。
 

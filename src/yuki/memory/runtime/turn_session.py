@@ -1,0 +1,96 @@
+"""Concrete per-turn memory session (R2 C5)."""
+
+from __future__ import annotations
+
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.memory.runtime.capability_view import build_capability_view
+from yuki.memory.runtime.contract import (
+    MemoryTurnContract,
+    active_read_contract,
+    forbidden_contract,
+)
+from yuki.memory.runtime.partition_lookup import MemoryPartitionLookup
+from yuki.memory.runtime.resolver import (
+    MemoryAccessDecision,
+    MemoryAccessReason,
+    resolve_memory_access,
+)
+from yuki.runtime.contracts import MemoryCapabilityView
+from yuki.runtime.errors import InvalidTurnContextError
+from yuki.runtime.origin import TurnOrigin
+
+
+class TurnMemorySession:
+    """I/O session that Chat may call.  It never holds ChatService."""
+
+    def __init__(
+        self,
+        *,
+        decision: MemoryAccessDecision,
+    ) -> None:
+        self._decision = decision
+
+    @classmethod
+    def open(
+        cls,
+        *,
+        origin: TurnOrigin,
+        memory_available: bool = True,
+    ) -> TurnMemorySession:
+        if origin is TurnOrigin.SELF_INITIATIVE:
+            # SELF continues under its own run identity via open_self_origin.
+            raise InvalidTurnContextError("invalid turn principal")
+        decision = resolve_memory_access(
+            origin=origin,
+            memory_available=memory_available,
+        )
+        return cls(
+            decision=decision,
+        )
+
+    @property
+    def contract(self) -> MemoryTurnContract:
+        return self._decision.contract
+
+    @classmethod
+    async def open_self_origin(
+        cls,
+        *,
+        initiative_run_id: str,
+        canonical_conversation_id: str,
+        identity: ConversationScope,
+        partition_lookup: MemoryPartitionLookup,
+        memory_available: bool = True,
+    ) -> TurnMemorySession:
+        source = await partition_lookup.resolve_self_origin(
+            initiative_run_id=initiative_run_id,
+            canonical_conversation_id=canonical_conversation_id,
+            group_id=identity.group_id,
+        )
+        if (
+            identity.scope_type is not ScopeType.GROUP
+            or identity.conversation_id != source.canonical_conversation_id
+            or identity.presence_id != source.presence_id
+        ):
+            raise ValueError("SELF Memory scope does not match its initiative")
+        decision = MemoryAccessDecision(
+            contract=active_read_contract(
+                persistent_write_allowed=True,
+            )
+            if memory_available
+            else forbidden_contract(),
+            reason=MemoryAccessReason.SELF_ORIGIN,
+        )
+        return cls(
+            decision=decision,
+        )
+
+    @property
+    def reason(self) -> MemoryAccessReason:
+        return self._decision.reason
+
+    def capability_view(self) -> MemoryCapabilityView:
+        return build_capability_view(
+            self._decision.contract,
+            transition_revision=1,
+        )

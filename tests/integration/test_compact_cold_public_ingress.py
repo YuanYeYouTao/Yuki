@@ -2,19 +2,19 @@ import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.commands_and_chat_helpers import inbound
 
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.domain.conversations import ConversationScope
+from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.work_repository import WorkConflict
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 
 
 @pytest.mark.asyncio
 async def test_actual_main_recovers_paid_public_compact_with_new_history(
     database, tmp_path, monkeypatch
 ):
-    import qq_ai_bot.services.context_compaction as compaction
+    import yuki.services.context_compaction as compaction
 
     provider = FakeLLMProvider(
         lambda request: (

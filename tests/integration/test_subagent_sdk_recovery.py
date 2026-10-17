@@ -9,13 +9,13 @@ from tests.integration.test_self_common_capabilities import runtime, self_actor
 from tests.support.runtime_execution import make_child_executor
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.execution_sources import SelfTaskSource, recover_execution_source
+from yuki.llm.fake import FakeLLMProvider
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import work
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.execution_sources import SelfTaskSource, recover_execution_source
 from yuki_plugin_sdk.permissions import PluginPermission
 
 
@@ -151,9 +151,9 @@ async def test_code_child_uses_main_script_api_and_fixed_direct_tools(database, 
 
 
 async def test_sdk_message_child_keeps_original_plugin_origin_and_delegation(database, tmp_path):
-    from qq_ai_bot.identity.canonical_repository import ensure_space
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.services.execution_sources import recover_source
+    from yuki.identity.canonical_repository import ensure_space
+    from yuki.persistence.models import ChatEventModel
+    from yuki.services.execution_sources import recover_source
 
     provider = FakeLLMProvider()
     env, harness, chat, _state, _message = await _scene(database, tmp_path, provider)

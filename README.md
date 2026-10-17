@@ -22,7 +22,7 @@
 
 </div>
 
-Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何在真实社交场景中持续存在。她当前运行在 QQ 私聊和群聊中，记住人与共同经历，也能使用工具和持久工作环境完成跨消息的任务。身份和记忆由自己的数据库保存，更换模型、QQ 账号或网关时可以继续沿用。
+Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何在真实社交场景中持续存在。她通过 QQ、Telegram 和个人客户端参与对话，记住人与共同经历，也能使用工具和持久工作环境完成跨消息的任务。身份和记忆由自己的数据库保存，更换模型、平台账号或网关时可以继续沿用。
 
 **当前正式版为 3.9.0。** 聊天、SELF 自主参与、定时任务、插件和长任务续跑共用同一主 Agent。你可以在手帐式管理 WebUI 中查看聊天、执行轨迹、模型用量和工作区；长会话由当前 Main 模型整理，任务沿原检查点与真实回执继续。完成或等待决定会在原工具批次、Code 程序收拢后结算，父子任务也能继续问答和交付。默认使用 direct 镜像，Code Mode 与持久工作环境按需部署，管理 WebUI 默认关闭。
 
@@ -47,7 +47,9 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 升级步骤、兼容性变化与各项验证范围见发布说明。模型响应、工具请求与宿主资源仍会影响实际体验；版本更新不保证固定的延迟、费用或缓存命中率。
 
-**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence、群按 SpaceBinding＋topic 隔离会话；人物记忆仍沿内部 Person。默认模型退役任意 OneBot action、戳一戳和远端转发历史展开，公共历史及成员目录只声明已观察账本。Plugin API **4.0**、Main 合同 **21**、迁移 **0131**；配置、升级及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地实施/验证进度见[实施记录](docs/architecture/Yuki-299与多平台解耦实施记录-2026-10-16.md)，正式 3.9.0 的历史说明保留如上。
+**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence＋子会话、群按 SpaceBinding＋topic 隔离；人物记忆仍沿内部 Person。`yuki acp` 让外部 ACP 客户端连接服务器，每个 session 有独立 Conversation，沿原 Main、固定工具和发送回执，见[个人 API](docs/architecture/client-api.md#acp-方向-a)。Plugin API **4.0**、Main 合同 **21**、迁移 **0132**；配置及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地验证、合并和上线分别记录，正式 3.9.0 的历史说明保留如上。
+
+当前源码的 Python 模块和发行包统一为 `yuki`，管理、个人客户端与 ACP 共用 `yuki` 命令，服务进程使用 `yuki-bot`；旧命令别名已删除。源码开发使用 `uv sync --all-extras` 或本地 Docker 构建。新发行镜像使用 `ghcr.io/yuanyeyoutao/yuki`，尚未据此发布新版本；下方正式 3.9.0 的下载、镜像和安装步骤继续对应其原 Release 产物。
 
 养鲲已移至独立仓库 [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game)，本仓库不再附带游戏源码或专用迁移。独立版需要 Plugin API 4.0 Host；安装与旧存档离线升级见插件仓库。
 
@@ -138,6 +140,8 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 首次部署在配置完成后，进入部署目录执行：
 
+以下命令针对正式 3.9.0 原镜像，使用该产物实际包含的旧 CLI 名称；当前源码构建统一使用 `yuki`。
+
 ```bash
 docker compose config --quiet
 docker compose pull
@@ -188,7 +192,7 @@ uv run mypy --platform linux src
 uv run pytest
 ```
 
-开发时按改动范围选择定向验证。Quality 执行源码检查、前端测试/构建与保留回归；Release 验证版本身份、amd64/arm64 direct 镜像和无源码部署包，不再运行旧 Memory 质量门或重复发布链。
+开发时按改动范围选择定向验证。Quality 执行源码检查与保留回归；Release 验证版本身份、amd64/arm64 direct 镜像和无源码部署包，不再运行旧前端、Memory 质量门或重复发布链。
 常驻回归使用 fake Provider 和隔离数据库；Gemini、DeepSeek 等付费 API 的缓存对照单独手动执行，
 报告区分冷轮、热轮和缺失计量，不作为普通测试或固定命中率门槛。
 

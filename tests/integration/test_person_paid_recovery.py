@@ -10,17 +10,17 @@ from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 from tests.unit.test_work_owner_recovery import original_responses, original_scheduler
 
-from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
-from qq_ai_bot.identity.person_identity import merge_persons
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_recovery_schema import recovery
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, journal, scope, work
-from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.domain.messages import ChatMessage
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.identity.person_identity import merge_persons
+from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_recovery_schema import recovery
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects, journal, scope, work
+from yuki.services.main_agent_turns import MainAgentTurnService
+from yuki.services.turn_transcript import TurnTranscript
 
 
 async def _facts(database, identity):

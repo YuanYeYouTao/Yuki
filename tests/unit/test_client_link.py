@@ -9,14 +9,14 @@ from sqlalchemy import func, select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 
-from qq_ai_bot.client_api.db_models import ClientLinkCodeModel
-from qq_ai_bot.client_api.identity import ClientIdentityService
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from qq_ai_bot.identity.person_identity import current_person_id
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.client_link import ClientLinkCommands
-from qq_ai_bot.services.execution_sources import recover_source
+from yuki.client_api.db_models import ClientLinkCodeModel
+from yuki.client_api.identity import ClientIdentityService
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.identity.person_identity import current_person_id
+from yuki.persistence.models import ChatEventModel
+from yuki.services.client_link import ClientLinkCommands
+from yuki.services.execution_sources import recover_source
 
 
 async def stack(database):

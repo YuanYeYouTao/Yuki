@@ -9,6 +9,8 @@
 当前开发分支的 Quality workflow 检查 Python 的 Ruff、Mypy 和 pytest；旧 WebUI 前端已退役。3.9.0 发行时的检查范围保留在原发布记录中。
 正式 tag 发布使用 `scripts/release_validate.py` 核对 tag、项目版本、运行时版本、锁文件、安装器及 main 祖先关系；不再运行 Memory synthetic quality/baseline/release-check 或独立迁移矩阵。迁移与启动由实际构建镜像的 release smoke 核验。
 
+当前源码已统一为 Python 发行包／模块 `yuki`，只发布 `yuki` 与 `yuki-bot` 两个命令。后续发行 workflow 使用 `ghcr.io/yuanyeyoutao/yuki`；源码开发需本地构建，不把未发布的新名称标签当作可拉取的 3.9.0 产物。上方正式 3.9.0 的旧镜像地址继续表示原发行事实。既有生产保实际数据库、Compose 项目与网络，只按完整配置替换 Bot。
+
 ## 发布流程
 
 正式产物由 `.github/workflows/release.yml` 发布，目标平台为 `linux/amd64` 和 `linux/arm64`，共用版本标签与部署包：

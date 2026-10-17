@@ -8,16 +8,16 @@ import pytest
 from sqlalchemy import func, select
 from tests.unit.test_memory_mutation import _context, _event, _service
 
-from qq_ai_bot.domain.audio import AudioTranscript, serialize_transcripts
-from qq_ai_bot.memory.claim_processor import MemoryProcessingContext
-from qq_ai_bot.memory.enums import MemoryStatus
-from qq_ai_bot.memory.extraction import MemoryClaim
-from qq_ai_bot.memory.mutation.models import MemoryMutationRequest
-from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
-from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
-from qq_ai_bot.memory.repository import MemoryJobRepository
-from qq_ai_bot.memory.subjects import SubjectContextBuilder
-from qq_ai_bot.persistence.models import MemoryMutationReceiptModel
+from yuki.domain.audio import AudioTranscript, serialize_transcripts
+from yuki.memory.claim_processor import MemoryProcessingContext
+from yuki.memory.enums import MemoryStatus
+from yuki.memory.extraction import MemoryClaim
+from yuki.memory.mutation.models import MemoryMutationRequest
+from yuki.memory.quality.audit import MemoryProductionQualityAudit
+from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
+from yuki.memory.repository import MemoryJobRepository
+from yuki.memory.subjects import SubjectContextBuilder
+from yuki.persistence.models import MemoryMutationReceiptModel
 
 
 def create_request(content="喜欢茶"):

@@ -31,7 +31,7 @@ SnowLuma 启动后：
 5. 运行只读契约检查：
 
    ```bash
-   docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
+   docker compose exec bot yuki gateway doctor --provider snowluma
    ```
 
 doctor 只报告 Yuki 依赖的 OneBot v11 核心 action、反向 WebSocket 路径和静态能力合同，不发送

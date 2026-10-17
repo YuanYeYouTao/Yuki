@@ -9,12 +9,12 @@ from sqlalchemy import func, select
 from tests.integration.test_telegram_runtime import drain, update
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import AttachmentKind
-from qq_ai_bot.gateway.providers.telegram_ingress import normalize_message
-from qq_ai_bot.identity.canonical_repository import create_space_binding, find_space_binding
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_schema_v1 import inputs, work
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import AttachmentKind
+from yuki.gateway.providers.telegram_ingress import normalize_message
+from yuki.identity.canonical_repository import create_space_binding, find_space_binding
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_schema_v1 import inputs, work
 
 
 def _service_update(field, value, *, identifier=1, chat=-10042):

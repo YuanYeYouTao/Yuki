@@ -6,17 +6,17 @@ import pytest
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
-from qq_ai_bot.identity.person_identity import merge_persons
-from qq_ai_bot.plugin_host.configuration_service import PluginConfigurationService
-from qq_ai_bot.plugin_host.db_models import PluginConfigValueModel
-from qq_ai_bot.plugin_host.ownership import PluginOwnershipError
-from qq_ai_bot.plugin_host.repository import (
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.identity.person_identity import merge_persons
+from yuki.plugin_host.configuration_service import PluginConfigurationService
+from yuki.plugin_host.db_models import PluginConfigValueModel
+from yuki.plugin_host.ownership import PluginOwnershipError
+from yuki.plugin_host.repository import (
     PluginConfigRepository,
     PluginInstallationRepository,
     PluginStateRepository,
 )
-from qq_ai_bot.plugin_host.session_repository import PluginAgentSessionRepository
+from yuki.plugin_host.session_repository import PluginAgentSessionRepository
 
 
 async def setup(database):

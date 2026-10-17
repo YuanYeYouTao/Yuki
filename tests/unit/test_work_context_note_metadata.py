@@ -2,10 +2,10 @@
 
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.runtime.work_context_note import visible_context_note
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.tool_results.access import ArtifactAccess
+from yuki.runtime.work_context_note import visible_context_note
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.tool_results.access import ArtifactAccess
 
 
 async def test_optional_note_keeps_repeated_references_and_future_metadata(database, tmp_path):

@@ -11,21 +11,21 @@ from PIL import Image
 from sqlalchemy import func, select
 from tests.conftest import MemorySender, build_harness, make_settings
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import (
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import (
     AttachmentKind,
     InboundMessage,
     MessageAttachment,
     SenderIdentity,
 )
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import inputs
-from qq_ai_bot.services.attachment_inputs import AttachmentInputService
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
-from qq_ai_bot.services.media_resolver import MediaResolver
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import inputs
+from yuki.services.attachment_inputs import AttachmentInputService
+from yuki.services.image_preprocessor import ImagePreprocessor
+from yuki.services.media_resolver import MediaResolver
 
 
 def message(**changes):
@@ -169,8 +169,8 @@ async def test_empty_body_with_real_input_still_reaches_main(database, carrier):
             **{"reply_attachments" if carrier == "reply_image" else "attachments": (attachment,)},
         )
     elif carrier == "audio":
-        from qq_ai_bot.asr.service import AudioInput
-        from qq_ai_bot.domain.audio import AudioTranscript, serialize_transcripts
+        from yuki.asr.service import AudioInput
+        from yuki.domain.audio import AudioTranscript, serialize_transcripts
 
         processor._asr = SimpleNamespace(
             prepare=AsyncMock(

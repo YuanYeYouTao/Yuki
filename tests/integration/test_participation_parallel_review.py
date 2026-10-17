@@ -31,15 +31,15 @@ from yuki_participation.models import Snapshot
 from yuki_participation.participation import ParticipationCheckpoint
 from yuki_participation.self_report import SelfDelta, SelfReport
 
-from qq_ai_bot.conversation.ordinary_admission import OrdinaryAdmissionRepository
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.participation_feedback import admission_unit_binding
-from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
-from qq_ai_bot.services.turn_execution import _PrimaryDispatch
+from yuki.conversation.ordinary_admission import OrdinaryAdmissionRepository
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatMessage
+from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.services.participation_feedback import admission_unit_binding
+from yuki.services.turn_coordinator import HistorySourceChangedError
+from yuki.services.turn_execution import _PrimaryDispatch
 
 
 @pytest.mark.parametrize("exit_first", ["semantic", "quiet"])

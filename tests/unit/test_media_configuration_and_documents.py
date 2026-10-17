@@ -14,25 +14,25 @@ from tests.conftest import make_settings
 from tests.unit.test_conversation_media_cleanup import _cache
 from tests.unit.test_native_media_inputs import _image
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.conversation.media_service import ConversationMediaError
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import (
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.conversation.media_service import ConversationMediaError
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import (
     AttachmentKind,
     InboundMessage,
     MessageAttachment,
     SenderIdentity,
 )
-from qq_ai_bot.emoji.grid import EmojiGrid
-from qq_ai_bot.emoji.models import EmojiSelectionRequest
-from qq_ai_bot.emoji.selector import EmojiSelector
-from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
-from qq_ai_bot.services.attachment_inputs import AttachmentInputService
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
-from qq_ai_bot.services.media_process import MediaProcessError, run_media_process
-from qq_ai_bot.services.video_frames import _run as run_video_process
-from qq_ai_bot.services.vision_service import VisionProcessingError
-from qq_ai_bot.vision.models import VisualItemObservation, VisualObservation
+from yuki.emoji.grid import EmojiGrid
+from yuki.emoji.models import EmojiSelectionRequest
+from yuki.emoji.selector import EmojiSelector
+from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
+from yuki.services.attachment_inputs import AttachmentInputService
+from yuki.services.image_preprocessor import ImagePreprocessor
+from yuki.services.media_process import MediaProcessError, run_media_process
+from yuki.services.video_frames import _run as run_video_process
+from yuki.services.vision_service import VisionProcessingError
+from yuki.vision.models import VisualItemObservation, VisualObservation
 
 
 def message(*files):
@@ -165,7 +165,7 @@ async def test_current_document_process_failure_is_not_invalid_video(database, m
         ).snapshot()
     ).vision
     monkeypatch.setattr(
-        "qq_ai_bot.services.attachment_inputs.run_parser",
+        "yuki.services.attachment_inputs.run_parser",
         AsyncMock(side_effect=MediaProcessError()),
     )
     with pytest.raises(VisionProcessingError) as caught:
@@ -192,7 +192,7 @@ async def test_history_document_process_failure_is_not_invalid_video(
             hashlib.sha256(path.read_bytes()).hexdigest(),
         )
     monkeypatch.setattr(
-        "qq_ai_bot.conversation.media_service.run_parser",
+        "yuki.conversation.media_service.run_parser",
         AsyncMock(side_effect=MediaProcessError()),
     )
     try:

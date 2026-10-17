@@ -10,28 +10,28 @@ from types import SimpleNamespace
 from tests.conftest import build_harness, make_settings
 from tests.support.codemode_cases import effect_rows, environment, outer_call, requires_worker
 
-from qq_ai_bot import __version__
-from qq_ai_bot.capabilities.invocation import direct_invocations
-from qq_ai_bot.codemode.driver import CodeModeDriver
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
-from qq_ai_bot.plugin_host.discovery import PluginDiscovery
-from qq_ai_bot.plugin_host.event_bus import PluginEventBus
-from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.plugin_host.loader import PluginLoader
-from qq_ai_bot.plugin_host.manager import PluginManager
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.invocation_service import InvocationService
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki import __version__
+from yuki.capabilities.invocation import direct_invocations
+from yuki.codemode.driver import CodeModeDriver
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
+from yuki.persistence.database import Database
+from yuki.plugin_host.capability_adapter import PluginCapabilityAdapter
+from yuki.plugin_host.discovery import PluginDiscovery
+from yuki.plugin_host.event_bus import PluginEventBus
+from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.plugin_host.loader import PluginLoader
+from yuki.plugin_host.manager import PluginManager
+from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki.runtime.origin import TurnOrigin
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.invocation_service import InvocationService
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 

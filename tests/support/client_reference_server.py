@@ -11,12 +11,12 @@ from tests.conftest import make_settings
 from tests.integration.test_current_material_main_contract import _catalog, _profile
 from tests.support.model_profiles import write_fake_profiles
 
-from qq_ai_bot.client_api.http import attach_client_api
-from qq_ai_bot.container import ApplicationContainer
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.persistence.database import Database
+from yuki.client_api.http import attach_client_api
+from yuki.container import ApplicationContainer
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.persistence.database import Database
 
 
 async def serve(root: Path, database_url: str, port: int, suppress_hints: bool) -> None:

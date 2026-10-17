@@ -7,8 +7,8 @@ from alembic import command
 from alembic.config import Config
 from tests.unit.test_migration_0119 import _seed_0118
 
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
+from yuki.persistence.database import Database
+from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
 
 
 def _insert(connection, table, values):

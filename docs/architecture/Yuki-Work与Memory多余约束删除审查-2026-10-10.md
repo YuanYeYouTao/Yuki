@@ -78,79 +78,79 @@
 
 ### C00 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_recovery_schema.py:1](../../src/qq_ai_bot/runtime/work_recovery_schema.py#L1) → [src/qq_ai_bot/memory/models.py:297 (MemoryConsistencyHealth.healthy)](../../src/qq_ai_bot/memory/models.py#L297)。
+调用/持久化/恢复：[src/yuki/runtime/work_recovery_schema.py:1](../../src/yuki/runtime/work_recovery_schema.py#L1) → [src/yuki/memory/models.py:297 (MemoryConsistencyHealth.healthy)](../../src/yuki/memory/models.py#L297)。
 
 验证入口：[tests/unit/test_runtime_recovery.py:78 (test_repeated_transient_failure_preserves_original_work_and_can_complete)](../../tests/unit/test_runtime_recovery.py#L78)。
 
 ### C01 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_control.py:1046 (WorkControl._prepare_completion)](../../src/qq_ai_bot/runtime/work_control.py#L1046) → [src/qq_ai_bot/runtime/work_control.py:306 (WorkControl.validate_work_report)](../../src/qq_ai_bot/runtime/work_control.py#L306) → [src/qq_ai_bot/runtime/work_repository.py:673 (WorkRepository.accept_control)](../../src/qq_ai_bot/runtime/work_repository.py#L673) → [src/qq_ai_bot/social/tools.py:6 (social_tool_definitions)](../../src/qq_ai_bot/social/tools.py#L6)。
+调用/持久化/恢复：[src/yuki/runtime/work_control.py:1046 (WorkControl._prepare_completion)](../../src/yuki/runtime/work_control.py#L1046) → [src/yuki/runtime/work_control.py:306 (WorkControl.validate_work_report)](../../src/yuki/runtime/work_control.py#L306) → [src/yuki/runtime/work_repository.py:673 (WorkRepository.accept_control)](../../src/yuki/runtime/work_repository.py#L673) → [src/yuki/social/tools.py:6 (social_tool_definitions)](../../src/yuki/social/tools.py#L6)。
 
 验证入口：[tests/unit/test_work_settlement_writer.py:150 (test_answer_completion_does_not_require_send_classification)](../../tests/unit/test_work_settlement_writer.py#L150)；[tests/unit/test_work_settlement_writer.py:319 (test_report_can_associate_all_admitted_inputs_and_rejects_foreign_event)](../../tests/unit/test_work_settlement_writer.py#L319)。
 
 ### C02 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_supervisor.py:69 (recover_failure)](../../src/qq_ai_bot/runtime/work_supervisor.py#L69) → [src/qq_ai_bot/runtime/activation_outcome.py:127 (classify_failure)](../../src/qq_ai_bot/runtime/activation_outcome.py#L127) → [src/qq_ai_bot/model_runtime/executor.py:467 (TaskModelExecutor._execute)](../../src/qq_ai_bot/model_runtime/executor.py#L467) → [src/qq_ai_bot/services/concurrency.py:44 (ConcurrencyManager.run_llm)](../../src/qq_ai_bot/services/concurrency.py#L44)。
+调用/持久化/恢复：[src/yuki/runtime/work_supervisor.py:69 (recover_failure)](../../src/yuki/runtime/work_supervisor.py#L69) → [src/yuki/runtime/activation_outcome.py:127 (classify_failure)](../../src/yuki/runtime/activation_outcome.py#L127) → [src/yuki/model_runtime/executor.py:467 (TaskModelExecutor._execute)](../../src/yuki/model_runtime/executor.py#L467) → [src/yuki/services/concurrency.py:44 (ConcurrencyManager.run_llm)](../../src/yuki/services/concurrency.py#L44)。
 
 验证入口：[tests/unit/test_runtime_recovery.py:229 (test_source_change_after_accepted_automation_preserves_receipt_without_replay)](../../tests/unit/test_runtime_recovery.py#L229)；[tests/unit/test_runtime_recovery.py:78 (test_repeated_transient_failure_preserves_original_work_and_can_complete)](../../tests/unit/test_runtime_recovery.py#L78)。
 
 ### C03 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_journal.py:165 (WorkJournal._load)](../../src/qq_ai_bot/runtime/work_journal.py#L165) → [src/qq_ai_bot/runtime/work_session.py:117 (WorkSession.restore)](../../src/qq_ai_bot/runtime/work_session.py#L117)。
+调用/持久化/恢复：[src/yuki/runtime/work_journal.py:165 (WorkJournal._load)](../../src/yuki/runtime/work_journal.py#L165) → [src/yuki/runtime/work_session.py:117 (WorkSession.restore)](../../src/yuki/runtime/work_session.py#L117)。
 
 验证入口：[tests/unit/test_work_protocol_continuity.py:332 (test_work_changes_from_deepseek_to_gemini_without_replaying_old_effect)](../../tests/unit/test_work_protocol_continuity.py#L332)。
 
 ### C04 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_wait.py:42 (normalize_conditions)](../../src/qq_ai_bot/runtime/work_wait.py#L42) → [src/qq_ai_bot/runtime/work_wait.py:163 (WorkWaitRepository.register)](../../src/qq_ai_bot/runtime/work_wait.py#L163) → [src/qq_ai_bot/runtime/work_wait.py:639 (WorkWaitRepository._observe_due)](../../src/qq_ai_bot/runtime/work_wait.py#L639)。
+调用/持久化/恢复：[src/yuki/runtime/work_wait.py:42 (normalize_conditions)](../../src/yuki/runtime/work_wait.py#L42) → [src/yuki/runtime/work_wait.py:163 (WorkWaitRepository.register)](../../src/yuki/runtime/work_wait.py#L163) → [src/yuki/runtime/work_wait.py:639 (WorkWaitRepository._observe_due)](../../src/yuki/runtime/work_wait.py#L639)。
 
 验证入口：[tests/unit/test_work_settlement_writer.py:368 (test_existing_timer_can_resolve_all_conditions_without_delay_policy)](../../tests/unit/test_work_settlement_writer.py#L368)。
 
 ### C05 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_repository.py:308 (WorkRepository.accept_in_session)](../../src/qq_ai_bot/runtime/work_repository.py#L308) → [src/qq_ai_bot/runtime/work_repository.py:1134 (WorkRepository.enqueue)](../../src/qq_ai_bot/runtime/work_repository.py#L1134) → [src/qq_ai_bot/runtime/subagent_repository.py:83 (SubagentRepository.start)](../../src/qq_ai_bot/runtime/subagent_repository.py#L83)。
+调用/持久化/恢复：[src/yuki/runtime/work_repository.py:308 (WorkRepository.accept_in_session)](../../src/yuki/runtime/work_repository.py#L308) → [src/yuki/runtime/work_repository.py:1134 (WorkRepository.enqueue)](../../src/yuki/runtime/work_repository.py#L1134) → [src/yuki/runtime/subagent_repository.py:83 (SubagentRepository.start)](../../src/yuki/runtime/subagent_repository.py#L83)。
 
 验证入口：[tests/unit/test_work_settlement_writer.py:472 (test_retained_work_and_pending_inputs_do_not_block_new_intents)](../../tests/unit/test_work_settlement_writer.py#L472)。
 
 ### C06 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/subagent_tools.py:117 (execute_subagent)](../../src/qq_ai_bot/runtime/subagent_tools.py#L117) → [src/qq_ai_bot/runtime/subagent_scheduler.py:89 (SubagentScheduler.loop)](../../src/qq_ai_bot/runtime/subagent_scheduler.py#L89) → [src/qq_ai_bot/runtime/work_budget.py:16 (charge)](../../src/qq_ai_bot/runtime/work_budget.py#L16) → [src/qq_ai_bot/services/concurrency.py:44 (ConcurrencyManager.run_llm)](../../src/qq_ai_bot/services/concurrency.py#L44)。
+调用/持久化/恢复：[src/yuki/runtime/subagent_tools.py:117 (execute_subagent)](../../src/yuki/runtime/subagent_tools.py#L117) → [src/yuki/runtime/subagent_scheduler.py:89 (SubagentScheduler.loop)](../../src/yuki/runtime/subagent_scheduler.py#L89) → [src/yuki/runtime/work_budget.py:16 (charge)](../../src/yuki/runtime/work_budget.py#L16) → [src/yuki/services/concurrency.py:44 (ConcurrencyManager.run_llm)](../../src/yuki/services/concurrency.py#L44)。
 
 验证入口：[tests/unit/test_subagent_result_checkpoint.py:166 (test_children_queue_without_admission_quota_and_keep_execution_concurrency)](../../tests/unit/test_subagent_result_checkpoint.py#L166)。
 
 ### C07 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_repository.py:96 (encode_json)](../../src/qq_ai_bot/runtime/work_repository.py#L96) → [src/qq_ai_bot/runtime/work_journal.py:123 (WorkJournal.load)](../../src/qq_ai_bot/runtime/work_journal.py#L123) → [src/qq_ai_bot/capabilities/results.py:129 (ToolResultBudgeter.render)](../../src/qq_ai_bot/capabilities/results.py#L129)。
+调用/持久化/恢复：[src/yuki/runtime/work_repository.py:96 (encode_json)](../../src/yuki/runtime/work_repository.py#L96) → [src/yuki/runtime/work_journal.py:123 (WorkJournal.load)](../../src/yuki/runtime/work_journal.py#L123) → [src/yuki/capabilities/results.py:129 (ToolResultBudgeter.render)](../../src/yuki/capabilities/results.py#L129)。
 
 验证入口：[tests/unit/test_work_native_media_receipts.py:1](../../tests/unit/test_work_native_media_receipts.py#L1)；[tests/unit/test_protocol_recovery_preparation.py:1](../../tests/unit/test_protocol_recovery_preparation.py#L1)。
 
 ### C08 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/protocol_store.py:439 (ProtocolStore.publish_refs)](../../src/qq_ai_bot/runtime/protocol_store.py#L439) → [src/qq_ai_bot/runtime/protocol_store.py:547 (ProtocolStore._unlink_objects)](../../src/qq_ai_bot/runtime/protocol_store.py#L547) → [src/qq_ai_bot/runtime/work_session.py:1469 (WorkSession.save)](../../src/qq_ai_bot/runtime/work_session.py#L1469)。
+调用/持久化/恢复：[src/yuki/runtime/protocol_store.py:439 (ProtocolStore.publish_refs)](../../src/yuki/runtime/protocol_store.py#L439) → [src/yuki/runtime/protocol_store.py:547 (ProtocolStore._unlink_objects)](../../src/yuki/runtime/protocol_store.py#L547) → [src/yuki/runtime/work_session.py:1469 (WorkSession.save)](../../src/yuki/runtime/work_session.py#L1469)。
 
 验证入口：[tests/unit/test_work_protocol_continuity.py:111 (test_new_work_reuses_prepared_object_marked_for_deletion)](../../tests/unit/test_work_protocol_continuity.py#L111)；[tests/unit/test_work_protocol_continuity.py:144 (test_gc_rechecks_object_reused_before_file_fence)](../../tests/unit/test_work_protocol_continuity.py#L144)。
 
 ### C09 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_schema_v1.py:1](../../src/qq_ai_bot/runtime/work_schema_v1.py#L1) → [migrations/versions/0104_remove_checkpoint_byte_ceiling.py:11 (upgrade)](../../migrations/versions/0104_remove_checkpoint_byte_ceiling.py#L11)。
+调用/持久化/恢复：[src/yuki/runtime/work_schema_v1.py:1](../../src/yuki/runtime/work_schema_v1.py#L1) → [migrations/versions/0104_remove_checkpoint_byte_ceiling.py:11 (upgrade)](../../migrations/versions/0104_remove_checkpoint_byte_ceiling.py#L11)。
 
 验证入口：[tests/unit/test_work_protocol_continuity.py:192 (test_checkpoint_upgrade_removes_fixed_ceiling_and_preserves_media)](../../tests/unit/test_work_protocol_continuity.py#L192)。
 
 ### C10 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/models.py:297 (MemoryConsistencyHealth.healthy)](../../src/qq_ai_bot/memory/models.py#L297) → [src/qq_ai_bot/memory/quality/audit.py:80 (MemoryProductionQualityAudit._checks)](../../src/qq_ai_bot/memory/quality/audit.py#L80) → [src/qq_ai_bot/memory/audit.py:121 (MemoryAuditService.health)](../../src/qq_ai_bot/memory/audit.py#L121)。
+调用/持久化/恢复：[src/yuki/memory/models.py:297 (MemoryConsistencyHealth.healthy)](../../src/yuki/memory/models.py#L297) → [src/yuki/memory/quality/audit.py:80 (MemoryProductionQualityAudit._checks)](../../src/yuki/memory/quality/audit.py#L80) → [src/yuki/memory/audit.py:121 (MemoryAuditService.health)](../../src/yuki/memory/audit.py#L121)。
 
 验证入口：[tests/unit/test_memory_mutation.py:154 (test_agent_can_correct_its_visible_self_memory)](../../tests/unit/test_memory_mutation.py#L154)。
 
 ### C11 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/dream/models.py:124 (DreamAction._shape)](../../src/qq_ai_bot/memory/dream/models.py#L124) → [src/qq_ai_bot/memory/dream/service.py:791 (DreamService._select_evidence)](../../src/qq_ai_bot/memory/dream/service.py#L791) → [src/qq_ai_bot/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L202) → [src/qq_ai_bot/memory/mutation/service.py:866 (MemoryMutationService._dream_evidence_bundle)](../../src/qq_ai_bot/memory/mutation/service.py#L866)。
+调用/持久化/恢复：[src/yuki/memory/dream/models.py:124 (DreamAction._shape)](../../src/yuki/memory/dream/models.py#L124) → [src/yuki/memory/dream/service.py:791 (DreamService._select_evidence)](../../src/yuki/memory/dream/service.py#L791) → [src/yuki/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/yuki/memory/mutation/service.py#L202) → [src/yuki/memory/mutation/service.py:866 (MemoryMutationService._dream_evidence_bundle)](../../src/yuki/memory/mutation/service.py#L866)。
 
 验证入口：[tests/unit/test_memory_dream.py:625 (test_recompose_is_atomic_partial_one_to_many_and_reversible)](../../tests/unit/test_memory_dream.py#L625)。
 
 ### C12 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/repository.py:2163 (MemoryJobRepository.fail)](../../src/qq_ai_bot/memory/repository.py#L2163) → [src/qq_ai_bot/memory/worker.py:176 (MemoryWorker._process_jobs)](../../src/qq_ai_bot/memory/worker.py#L176)。
+调用/持久化/恢复：[src/yuki/memory/repository.py:2163 (MemoryJobRepository.fail)](../../src/yuki/memory/repository.py#L2163) → [src/yuki/memory/worker.py:176 (MemoryWorker._process_jobs)](../../src/yuki/memory/worker.py#L176)。
 
 验证入口：[tests/unit/test_job_claim_transactions.py:1](../../tests/unit/test_job_claim_transactions.py#L1)。
 
@@ -162,139 +162,139 @@
 
 ### C14 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/embedding/jobs.py:477 (MemoryEmbeddingJobRepository.fail)](../../src/qq_ai_bot/memory/embedding/jobs.py#L477) → [src/qq_ai_bot/memory/embedding/worker.py:1](../../src/qq_ai_bot/memory/embedding/worker.py#L1) → [src/qq_ai_bot/memory/rebuild/repository.py:399 (MemoryRebuildRepository.fail_item)](../../src/qq_ai_bot/memory/rebuild/repository.py#L399) → [src/qq_ai_bot/memory/rebuild/repository.py:810 (MemoryRebuildRepository.fail_proposal)](../../src/qq_ai_bot/memory/rebuild/repository.py#L810) → [src/qq_ai_bot/memory/rebuild/service.py:681 (MemoryRebuildService.process_commit_once)](../../src/qq_ai_bot/memory/rebuild/service.py#L681)。
+调用/持久化/恢复：[src/yuki/memory/embedding/jobs.py:477 (MemoryEmbeddingJobRepository.fail)](../../src/yuki/memory/embedding/jobs.py#L477) → [src/yuki/memory/embedding/worker.py:1](../../src/yuki/memory/embedding/worker.py#L1) → [src/yuki/memory/rebuild/repository.py:399 (MemoryRebuildRepository.fail_item)](../../src/yuki/memory/rebuild/repository.py#L399) → [src/yuki/memory/rebuild/repository.py:810 (MemoryRebuildRepository.fail_proposal)](../../src/yuki/memory/rebuild/repository.py#L810) → [src/yuki/memory/rebuild/service.py:681 (MemoryRebuildService.process_commit_once)](../../src/yuki/memory/rebuild/service.py#L681)。
 
 验证入口：[tests/unit/test_embedding_claim_boundaries.py:1](../../tests/unit/test_embedding_claim_boundaries.py#L1)；[tests/unit/test_memory_rebuild.py:1](../../tests/unit/test_memory_rebuild.py#L1)。
 
 ### C15 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/admin/config_service.py:661 (RuntimeConfigService.set_override)](../../src/qq_ai_bot/admin/config_service.py#L661) → [src/qq_ai_bot/admin/config_service.py:813 (RuntimeConfigService.delete_override)](../../src/qq_ai_bot/admin/config_service.py#L813) → [src/qq_ai_bot/admin/config_service.py:980 (RuntimeConfigService.rollback)](../../src/qq_ai_bot/admin/config_service.py#L980) → [src/qq_ai_bot/config.py:1](../../src/qq_ai_bot/config.py#L1) → [src/qq_ai_bot/settings_domains.py:1](../../src/qq_ai_bot/settings_domains.py#L1)。
+调用/持久化/恢复：[src/yuki/admin/config_service.py:661 (RuntimeConfigService.set_override)](../../src/yuki/admin/config_service.py#L661) → [src/yuki/admin/config_service.py:813 (RuntimeConfigService.delete_override)](../../src/yuki/admin/config_service.py#L813) → [src/yuki/admin/config_service.py:980 (RuntimeConfigService.rollback)](../../src/yuki/admin/config_service.py#L980) → [src/yuki/config.py:1](../../src/yuki/config.py#L1) → [src/yuki/settings_domains.py:1](../../src/yuki/settings_domains.py#L1)。
 
 验证入口：[tests/unit/test_runtime_config_read_snapshot.py:1](../../tests/unit/test_runtime_config_read_snapshot.py#L1)。
 
 ### C16 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_compaction.py:50 (validate_summary)](../../src/qq_ai_bot/runtime/work_compaction.py#L50) → [src/qq_ai_bot/runtime/work_context_note.py:24 (validate_note)](../../src/qq_ai_bot/runtime/work_context_note.py#L24) → [src/qq_ai_bot/runtime/work_session.py:816 (WorkSession._source_page)](../../src/qq_ai_bot/runtime/work_session.py#L816) → [src/qq_ai_bot/runtime/work_session.py:1063 (WorkSession.next_summary_source)](../../src/qq_ai_bot/runtime/work_session.py#L1063) → [src/qq_ai_bot/runtime/work_session.py:1207 (WorkSession.compact)](../../src/qq_ai_bot/runtime/work_session.py#L1207) → [src/qq_ai_bot/runtime/work_session.py:117 (WorkSession.restore)](../../src/qq_ai_bot/runtime/work_session.py#L117)。
+调用/持久化/恢复：[src/yuki/runtime/work_compaction.py:50 (validate_summary)](../../src/yuki/runtime/work_compaction.py#L50) → [src/yuki/runtime/work_context_note.py:24 (validate_note)](../../src/yuki/runtime/work_context_note.py#L24) → [src/yuki/runtime/work_session.py:816 (WorkSession._source_page)](../../src/yuki/runtime/work_session.py#L816) → [src/yuki/runtime/work_session.py:1063 (WorkSession.next_summary_source)](../../src/yuki/runtime/work_session.py#L1063) → [src/yuki/runtime/work_session.py:1207 (WorkSession.compact)](../../src/yuki/runtime/work_session.py#L1207) → [src/yuki/runtime/work_session.py:117 (WorkSession.restore)](../../src/yuki/runtime/work_session.py#L117)。
 
 验证入口：[tests/unit/test_work_compaction_anchor_recovery.py:1](../../tests/unit/test_work_compaction_anchor_recovery.py#L1)；[tests/unit/test_work_compaction_public_delta.py:1](../../tests/unit/test_work_compaction_public_delta.py#L1)。
 
 ### C17 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/services/turn_execution.py:1200 (TurnExecution.settle_truncated)](../../src/qq_ai_bot/services/turn_execution.py#L1200) → [src/qq_ai_bot/services/turn_execution.py:1288 (TurnExecution.execute_tools)](../../src/qq_ai_bot/services/turn_execution.py#L1288) → [src/qq_ai_bot/runtime/work_journal.py:744 (WorkJournal.record_effect)](../../src/qq_ai_bot/runtime/work_journal.py#L744)。
+调用/持久化/恢复：[src/yuki/services/turn_execution.py:1200 (TurnExecution.settle_truncated)](../../src/yuki/services/turn_execution.py#L1200) → [src/yuki/services/turn_execution.py:1288 (TurnExecution.execute_tools)](../../src/yuki/services/turn_execution.py#L1288) → [src/yuki/runtime/work_journal.py:744 (WorkJournal.record_effect)](../../src/yuki/runtime/work_journal.py#L744)。
 
 验证入口：[tests/unit/test_provider_native_result_boundaries.py:1](../../tests/unit/test_provider_native_result_boundaries.py#L1)。
 
 ### C18 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/services/invocation_service.py:75 (InvocationService.invoke)](../../src/qq_ai_bot/services/invocation_service.py#L75) → [src/qq_ai_bot/tool_results/artifacts.py:193 (ToolArtifactRepository.write_artifact)](../../src/qq_ai_bot/tool_results/artifacts.py#L193) → [src/qq_ai_bot/capabilities/results.py:129 (ToolResultBudgeter.render)](../../src/qq_ai_bot/capabilities/results.py#L129)。
+调用/持久化/恢复：[src/yuki/services/invocation_service.py:75 (InvocationService.invoke)](../../src/yuki/services/invocation_service.py#L75) → [src/yuki/tool_results/artifacts.py:193 (ToolArtifactRepository.write_artifact)](../../src/yuki/tool_results/artifacts.py#L193) → [src/yuki/capabilities/results.py:129 (ToolResultBudgeter.render)](../../src/yuki/capabilities/results.py#L129)。
 
 验证入口：[tests/unit/test_runtime_recovery.py:112 (test_artifact_publication_failure_preserves_typed_effect_without_replaying_business)](../../tests/unit/test_runtime_recovery.py#L112)；[tests/unit/test_work_native_media_receipts.py:1](../../tests/unit/test_work_native_media_receipts.py#L1)。
 
 ### C19 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_control.py:797 (WorkControl._control)](../../src/qq_ai_bot/runtime/work_control.py#L797) → [src/qq_ai_bot/runtime/work_control.py:306 (WorkControl.validate_work_report)](../../src/qq_ai_bot/runtime/work_control.py#L306) → [src/qq_ai_bot/runtime/work_wait.py:306 (WorkWaitRepository._deliver)](../../src/qq_ai_bot/runtime/work_wait.py#L306) → [src/qq_ai_bot/services/main_agent_backend.py:376 (MainAgentBackend.execute_call)](../../src/qq_ai_bot/services/main_agent_backend.py#L376)。
+调用/持久化/恢复：[src/yuki/runtime/work_control.py:797 (WorkControl._control)](../../src/yuki/runtime/work_control.py#L797) → [src/yuki/runtime/work_control.py:306 (WorkControl.validate_work_report)](../../src/yuki/runtime/work_control.py#L306) → [src/yuki/runtime/work_wait.py:306 (WorkWaitRepository._deliver)](../../src/yuki/runtime/work_wait.py#L306) → [src/yuki/services/main_agent_backend.py:376 (MainAgentBackend.execute_call)](../../src/yuki/services/main_agent_backend.py#L376)。
 
 验证入口：[tests/unit/test_no_work_after_send_recovery.py:1](../../tests/unit/test_no_work_after_send_recovery.py#L1)；[tests/unit/test_subagent_result_checkpoint.py:1](../../tests/unit/test_subagent_result_checkpoint.py#L1)。
 
 ### C20 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/self_reflection/repository.py:429 (SelfReflectionRepository.claim_due)](../../src/qq_ai_bot/memory/self_reflection/repository.py#L429) → [src/qq_ai_bot/memory/self_reflection/service.py:316 (SelfReflectionService._input)](../../src/qq_ai_bot/memory/self_reflection/service.py#L316) → [src/qq_ai_bot/memory/self_reflection/models.py:109 (SelfReflectionProposal._shape)](../../src/qq_ai_bot/memory/self_reflection/models.py#L109) → [frontend/src/reflection.tsx:1](../../frontend/src/reflection.tsx#L1) → [src/qq_ai_bot/services/profile_commands.py:183 (ProfileCommandHandler._memory_diagnostics)](../../src/qq_ai_bot/services/profile_commands.py#L183)。
+调用/持久化/恢复：[src/yuki/memory/self_reflection/repository.py:429 (SelfReflectionRepository.claim_due)](../../src/yuki/memory/self_reflection/repository.py#L429) → [src/yuki/memory/self_reflection/service.py:316 (SelfReflectionService._input)](../../src/yuki/memory/self_reflection/service.py#L316) → [src/yuki/memory/self_reflection/models.py:109 (SelfReflectionProposal._shape)](../../src/yuki/memory/self_reflection/models.py#L109) → [frontend/src/reflection.tsx:1](../../frontend/src/reflection.tsx#L1) → [src/yuki/services/profile_commands.py:183 (ProfileCommandHandler._memory_diagnostics)](../../src/yuki/services/profile_commands.py#L183)。
 
 验证入口：[tests/unit/test_self_initiative_memory.py:809 (test_incoming_reflection_keeps_complete_source_without_own_reply)](../../tests/unit/test_self_initiative_memory.py#L809)。
 
 ### C21 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/self_reflection/repository.py:181 (SelfReflectionRepository._advance_state)](../../src/qq_ai_bot/memory/self_reflection/repository.py#L181) → [src/qq_ai_bot/memory/self_reflection/repository.py:262 (SelfReflectionRepository._reconcile_generation_boundary)](../../src/qq_ai_bot/memory/self_reflection/repository.py#L262) → [src/qq_ai_bot/memory/self_reflection/repository.py:429 (SelfReflectionRepository.claim_due)](../../src/qq_ai_bot/memory/self_reflection/repository.py#L429)。
+调用/持久化/恢复：[src/yuki/memory/self_reflection/repository.py:181 (SelfReflectionRepository._advance_state)](../../src/yuki/memory/self_reflection/repository.py#L181) → [src/yuki/memory/self_reflection/repository.py:262 (SelfReflectionRepository._reconcile_generation_boundary)](../../src/yuki/memory/self_reflection/repository.py#L262) → [src/yuki/memory/self_reflection/repository.py:429 (SelfReflectionRepository.claim_due)](../../src/yuki/memory/self_reflection/repository.py#L429)。
 
 验证入口：[tests/unit/test_self_initiative_memory.py:870 (test_reflection_only_live_source_ranges_block_claim_and_cursor)](../../tests/unit/test_self_initiative_memory.py#L870)。
 
 ### C22 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/rebuild/models.py:38 (MemoryRebuildSelection._canonical_ids)](../../src/qq_ai_bot/memory/rebuild/models.py#L38) → [src/qq_ai_bot/memory/rebuild/service.py:341 (MemoryRebuildService.start)](../../src/qq_ai_bot/memory/rebuild/service.py#L341) → [src/qq_ai_bot/admin/config_specs_restart.py:1](../../src/qq_ai_bot/admin/config_specs_restart.py#L1) → [src/qq_ai_bot/config.py:1](../../src/qq_ai_bot/config.py#L1)。
+调用/持久化/恢复：[src/yuki/memory/rebuild/models.py:38 (MemoryRebuildSelection._canonical_ids)](../../src/yuki/memory/rebuild/models.py#L38) → [src/yuki/memory/rebuild/service.py:341 (MemoryRebuildService.start)](../../src/yuki/memory/rebuild/service.py#L341) → [src/yuki/admin/config_specs_restart.py:1](../../src/yuki/admin/config_specs_restart.py#L1) → [src/yuki/config.py:1](../../src/yuki/config.py#L1)。
 
 验证入口：[tests/unit/test_memory_rebuild.py:1](../../tests/unit/test_memory_rebuild.py#L1)。
 
 ### C23 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/codemode/driver.py:933 (CodeModeDriver._bounded_result)](../../src/qq_ai_bot/codemode/driver.py#L933) → [src/qq_ai_bot/codemode/driver.py:845 (CodeModeDriver._settle)](../../src/qq_ai_bot/codemode/driver.py#L845)。
+调用/持久化/恢复：[src/yuki/codemode/driver.py:933 (CodeModeDriver._bounded_result)](../../src/yuki/codemode/driver.py#L933) → [src/yuki/codemode/driver.py:845 (CodeModeDriver._settle)](../../src/yuki/codemode/driver.py#L845)。
 
 验证入口：[tests/integration/test_codemode_output_recovery.py:1](../../tests/integration/test_codemode_output_recovery.py#L1)。
 
 ### C24 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_control.py:797 (WorkControl._control)](../../src/qq_ai_bot/runtime/work_control.py#L797) → [src/qq_ai_bot/runtime/work_control.py:1046 (WorkControl._prepare_completion)](../../src/qq_ai_bot/runtime/work_control.py#L1046) → [src/qq_ai_bot/runtime/work_repository.py:483 (WorkRepository.transition)](../../src/qq_ai_bot/runtime/work_repository.py#L483) → [src/qq_ai_bot/runtime/work_wait.py:163 (WorkWaitRepository.register)](../../src/qq_ai_bot/runtime/work_wait.py#L163)。
+调用/持久化/恢复：[src/yuki/runtime/work_control.py:797 (WorkControl._control)](../../src/yuki/runtime/work_control.py#L797) → [src/yuki/runtime/work_control.py:1046 (WorkControl._prepare_completion)](../../src/yuki/runtime/work_control.py#L1046) → [src/yuki/runtime/work_repository.py:483 (WorkRepository.transition)](../../src/yuki/runtime/work_repository.py#L483) → [src/yuki/runtime/work_wait.py:163 (WorkWaitRepository.register)](../../src/yuki/runtime/work_wait.py#L163)。
 
 验证入口：[tests/unit/test_work_settlement_writer.py:285 (test_detailed_target_and_wait_reason_are_preserved)](../../tests/unit/test_work_settlement_writer.py#L285)；[tests/unit/test_subagent_result_checkpoint.py:215 (test_verified_mutation_child_completes_without_extra_result_prose)](../../tests/unit/test_subagent_result_checkpoint.py#L215)。
 
 ### C25 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/dream/models.py:124 (DreamAction._shape)](../../src/qq_ai_bot/memory/dream/models.py#L124) → [src/qq_ai_bot/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L202)。
+调用/持久化/恢复：[src/yuki/memory/dream/models.py:124 (DreamAction._shape)](../../src/yuki/memory/dream/models.py#L124) → [src/yuki/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/yuki/memory/mutation/service.py#L202)。
 
 验证入口：[tests/unit/test_memory_dream.py:303 (test_single_source_dream_uses_saved_model_output_and_original_receipt)](../../tests/unit/test_memory_dream.py#L303)。
 
 ### C26 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/capabilities/validation.py:43 (JsonSchemaCapabilityValidator.admit)](../../src/qq_ai_bot/capabilities/validation.py#L43) → [src/qq_ai_bot/capabilities/catalog.py:187 (ToolProviderRegistry.catalog)](../../src/qq_ai_bot/capabilities/catalog.py#L187) → [src/qq_ai_bot/capabilities/runtime.py:31 (TurnCapabilityRuntime.__init__)](../../src/qq_ai_bot/capabilities/runtime.py#L31) → [src/qq_ai_bot/services/main_agent_backend.py:376 (MainAgentBackend.execute_call)](../../src/qq_ai_bot/services/main_agent_backend.py#L376)。
+调用/持久化/恢复：[src/yuki/capabilities/validation.py:43 (JsonSchemaCapabilityValidator.admit)](../../src/yuki/capabilities/validation.py#L43) → [src/yuki/capabilities/catalog.py:187 (ToolProviderRegistry.catalog)](../../src/yuki/capabilities/catalog.py#L187) → [src/yuki/capabilities/runtime.py:31 (TurnCapabilityRuntime.__init__)](../../src/yuki/capabilities/runtime.py#L31) → [src/yuki/services/main_agent_backend.py:376 (MainAgentBackend.execute_call)](../../src/yuki/services/main_agent_backend.py#L376)。
 
 验证入口：[tests/unit/test_capability_runtime_security.py:1](../../tests/unit/test_capability_runtime_security.py#L1)。
 
 ### C27 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_control.py:797 (WorkControl._control)](../../src/qq_ai_bot/runtime/work_control.py#L797) → [src/qq_ai_bot/runtime/work_queries.py:136 (WorkQueries.available)](../../src/qq_ai_bot/runtime/work_queries.py#L136) → [src/qq_ai_bot/runtime/work_queries.py:101 (WorkQueries.get)](../../src/qq_ai_bot/runtime/work_queries.py#L101)。
+调用/持久化/恢复：[src/yuki/runtime/work_control.py:797 (WorkControl._control)](../../src/yuki/runtime/work_control.py#L797) → [src/yuki/runtime/work_queries.py:136 (WorkQueries.available)](../../src/yuki/runtime/work_queries.py#L136) → [src/yuki/runtime/work_queries.py:101 (WorkQueries.get)](../../src/yuki/runtime/work_queries.py#L101)。
 
 验证入口：[tests/unit/test_work_settlement_writer.py:1](../../tests/unit/test_work_settlement_writer.py#L1)。
 
 ### C28 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/runtime/work_wait.py:639 (WorkWaitRepository._observe_due)](../../src/qq_ai_bot/runtime/work_wait.py#L639) → [src/qq_ai_bot/runtime/work_wait.py:306 (WorkWaitRepository._deliver)](../../src/qq_ai_bot/runtime/work_wait.py#L306) → [src/qq_ai_bot/runtime/work_control.py:797 (WorkControl._control)](../../src/qq_ai_bot/runtime/work_control.py#L797)。
+调用/持久化/恢复：[src/yuki/runtime/work_wait.py:639 (WorkWaitRepository._observe_due)](../../src/yuki/runtime/work_wait.py#L639) → [src/yuki/runtime/work_wait.py:306 (WorkWaitRepository._deliver)](../../src/yuki/runtime/work_wait.py#L306) → [src/yuki/runtime/work_control.py:797 (WorkControl._control)](../../src/yuki/runtime/work_control.py#L797)。
 
 验证入口：[tests/unit/test_work_settlement_writer.py:546 (test_wait_conditions_follow_mode_with_failed_member)](../../tests/unit/test_work_settlement_writer.py#L546)。
 
 ### C29 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/dream/models.py:124 (DreamAction._shape)](../../src/qq_ai_bot/memory/dream/models.py#L124) → [src/qq_ai_bot/memory/dream/service.py:879 (DreamService._run_model)](../../src/qq_ai_bot/memory/dream/service.py#L879) → [src/qq_ai_bot/memory/dream/service.py:908 (DreamService._anchor)](../../src/qq_ai_bot/memory/dream/service.py#L908) → [src/qq_ai_bot/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L202)。
+调用/持久化/恢复：[src/yuki/memory/dream/models.py:124 (DreamAction._shape)](../../src/yuki/memory/dream/models.py#L124) → [src/yuki/memory/dream/service.py:879 (DreamService._run_model)](../../src/yuki/memory/dream/service.py#L879) → [src/yuki/memory/dream/service.py:908 (DreamService._anchor)](../../src/yuki/memory/dream/service.py#L908) → [src/yuki/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/yuki/memory/mutation/service.py#L202)。
 
 验证入口：[tests/unit/test_memory_dream.py:1](../../tests/unit/test_memory_dream.py#L1)。
 
 ### C30 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/mutation/service.py:954 (MemoryMutationService.mutate_resolved)](../../src/qq_ai_bot/memory/mutation/service.py#L954) → [src/qq_ai_bot/memory/mutation/service.py:1014 (MemoryMutationService._prepare_self_origin)](../../src/qq_ai_bot/memory/mutation/service.py#L1014) → [src/qq_ai_bot/memory/mutation/service.py:1179 (MemoryMutationService._commit_prepared)](../../src/qq_ai_bot/memory/mutation/service.py#L1179) → [src/qq_ai_bot/memory/mutation/service.py:1941 (MemoryMutationService._apply)](../../src/qq_ai_bot/memory/mutation/service.py#L1941)。
+调用/持久化/恢复：[src/yuki/memory/mutation/service.py:954 (MemoryMutationService.mutate_resolved)](../../src/yuki/memory/mutation/service.py#L954) → [src/yuki/memory/mutation/service.py:1014 (MemoryMutationService._prepare_self_origin)](../../src/yuki/memory/mutation/service.py#L1014) → [src/yuki/memory/mutation/service.py:1179 (MemoryMutationService._commit_prepared)](../../src/yuki/memory/mutation/service.py#L1179) → [src/yuki/memory/mutation/service.py:1941 (MemoryMutationService._apply)](../../src/yuki/memory/mutation/service.py#L1941)。
 
 验证入口：[tests/unit/test_self_initiative_memory.py:293 (test_actorless_reflection_uses_unified_mutation_and_readable_evidence)](../../tests/unit/test_self_initiative_memory.py#L293)。
 
 ### C31 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/model_runtime/structured.py:99 (StructuredTaskRunner.run_with_response)](../../src/qq_ai_bot/model_runtime/structured.py#L99) → [src/qq_ai_bot/model_runtime/structured.py:244 (_decode_response)](../../src/qq_ai_bot/model_runtime/structured.py#L244) → [src/qq_ai_bot/services/agent_runner.py:289 (AgentRunner._compact_work)](../../src/qq_ai_bot/services/agent_runner.py#L289) → [src/qq_ai_bot/services/ordinary_compaction.py:149 (summarize_records)](../../src/qq_ai_bot/services/ordinary_compaction.py#L149) → [src/qq_ai_bot/conversation/rollup/service.py:252 (ConversationRollupService._summarize_source)](../../src/qq_ai_bot/conversation/rollup/service.py#L252)。
+调用/持久化/恢复：[src/yuki/model_runtime/structured.py:99 (StructuredTaskRunner.run_with_response)](../../src/yuki/model_runtime/structured.py#L99) → [src/yuki/model_runtime/structured.py:244 (_decode_response)](../../src/yuki/model_runtime/structured.py#L244) → [src/yuki/services/agent_runner.py:289 (AgentRunner._compact_work)](../../src/yuki/services/agent_runner.py#L289) → [src/yuki/services/ordinary_compaction.py:149 (summarize_records)](../../src/yuki/services/ordinary_compaction.py#L149) → [src/yuki/conversation/rollup/service.py:252 (ConversationRollupService._summarize_source)](../../src/yuki/conversation/rollup/service.py#L252)。
 
 验证入口：[tests/unit/test_work_compaction_anchor_recovery.py:1](../../tests/unit/test_work_compaction_anchor_recovery.py#L1)；[tests/unit/test_rollup_complete_sources.py:1](../../tests/unit/test_rollup_complete_sources.py#L1)。
 
 ### C32 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/services/durable_invocations.py:29 (DurableInvocations.run)](../../src/qq_ai_bot/services/durable_invocations.py#L29) → [src/qq_ai_bot/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/qq_ai_bot/automation/handlers.py#L107) → [src/qq_ai_bot/automation/executor.py:161 (AutomationExecutor._execute)](../../src/qq_ai_bot/automation/executor.py#L161) → [src/qq_ai_bot/automation/work_cursor.py:31 (save)](../../src/qq_ai_bot/automation/work_cursor.py#L31) → [src/qq_ai_bot/automation/worker.py:146 (AutomationWorker._process)](../../src/qq_ai_bot/automation/worker.py#L146) → [src/qq_ai_bot/automation/repository.py:693 (AutomationRepository.resumable_run)](../../src/qq_ai_bot/automation/repository.py#L693) → [src/qq_ai_bot/automation/repository.py:773 (AutomationRepository.finish_automation_run)](../../src/qq_ai_bot/automation/repository.py#L773)。
+调用/持久化/恢复：[src/yuki/services/durable_invocations.py:29 (DurableInvocations.run)](../../src/yuki/services/durable_invocations.py#L29) → [src/yuki/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/yuki/automation/handlers.py#L107) → [src/yuki/automation/executor.py:161 (AutomationExecutor._execute)](../../src/yuki/automation/executor.py#L161) → [src/yuki/automation/work_cursor.py:31 (save)](../../src/yuki/automation/work_cursor.py#L31) → [src/yuki/automation/worker.py:146 (AutomationWorker._process)](../../src/yuki/automation/worker.py#L146) → [src/yuki/automation/repository.py:693 (AutomationRepository.resumable_run)](../../src/yuki/automation/repository.py#L693) → [src/yuki/automation/repository.py:773 (AutomationRepository.finish_automation_run)](../../src/yuki/automation/repository.py#L773)。
 
 验证入口：[tests/integration/test_person_automation_final_feedback.py:124 (test_suspended_agent_preserves_automation_run_until_original_work_resumes)](../../tests/integration/test_person_automation_final_feedback.py#L124)。
 
 ### C33 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/services/chat.py:431 (ChatService._build_tool_registry)](../../src/qq_ai_bot/services/chat.py#L431) → [src/qq_ai_bot/tool_results/artifacts.py:193 (ToolArtifactRepository.write_artifact)](../../src/qq_ai_bot/tool_results/artifacts.py#L193) → [src/qq_ai_bot/tool_results/artifacts.py:351 (ToolArtifactRepository.read)](../../src/qq_ai_bot/tool_results/artifacts.py#L351) → [src/qq_ai_bot/tool_results/artifacts.py:808 (_get_json)](../../src/qq_ai_bot/tool_results/artifacts.py#L808) → [src/qq_ai_bot/tool_results/artifacts.py:923 (_search_json)](../../src/qq_ai_bot/tool_results/artifacts.py#L923)。
+调用/持久化/恢复：[src/yuki/services/chat.py:431 (ChatService._build_tool_registry)](../../src/yuki/services/chat.py#L431) → [src/yuki/tool_results/artifacts.py:193 (ToolArtifactRepository.write_artifact)](../../src/yuki/tool_results/artifacts.py#L193) → [src/yuki/tool_results/artifacts.py:351 (ToolArtifactRepository.read)](../../src/yuki/tool_results/artifacts.py#L351) → [src/yuki/tool_results/artifacts.py:808 (_get_json)](../../src/yuki/tool_results/artifacts.py#L808) → [src/yuki/tool_results/artifacts.py:923 (_search_json)](../../src/yuki/tool_results/artifacts.py#L923)。
 
 验证入口：[tests/unit/test_tool_artifact_orphans.py:68 (test_stored_result_can_be_read_by_deep_path_and_full_query)](../../tests/unit/test_tool_artifact_orphans.py#L68)。
 
 ### C34 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/validation.py:133 (MemoryClaimValidator._validate_claim)](../../src/qq_ai_bot/memory/validation.py#L133) → [src/qq_ai_bot/memory/claim_processor.py:116 (MemoryClaimProcessor.resolve)](../../src/qq_ai_bot/memory/claim_processor.py#L116) → [src/qq_ai_bot/memory/claim_processor.py:178 (MemoryClaimProcessor.apply_resolution)](../../src/qq_ai_bot/memory/claim_processor.py#L178) → [src/qq_ai_bot/memory/quality/audit.py:80 (MemoryProductionQualityAudit._checks)](../../src/qq_ai_bot/memory/quality/audit.py#L80)。
+调用/持久化/恢复：[src/yuki/memory/validation.py:133 (MemoryClaimValidator._validate_claim)](../../src/yuki/memory/validation.py#L133) → [src/yuki/memory/claim_processor.py:116 (MemoryClaimProcessor.resolve)](../../src/yuki/memory/claim_processor.py#L116) → [src/yuki/memory/claim_processor.py:178 (MemoryClaimProcessor.apply_resolution)](../../src/yuki/memory/claim_processor.py#L178) → [src/yuki/memory/quality/audit.py:80 (MemoryProductionQualityAudit._checks)](../../src/yuki/memory/quality/audit.py#L80)。
 
 验证入口：[tests/unit/test_memory_mutation.py:567 (test_self_create_is_atomic_receipted_and_deduplicated)](../../tests/unit/test_memory_mutation.py#L567)。
 
 ### C35 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/admin/capabilities.py:308 (AdminCapabilityService.execute)](../../src/qq_ai_bot/admin/capabilities.py#L308) → [src/qq_ai_bot/admin/config_service.py:661 (RuntimeConfigService.set_override)](../../src/qq_ai_bot/admin/config_service.py#L661) → [src/qq_ai_bot/services/main_agent_backend.py:376 (MainAgentBackend.execute_call)](../../src/qq_ai_bot/services/main_agent_backend.py#L376) → [src/qq_ai_bot/services/main_agent_backend.py:166 (MainAgentBackend.work_control_allowed)](../../src/qq_ai_bot/services/main_agent_backend.py#L166) → [src/qq_ai_bot/services/main_agent_backend.py:181 (MainAgentBackend.work_query_allowed)](../../src/qq_ai_bot/services/main_agent_backend.py#L181) → [src/qq_ai_bot/services/main_agent_backend.py:226 (MainAgentBackend.definitions)](../../src/qq_ai_bot/services/main_agent_backend.py#L226)。
+调用/持久化/恢复：[src/yuki/admin/capabilities.py:308 (AdminCapabilityService.execute)](../../src/yuki/admin/capabilities.py#L308) → [src/yuki/admin/config_service.py:661 (RuntimeConfigService.set_override)](../../src/yuki/admin/config_service.py#L661) → [src/yuki/services/main_agent_backend.py:376 (MainAgentBackend.execute_call)](../../src/yuki/services/main_agent_backend.py#L376) → [src/yuki/services/main_agent_backend.py:166 (MainAgentBackend.work_control_allowed)](../../src/yuki/services/main_agent_backend.py#L166) → [src/yuki/services/main_agent_backend.py:181 (MainAgentBackend.work_query_allowed)](../../src/yuki/services/main_agent_backend.py#L181) → [src/yuki/services/main_agent_backend.py:226 (MainAgentBackend.definitions)](../../src/yuki/services/main_agent_backend.py#L226)。
 
 验证入口：[tests/unit/test_capability_runtime_security.py:204 (test_admin_parameter_correction_can_read_before_retry_and_reuse_original_effect)](../../tests/unit/test_capability_runtime_security.py#L204)。
 
 ### C36 代码索引
 
-调用/持久化/恢复：[src/qq_ai_bot/memory/self_reflection/initiative.py:60 (claim_initiative)](../../src/qq_ai_bot/memory/self_reflection/initiative.py#L60) → [src/qq_ai_bot/memory/self_reflection/service.py:316 (SelfReflectionService._input)](../../src/qq_ai_bot/memory/self_reflection/service.py#L316) → [src/qq_ai_bot/memory/self_reflection/repository.py:763 (SelfReflectionRepository.tool_receipts)](../../src/qq_ai_bot/memory/self_reflection/repository.py#L763) → [src/qq_ai_bot/memory/self_reflection/repository.py:832 (SelfReflectionRepository.complete)](../../src/qq_ai_bot/memory/self_reflection/repository.py#L832) → [src/qq_ai_bot/memory/self_reflection/initiative.py:26 (advance_cursor)](../../src/qq_ai_bot/memory/self_reflection/initiative.py#L26)。
+调用/持久化/恢复：[src/yuki/memory/self_reflection/initiative.py:60 (claim_initiative)](../../src/yuki/memory/self_reflection/initiative.py#L60) → [src/yuki/memory/self_reflection/service.py:316 (SelfReflectionService._input)](../../src/yuki/memory/self_reflection/service.py#L316) → [src/yuki/memory/self_reflection/repository.py:763 (SelfReflectionRepository.tool_receipts)](../../src/yuki/memory/self_reflection/repository.py#L763) → [src/yuki/memory/self_reflection/repository.py:832 (SelfReflectionRepository.complete)](../../src/yuki/memory/self_reflection/repository.py#L832) → [src/yuki/memory/self_reflection/initiative.py:26 (advance_cursor)](../../src/yuki/memory/self_reflection/initiative.py#L26)。
 
 验证入口：[tests/unit/test_self_initiative_memory.py:208 (test_silent_receipt_windows_keep_large_source_complete_and_remaining_source_pending)](../../tests/unit/test_self_initiative_memory.py#L208)；[tests/unit/test_self_initiative_memory.py:250 (test_silent_original_receipt_window_retries_without_reselecting_new_budget)](../../tests/unit/test_self_initiative_memory.py#L250)。
 
@@ -360,7 +360,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/codemode/engine_monty.py:127 (strict_json)](../../src/qq_ai_bot/codemode/engine_monty.py#L127) → [src/qq_ai_bot/codemode/engine_monty.py:426 (MontyRun._advance)](../../src/qq_ai_bot/codemode/engine_monty.py#L426) → [src/qq_ai_bot/codemode/engine_monty.py:526 (MontyRun._completed)](../../src/qq_ai_bot/codemode/engine_monty.py#L526) → [src/qq_ai_bot/control_plane/json_types.py:14 (freeze_json_value)](../../src/qq_ai_bot/control_plane/json_types.py#L14) → [src/qq_ai_bot/control_plane/wire.py:84 (decode_command)](../../src/qq_ai_bot/control_plane/wire.py#L84)。
+代码索引：[src/yuki/codemode/engine_monty.py:127 (strict_json)](../../src/yuki/codemode/engine_monty.py#L127) → [src/yuki/codemode/engine_monty.py:426 (MontyRun._advance)](../../src/yuki/codemode/engine_monty.py#L426) → [src/yuki/codemode/engine_monty.py:526 (MontyRun._completed)](../../src/yuki/codemode/engine_monty.py#L526) → [src/yuki/control_plane/json_types.py:14 (freeze_json_value)](../../src/yuki/control_plane/json_types.py#L14) → [src/yuki/control_plane/wire.py:84 (decode_command)](../../src/yuki/control_plane/wire.py#L84)。
 
 本地完成：strict_json及控制JSON删除自设64/32层拒绝和depth形参；65层合法资料沿原真实字节预算完整往返，过小字节预算仍给实际错误。未运行native VM，不以Host成功冒充VM验收。
 
@@ -368,7 +368,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/services/chat.py:1543 (ChatService.open_self_memory_session)](../../src/qq_ai_bot/services/chat.py#L1543) → [src/qq_ai_bot/memory/runtime/turn_session.py:67 (TurnMemorySession.open_self_origin)](../../src/qq_ai_bot/memory/runtime/turn_session.py#L67) → [src/qq_ai_bot/memory/runtime/capability_view.py:31 (build_capability_view)](../../src/qq_ai_bot/memory/runtime/capability_view.py#L31) → [src/qq_ai_bot/services/agent_tools.py:2024 (AgentToolService._memory_change)](../../src/qq_ai_bot/services/agent_tools.py#L2024) → [src/qq_ai_bot/memory/mutation/service.py:1014 (MemoryMutationService._prepare_self_origin)](../../src/qq_ai_bot/memory/mutation/service.py#L1014)。
+代码索引：[src/yuki/services/chat.py:1543 (ChatService.open_self_memory_session)](../../src/yuki/services/chat.py#L1543) → [src/yuki/memory/runtime/turn_session.py:67 (TurnMemorySession.open_self_origin)](../../src/yuki/memory/runtime/turn_session.py#L67) → [src/yuki/memory/runtime/capability_view.py:31 (build_capability_view)](../../src/yuki/memory/runtime/capability_view.py#L31) → [src/yuki/services/agent_tools.py:2024 (AgentToolService._memory_change)](../../src/yuki/services/agent_tools.py#L2024) → [src/yuki/memory/mutation/service.py:1014 (MemoryMutationService._prepare_self_origin)](../../src/yuki/memory/mutation/service.py#L1014)。
 
 本地完成：主SELF声明及执行接到原initiative/原execution真实工具回执，复用已有SELF领域事务；重复quote按实际回执顺序查来源，未消费额外ref不阻断。真ChatService主循环两次成员工具→memory_change→NO_REPLY，一条mutation receipt、实际工具证据、无真人event/发送、Work及租约收尾；第二合法群projection不阻断。
 
@@ -376,7 +376,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/tool_results/artifacts.py:923 (_search_json)](../../src/qq_ai_bot/tool_results/artifacts.py#L923) → [src/qq_ai_bot/tool_results/artifacts.py:351 (ToolArtifactRepository.read)](../../src/qq_ai_bot/tool_results/artifacts.py#L351)。
+代码索引：[src/yuki/tool_results/artifacts.py:923 (_search_json)](../../src/yuki/tool_results/artifacts.py#L923) → [src/yuki/tool_results/artifacts.py:351 (ToolArtifactRepository.read)](../../src/yuki/tool_results/artifacts.py#L351)。
 
 本地完成：删除64层、50000节点及固定100项帽和scan_truncated死展示。65层及晚于50001节点的真实存档查询可命中，120项请求页后续9项可完整续读；仍沿实际返回预算。
 
@@ -384,7 +384,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/codemode/limits.py:30 (CodeModeLimits.__post_init__)](../../src/qq_ai_bot/codemode/limits.py#L30) → [src/qq_ai_bot/codemode/limits.py:40 (CodeModeLimits.from_settings)](../../src/qq_ai_bot/codemode/limits.py#L40)。
+代码索引：[src/yuki/codemode/limits.py:30 (CodeModeLimits.__post_init__)](../../src/yuki/codemode/limits.py#L30) → [src/yuki/codemode/limits.py:40 (CodeModeLimits.from_settings)](../../src/yuki/codemode/limits.py#L40)。
 
 本地完成：删除watchdog/feed跨key先验顺序拒绝，5秒watchdog/10秒feed沿各自执行超时配置。构造及Host回归通过，不冒充native短代码验收。
 
@@ -392,7 +392,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/runtime/work_control.py:1092 (WorkControl._queue_work)](../../src/qq_ai_bot/runtime/work_control.py#L1092) → [src/qq_ai_bot/runtime/work_activation.py:1](../../src/qq_ai_bot/runtime/work_activation.py#L1) → [src/qq_ai_bot/runtime/work_query_schema.py:11 (SOURCE_SCOPE_FIELDS)](../../src/qq_ai_bot/runtime/work_query_schema.py#L11)。
+代码索引：[src/yuki/runtime/work_control.py:1092 (WorkControl._queue_work)](../../src/yuki/runtime/work_control.py#L1092) → [src/yuki/runtime/work_activation.py:1](../../src/yuki/runtime/work_activation.py#L1) → [src/yuki/runtime/work_query_schema.py:11 (SOURCE_SCOPE_FIELDS)](../../src/yuki/runtime/work_query_schema.py#L11)。
 
 本地完成：新内部event按author_person_id核canonical所有者，来源保留该事件真实发送账号；activation/query scope去raw账号条件，恢复/记忆证据一起按canonical人查证。多binding同Person排队、恢复及合法工具调用通过，另一Person不混用。0104同步重建查询索引。
 
@@ -400,7 +400,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/runtime/work_control.py:306 (WorkControl.validate_work_report)](../../src/qq_ai_bot/runtime/work_control.py#L306) → [src/qq_ai_bot/social/tools.py:6 (social_tool_definitions)](../../src/qq_ai_bot/social/tools.py#L6) → [src/qq_ai_bot/runtime/work_repository.py:939 (WorkRepository.communication_reports)](../../src/qq_ai_bot/runtime/work_repository.py#L939) → [src/qq_ai_bot/services/work_reporting.py:27 (stage_feedback_opportunity)](../../src/qq_ai_bot/services/work_reporting.py#L27) → [src/qq_ai_bot/runtime/subagent_repository.py:504 (SubagentRepository.finish)](../../src/qq_ai_bot/runtime/subagent_repository.py#L504) → [src/qq_ai_bot/runtime/subagent_tools.py:117 (execute_subagent)](../../src/qq_ai_bot/runtime/subagent_tools.py#L117)。
+代码索引：[src/yuki/runtime/work_control.py:306 (WorkControl.validate_work_report)](../../src/yuki/runtime/work_control.py#L306) → [src/yuki/social/tools.py:6 (social_tool_definitions)](../../src/yuki/social/tools.py#L6) → [src/yuki/runtime/work_repository.py:939 (WorkRepository.communication_reports)](../../src/yuki/runtime/work_repository.py#L939) → [src/yuki/services/work_reporting.py:27 (stage_feedback_opportunity)](../../src/yuki/services/work_reporting.py#L27) → [src/yuki/runtime/subagent_repository.py:504 (SubagentRepository.finish)](../../src/yuki/runtime/subagent_repository.py#L504) → [src/yuki/runtime/subagent_tools.py:117 (execute_subagent)](../../src/yuki/runtime/subagent_tools.py#L117)。
 
 本地完成：删除report kind声明/执行/查询白名单和子结果UTF8[:12000]二次裁切。自定义kind真实回执可查，长中文子结果、父通知与原checkpoint一致；按原ToolResultBudgeter呈现。
 
@@ -408,7 +408,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/memory/dream/models.py:151 (DreamOutput._disjoint)](../../src/qq_ai_bot/memory/dream/models.py#L151) → [src/qq_ai_bot/memory/dream/service.py:375 (DreamService._commit_cluster_decision)](../../src/qq_ai_bot/memory/dream/service.py#L375) → [src/qq_ai_bot/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L202)。
+代码索引：[src/yuki/memory/dream/models.py:151 (DreamOutput._disjoint)](../../src/yuki/memory/dream/models.py#L151) → [src/yuki/memory/dream/service.py:375 (DreamService._commit_cluster_decision)](../../src/yuki/memory/dream/service.py#L375) → [src/yuki/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/yuki/memory/mutation/service.py#L202)。
 
 本地完成：Dream DTO与事务used集合沿outputs实际消费的来源计算。A声明1/2但只使用1，B可继续处理2；真实双动作事务、原operation receipt及重新打开仓库回放通过。
 
@@ -416,7 +416,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/memory/dream/models.py:99 (DreamRecomposeOutput._unique_sources)](../../src/qq_ai_bot/memory/dream/models.py#L99) → [src/qq_ai_bot/memory/dream/models.py:114 (DreamAction._unique_sources)](../../src/qq_ai_bot/memory/dream/models.py#L114) → [src/qq_ai_bot/memory/dream/models.py:52 (_DreamModel)](../../src/qq_ai_bot/memory/dream/models.py#L52)。
+代码索引：[src/yuki/memory/dream/models.py:99 (DreamRecomposeOutput._unique_sources)](../../src/yuki/memory/dream/models.py#L99) → [src/yuki/memory/dream/models.py:114 (DreamAction._unique_sources)](../../src/yuki/memory/dream/models.py#L114) → [src/yuki/memory/dream/models.py:52 (_DreamModel)](../../src/yuki/memory/dream/models.py#L52)。
 
 本地完成：输出DTO对无消费metadata放宽extra，alias沿现dict.fromkeys规范化；实际持久来源仍核原fact ID及snapshot。真实Dream输出解析/事务/重启回执覆盖重复alias和额外元数据，不粗改输入及持久类型。
 
@@ -424,7 +424,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/memory/self_reflection/models.py:92 (SelfReflectionProposal)](../../src/qq_ai_bot/memory/self_reflection/models.py#L92) → [src/qq_ai_bot/memory/self_reflection/models.py:92 (SelfReflectionProposal)](../../src/qq_ai_bot/memory/self_reflection/models.py#L92) → [src/qq_ai_bot/memory/self_reflection/service.py:476 (SelfReflectionService._apply)](../../src/qq_ai_bot/memory/self_reflection/service.py#L476) → [src/qq_ai_bot/memory/self_reflection/worker.py:1](../../src/qq_ai_bot/memory/self_reflection/worker.py#L1)。
+代码索引：[src/yuki/memory/self_reflection/models.py:92 (SelfReflectionProposal)](../../src/yuki/memory/self_reflection/models.py#L92) → [src/yuki/memory/self_reflection/models.py:92 (SelfReflectionProposal)](../../src/yuki/memory/self_reflection/models.py#L92) → [src/yuki/memory/self_reflection/service.py:476 (SelfReflectionService._apply)](../../src/yuki/memory/self_reflection/service.py#L476) → [src/yuki/memory/self_reflection/worker.py:1](../../src/yuki/memory/self_reflection/worker.py#L1)。
 
 本地完成：删除重复SelfReflectionOperation枚举，模型提案复用MemoryMutationOperation及原noop。RESTORE/UPDATE_METADATA沿真实Reflection模型→领域事务→checkpoint恢复通过；原已失效及争议事实可见，不凭领域测试冒充模型入口。
 
@@ -432,7 +432,7 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 状态：本地实施完成；统一验证、PR与上线按最终交付记录核定。
 
-代码索引：[src/qq_ai_bot/services/ordinary_compaction.py:28 (OrdinarySummary)](../../src/qq_ai_bot/services/ordinary_compaction.py#L28) → [src/qq_ai_bot/services/ordinary_compaction.py:149 (summarize_records)](../../src/qq_ai_bot/services/ordinary_compaction.py#L149) → [src/qq_ai_bot/conversation/rollup/summary.py:69 (_ids)](../../src/qq_ai_bot/conversation/rollup/summary.py#L69) → [src/qq_ai_bot/conversation/rollup/summary.py:75 (parse_summary)](../../src/qq_ai_bot/conversation/rollup/summary.py#L75) → [src/qq_ai_bot/conversation/rollup/service.py:252 (ConversationRollupService._summarize_source)](../../src/qq_ai_bot/conversation/rollup/service.py#L252)。
+代码索引：[src/yuki/services/ordinary_compaction.py:28 (OrdinarySummary)](../../src/yuki/services/ordinary_compaction.py#L28) → [src/yuki/services/ordinary_compaction.py:149 (summarize_records)](../../src/yuki/services/ordinary_compaction.py#L149) → [src/yuki/conversation/rollup/summary.py:69 (_ids)](../../src/yuki/conversation/rollup/summary.py#L69) → [src/yuki/conversation/rollup/summary.py:75 (parse_summary)](../../src/yuki/conversation/rollup/summary.py#L75) → [src/yuki/conversation/rollup/service.py:252 (ConversationRollupService._summarize_source)](../../src/yuki/conversation/rollup/service.py#L252)。
 
 本地完成：ordinary缺省字段、无消费metadata和Rollup重复refs/固定schema/extra门放宽，空正文不假推进覆盖。真实compact/commit→新Repository→prompt回归保留未引用原聊天和调用配对；未另建纠正循环。
 
@@ -442,11 +442,11 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 真实0103→0104升级及相关协议/配置/Memory整合57项通过；跨review的原来源失效/旧回执恢复4项通过。Ruff全仓检查、644份源码Mypy、相关文件格式及diff检查通过；release_validate校验3.9.0/0104通过，仅核源码身份，未创建tag或Release。
 
-上一轮冻结源码src/qq_ai_bot涉及44份文件：新增193行、删除832行，净删639行。唯一新增生产文件为45行0104迁移，计入后生产代码净删594行。第二轮新增删除与最终验证另记，不将上一轮检查冒充当前全部验收。既有测试同步覆盖真实恢复、排队、部分整理与升级行为；未另建测试或运行框架。现行SDK仍3.4，源码head0104；生产版本仍由实际镜像/数据库核定。
+上一轮冻结源码src/yuki涉及44份文件：新增193行、删除832行，净删639行。唯一新增生产文件为45行0104迁移，计入后生产代码净删594行。第二轮新增删除与最终验证另记，不将上一轮检查冒充当前全部验收。既有测试同步覆盖真实恢复、排队、部分整理与升级行为；未另建测试或运行框架。现行SDK仍3.4，源码head0104；生产版本仍由实际镜像/数据库核定。
 
 第二轮最终冻结快照统一回归：18份已改测试文件及配置读快照、SELF runtime、公开摘要增量、WebUI自省查询共430 passed、3 skipped、418 warnings，退出码0，286.10秒。仅3个本机未构建Monty binding场景跳过；实际Driver/SQLite/原父子回执案例运行通过，不冒充nativeVM验收。前端18项测试、TypeScript/Vite构建通过；全仓Ruff、76份改动Python格式检查、644份源码Mypy、release_validate及diff检查通过。该第二轮快照后继续实施C26–C36，旧验收不冒充第三轮最终源码。
 
-第二轮冻结快照累计src/qq_ai_bot的57份文件新增355行、删除1025行，净删670行；计入45行0104迁移后后端及迁移净删625行。前端删除1个旧策略展示项，env删除4行旧配置。摘要恢复用已有材料字段保留真实未处理信息，SELF用原live查询放开旧generation占坑；没有增加替代框架、协调器或新的状态机制。C00–C25均本地完成。
+第二轮冻结快照累计src/yuki的57份文件新增355行、删除1025行，净删670行；计入45行0104迁移后后端及迁移净删625行。前端删除1个旧策略展示项，env删除4行旧配置。摘要恢复用已有材料字段保留真实未处理信息，SELF用原live查询放开旧generation占坑；没有增加替代框架、协调器或新的状态机制。C00–C25均本地完成。
 
 第三轮冻结源码统一回归：14份相关既有测试文件共201 passed、3 skipped、174 warnings，退出码0，135.51秒。三项跳过均为本机未构建Monty binding；真实Host/SQLite/原效果与窗口回执场景已运行。不将分散专项与该统一结果相加。全仓Ruff、89份改动Python格式检查、diff检查通过；按部署目标Linux进行Mypy检查，626份源码无错误。Windows默认平台的全仓Mypy报告30个POSIX属性错误，均位于4份未改平台实现；全仓格式探测另有2份未改测试文件不符合格式，本轮未为其扩大编辑。没有把这两种探测写成全仓通过。
 
@@ -512,73 +512,73 @@ C36沿SELF工具receipt领取、模型实际呈现、原window和完成游标核
 
 #### W01
 
-源码：[src/qq_ai_bot/runtime/work_wait.py:163 (WorkWaitRepository.register)](../../src/qq_ai_bot/runtime/work_wait.py#L163) → [src/qq_ai_bot/services/chat.py:1441 (ChatService._run_agent)](../../src/qq_ai_bot/services/chat.py#L1441)。
+源码：[src/yuki/runtime/work_wait.py:163 (WorkWaitRepository.register)](../../src/yuki/runtime/work_wait.py#L163) → [src/yuki/services/chat.py:1441 (ChatService._run_agent)](../../src/yuki/services/chat.py#L1441)。
 
 验证：[tests/integration/test_self_initiative_lifecycle.py:34 (test_intrinsic_to_real_chat_and_terminal_feedback)](../../tests/integration/test_self_initiative_lifecycle.py#L34)。
 
 #### W02
 
-源码：[src/qq_ai_bot/services/work_resume.py:71 (WorkResumer.resume)](../../src/qq_ai_bot/services/work_resume.py#L71) → [src/qq_ai_bot/runtime/activation_outcome.py:127 (classify_failure)](../../src/qq_ai_bot/runtime/activation_outcome.py#L127) → [src/qq_ai_bot/runtime/work_supervisor.py:69 (recover_failure)](../../src/qq_ai_bot/runtime/work_supervisor.py#L69)。
+源码：[src/yuki/services/work_resume.py:71 (WorkResumer.resume)](../../src/yuki/services/work_resume.py#L71) → [src/yuki/runtime/activation_outcome.py:127 (classify_failure)](../../src/yuki/runtime/activation_outcome.py#L127) → [src/yuki/runtime/work_supervisor.py:69 (recover_failure)](../../src/yuki/runtime/work_supervisor.py#L69)。
 
 验证：[tests/unit/test_work_owner_recovery.py:104 (test_expired_original_work_recovers_without_new_input)](../../tests/unit/test_work_owner_recovery.py#L104)。
 
 #### W03
 
-源码：[src/qq_ai_bot/runtime/work_management.py:54 (resume_blocker)](../../src/qq_ai_bot/runtime/work_management.py#L54) → [src/qq_ai_bot/automation/worker.py:146 (AutomationWorker._process)](../../src/qq_ai_bot/automation/worker.py#L146)。
+源码：[src/yuki/runtime/work_management.py:54 (resume_blocker)](../../src/yuki/runtime/work_management.py#L54) → [src/yuki/automation/worker.py:146 (AutomationWorker._process)](../../src/yuki/automation/worker.py#L146)。
 
 验证：[tests/integration/test_person_automation_final_feedback.py:124 (test_suspended_agent_preserves_automation_run_until_original_work_resumes)](../../tests/integration/test_person_automation_final_feedback.py#L124)。
 
 #### W04
 
-源码：[src/qq_ai_bot/services/execution_sources.py:149 (recover_automation_source)](../../src/qq_ai_bot/services/execution_sources.py#L149) → [src/qq_ai_bot/services/subagent_execution.py:148 (SubagentExecution.run)](../../src/qq_ai_bot/services/subagent_execution.py#L148)。
+源码：[src/yuki/services/execution_sources.py:149 (recover_automation_source)](../../src/yuki/services/execution_sources.py#L149) → [src/yuki/services/subagent_execution.py:148 (SubagentExecution.run)](../../src/yuki/services/subagent_execution.py#L148)。
 
 验证：[tests/integration/test_scheduled_subagent_recovery.py:1](../../tests/integration/test_scheduled_subagent_recovery.py#L1)。
 
 #### W05
 
-源码：[src/qq_ai_bot/runtime/work_control.py:1046 (WorkControl._prepare_completion)](../../src/qq_ai_bot/runtime/work_control.py#L1046) → [src/qq_ai_bot/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/qq_ai_bot/automation/handlers.py#L107) → [src/qq_ai_bot/automation/executor.py:161 (AutomationExecutor._execute)](../../src/qq_ai_bot/automation/executor.py#L161)。
+源码：[src/yuki/runtime/work_control.py:1046 (WorkControl._prepare_completion)](../../src/yuki/runtime/work_control.py#L1046) → [src/yuki/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/yuki/automation/handlers.py#L107) → [src/yuki/automation/executor.py:161 (AutomationExecutor._execute)](../../src/yuki/automation/executor.py#L161)。
 
 验证：[tests/unit/test_work_settlement_writer.py:228 (test_empty_final_can_complete_answer_without_send_or_result_gate)](../../tests/unit/test_work_settlement_writer.py#L228)；[tests/integration/test_person_automation_final_feedback.py:75 (test_unsent_person_notification_final_stops_without_courtesy_correction)](../../tests/integration/test_person_automation_final_feedback.py#L75)。
 
 #### W06
 
-源码：[src/qq_ai_bot/runtime/work_repository.py:463 (WorkRepository.active)](../../src/qq_ai_bot/runtime/work_repository.py#L463) → [src/qq_ai_bot/conversation/autonomy_repository.py:456 (AutonomyRepository.list_active)](../../src/qq_ai_bot/conversation/autonomy_repository.py#L456)。
+源码：[src/yuki/runtime/work_repository.py:463 (WorkRepository.active)](../../src/yuki/runtime/work_repository.py#L463) → [src/yuki/conversation/autonomy_repository.py:456 (AutonomyRepository.list_active)](../../src/yuki/conversation/autonomy_repository.py#L456)。
 
 验证：[tests/unit/test_work_owner_recovery.py:216 (test_exact_33rd_input_is_selected_after_32_paused_works)](../../tests/unit/test_work_owner_recovery.py#L216)；[tests/unit/test_participation_feedback.py:405 (test_active_outbox_lists_all_retained_runs_past_former_128_limit)](../../tests/unit/test_participation_feedback.py#L405)。
 
 #### W07
 
-源码：[src/qq_ai_bot/conversation/autonomy_repository.py:198 (AutonomyRepository.accept_host_proposal)](../../src/qq_ai_bot/conversation/autonomy_repository.py#L198) → [src/qq_ai_bot/services/participation_feedback.py:1](../../src/qq_ai_bot/services/participation_feedback.py#L1) → [src/qq_ai_bot/conversation/self_initiative.py:13 (validate_self_initiative)](../../src/qq_ai_bot/conversation/self_initiative.py#L13)。
+源码：[src/yuki/conversation/autonomy_repository.py:198 (AutonomyRepository.accept_host_proposal)](../../src/yuki/conversation/autonomy_repository.py#L198) → [src/yuki/services/participation_feedback.py:1](../../src/yuki/services/participation_feedback.py#L1) → [src/yuki/conversation/self_initiative.py:13 (validate_self_initiative)](../../src/yuki/conversation/self_initiative.py#L13)。
 
 验证：[tests/unit/test_participation_feedback.py:296 (test_retained_wait_releases_new_opportunity_without_revoking_original_self)](../../tests/unit/test_participation_feedback.py#L296)。
 
 #### W08
 
-源码：[src/qq_ai_bot/runtime/work_recovery_schema.py:1](../../src/qq_ai_bot/runtime/work_recovery_schema.py#L1) → [src/qq_ai_bot/runtime/delivery_intents.py:19 (reserve)](../../src/qq_ai_bot/runtime/delivery_intents.py#L19) → [src/qq_ai_bot/persistence/schema_guard.py:1](../../src/qq_ai_bot/persistence/schema_guard.py#L1) → [migrations/versions/0104_remove_checkpoint_byte_ceiling.py:11 (upgrade)](../../migrations/versions/0104_remove_checkpoint_byte_ceiling.py#L11)。
+源码：[src/yuki/runtime/work_recovery_schema.py:1](../../src/yuki/runtime/work_recovery_schema.py#L1) → [src/yuki/runtime/delivery_intents.py:19 (reserve)](../../src/yuki/runtime/delivery_intents.py#L19) → [src/yuki/persistence/schema_guard.py:1](../../src/yuki/persistence/schema_guard.py#L1) → [migrations/versions/0104_remove_checkpoint_byte_ceiling.py:11 (upgrade)](../../migrations/versions/0104_remove_checkpoint_byte_ceiling.py#L11)。
 
 验证：[tests/unit/test_work_protocol_continuity.py:192 (test_checkpoint_upgrade_removes_fixed_ceiling_and_preserves_media)](../../tests/unit/test_work_protocol_continuity.py#L192)。
 
 #### W09
 
-源码：[src/qq_ai_bot/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/qq_ai_bot/automation/handlers.py#L107) → [src/qq_ai_bot/automation/repository.py:773 (AutomationRepository.finish_automation_run)](../../src/qq_ai_bot/automation/repository.py#L773)。
+源码：[src/yuki/automation/handlers.py:107 (AutomationCapabilityHandlers.agent)](../../src/yuki/automation/handlers.py#L107) → [src/yuki/automation/repository.py:773 (AutomationRepository.finish_automation_run)](../../src/yuki/automation/repository.py#L773)。
 
 验证：[tests/integration/test_person_automation_final_feedback.py:203 (test_public_cancel_settles_owning_run_without_error_or_new_request)](../../tests/integration/test_person_automation_final_feedback.py#L203)。
 
 #### W10
 
-源码：[src/qq_ai_bot/automation/validator.py:74 (AutomationValidator.validate)](../../src/qq_ai_bot/automation/validator.py#L74) → [src/qq_ai_bot/automation/executor.py:949 (AutomationExecutor._enforce_runtime_limits)](../../src/qq_ai_bot/automation/executor.py#L949)。
+源码：[src/yuki/automation/validator.py:74 (AutomationValidator.validate)](../../src/yuki/automation/validator.py#L74) → [src/yuki/automation/executor.py:949 (AutomationExecutor._enforce_runtime_limits)](../../src/yuki/automation/executor.py#L949)。
 
 验证：[tests/integration/test_person_automation_final_feedback.py:84 (test_agent_script_uses_original_work_budget_without_outer_flag)](../../tests/integration/test_person_automation_final_feedback.py#L84)。
 
 #### W11
 
-源码：[src/qq_ai_bot/runtime/effect_queries.py:24 (RuntimeEffectQueries.inspect_social_operation)](../../src/qq_ai_bot/runtime/effect_queries.py#L24) → [src/qq_ai_bot/automation/executor.py:161 (AutomationExecutor._execute)](../../src/qq_ai_bot/automation/executor.py#L161)。
+源码：[src/yuki/runtime/effect_queries.py:24 (RuntimeEffectQueries.inspect_social_operation)](../../src/yuki/runtime/effect_queries.py#L24) → [src/yuki/automation/executor.py:161 (AutomationExecutor._execute)](../../src/yuki/automation/executor.py#L161)。
 
 验证：[tests/unit/test_work_effect_lifecycle_repository.py:1](../../tests/unit/test_work_effect_lifecycle_repository.py#L1)。
 
 #### W12
 
-源码：[src/qq_ai_bot/runtime/subagent_repository.py:33 (SubagentRepository.reopen_parent)](../../src/qq_ai_bot/runtime/subagent_repository.py#L33) → [src/qq_ai_bot/runtime/subagent_repository.py:144 (SubagentRepository.acquire)](../../src/qq_ai_bot/runtime/subagent_repository.py#L144) → [src/qq_ai_bot/runtime/subagent_repository.py:483 (SubagentRepository.cancel)](../../src/qq_ai_bot/runtime/subagent_repository.py#L483) → [src/qq_ai_bot/runtime/subagent_tools.py:117 (execute_subagent)](../../src/qq_ai_bot/runtime/subagent_tools.py#L117)。
+源码：[src/yuki/runtime/subagent_repository.py:33 (SubagentRepository.reopen_parent)](../../src/yuki/runtime/subagent_repository.py#L33) → [src/yuki/runtime/subagent_repository.py:144 (SubagentRepository.acquire)](../../src/yuki/runtime/subagent_repository.py#L144) → [src/yuki/runtime/subagent_repository.py:483 (SubagentRepository.cancel)](../../src/yuki/runtime/subagent_repository.py#L483) → [src/yuki/runtime/subagent_tools.py:117 (execute_subagent)](../../src/yuki/runtime/subagent_tools.py#L117)。
 
 验证：[tests/unit/test_subagent_result_checkpoint.py:256 (test_retained_completed_tree_reopens_original_budget_after_eight_days_with_paused_root)](../../tests/unit/test_subagent_result_checkpoint.py#L256)；[tests/unit/test_subagent_result_checkpoint.py:316 (test_paused_child_resumes_original_goal_without_a_new_instruction)](../../tests/unit/test_subagent_result_checkpoint.py#L316)；[tests/unit/test_subagent_result_checkpoint.py:343 (test_child_cancellation_retires_accepted_control_and_retains_real_receipts)](../../tests/unit/test_subagent_result_checkpoint.py#L343)。
 
@@ -623,7 +623,7 @@ PR280（https://github.com/YuanYeYouTao/Yuki/pull/280）已合并为main04ec85cf
 
 优先删除解决：Worker RUNNING沿已有5秒查询，直接删365天休眠、active-wait判断和竞态wake；零消费者AutomationRepository.wake_claim、RuntimeEffectQueries.has_active_wait及Executor/Worker死字段/导入一并删除。work_management不增加任何替代接线；不新增poller、状态或重试框架。原wait信号唤醒照常保留，查询暂停任务不发新模型/业务调用。4源码+1/-42，净删41；本轮生产代码与迁移累计净删996。
 
-源码：[src/qq_ai_bot/automation/worker.py:146 (AutomationWorker._process)](../../src/qq_ai_bot/automation/worker.py#L146) → [src/qq_ai_bot/automation/repository.py:541 (AutomationRepository.claim_due)](../../src/qq_ai_bot/automation/repository.py#L541)。验证：[tests/integration/test_person_automation_final_feedback.py:203 (test_public_cancel_settles_owning_run_without_error_or_new_request)](../../tests/integration/test_person_automation_final_feedback.py#L203)。
+源码：[src/yuki/automation/worker.py:146 (AutomationWorker._process)](../../src/yuki/automation/worker.py#L146) → [src/yuki/automation/repository.py:541 (AutomationRepository.claim_due)](../../src/yuki/automation/repository.py#L541)。验证：[tests/integration/test_person_automation_final_feedback.py:203 (test_public_cancel_settles_owning_run_without_error_or_new_request)](../../tests/integration/test_person_automation_final_feedback.py#L203)。
 
 加强既有Person/SELF×need_input/time_due回归，active wait取消前两次原owner查询Provider仍1，取消后原run/step为cancelled、error空、claim清空，原source/预算未改。专项组合69 passed/69 warnings/67.80秒；公开HTTP管理入口2 passed/33 deselected。补丁PR281、main edcda2ae3868d6ff12db6a1ab3ac60d9266af14f已合并；本地source-free镜像健康/持久化smoke通过。该main Quality CI1242 passed/49 skipped/1075 warnings，641.42秒，静态检查与前端均绿。
 
@@ -648,7 +648,7 @@ Work群全链实测已经通过。最终健康抽样仍暴露两组长期停用S
 
 仅改变_hydrate及_binding两处原配置参数：停用scene不读取需要在线身份的群配置，读取全局控制元数据，原scene.enabled=false表达式同步binding OFF。enabled场景继续原群配置；disabled场景没有Jev/主模型/new run或隐式Provider选择。没有新增guard、try/except、fallback、关停链或配置开关，也不直接改生产开关。只删discovery OR会漏热缓存和legacy原入口，所以保留实际原关停路径。
 
-源码：[src/qq_ai_bot/services/semantic_participation.py:468 (SemanticParticipationService._binding)](../../src/qq_ai_bot/services/semantic_participation.py#L468) → [src/qq_ai_bot/services/semantic_participation.py:624 (SemanticParticipationService._hydrate)](../../src/qq_ai_bot/services/semantic_participation.py#L624)。验证：[tests/unit/test_participation_scope_lifecycle.py:166 (test_disabled_scope_uses_real_global_policy_to_retire_selector_and_original_outbox)](../../tests/unit/test_participation_scope_lifecycle.py#L166)及[test_disabled_scope_preserves_completed_work_and_original_feedback](../../tests/unit/test_participation_scope_lifecycle.py#L256)，真实RuntimeConfigService、热/冷场景、legacy、原outbox与完成Work；连同feedback/SELF全链24 passed，Ruff/Mypy通过。
+源码：[src/yuki/services/semantic_participation.py:468 (SemanticParticipationService._binding)](../../src/yuki/services/semantic_participation.py#L468) → [src/yuki/services/semantic_participation.py:624 (SemanticParticipationService._hydrate)](../../src/yuki/services/semantic_participation.py#L624)。验证：[tests/unit/test_participation_scope_lifecycle.py:166 (test_disabled_scope_uses_real_global_policy_to_retire_selector_and_original_outbox)](../../tests/unit/test_participation_scope_lifecycle.py#L166)及[test_disabled_scope_preserves_completed_work_and_original_feedback](../../tests/unit/test_participation_scope_lifecycle.py#L256)，真实RuntimeConfigService、热/冷场景、legacy、原outbox与完成Work；连同feedback/SELF全链24 passed，Ruff/Mypy通过。
 
 ### W15：永久owner被当前传输可用性覆盖
 
@@ -656,7 +656,7 @@ Dream原run69/6e0471af-7810-4005-9dd7-cf9215e4a185、cluster478停在processing�
 
 删除该类型门，复用canonical_fact_owner_complete返回原永久owner；新外部事件/选择器仍沿其原解析和实际权限。继续删除SYNTHESIZE/RECOMPOSE重建MemoryFactCreate、丢失canonical owner的旧转换：由原current_map的anchor继承实际Fact，原create_fact明确构造新row、新ID/时间，审计时间清空。没有新resolver、owner enum、兼容参数、异常兜底或Worker恢复框架。来源、同partition、签名、readable input fingerprint及首次写前证据冻结保留。
 
-源码：[src/qq_ai_bot/memory/partition.py:273 (resolve_fact_canonical_owners)](../../src/qq_ai_bot/memory/partition.py#L273) → [src/qq_ai_bot/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/qq_ai_bot/memory/mutation/service.py#L202) → [src/qq_ai_bot/memory/repository.py:822 (MemoryFactRepository.create_fact)](../../src/qq_ai_bot/memory/repository.py#L822)。验证：[tests/unit/test_memory_dream.py:169 (test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actual_calls)](../../tests/unit/test_memory_dream.py#L169)及[test_single_source_dream_uses_saved_model_output_and_original_receipt](../../tests/unit/test_memory_dream.py#L303)、[tests/unit/test_memory_partition.py:113 (test_space_partition_requires_enabled_active_binding)](../../tests/unit/test_memory_partition.py#L113)。
+源码：[src/yuki/memory/partition.py:273 (resolve_fact_canonical_owners)](../../src/yuki/memory/partition.py#L273) → [src/yuki/memory/mutation/service.py:202 (MemoryMutationService.mutate_dream)](../../src/yuki/memory/mutation/service.py#L202) → [src/yuki/memory/repository.py:822 (MemoryFactRepository.create_fact)](../../src/yuki/memory/repository.py#L822)。验证：[tests/unit/test_memory_dream.py:169 (test_dream_worker_recovers_disabled_owner_same_run_and_preserves_actual_calls)](../../tests/unit/test_memory_dream.py#L169)及[test_single_source_dream_uses_saved_model_output_and_original_receipt](../../tests/unit/test_memory_dream.py#L303)、[tests/unit/test_memory_partition.py:113 (test_space_partition_requires_enabled_active_binding)](../../tests/unit/test_memory_partition.py#L113)。
 
 原事务六套49项、最终Dream+partition39项以及canonical持久模型专项1项，合计89项通过，无skip。覆盖disabled Person/Space/Binding、PersonGroup/SELFgroup的KEEP/CONTEST/合成和重组、证据复制与原回滚、新事实ID/时间/audit。Worker恢复测试使用实际TaskModelExecutor→json_http协议MockTransport，复现旧resolver在真实响应后失败，原run/cluster恢复、attempt/model_calls1→2且不重置，原operation0→实际新事实成功，后台loop继续活着；它不是生产模型调用证据。三份Memory源码Mypy与格式/Ruff通过，交叉审计未见下游再次重解已有owner。
 
@@ -682,10 +682,10 @@ W16直接删除apply_evidence_write三次封口、EvidenceSnapshotRetryExhausted
 
 源码与验证索引：
 
-- W16：[src/qq_ai_bot/memory/repository.py:381 (MemoryFactRepository.apply_evidence_write)](../../src/qq_ai_bot/memory/repository.py#L381)；[tests/unit/test_dream_busy_recovery.py:117 (test_four_real_busy_rollbacks_complete_original_cluster_and_continue_next)](../../tests/unit/test_dream_busy_recovery.py#L117)、[test_phase_busy_is_not_classified_as_rolled_back_operation](../../tests/unit/test_dream_busy_recovery.py#L214)。
-- W17：[src/qq_ai_bot/memory/mutation/service.py:1179 (MemoryMutationService._commit_prepared)](../../src/qq_ai_bot/memory/mutation/service.py#L1179) → [src/qq_ai_bot/memory/mutation/service.py:1548 (MemoryMutationService.mutate_validated_claim)](../../src/qq_ai_bot/memory/mutation/service.py#L1548)；[tests/unit/test_mutation_snapshot_upgrade.py:126 (test_four_busy_rollbacks_reprepare_without_repeating_resolution)](../../tests/unit/test_mutation_snapshot_upgrade.py#L126)、[test_mutation_unknown_transaction_ack_uses_original_receipt_without_replay](../../tests/unit/test_mutation_snapshot_upgrade.py#L33)。
-- W18：[src/qq_ai_bot/memory/maintenance.py:96 (MemoryMaintenanceWorker._process_once_unlocked)](../../src/qq_ai_bot/memory/maintenance.py#L96)；[tests/unit/test_memory_maintenance_evidence_snapshot.py:133 (test_maintenance_reprepares_four_native_busy_rollbacks_with_original_batch_cutoff)](../../tests/unit/test_memory_maintenance_evidence_snapshot.py#L133)、[test_maintenance_unknown_acknowledgement_never_retries_or_reports_success](../../tests/unit/test_memory_maintenance_evidence_snapshot.py#L282)。
-- W19：[src/qq_ai_bot/memory/evidence_compaction.py:283 (EvidenceCompactionService._compact_fact)](../../src/qq_ai_bot/memory/evidence_compaction.py#L283)；[tests/unit/test_evidence_compaction_busy_recovery.py:124 (test_four_real_busy_rollbacks_finish_original_compaction_and_keep_provenance)](../../tests/unit/test_evidence_compaction_busy_recovery.py#L124)、[test_uncertain_acknowledgement_does_not_repeat_compaction](../../tests/unit/test_evidence_compaction_busy_recovery.py#L216)。
+- W16：[src/yuki/memory/repository.py:381 (MemoryFactRepository.apply_evidence_write)](../../src/yuki/memory/repository.py#L381)；[tests/unit/test_dream_busy_recovery.py:117 (test_four_real_busy_rollbacks_complete_original_cluster_and_continue_next)](../../tests/unit/test_dream_busy_recovery.py#L117)、[test_phase_busy_is_not_classified_as_rolled_back_operation](../../tests/unit/test_dream_busy_recovery.py#L214)。
+- W17：[src/yuki/memory/mutation/service.py:1179 (MemoryMutationService._commit_prepared)](../../src/yuki/memory/mutation/service.py#L1179) → [src/yuki/memory/mutation/service.py:1548 (MemoryMutationService.mutate_validated_claim)](../../src/yuki/memory/mutation/service.py#L1548)；[tests/unit/test_mutation_snapshot_upgrade.py:126 (test_four_busy_rollbacks_reprepare_without_repeating_resolution)](../../tests/unit/test_mutation_snapshot_upgrade.py#L126)、[test_mutation_unknown_transaction_ack_uses_original_receipt_without_replay](../../tests/unit/test_mutation_snapshot_upgrade.py#L33)。
+- W18：[src/yuki/memory/maintenance.py:96 (MemoryMaintenanceWorker._process_once_unlocked)](../../src/yuki/memory/maintenance.py#L96)；[tests/unit/test_memory_maintenance_evidence_snapshot.py:133 (test_maintenance_reprepares_four_native_busy_rollbacks_with_original_batch_cutoff)](../../tests/unit/test_memory_maintenance_evidence_snapshot.py#L133)、[test_maintenance_unknown_acknowledgement_never_retries_or_reports_success](../../tests/unit/test_memory_maintenance_evidence_snapshot.py#L282)。
+- W19：[src/yuki/memory/evidence_compaction.py:283 (EvidenceCompactionService._compact_fact)](../../src/yuki/memory/evidence_compaction.py#L283)；[tests/unit/test_evidence_compaction_busy_recovery.py:124 (test_four_real_busy_rollbacks_finish_original_compaction_and_keep_provenance)](../../tests/unit/test_evidence_compaction_busy_recovery.py#L124)、[test_uncertain_acknowledgement_does_not_repeat_compaction](../../tests/unit/test_evidence_compaction_busy_recovery.py#L216)。
 
 W20零消费者查证：clear_conflict仅定义，没有src/tests调用；直接删除30行。invalidate/本人撤回仍通过_clear_resolved_related_conflicts调用_clear_conflict_in_session；/ai memory resolve→MemoryAdmin→resolve_conflicts仍存在，不把它误当死代码。后两条原领域操作没有固定失败次数门，本次不因“没用共用helper”再添包装。源码格式、Ruff、Mypy通过。
 
@@ -701,10 +701,10 @@ W23纯删内层三次即时517重试及异常import，源码净删7行；原64re
 
 最终补充索引：
 
-- W20：[src/qq_ai_bot/memory/service.py:969 (MemoryFactService._clear_conflict_in_session)](../../src/qq_ai_bot/memory/service.py#L969) → [src/qq_ai_bot/memory/service.py:1177 (MemoryFactService.resolve_conflicts)](../../src/qq_ai_bot/memory/service.py#L1177)。
-- W21：[src/qq_ai_bot/memory/maintenance.py:60 (MemoryMaintenanceWorker.close)](../../src/qq_ai_bot/memory/maintenance.py#L60)、[src/qq_ai_bot/memory/worker.py:119 (MemoryWorker.close)](../../src/qq_ai_bot/memory/worker.py#L119)、[src/qq_ai_bot/memory/rebuild/worker.py:29 (MemoryRebuildWorker.close)](../../src/qq_ai_bot/memory/rebuild/worker.py#L29)；[tests/unit/test_memory_worker_shutdown.py:49 (test_close_during_real_busy_preserves_original_owner_and_committed_truth)](../../tests/unit/test_memory_worker_shutdown.py#L49)、[test_close_cancels_running_maintenance_under_continuous_real_writer_busy](../../tests/unit/test_memory_maintenance_evidence_snapshot.py#L221)。
-- W22：[src/qq_ai_bot/memory/evidence_compaction.py:574 (EvidenceCompactionService._finish_item)](../../src/qq_ai_bot/memory/evidence_compaction.py#L574)；[test_uncertain_acknowledgement_does_not_repeat_compaction](../../tests/unit/test_evidence_compaction_busy_recovery.py#L216)。
-- W23：[src/qq_ai_bot/services/participation_feedback.py:505 (_commit_pending)](../../src/qq_ai_bot/services/participation_feedback.py#L505) → [src/qq_ai_bot/services/participation_feedback.py:545 (reconcile_page)](../../src/qq_ai_bot/services/participation_feedback.py#L545)；[tests/unit/test_participation_feedback.py:132 (test_feedback_busy_exits_tick_and_next_host_reconciliation_preserves_original_facts)](../../tests/unit/test_participation_feedback.py#L132)、[test_feedback_unknown_commit_ack_exits_tick_and_replays_original_durable_sequence](../../tests/unit/test_participation_feedback.py#L198)。
+- W20：[src/yuki/memory/service.py:969 (MemoryFactService._clear_conflict_in_session)](../../src/yuki/memory/service.py#L969) → [src/yuki/memory/service.py:1177 (MemoryFactService.resolve_conflicts)](../../src/yuki/memory/service.py#L1177)。
+- W21：[src/yuki/memory/maintenance.py:60 (MemoryMaintenanceWorker.close)](../../src/yuki/memory/maintenance.py#L60)、[src/yuki/memory/worker.py:119 (MemoryWorker.close)](../../src/yuki/memory/worker.py#L119)、[src/yuki/memory/rebuild/worker.py:29 (MemoryRebuildWorker.close)](../../src/yuki/memory/rebuild/worker.py#L29)；[tests/unit/test_memory_worker_shutdown.py:49 (test_close_during_real_busy_preserves_original_owner_and_committed_truth)](../../tests/unit/test_memory_worker_shutdown.py#L49)、[test_close_cancels_running_maintenance_under_continuous_real_writer_busy](../../tests/unit/test_memory_maintenance_evidence_snapshot.py#L221)。
+- W22：[src/yuki/memory/evidence_compaction.py:574 (EvidenceCompactionService._finish_item)](../../src/yuki/memory/evidence_compaction.py#L574)；[test_uncertain_acknowledgement_does_not_repeat_compaction](../../tests/unit/test_evidence_compaction_busy_recovery.py#L216)。
+- W23：[src/yuki/services/participation_feedback.py:505 (_commit_pending)](../../src/yuki/services/participation_feedback.py#L505) → [src/yuki/services/participation_feedback.py:545 (reconcile_page)](../../src/yuki/services/participation_feedback.py#L545)；[tests/unit/test_participation_feedback.py:132 (test_feedback_busy_exits_tick_and_next_host_reconciliation_preserves_original_facts)](../../tests/unit/test_participation_feedback.py#L132)、[test_feedback_unknown_commit_ack_exits_tick_and_replays_original_durable_sequence](../../tests/unit/test_participation_feedback.py#L198)。
 
 本次回看执行及终局审查完成：C00–C36、P01–P10、W01–W23均已逐行标注，相关源码与消费者已复核。Memory范围旧三次/专属exhausted类和无消费者clear_conflict均零残余；测试和现行合同同步，Quality自动收集重命名和新增测试，不需添加或改动CI机制。冻结Ruff、16份改动Python格式、Linux-target Mypy644源文件、3.9.0 release identity及diffcheck通过。最新全量CI与生产结果在实际执行后补录，不把本地绿灯写成已上线。
 

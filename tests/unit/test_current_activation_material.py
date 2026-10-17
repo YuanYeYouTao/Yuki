@@ -11,11 +11,11 @@ from tests.conftest import MemorySender
 from tests.support.background_authority import approve_background_plugin
 from tests.unit.test_history_dispatch_ownership import _scene
 
-from qq_ai_bot.conversation.observation_models import ContextObservationModel, ContextSelectionModel
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import (
+from yuki.conversation.observation_models import ContextObservationModel, ContextSelectionModel
+from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import (
     ChatImage,
     ChatMessage,
     ChatRequest,
@@ -24,19 +24,19 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.identity.canonical_repository import ensure_person
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.protocol_store import ProtocolStore
-from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger, SandboxTaskTurnTrigger
-from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.runtime.work_schema_v1 import journal
-from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.turn_transcript import TranscriptRequest, validating_request
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.identity.canonical_repository import ensure_person
+from yuki.llm.fake import FakeLLMProvider
+from yuki.llm.openai_compatible import OpenAICompatibleProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.protocol_store import ProtocolStore
+from yuki.runtime.trigger import ExternalEventTurnTrigger, SandboxTaskTurnTrigger
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_schema_v1 import journal
+from yuki.runtime.work_source_guard import WorkSourceGuard
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.turn_transcript import TranscriptRequest, validating_request
 
 
 async def _saved(database):

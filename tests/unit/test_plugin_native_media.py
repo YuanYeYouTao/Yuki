@@ -13,18 +13,18 @@ import pytest
 from PIL import Image
 from sqlalchemy import delete, update
 
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
-from qq_ai_bot.plugin_host.db_models import PluginInstallationModel, PluginMediaArtifactModel
-from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
-from qq_ai_bot.services.native_media import NativeMediaPreparer
+from yuki.automation.models import TurnOrigin
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.plugin_host.capability_adapter import PluginCapabilityAdapter
+from yuki.plugin_host.db_models import PluginInstallationModel, PluginMediaArtifactModel
+from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.image_preprocessor import ImagePreprocessor
+from yuki.services.native_media import NativeMediaPreparer
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import StrictModel
 from yuki_plugin_sdk.permissions import PluginPermission
@@ -170,7 +170,7 @@ async def test_media_selection_requires_explicit_permission_without_losing_resul
 async def test_dispatch_hook_refuses_invalid_origin_despite_live_archive(
     database, tmp_path, change
 ):
-    from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+    from yuki.services.main_agent_backend import MainAgentBackend
 
     env = await environment(database, tmp_path)
     result = await env.adapter.execute(env.name, "{}", env.runtime)
@@ -277,7 +277,7 @@ def test_empty_sdk_result_serialization_stays_compatible():
 @pytest.mark.asyncio
 async def test_scheduled_media_uses_real_plugin_approval_without_second_menu(database, tmp_path):
     env = await environment(database, tmp_path)
-    from qq_ai_bot.domain.tool_actor import ToolActor
+    from yuki.domain.tool_actor import ToolActor
 
     actor = ToolActor(
         user_id="10001",

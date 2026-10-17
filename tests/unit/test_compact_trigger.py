@@ -6,7 +6,7 @@ import pytest
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 from tests.unit.test_current_context_compaction import _append_public, _public_context
 
-from qq_ai_bot.domain.messages import (
+from yuki.domain.messages import (
     ChatMessage,
     ChatResponse,
     ChatTool,
@@ -14,14 +14,14 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-from qq_ai_bot.runtime.work_repository import WorkCapacityError
-from qq_ai_bot.services.context_compaction import CompactReceipt
-from qq_ai_bot.services.turn_execution import TurnExecution
-from qq_ai_bot.services.turn_transcript import DispatchOrigin, TurnTranscript
-from qq_ai_bot.web.models import WebMode
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.capacity import estimate_request_tokens
+from yuki.model_runtime.models import ModelExecutionPriority
+from yuki.runtime.work_repository import WorkCapacityError
+from yuki.services.context_compaction import CompactReceipt
+from yuki.services.turn_execution import TurnExecution
+from yuki.services.turn_transcript import DispatchOrigin, TurnTranscript
+from yuki.web.models import WebMode
 
 
 @pytest.mark.parametrize("entry", ["ordinary", "work", "worker"])

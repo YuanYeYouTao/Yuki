@@ -9,28 +9,28 @@ from tests.unit.test_dream_owner_projection import _scene
 from tests.unit.test_memory_rebuild import _admin, _service
 from tests.unit.test_rebuild_receipt_finalization import _seed
 
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.identity.canonical_repository import (
     create_person_binding,
     create_presence,
     find_identity_binding,
 )
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.dream.db_models import MemoryDreamClusterPreviewModel
-from qq_ai_bot.memory.dream.models import DreamOutput
-from qq_ai_bot.memory.dream.service import DreamBudgetExhausted
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-from qq_ai_bot.model_runtime.request_accounting import before_provider_request
-from qq_ai_bot.persistence.models import (
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.dream.db_models import MemoryDreamClusterPreviewModel
+from yuki.memory.dream.models import DreamOutput
+from yuki.memory.dream.service import DreamBudgetExhausted
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.model_runtime.request_accounting import before_provider_request
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
     MemoryJobModel,
     MemoryRebuildItemModel,
     MemoryRebuildProposalModel,
 )
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 async def transfer_qq(database):

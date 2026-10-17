@@ -17,7 +17,7 @@
 - `Space`：永久共享空间；QQ 群只是它的一种外部表现。
 - `SpaceBinding`：Space 与外部群号的绑定。
 - `Presence`：Yuki 自己的平台账号。Presence 不是 Person。
-- `CanonicalConversation`：私聊按 IdentityBinding＋Presence 区分，群聊按 SpaceBinding＋topic 区分。
+- `CanonicalConversation`：私聊按 IdentityBinding＋Presence＋可选 thread 区分，群聊按 SpaceBinding＋topic 区分。
   同一 Person 的多个入口分别保有历史、generation、检查点与模型 session；Memory 仍归 Person。
   `/ai new` 只推进命令所在会话的 generation。
 
@@ -99,9 +99,11 @@ compact 检查点、raw history、按需 Memory 工具、Prompt compiler、工�
 仍是普通 outbound `message`，并通过 `caused_by_event_id` 永久指向来源 external event。模型历史与
 公共消息渲染保留因果来源标签，平台正文不被改写。
 
+ACP 使用共享 Presence 与每个原 Person 的稳定 Binding；每次 `session/new` 在该入口新建独立 thread／Conversation，`sessionId` 就是 Conversation UUID。原 App、QQ、TG 的空 thread 入口保持不变，人物资料与记忆仍归 Person。请求按实际 ACP Conversation＋原 UUID 查证，不按平台消息号重建归属。协议、结束与取消见[个人 API](client-api.md#acp-方向-a)。
+
 ## 平台入口与原生适配
 
-私聊以内部 Binding＋Presence 确定入口，群以 SpaceBinding＋topic 确定入口。每个入口各有 Conversation；同一 Person/Space 的长期身份和已定义记忆语义共享，聊天上下文不串入口。旧记录、冻结 primary alias 和 generation 不重写。
+私聊以内部 Binding＋Presence＋可选 thread 确定入口，群以 SpaceBinding＋topic 确定入口。每个入口各有 Conversation；同一 Person/Space 的长期身份和已定义记忆语义共享，聊天上下文不串入口。旧记录、冻结 primary alias 和 generation 不重写。
 
 GatewayProvider 提供连接事实、接入投影和实际原生社交操作。公共 Social 准备内部目标、核授权、claim 原操作并记录回执；各适配器编码文本、提及、引用、文件及协议实际限制。Provider 的纯发送计划不发送消息，每个实际平台步骤各有原回执。公共层不调用任意 OneBot action，也不按 Telegram/QQ 分叉一套领域服务。
 

@@ -7,12 +7,12 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.providers.app import AppHandle, AppProvider
-from qq_ai_bot.gateway.providers.snowluma import SnowLumaProvider
-from qq_ai_bot.gateway.providers.telegram import TelegramAPIError, TelegramClient, TelegramProvider
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.gateway.social import TransportTarget
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.providers.app import AppHandle, AppProvider
+from yuki.gateway.providers.snowluma import SnowLumaProvider
+from yuki.gateway.providers.telegram import TelegramAPIError, TelegramClient, TelegramProvider
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.gateway.social import TransportTarget
 
 
 @pytest.mark.parametrize(

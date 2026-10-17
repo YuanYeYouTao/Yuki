@@ -12,34 +12,34 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.conftest import MemorySender, make_settings
 
-from qq_ai_bot.admin.control_resolution import ControlAccess
-from qq_ai_bot.admin.models import ControlAuditRef
-from qq_ai_bot.container import ApplicationContainer
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.admin.control_resolution import ControlAccess
+from yuki.admin.models import ControlAuditRef
+from yuki.container import ApplicationContainer
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ControlCommandReceiptModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.conversation.hydrate import ensure_canonical_conversation
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.identity.canonical_repository import (
     ensure_person,
     ensure_presence,
     ensure_space,
     find_identity_binding,
 )
-from qq_ai_bot.identity.db_models import (
+from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     PresenceModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.routing import RouteCandidate, RouteSendError
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import AdminOperationEventModel, ChatEventModel
-from qq_ai_bot.services.admin.group_recovery import GroupRecoveryService
+from yuki.identity.routing import RouteCandidate, RouteSendError
+from yuki.persistence.database import Database
+from yuki.persistence.models import AdminOperationEventModel, ChatEventModel
+from yuki.services.admin.group_recovery import GroupRecoveryService
 
 
 @dataclass
@@ -237,7 +237,7 @@ async def test_superuser_on_recovers_legacy_pauses_and_commands_without_chat_sid
 async def test_recovery_rejects_untrusted_or_unreachable_requests(
     database: Database, case: str
 ) -> None:
-    from qq_ai_bot.domain.messages import AttachmentKind, MessageAttachment
+    from yuki.domain.messages import AttachmentKind, MessageAttachment
 
     app, bot, presence, space, binding = await stack(database)
     await pause(database, space, binding)
@@ -348,7 +348,7 @@ async def test_recovery_audit_failure_rolls_back_routes_and_enable(
     async def fail_audit(*args: object, **kwargs: object) -> None:
         raise RuntimeError("audit unavailable")
 
-    monkeypatch.setattr("qq_ai_bot.services.admin.group_recovery.add_audit_event", fail_audit)
+    monkeypatch.setattr("yuki.services.admin.group_recovery.add_audit_event", fail_audit)
     with pytest.raises(RuntimeError, match="audit unavailable"):
         await app.processor.handle(message(), Sender(bot))
     assert await state(database, space, binding) == before
@@ -662,7 +662,7 @@ async def test_new_group_registration_audit_failure_rolls_back_identity_and_rout
     async def fail_audit(*args: object, **kwargs: object) -> None:
         raise RuntimeError("audit unavailable")
 
-    monkeypatch.setattr("qq_ai_bot.services.admin.group_recovery.add_audit_event", fail_audit)
+    monkeypatch.setattr("yuki.services.admin.group_recovery.add_audit_event", fail_audit)
     with pytest.raises(RuntimeError, match="audit unavailable"):
         await app.processor.handle(replace(message(), group_id=NEW_GROUP), Sender(bot))
     assert await new_group_binding(database) is None

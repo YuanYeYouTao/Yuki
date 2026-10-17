@@ -5,10 +5,10 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from qq_ai_bot.admin.authority.operations import OperationStatus
-from qq_ai_bot.conversation.canonical_db_models import ControlCommandReceiptModel
-from qq_ai_bot.persistence.command_receipts import CommandReceiptRepository, control_operation
-from qq_ai_bot.persistence.models import AdminOperationEventModel
+from yuki.admin.authority.operations import OperationStatus
+from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
+from yuki.persistence.command_receipts import CommandReceiptRepository, control_operation
+from yuki.persistence.models import AdminOperationEventModel
 
 
 async def test_restart_recovers_original_intents_and_preserves_existing_outcomes(database):

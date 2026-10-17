@@ -7,12 +7,12 @@ import pytest
 from sqlalchemy import select
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import ensure_presence
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.social.models import SocialError
+from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.conversations import ConversationScope
+from yuki.identity.canonical_repository import ensure_presence
+from yuki.persistence.models import ChatEventModel
+from yuki.social.models import SocialError
 
 
 async def private_entry(env, account, message_id):

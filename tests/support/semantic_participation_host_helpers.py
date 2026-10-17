@@ -11,16 +11,16 @@ from sqlalchemy import select
 from yuki_participation.models import Choice, Observation
 from yuki_participation.rubric import CRITERIA, REVISION
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
 )
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.participation_snapshot import AsyncSnapshotStore
-from qq_ai_bot.services.semantic_participation import SemanticParticipationService
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.participation_snapshot import AsyncSnapshotStore
+from yuki.services.semantic_participation import SemanticParticipationService
 
 pytestmark = pytest.mark.asyncio
 
@@ -138,7 +138,7 @@ async def _host(database, tmp_path, *, observer=True):
     )
     from tests.conftest import make_settings
 
-    from qq_ai_bot.admin.config_service import RuntimeConfigService
+    from yuki.admin.config_service import RuntimeConfigService
 
     config = RuntimeConfigService(
         settings=make_settings(database.url, conversation_semantic_participation_enabled=True),
