@@ -335,7 +335,11 @@ class Peer:
             command,
             *(args or []),
             cwd=cwd or self.spec["cwd"],
-            env={**os.environ, **{item.name: item.value for item in (env or [])}},
+            env={
+                **os.environ,
+                **agent_environment(self.spec.get("env", {})),
+                **{item.name: item.value for item in (env or [])},
+            },
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             start_new_session=os.name != "nt",

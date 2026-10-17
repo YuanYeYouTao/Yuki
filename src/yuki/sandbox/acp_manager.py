@@ -300,6 +300,15 @@ class ACPResources:
                         },
                     )
                 continue
+            if (
+                args.get("method") == "close"
+                and peer["dispatched"]
+                and not self.metadata(peer_id).get("session_id")
+            ):
+                # The SDK cannot scan RPC while initialize/new_session waits.
+                # Explicit close releases this exact Supervisor resource.
+                self.manager.cancel_process(peer_id)
+                continue
             if not row["dispatched"] and (
                 self.metadata(peer_id).get("session_id") or args.get("method") == "close"
             ):

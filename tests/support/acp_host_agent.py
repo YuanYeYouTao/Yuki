@@ -60,7 +60,8 @@ async def main() -> None:
                         "command": sys.executable,
                         "args": [
                             "-c",
-                            "import time; print('background', flush=True); time.sleep(30)",
+                            "import os,time; print('background', os.getenv('YUKI_PEER_ENV_PROBE'), "
+                            "flush=True); time.sleep(30)",
                         ],
                     },
                 )

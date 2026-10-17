@@ -203,6 +203,7 @@ async def test_terminal_alias_cancels_original_prompt_and_leaves_newer_prompt_an
         assert cancelled["run_id"] == run["run_id"] and cancelled["status"] == "running"
         cancel = original_request(manager, peer_id, f"prompt-cancel:{run['run_id']}")
         assert cancel["method"] == "cancel" and cancel["run_id"] == run["run_id"]
+        assert not (peer.root / "state/cancel").exists()
         peer.finish(
             original_request(manager, peer_id, "prompt"),
             status="cancelled",

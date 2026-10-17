@@ -147,11 +147,13 @@ async def test_distinct_permission_callbacks_reliable_originals_and_reply(runnin
 @pytest.mark.asyncio
 async def test_files_and_background_terminal_live_past_prompt_and_close_releases(running_peer):
     peer, root = running_peer
+    peer.spec["env"]["YUKI_PEER_ENV_PROBE"] = "configured-environment"
     prompt = submit(peer, root, "prompt", run_id=str(uuid4()), prompt="callbacks")
     assert (await result(root, prompt))["status"] == "succeeded"
     assert (root / "callback.txt").read_text(encoding="utf-8") == "真实回调\n"
     terminal = peer.terminals[(root / "terminal-id").read_text()]
     assert terminal.process.returncode is None
+    await eventually(lambda: b"configured-environment" in terminal.output)
     close = submit(peer, root, "close")
     assert (await result(root, close))["result"]["closed"]
     assert terminal.process.returncode is not None

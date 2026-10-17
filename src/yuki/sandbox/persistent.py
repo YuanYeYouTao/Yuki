@@ -632,6 +632,14 @@ class PersistentManager:
         self.queue.put_nowait(identity)
         return self.get(identity) if method == "service" else await self.wait_result(identity)
 
+    def cancel_process(self, identity: str) -> None:
+        directory = FileWorkspace(self.runtime_root)
+        try:
+            directory.write(f"{identity}/state/cancel", b"cancel", expected_version=None)
+        except WorkspaceError as exc:
+            if str(exc) != "version_conflict":
+                raise
+
     async def control(self, identity: str, action: str, text: str = "") -> dict[str, Any]:
         identity = identifier(identity)
         if self.acp.kind(identity) == "acp_prompt":
@@ -650,12 +658,7 @@ class PersistentManager:
                     identity, "cancelled", {"exit_code": None, "error": "cancelled_before_launch"}
                 )
             else:
-                directory = FileWorkspace(self.runtime_root)
-                try:
-                    directory.write(f"{identity}/state/cancel", b"cancel", expected_version=None)
-                except WorkspaceError as exc:
-                    if str(exc) != "version_conflict":
-                        raise
+                self.cancel_process(identity)
             return self.get(identity)
         connection = self.connections.get(identity)
         if connection is None:
