@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from qq_ai_bot.config import Settings
-from qq_ai_bot.memory.claim_candidates import MemoryClaimCandidateRepository
 from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
 from qq_ai_bot.memory.enums import (
     MemoryRebuildJobOutcome,
@@ -44,7 +43,6 @@ class _MemoryJobResult:
     extracted: int = 0
     validated: int = 0
     applied: int = 0
-    candidates: int = 0
     rejection_reasons: tuple[tuple[str, int], ...] = ()
 
     @property
@@ -73,7 +71,6 @@ class MemoryWorker:
         extractor: MemoryEventExtractor | None = None,
         processor: MemoryClaimProcessor | None = None,
         mutations: MemoryMutationService | None = None,
-        claim_candidates: MemoryClaimCandidateRepository | None = None,
     ) -> None:
         self._settings = settings
         self._jobs = jobs
@@ -99,9 +96,6 @@ class MemoryWorker:
             facts=facts,
             processor=self.processor,
             ledger=ledger,
-        )
-        self.claim_candidates = claim_candidates or MemoryClaimCandidateRepository(
-            facts.repository.database
         )
         self._wake = asyncio.Event()
         self._stop = asyncio.Event()
@@ -265,7 +259,6 @@ class MemoryWorker:
                     "extracted": result.extracted,
                     "validated": result.validated,
                     "applied": result.applied,
-                    "candidates": result.candidates,
                     "rejected": sum(count for _, count in result.rejection_reasons),
                     result.outcome.value: 1,
                 }
@@ -309,7 +302,6 @@ class MemoryWorker:
         if not extracted_count:
             return _MemoryJobResult(MemoryRebuildJobOutcome.NO_CLAIMS)
         applied = 0
-        candidates = 0
         validated_count = 0
         rejection_reasons: Counter[str] = Counter()
         for claim in claims:
@@ -321,18 +313,8 @@ class MemoryWorker:
             )
             validated = validation.claim
             if validated is None:
-                if validation.candidate_type is not None:
-                    await self.claim_candidates.stage(
-                        claim,
-                        job.event,
-                        candidate_type=validation.candidate_type,
-                        job=job,
-                    )
-                    candidates += 1
-                    continue
-                else:
-                    rejection_reasons[validation.reason_code] += 1
-                    continue
+                rejection_reasons[validation.reason_code] += 1
+                continue
             validated_count += 1
             result = await self.mutations.mutate_validated_claim(
                 validated,
@@ -350,8 +332,6 @@ class MemoryWorker:
         outcome = (
             MemoryRebuildJobOutcome.CLAIMS_APPLIED
             if applied
-            else MemoryRebuildJobOutcome.CANDIDATES_STAGED
-            if candidates
             else MemoryRebuildJobOutcome.ALL_REJECTED
         )
         return _MemoryJobResult(
@@ -359,7 +339,6 @@ class MemoryWorker:
             extracted=extracted_count,
             validated=validated_count,
             applied=applied,
-            candidates=candidates,
             rejection_reasons=tuple(
                 sorted(rejection_reasons.items(), key=lambda item: (-item[1], item[0]))
             ),

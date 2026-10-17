@@ -49,6 +49,9 @@ extract 每个事件独立调用 `ModelTask.MEMORY_EXTRACTION`，只暂存 propo
 `current_speaker / other_member / bot` 提供消歧，不得独立产生事实。回复方式、称呼、格式、
 语音和表情等交互要求由提取结果表达，不按固定风格分类硬拒绝。
 
+实时与重建提取共用 Person、PersonGroup、Group 三种声明，不提供 SELF subject/scope，
+不生产 SELF 待裁决候选。旧候选历史、旧提取结果和原执行回执保留；不会改写成普通提取直接创建的 SELF 事实。
+
 `third_party_mode=trusted_metadata` 优先接受原持久 canonical 作者和提及；明确保存的空提及不会回退到平台段。
 旧 `yuki_context` 平台账号及 OneBot 数字 at 段只按原平台和事件 `observed_at` 对应的历史 Binding 时段归属，
 不查今日同号账号的持有人。回复使用同一原 Conversation 的内部 reply 事件作者；不按正文姓名、昵称、

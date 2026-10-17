@@ -182,7 +182,6 @@ async def test_app_only_self_reflection_claim_and_write_do_not_require_qq_bindin
     service = SelfReflectionService(
         settings=make_settings(database.url, self_memory_enabled=True),
         repository=repository,
-        facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
     )

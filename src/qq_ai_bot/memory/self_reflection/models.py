@@ -11,20 +11,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
-from qq_ai_bot.memory.enums import MemoryAuthority, MemoryConflictState, MemoryKind
-from qq_ai_bot.memory.mutation.models import MemoryMutationOperation
+from qq_ai_bot.memory.enums import MemoryKind
 from qq_ai_bot.persistence.repository_records import EventRecord
 
 
 class SelfReflectionVisibility(StrEnum):
     CURRENT_SCOPE = "current_scope"
     GLOBAL = "global"
-
-
-class SelfCandidateDecision(StrEnum):
-    ACCEPT = "accept"
-    REJECT = "reject"
-    DEFER = "defer"
 
 
 class _Contract(BaseModel):
@@ -55,18 +48,6 @@ class SelfReflectionToolReceipt(_Contract):
     occurred_at: datetime | None = None
 
 
-class SelfReflectionFact(_Contract):
-    ref: str = Field(pattern=r"^(?:fact|candidate)_[1-9]\d*$")
-    kind: MemoryKind | None = None
-    category: str
-    memory_key: str
-    content: str
-    status: str
-    authority: MemoryAuthority | None = None
-    conflict_state: MemoryConflictState | None = None
-    evidence_count: int | None = Field(default=None, ge=0)
-
-
 class SelfReflectionInput(_Contract):
     source_kind: Literal["chat", "initiative_tools"] = "chat"
     scope_type: ScopeType
@@ -77,9 +58,6 @@ class SelfReflectionInput(_Contract):
     context_events: tuple[SelfReflectionContextEvent, ...] = ()
     events: tuple[SelfReflectionEvent, ...]
     tool_receipts: tuple[SelfReflectionToolReceipt, ...] = ()
-    self_facts: tuple[SelfReflectionFact, ...] = ()
-    existing_episodes: tuple[SelfReflectionFact, ...] = ()
-    self_candidates: tuple[SelfReflectionFact, ...] = ()
 
     @model_validator(mode="after")
     def _scope_identity(self) -> SelfReflectionInput:
@@ -96,46 +74,15 @@ class SelfReflectionInput(_Contract):
 
 
 class SelfReflectionProposal(_Contract):
-    operation: MemoryMutationOperation | Literal["noop"]
-    fact_ref: str | None = Field(default=None, pattern=r"^fact_[1-9]\d*$")
-    merge_fact_ref: str | None = Field(default=None, pattern=r"^fact_[1-9]\d*$")
-    candidate_ref: str | None = Field(default=None, pattern=r"^candidate_[1-9]\d*$")
-    candidate_decision: SelfCandidateDecision | None = None
-    evidence_refs: tuple[str, ...] = ()
+    evidence_refs: tuple[str, ...] = Field(min_length=1)
     visibility: SelfReflectionVisibility = SelfReflectionVisibility.CURRENT_SCOPE
-    category: str | None = None
-    kind: MemoryKind | None = None
-    memory_key: str | None = Field(default=None)
-    content: str | None = None
+    category: str
+    kind: MemoryKind
+    memory_key: str
+    content: str
     reason: str = ""
     confidence: float = Field(default=0.85, ge=0, le=1)
     importance: int = Field(default=3, ge=1, le=5)
-
-    @model_validator(mode="after")
-    def _shape(self) -> SelfReflectionProposal:
-        if self.candidate_ref is None and self.candidate_decision is not None:
-            raise ValueError("candidate decision requires candidate_ref")
-        if self.operation == "noop":
-            if self.candidate_decision is SelfCandidateDecision.ACCEPT:
-                raise ValueError("candidate acceptance requires a memory mutation")
-            return self
-        if self.candidate_decision in {
-            SelfCandidateDecision.REJECT,
-            SelfCandidateDecision.DEFER,
-        }:
-            raise ValueError("candidate rejection or deferral requires noop")
-        if not self.evidence_refs:
-            raise ValueError("self-reflection mutations require trusted evidence aliases")
-        if self.operation is MemoryMutationOperation.CREATE:
-            if self.fact_ref or self.merge_fact_ref:
-                raise ValueError("create cannot reference an existing fact")
-            if not all((self.category, self.kind, self.memory_key, self.content)):
-                raise ValueError("create requires category, kind, key, and content")
-        elif self.fact_ref is None:
-            raise ValueError("existing-fact operation requires fact_ref")
-        if self.operation is MemoryMutationOperation.MERGE and self.merge_fact_ref is None:
-            raise ValueError("merge requires merge_fact_ref")
-        return self
 
 
 class SelfEpisodePassage(_Contract):

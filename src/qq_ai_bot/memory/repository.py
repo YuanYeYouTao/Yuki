@@ -466,65 +466,6 @@ class MemoryFactRepository:
         )
         return await project_memory_fact_rows(session, rows)
 
-    async def list_visible_self_facts(
-        self, *, person_id: str | None, space_id: str | None
-    ) -> tuple[MemoryFact, ...]:
-        """Read the current reflection owner's global and local SELF input."""
-        from qq_ai_bot.memory.partition import require_xor_memory_owner
-
-        person_id, space_id = require_xor_memory_owner(person_id, space_id)
-        global_scope = and_(
-            MemoryFactModel.visibility_type == SelfMemoryVisibility.GLOBAL.value,
-            MemoryFactModel.canonical_visibility_person_id.is_(None),
-            MemoryFactModel.canonical_visibility_space_id.is_(None),
-        )
-        local_scope = and_(
-            MemoryFactModel.visibility_type
-            == (
-                SelfMemoryVisibility.GROUP.value if space_id else SelfMemoryVisibility.PRIVATE.value
-            ),
-            (
-                same_person_condition(MemoryFactModel.canonical_visibility_person_id, person_id)
-                if person_id is not None
-                else MemoryFactModel.canonical_visibility_person_id.is_(None)
-            ),
-            MemoryFactModel.canonical_visibility_space_id == space_id,
-        )
-        conditions = [
-            MemoryFactModel.scope_type == MemoryScopeType.SELF.value,
-            MemoryFactModel.canonical_subject_person_id.is_(None),
-            MemoryFactModel.canonical_subject_space_id.is_(None),
-            MemoryFactModel.review_state != "quarantined",
-            MemoryFactModel.status.in_(
-                (
-                    MemoryStatus.ACTIVE.value,
-                    MemoryStatus.CONTESTED.value,
-                    MemoryStatus.INVALIDATED.value,
-                )
-            ),
-            or_(global_scope, local_scope),
-            or_(
-                MemoryFactModel.status != MemoryStatus.ACTIVE.value,
-                MemoryFactModel.valid_until.is_(None),
-                MemoryFactModel.valid_until > datetime.now(UTC),
-            ),
-        ]
-        async with self._database.sessions() as session:
-            rows = await self._execute_facts_with_count(
-                session,
-                conditions,
-                order_by=(
-                    case(
-                        {"active": 0, "contested": 1, "invalidated": 2},
-                        value=MemoryFactModel.status,
-                    ),
-                    case((global_scope, 0), else_=1),
-                    MemoryFactModel.importance.desc(),
-                    MemoryFactModel.updated_at.desc(),
-                ),
-            )
-            return await project_memory_fact_rows(session, rows)
-
     async def get_fact(
         self,
         fact_id: int,

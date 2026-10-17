@@ -156,7 +156,6 @@ class ConversationModule:
             service=SelfReflectionService(
                 settings=settings,
                 repository=self_reflection_repository,
-                facts=persistence.memories,
                 mutations=memory_mutations,
                 models=models,
             ),

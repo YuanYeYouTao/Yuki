@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,11 +18,15 @@ from qq_ai_bot.memory.enums import (
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
 
-EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v5"
-EXTRACTION_SCHEMA_VERSION = "5"
+EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v6"
+EXTRACTION_SCHEMA_VERSION = "6"
 SOURCE_ADAPTATION_VERSION = "3"
-BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v4"
-BATCH_EXTRACTION_SCHEMA_VERSION = "4"
+BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v5"
+BATCH_EXTRACTION_SCHEMA_VERSION = "5"
+
+type ExtractionScope = Literal[
+    MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP, MemoryScopeType.GROUP
+]
 
 
 class _ExtractionModel(BaseModel):
@@ -42,7 +47,7 @@ class ConversationContextEvent(_ExtractionModel):
 class AvailableSubject(_ExtractionModel):
     subject_ref: str
     display_label: str
-    allowed_scopes: tuple[MemoryScopeType, ...]
+    allowed_scopes: tuple[ExtractionScope, ...]
     relation_to_speaker: str
 
 
@@ -55,7 +60,7 @@ class MemoryExtractionInput(_ExtractionModel):
 class MemoryClaim(_ExtractionModel):
     subject_ref: str = Field(min_length=1)
     subject_name: str | None = Field(default=None, min_length=1)
-    scope_type: MemoryScopeType
+    scope_type: ExtractionScope
     kind: MemoryKind = MemoryKind.FACT
     memory_key: str = Field(min_length=1)
     category: str = Field(min_length=1)

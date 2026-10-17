@@ -11,7 +11,7 @@ from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.identity.db_models import PresenceModel
 from qq_ai_bot.identity.person_identity import current_person_ids, person_family_ids
 from qq_ai_bot.memory.enums import MemoryScopeType, SelfMemoryVisibility
-from qq_ai_bot.memory.extraction import AvailableSubject, MemoryClaim
+from qq_ai_bot.memory.extraction import AvailableSubject, ExtractionScope, MemoryClaim
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.people_repository import PeopleRepository
@@ -51,7 +51,7 @@ class SubjectResolver:
 
     @staticmethod
     def context(event: EventRecord) -> SubjectResolutionContext:
-        scopes = [MemoryScopeType.PERSON]
+        scopes: list[ExtractionScope] = [MemoryScopeType.PERSON]
         if event.scope_type is ScopeType.GROUP:
             scopes.append(MemoryScopeType.PERSON_GROUP)
         available = [
@@ -65,12 +65,6 @@ class SubjectResolver:
                 ),
                 allowed_scopes=tuple(scopes),
                 relation_to_speaker="self",
-            ),
-            AvailableSubject(
-                subject_ref="self",
-                display_label="本 Agent（SELF）",
-                allowed_scopes=(MemoryScopeType.SELF,),
-                relation_to_speaker="agent_observation",
             ),
         ]
         resolved: list[tuple[str, ResolvedSubject]] = [
