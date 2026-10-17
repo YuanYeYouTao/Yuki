@@ -319,10 +319,14 @@ owned 页也推进原进程内游标，固定 cutoff 和同排序高水位，次
 复用有界 digest/size 缓存，opaque 与会改变媒体外置的条目仍按原协议准备；缓存不代替
 发布前真实文件身份/完整性核验。文件缺失重新准备，变化重新查证，损坏拒绝发布。
 
-热配置 `context.window_tokens` / `context.work_window_tokens` 初始为 96000 / 128000。
-真实预算按当前 Profile 的输入容量、联合窗口与输出限额计算，最终请求包含完整工具、
-原生声明和私有协议。自动 compact 只在该请求超过真实输入预算时执行，不维护比例水位、
-独立整理窗口或摘要输出限额；compact 沿当前 Main 的输出、思考、超时与调度合同派发。
+热配置 `context.compact_trigger_tokens` 默认 `96000`，环境变量为
+`CONTEXT_COMPACT_TRIGGER_TOKENS`，普通聊天、Work 与子任务使用同一提前整理触发值。
+本地估值包含完整工具、原生声明、媒体与私有协议；触发值不限制可执行输入，也不要求
+整理结果降到该值以下。没有可整理前缀或未得到有效检查点时，仍可容纳的请求继续执行。
+硬容量只按当前 Profile 的 `max_input_tokens`、`context_window_tokens` 与本次输出额度计算；
+未声明的项保持未知，两项均未知时没有本地硬容量兜底。旧 Host 双窗口
+`context.window_tokens` / `context.work_window_tokens` 及其环境变量退役，不迁成 Profile 配置。
+不维护触发比例、独立整理窗口或摘要输出限额；compact 沿当前 Main 的输出、思考、超时与调度合同派发。
 
 公共 P 与私有 E 共用 `TurnExecution.compact_current`。P 请求在公共边界结束，结果发布到
 原 Conversation 的 projection；E 整理实际已配对执行前缀，保留初始材料和切点后的原文。

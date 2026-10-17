@@ -246,7 +246,7 @@ def public_compact_plan(
     main_request: ChatRequest,
     *,
     initial: tuple[ChatMessage, ...],
-    input_budget: int,
+    input_budget: int | None,
     prepare: Callable[[ChatRequest], ChatRequest],
     focus: str = "",
 ) -> ExecutionCompactPlan:
@@ -266,7 +266,7 @@ def public_compact_plan(
             continuation=None,
             continuation_items=(),
         )
-        if estimate_request_tokens(prepare(request)) > input_budget:
+        if input_budget is not None and estimate_request_tokens(prepare(request)) > input_budget:
             high = boundary - 1
             continue
         fitting = boundary, covered, prefix, request
@@ -346,7 +346,7 @@ def execution_compact_plan(
     initial: tuple[ChatMessage, ...],
     main_request: ChatRequest,
     *,
-    input_budget: int,
+    input_budget: int | None,
     prepare: Callable[[ChatRequest], ChatRequest],
     retained_public: tuple[ChatMessage, ...] = (),
     call_key: Callable[[str], str] | None = None,
@@ -410,7 +410,7 @@ def execution_compact_plan(
             continuation=sequence.continuation,
             continuation_items=sequence.items,
         )
-        if estimate_request_tokens(prepare(request)) > input_budget:
+        if input_budget is not None and estimate_request_tokens(prepare(request)) > input_budget:
             continue
         suffix = entries[boundary:]
         native_suffix = any(not isinstance(item, ChatMessage) for item in suffix)
@@ -475,7 +475,7 @@ def execution_compact_plan(
         # Older retained findings can be covered by another legitimate batch.
         # The unobserved last round must fit as actual evidence; compacting only
         # its earlier prefix cannot make an oversized result usable.
-        if (
+        if input_budget is not None and (
             estimate_request_tokens(
                 prepare(
                     replace(

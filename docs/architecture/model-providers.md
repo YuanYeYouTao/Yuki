@@ -188,8 +188,11 @@ LLM/LLM_FLASH 设置可作为 TOML 引用值，其他变量须先导出，不扫
 
 公共和私有 compact 都使用当前 Main Profile 的超时、输出与思考设置，沿原 system、
 工具、会话元数据和协议派发。没有独立 conversation_compaction 路由或摘要输出预算；
-旧 TOML 路由跳过并警告一次。自动 compact 只按完整请求的真实容量触发，手动命令
-仅处理公共历史。执行器按 Profile 输入/联合窗口与输出限额核验，不静默减量或换模型。
+旧 TOML 路由跳过并警告一次。自动 compact 由统一的 `context.compact_trigger_tokens`
+提前触发，默认 `96000`（`CONTEXT_COMPACT_TRIGGER_TOKENS`）；触发值不充当容量上限或摘要目标。
+手动命令仅处理公共历史。硬容量由 Profile 的 `max_input_tokens`、`context_window_tokens`
+和本次输出额度计算，未声明项保持未知，不从模型名称猜容量，也不补隐含默认窗口。
+执行器沿已知容量核验，不静默减量或换模型；仍可容纳的请求不因软触发未产生有效检查点而失败。
 
 - 每次响应的工具 ID、签名思考和原生块按原顺序保存在私有 ProviderContinuation；
   工具回执和用户改向按到达顺序追加，不重建已有调用，不重发已确认效果。

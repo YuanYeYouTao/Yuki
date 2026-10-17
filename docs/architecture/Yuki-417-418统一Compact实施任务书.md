@@ -1,5 +1,7 @@
 # #417/#418 统一 Compact 实施任务书
 
+本文保留 `0119` 的历史设计与实施基线；自 `0130` 起，旧 Host 聊天/Work 双窗口及“自动 compact 只按硬容量触发”的说明由[现行会话 Compact 合同](conversation-compact.md)取代，以下原阶段事实不作为当前配置规则。
+
 日期：2026-10-14。关联 [Issue #417](https://github.com/YuanYeYouTao/Yuki/issues/417)、[Issue #418](https://github.com/YuanYeYouTao/Yuki/issues/418)，设计来源为[Work 摘要退役、会话 Compact 与任务树设计审查报告](Yuki-Work摘要退役与会话Compact及任务树设计审查报告-2026-10-14.md)（下称“审查报告”），含附录 B。
 
 **最高开发约束：禁止防御性编程。能通过删除或放宽条件解决的问题，不新增替代机制；不用调阈值、加开关或改名保留旧机制。** 身份、授权、真实来源、预算和执行回执按事实处理。共同规则见[开发约束](development-contract.md)。

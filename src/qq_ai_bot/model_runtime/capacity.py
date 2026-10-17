@@ -27,13 +27,16 @@ class ModelCapacity:
     context_tokens: int | None = None
     output_tokens: int = 8192
 
-    def input_budget(self, active_tokens: int = 262144, *, output_tokens: int | None = None) -> int:
-        limits = [active_tokens]
+    def input_budget(self, *, output_tokens: int | None = None) -> int | None:
+        limits = []
         if self.input_tokens is not None:
             limits.append(self.input_tokens)
         if self.context_tokens is not None:
-            limits.append(self.context_tokens - (output_tokens or self.output_tokens))
-        return max(1, min(limits))
+            limits.append(
+                self.context_tokens
+                - (self.output_tokens if output_tokens is None else output_tokens)
+            )
+        return min(limits) if limits else None
 
 
 def _tool_input(tool: ChatTool) -> dict[str, object]:

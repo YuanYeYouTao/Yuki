@@ -282,7 +282,6 @@ async def _assemble_wakeup(
     )
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
-    runtime.context.window_tokens = 96_000
     context = await assembler.assemble(
         inbound=None,
         profile=None,
@@ -396,7 +395,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     )
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
-    runtime.context.window_tokens = 96_000
 
     ordinary_event = replace(
         _message(10, "ordinary current turn"),
@@ -508,7 +506,6 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
         metadata={"scene": "私聊"},
     )
     runtime = MagicMock()
-    runtime.context.window_tokens = 96_000
     composed = composer.compose(
         inbound=None,
         context=context,
@@ -919,7 +916,6 @@ def _covered_external_turn(
     )
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
-    runtime.context.window_tokens = 96_000
     return assembler, event, turn, runtime
 
 

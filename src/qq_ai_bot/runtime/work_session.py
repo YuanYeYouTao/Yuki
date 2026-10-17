@@ -284,8 +284,8 @@ class WorkSession:
             self.event_ids = list(metadata.get("event_ids", []))
             self.source_keys = list(metadata.get("source_keys", []))
             self.input_ids = list(metadata.get("input_ids", []))
-            if self.progress.get("context_compaction") is not None:
-                compact = self.progress["context_compaction"]
+            compact = self.progress.get("context_compaction")
+            if compact is not None and compact.get("phase") != "paired":
                 if (
                     public_compaction is not None
                     and compact.get("valid")
@@ -795,11 +795,12 @@ class WorkSession:
                 }
             )
             self.progress.pop("model_observations", None)
+            self.progress.pop("context_compaction", None)
         else:
             manifest = await self.journal.objects.get(state["previous_protocol_ref"])
             hydrated = await self.journal.objects.hydrate(manifest)
             self.transcript = decode_transcript(hydrated["transcript"])
-        self.progress.pop("context_compaction", None)
+            state["phase"] = "paired"
         try:
             await self.save(
                 "paired",

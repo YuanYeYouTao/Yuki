@@ -30,10 +30,12 @@ from qq_ai_bot.domain.messages import (
     ChatRequest,
     ChatResponse,
     ChatTool,
+    FunctionCallOutput,
     ModelResponseStatus,
     NativeToolDefinition,
     NativeToolEvent,
     PromptRequestDiagnostics,
+    ProviderContinuation,
     ResponseCitation,
 )
 from qq_ai_bot.llm.base import (
@@ -969,12 +971,7 @@ class TurnExecution:
         )
         capacity = self.runner._models.capacity(self.runner._task)
         context = self.runtime.runtime_config.context
-        input_budget = capacity.input_budget(
-            context.work_window_tokens
-            if self.state.control and self.state.control.current
-            else context.window_tokens,
-            output_tokens=request.max_output_tokens,
-        )
+        input_budget = capacity.input_budget(output_tokens=request.max_output_tokens)
         predicted_tokens = estimate_request_tokens(self.runner._capacity_request(request))
         if self.runtime.compact_focus is not None:
             public = self.runtime.public_compaction
@@ -992,14 +989,38 @@ class TurnExecution:
             return End(
                 AgentRunResult(
                     text="已压缩当前会话的公共上下文。"
-                    if self.state.transcript is not original
+                    if self.state.transcript.chain_id != original.chain_id
                     else "本次压缩没有产生有效检查点。",
                     tool_calls_used=0,
                     model_requests=sum(self.runtime.auxiliary_requests or ()),
                     suppress_delivery=True,
                 )
             )
-        while predicted_tokens > input_budget:
+        if (
+            predicted_tokens >= context.compact_trigger_tokens
+            and (input_budget is None or predicted_tokens <= input_budget)
+            and not self.state.provider_pause_replay
+        ):
+            original = self.state.transcript
+            request = await self.compact_current(
+                request_index,
+                request,
+                priority,
+                input_budget,
+                trigger_tokens=context.compact_trigger_tokens,
+            )
+            predicted_tokens = estimate_request_tokens(self.runner._capacity_request(request))
+            if self.state.transcript.chain_id != original.chain_id:
+                sequence = self.state.transcript.request()
+                self.state.continuation_tools = ()
+                self.state.continuation_native_tools = ()
+            if (
+                self.runtime.max_model_requests is not None
+                and request_index + sum(self.runtime.auxiliary_requests or ())
+                >= self.runtime.max_model_requests
+            ):
+                return STOP
+        while input_budget is not None and predicted_tokens > input_budget:
             if self.state.provider_pause_replay:
                 raise WorkCapacityError("model_request_capacity")
             request = await self.compact_current(request_index, request, priority, input_budget)
@@ -1010,13 +1031,6 @@ class TurnExecution:
             ):
                 return STOP
             sequence = self.state.transcript.request()
-            request = replace(
-                request,
-                messages=sequence.messages,
-                continuation=sequence.continuation,
-                continuation_items=sequence.items,
-                request_chain_id=self.state.transcript.chain_id,
-            )
             predicted_tokens = estimate_request_tokens(self.runner._capacity_request(request))
             self.state.continuation_tools = ()
             self.state.continuation_native_tools = ()
@@ -1027,7 +1041,9 @@ class TurnExecution:
         request_index: int,
         request: ChatRequest,
         priority: ModelExecutionPriority,
-        input_budget: int,
+        input_budget: int | None,
+        *,
+        trigger_tokens: int | None = None,
     ) -> ChatRequest:
         """Maintain the actual Main chain under its original dispatch and journal."""
         from qq_ai_bot.conversation.observations import privacy_generation
@@ -1068,36 +1084,11 @@ class TurnExecution:
             )
         )
         public_requested = self.runtime.compact_focus is not None
-        if public_eligible and (public_requested or initial_tokens >= input_budget):
-            assert public_context is not None
-            plan = public_compact_plan(
-                public_context,
-                self.state.transcript,
-                request,
-                initial=self.initial_messages,
-                input_budget=input_budget,
-                prepare=self.runner._capacity_request,
-                focus=self.runtime.compact_focus or "",
-            )
-        else:
-            try:
-                plan = execution_compact_plan(
-                    self.state.transcript,
-                    self.initial_messages,
-                    request,
-                    input_budget=input_budget,
-                    prepare=self.runner._capacity_request,
-                    retained_public=tuple(self.state.public_tail),
-                    responses=tuple(recorded_response(value) for value in recorded),
-                    call_key=(
-                        self.state.control.session.call_key
-                        if self.state.control is not None and self.state.control.session is not None
-                        else None
-                    ),
-                )
-            except WorkCapacityError:
-                if not public_eligible:
-                    raise
+        public_limit = trigger_tokens if trigger_tokens is not None else input_budget
+        try:
+            if public_eligible and (
+                public_requested or (public_limit is not None and initial_tokens >= public_limit)
+            ):
                 assert public_context is not None
                 plan = public_compact_plan(
                     public_context,
@@ -1106,7 +1097,51 @@ class TurnExecution:
                     initial=self.initial_messages,
                     input_budget=input_budget,
                     prepare=self.runner._capacity_request,
+                    focus=self.runtime.compact_focus or "",
                 )
+            else:
+                tail = self.state.transcript.entries()[len(self.initial_messages) :]
+                if trigger_tokens is not None and not any(
+                    isinstance(entry, (FunctionCallOutput, ProviderContinuation))
+                    or (isinstance(entry, ChatMessage) and entry.role in {"assistant", "tool"})
+                    for entry in tail
+                ):
+                    return request
+                try:
+                    plan = execution_compact_plan(
+                        self.state.transcript,
+                        self.initial_messages,
+                        request,
+                        input_budget=input_budget,
+                        prepare=self.runner._capacity_request,
+                        retained_public=tuple(self.state.public_tail),
+                        responses=tuple(recorded_response(value) for value in recorded),
+                        call_key=(
+                            self.state.control.session.call_key
+                            if self.state.control is not None
+                            and self.state.control.session is not None
+                            else None
+                        ),
+                    )
+                except WorkCapacityError:
+                    if not public_eligible:
+                        raise
+                    assert public_context is not None
+                    plan = public_compact_plan(
+                        public_context,
+                        self.state.transcript,
+                        request,
+                        initial=self.initial_messages,
+                        input_budget=input_budget,
+                        prepare=self.runner._capacity_request,
+                    )
+        except WorkCapacityError:
+            # A soft watermark is a maintenance policy, not an input-capacity
+            # error. Only planning failures are optional; paid/unknown outcomes,
+            # source changes and cancellation keep their original recovery path.
+            if trigger_tokens is None:
+                raise
+            return request
         original = self.state.transcript
         control = self.state.control
         session = control.session if control is not None and control.current is not None else None
@@ -1115,6 +1150,45 @@ class TurnExecution:
             if session is None and public_context is not None and self.runtime.execution_id
             else None
         )
+        if not public_requested:
+            previous = (
+                session.progress.get("context_compaction")
+                if session is not None
+                else await receipt.read()
+                if receipt is not None
+                else None
+            )
+            if (
+                previous is not None
+                and previous.get("phase") == "paired"
+                and previous.get("valid") is False
+            ):
+                # Reuse the original paid failure for this exact candidate.
+                # A cold activation changes chain/diagnostic metadata, not the
+                # model input. New source content or settings are a new input.
+                metadata = {
+                    "request_chain_id",
+                    "request_shape_hash",
+                    "conversation_prefix_hash",
+                    "prompt_snapshot_fingerprint",
+                    "static_prompt_revision",
+                }
+                current_input = {
+                    key: value for key, value in asdict(plan.request).items() if key not in metadata
+                }
+                previous_input = {
+                    key: value for key, value in previous["request"].items() if key not in metadata
+                }
+                if json.dumps(current_input, sort_keys=True, default=str) == json.dumps(
+                    previous_input, sort_keys=True, default=str
+                ):
+                    if (
+                        input_budget is not None
+                        and estimate_request_tokens(self.runner._capacity_request(request))
+                        > input_budget
+                    ):
+                        raise WorkCapacityError("model_request_capacity")
+                    return request
         if session is not None:
             await session.prepare_context_compaction(
                 self.initial_messages,
@@ -1179,11 +1253,19 @@ class TurnExecution:
             on_dispatch=persist_dispatch if receipt is not None else None,
             business_inputs=False,
         )
+        response: ChatResponse | None = None
         try:
             response = await self.runner._concurrency.run_llm(
                 self.runtime.conversation_key,
                 dispatch.complete,
             )
+        except (LLMEmptyResponseError, LLMMalformedFunctionCallError) as exc:
+            if plan.request.native_tools:
+                raise
+            # The adapter confirmed a response without usable local output.
+            # Keep this paid failure, then resume the original input; no model
+            # response, usage or provider continuation is invented here.
+            state["error_category"] = type(exc).__name__
         except BaseException:
             if not dispatch.prepared:
                 self.state.transcript = original
@@ -1195,19 +1277,21 @@ class TurnExecution:
             if dispatch.prepared and self.runtime.auxiliary_requests is not None:
                 self.runtime.auxiliary_requests[0] += 1
         valid = (
-            bool(response.content.strip())
+            response is not None
+            and bool(response.content.strip())
             and not response.tool_calls
             and response.status is ModelResponseStatus.COMPLETED
         )
-        if response.continuation is not None:
+        if response is not None and response.continuation is not None:
             plan.transcript.accept(response.continuation)
-        plan.transcript.append(
-            ChatMessage("assistant", response.content, tool_calls=response.tool_calls),
-        )
+        if response is not None:
+            plan.transcript.append(
+                ChatMessage("assistant", response.content, tool_calls=response.tool_calls),
+            )
+            state["model_response"] = asdict(response)
         state.update(
-            response=response.content,
+            response=response.content if response is not None else "",
             valid=valid,
-            model_response=asdict(response),
             phase="response",
             model_requests=sum(self.runtime.auxiliary_requests or ()),
         )
@@ -1223,7 +1307,7 @@ class TurnExecution:
                 publication = await public_compact_publication(
                     public_context.repository,
                     plan.public,
-                    response.content,
+                    state["response"],
                 )
             else:
                 publication = None
@@ -1235,11 +1319,14 @@ class TurnExecution:
                 async with public_context.repository.database.immediate_session() as writer:
                     await publication(writer)
         if not valid:
-            if estimate_request_tokens(self.runner._capacity_request(request)) > input_budget:
+            if (
+                input_budget is not None
+                and estimate_request_tokens(self.runner._capacity_request(request)) > input_budget
+            ):
                 raise WorkCapacityError("model_request_capacity")
             return request
         if plan.public is not None:
-            await self.adopt_public_compact(plan.public, response.content)
+            await self.adopt_public_compact(plan.public, state["response"])
         sequence = self.state.transcript.request()
         candidate = replace(
             request,
@@ -1251,6 +1338,7 @@ class TurnExecution:
         if (
             not plan.retained
             and plan.public is None
+            and input_budget is not None
             and estimate_request_tokens(self.runner._capacity_request(candidate)) > input_budget
         ):
             raise WorkCapacityError("model_request_capacity")

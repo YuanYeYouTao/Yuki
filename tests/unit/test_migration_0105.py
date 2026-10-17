@@ -45,8 +45,9 @@ automation_budgets = Table(
 )
 
 
-def test_0106_query_migration_removes_retired_overrides_without_removing_other_config(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("target_revision", ["0107", "head"])
+def test_0107_query_migration_removes_retired_overrides_without_removing_other_config(
+    tmp_path, monkeypatch, target_revision
 ):
     url = f"sqlite+aiosqlite:///{(tmp_path / 'queries.db').as_posix()}"
     monkeypatch.setenv("DATABASE_URL", url)
@@ -61,11 +62,12 @@ def test_0106_query_migration_removes_retired_overrides_without_removing_other_c
                 person = await ensure_person(writer, "10001")
                 space = await ensure_space(writer, "20001")
                 now = datetime.now(UTC)
-                for scope, person_id, space_id, key in (
-                    ("global", None, None, "memory.max_referenced_targets"),
-                    ("user", person, None, "memory.max_referenced_targets"),
-                    ("group", None, space, "memory.max_referenced_targets"),
-                    ("global", None, None, "context.window_tokens"),
+                for scope, person_id, space_id, key, value in (
+                    ("global", None, None, "memory.max_referenced_targets", "5"),
+                    ("user", person, None, "memory.max_referenced_targets", "5"),
+                    ("group", None, space, "memory.max_referenced_targets", "5"),
+                    ("global", None, None, "context.window_tokens", "60000"),
+                    ("global", None, None, "llm.max_output_tokens", "16384"),
                 ):
                     writer.add(
                         RuntimeConfigOverrideModel(
@@ -73,7 +75,7 @@ def test_0106_query_migration_removes_retired_overrides_without_removing_other_c
                             scope_type=scope,
                             canonical_person_id=person_id,
                             canonical_space_id=space_id,
-                            value_json="60000" if key.startswith("context.") else "5",
+                            value_json=value,
                             value_type="integer",
                             apply_mode="hot",
                             created_at=now,
@@ -85,16 +87,17 @@ def test_0106_query_migration_removes_retired_overrides_without_removing_other_c
             await database.close()
 
     asyncio.run(seed())
-    command.upgrade(config, "head")
+    command.upgrade(config, target_revision)
 
     async def verify():
         database = Database(url)
         try:
             async with database.sessions() as reader:
                 rows = (await reader.scalars(select(RuntimeConfigOverrideModel))).all()
-                assert [(row.config_key, row.value_json) for row in rows] == [
-                    ("context.window_tokens", "60000")
-                ]
+                expected = [("llm.max_output_tokens", "16384")]
+                if target_revision == "0107":
+                    expected.append(("context.window_tokens", "60000"))
+                assert sorted((row.config_key, row.value_json) for row in rows) == sorted(expected)
                 assert not list(await reader.execute(text("PRAGMA foreign_key_check")))
         finally:
             await database.close()

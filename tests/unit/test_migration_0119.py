@@ -200,7 +200,7 @@ def test_scope_snapshot_reads_selected_checkpoint_and_all_raw_suffix(tmp_path, m
             assert tuple(row.id for row in prefix.raw_events) == (6,)
             settings = Settings(_env_file=None)
             runtime = await RuntimeConfigService(settings=settings, database=database).snapshot()
-            runtime = replace(runtime, context=replace(runtime.context, window_tokens=1))
+            runtime = replace(runtime, context=replace(runtime.context, compact_trigger_tokens=1))
             assembled = await ContextAssembler(
                 settings=settings,
                 ledger=EventLedgerRepository(database),
