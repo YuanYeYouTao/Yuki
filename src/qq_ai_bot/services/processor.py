@@ -258,7 +258,7 @@ class _ObservedHumanTurn:
     created: bool
     has_visual_input: bool
     audio: AudioInput | None = None
-    ordinary_reason: Literal["group_open", "continuation"] | None = None
+    ordinary_reason: OrdinaryReason | None = None
     binding: OrdinaryParticipationBinding | None = None
     prepared_input: _PreparedHumanInput | None = None
 
@@ -533,7 +533,7 @@ class MessageProcessor:
         reason: OrdinaryReason,
         defer_new_main: bool = False,
     ) -> ProcessResult:
-        """Promote the original normalized event, never replay ingress or guess it.
+        """Queue the original normalized input; offer its original Work/wait now.
 
         Unadmitted preparation is intentionally process-local. On restart, an
         absent original envelope is not reconstructed from platform IDs/media.
@@ -543,18 +543,35 @@ class MessageProcessor:
         keeps the observation token and returns ``ordinary_deferred`` instead of
         opening a new Main, so the debounced attempt still owns that decision.
         """
-        if await self.ordinary_admissions.get(event_id) is not None:
-            return ProcessResult(False, reason="ordinary_already_admitted")
         observed = self._observed_human_turns.get(event_id)
         if observed is None:
+            if await self.ordinary_admissions.get(event_id) is not None:
+                return ProcessResult(False, reason="ordinary_already_admitted")
             return ProcessResult(False, reason="ordinary_envelope_unavailable")
+        if defer_new_main:
+            return await self._promote_observed_input(
+                observed, binding, reason=reason, defer_new_main=True
+            )
+        return await self._defer_ordinary(observed, binding, reason)
+
+    async def _promote_observed_input(
+        self,
+        observed: _ObservedHumanTurn,
+        binding: OrdinaryParticipationBinding | None,
+        *,
+        reason: OrdinaryReason,
+        defer_new_main: bool = False,
+    ) -> ProcessResult:
+        event_id = observed.record.id
+        if await self.ordinary_admissions.get(event_id) is not None:
+            return ProcessResult(False, reason="ordinary_already_admitted")
         runtime = await self._runtime_config.snapshot(
             user_id=observed.message.person_id,
             group_id=observed.message.space_id,
         )
         if not defer_new_main:
-            original = await self.promote_committed_event(
-                event_id, None, reason=reason, defer_new_main=True
+            original = await self._promote_observed_input(
+                observed, None, reason=reason, defer_new_main=True
             )
             if original.reason != "ordinary_deferred":
                 return original
@@ -617,32 +634,45 @@ class MessageProcessor:
                 time.perf_counter(),
                 input_only=input_only,
                 defer_new_main=defer_new_main,
+                observed=observed,
             )
 
     async def _defer_ordinary(
         self,
         observed: _ObservedHumanTurn,
         binding: OrdinaryParticipationBinding | None,
-        reason: Literal["group_open", "continuation"],
+        reason: OrdinaryReason,
     ) -> ProcessResult:
         """Give the original Work/wait this input now; merge the new Main by quiet window."""
 
-        event_id = observed.record.id
-        result = await self.promote_committed_event(
-            event_id, None, reason=reason, defer_new_main=True
+        result = await self._promote_observed_input(
+            observed, None, reason=reason, defer_new_main=True
         )
         if result.reason != "ordinary_deferred":
             return result
         observed.ordinary_reason = reason
         observed.binding = binding
-        if self._autonomous is None:
-            return await self.promote_committed_event(event_id, binding, reason=reason)
+        worker = self._autonomous
+        if worker is None:
+            return await self._promote_observed_input(observed, binding, reason=reason)
 
         async def attempt() -> int:
-            result = await self.promote_committed_event(event_id, binding, reason=reason)
+            result = await self._promote_observed_input(observed, binding, reason=reason)
+            if result.reason == "ordinary_busy_or_superseded" and self._turn_coordinator.is_current(
+                observed.token
+            ):
+                # Wait for the existing turn, without holding the input lock that
+                # its next boundary needs in order to accept this same source.
+                async with self._concurrency.conversation(observed.snapshot.scope_key):
+                    pass
+                if not worker.is_current_ordinary_input(observed.message) or not (
+                    self._turn_coordinator.is_current(observed.token)
+                ):
+                    return 0
+                result = await self._promote_observed_input(observed, binding, reason=reason)
             return result.sent_messages
 
-        self._autonomous.observe(observed.message, ordinary_attempt=attempt)
+        worker.observe(observed.message, ordinary_attempt=attempt)
         return ProcessResult(False, reason="ordinary_deferred")
 
     async def handle(
@@ -1081,10 +1111,6 @@ class MessageProcessor:
                     )
                     if found is not None:
                         implicit_binding, implicit = found
-                        if implicit == "semantic_invitation":
-                            return await self.promote_committed_event(
-                                record.id, implicit_binding, reason=implicit
-                            )
                         return await self._defer_ordinary(observed, implicit_binding, implicit)
             if (
                 message.scope_type is ScopeType.GROUP
@@ -1139,6 +1165,7 @@ class MessageProcessor:
         *,
         input_only: bool = False,
         defer_new_main: bool = False,
+        observed: _ObservedHumanTurn | None = None,
     ) -> ProcessResult:
         lock = self._ordinary_locks.setdefault(record.id, asyncio.Lock())
         async with lock:
@@ -1163,6 +1190,7 @@ class MessageProcessor:
                 started,
                 input_only=input_only,
                 defer_new_main=defer_new_main,
+                observed=observed,
             )
 
     async def _prepare_human_input(
@@ -1406,11 +1434,14 @@ class MessageProcessor:
         *,
         input_only: bool = False,
         defer_new_main: bool = False,
+        observed: _ObservedHumanTurn | None = None,
     ) -> ProcessResult:
         # defer_new_main: offer the raw source to the original Work/wait only.
         # It is not a new foreground turn, so newer messages neither cancel nor
         # supersede it; rate, ASR, media and text limits still apply.
         identity = message.scope()
+        if observed is None:
+            observed = self._observed_human_turns.get(record.id)
         coordinator_key = turn_snapshot.scope_key
         event_key = build_event_key(message, identity.key)
         if not defer_new_main:
@@ -1487,7 +1518,6 @@ class MessageProcessor:
 
         async def prepare_source(*, existing_work: bool) -> PreparedOrdinaryAdmission | None:
             nonlocal record, audio, prepared
-            observed = self._observed_human_turns.get(record.id)
             cached = observed.prepared_input if observed is not None else None
             async with (
                 nullcontext()
@@ -1593,7 +1623,7 @@ class MessageProcessor:
         assert audio is not None
         try:
             complete = await self._prepare_human_input(
-                self._observed_human_turns.get(record.id),
+                observed,
                 message,
                 sender,
                 record,
@@ -1886,12 +1916,12 @@ class MessageProcessor:
     ) -> None:
         if self._participation is None:
             return
-        admission = await self.ordinary_admissions.get(event_id)
-        if admission is None:
-            return
         try:
+            admission = await self.ordinary_admissions.get(event_id)
+            if admission is None:
+                return
             await self._participation.on_ordinary_admitted(binding, admission)
-        except (OSError, RuntimeError, ValueError) as exc:
+        except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
             logger.warning("ordinary_participation_save_failed category=%s", type(exc).__name__)
 
     async def _analyze_visual_input(

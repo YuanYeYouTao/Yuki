@@ -303,6 +303,7 @@ class MainAgentTurnService:
                 fresh = tuple(row for row in rows if row.id not in known)
                 if not rows:
                     return None
+                selected_event_ids = frozenset(row.id for row in rows)
                 ordinary_candidates: tuple[OrdinaryContextInput, ...] = ()
                 control = current_work_control.get()
                 if (
@@ -330,6 +331,9 @@ class MainAgentTurnService:
                         from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
 
                         raise HistorySourceChangedError(version)
+                    # Preparation may await external material. Refresh the same
+                    # selection; later arrivals belong to the next boundary.
+                    rows = tuple(row for row in rows if row.id in selected_event_ids)
                     fresh = tuple(row for row in rows if row.id not in known)
                     refreshed = {row.id: row for row in fresh}
                     ordinary_candidates = tuple(
@@ -365,6 +369,7 @@ class MainAgentTurnService:
 
                 async def prepare_boundary(
                     business_inputs: bool = False,
+                    inputs: tuple[OrdinaryContextInput, ...] = ordinary_candidates,
                 ) -> PreparedContextBoundary:
                     nonlocal committed, observation_watermark
                     from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
@@ -379,7 +384,7 @@ class MainAgentTurnService:
                     control = current_work_control.get()
                     if (
                         business_inputs
-                        and ordinary_candidates
+                        and inputs
                         and control is not None
                         and control.current is not None
                     ):
@@ -419,6 +424,7 @@ class MainAgentTurnService:
                         selected_guard is not None
                         and await repository.invalidation_reason(view_key) == "source_changed"
                     )
+                    already_published = selected == old and not rebuild
                     projection_publication = await repository.prepare_commit(
                         view_key=view_key,
                         conversation_id=conversation_id,
@@ -434,18 +440,19 @@ class MainAgentTurnService:
                         selected_summary_coverage=previous.selected_summary_coverage,
                         selected_summary_kind=previous.selected_summary_kind,
                         selected_summary_renderer=previous.selected_summary_renderer,
+                        previous_snapshot=previous,
+                        write=not already_published,
                     )
                     original_guard = guard.snapshot() if guard is not None else None
-                    snapshot = previous if committed else None
+                    snapshot = None
 
                     async def publish(session: AsyncSession) -> None:
                         nonlocal snapshot
-                        if not committed:
-                            snapshot = await projection_publication(session)
+                        snapshot = await projection_publication(session)
                         committed_inputs.clear()
                         if business_inputs:
-                            assert ordinary_activation is not None or not ordinary_candidates
-                            for candidate in ordinary_candidates:
+                            assert ordinary_activation is not None or not inputs
+                            for candidate in inputs:
                                 assert ordinary_activation is not None
                                 try:
                                     inserted = await ordinary_repository.commit_to_activation(
@@ -489,15 +496,18 @@ class MainAgentTurnService:
                         assert snapshot is not None
                         prepared.committed = snapshot
                         prepared.committed_input = list(selected.items)
-                        observation_watermark = max(row.id for row in rows)
+                        observation_watermark = max(selected_event_ids)
                         committed = True
 
                     return PreparedContextBoundary(publish, stage, rollback, finalize)
 
-                async def commit_boundary(business_inputs: bool = False) -> None:
+                async def commit_boundary(
+                    business_inputs: bool = False,
+                    inputs: tuple[OrdinaryContextInput, ...] = ordinary_candidates,
+                ) -> None:
                     if committed and not business_inputs:
                         return
-                    candidate = await prepare_boundary(business_inputs)
+                    candidate = await prepare_boundary(business_inputs, inputs)
                     candidate.stage()
                     try:
                         async with repository.database.immediate_session() as writer:
@@ -515,11 +525,7 @@ class MainAgentTurnService:
                     delta,
                     commit_boundary,
                     prepare_boundary,
-                    tuple(
-                        candidate.message
-                        for candidate in ordinary_candidates
-                        if candidate.message is not None
-                    ),
+                    ordinary_candidates,
                 )
 
             async def adopt_compact(
