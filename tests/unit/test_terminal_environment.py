@@ -328,6 +328,7 @@ async def test_network_guard_allows_public_protocols_after_private_isolation(tmp
     capture = tmp_path / "iptables-arguments"
     for name, body in {
         "id": "printf '0\\n'",
+        "modprobe": "exit 0",
         "sysctl": "printf '1\\n'",
         "iptables": ('printf "%s\\n" "$*" >> "$CAPTURE"\ncase "$*" in *" -C "*) exit 1;; esac'),
     }.items():
