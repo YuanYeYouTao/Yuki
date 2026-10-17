@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
 from dataclasses import replace
 from typing import Any
 
@@ -45,6 +46,7 @@ from qq_ai_bot.services.context_boundary import (
 from qq_ai_bot.services.context_compaction import PublicCompactContext
 from qq_ai_bot.services.durable_invocations import DurableInvocations
 from qq_ai_bot.services.history_projection import prepare_history
+from qq_ai_bot.services.processing_status import ProcessingStatusService
 from qq_ai_bot.services.prompt_composer import PromptComposer, PromptComposition
 from qq_ai_bot.services.turn_transcript import (
     DispatchOrigin,
@@ -62,9 +64,11 @@ class MainAgentTurnService:
         database: Database | None = None,
         *,
         executions: ActivationTasks | None = None,
+        processing_status: ProcessingStatusService | None = None,
     ) -> None:
         self._composer = composer
         self._runner = runner
+        self._processing_status = processing_status
         self.executions = executions if executions is not None else ActivationTasks()
         self._invocations = (
             DurableInvocations(database, self._run_prepared, self.executions) if database else None
@@ -646,15 +650,25 @@ class MainAgentTurnService:
         control = runtime.work_control
         if control is not None:
             control.current_message = messages[-1] if messages else None
-        result = await self._runner.run(
-            messages,
-            replace(
-                runtime,
-                dynamic_context_prepared=True,
-                work_control=control,
-            ),
-            backend,
-        )
+        async with (
+            self._processing_status.during(
+                conversation_id=runtime.canonical_conversation_id,
+                presence_id=runtime.presence_id,
+                source_event_id=runtime.source_event_id,
+                group=runtime.current_group_id is not None,
+            )
+            if self._processing_status is not None
+            else nullcontext()
+        ):
+            result = await self._runner.run(
+                messages,
+                replace(
+                    runtime,
+                    dynamic_context_prepared=True,
+                    work_control=control,
+                ),
+                backend,
+            )
         return result
 
 

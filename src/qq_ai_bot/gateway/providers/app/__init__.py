@@ -3,6 +3,7 @@
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.gateway.provider import GatewayConnectionProfile
 from qq_ai_bot.gateway.providers.app.social import AppSocialOperations
+from qq_ai_bot.gateway.social import TransportTarget
 
 APP_PROVIDER_ID = "app"
 
@@ -13,6 +14,9 @@ class AppHandle:
 
 class AppProvider:
     def media(self, handle: object) -> None:
+        return None
+
+    def activity(self, handle: object, target: TransportTarget) -> None:
         return None
 
     def project_inbound(self, message: InboundMessage, yuki_ids: frozenset[str]) -> InboundMessage:

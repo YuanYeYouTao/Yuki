@@ -5,10 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final, cast, final
 
+from qq_ai_bot.adapters.onebot.activity import OneBotActivityHandle, OneBotTypingActivity
 from qq_ai_bot.adapters.onebot.media import OneBotMediaAdapter, OneBotMediaHandle
 from qq_ai_bot.adapters.onebot.social import OneBotSocialOperations
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.gateway.provider import GatewayConnectionProfile
+from qq_ai_bot.gateway.social import TransportTarget
 
 SNOWLUMA_PROVIDER_ID: Final[str] = "snowluma"
 SNOWLUMA_PLATFORM: Final[str] = "qq"
@@ -33,6 +35,11 @@ class SnowLumaProvider:
 
     def media(self, handle: object) -> OneBotMediaAdapter:
         return OneBotMediaAdapter(cast(OneBotMediaHandle, handle))
+
+    def activity(self, handle: object, target: TransportTarget) -> OneBotTypingActivity | None:
+        if target.kind != "person":
+            return None
+        return OneBotTypingActivity(cast(OneBotActivityHandle, handle), target.external_id)
 
     def project_inbound(self, message: InboundMessage, yuki_ids: frozenset[str]) -> InboundMessage:
         from qq_ai_bot.adapters.onebot.normalizer import reproject_inbound_mentions

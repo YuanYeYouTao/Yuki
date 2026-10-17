@@ -40,6 +40,8 @@ async def telegram_env(database, tmp_path):
             result = {"id": 80001, "is_bot": True, "username": "yuki_test"}
         elif method == "getChatMember":
             result = {"status": "administrator", "user": {"id": params["user_id"]}}
+        elif method == "sendChatAction":
+            result = True
         elif method == "sendMessage":
             result = {"message_id": 1000 + len(wire), "chat": {"id": params["chat_id"]}}
         else:
@@ -245,6 +247,9 @@ async def test_another_platform_uses_the_same_processor_and_social_contract(tele
         social = NativeOperations()
 
         def media(self, handle):
+            return None
+
+        def activity(self, handle, target):
             return None
 
         def project_inbound(self, message, yuki_ids):

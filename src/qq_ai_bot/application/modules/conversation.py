@@ -29,6 +29,7 @@ from qq_ai_bot.services.agent_tools import AgentToolService
 from qq_ai_bot.services.chat import ChatService, ToolInvocationRecorder
 from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.effect_gate import ConversationEffectGate
+from qq_ai_bot.services.processing_status import ProcessingStatusService
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.services.prompt_registry import PromptRegistry
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
@@ -68,6 +69,7 @@ class ConversationModule:
         memory_embeddings: MemoryEmbeddingRuntime,
         tool_artifacts: ToolArtifactWriter | None = None,
         tool_invocations: ToolInvocationRecorder | None = None,
+        processing_status: ProcessingStatusService | None = None,
     ) -> None:
         self._settings = settings
         self._persistence = persistence
@@ -81,6 +83,7 @@ class ConversationModule:
         self._memory_embeddings = memory_embeddings
         self._tool_artifacts = tool_artifacts
         self._tool_invocations = tool_invocations
+        self._processing_status = processing_status
 
     def build(self) -> ConversationBundle:
         settings = self._settings
@@ -131,6 +134,7 @@ class ConversationModule:
             tool_invocations=self._tool_invocations,
             conversation_scopes=persistence.conversation_scopes,
             effect_gate=self._effect_gate,
+            processing_status=self._processing_status,
         )
         memory_rebuild_service = MemoryRebuildService(
             settings=settings,

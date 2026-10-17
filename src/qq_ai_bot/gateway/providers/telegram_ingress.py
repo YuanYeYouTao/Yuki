@@ -99,6 +99,9 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
                 },
             }
         )
+    # A reply relation alone is not a new chat body; native service updates have none.
+    if not (text.strip() or attachments):
+        return None
     reply = raw.get("reply_to_message")
     reply_author = reply.get("from") if isinstance(reply, dict) else None
     chat_id = str(chat["id"])

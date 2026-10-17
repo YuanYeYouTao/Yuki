@@ -44,6 +44,7 @@ class InvocationContextFactory:
             public_compaction=source.public_compaction,
             compact_focus=source.compact_focus,
             canonical_conversation_id=source.effective_conversation_id,
+            presence_id=source.effective_presence_id,
             conversation_generation=source.turn_snapshot.generation
             if source.turn_snapshot is not None
             else None,

@@ -22,6 +22,16 @@ Provider 的 `media(handle)` 从该原生连接提供媒体适配器。附件工
 
 旧 Conversation、primary alias、generation、Work、已付请求和真实效果回执继续沿原 ID。旧多 Bot 私聊只通过原内部事件和真实旧 alias 证明入口，不能按今天的主动路由重建归属。当前新消息按新入口规则接纳。
 
+## 空输入与处理状态
+
+Telegram 没有可投影的当前正文或受支持附件时静默忽略；已有正文或媒体的引用仍保留原关系，单独的原生 reply 字段不构成当前新发言。群迁移仍沿原专用分支处理，确认更新不产生固定空输入回复。共用 Processor 对完全没有正文、附件、Bot 提及、引用内容或引用 ID 的输入，在模型固定、入账、通知当前轮和 Work/JEV 接纳之前返回，不打断正在执行的工作。QQ 的纯附件、只提及 Bot 和真实引用继续走原路径；引用解析后仍没有可处理内容时静默结束，不把旧消息自动当成新问题。媒体格式与历史投影继续遵守[媒体合同](chat-media-workspace.md)。
+
+正在输入属于临时平台状态。`GatewayProvider.activity(handle, target)` 返回可选 `PlatformActivity`，由原 Registry/Catalog 透传；适配器提供刷新间隔、`start` 和 `stop`。公共运行时用原 Conversation、Presence 和内部 source event 解析实际连接与目标，不增加模型工具、能力目录或提示词。QQ 当前只在私聊使用 SnowLuma 的 `set_input_status`，开始为 `event_type=1`，最后退出后由后台清理发送 `0`；QQ 群和 App 没有此原生动作时返回无实现。Main 开始和结束都不等待这些平台请求；状态服务保留清理任务，相邻同入口的提示只在后台保持原停止、新开始的顺序。
+
+Telegram 使用 `sendChatAction(action=typing)`，保真实 chat 与 topic，每 4 秒刷新；Main 退出后取消后台刷新，不虚构停止 API。Telegram 的状态最多保留 5 秒，Bot 发消息时也会清除，见[原生 API](https://core.telegram.org/bots/api#sendchataction)。提示失败只记诊断并结束该提示，不改变 Main 结果或发送回执；可见状态不能证明模型成功、消息已发送或工作已完成。
+
+生命周期与刷新参考 Memoh 本地快照 `7e40b52ec46d076c17d93e578f5fc18f88742f97` 的[适配接口](https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/channel/adapter.go#L38-L60)、[运行时状态生命周期](https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/channel/processing_status.go#L31-L121)和[Telegram 刷新实现](https://github.com/felinics/Memoh/blob/7e40b52ec46d076c17d93e578f5fc18f88742f97/internal/channel/adapters/telegram/telegram.go#L2428-L2484)。Yuki 的接线归属与生命周期见[主 Agent 合同](main-agent-runtime.md)。
+
 ## 公共工具
 
 `send_message` 共用参数表达文字、图片、文件、真实提及和内部事件引用。平台计划可以拆为数项；部分成功分别保留，结果未知不自动重发。App 文件及说明原子交付；QQ 上传与附言分别确认；Telegram 按实际文本和 caption 限制生成原生派发。

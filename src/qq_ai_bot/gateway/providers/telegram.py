@@ -12,7 +12,8 @@ import httpx
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.gateway.media import MediaKind, MediaResolutionError, PlatformMediaFile
 from qq_ai_bot.gateway.provider import GatewayConnectionProfile
-from qq_ai_bot.gateway.social import PlatformSocialOperations
+from qq_ai_bot.gateway.providers.telegram_activity import TelegramTypingActivity
+from qq_ai_bot.gateway.social import PlatformSocialOperations, TransportTarget
 from qq_ai_bot.services.http_logging import redact_httpx_url
 
 TELEGRAM_PROVIDER_ID = "telegram"
@@ -148,6 +149,9 @@ class TelegramClient:
 class TelegramProvider:
     def media(self, handle: object) -> TelegramClient:
         return cast(TelegramClient, handle)
+
+    def activity(self, handle: object, target: TransportTarget) -> TelegramTypingActivity:
+        return TelegramTypingActivity(cast(TelegramClient, handle), target)
 
     def project_inbound(self, message: InboundMessage, yuki_ids: frozenset[str]) -> InboundMessage:
         return message
