@@ -74,6 +74,7 @@ async def test_catalog_is_configuration_only_and_does_not_expose_environment(tmp
             {"method": "acp_peer_open", "args": {"agent_id": "missing"}, "request_id": "unknown"}
         )
         assert unavailable["error"] == "acp_agent_not_configured"
+        assert unavailable["executed"] is False
     finally:
         await manager.close()
 
@@ -297,6 +298,7 @@ async def test_purge_waits_for_actual_process_exit_and_preserves_unrelated_home_
             }
         )
         assert denied["error"] == "acp_peer_closed"
+        assert denied["executed"] is False
         peer.finish(
             original_request(manager, peer_id, "forget"),
             status="succeeded",
@@ -414,6 +416,63 @@ async def test_event_ack_is_monotonic_and_cannot_skip_unwritten_or_partial_event
             with pytest.raises(ValueError, match="invalid_acp_event_ack"):
                 manager.acp.events({"peer_id": peer_id, "ack_cursor": invalid})
         assert read_json(peer.root / "rpc/events.ack")["cursor"] == first
+    finally:
+        await manager.close()
+
+
+async def test_close_commit_alone_revokes_original_queued_launch_across_restart(tmp_path):
+    manager = manager_at(tmp_path)
+    peer_id = manager.acp.peer_open({"agent_id": "fixture"}, "resource")["peer_id"]
+    args = {"peer_id": peer_id, "purge": True}
+    manager.acp._create(
+        "acp_close", args, "forget", "acp_control", payload={**args, "method": "close"}
+    )
+    # A Manager loss here cannot turn a committed close into a launch on recover.
+    await manager.close()
+    manager = manager_at(tmp_path)
+    try:
+        assert not manager.active()
+        original = manager.acp.peer_open({"agent_id": "fixture"}, "resource")
+        assert original["status"] == "cancelled" and original["closing"]
+        assert manager.queue.empty()
+        manager.acp.refresh()
+        closed = await manager.handle(
+            {"method": "acp_prompt_query", "args": {"request_id": "forget"}}
+        )
+        assert closed["purged"] and closed["status"] == "succeeded"
+    finally:
+        await manager.close()
+
+
+async def test_original_prepared_peer_directory_survives_manager_restart_before_dispatch(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(os, "geteuid", lambda: 10001, raising=False)
+    manager = manager_at(tmp_path)
+    peer_id = manager.acp.peer_open({"agent_id": "fixture"}, "resource")["peer_id"]
+    original = manager.acp.row(peer_id)
+    spec = manager.prepare_spec(peer_id, json.loads(original["payload"]), "acp_peer")
+    root = manager.acp.root(peer_id)
+    marker = root / "state" / "retained"
+    marker.write_text("original", encoding="utf-8")
+    # Windows cannot rewrite a read-only file; production Manager runs as Linux root.
+    (root / "spec.json").chmod(0o600)
+    await manager.close()
+    manager = manager_at(tmp_path)
+    request = AsyncMock(return_value={"session_id": "original-pty"})
+    manager.execd = SimpleNamespace(request=request)
+    manager.attach = AsyncMock()
+    try:
+        await manager.launch(peer_id)
+        saved = manager.acp.row(peer_id)
+        assert saved["id"] == peer_id and saved["request_id"] == original["request_id"]
+        assert saved["payload_hash"] == original["payload_hash"]
+        assert saved["state"] == "running" and saved["dispatched"] == 1
+        assert read_json(root / "spec.json") == spec
+        assert marker.read_text(encoding="utf-8") == "original"
+        request.assert_awaited_once()
+        manager.attach.assert_awaited_once_with(peer_id, "original-pty", tty=False)
+        assert manager.db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0] == 1
     finally:
         await manager.close()
 

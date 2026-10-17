@@ -105,9 +105,15 @@ class ACPResources:
                 if self.kind(peer_id) != "acp_peer":
                     raise ValueError("acp_peer_not_found")
                 payload = {**payload, "peer_id": peer_id}
+                peer = self.row(peer_id)
+                result = {**json.loads(peer["result"]), "closing": True}
+                state = peer["state"]
+                if not peer["dispatched"] and state not in TERMINAL:
+                    state = "cancelled"
+                    result["closed"] = True
                 self.manager.db.execute(
-                    "UPDATE jobs SET result=json_set(result,'$.closing',json('true')) WHERE id=?",
-                    (peer_id,),
+                    "UPDATE jobs SET state=?,result=? WHERE id=?",
+                    (state, json.dumps(result), peer_id),
                 )
             self.manager.db.execute(
                 "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
@@ -315,6 +321,11 @@ class ACPResources:
             "OR json_extract(result,'$.peer_id')=?)",
             (peer_id, peer_id, peer_id),
         ).fetchall()
+        # The pending close remains the original retryable intent until every
+        # protocol file is gone. A failed unlink must not erase method/purge.
+        root = self.root(peer_id)
+        if root.exists():
+            shutil.rmtree(root)
         with self.manager.db:
             for row in rows:
                 saved = json.loads(row["result"])
@@ -330,16 +341,16 @@ class ACPResources:
                 if state not in TERMINAL and row["id"] != preserve_id:
                     state = "failed"
                     minimal.update(uncertain=True, error="acp_peer_closed")
+                payload: dict[str, Any] = {"peer_id": peer_id}
+                if row["id"] == preserve_id:
+                    payload.update(method="close", purge=True)
                 self.manager.db.execute(
                     "UPDATE jobs SET payload=?,result=?,state=? WHERE id=?",
-                    (json.dumps({"peer_id": peer_id}), json.dumps(minimal), state, row["id"]),
+                    (json.dumps(payload), json.dumps(minimal), state, row["id"]),
                 )
                 self.manager.db.execute(
                     "DELETE FROM completion_outbox WHERE run_id=?", (row["id"],)
                 )
-        root = self.root(peer_id)
-        if root.exists():
-            shutil.rmtree(root)
 
     def control(self, method: str, args: dict[str, Any], request_id: str) -> dict[str, Any]:
         if "run_id" in args:
@@ -363,11 +374,6 @@ class ACPResources:
             "acp_control",
             payload={**args, "method": method},
         )
-        if method == "close":
-            peer_id = json.loads(self.row(identity)["payload"])["peer_id"]
-            peer = self.row(peer_id)
-            if not peer["dispatched"] and peer["state"] not in TERMINAL:
-                self.manager.finish(peer["id"], "cancelled", {"closing": True, "closed": True})
         self.refresh()
         result = self.view(identity)
         if method == "close":
@@ -378,7 +384,7 @@ class ACPResources:
                 "operation_id": request_id,
                 "cancel_requested": True,
             }
-        return result
+        return {**result, "operation_id": request_id, "admitted": True}
 
     def events(self, args: dict[str, Any]) -> dict[str, Any]:
         peer_id = identifier(args["peer_id"])
@@ -411,6 +417,23 @@ class ACPResources:
         return {"peer_id": peer_id, **page}
 
     async def handle(self, method: str, args: dict[str, Any], request_id: str) -> dict[str, Any]:
+        try:
+            return await self._handle(method, args, request_id)
+        except (ValueError, KeyError, TypeError) as exc:
+            if (
+                method in {"acp_peer_open", "acp_prompt_submit"}
+                and not self.manager.db.execute(
+                    "SELECT 1 FROM jobs WHERE request_id=?", (request_id,)
+                ).fetchone()
+            ):
+                return {
+                    "error": str(exc) if isinstance(exc, ValueError) else "invalid_arguments",
+                    "executed": False,
+                    "retryable": False,
+                }
+            raise
+
+    async def _handle(self, method: str, args: dict[str, Any], request_id: str) -> dict[str, Any]:
         if method == "acp_agents":
             return {
                 "agents": [

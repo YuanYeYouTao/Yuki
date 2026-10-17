@@ -170,7 +170,9 @@ class Peer:
         self.session_id: str | None = None
         self.connection: Any = None
         self.active: dict[str, Any] | None = None
-        self.active_cancelled = False
+        # An index of this peer's original accepted cancel operations, not a
+        # session-wide flag: a later prompt with another run remains independent.
+        self.cancelled_runs: set[str] = set()
         self.sent = asyncio.Event()
         self.stopping = asyncio.Event()
         self.state_lock = asyncio.Lock()
@@ -223,7 +225,12 @@ class Peer:
         )
 
     def require_session(self, session_id: str) -> dict[str, Any]:
-        if session_id != self.session_id or self.active is None or self.active_cancelled:
+        if (
+            session_id != self.session_id
+            or self.active is None
+            or self.stopping.is_set()
+            or self.active["run_id"] in self.cancelled_runs
+        ):
             raise ValueError("callback has no original active prompt")
         return self.active
 
@@ -420,10 +427,19 @@ class Peer:
             payload = request.get("payload", {})
             if method == "prompt":
                 async with self.state_lock:
+                    if request["run_id"] in self.cancelled_runs:
+                        self.finish(
+                            request,
+                            status="cancelled",
+                            result={
+                                "stopReason": "cancelled",
+                                "dispatched": False,
+                            },
+                        )
+                        return
                     if self.active is not None or self.stopping.is_set():
                         raise ValueError("ACP session already has a prompt or is closing")
                     self.active = request
-                    self.active_cancelled = False
                     self.sent.clear()
                     events_path = self.root / "rpc" / "events.jsonl"
                     start_cursor = events_path.stat().st_size if events_path.exists() else 0
@@ -483,6 +499,8 @@ class Peer:
                     self.save_permissions()
                 self.finish(request, status="succeeded", result={"accepted": True})
             elif method in {"cancel", "close"}:
+                if method == "cancel":
+                    self.cancelled_runs.add(request["run_id"])
                 if method == "close":
                     self.stopping.set()
                     self.close_requests.append(request)
@@ -494,7 +512,6 @@ class Peer:
                         method == "close" or active["run_id"] == request.get("run_id")
                     )
                     if same:
-                        self.active_cancelled = True
                         await self.connection.cancel(session_id=self.session_id)
                         for _question, future in self.permissions.values():
                             if not future.done():
@@ -555,6 +572,10 @@ class Peer:
                     ),
                     client_info=Implementation(name="Yuki", version="1"),
                 )
+                if initialized.protocol_version != 1:
+                    raise ValueError(
+                        f"unsupported ACP protocol version: {initialized.protocol_version}"
+                    )
                 new = await connection.new_session(cwd=self.spec["cwd"], mcp_servers=[])
                 self.session_id = new.session_id
                 atomic_json(

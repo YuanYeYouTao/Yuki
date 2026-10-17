@@ -521,10 +521,10 @@ class PersistentManager:
 
     def prepare_spec(self, identity: str, args: dict[str, Any], kind: str) -> dict[str, Any]:
         root = self.runtime_root / identifier(identity)
-        root.mkdir(mode=0o755)
+        root.mkdir(mode=0o755, exist_ok=True)
         root.chmod(0o755)
         state = root / "state"
-        state.mkdir(mode=0o700)
+        state.mkdir(mode=0o700, exist_ok=True)
         if os.geteuid() == 0:
             os.chown(
                 state,
