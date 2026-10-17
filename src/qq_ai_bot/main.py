@@ -19,6 +19,7 @@ from qq_ai_bot.config import Settings
 from qq_ai_bot.container import ApplicationContainer, get_container, set_container
 from qq_ai_bot.gateway.registry import RegistryClosed
 from qq_ai_bot.health import HealthPayload, build_health_payload
+from qq_ai_bot.http_environment import load_http_environment
 from qq_ai_bot.logging import configure_logging
 from qq_ai_bot.persistence.instance_lock import SQLiteApplicationLock
 from qq_ai_bot.persistence.schema_guard import require_canonical_schema
@@ -57,6 +58,7 @@ def register_health_routes(app: FastAPI) -> None:
 def bootstrap(settings: Settings | None = None) -> None:
     """Configure NoneBot, routes, adapters, plugins, and resource lifecycle."""
 
+    load_http_environment()
     app_settings = settings or Settings()
     # Yuki accepts the long-standing comma-separated SUPERUSERS setting, while
     # NoneBot's environment source parses its own field as JSON before applying

@@ -97,6 +97,9 @@ Tavily Extract，也不要求供应商返回 raw_content。`read_webpage` 明确
 模型搜索及无搜索后端时的网页读取复用经过公共地址、DNS 与重定向检查的 HTTP 下载器，
 不按 Tavily key 自动选择提取后端。显式 Tavily 后端保留其搜索与提取，返回正文保持原来源，
 不因提取失败改变搜索供应商或推翻原搜索结果。插件 `WEB_SEARCH` 与 `WEB_READ` 继续分别授权。
+本机网页下载使用标准代理发现，按每跳原网站匹配 `NO_PROXY`，保持校验后的固定公网 IP、
+原 Host 与目标 TLS 名称；HTTPS 代理的 TLS 独立校验代理域名。网页沿已有 Web 超时，模型
+仍沿 Profile 超时，公共页面缓存不因代理切换而失效。启动配置见[代理说明](../operations/http-proxy.zh-CN.md)。
 提取失败明确报错，
 不将搜索总结充当网页正文。来源、上游已返回内容和总结保留原件，再由既有结果预算器
 整理展示或保存 artifact，不为保有来源额外抓页。

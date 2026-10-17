@@ -296,6 +296,10 @@ class WebModule:
             credential=key,
             provider=create_model_provider(profile.model_copy(update={"max_retries": 0}), key),
             state=BridgeState(settings.web_search_bridge_state_path),
+            extractor=DirectPageExtractor(
+                state=BridgeState(settings.web_search_bridge_state_path),
+                timeout_seconds=settings.web_timeout_seconds,
+            ),
             invocations=self._invocations,
         )
 

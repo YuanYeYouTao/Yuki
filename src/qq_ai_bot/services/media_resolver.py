@@ -197,11 +197,9 @@ class MediaResolver:
                 "Host": _host_header(normalized),
                 "Connection": "close",
             }
-            request_extensions = (
-                {"sni_hostname": original_host}
-                if urlsplit(normalized).scheme.casefold() == "https"
-                else None
-            )
+            request_extensions = {"original_url": normalized}
+            if urlsplit(normalized).scheme.casefold() == "https":
+                request_extensions["sni_hostname"] = original_host
             try:
                 async with self._client.stream(
                     "GET",

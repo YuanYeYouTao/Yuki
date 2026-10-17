@@ -39,6 +39,7 @@ from qq_ai_bot.deployment_setup.service import (
     verify_health,
 )
 from qq_ai_bot.deployment_setup.terminal import BackRequested, QuitRequested, TerminalUI
+from qq_ai_bot.http_environment import load_http_environment
 from qq_ai_bot.llm.vendor_policy import CHAT_VENDORS, RESPONSES_VENDORS, supports_native_search
 from qq_ai_bot.model_runtime.profiles import normalize_model_profile_document
 from qq_ai_bot.plugin_host.discovery import PluginDiscovery
@@ -105,6 +106,7 @@ def run_setup_command(args: argparse.Namespace) -> int:
     paths = SetupPaths(Path(args.deployment_root).resolve())
     ui = TerminalUI(no_color=bool(args.no_color))
     try:
+        load_http_environment(paths.env)
         action = str(args.setup_action)
         if action == "environment-check":
             from qq_ai_bot.deployment_setup.environment_check import check_environment

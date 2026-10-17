@@ -77,6 +77,9 @@ Tavily 密钥是否存在推断外部搜索。全局 `WEB_MODE=disabled` 仍禁�
 不要求链接先出现在当前输入或本轮搜索中。
 模型搜索和未配置搜索后端时的网页读取复用公共地址校验、DNS 固定和重定向检查的 HTTP
 下载器，提取 HTML 或纯文本，不因存在 Tavily 密钥而切换提取后端。
+该下载器默认使用标准系统/环境代理，支持 HTTP、HTTPS 与 SOCKS5 代理；网页下载沿
+`WEB_TIMEOUT_SECONDS`，不借用搜索模型的超时。原网站域名用于 `NO_PROXY` 和 TLS 校验，
+网络连接仍固定在已校验的公网 IP。原生启动、Docker 与 Mihomo 示例见[代理配置](operations/http-proxy.zh-CN.md)。
 显式 Tavily 后端的搜索与页面提取分别调用；返回内容保持原来源。
 插件 `WEB_SEARCH` 不包含 `WEB_READ` 权限，独立调用继续核原批准。
 提取失败时明确返回错误，

@@ -33,7 +33,6 @@ from qq_ai_bot.runtime.work_activation import current_work_control
 from qq_ai_bot.web.base import WebPageExtractor, WebSearchError, normalize_public_url
 from qq_ai_bot.web.bridge_state import BridgeState
 from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
-from qq_ai_bot.web.page_extractor import DirectPageExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ class NativeSearchBridge:
         credential: str,
         provider: LLMProvider,
         state: BridgeState,
-        extractor: WebPageExtractor | None = None,
+        extractor: WebPageExtractor,
         invocations: ModelInvocationRepository | None = None,
     ) -> None:
         if (
@@ -61,9 +60,7 @@ class NativeSearchBridge:
         self.profile = profile
         self.provider = provider
         self.state = state
-        self.extractor = extractor or DirectPageExtractor(
-            state=state, timeout_seconds=profile.timeout_seconds
-        )
+        self.extractor = extractor
         self.invocations = invocations
         self._namespace = hashlib.sha256(
             json.dumps(
@@ -321,7 +318,7 @@ class NativeSearchBridge:
         errors: list[BaseException] = []
         closed: set[int] = set()
         for resource in (self.provider, self.extractor):
-            if resource is None or id(resource) in closed:
+            if id(resource) in closed:
                 continue
             closed.add(id(resource))
             try:

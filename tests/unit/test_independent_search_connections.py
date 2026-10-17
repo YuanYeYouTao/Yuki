@@ -85,6 +85,35 @@ def settings(tmp_path, **overrides):
     return make_settings("sqlite+aiosqlite:///:memory:", **values)
 
 
+async def test_bridge_reader_uses_web_timeout_without_a_model_request(tmp_path, monkeypatch):
+    main = profile("main", ModelProtocol.CHAT_COMPLETIONS, search_mode=ModelSearchMode.BRIDGE)
+    search = profile("search", ModelProtocol.GEMINI)
+    model = FakeLLMProvider(lambda _: ChatResponse(content="unused", latency_seconds=0))
+    monkeypatch.setattr(web_module, "create_model_provider", lambda *_args: model)
+    clients = ModelClientPool(secret_overrides={"SEARCH_KEY": "synthetic"})
+    module = WebModule(
+        settings(tmp_path, web_timeout_seconds=0.03).web, lifecycle=LifecycleRegistry()
+    )
+    routed = module.prepare(catalog(main, search), clients)
+    token = current_web_model_task.set(ModelTask.CHAT_AGENT)
+    try:
+        bridge = routed.bridges[ModelTask.CHAT_AGENT]
+
+        async def stalled_download(*_args, **_kwargs):
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(bridge.extractor.media, "_download_with_redirects", stalled_download)
+        with pytest.raises(WebSearchError) as failure:
+            await asyncio.wait_for(routed.extract("https://example.com/", "read"), 1)
+        assert failure.value.__cause__.code == "timeout"
+        assert bridge.profile.timeout_seconds == search.timeout_seconds
+        assert not model.requests
+    finally:
+        current_web_model_task.reset(token)
+        await routed.close()
+        await clients.close()
+
+
 @pytest.mark.parametrize(
     "protocol",
     [

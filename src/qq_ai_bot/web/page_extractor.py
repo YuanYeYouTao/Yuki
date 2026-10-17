@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 from html.parser import HTMLParser
 from urllib.parse import urlsplit
 
@@ -11,7 +12,10 @@ from qq_ai_bot.services.media_resolver import MediaResolutionError, MediaResolve
 from qq_ai_bot.vision.models import MediaReference
 from qq_ai_bot.web.base import WebSearchError, normalize_public_url
 from qq_ai_bot.web.bridge_state import BridgeState
+from qq_ai_bot.web.http_transport import create_web_http_client
 from qq_ai_bot.web.models import WebSearchResponse, WebSearchSource
+
+logger = logging.getLogger(__name__)
 
 
 class PageText(HTMLParser):
@@ -38,17 +42,36 @@ class DirectPageExtractor:
         self, *, state: BridgeState, timeout_seconds: float, media: MediaResolver | None = None
     ) -> None:
         self.state = state
-        self.media = media or MediaResolver(
-            max_download_bytes=2 * 1024 * 1024,
-            timeout_seconds=timeout_seconds,
-            allow_private_urls=False,
+        self._client = (
+            create_web_http_client(timeout_seconds=timeout_seconds) if media is None else None
+        )
+        self.media = (
+            media
+            if media is not None
+            else MediaResolver(
+                max_download_bytes=2 * 1024 * 1024,
+                timeout_seconds=timeout_seconds,
+                allow_private_urls=False,
+                client=self._client,
+            )
         )
 
     async def _extract(self, url: str, query: str) -> WebSearchSource:
         normalized = normalize_public_url(url)
         try:
             page = await self.media.resolve(MediaReference(url=normalized))
-        except (MediaResolutionError, OSError) as exc:
+        except MediaResolutionError as exc:
+            cause: BaseException = exc
+            while cause.__cause__ is not None:
+                cause = cause.__cause__
+            logger.warning(
+                "web_page_download_failed code=%s cause=%s",
+                exc.code,
+                type(cause).__name__,
+            )
+            raise WebSearchError("extract_failed", "网页下载失败") from exc
+        except OSError as exc:
+            logger.warning("web_page_download_failed cause=%s", type(exc).__name__)
             raise WebSearchError("extract_failed", "网页下载失败") from exc
         content_type = (page.content_type or "").split(";")[0].casefold()
         if content_type not in {"text/html", "text/plain", "application/xhtml+xml"}:
@@ -87,4 +110,8 @@ class DirectPageExtractor:
         return source
 
     async def close(self) -> None:
-        await self.media.close()
+        try:
+            await self.media.close()
+        finally:
+            if self._client is not None:
+                await self._client.aclose()

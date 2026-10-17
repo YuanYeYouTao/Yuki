@@ -35,6 +35,7 @@ from qq_ai_bot.services.turn_execution import TurnExecution
 from qq_ai_bot.web.bridge_state import BridgeState
 from qq_ai_bot.web.models import WebMode, WebSearchRequest
 from qq_ai_bot.web.native_bridge import NativeSearchBridge
+from qq_ai_bot.web.page_extractor import DirectPageExtractor
 
 
 class _StructuredResult(BaseModel):
@@ -358,6 +359,9 @@ async def test_native_search_uses_actual_work_owner_without_changing_body(databa
             credential="synthetic",
             provider=provider,
             state=BridgeState(tmp_path / "search.sqlite3"),
+            extractor=DirectPageExtractor(
+                state=BridgeState(tmp_path / "search.sqlite3"), timeout_seconds=2
+            ),
         )
         try:
             token = current_work_control.set(control)
