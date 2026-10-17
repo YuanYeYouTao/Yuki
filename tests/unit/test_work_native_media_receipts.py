@@ -12,19 +12,19 @@ from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_protocol_continuity import _control
 from tests.unit.test_work_source_guard import _guard
 
-from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
-from qq_ai_bot.capabilities.media import MediaResultText, result_images
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ToolCall, ToolFunction
-from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.effect_outcomes import current_result_capture
-from qq_ai_bot.runtime.protocol_schema import refs
-from qq_ai_bot.runtime.work_journal import JournalUnavailable
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.services.turn_transcript import TurnTranscript, validating_request
+from yuki.admin.models import WorkStorageRuntimeConfig
+from yuki.capabilities.media import MediaResultText, result_images
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.domain.messages import ChatImage, ChatMessage, ToolCall, ToolFunction
+from yuki.execution_trace.db_models import ExecutionTraceStateModel
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.effect_outcomes import current_result_capture
+from yuki.runtime.protocol_schema import refs
+from yuki.runtime.work_journal import JournalUnavailable
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_schema_v1 import effects
+from yuki.services.turn_transcript import TurnTranscript, validating_request
 
 
 def _image(control, identity):

@@ -8,17 +8,17 @@ import pytest
 from sqlalchemy import select
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.identity.canonical_repository import ensure_person
-from qq_ai_bot.identity.db_models import IdentityBindingModel
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.social.agent_adapter import invoke_social
-from qq_ai_bot.social.models import SocialError
+from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.domain.tool_actor import ToolActor
+from yuki.identity.canonical_repository import ensure_person
+from yuki.identity.db_models import IdentityBindingModel
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
+from yuki.services.agent_tools import ToolRuntime
+from yuki.social.agent_adapter import invoke_social
+from yuki.social.models import SocialError
 
 
 async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_receipt(

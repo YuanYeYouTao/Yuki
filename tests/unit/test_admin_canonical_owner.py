@@ -8,18 +8,18 @@ from uuid import uuid4
 import pytest
 from tests.conftest import build_harness, make_settings
 
-from qq_ai_bot.admin.control_resolution import ControlAccess
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.admin.control_resolution import ControlAccess
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.domain.profiles import UserProfileSnapshot
+from yuki.identity.canonical_repository import (
     create_person_binding,
     create_space_binding,
     find_identity_binding,
     find_space_binding,
 )
-from qq_ai_bot.identity.db_models import IdentityBindingModel
-from qq_ai_bot.services.policies import CommandName
+from yuki.identity.db_models import IdentityBindingModel
+from yuki.services.policies import CommandName
 
 
 async def identities(database):

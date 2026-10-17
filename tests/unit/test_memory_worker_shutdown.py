@@ -11,20 +11,20 @@ from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_rebuild import _admin, _event, _ExtractionProvider, _service
 from tests.unit.test_memory_v2 import _claim
 
-from qq_ai_bot.domain.messages import ChatResponse
-from qq_ai_bot.memory.enums import MemoryRebuildRunStatus
-from qq_ai_bot.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.worker import MemoryRebuildWorker
-from qq_ai_bot.memory.repository import MemoryJobRepository
-from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.persistence.models import (
+from yuki.domain.messages import ChatResponse
+from yuki.memory.enums import MemoryRebuildRunStatus
+from yuki.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.worker import MemoryRebuildWorker
+from yuki.memory.repository import MemoryJobRepository
+from yuki.memory.worker import MemoryWorker
+from yuki.persistence.models import (
     MemoryFactModel,
     MemoryJobModel,
     MemoryMutationReceiptModel,
     MemoryRebuildProposalModel,
 )
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.services.concurrency import ConcurrencyManager
 
 
 class _Provider(_ExtractionProvider):

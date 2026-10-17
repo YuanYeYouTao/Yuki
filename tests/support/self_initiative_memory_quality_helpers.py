@@ -2,15 +2,15 @@
 
 from tests.unit.test_self_initiative_memory import claim, finish, record, seed
 
-from qq_ai_bot.memory.enums import MemoryKind, MemoryScopeType, SelfMemoryVisibility
-from qq_ai_bot.memory.mutation.models import (
+from yuki.memory.enums import MemoryKind, MemoryScopeType, SelfMemoryVisibility
+from yuki.memory.mutation.models import (
     MemoryDecisionActorType,
     MemoryMutationContext,
     MemoryMutationOperation,
     MemoryMutationRequest,
     MemoryMutationTarget,
 )
-from qq_ai_bot.memory.subjects import ResolvedSubject
+from yuki.memory.subjects import ResolvedSubject
 
 
 async def reflection_fact(database):

@@ -3,11 +3,11 @@
 先在仓库根目录运行：
 
 ```bash
-uv run qq-ai-bot-cli plugin validate plugins/com.example.plugin
-uv run qq-ai-bot-cli plugin inspect com.example.plugin
-uv run qq-ai-bot-cli plugin permissions com.example.plugin
-uv run qq-ai-bot-cli plugin doctor com.example.plugin
-uv run qq-ai-bot-cli plugin test plugins/com.example.plugin
+uv run yuki plugin validate plugins/com.example.plugin
+uv run yuki plugin inspect com.example.plugin
+uv run yuki plugin permissions com.example.plugin
+uv run yuki plugin doctor com.example.plugin
+uv run yuki plugin test plugins/com.example.plugin
 ```
 
 ## 常见状态

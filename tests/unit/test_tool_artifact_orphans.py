@@ -7,7 +7,7 @@ from uuid import uuid4
 
 import pytest
 
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.tool_results.artifacts import ToolArtifactRepository
 
 
 def age(path):

@@ -9,13 +9,13 @@ import pytest
 from pydantic import TypeAdapter
 from tools import cache_probe_replay as cache_probe
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
-from qq_ai_bot.model_runtime.models import (
+from yuki.domain.messages import ChatMessage, ChatRequest
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.pool import ModelClientPool
 
 
 def profile(provider, protocol):

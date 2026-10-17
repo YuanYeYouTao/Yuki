@@ -8,9 +8,9 @@ import pytest
 from pydantic import ValidationError
 from tests.conftest import make_settings
 
-from qq_ai_bot.vision.base import VisionError
-from qq_ai_bot.vision.models import PreparedFrame, PreparedVisualInput, VisionAnalysisOptions
-from qq_ai_bot.vision.qwen import QwenVisionProvider
+from yuki.vision.base import VisionError
+from yuki.vision.models import PreparedFrame, PreparedVisualInput, VisionAnalysisOptions
+from yuki.vision.qwen import QwenVisionProvider
 
 
 def visual():

@@ -2,15 +2,15 @@
 
 from unittest.mock import AsyncMock
 
-from qq_ai_bot.config import Settings
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.prompt_composer import PromptComposer
-from qq_ai_bot.services.subagent_execution import SubagentExecution, SubagentExecutionDependencies
-from qq_ai_bot.services.work_resume import WorkResumeDependencies, WorkResumer
+from yuki.config import Settings
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.runtime.activation_bindings import ActiveWorkBindings
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.sandbox.task_repository import SandboxTaskRepository
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.services.prompt_composer import PromptComposer
+from yuki.services.subagent_execution import SubagentExecution, SubagentExecutionDependencies
+from yuki.services.work_resume import WorkResumeDependencies, WorkResumer
 
 
 def make_work_resumer(

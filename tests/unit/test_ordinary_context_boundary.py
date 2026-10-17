@@ -11,34 +11,34 @@ from sqlalchemy import select
 from tests.conftest import MemorySender
 from tests.unit.test_history_dispatch_ownership import _scene
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.conversation.initiative_sources import source_revision
-from qq_ai_bot.conversation.ordinary_admission import (
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.initiative_sources import source_revision
+from yuki.conversation.ordinary_admission import (
     OrdinaryAdmissionConflict,
     OrdinaryAdmissionDuplicate,
     OrdinaryAdmissionRepository,
 )
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.conversation.projections import ProjectionConflict
-from qq_ai_bot.domain.audio import AudioTranscript, serialize_transcripts
-from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ChatRequest, ChatResponse
-from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-from qq_ai_bot.identity.db_models import PresenceModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.work_activation import activate_work, current_work_control
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_session import WorkSession
-from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.services.context_boundary import OrdinaryContextInput
-from qq_ai_bot.services.context_compaction import EXECUTION_COMPACT_INSTRUCTION
-from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
-from qq_ai_bot.services.turn_execution import TurnExecution, _PrimaryDispatch
-from qq_ai_bot.services.turn_transcript import (
+from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.conversation.projections import ProjectionConflict
+from yuki.domain.audio import AudioTranscript, serialize_transcripts
+from yuki.domain.messages import ChatImage, ChatMessage, ChatRequest, ChatResponse
+from yuki.execution_trace.db_models import ExecutionTraceStateModel
+from yuki.identity.db_models import PresenceModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.capacity import estimate_request_tokens
+from yuki.model_runtime.models import ModelExecutionPriority
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_activation import activate_work, current_work_control
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_session import WorkSession
+from yuki.runtime.work_source_guard import WorkSourceGuard
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.context_boundary import OrdinaryContextInput
+from yuki.services.context_compaction import EXECUTION_COMPACT_INSTRUCTION
+from yuki.services.turn_coordinator import HistorySourceChangedError
+from yuki.services.turn_execution import TurnExecution, _PrimaryDispatch
+from yuki.services.turn_transcript import (
     DispatchOrigin,
     TranscriptRequest,
     validating_request,

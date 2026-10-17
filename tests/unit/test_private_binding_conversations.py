@@ -5,24 +5,24 @@ from uuid import uuid4
 
 from sqlalchemy import select
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ConversationLegacyAliasModel,
 )
-from qq_ai_bot.conversation.hydrate import bump_canonical_generation, ensure_legacy_alias
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.conversation.hydrate import bump_canonical_generation, ensure_legacy_alias
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.conversation.scope_repository import ConversationScopeRepository
+from yuki.domain.conversations import ConversationScope
+from yuki.identity.canonical_repository import (
     create_presence,
     find_identity_binding,
     find_presence,
 )
-from qq_ai_bot.identity.db_models import IdentityBindingModel
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.runtime.work_repository import WorkRepository
+from yuki.identity.db_models import IdentityBindingModel
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.runtime.work_repository import WorkRepository
 
 
 async def entries(database):

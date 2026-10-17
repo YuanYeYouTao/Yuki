@@ -13,37 +13,37 @@ from tests.support.automation_runtime_helpers import FakeClock
 from tests.support.model_profiles import write_fake_profiles
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.container import ApplicationContainer
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
-from qq_ai_bot.model_runtime.models import (
+from yuki.automation.models import RunStatus
+from yuki.container import ApplicationContainer
+from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.domain.tool_actor import ToolActor
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.llm.fake import FakeLLMProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.model_runtime.db_models import ModelInvocationModel
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
     ModelRoute,
     ModelTask,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.protocol_store import ProtocolStore
-from qq_ai_bot.runtime.trigger import SelfInitiativeTrigger
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_journal import WorkJournal, decode_transcript
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
-from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
-from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import ModelProfileCatalog
+from yuki.persistence.models import ChatEventModel
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.protocol_store import ProtocolStore
+from yuki.runtime.trigger import SelfInitiativeTrigger
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_journal import WorkJournal, decode_transcript
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects, journal, work
+from yuki.sandbox.environment_tools import SANDBOX_TOOLS
+from yuki.workspace.tools import WORKSPACE_TOOLS
 from yuki_plugin_sdk.permissions import PluginPermission
 
 
@@ -626,7 +626,7 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
     else:
         actor = await self_actor(database, env)
         source = replace(runtime(actor, env), runtime_config=await chat._runtime_config.snapshot())
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+    from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
     scoped = ScopedEventLedgerUnitOfWork(database)
     added = await scoped.append(

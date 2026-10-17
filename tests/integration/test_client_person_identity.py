@@ -17,17 +17,17 @@ from tests.unit.test_client_files import upload
 from tests.unit.test_client_sdk import DropAcknowledgement
 from tests.unit.test_client_works import owner, seeded
 
-from qq_ai_bot.client_api.db_models import ClientDeviceModel
-from qq_ai_bot.client_api.identity import fingerprint
-from qq_ai_bot.client_sdk import Outbox, PersonalClient
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.client_api.db_models import ClientDeviceModel
+from yuki.client_api.identity import fingerprint
+from yuki.client_sdk import Outbox, PersonalClient
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ControlCommandReceiptModel,
 )
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from qq_ai_bot.identity.person_identity import current_person_id, merge_persons
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_schema_v1 import journal
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.identity.person_identity import current_person_id, merge_persons
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_schema_v1 import journal
 
 admin = admin_fixture
 app_env = app_fixture
@@ -405,7 +405,7 @@ async def test_claim_account_merges_two_apps_without_changing_their_original_cre
         await env.identity.authenticate(b["token"]), str(uuid4())
     )
     async with database.sessions() as session:
-        from qq_ai_bot.identity.canonical_repository import find_identity_binding
+        from yuki.identity.canonical_repository import find_identity_binding
 
         original_binding = await find_identity_binding(session, "1001")
         original_id = original_binding.id
@@ -490,7 +490,7 @@ async def test_current_root_can_read_original_file_but_foreign_person_cannot(app
 def test_cli_exposes_original_entry_binding(monkeypatch):
     import argparse
 
-    from qq_ai_bot.client_sdk.cli import add_client_parser
+    from yuki.client_sdk.cli import add_client_parser
 
     monkeypatch.setenv("YUKI_CLIENT_ENTRY_BINDING", "environment-entry")
     parser = argparse.ArgumentParser()
@@ -503,8 +503,8 @@ def test_cli_exposes_original_entry_binding(monkeypatch):
 async def test_operator_transfer_pauses_current_root_route_without_moving_history(
     app_env, database
 ):
-    from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel
-    from qq_ai_bot.identity.canonical_repository import find_identity_binding, find_presence
+    from yuki.conversation.canonical_db_models import PersonActiveRouteModel
+    from yuki.identity.canonical_repository import find_identity_binding, find_presence
 
     env = app_env
     _a, _b, person_a, person_b, _me_a, _me_b = await merged_pair(env, database)

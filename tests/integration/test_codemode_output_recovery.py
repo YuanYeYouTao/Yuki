@@ -15,15 +15,15 @@ from tests.support.codemode_cases import (
 )
 from tests.support.work_session import WorkSession
 
-from qq_ai_bot.admin.authority.json_types import freeze_json_object
-from qq_ai_bot.codemode.driver import CodeCompositionYield, CodeModeDriver
-from qq_ai_bot.codemode.driver_types import EngineCall, EngineOutcome, HostCounters
-from qq_ai_bot.codemode.engine_monty import strict_json
-from qq_ai_bot.codemode.limits import CodeModeLimits
-from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.admin.authority.json_types import freeze_json_object
+from yuki.codemode.driver import CodeCompositionYield, CodeModeDriver
+from yuki.codemode.driver_types import EngineCall, EngineOutcome, HostCounters
+from yuki.codemode.engine_monty import strict_json
+from yuki.codemode.limits import CodeModeLimits
+from yuki.domain.messages import ChatMessage
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.services.turn_transcript import TurnTranscript
 
 
 def test_json_boundary_preserves_deep_legal_result_and_independent_watchdog():
@@ -247,7 +247,7 @@ async def test_operation_summary_respects_result_limit(database, tmp_path, limit
     import httpx
     from tests.support.correctness_wire import KINDS
 
-    from qq_ai_bot.domain.messages import ChatRequest, FunctionCallOutput, ProviderContinuation
+    from yuki.domain.messages import ChatRequest, FunctionCallOutput, ProviderContinuation
 
     env = await environment(database, tmp_path, tool_limit=32)
     install(env, count=20, printing=False)
@@ -373,7 +373,7 @@ async def test_bounded_concurrent_reads_keep_exact_budget_and_partial_receipts(
 ):
     from sqlalchemy.dialects.sqlite import insert
 
-    from qq_ai_bot.runtime.work_budget_schema import budgets
+    from yuki.runtime.work_budget_schema import budgets
 
     env = await environment(database, tmp_path, max_parallel=2)
     install(env, count=5, printing=False)

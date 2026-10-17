@@ -15,7 +15,7 @@
 
 ## 首次迁移与实际异常
 
-首轮操作目录：`/opt/yuki-qqbot/ops/query-optimization-1aa8668d-20261011T201611Z`，恢复记录为其中`rollout.json`，一致备份在`backup/qq_ai_bot.db`。从实际Bot labels取得全部Compose files、root和project，只停止和重建Bot。
+首轮操作目录：`/opt/yuki-qqbot/ops/query-optimization-1aa8668d-20261011T201611Z`，恢复记录为其中`rollout.json`，一致备份在`backup/yuki.db`。从实际Bot labels取得全部Compose files、root和project，只停止和重建Bot。
 
 原镜像`ops-f439a267`更新到`ops-1aa8668d`。停写备份及副本0106→0107演练通过，生产按真实Alembic链升级，增加四索引并删除退役override。副本与实际生产迁移前后计数相同：automations120、versions79、runs154、Work167、social receipts17017、chat events90867；这是迁移当时的保全证据，不要求后续计数不增长。旧人数环境键从有效Compose和.env删除。
 

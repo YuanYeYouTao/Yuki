@@ -63,14 +63,14 @@ SNOWLUMA_WEBUI_BIND_ADDRESS=127.0.0.1
 Provider 合同检查：
 
 ```bash
-docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
+docker compose exec bot yuki gateway doctor --provider snowluma
 ```
 
 doctor 是只读检查，不发送消息、不调用私有 action，也不输出凭据。
 
 ## 模型配置
 
-使用 `qq-ai-bot-cli setup` 完成初始引导；后续在模型 TOML 中明确选择供应商、协议、
+使用 `yuki setup` 完成初始引导；后续在模型 TOML 中明确选择供应商、协议、
 API Base URL、模型与任务路由，通过 `admin model apply` 保存并热应用。
 新增密钥使用 `admin model secret set`，密钥进入服务器私有文件，不回显。
 连接配置与命令见[管理 API](architecture/admin-api.md)。
@@ -141,9 +141,9 @@ Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当�
 
 升级前停止实际写入本次数据库与备份目录的进程，并按同一时点备份：
 
-- `qq_ai_bot.db`
-- `qq_ai_bot.db-wal`
-- `qq_ai_bot.db-shm`
+- `yuki.db`
+- `yuki.db-wal`
+- `yuki.db-shm`
 - 配置、Compose 文件、镜像 digest 和 Provider 登录目录
 - 宿主插件、协议对象、工具 artifacts、持久 Work 证据及被引用音频
 

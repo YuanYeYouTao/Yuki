@@ -5,12 +5,12 @@ from __future__ import annotations
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import replace
 
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
-from qq_ai_bot.execution_trace.recorder import TraceRecorder
-from qq_ai_bot.model_runtime.capacity import ModelCapacity
-from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
-from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, request_shape_hash
-from qq_ai_bot.model_runtime.models import (
+from yuki.domain.messages import ChatRequest, ChatResponse
+from yuki.execution_trace.recorder import TraceRecorder
+from yuki.model_runtime.capacity import ModelCapacity
+from yuki.model_runtime.dispatch_guard import check_model_dispatch
+from yuki.model_runtime.executor import ModelCompleter, ModelExecutor, request_shape_hash
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
     ModelProtocol,

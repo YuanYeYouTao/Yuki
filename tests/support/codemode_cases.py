@@ -18,16 +18,16 @@ import pytest
 from sqlalchemy import select
 from tests.unit.test_tool_effect_audit import active_work
 
-from qq_ai_bot.capabilities.invocation import direct_invocations
-from qq_ai_bot.codemode.api_projection import project
-from qq_ai_bot.codemode.contract import EXECUTE_CODE_TOOL
-from qq_ai_bot.codemode.driver import ChildClass, CodeHost, CodeModeDriver
-from qq_ai_bot.codemode.engine_monty import PinnedWorker
-from qq_ai_bot.codemode.limits import CodeModeLimits
-from qq_ai_bot.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunction
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_schema_v1 import effects, work
-from qq_ai_bot.services.invocation_service import InvocationService
+from yuki.capabilities.invocation import direct_invocations
+from yuki.codemode.api_projection import project
+from yuki.codemode.contract import EXECUTE_CODE_TOOL
+from yuki.codemode.driver import ChildClass, CodeHost, CodeModeDriver
+from yuki.codemode.engine_monty import PinnedWorker
+from yuki.codemode.limits import CodeModeLimits
+from yuki.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunction
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_schema_v1 import effects, work
+from yuki.services.invocation_service import InvocationService
 
 BINARY = Path(os.environ.get("YUKI_MONTY_BINARY", "/nonexistent/monty"))
 try:
@@ -130,8 +130,8 @@ def build_host(owner, domain, *, tool_limit=32, max_parallel=2):
 
     async def execute_business(invocation, side_effecting):
         async def invoke():
-            from qq_ai_bot.capabilities.results import normalize_legacy_result
-            from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+            from yuki.capabilities.results import normalize_legacy_result
+            from yuki.runtime.effect_outcomes import current_result_capture
 
             result = await domain(invocation.call.function.name, invocation.call.function.arguments)
             capture = current_result_capture.get()

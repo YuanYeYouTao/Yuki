@@ -5,7 +5,7 @@ import sqlite3
 import pytest
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.workspace.store import WorkspaceStore
 
 
 @pytest.mark.parametrize("legacy_expiry", [1, 4_000_000_000])

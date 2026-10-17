@@ -16,19 +16,19 @@ from yuki_participation.models import Effect, Snapshot, SourceRef
 from yuki_participation.observer import JevObserver
 from yuki_participation.self_report import SelfDelta, SelfReport
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
 )
-from qq_ai_bot.conversation.initiative_sources import source_revision
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
-from qq_ai_bot.identity.person_identity import merge_persons
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.participation_feedback import admission_unit_binding
-from qq_ai_bot.services.participation_identity import actor_identity
-from qq_ai_bot.services.participation_trace import TracedSemanticObserver
+from yuki.conversation.initiative_sources import source_revision
+from yuki.domain.conversations import ScopeType
+from yuki.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
+from yuki.identity.person_identity import merge_persons
+from yuki.persistence.models import ChatEventModel
+from yuki.services.participation_feedback import admission_unit_binding
+from yuki.services.participation_identity import actor_identity
+from yuki.services.participation_trace import TracedSemanticObserver
 
 
 def actual_config(host):

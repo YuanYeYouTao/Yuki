@@ -6,12 +6,12 @@ import pytest
 from sqlalchemy import select
 from tests.support.automation_unified_delivery_helpers import sent, setup_run
 
-from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.social.db_models import SocialOperationModel
+from yuki.automation.models import RunStatus
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_schema_v1 import work
+from yuki.social.db_models import SocialOperationModel
 
 
 @pytest.mark.parametrize("delivery", ["current_group", "self_private", "none"])

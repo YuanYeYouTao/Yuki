@@ -10,26 +10,26 @@ from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_v2 import _append_event, _claim, _event
 
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.enums import MemoryRebuildJobOutcome, MemoryScopeType
-from qq_ai_bot.memory.event_extractor import MemoryEventExtractor
-from qq_ai_bot.memory.extraction import (
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.enums import MemoryRebuildJobOutcome, MemoryScopeType
+from yuki.memory.event_extractor import MemoryEventExtractor
+from yuki.memory.extraction import (
     AvailableSubject,
     BatchMemoryExtractionOutput,
     MemoryExtractionOutput,
 )
-from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.subjects import SubjectResolver
-from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.persistence.models import (
+from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
+from yuki.memory.service import MemoryFactService
+from yuki.memory.subjects import SubjectResolver
+from yuki.memory.worker import MemoryWorker
+from yuki.persistence.models import (
     MemoryClaimCandidateEvidenceModel,
     MemoryClaimCandidateModel,
     MemoryFactModel,
     MemoryJobModel,
 )
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.concurrency import ConcurrencyManager
 
 
 def _enum(schema, value):

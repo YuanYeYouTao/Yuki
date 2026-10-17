@@ -17,19 +17,19 @@ from tests.support.autonomy_repository_helpers import _accept, _enable, _scene
 from yuki_participation.controller import Controller
 from yuki_participation.models import CandidateKind, Proposal, Scope, SourceRef, Support
 
-from qq_ai_bot.conversation.autonomy_binding import AutonomyOwner
-from qq_ai_bot.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
-from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-from qq_ai_bot.conversation.self_initiative import validate_self_initiative
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_schema import budgets, children
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import journal, work
-from qq_ai_bot.services import participation_feedback
-from qq_ai_bot.services.participation_feedback import reconcile_page, sync_scope_effects
-from qq_ai_bot.services.semantic_participation import SemanticParticipationService
-from qq_ai_bot.social.db_models import SocialOperationModel
+from yuki.conversation.autonomy_binding import AutonomyOwner
+from yuki.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
+from yuki.conversation.autonomy_repository import AutonomyRepository
+from yuki.conversation.self_initiative import validate_self_initiative
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_schema import budgets, children
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import journal, work
+from yuki.services import participation_feedback
+from yuki.services.participation_feedback import reconcile_page, sync_scope_effects
+from yuki.services.semantic_participation import SemanticParticipationService
+from yuki.social.db_models import SocialOperationModel
 
 
 async def setup(database, *, owner=AutonomyOwner.SEMANTIC):

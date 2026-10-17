@@ -16,8 +16,8 @@
   "receipt_errors_scope": "visible tool history per HTTP request; repeated history is not a new failed operation",
   "harness_sha256": "a911c82c0a9b33efc0385d79ce5a2e4f45cd6e0bf069b1d874c7d19b0b5d0465",
   "runtime_source_sha256": {
-    "src/qq_ai_bot/codemode/engine_monty.py": "eef01e95f1c4a5d2adadfe5db70fe38ea3e8f27b9987062a1568f1a9a4d1b3de",
-    "src/qq_ai_bot/runtime/work_control.py": "a107a0777aa57fc2891ecf3d03f5ba2c0f5e9d0e82bdae5d1d6565394e11ad4a",
+    "src/yuki/codemode/engine_monty.py": "eef01e95f1c4a5d2adadfe5db70fe38ea3e8f27b9987062a1568f1a9a4d1b3de",
+    "src/yuki/runtime/work_control.py": "a107a0777aa57fc2891ecf3d03f5ba2c0f5e9d0e82bdae5d1d6565394e11ad4a",
     "tests/integration/test_codemode_runner.py": "ff914c3f6b180af073936b5df76c0a196aefe5baff1d52fce92995fbe118aee6"
   },
   "records": [

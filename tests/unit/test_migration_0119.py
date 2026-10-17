@@ -11,15 +11,15 @@ from uuid import uuid4
 from alembic import command
 from alembic.config import Config
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.schema_guard import require_canonical_schema
-from qq_ai_bot.services.context_assembler import ContextAssembler
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.config import Settings
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.conversation.scope_repository import ConversationScopeRepository
+from yuki.domain.conversations import ConversationScope
+from yuki.persistence.database import Database
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.schema_guard import require_canonical_schema
+from yuki.services.context_assembler import ContextAssembler
 
 
 def _seed_0118(path, monkeypatch):

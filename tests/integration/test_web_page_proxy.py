@@ -14,12 +14,12 @@ import pytest
 import pytest_asyncio
 import trustme
 
-from qq_ai_bot.services import media_resolver
-from qq_ai_bot.services.media_resolver import MediaResolutionError, MediaResolver
-from qq_ai_bot.vision.models import MediaReference
-from qq_ai_bot.web.base import WebSearchError
-from qq_ai_bot.web.bridge_state import BridgeState
-from qq_ai_bot.web.page_extractor import DirectPageExtractor
+from yuki.services import media_resolver
+from yuki.services.media_resolver import MediaResolutionError, MediaResolver
+from yuki.vision.models import MediaReference
+from yuki.web.base import WebSearchError
+from yuki.web.bridge_state import BridgeState
+from yuki.web.page_extractor import DirectPageExtractor
 
 _PROXY_ENV = (
     "http_proxy",

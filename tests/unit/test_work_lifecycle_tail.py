@@ -7,12 +7,12 @@ import pytest
 from sqlalchemy import select
 from tests.support.work_runner_helpers import case, run, tool
 
-from qq_ai_bot.capabilities.results import normalize_legacy_result
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse
-from qq_ai_bot.runtime.effect_outcomes import current_result_capture
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_schema_v1 import effects
+from yuki.capabilities.results import normalize_legacy_result
+from yuki.domain.messages import ChatMessage, ChatResponse
+from yuki.runtime.effect_outcomes import current_result_capture
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_schema_v1 import effects
 
 
 def pairs(control):

@@ -140,7 +140,7 @@ def test_plugin_source_imports_only_public_sdk_and_standard_library() -> None:
         for node in ast.walk(ast.parse(source))
         if isinstance(node, ast.ImportFrom) and node.module is not None
     )
-    assert "qq_ai_bot" not in imported_roots
+    assert "yuki" not in imported_roots
     assert not ({"httpx", "requests", "socket", "urllib"} & imported_roots)
     assert imported_roots <= {"__future__", "pydantic", "typing", "yuki_plugin_sdk"}
 

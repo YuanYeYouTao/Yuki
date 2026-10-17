@@ -9,12 +9,12 @@ from tests.conftest import MemorySender, make_settings
 from tests.support.autonomy_repository_helpers import _accept, _enable, _scene
 from tests.unit.test_auto_reply_merge import _admissions, _open_group_scene, _wait_for_worker
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-from qq_ai_bot.domain.memory_config import MemoryConfigScope
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.conversation.autonomy_repository import AutonomyRepository
+from yuki.domain.memory_config import MemoryConfigScope
+from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import RuntimeConfigOverrideModel
 
 
 async def override(database, space, key, value, version=1):
@@ -63,7 +63,7 @@ async def test_four_flags_new_ordinary_admission_and_explicit_call(
 
 async def test_canonical_config_queries_use_exact_keys_aliases_and_owner(database):
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
-    from qq_ai_bot.identity.canonical_repository import find_space_binding
+    from yuki.identity.canonical_repository import find_space_binding
 
     async with database.sessions() as reader:
         original = await find_space_binding(reader, "2001")
@@ -134,8 +134,8 @@ async def test_ordinary_writer_serializes_flag_close_and_preserves_original_admi
 ):
     import asyncio
 
-    from qq_ai_bot.conversation.ordinary_admission import OrdinaryAdmissionRepository
-    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
+    from yuki.conversation.ordinary_admission import OrdinaryAdmissionRepository
+    from yuki.persistence.event_repository import EventLedgerRepository
 
     env, harness, worker, message = await _open_group_scene(
         database, tmp_path, FakeLLMProvider(), debounce=60

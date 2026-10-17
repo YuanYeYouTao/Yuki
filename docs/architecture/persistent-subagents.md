@@ -132,7 +132,7 @@ SDK child 使用原 plugin_invocation 来源，并核当前 live Host 的批准�
 真实缓存审计应使用隔离数据库与选定 Provider 的实际 API，不启动第二个生产 Bot，不发送 QQ 消息。
 生产网关、RSS、Manager 和持久环境必须在更新 Bot 后复核。
 
-部署前停止 Bot 并做一致性数据库及配置备份，使用目标镜像执行 `qq-ai-bot-cli init-db`，
+部署前停止 Bot 并做一致性数据库及配置备份，使用目标镜像执行 `yuki init-db`，
 升级至随包 Alembic head 后更新 Bot；0057 是工作者表的历史引入版本，不是当前升级终点。
 回退先关闭新派生并收拢任务，保留当前数据库、工作文件、执行回执和预算。
 恢复镜像必须兼容当前存储合同，不能用旧数据库覆盖上线后的写入；迁移 downgrade

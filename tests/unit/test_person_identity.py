@@ -10,29 +10,29 @@ from sqlalchemy import select, text
 from tests.conftest import make_settings
 from tests.unit.test_runtime_config_read_snapshot import _override, _owners
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.admin.control_resolution import ControlAccess
-from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel
-from qq_ai_bot.domain.memory_config import MemoryConfigScope
-from qq_ai_bot.identity.canonical_repository import create_person_binding, find_identity_binding
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.identity.event_author import project_event_author
-from qq_ai_bot.identity.person_identity import (
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.admin.control_resolution import ControlAccess
+from yuki.conversation.canonical_db_models import PersonActiveRouteModel
+from yuki.domain.memory_config import MemoryConfigScope
+from yuki.identity.canonical_repository import create_person_binding, find_identity_binding
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.identity.event_author import project_event_author
+from yuki.identity.person_identity import (
     current_person_id,
     merge_persons,
     person_family_ids,
     rename_person,
 )
-from qq_ai_bot.identity.person_state import (
+from yuki.identity.person_state import (
     load_canonical_aliases,
     load_canonical_profile,
     observe_canonical_person,
     set_canonical_person_enabled,
 )
-from qq_ai_bot.persistence.models import AdminOperationEventModel, RuntimeConfigOverrideModel
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.services.canonical_owners import require_live_person
+from yuki.persistence.models import AdminOperationEventModel, RuntimeConfigOverrideModel
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.services.canonical_owners import require_live_person
 
 NOW = datetime(2026, 10, 17, tzinfo=UTC)
 
@@ -191,8 +191,8 @@ async def test_rollback_requires_original_configuration_row_not_equal_value_vers
     await merge(database, a, b)
     # The public Admin command also records a normal command audit, distinct
     # from the domain's configuration movement facts.
-    from qq_ai_bot.client_api.identity import fingerprint
-    from qq_ai_bot.persistence.command_receipts import CommandReceiptRepository
+    from yuki.client_api.identity import fingerprint
+    from yuki.persistence.command_receipts import CommandReceiptRepository
 
     async with database.immediate_session() as session:
         await CommandReceiptRepository(database).record_personal_command(
@@ -329,7 +329,7 @@ async def test_root_disable_rejects_new_original_actor_ingress_and_qq_grant_stay
 async def test_rollback_human_follows_merge_but_independent_operator_does_not(
     database, control_actor
 ):
-    from qq_ai_bot.admin.models import ControlAuditRef
+    from yuki.admin.models import ControlAuditRef
 
     a, b, _, _ = await _owners(database)
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
@@ -365,7 +365,7 @@ async def test_rollback_human_follows_merge_but_independent_operator_does_not(
 
 
 async def test_legacy_opaque_operator_rollback_uses_original_principal_exactly(database):
-    from qq_ai_bot.admin.models import ControlAuditRef
+    from yuki.admin.models import ControlAuditRef
 
     a, b, _, _ = await _owners(database)
     operator_id = str(uuid4())

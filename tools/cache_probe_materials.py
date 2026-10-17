@@ -323,7 +323,7 @@ def database_inventory(connection: sqlite3.Connection) -> dict[str, Any]:
 
 
 def snapshot_controls(snapshot: Path, contexts: Path) -> dict[str, Any]:
-    from qq_ai_bot.persistence.repository_helpers import _event_record
+    from yuki.persistence.repository_helpers import _event_record
 
     with sqlite3.connect(snapshot.resolve().as_uri() + "?mode=ro", uri=True) as reader:
         reader.row_factory = sqlite3.Row
@@ -504,10 +504,10 @@ def freeze_sources(root: Path, output: Path) -> dict[str, Any]:
 async def serialized_bodies(request: Any) -> dict[str, Any]:
     import httpx
 
-    from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-    from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-    from qq_ai_bot.llm.gemini import GeminiProvider
-    from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
+    from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+    from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+    from yuki.llm.gemini import GeminiProvider
+    from yuki.llm.openai_compatible import OpenAICompatibleProvider
 
     def reject(_request):
         raise AssertionError("Offline composition cannot dispatch HTTP")
@@ -537,18 +537,18 @@ async def run_snapshot_arm(args) -> None:
     from pydantic import TypeAdapter
     from tests.conftest import build_harness, make_settings
 
-    from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-    from qq_ai_bot.domain.messages import ChatRequest, ChatTool, InboundMessage, SenderIdentity
-    from qq_ai_bot.domain.profiles import UserProfileSnapshot
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.persistence.database import Database
-    from qq_ai_bot.persistence.repository_helpers import _event_record
-    from qq_ai_bot.prompting.contributors import static_text
-    from qq_ai_bot.prompting.models import PromptChannel
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
-    from qq_ai_bot.services.prompt_composer import PromptComposer
-    from qq_ai_bot.services.turn_transcript import TranscriptRequest, validating_request
+    from yuki.conversation.scope import ConversationTurnSnapshot
+    from yuki.domain.conversations import ConversationScope, ScopeType
+    from yuki.domain.messages import ChatRequest, ChatTool, InboundMessage, SenderIdentity
+    from yuki.domain.profiles import UserProfileSnapshot
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.persistence.database import Database
+    from yuki.persistence.repository_helpers import _event_record
+    from yuki.prompting.contributors import static_text
+    from yuki.prompting.models import PromptChannel
+    from yuki.services.main_agent_contract import MainAgentContract
+    from yuki.services.prompt_composer import PromptComposer
+    from yuki.services.turn_transcript import TranscriptRequest, validating_request
 
     output = args.output / args.child
     output.mkdir()

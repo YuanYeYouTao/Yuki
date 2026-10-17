@@ -1544,7 +1544,7 @@ yuki_no_at_v3/MANIFEST.json
 
 | 项目 | 地址 | 在任务书中的定位 |
 |---|---|---|
-| Yuki-QQbot | https://github.com/YuanYeYouTao/Yuki-QQbot | 当前要改造的系统；代码讨论固定到前述提交 |
+| Yuki-QQbot | https://github.com/YuanYeYouTao/Yuki | 当前要改造的系统；代码讨论固定到前述提交 |
 | Cortico | https://github.com/Pal-AI-Lab/Cortico | 本会话讨论的全局循环观察对象，不采用其作为群内自主主架构 |
 | Hermes_Soul_patch | https://github.com/gejifeng/Hermes_Soul_patch | 理解情感、心跳与发送边界的背景材料 |
 | FAtiMA-Toolkit | https://github.com/GAIPS/FAtiMA-Toolkit | 理解评价、状态与决策分离的背景材料 |
@@ -1556,28 +1556,28 @@ yuki_no_at_v3/MANIFEST.json
 
 固定提交浏览入口：
 
-https://github.com/YuanYeYouTao/Yuki-QQbot/tree/a781e6853011fe741d350e95cc1325b34c508287
+https://github.com/YuanYeYouTao/Yuki/tree/a781e6853011fe741d350e95cc1325b34c508287
 
 | 路径 | 本次任务关注点 |
 |---|---|
-| `src/qq_ai_bot/services/autonomous_groups.py` | 旧本地判定的替换与观测复用 |
-| `src/qq_ai_bot/conversation/features.py` | 现有廉价特征复用，不重复统计代价 |
-| `src/qq_ai_bot/conversation/participation.py` | 旧策略保留作冻结对照 |
-| `src/qq_ai_bot/runtime/trigger.py` | 无真人消息的正式自主来源 |
-| `src/qq_ai_bot/runtime/authority.py` | 独立自主授权主体 |
-| `src/qq_ai_bot/services/main_agent_turns.py` | 新来源接入同一 Main Agent |
-| `src/qq_ai_bot/services/agent_runner.py` | 完整终态、自报分离与 `NO_REPLY` |
-| `src/qq_ai_bot/services/main_agent_backend.py` | 工具执行权限、回复目标、实际效果 |
-| `src/qq_ai_bot/services/context_assembler.py` | 当前人物为空时的合法上下文 |
-| `src/qq_ai_bot/services/prompt_composer.py` | 真实来源与权限声明，不继承最后发言者 |
-| `src/qq_ai_bot/prompting/compiler.py` | 稳定前缀、历史与本轮输入 |
-| `src/qq_ai_bot/prompting/serializer.py` | 不向历史最后 user 追加本轮动态状态 |
-| `src/qq_ai_bot/prompting/contracts.py` | 状态尾段不误入一般 Work 状态修改流程 |
-| `src/qq_ai_bot/workspace/short_state.py` | 与全局三槽短期记录保持区分 |
-| `src/qq_ai_bot/memory/attribution.py` | 真实暴露与既有归因流程 |
-| `src/qq_ai_bot/memory/self_reflection/` | 自主工具经历的读取与自省 |
-| `src/qq_ai_bot/persistence/models.py` | run、来源、检查点与收据迁移 |
-| `src/qq_ai_bot/mcp/repository.py` | 不依赖真人 ChatEvent 才能写工具记忆收据 |
+| `src/yuki/services/autonomous_groups.py` | 旧本地判定的替换与观测复用 |
+| `src/yuki/conversation/features.py` | 现有廉价特征复用，不重复统计代价 |
+| `src/yuki/conversation/participation.py` | 旧策略保留作冻结对照 |
+| `src/yuki/runtime/trigger.py` | 无真人消息的正式自主来源 |
+| `src/yuki/runtime/authority.py` | 独立自主授权主体 |
+| `src/yuki/services/main_agent_turns.py` | 新来源接入同一 Main Agent |
+| `src/yuki/services/agent_runner.py` | 完整终态、自报分离与 `NO_REPLY` |
+| `src/yuki/services/main_agent_backend.py` | 工具执行权限、回复目标、实际效果 |
+| `src/yuki/services/context_assembler.py` | 当前人物为空时的合法上下文 |
+| `src/yuki/services/prompt_composer.py` | 真实来源与权限声明，不继承最后发言者 |
+| `src/yuki/prompting/compiler.py` | 稳定前缀、历史与本轮输入 |
+| `src/yuki/prompting/serializer.py` | 不向历史最后 user 追加本轮动态状态 |
+| `src/yuki/prompting/contracts.py` | 状态尾段不误入一般 Work 状态修改流程 |
+| `src/yuki/workspace/short_state.py` | 与全局三槽短期记录保持区分 |
+| `src/yuki/memory/attribution.py` | 真实暴露与既有归因流程 |
+| `src/yuki/memory/self_reflection/` | 自主工具经历的读取与自省 |
+| `src/yuki/persistence/models.py` | run、来源、检查点与收据迁移 |
+| `src/yuki/mcp/repository.py` | 不依赖真人 ChatEvent 才能写工具记忆收据 |
 
 这些定位继承 S1/S2 的审计，不代表表中的新增接口已存在。T01 应在目标 commit 上逐项确认。
 

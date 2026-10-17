@@ -10,16 +10,16 @@ from tests.conftest import make_settings
 from tests.support.canonical_ingress import append_user_event
 from tests.support.model_executor import InjectedModelExecutor
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
-from qq_ai_bot.llm.base import LLMProvider, LLMUnavailableError
-from qq_ai_bot.memory.extraction import BatchMemoryExtractionOutput
-from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.persistence.models import ChatEventModel, MemoryJobModel
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import ChatRequest, ChatResponse
+from yuki.llm.base import LLMProvider, LLMUnavailableError
+from yuki.memory.extraction import BatchMemoryExtractionOutput
+from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
+from yuki.memory.service import MemoryFactService
+from yuki.memory.worker import MemoryWorker
+from yuki.persistence.models import ChatEventModel, MemoryJobModel
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.concurrency import ConcurrencyManager
 
 
 @pytest.mark.parametrize("kind", ["memory", "memory_batch"])
@@ -31,7 +31,7 @@ async def test_claim_prepares_without_writer_and_competing_claims_are_disjoint(
     repository = MemoryJobRepository(database)
     for identity in ids:
         assert await repository.enqueue(identity, "private:1001")
-    module = importlib.import_module("qq_ai_bot.memory.repository")
+    module = importlib.import_module("yuki.memory.repository")
 
     if stale_processing:
         async with database.sessions() as session, session.begin():
@@ -96,7 +96,7 @@ async def test_memory_claim_rechecks_reset_between_prepare_and_commit(
     identity = await append_user_event(database, message_id="reset-claim")
     repository = MemoryJobRepository(database)
     assert await repository.enqueue(identity, "private:1001")
-    module = importlib.import_module("qq_ai_bot.memory.repository")
+    module = importlib.import_module("yuki.memory.repository")
     original = module.commit_job_claims
 
     async def reset_then_commit(*args):

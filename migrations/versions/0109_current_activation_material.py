@@ -7,8 +7,8 @@ import sqlalchemy as sa
 from alembic import op
 from alembic.util import load_python_file
 
-from qq_ai_bot.conversation.projection_current_schema import PROJECTION_TRIGGERS_0109
-from qq_ai_bot.conversation.projection_material_schema import PROJECTION_TRIGGERS_0108
+from yuki.conversation.projection_current_schema import PROJECTION_TRIGGERS_0109
+from yuki.conversation.projection_material_schema import PROJECTION_TRIGGERS_0108
 
 revision = "0109"
 down_revision = "0108"

@@ -33,9 +33,9 @@ docker compose --profile napcat --profile snowluma --profile speech ps --all
 
 把以下文件作为一组复制到部署目录之外，并记录 size、SHA-256 与“缺失”项：
 
-- `data/qq_ai_bot.db`
-- `data/qq_ai_bot.db-wal`
-- `data/qq_ai_bot.db-shm`
+- `data/yuki.db`
+- `data/yuki.db-wal`
+- `data/yuki.db-shm`
 - `.env`、`config/`、`.mcp.json`、Compose 文件和镜像 digest
 - Plugin KV、GitHub pending/inflight、`data/plugin_artifacts/` 与对应未过期媒体资产
 - 当前 `plugins/github-monitor/` 代码与 `plugin.toml`
@@ -104,10 +104,10 @@ mv "plugins/.github-monitor-3.8.1-staged-$stamp" plugins/github-monitor
 在隔离的部署副本中加载 3.8.1 Bot 镜像，但不要接入 QQ 或启动后台 worker。依次执行：
 
 ```bash
-YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
-YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot \
+YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint yuki bot init-db
+YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint yuki bot \
   conversation recount-uncovered
-YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot \
+YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint yuki bot \
   conversation recount-uncovered --check
 YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint python bot \
   /app/plugins/github-monitor/doctor.py --apply-legacy-import
@@ -123,7 +123,7 @@ recount 只重算 canonical Conversation 的 `uncovered_event_count` 与
 ```bash
 YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint python bot \
   /app/plugins/github-monitor/doctor.py
-YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot \
+YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint yuki bot \
   plugin doctor github-monitor
 docker compose config --quiet
 ```
@@ -135,7 +135,7 @@ docker compose config --quiet
 rehearsal 完全通过后，保持生产 Bot 与 Provider 停止，对 live 数据执行同一命令：
 
 ```bash
-YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot \
+YUKI_VERSION=3.8.1 docker compose run --rm --no-deps --entrypoint yuki bot \
   conversation recount-uncovered
 ```
 

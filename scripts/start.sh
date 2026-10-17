@@ -19,12 +19,12 @@ case ",${COMPOSE_PROFILES:-}," in
     case "$snowluma_gid" in
         ''|*[!0-9]*) printf '%s\n' "Invalid SnowLuma GID" >&2; exit 1 ;;
     esac
-    qq-ai-bot-cli render-snowluma-config --output "$SNOWLUMA_CONFIG_OUTPUT"
+    yuki render-snowluma-config --output "$SNOWLUMA_CONFIG_OUTPUT"
     chown -R "$snowluma_uid:$snowluma_gid" /app/snowluma-data/config
     chmod 600 "$SNOWLUMA_CONFIG_OUTPUT"
     fi
     ;;
 esac
 
-setpriv --reuid=10001 --regid=10001 --init-groups qq-ai-bot-cli init-db
-exec setpriv --reuid=10001 --regid=10001 --init-groups qq-ai-bot
+setpriv --reuid=10001 --regid=10001 --init-groups yuki init-db
+exec setpriv --reuid=10001 --regid=10001 --init-groups yuki-bot

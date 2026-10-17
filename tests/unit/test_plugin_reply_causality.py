@@ -6,12 +6,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.domain.conversations import ConversationScope
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.persistence.database import Database
+from yuki.persistence.models import ChatEventModel
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 def _writer(database: Database) -> ScopedEventLedgerUnitOfWork:
@@ -123,7 +123,7 @@ async def test_raw_reply_hydrates_cause_metadata_after_source_is_covered(
         caused_by_event_id=source_event_id,
     )
 
-    from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
+    from yuki.conversation.scope_repository import ConversationScopeRepository
 
     snapshot = await ConversationScopeRepository(database).load_prompt_snapshot(
         ConversationScope.private("8000", "1001")

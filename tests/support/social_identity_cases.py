@@ -8,18 +8,18 @@ import pytest
 from sqlalchemy import select
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from qq_ai_bot.conversation.canonical_db_models import SpaceActiveRouteModel
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
-from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
-from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.social.models import SocialError
-from qq_ai_bot.social.service import SocialContext, SocialService
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.conversation.canonical_db_models import SpaceActiveRouteModel
+from yuki.domain.conversations import ConversationScope
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
+from yuki.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
+from yuki.identity.routing import PresenceRouter, RouteSendError
+from yuki.persistence.models import ChatEventModel
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.social.models import SocialError
+from yuki.social.service import SocialContext, SocialService
+from yuki.workspace.store import WorkspaceStore
 
 
 class Bot:
@@ -307,9 +307,9 @@ async def test_real_mentions_preserve_segments_and_replay(social_env, attachment
 async def current_speaker_mention(env):
     from tests.support.commands_and_chat_helpers import inbound
 
-    from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-    from qq_ai_bot.services.agent_tools import ToolRuntime
-    from qq_ai_bot.social.agent_adapter import invoke_social
+    from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+    from yuki.services.agent_tools import ToolRuntime
+    from yuki.social.agent_adapter import invoke_social
 
     async with env.db.sessions() as session:
         event_id = await session.scalar(select(ChatEventModel.id))

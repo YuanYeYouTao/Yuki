@@ -72,9 +72,9 @@ docker compose up -d --no-deps --force-recreate bot
 也可以在仓库根目录执行：
 
 ```bash
-docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin inspect github-monitor
-docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin approve github-monitor --permission background.worker --permission network.http.allowlisted --permission storage.private --permission plugin.config.read --permission plugin.config.write --permission command.register --permission notification.publish --permission notification.agent --permission media.artifact.create
-docker compose exec -u 10001:10001 bot qq-ai-bot-cli plugin enable github-monitor
+docker compose exec -u 10001:10001 bot yuki plugin inspect github-monitor
+docker compose exec -u 10001:10001 bot yuki plugin approve github-monitor --permission background.worker --permission network.http.allowlisted --permission storage.private --permission plugin.config.read --permission plugin.config.write --permission command.register --permission notification.publish --permission notification.agent --permission media.artifact.create
+docker compose exec -u 10001:10001 bot yuki plugin enable github-monitor
 ```
 
 正常状态应为 `running`，且 `failure_count` 为 `0`。插件源码或 Manifest 发生变化时，Host
@@ -213,7 +213,7 @@ docker compose run --rm --no-deps --entrypoint python bot \
 legacy 行、不推进 cursor、不 rebaseline。只读检查使用 SQLite `mode=ro`，不会因误配路径创建空库。
 任一 invalid/legacy-shadow state、未完成 activation、pending/inflight、gap、CAS/receipt conflict、
 活动诊断、媒体过期或 Host pending 都会返回非零，禁止恢复流量。普通
-`qq-ai-bot-cli plugin doctor github-monitor` 只检查安装与 Manifest，不能替代这个队列
+`yuki plugin doctor github-monitor` 只检查安装与 Manifest，不能替代这个队列
 doctor。
 
 ## 端到端测试
@@ -266,7 +266,7 @@ doctor。
 
 ## 开发验证
 
-使用 `qq-ai-bot-cli plugin configuration` 读取配置，`plugin configure` 按原 revision
+使用 `yuki plugin configuration` 读取配置，`plugin configure` 按原 revision
 保存；使用 `plugin observe` 查看仓库 queue/cursor/诊断及 Host 通知 outbox。配置来自已批准
 注册的 schema，修改保存原 Host 配置表，插件按自身读取逻辑生效。只读状态使用 SDK 的
 `observe`，不访问 GitHub、不轮询或封口，不返回 prepared 通知内容。队列未建立或状态损坏
@@ -279,7 +279,7 @@ doctor。
 ```bash
 uv run ruff check plugins/github-monitor
 uv run pytest -q plugins/github-monitor/tests
-uv run qq-ai-bot-cli plugin test plugins/github-monitor
+uv run yuki plugin test plugins/github-monitor
 ```
 
 插件契约测试使用 Fake Host，不需要真实 GitHub Token，也不会访问网络。

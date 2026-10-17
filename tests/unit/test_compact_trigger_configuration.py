@@ -5,9 +5,9 @@ from pydantic import ValidationError
 from tests.conftest import make_settings
 from tests.unit.test_runtime_config_read_snapshot import _override, _owners
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.admin.models import ConfigApplyMode
-from qq_ai_bot.config import Settings
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.admin.models import ConfigApplyMode
+from yuki.config import Settings
 
 
 @pytest.mark.parametrize("value", [None, 1, 96000, 2097153])

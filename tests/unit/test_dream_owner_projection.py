@@ -9,19 +9,19 @@ from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_dream import _empty_dream_statistics, _services
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.dream.db_models import (
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.conversations import ScopeType
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.dream.db_models import (
     MemoryDreamClusterPreviewModel,
     MemoryDreamOperationModel,
 )
-from qq_ai_bot.memory.dream.models import DreamAction, DreamOperationType, DreamOutput, DreamRunMode
-from qq_ai_bot.memory.dream.repository import fact_signature
-from qq_ai_bot.memory.dream.service import DreamService
-from qq_ai_bot.memory.embedding.fake import FakeEmbeddingProvider
-from qq_ai_bot.memory.embedding.runtime import MemoryEmbeddingRuntime
-from qq_ai_bot.memory.enums import (
+from yuki.memory.dream.models import DreamAction, DreamOperationType, DreamOutput, DreamRunMode
+from yuki.memory.dream.repository import fact_signature
+from yuki.memory.dream.service import DreamService
+from yuki.memory.embedding.fake import FakeEmbeddingProvider
+from yuki.memory.embedding.runtime import MemoryEmbeddingRuntime
+from yuki.memory.enums import (
     MemoryAuthority,
     MemoryEvidenceRelation,
     MemoryKind,
@@ -29,11 +29,11 @@ from qq_ai_bot.memory.enums import (
     MemorySourceType,
     SelfMemoryVisibility,
 )
-from qq_ai_bot.memory.fts import SQLiteMemoryFTSIndex
-from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
-from qq_ai_bot.memory.retrieval import MemoryRetriever
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.memory.fts import SQLiteMemoryFTSIndex
+from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
+from yuki.memory.retrieval import MemoryRetriever
+from yuki.persistence.database import Database
+from yuki.services.concurrency import ConcurrencyManager
 
 
 def _service(database, provider):

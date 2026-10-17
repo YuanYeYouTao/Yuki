@@ -6,13 +6,13 @@ import pytest
 from sqlalchemy import select
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
-from qq_ai_bot.services.execution_sources import recover_source
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.sandbox.task_repository import SandboxTaskRepository
+from yuki.services.execution_sources import recover_source
 
 
 @pytest.mark.asyncio
@@ -60,7 +60,7 @@ async def test_sandbox_self_source_keeps_original_execution_without_message_or_w
 
     from tests.unit.test_self_initiative_runtime import self_source
 
-    from qq_ai_bot.services.execution_sources import recover_execution_source
+    from yuki.services.execution_sources import recover_execution_source
 
     source, _, _ = await self_source(database)
     original_execution = f"initiative:{source['initiative_run_id']}"

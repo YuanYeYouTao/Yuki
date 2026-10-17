@@ -17,9 +17,9 @@ from typing import Any
 import httpx
 from pydantic import TypeAdapter
 
-from qq_ai_bot.domain.messages import ChatRequest
-from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
-from qq_ai_bot.model_runtime.pool import ModelClientPool
+from yuki.domain.messages import ChatRequest
+from yuki.model_runtime.models import ModelProfile, ModelProtocol
+from yuki.model_runtime.pool import ModelClientPool
 
 
 def route_from_stdin(stream: Any) -> tuple[ModelProfile, str]:

@@ -10,17 +10,17 @@ from sqlalchemy import delete, select
 from tests.support.social_identity_cases import social_env
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from qq_ai_bot.admin.models import ReplyRuntimeConfig
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.emoji.delivery import EmojiDeliveryService
-from qq_ai_bot.emoji.models import EmojiSelectionResult
-from qq_ai_bot.identity.canonical_repository import ensure_presence, ensure_space
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.social.agent_adapter import invoke_social
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.social.models import SocialError
+from yuki.admin.models import ReplyRuntimeConfig
+from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+from yuki.domain.conversations import ConversationScope
+from yuki.emoji.delivery import EmojiDeliveryService
+from yuki.emoji.models import EmojiSelectionResult
+from yuki.identity.canonical_repository import ensure_presence, ensure_space
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
+from yuki.social.agent_adapter import invoke_social
+from yuki.social.db_models import SocialOperationModel
+from yuki.social.models import SocialError
 
 
 @pytest.mark.asyncio
@@ -198,8 +198,8 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
         group_id="20001",
         creator_user_id="10001",
     )
-    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-    from qq_ai_bot.identity.canonical_repository import find_identity_binding
+    from yuki.conversation.hydrate import ensure_canonical_conversation
+    from yuki.identity.canonical_repository import find_identity_binding
 
     async with database.immediate_session() as session:
         binding = await find_identity_binding(session, "10001")
@@ -320,10 +320,10 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
 async def test_work_social_delivery_passes_seventeenth_message_and_split_without_replay(
     database, tmp_path, monkeypatch
 ):
-    from qq_ai_bot.runtime.work_activation import current_work_control
-    from qq_ai_bot.runtime.work_control import WorkControl
-    from qq_ai_bot.runtime.work_repository import WorkRepository
-    from qq_ai_bot.services.message_splitter import OutboundMessageSplitter
+    from yuki.runtime.work_activation import current_work_control
+    from yuki.runtime.work_control import WorkControl
+    from yuki.runtime.work_repository import WorkRepository
+    from yuki.services.message_splitter import OutboundMessageSplitter
 
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
@@ -397,15 +397,15 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
 
 @pytest.mark.parametrize("target_kind", ["space", "person"])
 async def test_emoji_usage_follows_route_instead_of_inbound_scope(database, tmp_path, target_kind):
-    from qq_ai_bot.domain.conversations import ScopeType
-    from qq_ai_bot.domain.messages import (
+    from yuki.domain.conversations import ScopeType
+    from yuki.domain.messages import (
         AttachmentKind,
         InboundMessage,
         OutboundMedia,
         OutboundMessage,
         SenderIdentity,
     )
-    from qq_ai_bot.emoji.models import EmojiPreparationStatus
+    from yuki.emoji.models import EmojiPreparationStatus
 
     env = await social_env(database, tmp_path)
     await env.router.cas_takeover_person(env.person)
@@ -466,8 +466,8 @@ async def test_emoji_usage_follows_route_instead_of_inbound_scope(database, tmp_
 async def test_emoji_usage_resolves_canonical_owners_before_writer(database, tmp_path):
     from sqlalchemy import event
 
-    from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiUsageEventModel
-    from qq_ai_bot.emoji.repository import EmojiRepository
+    from yuki.emoji.db_models import EmojiAssetModel, EmojiUsageEventModel
+    from yuki.emoji.repository import EmojiRepository
 
     env = await social_env(database, tmp_path)
     now = datetime.now(UTC)

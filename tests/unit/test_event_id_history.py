@@ -6,12 +6,12 @@ import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.identity.canonical_repository import ensure_person, ensure_presence
+from yuki.persistence.database import Database
+from yuki.persistence.models import ChatEventModel
+from yuki.persistence.repositories import EventLedgerRepository
 
 
 @pytest.mark.asyncio

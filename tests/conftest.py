@@ -10,17 +10,18 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-from qq_ai_bot.domain.messages import OutboundMessage, OutboundSendReceipt
-from qq_ai_bot.llm.base import LLMProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repositories import (
+from tests.support.model_executor import require_model_executor
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.config import Settings
+from yuki.conversation.scope_repository import ConversationScopeRepository
+from yuki.domain.messages import OutboundMessage, OutboundSendReceipt
+from yuki.llm.base import LLMProvider
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
+from yuki.memory.service import MemoryFactService
+from yuki.persistence.database import Database
+from yuki.persistence.repositories import (
     EmojiDescriptionRepository,
     EventLedgerRepository,
     GroupSettingsRepository,
@@ -28,23 +29,22 @@ from qq_ai_bot.persistence.repositories import (
     PeopleRepository,
     PrivateUserSettingsRepository,
 )
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
-from qq_ai_bot.services.agent_tools import AgentToolService
-from qq_ai_bot.services.chat import ChatService
-from qq_ai_bot.services.command_service import CommandService
-from qq_ai_bot.services.concurrency import ConcurrencyManager
-from qq_ai_bot.services.effect_gate import ConversationEffectGate
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
-from qq_ai_bot.services.media_resolver import MediaResolver
-from qq_ai_bot.services.processor import DirectPluginCommandResolver, MessageProcessor
-from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
-from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
-from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
-from qq_ai_bot.services.vision_service import VisionService
-from qq_ai_bot.vision.base import VisionProvider
-from qq_ai_bot.web.base import WebSearchProvider
-from tests.support.model_executor import require_model_executor
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.persistence.turn_observations import RuntimeTurnObservationRepository
+from yuki.services.agent_tools import AgentToolService
+from yuki.services.chat import ChatService
+from yuki.services.command_service import CommandService
+from yuki.services.concurrency import ConcurrencyManager
+from yuki.services.effect_gate import ConversationEffectGate
+from yuki.services.image_preprocessor import ImagePreprocessor
+from yuki.services.media_resolver import MediaResolver
+from yuki.services.processor import DirectPluginCommandResolver, MessageProcessor
+from yuki.services.rate_limit import SlidingWindowRateLimiter
+from yuki.services.turn_coordinator import ConversationTurnCoordinator
+from yuki.services.vision_rate_limit import VisionRateLimiter
+from yuki.services.vision_service import VisionService
+from yuki.vision.base import VisionProvider
+from yuki.web.base import WebSearchProvider
 
 
 class MemorySender:
@@ -113,7 +113,7 @@ def build_harness(
     command_service: CommandService | None = None,
     direct_plugin_commands: DirectPluginCommandResolver | None = None,
 ) -> Harness:
-    from qq_ai_bot.identity.write_settings import configure_identity_write_settings
+    from yuki.identity.write_settings import configure_identity_write_settings
 
     configure_identity_write_settings(settings)
     groups = GroupSettingsRepository(database)
@@ -229,7 +229,7 @@ def build_harness(
 
 @pytest.fixture(autouse=True)
 def _identity_write_settings_isolation() -> Iterator[None]:
-    from qq_ai_bot.identity.write_settings import (
+    from yuki.identity.write_settings import (
         IdentityWriteSettings,
         configure_identity_write_settings,
         reset_identity_write_settings,
@@ -245,7 +245,7 @@ def _identity_write_settings_isolation() -> Iterator[None]:
 
 @pytest_asyncio.fixture
 async def database(tmp_path: Path) -> Database:
-    from qq_ai_bot.identity.write_settings import (
+    from yuki.identity.write_settings import (
         IdentityWriteSettings,
         configure_identity_write_settings,
         reset_identity_write_settings,
@@ -254,7 +254,7 @@ async def database(tmp_path: Path) -> Database:
     path = (tmp_path / "test.db").as_posix()
     db = Database(f"sqlite+aiosqlite:///{path}")
     await db.create_schema()
-    from qq_ai_bot.identity.canonical_repository import (
+    from yuki.identity.canonical_repository import (
         create_presence,
         ensure_person,
         ensure_presence,

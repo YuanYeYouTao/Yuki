@@ -16,22 +16,22 @@ from tests.support.legacy_conversation_seed import (
 )
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel
-from qq_ai_bot.automation.repository import AutomationRepository
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_space
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.automation.authority import DelegatedAuthority, PermissionLevel
+from yuki.automation.repository import AutomationRepository
+from yuki.identity.canonical_repository import ensure_person, ensure_space
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     AutomationStepRunModel,
     AutomationVersionModel,
     RuntimeConfigOverrideModel,
 )
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_schema import children
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_recovery_schema import invocations
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
-from qq_ai_bot.runtime.work_tree import budget_root_id
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_schema import children
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_recovery_schema import invocations
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects, journal, work
+from yuki.runtime.work_tree import budget_root_id
 
 # Historical 0087 schema belongs to this upgrade fixture, not live runtime metadata.
 automation_budgets = Table(

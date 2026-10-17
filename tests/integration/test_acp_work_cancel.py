@@ -11,10 +11,12 @@ from tests.integration.test_acp_runtime_integration import acp_runtime as acp_ru
 from tests.integration.test_acp_runtime_integration import new_session, selected, settled
 from tests.unit.test_client_api import bearer
 
-import qq_ai_bot.client_api.prompts as prompt_service
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.gateway.providers.app.social import AppSocialOperations
-from qq_ai_bot.runtime.work_schema_v1 import work
+import yuki.client_api.prompts as prompt_service
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.gateway.providers.app.social import AppSocialOperations
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import work
 
 
 def scripted(steps):
@@ -65,8 +67,9 @@ async def prepare_resumable_work(env):
 
 
 @pytest.mark.parametrize("cancel_waiter", [False, True])
-async def test_cancel_joins_original_scheduler_work_and_flushes_already_claimed_send(
-    acp_runtime, monkeypatch, cancel_waiter
+@pytest.mark.parametrize("child_worker", [False, True])
+async def test_cancel_joins_original_work_tree_and_flushes_already_claimed_send(
+    acp_runtime, database, monkeypatch, cancel_waiter, child_worker
 ):
     env = acp_runtime
     session, request_id, work_id = await prepare_resumable_work(env)
@@ -94,12 +97,27 @@ async def test_cancel_joins_original_scheduler_work_and_flushes_already_claimed_
 
     monkeypatch.setattr(prompt_service, "manage_work", mark_cancel)
     monkeypatch.setattr(AsyncSession, "commit", committed)
-    owners = await env.app.work_scheduler.dispatch_once()
+    execution_id = work_id
+    if child_worker:
+        repository = WorkRepository(database)
+        parent = await repository.get(work_id)
+        lease = await repository.acquire(parent["conversation_id"], parent["generation"])
+        execution_id = await SubagentRepository(repository).start(
+            lease, work_id, str(uuid4()), {"goal": "Send the original ACP child result"}
+        )
+        await repository.release(lease)
+        await env.app.subagent_execution.prepare()
+        owners = [asyncio.create_task(env.app.subagent_execution.run(execution_id))]
+    else:
+        owners = await env.app.work_scheduler.dispatch_once()
     assert len(owners) == 1
     cancellation = None
     try:
         async with asyncio.timeout(15):
             await claimed.wait()
+            if child_worker:
+                assert not env.app.runtime.bindings.completions(work_id)
+                assert env.app.runtime.bindings.completions(execution_id)
             cancellation = asyncio.create_task(
                 env.http.post(
                     f"/client/v1/acp/sessions/{session['session_id']}/requests/{request_id}/cancel",
@@ -116,7 +134,7 @@ async def test_cancel_joins_original_scheduler_work_and_flushes_already_claimed_
             assert facts["work"]["active"] is True
             assert not cancellation.done()
             assert not facts["result_event_ids"]
-            completions = env.app.runtime.bindings.completions(work_id)
+            completions = env.app.runtime.bindings.completions(execution_id)
             if cancel_waiter:
                 cancellation.cancel()
             assert all(not completed.done() for completed in completions)
@@ -138,6 +156,7 @@ async def test_cancel_joins_original_scheduler_work_and_flushes_already_claimed_
             await asyncio.gather(*owners)
             assert all(completed.done() and not completed.cancelled() for completed in completions)
             assert not env.app.runtime.bindings.completions(work_id)
+            assert not env.app.runtime.bindings.completions(execution_id)
             repeated = await env.http.post(
                 f"/client/v1/acp/sessions/{session['session_id']}/requests/{request_id}/cancel",
                 headers=bearer(env.device["token"]),

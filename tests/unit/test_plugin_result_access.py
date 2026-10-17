@@ -12,19 +12,19 @@ from tests.support.background_authority import approve_background_plugin
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel, ToolArtifactModel
-from qq_ai_bot.runtime.effect_outcomes import ResultCapture, current_result_capture
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.tool_results.access import ArtifactAccess
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.capabilities.results import ToolExecutionResult, ToolResultBudgeter
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel, ToolArtifactModel
+from yuki.runtime.effect_outcomes import ResultCapture, current_result_capture
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.trigger import ExternalEventTurnTrigger
+from yuki.services.agent_tools import ToolRuntime
+from yuki.social.db_models import SocialOperationModel
+from yuki.tool_results.access import ArtifactAccess
+from yuki.tool_results.artifacts import ToolArtifactRepository
 
 
 @pytest.mark.parametrize(
@@ -237,10 +237,10 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
 ):
     from tests.support.automation_unified_delivery_helpers import setup_run
 
-    from qq_ai_bot.automation.models import RunStatus
-    from qq_ai_bot.memory.enums import MemoryKind, MemoryScopeType, MemorySourceType
-    from qq_ai_bot.memory.models import MemoryFactCreate
-    from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+    from yuki.automation.models import RunStatus
+    from yuki.memory.enums import MemoryKind, MemoryScopeType, MemorySourceType
+    from yuki.memory.models import MemoryFactCreate
+    from yuki.tool_results.artifacts import ToolArtifactRepository
 
     case = await setup_run(
         database, tmp_path, delivery="none", mode="silent", work_enabled=work_enabled
@@ -295,7 +295,7 @@ async def test_scheduled_main_does_not_redeclare_retired_raw_tool_for_admin(
 ):
     from tests.support.automation_unified_delivery_helpers import setup_run
 
-    from qq_ai_bot.automation.models import RunStatus
+    from yuki.automation.models import RunStatus
 
     case = await setup_run(database, tmp_path, delivery="none", mode="silent", superusers_csv="")
     if promoted:

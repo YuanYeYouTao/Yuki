@@ -6,8 +6,8 @@ import pytest
 from tests.support.work_session import invoke_tool
 from tests.unit.test_tool_effect_audit import active_work
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.domain.messages import ToolCall, ToolFunction
 
 
 @pytest.mark.parametrize("read_only", [False, True])

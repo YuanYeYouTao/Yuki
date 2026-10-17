@@ -11,33 +11,33 @@ from sqlalchemy import select
 from tests.support.gateway import builtin_registry
 from tests.support.user_profiles_helpers import observe_members
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.identity import AuthorKind
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.domain.conversations import ScopeType
+from yuki.domain.identity import AuthorKind
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.identity.canonical_repository import (
     ensure_person,
     find_identity_binding,
     set_identity_failpoint,
 )
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.identity.canonical_repository import (
     ensure_presence as ensure_v2_presence,
 )
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.identity.canonical_repository import (
     ensure_space as ensure_v2_space,
 )
-from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
-from qq_ai_bot.identity.db_models import IdentityBindingModel
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.identity.ingress import CanonicalIngressResolver, overlay_yuki_signals
-from qq_ai_bot.identity.routing import PresenceRouter
-from qq_ai_bot.identity.write_settings import (
+from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
+from yuki.identity.db_models import IdentityBindingModel
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.identity.ingress import CanonicalIngressResolver, overlay_yuki_signals
+from yuki.identity.routing import PresenceRouter
+from yuki.identity.write_settings import (
     IdentityWriteSettings,
     configure_identity_write_settings,
 )
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel
+from yuki.persistence.database import Database
+from yuki.persistence.models import ChatEventModel
 
 _NOW = datetime(2026, 8, 24, tzinfo=UTC)
 
@@ -58,7 +58,7 @@ class _LagrangeProvider:
         return None
 
     def project_inbound(self, message, yuki_ids):
-        from qq_ai_bot.adapters.onebot.normalizer import reproject_inbound_mentions
+        from yuki.adapters.onebot.normalizer import reproject_inbound_mentions
 
         return reproject_inbound_mentions(message, yuki_ids)
 
@@ -243,7 +243,7 @@ async def test_external_bot_does_not_create_person(database: Database) -> None:
     assert admitted.author_person_id is None
     assert admitted.conversation_id is None
     async with database.sessions() as session:
-        from qq_ai_bot.identity.db_models import CanonicalPersonModel
+        from yuki.identity.db_models import CanonicalPersonModel
 
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "6666")
@@ -257,9 +257,9 @@ async def test_external_bot_does_not_create_person(database: Database) -> None:
 async def test_private_reply_keeps_original_connection_without_resending(failure: str) -> None:
     from unittest.mock import AsyncMock
 
-    from qq_ai_bot.adapters.onebot.sender import OneBotSender, OneBotSendError
-    from qq_ai_bot.domain.messages import OutboundMessage
-    from qq_ai_bot.gateway.registry import configure_process_registry
+    from yuki.adapters.onebot.sender import OneBotSender, OneBotSendError
+    from yuki.domain.messages import OutboundMessage
+    from yuki.gateway.registry import configure_process_registry
 
     @dataclass
     class SendingBot(_Bot):
@@ -297,7 +297,7 @@ async def test_private_reply_keeps_original_connection_without_resending(failure
 
 
 def test_any_presence_mention_and_reply_overlay() -> None:
-    from qq_ai_bot.services.policies import replies_to_bot
+    from yuki.services.policies import replies_to_bot
 
     message = _message(
         message_id="m1",
@@ -352,8 +352,8 @@ async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
 async def test_retired_provider_provenance_remains_readable_without_recreating_event(
     database: Database,
 ) -> None:
-    from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-    from qq_ai_bot.persistence.repositories import EventLedgerRepository
+    from yuki.conversation.scope_repository import ConversationScopeRepository
+    from yuki.persistence.repositories import EventLedgerRepository
 
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
@@ -388,7 +388,7 @@ async def test_retired_provider_provenance_remains_readable_without_recreating_e
 
 @pytest.mark.asyncio
 async def test_unknown_group_and_unknown_presence_fail_closed(database: Database) -> None:
-    from qq_ai_bot.identity.db_models import CanonicalPersonModel, SpaceBindingModel
+    from yuki.identity.db_models import CanonicalPersonModel, SpaceBindingModel
 
     registry, resolver, _uow = await _stack(database)
     bot = _Bot("8888")
@@ -484,8 +484,8 @@ async def test_canonical_ingress_race_rereads_winner(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
-    from qq_ai_bot.identity import canonical_uow as ingress_uow
+    from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
+    from yuki.identity import canonical_uow as ingress_uow
 
     uow, admitted = await _admit_private(database, "ingress-race-1", text="race-winner")
     first = await uow.append_inbound(admitted.message, admitted)
@@ -521,7 +521,7 @@ async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
 ) -> None:
     from uuid import uuid4
 
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
+    from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
 
     uow, admitted = await _admit_private(database, "ingress-forge-1", text="kept")
     first = await uow.append_inbound(admitted.message, admitted)
@@ -533,7 +533,7 @@ async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
         await uow.append_inbound(admitted.message, admitted)
     assert dangling.value.category == "receipt_conflict"
     async with database.sessions() as session, session.begin():
-        from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+        from yuki.conversation.hydrate import ensure_canonical_conversation
 
         receipt = await session.scalar(select(CanonicalEventReceiptModel))
         assert receipt is not None
@@ -826,7 +826,7 @@ async def test_gateway_probe_during_pre_admission_does_not_hold_sqlite_writer(
 async def test_admitted_group_message_survives_disconnect_but_not_route_change(
     database: Database, route_state: str
 ) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import SpaceBindingIngestRouteModel
+    from yuki.conversation.canonical_db_models import SpaceBindingIngestRouteModel
 
     registry, resolver, uow = await _stack(database)
     async with database.sessions() as session, session.begin():
@@ -864,7 +864,7 @@ async def test_admitted_group_message_survives_disconnect_but_not_route_change(
 async def test_admitted_group_new_survives_socket_disconnect_but_not_route_pause(
     database: Database, route_paused: bool
 ) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import SpaceBindingIngestRouteModel
+    from yuki.conversation.canonical_db_models import SpaceBindingIngestRouteModel
 
     registry, resolver, uow = await _stack(database)
     async with database.sessions() as session, session.begin():
@@ -932,7 +932,7 @@ async def test_internal_reply_reference_rejects_a_foreign_conversation(database:
 async def test_person_references_keep_all_people_and_the_first_mentioned_binding(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.event_author import project_event_author, project_event_authors
+    from yuki.identity.event_author import project_event_author, project_event_authors
 
     user_ids = tuple(str(61001 + index) for index in range(8))
     await observe_members(database, user_ids)
@@ -995,8 +995,8 @@ async def test_person_references_keep_all_people_and_the_first_mentioned_binding
 async def test_reference_projection_rejects_disabled_owner_and_presence_person_collision(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.db_models import CanonicalPersonModel, PresenceModel
-    from qq_ai_bot.identity.event_author import project_event_authors
+    from yuki.identity.db_models import CanonicalPersonModel, PresenceModel
+    from yuki.identity.event_author import project_event_authors
 
     async with database.immediate_session() as session:
         disabled_id = await ensure_person(session, "61010", now=_NOW)
@@ -1035,8 +1035,8 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
 ) -> None:
     from sqlalchemy import delete
 
-    from qq_ai_bot.identity.db_models import CanonicalPersonModel, SpaceBindingModel
-    from qq_ai_bot.persistence.models import MembershipModel, PersonAliasModel
+    from yuki.identity.db_models import CanonicalPersonModel, SpaceBindingModel
+    from yuki.persistence.models import MembershipModel, PersonAliasModel
 
     people = await observe_members(database, ("61021", "61022", "61023"))
     async with database.immediate_session() as session:

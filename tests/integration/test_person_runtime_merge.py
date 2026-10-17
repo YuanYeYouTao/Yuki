@@ -18,17 +18,17 @@ from tests.unit.test_client_api import bearer
 from tests.unit.test_client_works import owner
 from tests.unit.test_personal_entry_contract import admin as admin
 
-from qq_ai_bot.client_api.identity import ClientIdentityService
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
-from qq_ai_bot.identity.db_models import CanonicalPersonModel
-from qq_ai_bot.identity.person_identity import merge_persons, rename_person
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.work_budget import charge
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import journal, work
+from yuki.client_api.identity import ClientIdentityService
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.identity.db_models import CanonicalPersonModel
+from yuki.identity.person_identity import merge_persons, rename_person
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.work_budget import charge
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import journal, work
 
 
 @pytest.mark.parametrize("change", ["merge", "rename", "merge_disabled"])

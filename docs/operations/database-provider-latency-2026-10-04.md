@@ -1,7 +1,7 @@
 # 数据库与 Provider 回复长尾第三轮检查和修复
 
 日期：2026-10-04；展示时间均为 Asia/Taipei。第三轮
-[PR #239](https://github.com/YuanYeYouTao/Yuki-QQbot/pull/239) 已合并并部署
+[PR #239](https://github.com/YuanYeYouTao/Yuki/pull/239) 已合并并部署
 `180974534a43fff7c1b56ef2c25dd4942bc6d7b1`，Bot 于 20:23:20 启动。
 正式交付证据保存在生产备份目录
 `/opt/yuki-qqbot/backups/pre-database-provider-latency-20261004T121753Z` 内的

@@ -15,19 +15,19 @@ from tests.support.gateway import builtin_registry
 from tests.support.runtime_execution import make_work_resumer
 from tests.unit.test_migration_0119 import _seed_0118
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.runtime.work_journal import encode_transcript
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.execution_sources import recover_source
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.social.service import SocialContext, SocialService
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
+from yuki.domain.tool_actor import ToolActor
+from yuki.identity.routing import PresenceRouter, RouteSendError
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.database import Database
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.runtime.work_journal import encode_transcript
+from yuki.runtime.work_repository import WorkRepository
+from yuki.services.execution_sources import recover_source
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.social.service import SocialContext, SocialService
 
 
 class Bot:
@@ -337,19 +337,19 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
                 and event.ingress_presence_id == second_presence
             )
             assert len(bot_b.calls) == 1 and bot_a.calls == []
-            from qq_ai_bot.plugin_host.background_turns import PluginBackgroundTurnWorker
-            from qq_ai_bot.plugin_host.db_models import (
+            from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
+            from yuki.plugin_host.db_models import (
                 PluginBackgroundTargetGrantModel,
                 PluginBackgroundTurnJobModel,
                 PluginNotificationOutboxModel,
             )
-            from qq_ai_bot.plugin_host.media_artifacts import PluginMediaArtifactStore
-            from qq_ai_bot.plugin_host.notification_delivery import (
+            from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
+            from yuki.plugin_host.notification_delivery import (
                 PlatformNotificationTransport,
                 PluginNotificationOutboxWorker,
             )
-            from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
-            from qq_ai_bot.services.effect_gate import ConversationEffectGate
+            from yuki.plugin_host.notification_repository import PluginNotificationRepository
+            from yuki.services.effect_gate import ConversationEffectGate
 
             notifications = PluginNotificationRepository(database)
             async with database.sessions() as reader:

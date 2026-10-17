@@ -7,16 +7,16 @@ import pytest
 from sqlalchemy import select
 from tests.unit.test_memory_v2 import _append_event
 
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.identity.canonical_repository import create_person_binding, create_presence
-from qq_ai_bot.persistence.models import (
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.identity.canonical_repository import create_person_binding, create_presence
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryClaimCandidateEvidenceModel,
     MemoryClaimCandidateModel,
 )
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 async def _candidate(database, *events, status="pending"):

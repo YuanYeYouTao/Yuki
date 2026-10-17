@@ -245,7 +245,7 @@ App 补充后 QQ 原合同保持。相关核心、Social、Work 与部署合同�
 ## P11：参考客户端、独立进程与完整接续验收
 
 主包加入 HTTP-only `client_sdk.PersonalClient`、客户端 SQLite outbox 与 `yuki client`
-入口（保留 `qq-ai-bot-cli client`）。请求 UUID、目标、正文和附件引用先持久化再派发；
+入口（保留 `yuki client`）。请求 UUID、目标、正文和附件引用先持久化再派发；
 记录 draft／submitted／accepted／result，传输未知时查询原请求并核对完整指纹。
 同服务器／Person 的设备共享原请求；另一 Person 不派发旧 outbox。凭据不保存到 outbox。
 服务端原请求查询补充授权后的操作指纹、失败原状态与原 Social 成功结果事件 ID，

@@ -6,10 +6,10 @@ import pytest
 from sqlalchemy import event, select, text, update
 from tests.unit.test_memory_rebuild import _admin, _event, _service
 
-from qq_ai_bot.memory.enums import MemoryRebuildRunStatus
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-from qq_ai_bot.persistence.models import MemoryRebuildItemModel, MemoryRebuildRunModel
+from yuki.memory.enums import MemoryRebuildRunStatus
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.persistence.models import MemoryRebuildItemModel, MemoryRebuildRunModel
 
 
 def _observe(database):

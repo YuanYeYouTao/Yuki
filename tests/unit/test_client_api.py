@@ -16,12 +16,12 @@ from tests.unit.test_admin_api import (
     admin as admin_fixture,
 )
 
-from qq_ai_bot.admin_api.http import attach_admin_api
-from qq_ai_bot.client_api.db_models import ClientDeviceModel
-from qq_ai_bot.client_api.http import ClientApi, attach_client_api
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
-from qq_ai_bot.identity.db_models import IdentityBindingModel
+from yuki.admin_api.http import attach_admin_api
+from yuki.client_api.db_models import ClientDeviceModel
+from yuki.client_api.http import ClientApi, attach_client_api
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.identity.db_models import IdentityBindingModel
 
 admin = admin_fixture
 

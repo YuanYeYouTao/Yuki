@@ -119,7 +119,7 @@ Host 已接纳的主 Agent 轮次仍由原 job/event 和现有授权继续管理
 uv run pytest -q plugins/subscription-monitor/tests
 uv run ruff check plugins/subscription-monitor
 uv run mypy --follow-imports=silent plugins/subscription-monitor/subscription_monitor
-uv run qq-ai-bot-cli plugin test plugins/subscription-monitor
+uv run yuki plugin test plugins/subscription-monitor
 ```
 
 测试使用 SDK Fake 和真实插件生命周期契约，不连接外网、真实模型或 QQ。

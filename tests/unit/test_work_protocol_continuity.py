@@ -21,9 +21,9 @@ from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession, invoke_tool
 
-from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import (
+from yuki.admin.models import WorkStorageRuntimeConfig
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import (
     ChatImage,
     ChatMessage,
     ChatRequest,
@@ -34,16 +34,16 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.identity.db_models import PresenceModel
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-from qq_ai_bot.llm.vendor_policy import ChatWireOptions
-from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.models import (
+from yuki.identity.db_models import PresenceModel
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.llm.fake import FakeLLMProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.llm.openai_compatible import OpenAICompatibleProvider
+from yuki.llm.openai_responses import OpenAIResponsesProvider
+from yuki.llm.vendor_policy import ChatWireOptions
+from yuki.model_runtime.executor import TaskModelExecutor
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
@@ -51,23 +51,23 @@ from qq_ai_bot.model_runtime.models import (
     ModelSearchMode,
     ModelTask,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-from qq_ai_bot.model_runtime.routes import ModelRouter
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.protocol_schema import objects, refs, usage
-from qq_ai_bot.runtime.protocol_store import ProtocolStore
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_journal import encode_transcript
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import journal
-from qq_ai_bot.services.agent_runner import AgentRunResult, AgentRuntime
-from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
-from qq_ai_bot.services.native_tool_binder import NativeToolBinder
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.social.models import OperationStatus, SocialTarget
-from qq_ai_bot.social.repository import SocialOperationRepository
-from qq_ai_bot.web.models import WebMode
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import ModelProfileCatalog
+from yuki.model_runtime.routes import ModelRouter
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.protocol_schema import objects, refs, usage
+from yuki.runtime.protocol_store import ProtocolStore
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_journal import encode_transcript
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import journal
+from yuki.services.agent_runner import AgentRunResult, AgentRuntime
+from yuki.services.main_agent_turns import MainAgentTurnService
+from yuki.services.native_tool_binder import NativeToolBinder
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.social.models import OperationStatus, SocialTarget
+from yuki.social.repository import SocialOperationRepository
+from yuki.web.models import WebMode
 
 
 async def _control(database, tmp_path, *, worker=False):
@@ -83,7 +83,7 @@ async def _control(database, tmp_path, *, worker=False):
         lease, source_key="anchor-test", source=control.source, goal="retain the actual task"
     )
     if worker:
-        from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+        from yuki.runtime.subagent_repository import SubagentRepository
 
         children = SubagentRepository(repo)
         identity = await children.start(
@@ -145,7 +145,7 @@ async def test_new_work_reuses_prepared_object_marked_for_deletion(database, tmp
 
 
 async def test_gc_rechecks_object_reused_before_file_fence(database, tmp_path, monkeypatch):
-    import qq_ai_bot.runtime.protocol_store as module
+    import yuki.runtime.protocol_store as module
 
     control = await _control(database, tmp_path)
     identity = control.current["id"]
@@ -1339,7 +1339,7 @@ async def test_main_entry_captures_current_task_before_work_status(database, tmp
 async def test_original_trigger_requirements_survive_goal_rewrite_and_business_resume(
     database, tmp_path
 ):
-    from qq_ai_bot.persistence.models import ChatEventModel
+    from yuki.persistence.models import ChatEventModel
 
     control = await _control(database, tmp_path)
     event_id = control.source["trigger_event_id"]
@@ -1388,9 +1388,9 @@ async def test_pending_recovery_uses_original_evidence_not_display(
 ):
     from sqlalchemy import update
 
-    from qq_ai_bot.capabilities.results import ToolExecutionResult
-    from qq_ai_bot.runtime.effect_outcomes import execution_evidence
-    from qq_ai_bot.runtime.work_schema_v1 import effects
+    from yuki.capabilities.results import ToolExecutionResult
+    from yuki.runtime.effect_outcomes import execution_evidence
+    from yuki.runtime.work_schema_v1 import effects
 
     control = await _control(database, tmp_path)
     initial = (ChatMessage("system", "fixed"), ChatMessage("user", "retain task"))
@@ -1484,8 +1484,8 @@ async def test_private_note_keeps_normal_resume_without_public_history_publicati
     from tests.support.runtime_execution import make_work_resumer
     from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-    from qq_ai_bot.conversation.observation_models import ContextObservationModel
-    from qq_ai_bot.runtime.work_schema_v1 import work
+    from yuki.conversation.observation_models import ContextObservationModel
+    from yuki.runtime.work_schema_v1 import work
 
     provider = FakeLLMProvider()
 

@@ -11,20 +11,20 @@ from sqlalchemy.exc import OperationalError
 from tests.conftest import make_settings
 from tests.unit.test_memory_dream import _empty_dream_statistics, _fact_with_evidence, _services
 
-from qq_ai_bot.memory.dream.db_models import (
+from yuki.memory.dream.db_models import (
     MemoryDreamClusterModel,
     MemoryDreamOperationModel,
     MemoryDreamRunModel,
 )
-from qq_ai_bot.memory.dream.models import (
+from yuki.memory.dream.models import (
     DreamAction,
     DreamClusterStatus,
     DreamOperationType,
     DreamOutput,
     DreamRunMode,
 )
-from qq_ai_bot.memory.dream.service import DreamService
-from qq_ai_bot.memory.dream.worker import DreamWorker
+from yuki.memory.dream.service import DreamService
+from yuki.memory.dream.worker import DreamWorker
 
 
 async def _case(database, monkeypatch, *, clusters=1):

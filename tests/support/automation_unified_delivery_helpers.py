@@ -8,18 +8,18 @@ from tests.conftest import build_harness, make_settings
 from tests.support.automation_runtime_helpers import FakeClock
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.automation.repository import AutomationRepository
-from qq_ai_bot.automation.service import AutomationService
-from qq_ai_bot.automation.tools import AutomationToolService
-from qq_ai_bot.automation.worker import AutomationWorker
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.time.service import TimeContextService
-from qq_ai_bot.workspace.short_state import ShortState
+from yuki.automation.repository import AutomationRepository
+from yuki.automation.service import AutomationService
+from yuki.automation.tools import AutomationToolService
+from yuki.automation.worker import AutomationWorker
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.domain.tool_actor import ToolActor
+from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_repository import WorkRepository
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.time.service import TimeContextService
+from yuki.workspace.short_state import ShortState
 
 
 async def setup_run(

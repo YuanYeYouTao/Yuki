@@ -9,11 +9,11 @@ from sqlalchemy import delete, select
 from tests.unit.test_memory_candidate_privacy import _candidate, _values
 from tests.unit.test_memory_v2 import _append_event
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.persistence.models import (
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
     MemoryFactModel,
@@ -22,11 +22,11 @@ from qq_ai_bot.persistence.models import (
     MemorySelfReflectionRunModel,
     MemoryToolReceiptModel,
 )
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.persistence.repository_helpers import _event_record
-from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.persistence.repository_helpers import _event_record
+from yuki.persistence.repository_records import EventRecord
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 async def _group_fact(writer, space_id, key):

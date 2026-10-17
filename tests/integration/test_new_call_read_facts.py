@@ -7,9 +7,9 @@ import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.integration.test_plugin_frozen_binding import write_plugin
 
-from qq_ai_bot import __version__
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import (
+from yuki import __version__
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import (
     ChatMessage,
     ChatResponse,
     InboundMessage,
@@ -17,18 +17,18 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
-from qq_ai_bot.plugin_host.discovery import PluginDiscovery
-from qq_ai_bot.plugin_host.event_bus import PluginEventBus
-from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.plugin_host.loader import PluginLoader
-from qq_ai_bot.plugin_host.manager import PluginManager
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.llm.fake import FakeLLMProvider
+from yuki.plugin_host.capability_adapter import PluginCapabilityAdapter
+from yuki.plugin_host.discovery import PluginDiscovery
+from yuki.plugin_host.event_bus import PluginEventBus
+from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.plugin_host.loader import PluginLoader
+from yuki.plugin_host.manager import PluginManager
+from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 
 
 @pytest.mark.parametrize("same_response", [False, True])
@@ -143,7 +143,7 @@ async def test_saved_legacy_readonly_alias_restores_original_receipt_without_dis
     from tests.support.work_session import WorkSession, invoke_tool
     from tests.unit.test_work_journal_source_retry import _session
 
-    from qq_ai_bot.services.turn_transcript import TurnTranscript
+    from yuki.services.turn_transcript import TurnTranscript
 
     control, session, _selected, _unselected = await _session(database)
     original = ToolCall("original-read", ToolFunction("read_fixture", '{"query":"same"}'))

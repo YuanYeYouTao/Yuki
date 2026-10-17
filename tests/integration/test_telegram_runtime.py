@@ -10,22 +10,22 @@ import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.providers.telegram import TelegramClient
-from qq_ai_bot.gateway.providers.telegram_ingress import TelegramGateway
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.identity.canonical_repository import create_presence
-from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
-from qq_ai_bot.identity.ingress import CanonicalIngressResolver
-from qq_ai_bot.identity.routing import PresenceRouter
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.social.service import SocialService
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.providers.telegram import TelegramClient
+from yuki.gateway.providers.telegram_ingress import TelegramGateway
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.identity.canonical_repository import create_presence
+from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
+from yuki.identity.ingress import CanonicalIngressResolver
+from yuki.identity.routing import PresenceRouter
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.social.service import SocialService
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 
 
 @pytest.fixture
@@ -165,10 +165,10 @@ async def test_topics_keep_original_reply_destination_and_one_space(telegram_env
 async def test_forget_qq_same_number_preserves_telegram_conversation_and_work(
     telegram_env, database
 ):
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
-    from qq_ai_bot.persistence.people_repository import PeopleRepository
-    from qq_ai_bot.runtime.work_repository import WorkRepository
+    from yuki.domain.conversations import ConversationScope
+    from yuki.identity.canonical_repository import ensure_person, ensure_presence
+    from yuki.persistence.people_repository import PeopleRepository
+    from yuki.runtime.work_repository import WorkRepository
 
     env = telegram_env
     await env.gateway.receive(update(text="the number 42 is ordinary text"))
@@ -229,11 +229,11 @@ async def test_another_platform_uses_the_same_processor_and_social_contract(tele
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from qq_ai_bot.domain.conversations import ScopeType
-    from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-    from qq_ai_bot.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
-    from qq_ai_bot.gateway.providers.app.social import AppSocialOperations
-    from qq_ai_bot.gateway.social import TransportReceipt
+    from yuki.domain.conversations import ScopeType
+    from yuki.domain.messages import InboundMessage, SenderIdentity
+    from yuki.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
+    from yuki.gateway.providers.app.social import AppSocialOperations
+    from yuki.gateway.social import TransportReceipt
 
     sent = []
 

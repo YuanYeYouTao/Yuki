@@ -7,10 +7,10 @@ from datetime import UTC, datetime
 
 import pytest
 
-from qq_ai_bot.adapters.onebot.legacy_event import project_legacy_segments
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.persistence.repository_records import EventRecord
+from yuki.adapters.onebot.legacy_event import project_legacy_segments
+from yuki.domain.conversations import ScopeType
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.persistence.repository_records import EventRecord
 
 
 def test_history_reprojects_ordered_mentions_from_persisted_segments() -> None:
@@ -102,7 +102,7 @@ def test_history_segment_fallback_log_never_contains_content_or_ids(
         group_id="2001",
     )
 
-    with caplog.at_level("WARNING", logger="qq_ai_bot.adapters.onebot.legacy_event"):
+    with caplog.at_level("WARNING", logger="yuki.adapters.onebot.legacy_event"):
         projection = project_legacy_segments(event.segments, event.bot_user_id)
         assert projection is None
         rendered = ChatEventPromptRenderer((event,)).render_reference_event(event)

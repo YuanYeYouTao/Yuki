@@ -7,12 +7,12 @@ from alembic import command
 from alembic.config import Config
 from tests.unit.test_memory_mutation import _context, _event, _service
 
-from qq_ai_bot.memory.mutation.models import (
+from yuki.memory.mutation.models import (
     MemoryMutationOperation,
     MemoryMutationRequest,
     MemoryMutationTarget,
 )
-from qq_ai_bot.persistence.schema_guard import canonical_schema_revision
+from yuki.persistence.schema_guard import canonical_schema_revision
 
 
 async def test_same_key_create_preserves_originals_and_correct_changes_only_named_fact(database):

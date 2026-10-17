@@ -9,13 +9,13 @@ from unittest.mock import AsyncMock
 import httpx
 from tests.conftest import make_settings
 
-from qq_ai_bot.application.lifecycle import LifecycleRegistry
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.providers.telegram import TelegramClient
-from qq_ai_bot.gateway.providers.telegram_ingress import TelegramGateway
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.health import build_health_payload
-from qq_ai_bot.identity.routing import PresenceRouter
+from yuki.application.lifecycle import LifecycleRegistry
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.providers.telegram import TelegramClient
+from yuki.gateway.providers.telegram_ingress import TelegramGateway
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.health import build_health_payload
+from yuki.identity.routing import PresenceRouter
 
 
 def health_container(database, gateway):

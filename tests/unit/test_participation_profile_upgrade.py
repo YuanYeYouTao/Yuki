@@ -4,7 +4,7 @@ import json
 
 from tests.support.semantic_participation_host_helpers import _host
 
-from qq_ai_bot.services.participation_parameters import AutonomyParameters
+from yuki.services.participation_parameters import AutonomyParameters
 
 
 async def test_old_profile_hot_load_and_explicit_file_update_preserve_overrides(database, tmp_path):

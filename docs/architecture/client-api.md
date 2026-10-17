@@ -5,8 +5,8 @@
 
 ## 配对与账号绑定
 
-第一台设备可由 operator 执行 `qq-ai-bot-cli admin person create`，再执行
-`qq-ai-bot-cli admin client pair --person <id>` 取得绑定码；已有 QQ 或 Telegram 用户也可在自己的私聊
+第一台设备可由 operator 执行 `yuki admin person create`，再执行
+`yuki admin client pair --person <id>` 取得绑定码；已有 QQ 或 Telegram 用户也可在自己的私聊
 发送 `/ai link`。码有效期十分钟，仅存 SHA-256，一次兑换。过期码沿原维护循环清理。
 
 | 请求 | 授权与结果 |
@@ -144,7 +144,7 @@ kind 为 file、image、video 或 record。服务器流式写设备／请求暂�
 ## Python 参考客户端与 CLI
 
 主包提供 client_sdk.PersonalClient，所有操作经 HTTP；不直接访问服务器数据库、模型或工具。
-yuki client（同一入口也保留 qq-ai-bot-cli client）支持 pair、me、home、send、input、cancel、upload、artifact、request、
+yuki client（同一入口也保留 yuki client）支持 pair、me、home、send、input、cancel、upload、artifact、request、
 retry、pending、watch、link-code、revoke。URL 取 YUKI_CLIENT_URL，设备凭据取
 YUKI_CLIENT_TOKEN；配对码取 YUKI_CLIENT_CODE，pair 的首次响应返回设备 token。
 凭据不放命令参数或 outbox。--state 选择本地 outbox 文件，文件权限为 0600。
@@ -152,12 +152,12 @@ YUKI_CLIENT_TOKEN；配对码取 YUKI_CLIENT_CODE，pair 的首次响应返回�
 Python 构造器对应 `entry_binding_id=`。每个入口使用自己的 outbox 文件。
 
 ```sh
-qq-ai-bot-cli client --state ./phone.sqlite send '继续这项任务' --draft
-qq-ai-bot-cli client --state ./phone.sqlite retry <原请求UUID>
-qq-ai-bot-cli client --state ./phone.sqlite request <原请求UUID>
-qq-ai-bot-cli client --state ./phone.sqlite input <WorkID> '补充要求'
-qq-ai-bot-cli client --state ./phone.sqlite watch
-qq-ai-bot-cli client --entry-binding <AppBindingID> --state ./other-entry.sqlite home
+yuki client --state ./phone.sqlite send '继续这项任务' --draft
+yuki client --state ./phone.sqlite retry <原请求UUID>
+yuki client --state ./phone.sqlite request <原请求UUID>
+yuki client --state ./phone.sqlite input <WorkID> '补充要求'
+yuki client --state ./phone.sqlite watch
+yuki client --entry-binding <AppBindingID> --state ./other-entry.sqlite home
 ```
 
 首次提交前持久保存 UUID、目标、规范化正文及附件引用；同号修改正文／操作会拒绝。
@@ -190,7 +190,7 @@ App 主会话直接回复时，沿原 mailbox 匹配本会话、本人最近的 
 
 ## ACP 方向 A
 
-`yuki acp`（同入口 `qq-ai-bot-cli acp`）是本地 stdio Agent，使用官方 Python SDK
+`yuki acp`是本地 stdio Agent，使用官方 Python SDK
 `agent-client-protocol==0.12.1`、稳定 wire `protocolVersion=1`。它持现有个人设备凭据连接服务器，
 不在客户端进程加载 Bot 数据库、模型或服务器工具。凭据沿 `YUKI_CLIENT_TOKEN`，地址沿
 `YUKI_CLIENT_URL` 或 `--url`；原请求 Outbox 放在 `--state-dir` 指定的私有目录。

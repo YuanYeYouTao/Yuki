@@ -11,20 +11,20 @@ from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_client_api import bearer, pair
 
-from qq_ai_bot.client_api.works import ClientWorks
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.client_api.works import ClientWorks
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ControlCommandReceiptModel,
 )
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
-from qq_ai_bot.persistence.event_repository import ConversationReadVersion
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, work
-from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
-from qq_ai_bot.social.db_models import SocialOperationModel
+from yuki.domain.conversations import ConversationScope
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.persistence.event_repository import ConversationReadVersion
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects, inputs, journal, work
+from yuki.runtime.work_source_guard import WorkSourceGuard
+from yuki.social.db_models import SocialOperationModel
 
 admin = admin_fixture
 app_env = app_fixture
@@ -478,7 +478,7 @@ async def guard_for(original, database):
 async def test_guard_accepts_only_mailbox_proof_and_retains_original_work_after_other_entry_reset(
     app_env, database
 ):
-    from qq_ai_bot.conversation.hydrate import bump_canonical_generation
+    from yuki.conversation.hydrate import bump_canonical_generation
 
     env = app_env
     device, _ = await owner(env, database)
@@ -521,7 +521,7 @@ async def test_same_person_event_without_mailbox_proof_is_not_a_work_input(app_e
     guard, control = await guard_for(original, database)
     principal = await env.identity.authenticate(device["token"])
     async with database.sessions() as session:
-        from qq_ai_bot.identity.db_models import IdentityBindingModel
+        from yuki.identity.db_models import IdentityBindingModel
 
         binding = await session.get(IdentityBindingModel, principal.binding_id)
     message = env.gateway.message(binding, str(uuid4()), "ordinary App message", ())
@@ -619,7 +619,7 @@ async def test_completion_between_preparation_and_writer_creates_no_input(
 async def test_group_cancel_and_completion_preserve_original_winner(
     app_env, database, completion_first
 ):
-    from qq_ai_bot.runtime.work_repository import WorkConflict
+    from yuki.runtime.work_repository import WorkConflict
 
     env = app_env
     device, _ = await owner(env, database)

@@ -7,8 +7,8 @@ import json
 import pytest
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from qq_ai_bot.sandbox.persistent import PersistentManager
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.sandbox.persistent import PersistentManager
+from yuki.workspace.store import WorkspaceStore
 
 
 @pytest.mark.parametrize("legacy", [False, True])

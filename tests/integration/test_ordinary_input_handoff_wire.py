@@ -17,15 +17,15 @@ from tests.integration.test_current_material_main_contract import _catalog, _dep
 from tests.unit.test_auto_reply_merge import _wait_for_worker
 from tests.unit.test_ordinary_input_handoff import A, B, C, _tool, _work_count
 
-from qq_ai_bot.domain.messages import ChatResponse
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-from qq_ai_bot.model_runtime.models import ModelProtocol
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.persistence.models import ChatEventModel
+from yuki.domain.messages import ChatResponse
+from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.llm.openai_compatible import OpenAICompatibleProvider
+from yuki.llm.openai_responses import OpenAIResponsesProvider
+from yuki.model_runtime.models import ModelProtocol
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.persistence.models import ChatEventModel
 
 
 @pytest.mark.parametrize(("vendor", "protocol"), DIALECTS)

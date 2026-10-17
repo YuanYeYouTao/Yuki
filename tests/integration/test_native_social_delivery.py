@@ -18,30 +18,30 @@ from tests.integration.test_telegram_runtime import update
 from tests.support.social_identity_cases import social_env
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from qq_ai_bot.capabilities.invocation import direct_invocations
-from qq_ai_bot.capabilities.results import normalize_legacy_result
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.capabilities.invocation import direct_invocations
+from yuki.capabilities.results import normalize_legacy_result
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
 )
-from qq_ai_bot.domain.messages import ToolCall, ToolFunction
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.providers.telegram import TelegramClient
-from qq_ai_bot.gateway.providers.telegram_ingress import TelegramGateway
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.gateway.social import TransportMedia, TransportMessage
-from qq_ai_bot.identity.canonical_repository import create_presence
-from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
-from qq_ai_bot.identity.ingress import CanonicalIngressResolver
-from qq_ai_bot.identity.routing import PresenceRouter
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.message_splitter import OutboundMessageSplitter
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.social.models import SocialError
-from qq_ai_bot.social.repository import payload_hash, sequence_prefix
-from qq_ai_bot.social.service import SocialContext, SocialService
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.domain.messages import ToolCall, ToolFunction
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.providers.telegram import TelegramClient
+from yuki.gateway.providers.telegram_ingress import TelegramGateway
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.gateway.social import TransportMedia, TransportMessage
+from yuki.identity.canonical_repository import create_presence
+from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
+from yuki.identity.ingress import CanonicalIngressResolver
+from yuki.identity.routing import PresenceRouter
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.services.message_splitter import OutboundMessageSplitter
+from yuki.social.db_models import SocialOperationModel
+from yuki.social.models import SocialError
+from yuki.social.repository import payload_hash, sequence_prefix
+from yuki.social.service import SocialContext, SocialService
+from yuki.workspace.store import WorkspaceStore
 
 
 def visible(value):
@@ -610,11 +610,11 @@ async def test_prepared_layout_replacement_cannot_dispatch_stale_child(
 async def test_work_unclaimed_delivery_replans_without_resetting_original_budget(
     native_env, monkeypatch
 ):
-    from qq_ai_bot.runtime.work_activation import current_work_control
-    from qq_ai_bot.runtime.work_budget import charge
-    from qq_ai_bot.runtime.work_budget_schema import budgets
-    from qq_ai_bot.runtime.work_control import WorkControl
-    from qq_ai_bot.runtime.work_repository import WorkRepository
+    from yuki.runtime.work_activation import current_work_control
+    from yuki.runtime.work_budget import charge
+    from yuki.runtime.work_budget_schema import budgets
+    from yuki.runtime.work_control import WorkControl
+    from yuki.runtime.work_repository import WorkRepository
 
     env = native_env
     repository = WorkRepository(env.db)
@@ -671,10 +671,10 @@ async def test_work_unclaimed_delivery_replans_without_resetting_original_budget
 
 @pytest.mark.parametrize("lost_ack", [False, True])
 async def test_work_dispatched_plan_and_reservations_are_readonly_on_recovery(native_env, lost_ack):
-    from qq_ai_bot.runtime.work_activation import current_work_control
-    from qq_ai_bot.runtime.work_control import WorkControl
-    from qq_ai_bot.runtime.work_recovery_schema import deliveries
-    from qq_ai_bot.runtime.work_repository import WorkRepository
+    from yuki.runtime.work_activation import current_work_control
+    from yuki.runtime.work_control import WorkControl
+    from yuki.runtime.work_recovery_schema import deliveries
+    from yuki.runtime.work_repository import WorkRepository
 
     env = native_env
     repository = WorkRepository(env.db)
@@ -731,9 +731,9 @@ async def test_work_dispatched_plan_and_reservations_are_readonly_on_recovery(na
 
 
 async def prepare_paid_send(env, args):
-    from qq_ai_bot.runtime.effect_outcomes import ResultCapture
-    from qq_ai_bot.runtime.work_control import WorkControl
-    from qq_ai_bot.runtime.work_repository import WorkRepository
+    from yuki.runtime.effect_outcomes import ResultCapture
+    from yuki.runtime.work_control import WorkControl
+    from yuki.runtime.work_repository import WorkRepository
 
     repository = WorkRepository(env.db)
     lease = await repository.acquire(env.context.conversation_id, 1)
@@ -765,10 +765,10 @@ async def prepare_paid_send(env, args):
 async def test_native_t3_recovery_preserves_exact_media_and_caption_facts(
     native_env, long_caption, fail_tail
 ):
-    from qq_ai_bot.runtime.effect_outcomes import current_result_capture, execution_evidence
-    from qq_ai_bot.runtime.work_activation import current_work_control
-    from qq_ai_bot.runtime.work_journal import WorkJournal
-    from qq_ai_bot.runtime.work_schema_v1 import effects
+    from yuki.runtime.effect_outcomes import current_result_capture, execution_evidence
+    from yuki.runtime.work_activation import current_work_control
+    from yuki.runtime.work_journal import WorkJournal
+    from yuki.runtime.work_schema_v1 import effects
 
     env = native_env
     artifact = snapshot_bytes(env.store, "paid.txt", b"immutable original")
@@ -819,9 +819,9 @@ async def test_native_t3_recovery_preserves_exact_media_and_caption_facts(
 async def test_legacy_qq_file_caption_layout_t3_recovery_reads_original_ledger(
     database, tmp_path, caption_confirmed
 ):
-    from qq_ai_bot.runtime.delivery_intents import reserve
-    from qq_ai_bot.runtime.effect_outcomes import current_result_capture, execution_evidence
-    from qq_ai_bot.runtime.work_journal import WorkJournal
+    from yuki.runtime.delivery_intents import reserve
+    from yuki.runtime.effect_outcomes import current_result_capture, execution_evidence
+    from yuki.runtime.work_journal import WorkJournal
 
     env = await social_env(database, tmp_path)
     artifact = snapshot_bytes(env.store, "legacy.txt", b"original legacy file")
@@ -908,7 +908,7 @@ async def assert_committed_ack_loss_preserves_delivery(env, monkeypatch):
     from sqlalchemy.exc import OperationalError
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from qq_ai_bot.social.models import OperationStatus
+    from yuki.social.models import OperationStatus
 
     original_finish, original_commit = env.service.receipts.finish, AsyncSession.commit
 

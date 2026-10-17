@@ -4,29 +4,29 @@ from types import SimpleNamespace
 
 import pytest
 
-from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-from qq_ai_bot.domain.messages import (
+from yuki.conversation.frozen_fragments import FrozenFragments
+from yuki.domain.messages import (
     ChatMessage,
     ChatRequest,
     ProviderContinuation,
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.llm.base import LLMUnsupportedFeatureError
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
-from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.models import ModelProfile, ModelRoute, ModelTask
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-from qq_ai_bot.model_runtime.routes import ModelRouter
-from qq_ai_bot.runtime.work_repository import WorkCapacityError
-from qq_ai_bot.services.context_compaction import (
+from yuki.llm.base import LLMUnsupportedFeatureError
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+from yuki.model_runtime.executor import TaskModelExecutor
+from yuki.model_runtime.models import ModelProfile, ModelRoute, ModelTask
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import ModelProfileCatalog
+from yuki.model_runtime.routes import ModelRouter
+from yuki.runtime.work_repository import WorkCapacityError
+from yuki.services.context_compaction import (
     PublicCompactContext,
     execution_compact_plan,
     public_compact_plan,
 )
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.services.turn_transcript import TurnTranscript
 
 
 @pytest.mark.parametrize(

@@ -2,7 +2,7 @@
 
 from alembic import op
 
-from qq_ai_bot.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
+from yuki.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
 
 revision = "0119"
 down_revision = "0118"

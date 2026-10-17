@@ -1,0 +1,62 @@
+"""Metadata-driven capability visibility policy.
+
+Authority is actor permissions, scene isolation and the memory
+capability view.  Namespace is not a permission and is never used as a hard
+filter here.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from yuki.capabilities.models import (
+    AuthorityContext,
+    CapabilityDescriptor,
+)
+from yuki.runtime.contracts import MemoryCapabilityView
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityPolicyContext:
+    authority: AuthorityContext
+    conversation_open: bool = True
+    tools_closed: bool = False
+    memory_view: MemoryCapabilityView | None = None
+    artifact_available: bool = False
+
+
+class CapabilityPolicyEngine:
+    """Intersect backend descriptors with current-turn authority and scene."""
+
+    def visible(
+        self,
+        descriptors: tuple[CapabilityDescriptor, ...],
+        context: CapabilityPolicyContext,
+    ) -> tuple[CapabilityDescriptor, ...]:
+        if not context.conversation_open or context.tools_closed:
+            return ()
+        granted = set(context.authority.permissions)
+        if context.authority.is_superuser:
+            granted.add("superuser")
+        hidden_namespaces = (
+            frozenset(context.memory_view.hidden_namespaces)
+            if context.memory_view is not None
+            else frozenset()
+        )
+        visible: list[CapabilityDescriptor] = []
+        for descriptor in descriptors:
+            if not descriptor.required_permissions.issubset(granted):
+                continue
+            if descriptor.namespace_id in hidden_namespaces:
+                continue
+            if descriptor.model_name == "read_tool_artifact" and not context.artifact_available:
+                continue
+            visible.append(descriptor)
+        return tuple(visible)
+
+    def requestable_ids(
+        self,
+        descriptors: tuple[CapabilityDescriptor, ...],
+        context: CapabilityPolicyContext,
+    ) -> frozenset[str]:
+        return frozenset(item.model_name for item in self.visible(descriptors, context))

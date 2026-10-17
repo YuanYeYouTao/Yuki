@@ -10,27 +10,27 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from tests.conftest import build_harness, make_settings
 
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.conversation.scope_models import ConversationCoverageError
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage, SenderIdentity
-from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.executor import provider_cache_shape_diagnostics
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.context_assembler import (
+from yuki.automation.models import TurnOrigin
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.conversation.scope_models import ConversationCoverageError
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.messages import ChatMessage, ChatRequest, InboundMessage, SenderIdentity
+from yuki.domain.profiles import UserProfileSnapshot
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.executor import provider_cache_shape_diagnostics
+from yuki.persistence.database import Database
+from yuki.persistence.repository_records import EventRecord
+from yuki.runtime.trigger import ExternalEventTurnTrigger
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.context_assembler import (
     AssembledContext,
     ContextAssembler,
     ContextMetrics,
     _HistoryPromptWindow,
 )
-from qq_ai_bot.services.prompt_composer import PromptComposer
+from yuki.services.prompt_composer import PromptComposer
 
 _OCCURRED = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
 
@@ -579,7 +579,7 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
 ) -> None:
     from types import SimpleNamespace
 
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
+    from yuki.services.main_agent_contract import MainAgentContract
 
     provider = FakeLLMProvider(lambda _request: "ok")
     harness = build_harness(database, make_settings(database.url), provider)
@@ -765,9 +765,9 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     database: Database,
     tmp_path,
 ) -> None:
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
-    from qq_ai_bot.workspace.short_state import ShortState
-    from qq_ai_bot.workspace.store import WorkspaceStore
+    from yuki.services.main_agent_contract import MainAgentContract
+    from yuki.workspace.short_state import ShortState
+    from yuki.workspace.store import WorkspaceStore
 
     harness = build_harness(
         database, make_settings(database.url, agent_tool_result_max_characters=24000)

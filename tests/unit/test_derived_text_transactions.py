@@ -4,14 +4,14 @@ import pytest
 from sqlalchemy import event
 from tests.support.public_history import _prepare_v2_private, _publish_checkpoint
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.domain.audio import AudioTranscript, serialize_transcripts
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.domain.audio import AudioTranscript, serialize_transcripts
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.persistence.models import ChatEventModel
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 async def _source(database):

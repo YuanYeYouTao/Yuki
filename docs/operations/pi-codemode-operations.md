@@ -170,7 +170,7 @@ defaults. Preserve gateway, proxy and custom services.
 On the copied Bot data, use:
 
 ```sh
-python scripts/verify_work_backup.py /absolute/snapshot/qq_ai_bot.db /absolute/snapshot/data
+python scripts/verify_work_backup.py /absolute/snapshot/yuki.db /absolute/snapshot/data
 ```
 
 This read-only verifier checks SQLite integrity/foreign keys and every live
@@ -196,7 +196,7 @@ No private production backup was supplied or inspected.
    Manager, plugin/MCP operations by their original persistent IDs. Missing
    upstream evidence remains unknown; never retry an entire program or send.
 3. Take the consistent restricted backup above. Run the normal Alembic upgrade
-   using the new distribution's `qq-ai-bot-cli init-db`, with the approved
+   using the new distribution's `yuki init-db`, with the approved
    database configuration. Do not stamp past earlier revisions. Verify the target distribution's actual single Alembic head (current source: `0104`), original facts, references and finite budgets before resuming.
 4. Replace only the approved Bot distribution/configuration. Verify worker
    hashes and unprivileged isolation. Start one Bot; observe original Work

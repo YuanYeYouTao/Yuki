@@ -13,7 +13,7 @@ thoughtSignature 保留独立通道及私有续跑状态，见[模型供应商�
 
 思考开关、effort 和预算沿显式请求或 Profile，不再强制开启或抬到 low。
 DeepSeek 在关闭思考时省略 reasoning 参数，实际 Provider 的缺省行为另行核验。
-[Issue #55](https://github.com/YuanYeYouTao/Yuki-QQbot/issues/55) 的旧样本记录上游把规划
+[Issue #55](https://github.com/YuanYeYouTao/Yuki/issues/55) 的旧样本记录上游把规划
 放进正文；客户端不能根据文字可靠还原丢失的通道。如果模型主动把不合适的内容放进
 `send_message.text`，仍须按模型生成质量处理，不增加关键词过滤或第二个判断模型。
 

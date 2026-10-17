@@ -10,21 +10,21 @@ from tests.support.social_identity_cases import social_env
 from tests.unit.test_client_identity import code_for
 from tests.unit.test_rebuild_receipt_finalization import _seed
 
-from qq_ai_bot.client_api.errors import ClientError
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import ensure_person, find_identity_binding
-from qq_ai_bot.identity.db_models import IdentityBindingModel
-from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import (
+from yuki.client_api.errors import ClientError
+from yuki.domain.conversations import ConversationScope
+from yuki.identity.canonical_repository import ensure_person, find_identity_binding
+from yuki.identity.db_models import IdentityBindingModel
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryRebuildItemModel,
     MemoryRebuildProposalModel,
     MemoryRebuildRunModel,
 )
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.runtime.work_repository import WorkRepository
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.runtime.work_repository import WorkRepository
 
 
 async def append(database, message, account="1001", group=False):
@@ -217,7 +217,7 @@ async def test_forget_gate_scope_does_not_cancel_previous_owner_group_work(datab
     )
     await transfer_account(database, "1001")
     await append(database, "current owner's private message")
-    from qq_ai_bot.identity.canonical_repository import find_identity_binding
+    from yuki.identity.canonical_repository import find_identity_binding
 
     async with database.sessions() as reader:
         current = await find_identity_binding(reader, "1001", platform="qq")

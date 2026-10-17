@@ -12,13 +12,13 @@ from tests.unit.test_app_messages import drain
 from tests.unit.test_client_api import bearer
 from tests.unit.test_client_works import owner, seeded
 
-from qq_ai_bot.client_api.errors import ClientError
-from qq_ai_bot.client_api.views import ClientViews
-from qq_ai_bot.client_api.works import ClientWorks
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.execution_trace.recorder import TraceRecorder, trace_span
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
-from qq_ai_bot.runtime.work_schema_v1 import work
+from yuki.client_api.errors import ClientError
+from yuki.client_api.views import ClientViews
+from yuki.client_api.works import ClientWorks
+from yuki.domain.conversations import ConversationScope
+from yuki.execution_trace.recorder import TraceRecorder, trace_span
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.runtime.work_schema_v1 import work
 
 admin = admin_fixture
 app_env = app_fixture

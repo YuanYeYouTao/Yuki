@@ -14,22 +14,22 @@ from tests.conftest import make_settings
 from tests.support.correctness_wire import wire
 from tests.support.model_executor import InjectedModelExecutor
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.canonical_repository import ensure_presence
-from qq_ai_bot.identity.db_models import (
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.canonical_repository import ensure_presence
+from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor
-from qq_ai_bot.memory.dream.db_models import (
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.claim_processor import MemoryClaimProcessor
+from yuki.memory.dream.db_models import (
     MemoryDreamOperationModel,
     MemoryDreamOperationResultModel,
 )
-from qq_ai_bot.memory.dream.models import (
+from yuki.memory.dream.models import (
     DreamAction,
     DreamOperationStatus,
     DreamOperationType,
@@ -37,19 +37,19 @@ from qq_ai_bot.memory.dream.models import (
     DreamRecomposeOutput,
     DreamRunMode,
 )
-from qq_ai_bot.memory.dream.repository import (
+from yuki.memory.dream.repository import (
     DreamCandidate,
     DreamCandidateLoad,
     DreamRepository,
     fact_signature,
 )
-from qq_ai_bot.memory.dream.service import DreamService
-from qq_ai_bot.memory.dream.worker import DreamWorker
-from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
-from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile, EmbeddingVector
-from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
-from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
-from qq_ai_bot.memory.enums import (
+from yuki.memory.dream.service import DreamService
+from yuki.memory.dream.worker import DreamWorker
+from yuki.memory.embedding.codec import Float32VectorCodec
+from yuki.memory.embedding.models import EmbeddingProviderProfile, EmbeddingVector
+from yuki.memory.embedding.repository import MemoryEmbeddingRepository
+from yuki.memory.embedding.text import EmbeddingDocumentBuilder
+from yuki.memory.enums import (
     MemoryAuthority,
     MemoryConflictState,
     MemoryEvidenceRelation,
@@ -60,22 +60,22 @@ from qq_ai_bot.memory.enums import (
     MemoryStatus,
     SelfMemoryVisibility,
 )
-from qq_ai_bot.memory.models import (
+from yuki.memory.models import (
     MemoryEvidenceCreate,
     MemoryFact,
     MemoryFactCreate,
 )
-from qq_ai_bot.memory.mutation.service import DreamRecomposePlan, MemoryMutationService
-from qq_ai_bot.memory.partition import (
+from yuki.memory.mutation.service import DreamRecomposePlan, MemoryMutationService
+from yuki.memory.partition import (
     MemoryPartitionResolutionError,
     resolve_active_space_id,
     resolve_fact_canonical_owners,
 )
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.service import MemoryFactService
+from yuki.model_runtime.structured import StructuredTaskRunner
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryEmbeddingModel,
     MemoryEvidenceModel,
@@ -83,8 +83,8 @@ from qq_ai_bot.persistence.models import (
     MemoryFactRelationModel,
     MemoryMutationReceiptModel,
 )
-from qq_ai_bot.persistence.repositories import EventLedgerRepository, PeopleRepository
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.persistence.repositories import EventLedgerRepository, PeopleRepository
+from yuki.services.concurrency import ConcurrencyManager
 
 
 def _services(

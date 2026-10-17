@@ -12,29 +12,29 @@ from tests.unit.test_memory_mutation import _event, _service
 from tests.unit.test_memory_rebuild import _service as rebuild_service
 from tests.unit.test_memory_worker_shutdown import _Provider as ExtractionProvider
 
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.dream.db_models import MemoryDreamClusterModel
-from qq_ai_bot.memory.dream.models import DreamClusterStatus, DreamOutput
-from qq_ai_bot.memory.dream.service import DreamBudgetExhausted
-from qq_ai_bot.memory.enums import MemoryRebuildJobOutcome
-from qq_ai_bot.memory.job_claims import MemoryJobClaimLost
-from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
-from qq_ai_bot.memory.self_reflection.models import SelfReflectionOutput
-from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-from qq_ai_bot.memory.self_reflection.service import (
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.dream.db_models import MemoryDreamClusterModel
+from yuki.memory.dream.models import DreamClusterStatus, DreamOutput
+from yuki.memory.dream.service import DreamBudgetExhausted
+from yuki.memory.enums import MemoryRebuildJobOutcome
+from yuki.memory.job_claims import MemoryJobClaimLost
+from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
+from yuki.memory.self_reflection.models import SelfReflectionOutput
+from yuki.memory.self_reflection.repository import SelfReflectionRepository
+from yuki.memory.self_reflection.service import (
     _CHECKPOINT,
     ReflectionCheckpoint,
     SelfReflectionService,
 )
-from qq_ai_bot.memory.self_reflection.worker import SelfReflectionWorker
-from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.persistence.models import (
+from yuki.memory.self_reflection.worker import SelfReflectionWorker
+from yuki.memory.worker import MemoryWorker
+from yuki.persistence.models import (
     MemoryFactModel,
     MemoryJobModel,
     MemoryMutationReceiptModel,
     MemorySelfReflectionRunModel,
 )
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.services.concurrency import ConcurrencyManager
 
 
 @pytest.mark.parametrize("merge_owner", [False, True])
@@ -105,7 +105,7 @@ async def test_reflection_checkpoint_finishes_after_the_original_daily_request_i
     if merge_owner:
         from tests.unit.test_memory_person_identity import merge_people
 
-        from qq_ai_bot.identity.canonical_repository import find_identity_binding
+        from yuki.identity.canonical_repository import find_identity_binding
 
         async with database.sessions() as reader:
             target = (await find_identity_binding(reader, "1002")).person_id

@@ -4,17 +4,17 @@ import json
 
 from tests.conftest import make_settings
 
-from qq_ai_bot.capabilities.results import normalize_legacy_result
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE
-from qq_ai_bot.memory.enums import MemoryEvidenceRelation, MemoryScopeType, MemorySourceType
-from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
-from qq_ai_bot.services.prompt_composer import PromptComposer
+from yuki.capabilities.results import normalize_legacy_result
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.memory.context import MEMORY_GROUNDING_RULE
+from yuki.memory.enums import MemoryEvidenceRelation, MemoryScopeType, MemorySourceType
+from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.service import MemoryFactService
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.agent_tools import AgentToolService, ToolRuntime
+from yuki.services.prompt_composer import PromptComposer
 
 
 async def test_memory_read_result_keeps_complete_fact_and_evidence_without_policy(database):

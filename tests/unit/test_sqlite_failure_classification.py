@@ -8,9 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from tests.unit.test_runtime_recovery import setup
 
-from qq_ai_bot.runtime.activation_outcome import ExitReason, classify_failure
-from qq_ai_bot.runtime.work_recovery_schema import recovery
-from qq_ai_bot.runtime.work_supervisor import recover_failure
+from yuki.runtime.activation_outcome import ExitReason, classify_failure
+from yuki.runtime.work_recovery_schema import recovery
+from yuki.runtime.work_supervisor import recover_failure
 
 
 @pytest.mark.parametrize(

@@ -33,8 +33,8 @@
 
 ## 合并与上线
 
-- [PR #89](https://github.com/YuanYeYouTao/Yuki-QQbot/pull/89) 已合并，main 提交 `17fc8ba562283d686679653cf77b9c930a686b47`。
-- [CI 34772212230](https://github.com/YuanYeYouTao/Yuki-QQbot/actions/runs/34772212230) 全通过：910 项测试、19 项迁移矩阵、示例插件及 GitHub Monitor 合同、Ruff、Mypy、语音、记忆质量与 Docker。
+- [PR #89](https://github.com/YuanYeYouTao/Yuki/pull/89) 已合并，main 提交 `17fc8ba562283d686679653cf77b9c930a686b47`。
+- [CI 34772212230](https://github.com/YuanYeYouTao/Yuki/actions/runs/34772212230) 全通过：910 项测试、19 项迁移矩阵、示例插件及 GitHub Monitor 合同、Ruff、Mypy、语音、记忆质量与 Docker。
 - 线上镜像 `ghcr.io/yuanyeyoutao/yuki-qqbot:entrypoints-de942d6`，源码提交 `de942d6298e19f6e65a0f36750e9ef4f1c975bb2`；运行代码、依赖声明及迁移与合并后的 main 一致。
 - 服务器利用未变化的原依赖镜像构建源码更新层，619 个源码和迁移文件 SHA-256 校验通过；旧插件只读后端不存在。此镜像保存在服务器，未另发正式版本或发布 GHCR 标签。
 - 停 Bot 后保存一致性恢复点 `/opt/yuki-qqbot/backups/pre-entrypoints-20260913T174650Z`，包含 Bot/Manager 数据库与部署配置。生产迁移至 0060，完整性、外键和启动校验通过；继承 41 条 run 预算。

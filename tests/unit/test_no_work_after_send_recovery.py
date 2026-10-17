@@ -10,13 +10,13 @@ from tests.support.commands_and_chat_helpers import inbound
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.hydrate import require_primary_alias_for_conversation
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.llm.base import LLMEmptyResponseError, LLMMalformedFunctionCallError
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.runtime.work_schema_v1 import work
+from yuki.conversation.hydrate import require_primary_alias_for_conversation
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.llm.base import LLMEmptyResponseError, LLMMalformedFunctionCallError
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_schema_v1 import work
 
 
 @pytest.mark.asyncio

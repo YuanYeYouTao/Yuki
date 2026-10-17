@@ -11,14 +11,14 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import event, insert, select, update
 
-from qq_ai_bot.conversation import media_service
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.conversation.media_service import ConversationMediaError, ConversationMediaService
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatImage
-from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
+from yuki.conversation import media_service
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.media_service import ConversationMediaError, ConversationMediaService
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import ChatImage
+from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.image_preprocessor import ImagePreprocessor
 
 
 async def _cache(database, tmp_path, count=1):

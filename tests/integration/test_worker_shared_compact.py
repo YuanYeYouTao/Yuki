@@ -5,14 +5,14 @@ from dataclasses import replace
 from sqlalchemy import select
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
-from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_session import WorkSession
-from qq_ai_bot.services.turn_execution import TurnExecution
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.web.models import WebMode
+from yuki.domain.messages import ChatMessage
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.models import ModelExecutionPriority
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_session import WorkSession
+from yuki.services.turn_execution import TurnExecution
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.web.models import WebMode
 
 
 async def test_worker_compact_current_uses_original_child_and_root_budget(database, tmp_path):

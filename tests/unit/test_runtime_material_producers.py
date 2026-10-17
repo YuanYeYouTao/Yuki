@@ -6,21 +6,21 @@ import json
 
 import pytest
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
-from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
-from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
-from qq_ai_bot.plugin_host.prompt_adapter import PluginPromptAdapter
-from qq_ai_bot.prompting import (
+from yuki.domain.messages import ChatMessage, ChatRequest
+from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
+from yuki.plugin_host.prompt_adapter import PluginPromptAdapter
+from yuki.prompting import (
     PromptChannel,
     PromptCompiler,
     PromptContribution,
     PromptProgram,
     PromptTrust,
 )
-from qq_ai_bot.services.model_context_projection import project_short_state
-from qq_ai_bot.services.prompt_registry import PromptRegistry
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.services.model_context_projection import project_short_state
+from yuki.services.prompt_registry import PromptRegistry
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import PromptFragment, PromptStage, TrustedLevel
 from yuki_plugin_sdk.permissions import PluginPermission
@@ -44,7 +44,7 @@ async def test_short_state_first_write_and_clear_only_return_the_changed_slot(tm
 
 def test_short_state_expiry_changes_the_read_value_without_renewal(tmp_path, monkeypatch) -> None:
     clock = 1_000_000
-    monkeypatch.setattr("qq_ai_bot.workspace.short_state.time.time", lambda: clock)
+    monkeypatch.setattr("yuki.workspace.short_state.time.time", lambda: clock)
     state = ShortState(WorkspaceStore(tmp_path / "workspace"))
     state.update({"slot": 1, "text": "temporary"})
     before = state.snapshot()[0]

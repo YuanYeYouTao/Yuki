@@ -10,9 +10,9 @@ from nonebot.adapters.onebot.v11 import (
 )
 from nonebot.adapters.onebot.v11.event import Reply, Sender
 
-from qq_ai_bot.adapters.onebot.normalizer import normalize_event, reproject_inbound_mentions
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import AttachmentKind
+from yuki.adapters.onebot.normalizer import normalize_event, reproject_inbound_mentions
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import AttachmentKind
 
 
 def private_event(

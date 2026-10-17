@@ -8,25 +8,25 @@ import pytest
 from tests.support.codemode_cases import requires_worker
 from tests.support.codemode_runner_helpers import ACCEPT, Backend, call, runner_env
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatResponse
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.models import (
+from yuki.domain.messages import ChatMessage, ChatRequest, ChatResponse
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.llm.openai_compatible import OpenAICompatibleProvider
+from yuki.llm.openai_responses import OpenAIResponsesProvider
+from yuki.model_runtime.executor import TaskModelExecutor
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
     ModelRoute,
     ModelTask,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-from qq_ai_bot.model_runtime.routes import ModelRouter
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_journal import WorkJournal, decode_transcript
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import ModelProfileCatalog
+from yuki.model_runtime.routes import ModelRouter
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_journal import WorkJournal, decode_transcript
 
 pytestmark = requires_worker
 

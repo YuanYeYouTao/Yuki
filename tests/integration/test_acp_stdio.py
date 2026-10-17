@@ -65,7 +65,7 @@ def process(peer, url, state):
         cast(Client, peer),
         sys.executable,
         "-m",
-        "qq_ai_bot.cli",
+        "yuki.cli",
         "acp",
         "--url",
         url,

@@ -9,9 +9,9 @@ from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_app_messages import drain
 from tests.unit.test_client_api import bearer, pair, person_and_code
 
-from qq_ai_bot.client_api.errors import ClientError
-from qq_ai_bot.client_api.prompts import ClientPrompts
-from qq_ai_bot.client_api.requests import ClientRequests
+from yuki.client_api.errors import ClientError
+from yuki.client_api.prompts import ClientPrompts
+from yuki.client_api.requests import ClientRequests
 
 app_env = app_fixture
 admin = admin_fixture
@@ -144,7 +144,7 @@ async def test_revoked_device_cannot_cancel_an_accepted_prompt(app_env, monkeypa
 
     # Revocation blocks new API actions; the already finished execution keeps its receipt.
     async with env.identity.database.sessions() as reader:
-        from qq_ai_bot.client_api.requests import personal_command
+        from yuki.client_api.requests import personal_command
 
         receipt = await personal_command(reader, principal.request_person_id, request_id)
         assert receipt is not None and receipt.operation_kind == "client.message"

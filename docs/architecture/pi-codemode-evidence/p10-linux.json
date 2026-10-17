@@ -8,9 +8,9 @@
   "native_sha256": "fc4ee999669c5f520f6d37333b13e341fc4a00493785e0a6e6b6133dfe435241",
   "launcher_sha256": "bc3dd9cd7d1d0f0c11fe294c5e586ca30a28f4281271ee9cda3db800abd07c63",
   "source_sha256": {
-    "src/qq_ai_bot/services/agent_runner.py": "bcfb0de33c366231a36825fefbe979e6a30d987edb30519eaedc9680267f9f26",
-    "src/qq_ai_bot/services/turn_execution.py": "420cf1b390f5531c6637662cf5fbc374744245840612ca3eb381ca4ac7865958",
-    "src/qq_ai_bot/agent_core/loop.py": "ae70d4ddb208aa81163efa6e186757b4e8b962be7e59dc2c84afb914e34a3b1d"
+    "src/yuki/services/agent_runner.py": "bcfb0de33c366231a36825fefbe979e6a30d987edb30519eaedc9680267f9f26",
+    "src/yuki/services/turn_execution.py": "420cf1b390f5531c6637662cf5fbc374744245840612ca3eb381ca4ac7865958",
+    "src/yuki/agent_core/loop.py": "ae70d4ddb208aa81163efa6e186757b4e8b962be7e59dc2c84afb914e34a3b1d"
   },
   "real_business_effects": 0
 }

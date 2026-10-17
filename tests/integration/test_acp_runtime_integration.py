@@ -13,12 +13,12 @@ from tests.integration.test_current_material_main_contract import _deployment
 from tests.unit.test_client_api import bearer
 from tests.unit.test_client_sdk import DropAcknowledgement
 
-from qq_ai_bot.client_api.http import attach_client_api
-from qq_ai_bot.client_sdk import Outbox, PersonalClient
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_repository import WorkRepository
+from yuki.client_api.http import attach_client_api
+from yuki.client_sdk import Outbox, PersonalClient
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_repository import WorkRepository
 
 
 def sent_reply(request):

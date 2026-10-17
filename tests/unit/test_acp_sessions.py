@@ -11,22 +11,22 @@ from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_client_works import owner
 
-from qq_ai_bot.client_api.errors import ClientError
-from qq_ai_bot.client_api.identity import ClientIdentityService
-from qq_ai_bot.client_api.requests import personal_command
-from qq_ai_bot.client_api.sessions import ClientSessions
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.client_api.errors import ClientError
+from yuki.client_api.identity import ClientIdentityService
+from yuki.client_api.requests import personal_command
+from yuki.client_api.sessions import ClientSessions
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ControlCommandReceiptModel,
 )
-from qq_ai_bot.conversation.hydrate import bump_canonical_generation
-from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from qq_ai_bot.identity.person_identity import merge_persons
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.conversation.hydrate import bump_canonical_generation
+from yuki.conversation.scope_repository import ConversationScopeRepository
+from yuki.domain.conversations import ConversationScope
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.identity.person_identity import merge_persons
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 app_env = app_fixture
 admin = admin_fixture

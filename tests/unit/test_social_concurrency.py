@@ -9,14 +9,14 @@ import pytest
 from sqlalchemy import select, update
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.canonical_db_models import SpaceActiveRouteModel
-from qq_ai_bot.gateway.social import TransportMessage
-from qq_ai_bot.identity.canonical_repository import ensure_space
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
-from qq_ai_bot.identity.routing import RouteSendError
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.social.models import SocialError, SocialTarget
+from yuki.conversation.canonical_db_models import SpaceActiveRouteModel
+from yuki.gateway.social import TransportMessage
+from yuki.identity.canonical_repository import ensure_space
+from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
+from yuki.identity.routing import RouteSendError
+from yuki.persistence.database import Database
+from yuki.persistence.models import ChatEventModel
+from yuki.social.models import SocialError, SocialTarget
 
 
 @pytest.mark.parametrize("enabled", [True, False])

@@ -8,19 +8,19 @@ from unittest.mock import AsyncMock
 from sqlalchemy import select, update
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import (
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import (
     AttachmentKind,
     InboundMessage,
     MessageAttachment,
     SenderIdentity,
 )
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.attachment_inputs import AttachmentInputService, NativeInput
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.attachment_inputs import AttachmentInputService, NativeInput
 
 
 async def setup_forward(database, tmp_path, segments):

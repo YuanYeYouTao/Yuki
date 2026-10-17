@@ -16,9 +16,9 @@ from tests.support.work_compaction_capacity_helpers import _grow, _runtime
 from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_journal_source_retry import _change, _session
 
-from qq_ai_bot.conversation.observation_models import ContextObservationModel
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import (
+from yuki.conversation.observation_models import ContextObservationModel
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import (
     ChatMessage,
     InboundMessage,
     ProviderContinuation,
@@ -26,28 +26,28 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.context_preparation import (
+from yuki.execution_trace.db_models import ExecutionTraceStateModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.models import ModelExecutionPriority
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.context_preparation import (
     prepare_context,
     protocol_recovery_preparation,
     select_protocol_recovery,
 )
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_journal import decode_transcript
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
-from qq_ai_bot.services.context_assembler import ContextAssembler
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_journal import decode_transcript
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_schema_v1 import effects
+from yuki.runtime.work_source_guard import WorkSourceGuard
+from yuki.services.context_assembler import ContextAssembler
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 
 
 async def as_child(control, original):
@@ -443,8 +443,8 @@ async def test_paid_current_compact_recovery_prepares_latest_public_history(
         runtime = replace(
             runtime, runtime_config=config, fixed_tools=definitions, auxiliary_requests=[0]
         )
-        from qq_ai_bot.domain.messages import ChatRequest
-        from qq_ai_bot.services.turn_execution import TurnExecution
+        from yuki.domain.messages import ChatRequest
+        from yuki.services.turn_execution import TurnExecution
 
         main = ChatRequest(messages=session.transcript.request().messages, tools=definitions)
         execution = TurnExecution(runner, first.messages, runtime, None)
@@ -509,7 +509,7 @@ async def test_paid_current_compact_recovery_prepares_latest_public_history(
             == "Continue the original task with verified findings."
         )
         invoke.assert_awaited_once()
-        from qq_ai_bot.runtime.work_schema_v1 import inputs
+        from yuki.runtime.work_schema_v1 import inputs
 
         async with database.sessions() as reader:
             assert (

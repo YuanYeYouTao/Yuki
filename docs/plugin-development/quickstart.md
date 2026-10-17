@@ -75,8 +75,8 @@ class HelloPlugin:
 
 ```bash
 uv sync --frozen --extra dev
-uv run qq-ai-bot-cli plugin validate plugins/com.example.hello
-uv run qq-ai-bot-cli plugin test plugins/com.example.hello
+uv run yuki plugin validate plugins/com.example.hello
+uv run yuki plugin test plugins/com.example.hello
 ```
 
 也可以在 pytest 中使用测试 SDK：
@@ -108,10 +108,10 @@ CLI 以 Bearer 逐次认证，读取最新 revision 后提交原请求；未知�
 审阅 `inspect` 的权限后显式批准：
 
 ```bash
-uv run qq-ai-bot-cli plugin discover
-uv run qq-ai-bot-cli plugin inspect com.example.hello
-uv run qq-ai-bot-cli plugin approve com.example.hello --permission command.register
-uv run qq-ai-bot-cli plugin enable com.example.hello
+uv run yuki plugin discover
+uv run yuki plugin inspect com.example.hello
+uv run yuki plugin approve com.example.hello --permission command.register
+uv run yuki plugin enable com.example.hello
 ```
 
 `approve` 不传 `--permission` 只批准空权限集合，不自动批准 Manifest 的全部请求。连接中断会保留并显示原请求编号；查原 Control 回执后再决定后续动作，不盲重发。`validate`、`test`、`docs` 仍可离线运行。`setup apply-pending` 在线时调用同一 Control 接口；仅在成功获取原应用排他锁后才进行停机 bootstrap。

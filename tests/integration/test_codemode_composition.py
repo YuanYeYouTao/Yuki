@@ -12,8 +12,8 @@ from tests.support.codemode_cases import (
     run_code,
 )
 
-from qq_ai_bot.codemode.driver import CodeModeDriver
-from qq_ai_bot.runtime.work_budget_schema import budgets
+from yuki.codemode.driver import CodeModeDriver
+from yuki.runtime.work_budget_schema import budgets
 
 pytestmark = requires_worker
 
@@ -195,7 +195,7 @@ async def test_segment_allowance_yields_and_resumes_same_composition(database, t
     code = "a = await yuki_lookup({'q': 1})\nb = await yuki_lookup({'q': 2})\n[a['ok'], b['ok']]"
     from tests.support.codemode_cases import outer_call
 
-    from qq_ai_bot.codemode.driver import CodeCompositionYield
+    from yuki.codemode.driver import CodeCompositionYield
 
     outer = outer_call(env, code)
     with pytest.raises(CodeCompositionYield):

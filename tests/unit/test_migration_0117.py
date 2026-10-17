@@ -6,7 +6,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
 
-from qq_ai_bot.persistence.database import Database
+from yuki.persistence.database import Database
 
 
 def test_upgrade_removes_only_agent_action_diagnostics(tmp_path, monkeypatch):

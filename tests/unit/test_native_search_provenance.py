@@ -7,7 +7,7 @@ import httpx
 import pytest
 from tests.unit.test_provider_protocols import provider, request
 
-from qq_ai_bot.domain.messages import (
+from yuki.domain.messages import (
     ChatMessage,
     CitationOrigin,
     ModelResponseStatus,
@@ -18,14 +18,14 @@ from qq_ai_bot.domain.messages import (
     ProviderContinuation,
     ResponseCitation,
 )
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.base import LLMInvalidResponseError
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.openai_responses import (
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.base import LLMInvalidResponseError
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.llm.openai_responses import (
     OpenAICompatibleResponsesProvider,
     OpenAIResponsesProvider,
 )
-from qq_ai_bot.web.native_sources import recover_native_web_response
+from yuki.web.native_sources import recover_native_web_response
 
 
 def native_request():

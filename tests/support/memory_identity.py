@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from tests.unit.test_client_identity import code_for
 
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
+from yuki.identity.canonical_repository import find_identity_binding
 
 
 async def transfer_account(database, account: str, target_account: str = "1002"):

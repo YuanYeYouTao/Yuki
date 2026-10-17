@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from qq_ai_bot.model_runtime.models import ModelTask
+from yuki.model_runtime.models import ModelTask
 
 
 def write_fake_profiles(path: Path, *, model: str = "fake-model") -> Path:

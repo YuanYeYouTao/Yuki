@@ -11,13 +11,13 @@ from sqlalchemy import select, update
 from tests.support.runtime_work_helpers import _persisted_tool_receipt
 from tests.support.subagents_helpers import stack
 
-from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
-from qq_ai_bot.runtime.subagent_schema import children
-from qq_ai_bot.runtime.subagent_tools import execute_subagent, subagent_tools
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_schema_v1 import effects, work
+from yuki.runtime.subagent_scheduler import SubagentScheduler
+from yuki.runtime.subagent_schema import children
+from yuki.runtime.subagent_tools import execute_subagent, subagent_tools
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_schema_v1 import effects, work
 
 
 async def _completed_child(
@@ -335,8 +335,8 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(
     repo, workers, parent_lease, parent, initial = await stack(database, tmp_path)
     obsolete = []
     if repair_barrier == "obsolete_generation":
-        from qq_ai_bot.conversation.hydrate import bump_canonical_generation
-        from qq_ai_bot.persistence.models import ChatEventModel
+        from yuki.conversation.hydrate import bump_canonical_generation
+        from yuki.persistence.models import ChatEventModel
 
         obsolete = [initial]
         for index in range(7):
@@ -526,9 +526,9 @@ async def test_retained_child_resumes_without_reopening_ancestors_or_resetting_b
 
 
 async def test_neutral_resume_cannot_borrow_another_persons_child(database, tmp_path):
-    from qq_ai_bot.identity.canonical_repository import ensure_person
-    from qq_ai_bot.runtime.work_queries import WorkQueries
-    from qq_ai_bot.runtime.work_schema_v1 import inputs
+    from yuki.identity.canonical_repository import ensure_person
+    from yuki.runtime.work_queries import WorkQueries
+    from yuki.runtime.work_schema_v1 import inputs
 
     repo, workers, parent_lease, parent, identity = await stack(database, tmp_path)
     child_lease = await workers.acquire(identity)
@@ -612,7 +612,7 @@ async def test_paused_child_resumes_original_goal_without_a_new_instruction(
 
 
 async def test_three_level_creation_queries_budget_and_direct_parent_recovery(database, tmp_path):
-    from qq_ai_bot.runtime.work_tree import ancestor_work_ids, descendant_work_ids
+    from yuki.runtime.work_tree import ancestor_work_ids, descendant_work_ids
 
     database.subagents_enabled = True
     repo, workers, parent_lease, root, sibling = await stack(database, tmp_path)
@@ -736,8 +736,8 @@ async def test_three_level_creation_queries_budget_and_direct_parent_recovery(da
         )
     )
     assert archived["work"]["state"] == "cancelled"
-    from qq_ai_bot.runtime.work_budget_schema import budgets
-    from qq_ai_bot.runtime.work_queries import WorkQueries
+    from yuki.runtime.work_budget_schema import budgets
+    from yuki.runtime.work_queries import WorkQueries
 
     details = await WorkQueries(repo).get(leaf_lease, {}, leaf_id)
     assert details["parent_work_id"] == branch_id
@@ -817,9 +817,9 @@ async def test_derived_call_retrieves_terminal_child_without_new_identity_or_bud
 
 
 async def test_privacy_purge_removes_one_actual_tree_and_preserves_other_scope(database, tmp_path):
-    from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-    from qq_ai_bot.identity.canonical_repository import ensure_space
-    from qq_ai_bot.runtime.work_schema_v1 import scope
+    from yuki.conversation.hydrate import ensure_canonical_conversation
+    from yuki.identity.canonical_repository import ensure_space
+    from yuki.runtime.work_schema_v1 import scope
 
     repo, workers, lease, root, sibling = await stack(database, tmp_path)
     branch = await repo.derive(lease, root["id"], "private-branch", "private child")
@@ -885,9 +885,9 @@ async def test_original_sandbox_completion_keeps_remaining_all_wait_conditions(d
 
     from tests.unit.test_work_settlement_writer import _running_work
 
-    from qq_ai_bot.runtime.work_wait import WorkWaitRepository
-    from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
-    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+    from yuki.runtime.work_wait import WorkWaitRepository
+    from yuki.sandbox.db_models import SandboxTaskRunModel
+    from yuki.sandbox.task_repository import SandboxTaskRepository
 
     repo, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
@@ -965,7 +965,7 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
 
     from tests.support.background_authority import approve_background_plugin
 
-    from qq_ai_bot.plugin_host.db_models import PluginBackgroundTurnJobModel
+    from yuki.plugin_host.db_models import PluginBackgroundTurnJobModel
     from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
     repo, workers, parent_lease, root, sibling = await stack(database, tmp_path)
@@ -1158,7 +1158,7 @@ async def test_paused_descendant_retains_terminal_ancestors_and_resumes_without_
     assert (await repo.get(leaf_id))["source_json"] == before["source_json"]
     for identity, original in original_roots.items():
         assert await repo.get(identity) == original
-    from qq_ai_bot.runtime.work_tree import ancestor_work_ids, budget_root_id
+    from yuki.runtime.work_tree import ancestor_work_ids, budget_root_id
 
     async with database.sessions() as reader:
         assert await ancestor_work_ids(reader, leaf_id) == [branch["id"], root["id"]]
@@ -1190,8 +1190,8 @@ async def test_completed_nested_artifact_remains_readable_until_retained_tree_se
 ):
     from datetime import UTC, datetime, timedelta
 
-    from qq_ai_bot.persistence.models import ToolArtifactModel
-    from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+    from yuki.persistence.models import ToolArtifactModel
+    from yuki.tool_results.artifacts import ToolArtifactRepository
 
     repo, workers, lease, root, _sibling = await stack(database, tmp_path)
     branch_id = (await repo.derive(lease, root["id"], "artifact-branch", "retain child evidence"))[
@@ -1301,8 +1301,8 @@ async def test_original_sandbox_runs_cancel_for_stopped_work_and_preserve_late_r
     from tests.conftest import build_harness, make_settings
     from tests.support.runtime_execution import make_child_executor
 
-    from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
-    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+    from yuki.sandbox.db_models import SandboxTaskRunModel
+    from yuki.sandbox.task_repository import SandboxTaskRepository
 
     repo, workers, lease, root, failed_worker = await stack(database, tmp_path)
     branch = await repo.derive(lease, root["id"], "branch", "ordinary child")
@@ -1433,7 +1433,7 @@ async def test_child_cancellation_retires_accepted_control_and_retains_real_rece
         assert not await repo.valid(lease)
     else:
         await repo.release(lease)
-        from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+        from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
         async with database.immediate_session() as session:
             await session.execute(
@@ -1464,7 +1464,7 @@ async def test_retired_generation_notification_maintenance_stays_read_only(
 ):
     from contextlib import asynccontextmanager
 
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
 
     repository, workers, parent, lease, identity, _ = await _completed_child(database, tmp_path)
     await repository.release(lease)

@@ -1,6 +1,6 @@
 # Incoming voice recognition / 接收语音识别
 
-Issue [#14](https://github.com/YuanYeYouTao/Yuki-QQbot/issues/14) requests file sending
+Issue [#14](https://github.com/YuanYeYouTao/Yuki/issues/14) requests file sending
 and speech recognition. File sending already uses the shared workspace/social
 delivery service, including separate upload and caption receipts. This change
 adds automatic recognition of inbound OneBot `record` segments.

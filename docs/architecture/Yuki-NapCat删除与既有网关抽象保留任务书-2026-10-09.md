@@ -10,7 +10,7 @@
 
 ## 1. 范围与基线
 
-- 审计基线：main `e783175d41fb48dc5c7e7a352c255e9099258115`。完整路径相对仓库根目录；源码模块短路径相对 `src/qq_ai_bot/`，同段短文件名沿所指模块。行号只用于定位该基线。
+- 审计基线：main `e783175d41fb48dc5c7e7a352c255e9099258115`。完整路径相对仓库根目录；源码模块短路径相对 `src/yuki/`，同段短文件名沿所指模块。行号只用于定位该基线。
 - 当前交付：实现、验证、PR 合并、镜像构建、生产上线与服务器清理均已完成；实际回执见任务索引、§12 与[上线报告](../operations/napcat-retirement-20261009.md)。3.9.0 仍未正式发行。
 - 实施目标：Yuki 不再附带、装配、安装或承诺兼容 NapCat；当前附带网关为 SnowLuma，网关层继续可替换。
 - 用户于 2026-10-09 追加授权：按老规矩 PR、合并、本地构建、上传上线，并清理服务器旧镜像，只保留最新与第二新。只更新 Bot，保持 SnowLuma 实例和 QQ 登录资料；清理先核实际容器、挂载和持久引用。
@@ -56,19 +56,19 @@
 
 | 位置（基线） | 具体处理 |
 | --- | --- |
-| `src/qq_ai_bot/gateway/providers/napcat.py:1–49` | 整文件删除：NapCatProvider、ID、能力常量及 napcat_provider_catalog |
-| `src/qq_ai_bot/gateway/providers/__init__.py:4–7,16–18,22–27` | 删除 NapCat 导入、builtin 实例与导出；保留现有 Catalog 装配，同步修正“一律需要显式选择”的旧 docstring |
-| `src/qq_ai_bot/adapters/onebot/provider_adapter.py:16,119–127,171` | 删除 NapCatOneBotAdapter、专属导入和导出；其继承开启的旧 OneBot HTTP/WS 接入入口随之退出，不把旧入口改接 SnowLuma |
-| `src/qq_ai_bot/adapters/onebot/__init__.py:5,12`；`src/qq_ai_bot/main.py:16,77` | 删除公开导出、import 和 driver 注册，核对所有消费者 |
+| `src/yuki/gateway/providers/napcat.py:1–49` | 整文件删除：NapCatProvider、ID、能力常量及 napcat_provider_catalog |
+| `src/yuki/gateway/providers/__init__.py:4–7,16–18,22–27` | 删除 NapCat 导入、builtin 实例与导出；保留现有 Catalog 装配，同步修正“一律需要显式选择”的旧 docstring |
+| `src/yuki/adapters/onebot/provider_adapter.py:16,119–127,171` | 删除 NapCatOneBotAdapter、专属导入和导出；其继承开启的旧 OneBot HTTP/WS 接入入口随之退出，不把旧入口改接 SnowLuma |
+| `src/yuki/adapters/onebot/__init__.py:5,12`；`src/yuki/main.py:16,77` | 删除公开导出、import 和 driver 注册，核对所有消费者 |
 | `pyproject.toml:94–97` 的 `[tool.nonebot]` | 删除孤立的 plugins/plugin_dirs/裸 OneBot V11 适配器启动元数据。本仓正式入口不消费它，外部 NoneBot 工具却可另生成注册裸 Adapter 的启动脚本；不把声明改成 SnowLuma，也不增添另一条启动链。保留现有 console scripts、OneBot 依赖和 main 的实际插件加载 |
-| `src/qq_ai_bot/gateway/compatibility.py:8,49–53` | 删除 NapCat doctor 路径声明；保留实际使用的 OneBot action 合同和 SnowLuma 声明 |
-| `src/qq_ai_bot/social/service.py:28–29,237–244` | 删除每次构造的 `{napcat: NapCatProvider(), snowluma: SnowLumaProvider()}` 品牌分派和未知品牌拒绝。两个实现没有覆写社交动作，直接复用已有 OneBotSocialOperations；原 route、效果 claim 和授权链保持 |
-| `src/qq_ai_bot/gateway/providers/snowluma.py:8,25` | N02 直接复用 OneBotSocialOperations 后，删除 SnowLumaProvider 失去消费者的 mixin 继承和 import。GatewayProvider 合同只要求 provider_id/describe_connection；保留 SnowLuma 原 profile/能力实现和共同社交操作，不合并出新抽象 |
-| `src/qq_ai_bot/adapters/onebot/provider_adapter.py:159–165` 与相关 `__all__` | 删除零消费者的 provider_id_for_bot，连同仅供它使用的 OneBot Bot import（:12）；不新增替代 getter |
-| `src/qq_ai_bot/adapters/onebot/sender.py:76–89` | 删除零消费者的 provider_id 属性及 Registry → adapter → `onebot` 来源兜底。真实来源已经由 ingress 的 Registry snapshot 入账，不制造默认来源 |
-| `src/qq_ai_bot/cli.py:63–97,637–638,670–671` | 删除 NapCat 配置渲染函数、render-napcat-config 注册与分发，并删除死 import |
-| `src/qq_ai_bot/cli.py:30,652` | 删除 doctor 的 NapCat 选择；能直接使用现存 catalog.provider_ids 时就复用，不另造发现机制 |
-| `src/qq_ai_bot/admin/config_specs_protected.py:101–110` | 删除 NapCat WebUI Token 占位规格，不新增另一个品牌占位替代。前端经 list_config_specs 间接消费，此项不需要新页面 |
+| `src/yuki/gateway/compatibility.py:8,49–53` | 删除 NapCat doctor 路径声明；保留实际使用的 OneBot action 合同和 SnowLuma 声明 |
+| `src/yuki/social/service.py:28–29,237–244` | 删除每次构造的 `{napcat: NapCatProvider(), snowluma: SnowLumaProvider()}` 品牌分派和未知品牌拒绝。两个实现没有覆写社交动作，直接复用已有 OneBotSocialOperations；原 route、效果 claim 和授权链保持 |
+| `src/yuki/gateway/providers/snowluma.py:8,25` | N02 直接复用 OneBotSocialOperations 后，删除 SnowLumaProvider 失去消费者的 mixin 继承和 import。GatewayProvider 合同只要求 provider_id/describe_connection；保留 SnowLuma 原 profile/能力实现和共同社交操作，不合并出新抽象 |
+| `src/yuki/adapters/onebot/provider_adapter.py:159–165` 与相关 `__all__` | 删除零消费者的 provider_id_for_bot，连同仅供它使用的 OneBot Bot import（:12）；不新增替代 getter |
+| `src/yuki/adapters/onebot/sender.py:76–89` | 删除零消费者的 provider_id 属性及 Registry → adapter → `onebot` 来源兜底。真实来源已经由 ingress 的 Registry snapshot 入账，不制造默认来源 |
+| `src/yuki/cli.py:63–97,637–638,670–671` | 删除 NapCat 配置渲染函数、render-napcat-config 注册与分发，并删除死 import |
+| `src/yuki/cli.py:30,652` | 删除 doctor 的 NapCat 选择；能直接使用现存 catalog.provider_ids 时就复用，不另造发现机制 |
+| `src/yuki/admin/config_specs_protected.py:101–110` | 删除 NapCat WebUI Token 占位规格，不新增另一个品牌占位替代。前端经 list_config_specs 间接消费，此项不需要新页面 |
 | `.env.example:8,13–14,24–28,447` | 删除所有 NAPCAT_* 与支持说明；新部署示例明确选择附带的 snowluma profile。这只是部署示例，不是核心来源默认值 |
 | `docker-compose.yml:24–25,38,57–80` | 删除 bot 的 NapCat env/mount 和完整 napcat service/profile：镜像、账号、UID/GID、WebUI/token、6099 和专属目录。共享 social-transfer 仍供 SnowLuma 与 bot 使用，保留 |
 | `Dockerfile:61`；`scripts/start.sh:4,10–12` | 删除 NapCat 目录创建和启动渲染分支；保留原 bot/SnowLuma 启动流程 |

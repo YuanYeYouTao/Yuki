@@ -11,20 +11,20 @@ from tests.support.agent_backend import StubAgentBackend
 from tests.support.work_runner_helpers import case, run, tool
 from tests.unit.test_subagent_lifecycle import worker_case
 
-from qq_ai_bot.capabilities.coordinator import CoordinatedToolResult
-from qq_ai_bot.capabilities.media import MediaResultText
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ChatResponse, ChatTool
-from qq_ai_bot.model_runtime.models import ModelCapability
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.effect_outcomes import current_result_capture
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_schema_v1 import effects, work
-from qq_ai_bot.runtime.work_session import WorkSession
-from qq_ai_bot.services.agent_runner import CODE_COMPOSITION_YIELDED
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.capabilities.coordinator import CoordinatedToolResult
+from yuki.capabilities.media import MediaResultText
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatImage, ChatMessage, ChatResponse, ChatTool
+from yuki.model_runtime.models import ModelCapability
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.effect_outcomes import current_result_capture
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_schema_v1 import effects, work
+from yuki.runtime.work_session import WorkSession
+from yuki.services.agent_runner import CODE_COMPOSITION_YIELDED
+from yuki.services.turn_transcript import TurnTranscript
 
 
 class RegistrationCrash(BaseException):

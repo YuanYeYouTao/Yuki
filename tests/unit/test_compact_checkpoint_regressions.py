@@ -3,12 +3,12 @@
 import pytest
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.projections import PromptProjectionRepository
-from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import ensure_space
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.conversation.projections import PromptProjectionRepository
+from yuki.conversation.scope_repository import ConversationScopeRepository
+from yuki.domain.conversations import ConversationScope
+from yuki.identity.canonical_repository import ensure_space
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 @pytest.mark.parametrize("maximum_views", [1, 128])
@@ -89,16 +89,16 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(
 
     import httpx
 
-    from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatTool
-    from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-    from qq_ai_bot.llm.gemini import GeminiProvider
-    from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-    from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
-    from qq_ai_bot.services.context_compaction import (
+    from yuki.domain.messages import ChatMessage, ChatRequest, ChatTool
+    from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+    from yuki.llm.gemini import GeminiProvider
+    from yuki.llm.openai_responses import OpenAIResponsesProvider
+    from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+    from yuki.services.context_compaction import (
         EXECUTION_COMPACT_INSTRUCTION,
         execution_compact_plan,
     )
-    from qq_ai_bot.services.turn_transcript import TurnTranscript
+    from yuki.services.turn_transcript import TurnTranscript
 
     initial = (
         ChatMessage("system", "original static contract"),
@@ -258,9 +258,9 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(
 
         from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
-        from qq_ai_bot.llm.fake import FakeLLMProvider
-        from qq_ai_bot.services.turn_execution import TurnExecution
-        from qq_ai_bot.web.models import WebMode
+        from yuki.llm.fake import FakeLLMProvider
+        from yuki.services.turn_execution import TurnExecution
+        from yuki.web.models import WebMode
 
         control, session, _ = await _session(database, tmp_path)
         session.transcript = transcript
@@ -303,12 +303,12 @@ async def test_irreducible_raw_tail_does_not_buy_repeated_compacts(database, tmp
 
     from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
-    from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.model_runtime.capacity import ModelCapacity
-    from qq_ai_bot.runtime.work_repository import WorkCapacityError
-    from qq_ai_bot.services.turn_execution import TurnExecution
-    from qq_ai_bot.web.models import WebMode
+    from yuki.domain.messages import ChatMessage, ToolCall, ToolFunction
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.model_runtime.capacity import ModelCapacity
+    from yuki.runtime.work_repository import WorkCapacityError
+    from yuki.services.turn_execution import TurnExecution
+    from yuki.web.models import WebMode
 
     control, session, initial = await _session(database, tmp_path)
     session.transcript.append(ChatMessage("assistant", "earlier completed finding " * 100))
@@ -390,10 +390,10 @@ def test_public_plan_scaling_measurement():
     from time import perf_counter
     from types import SimpleNamespace
 
-    from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-    from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
-    from qq_ai_bot.services.context_compaction import PublicCompactContext, public_compact_plan
-    from qq_ai_bot.services.turn_transcript import TurnTranscript
+    from yuki.conversation.frozen_fragments import FrozenFragments
+    from yuki.domain.messages import ChatMessage, ChatRequest
+    from yuki.services.context_compaction import PublicCompactContext, public_compact_plan
+    from yuki.services.turn_transcript import TurnTranscript
 
     static = ChatMessage("system", "original static instructions")
     metrics = []
@@ -460,12 +460,12 @@ async def test_status_does_not_report_source_invalidated_checkpoint(database, tm
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.commands_and_chat_helpers import inbound
 
-    from qq_ai_bot.conversation.projections import PromptProjectionRepository
-    from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-    from qq_ai_bot.persistence.models import ChatEventModel
+    from yuki.conversation.projections import PromptProjectionRepository
+    from yuki.conversation.scope_repository import ConversationScopeRepository
+    from yuki.domain.conversations import ConversationScope
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.persistence.event_repository import EventLedgerRepository
+    from yuki.persistence.models import ChatEventModel
 
     harness = build_harness(
         database, make_settings(database.url), FakeLLMProvider(lambda request: "not called")
@@ -528,8 +528,8 @@ async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
     from tests.support.work_compaction_capacity_helpers import _session
     from tests.unit.test_current_context_compaction import _append_public, _public_context
 
-    from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-    from qq_ai_bot.services.context_compaction import (
+    from yuki.conversation.frozen_fragments import FrozenFragments
+    from yuki.services.context_compaction import (
         PublicCompactContext,
         current_public_compact,
         public_compact_publication,
@@ -609,7 +609,7 @@ async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
     )
     # Also fence a stale publisher that raced a later adoption. Cache availability
     # must not let this already-paid older checkpoint move coverage backwards.
-    from qq_ai_bot.conversation.projections import ProjectionConflict
+    from yuki.conversation.projections import ProjectionConflict
 
     stale_publication = await public_compact_publication(repository, paid, "Older paid checkpoint")
     with pytest.raises(ProjectionConflict, match="newer checkpoint"):
@@ -645,10 +645,10 @@ async def test_two_unselected_source_changes_can_reprepare_same_journal(
     from tests.support.work_compaction_capacity_helpers import _session
     from tests.unit.test_current_context_compaction import _append_public
 
-    from qq_ai_bot.domain.messages import ChatMessage
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.runtime.work_repository import WorkConflict
-    from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+    from yuki.domain.messages import ChatMessage
+    from yuki.persistence.models import ChatEventModel
+    from yuki.runtime.work_repository import WorkConflict
+    from yuki.runtime.work_source_guard import WorkSourceGuard
 
     control, session, _ = await _session(database, tmp_path)
     scope = ConversationScope.group("80001", "20001")
@@ -711,9 +711,9 @@ async def test_source_recheck_does_not_republish_after_unconfirmed_rollback(
 ):
     from tests.support.work_compaction_capacity_helpers import _session
 
-    from qq_ai_bot.domain.messages import ChatMessage
-    from qq_ai_bot.runtime.work_repository import WorkConflict
-    from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+    from yuki.domain.messages import ChatMessage
+    from yuki.runtime.work_repository import WorkConflict
+    from yuki.runtime.work_source_guard import WorkSourceGuard
 
     control, session, _ = await _session(database, tmp_path)
     version, _ = await EventLedgerRepository(database).read_scope_context(

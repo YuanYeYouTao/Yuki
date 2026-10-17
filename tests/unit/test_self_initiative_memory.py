@@ -15,25 +15,25 @@ from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_mutation import _event, _service
 
-from qq_ai_bot.conversation.autonomy_db_models import AutonomyBindingModel, InitiativeRunModel
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.identity.db_models import SpaceBindingModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.enums import MemoryKind, MemoryScopeType, MemoryStatus, SelfMemoryVisibility
-from qq_ai_bot.memory.models import MemoryFactCreate
-from qq_ai_bot.memory.mutation.models import (
+from yuki.conversation.autonomy_db_models import AutonomyBindingModel, InitiativeRunModel
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.identity.db_models import SpaceBindingModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.enums import MemoryKind, MemoryScopeType, MemoryStatus, SelfMemoryVisibility
+from yuki.memory.models import MemoryFactCreate
+from yuki.memory.mutation.models import (
     MemoryDecisionActorType,
     MemoryMutationContext,
     MemoryMutationOperation,
     MemoryMutationRequest,
     MemoryMutationTarget,
 )
-from qq_ai_bot.memory.self_reflection.control import ReflectionControlRepository
-from qq_ai_bot.memory.self_reflection.db_models import InitiativeReflectionCursorModel
-from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
-from qq_ai_bot.memory.subjects import ResolvedSubject
-from qq_ai_bot.persistence.models import (
+from yuki.memory.self_reflection.control import ReflectionControlRepository
+from yuki.memory.self_reflection.db_models import InitiativeReflectionCursorModel
+from yuki.memory.self_reflection.repository import SelfReflectionRepository
+from yuki.memory.self_reflection.service import SelfReflectionService
+from yuki.memory.subjects import ResolvedSubject
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
     MemoryFactModel,
@@ -44,7 +44,7 @@ from qq_ai_bot.persistence.models import (
     MemorySelfReflectionStateModel,
     MemoryToolReceiptModel,
 )
-from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
+from yuki.tool_results.recorder import ToolInvocationRepository
 
 
 async def seed(database):
@@ -321,7 +321,7 @@ async def test_concurrent_reflection_claims_keep_one_original_run(
 
     with monkeypatch.context() as patch:
         if source_kind == "initiative":
-            from qq_ai_bot.memory.self_reflection import initiative
+            from yuki.memory.self_reflection import initiative
 
             resolve = initiative.resolve_self_origin
 
@@ -510,8 +510,8 @@ async def test_reflection_transition_keeps_original_source_after_unrelated_wal_c
 
 
 async def test_reflection_request_does_not_grow_with_old_self_memory(database):
-    from qq_ai_bot.memory.self_reflection.models import SelfReflectionOutput
-    from qq_ai_bot.model_runtime.models import ModelTask
+    from yuki.memory.self_reflection.models import SelfReflectionOutput
+    from yuki.model_runtime.models import ModelTask
 
     mutations, facts, event, run_id = await seed(database)
     await record(database, event, run_id)
@@ -629,7 +629,7 @@ async def test_reflection_health_uses_original_oldest_recent_cycle_baseline(data
         def now(cls, tz=None):
             return now
 
-    from qq_ai_bot.memory.self_reflection import control
+    from yuki.memory.self_reflection import control
 
     monkeypatch.setattr(control, "datetime", FixedDateTime)
     report = await ReflectionControlRepository(
@@ -661,7 +661,7 @@ async def test_mixed_recovery_prepares_full_tail_before_cursor_write_and_sees_st
         group_id="3001",
     )
     await repository.scan_new_events()
-    from qq_ai_bot.domain import audio
+    from yuki.domain import audio
 
     transcripts = []
     original_transcript = audio.transcript_context
@@ -1035,18 +1035,18 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
     from tests.integration.test_self_automation_delivery import self_actor
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.conversation.hydrate import primary_alias_for_conversation
-    from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-    from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-    from qq_ai_bot.runtime.origin import TurnOrigin
-    from qq_ai_bot.runtime.work_activation import bind_work_activation
-    from qq_ai_bot.runtime.work_control import WorkControl
-    from qq_ai_bot.runtime.work_repository import WorkRepository
-    from qq_ai_bot.services.agent_tools import ToolRuntime
-    from qq_ai_bot.services.execution_sources import recover_self_source
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
-    from qq_ai_bot.workspace.short_state import ShortState
+    from yuki.conversation.hydrate import primary_alias_for_conversation
+    from yuki.conversation.scope import ConversationTurnSnapshot
+    from yuki.domain.conversations import ConversationScope, ScopeType
+    from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+    from yuki.runtime.origin import TurnOrigin
+    from yuki.runtime.work_activation import bind_work_activation
+    from yuki.runtime.work_control import WorkControl
+    from yuki.runtime.work_repository import WorkRepository
+    from yuki.services.agent_tools import ToolRuntime
+    from yuki.services.execution_sources import recover_self_source
+    from yuki.services.main_agent_contract import MainAgentContract
+    from yuki.workspace.short_state import ShortState
 
     env = await social_env(database, tmp_path)
     if multiple_bindings:
@@ -1412,7 +1412,7 @@ async def test_reflection_only_live_source_ranges_block_claim_and_cursor(databas
 async def test_isolated_receipt_windows_do_not_starve_later_initiatives(database):
     from sqlalchemy import insert
 
-    from qq_ai_bot.memory.self_reflection.db_models import InitiativeReflectionWindowModel
+    from yuki.memory.self_reflection.db_models import InitiativeReflectionWindowModel
 
     _, _, initial, old_id = await seed(database)
     await record(database, initial, old_id)

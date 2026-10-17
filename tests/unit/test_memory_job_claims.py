@@ -13,27 +13,27 @@ from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_mutation import _service
 from tests.unit.test_memory_v2 import _append_event, _claim
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
-from qq_ai_bot.llm.base import LLMProvider
-from qq_ai_bot.memory.claim_processor import MemoryProcessingContext
-from qq_ai_bot.memory.enums import MemoryRebuildJobOutcome
-from qq_ai_bot.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
-from qq_ai_bot.memory.job_claims import MemoryJobClaimLost
-from qq_ai_bot.memory.models import MemoryJob
-from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import ChatRequest, ChatResponse
+from yuki.llm.base import LLMProvider
+from yuki.memory.claim_processor import MemoryProcessingContext
+from yuki.memory.enums import MemoryRebuildJobOutcome
+from yuki.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
+from yuki.memory.job_claims import MemoryJobClaimLost
+from yuki.memory.models import MemoryJob
+from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
+from yuki.memory.service import MemoryFactService
+from yuki.memory.worker import MemoryWorker
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryClaimCandidateModel,
     MemoryFactModel,
     MemoryJobModel,
     MemoryMutationReceiptModel,
 )
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.concurrency import ConcurrencyManager
 
 
 class _ReclaimTime(datetime):
@@ -53,7 +53,7 @@ async def test_queue_health_preserves_owner_waiting_stale_and_failure_categories
         def now(cls, tz=None):
             return clock
 
-    monkeypatch.setattr("qq_ai_bot.memory.repository.datetime", FixedClock)
+    monkeypatch.setattr("yuki.memory.repository.datetime", FixedClock)
     ledger = EventLedgerRepository(database)
     events = [
         await _append_event(
@@ -117,7 +117,7 @@ async def test_queue_health_preserves_owner_waiting_stale_and_failure_categories
 async def _reclaim(jobs: MemoryJobRepository, monkeypatch: pytest.MonkeyPatch) -> MemoryJob:
     # Advance only the queue's clock: do not alter the original claimant's row/token.
     with monkeypatch.context() as patch:
-        patch.setattr("qq_ai_bot.memory.repository.datetime", _ReclaimTime)
+        patch.setattr("yuki.memory.repository.datetime", _ReclaimTime)
         (claimed,) = await jobs.claim()
     return claimed
 

@@ -1,12 +1,12 @@
 """Explicit trusted backend for isolated Runner fixtures, never production authority."""
 
-from qq_ai_bot.services.agent_runner import AgentToolBackend
+from yuki.services.agent_runner import AgentToolBackend
 
 
 def _typed_fixture(call):
     async def execute(invocation):
-        from qq_ai_bot.capabilities.results import normalize_legacy_result
-        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+        from yuki.capabilities.results import normalize_legacy_result
+        from yuki.runtime.effect_outcomes import current_result_capture
 
         result = await call(invocation)
         capture = current_result_capture.get()

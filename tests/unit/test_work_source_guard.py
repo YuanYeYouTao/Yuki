@@ -8,17 +8,17 @@ from sqlalchemy import delete, select, update
 from sqlalchemy import event as sql_event
 from tests.support.semantic_participation_host_helpers import _event_and_route
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
-from qq_ai_bot.conversation.projection_revision_schema import EVENT_METADATA_COLUMNS_0082
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-from qq_ai_bot.identity.canonical_repository import ensure_space
-from qq_ai_bot.persistence.event_repository import ConversationReadVersion, EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
-from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+from yuki.conversation.projection_revision_schema import EVENT_METADATA_COLUMNS_0082
+from yuki.domain.conversations import ConversationScope
+from yuki.execution_trace.db_models import ExecutionTraceStateModel
+from yuki.identity.canonical_repository import ensure_space
+from yuki.persistence.event_repository import ConversationReadVersion, EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_repository import WorkConflict, WorkRepository
+from yuki.runtime.work_source_guard import WorkSourceGuard
 
 
 async def _guard(database, event):

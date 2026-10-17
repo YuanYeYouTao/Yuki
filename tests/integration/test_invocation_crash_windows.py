@@ -14,15 +14,15 @@ from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 from tests.unit.test_tool_effect_audit import active_work
 
-from qq_ai_bot.capabilities.invocation import direct_invocations
-from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.capabilities.invocation import direct_invocations
+from yuki.domain.messages import ChatMessage, ToolCall, ToolFunction
+from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.work_budget import WorkBudgetExceeded
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkConflict, WorkRepository
+from yuki.runtime.work_schema_v1 import effects, journal, work
+from yuki.services.turn_transcript import TurnTranscript
 
 
 async def prepared(database, tmp_path):

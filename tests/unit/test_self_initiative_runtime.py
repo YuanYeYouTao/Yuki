@@ -10,31 +10,31 @@ import pytest
 from sqlalchemy import select, update
 from tests.support.work_session import WorkSession, invoke_tool
 
-from qq_ai_bot.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
-from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.messages import (
+from yuki.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
+from yuki.conversation.autonomy_repository import AutonomyRepository
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.hydrate import ensure_canonical_conversation
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.messages import (
     ChatMessage,
     ChatTool,
     ProviderContinuation,
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.identity.canonical_repository import ensure_presence, ensure_space
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.errors import InvalidTurnContextError
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.work_activation import activate_work, current_work_control
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs
-from qq_ai_bot.services.execution_sources import recover_execution_source, recover_self_source
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.domain.tool_actor import ToolActor
+from yuki.identity.canonical_repository import ensure_presence, ensure_space
+from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.errors import InvalidTurnContextError
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.work_activation import activate_work, current_work_control
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkConflict, WorkRepository
+from yuki.runtime.work_schema_v1 import effects, inputs
+from yuki.services.execution_sources import recover_execution_source, recover_self_source
+from yuki.services.turn_transcript import TurnTranscript
 
 
 async def self_source(database):
@@ -118,8 +118,8 @@ def test_snapshot_and_authority_require_exactly_one_real_principal():
         replace(snap, trigger_event_id=9)
     with pytest.raises(ValueError):
         replace(snap, initiative_run_id=None)
-    from qq_ai_bot.domain.conversations import ScopeType
-    from qq_ai_bot.services.agent_tools import ToolRuntime
+    from yuki.domain.conversations import ScopeType
+    from yuki.services.agent_tools import ToolRuntime
 
     source = ToolRuntime(
         inbound=None,
@@ -286,7 +286,7 @@ async def test_self_work_restart_retains_id_budget_prefix_pending_receipt_and_de
 
 
 async def test_self_owned_sandbox_completion_routes_once_to_original_work(database):
-    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+    from yuki.sandbox.task_repository import SandboxTaskRepository
 
     source, _, _ = await self_source(database)
     repo = WorkRepository(database)
@@ -444,7 +444,7 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
     )
     from tests.support.runtime_execution import make_work_resumer
 
-    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
+    from yuki.persistence.event_repository import EventLedgerRepository
 
     resumer = make_work_resumer(
         repo,
@@ -466,9 +466,9 @@ async def test_scheduler_resumes_self_without_reading_a_person_event_or_sending_
 async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(database, tmp_path):
     from tests.support.model_profiles import write_fake_profiles
 
-    from qq_ai_bot.domain.messages import ChatRequest
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.model_runtime import (
+    from yuki.domain.messages import ChatRequest
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.model_runtime import (
         ModelClientPool,
         ModelExecutionPriority,
         ModelRouter,
@@ -476,8 +476,8 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
         TaskModelExecutor,
         load_model_profile_catalog,
     )
-    from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
-    from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+    from yuki.runtime.subagent_scheduler import SubagentScheduler
+    from yuki.services.main_agent_backend import MainAgentBackend
 
     source, _, _ = await self_source(database)
     repo = WorkRepository(database)
@@ -587,7 +587,7 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
 
 
 async def test_worker_recovery_starts_when_new_chat_and_child_admission_are_off(database):
-    from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
+    from yuki.runtime.subagent_scheduler import SubagentScheduler
 
     assert not database.subagents_enabled
     contract = SimpleNamespace(definitions=AsyncMock(return_value=()))

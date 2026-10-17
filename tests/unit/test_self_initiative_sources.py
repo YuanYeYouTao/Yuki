@@ -6,8 +6,8 @@ import pytest
 from sqlalchemy import select, update
 from tests.support.self_initiative_memory_quality_helpers import reflection_fact
 
-from qq_ai_bot.memory.self_origin import read_self_initiative_facts
-from qq_ai_bot.persistence.models import MemoryEvidenceModel, MemoryFactModel
+from yuki.memory.self_origin import read_self_initiative_facts
+from yuki.persistence.models import MemoryEvidenceModel, MemoryFactModel
 
 pytestmark = pytest.mark.asyncio
 
@@ -15,7 +15,7 @@ pytestmark = pytest.mark.asyncio
 async def test_older_readable_evidence_survives_newer_unreadable_sources(database):
     from sqlalchemy import insert
 
-    from qq_ai_bot.persistence.models import MemoryToolReceiptModel
+    from yuki.persistence.models import MemoryToolReceiptModel
 
     facts, source, _run, batch, fact_id = await reflection_fact(database)
     now = datetime.now(UTC)

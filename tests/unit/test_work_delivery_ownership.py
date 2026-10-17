@@ -17,18 +17,18 @@ from tests.support.social_identity_cases import social_env
 from tests.support.work_runner_helpers import case, run, tool
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ChatTool, ToolCall, ToolFunction
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel, IdentityBindingModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_activation import activate_work
-from qq_ai_bot.runtime.work_control import WorkControl, work_control_tools
-from qq_ai_bot.runtime.work_queries import WorkQueries
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.social.tools import social_tool_definitions
+from yuki.automation.models import TurnOrigin
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatMessage, ChatResponse, ChatTool, ToolCall, ToolFunction
+from yuki.identity.db_models import CanonicalSpaceModel, IdentityBindingModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_activation import activate_work
+from yuki.runtime.work_control import WorkControl, work_control_tools
+from yuki.runtime.work_queries import WorkQueries
+from yuki.runtime.work_repository import WorkRepository
+from yuki.services.agent_runner import AgentRuntime
+from yuki.social.tools import social_tool_definitions
 
 DELIVERY_TOOLS = tuple(
     sorted((*work_control_tools(), *social_tool_definitions()), key=lambda tool: tool.name)
@@ -266,7 +266,7 @@ async def test_accept_handoff_is_atomic_and_recovery_does_not_block_old_work_for
 ):
     from tests.support.work_session import WorkSession
 
-    from qq_ai_bot.services.turn_transcript import TurnTranscript
+    from yuki.services.turn_transcript import TurnTranscript
 
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
@@ -411,8 +411,8 @@ async def test_file_sent_caption_unknown_can_explain_and_complete_without_reuplo
     env.bot.call_api = caption_disconnected
 
     async def execute_original(invocation):
-        from qq_ai_bot.capabilities.results import normalize_legacy_result
-        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+        from yuki.capabilities.results import normalize_legacy_result
+        from yuki.runtime.effect_outcomes import current_result_capture
 
         test_case.observed.append(invocation.call.function.name)
         receipt = await env.service.execute(
@@ -544,7 +544,7 @@ async def test_direct_memory_and_send_follow_original_order_without_work_admissi
 async def test_mixed_code_resource_yield_stops_later_calls_in_original_batch(
     database, tmp_path, monkeypatch
 ):
-    from qq_ai_bot.services.agent_runner import CODE_COMPOSITION_YIELDED
+    from yuki.services.agent_runner import CODE_COMPOSITION_YIELDED
 
     calls = (
         tool("execute_code", {"code": "# resource pause"}, "original-code"),

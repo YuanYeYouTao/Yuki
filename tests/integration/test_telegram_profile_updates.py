@@ -8,16 +8,16 @@ from tests.integration.test_telegram_ingress_content import _service_update
 from tests.integration.test_telegram_runtime import drain, update
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.identity.canonical_repository import (
     create_space_binding,
     find_identity_binding,
     find_space_binding,
 )
-from qq_ai_bot.identity.db_models import (
+from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
 )
-from qq_ai_bot.persistence.models import ChatEventModel, MembershipModel, PersonAliasModel
+from yuki.persistence.models import ChatEventModel, MembershipModel, PersonAliasModel
 
 
 async def test_new_group_message_updates_native_names_in_its_original_admission(

@@ -13,16 +13,16 @@ from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from sqlalchemy import select, update
 
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.conversation.hydrate import ensure_canonical_conversation
+from yuki.identity.canonical_repository import (
     find_identity_binding,
     find_presence,
     find_space_binding,
 )
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.plugin_host import notification_repository as publications
-from qq_ai_bot.plugin_host.db_models import (
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.persistence.models import ChatEventModel
+from yuki.plugin_host import notification_repository as publications
+from yuki.plugin_host.db_models import (
     PluginBackgroundTargetGrantModel,
     PluginBackgroundTurnJobModel,
     PluginConfigValueModel,
@@ -31,7 +31,7 @@ from qq_ai_bot.plugin_host.db_models import (
     PluginNotificationOutboxModel,
     PluginStateModel,
 )
-from qq_ai_bot.plugin_host.notification_repository import PluginNotificationRepository
+from yuki.plugin_host.notification_repository import PluginNotificationRepository
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 

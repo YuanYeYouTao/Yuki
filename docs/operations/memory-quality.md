@@ -3,11 +3,11 @@
 以下命令必须指向明确的数据库。来源 audit 只读，不自动修复历史缺链，也不将同 key 独立事实当成冲突。
 
 ```bash
-qq-ai-bot-cli memory audit --database-url <database-url>
-qq-ai-bot-cli memory stats --database-url <database-url> --hours 24
-qq-ai-bot-cli memory hygiene scan --database-url <database-url>
-qq-ai-bot-cli memory hygiene apply <fingerprint> --database-url <database-url>
-qq-ai-bot-cli memory hygiene rebuild-fts <fingerprint> --database-url <database-url>
+yuki memory audit --database-url <database-url>
+yuki memory stats --database-url <database-url> --hours 24
+yuki memory hygiene scan --database-url <database-url>
+yuki memory hygiene apply <fingerprint> --database-url <database-url>
+yuki memory hygiene rebuild-fts <fingerprint> --database-url <database-url>
 ```
 
 apply 和全量 FTS 重建是明确的维护动作；先查 scan，再核对原指纹和备份。不要通过清库、重置预算或重新调用模型掩盖已提交效果和历史缺链。

@@ -1,0 +1,132 @@
+"""Immutable and secret configuration declarations."""
+
+from __future__ import annotations
+
+from yuki.admin.config_spec_helpers import (
+    _configured,
+    _constant,
+    _database_password_configured,
+    _field,
+    _spec,
+)
+from yuki.admin.models import ConfigApplyMode, ConfigSpec
+
+
+def protected_config_specs() -> tuple[ConfigSpec, ...]:
+    immutable = (
+        _spec(
+            "app.host",
+            "服务监听地址",
+            "仅能通过启动环境修改。",
+            value_type="string",
+            mode=ConfigApplyMode.IMMUTABLE,
+            env_alias="APP_HOST",
+            getter=_field("app_host"),
+            settings_fields=("app_host",),
+            category="app",
+        ),
+        _spec(
+            "app.port",
+            "服务监听端口",
+            "仅能通过启动环境修改。",
+            value_type="integer",
+            mode=ConfigApplyMode.IMMUTABLE,
+            env_alias="APP_PORT",
+            getter=_field("app_port"),
+            settings_fields=("app_port",),
+            category="app",
+        ),
+        _spec(
+            "database.url",
+            "数据库连接",
+            "数据库地址不可通过管理员工具读取或修改。",
+            value_type="string",
+            mode=ConfigApplyMode.IMMUTABLE,
+            getter=_configured("database_url"),
+            category="database",
+            sensitive=True,
+        ),
+        _spec(
+            "superusers",
+            "超级管理员列表",
+            "唯一权限来源，只能通过启动环境维护。",
+            value_type="string",
+            mode=ConfigApplyMode.IMMUTABLE,
+            getter=lambda settings: bool(settings.superusers),
+            category="security",
+            sensitive=True,
+        ),
+        _spec(
+            "groups.startup_enabled",
+            "启动默认群列表",
+            "只作为尚未落库群的启动默认值。",
+            value_type="string",
+            mode=ConfigApplyMode.IMMUTABLE,
+            getter=lambda settings: bool(settings.enabled_groups),
+            category="groups",
+            sensitive=True,
+        ),
+    )
+    secret = (
+        _spec(
+            "llm.api_key",
+            "LLM API Key",
+            "只能确认是否已配置，不能读取或修改。",
+            value_type="string",
+            mode=ConfigApplyMode.SECRET,
+            getter=_configured("llm_api_key"),
+            category="secret",
+            sensitive=True,
+        ),
+        _spec(
+            "web.tavily_api_key",
+            "Tavily API Key",
+            "只能确认是否已配置，不能读取或修改。",
+            value_type="string",
+            mode=ConfigApplyMode.SECRET,
+            getter=_configured("tavily_api_key"),
+            category="secret",
+            sensitive=True,
+        ),
+        _spec(
+            "onebot.access_token",
+            "OneBot Access Token",
+            "只能确认是否已配置，不能读取或修改。",
+            value_type="string",
+            mode=ConfigApplyMode.SECRET,
+            getter=_configured("onebot_access_token"),
+            category="secret",
+            sensitive=True,
+        ),
+        _spec(
+            "database.password",
+            "数据库密码",
+            "只能确认数据库 URL 是否包含密码，不能读取或修改。",
+            value_type="string",
+            mode=ConfigApplyMode.SECRET,
+            getter=_database_password_configured,
+            category="secret",
+            sensitive=True,
+        ),
+        _spec(
+            "qq.login_credentials",
+            "QQ 登录凭据",
+            "QQ 登录态属于所选网关 Provider，应用不能读取或修改。",
+            value_type="string",
+            mode=ConfigApplyMode.SECRET,
+            getter=_constant(False),
+            category="secret",
+            sensitive=True,
+        ),
+        _spec(
+            "vision.api_key",
+            "视觉 API Key",
+            "只能确认是否已配置，不能读取或修改。",
+            value_type="string",
+            mode=ConfigApplyMode.SECRET,
+            getter=_configured("vision_api_key"),
+            category="secret",
+            sensitive=True,
+        ),
+    )
+    return (*immutable, *secret)

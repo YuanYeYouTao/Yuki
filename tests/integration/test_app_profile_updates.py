@@ -10,8 +10,8 @@ from tests.unit.test_app_messages import drain
 from tests.unit.test_client_api import bearer
 from tests.unit.test_client_works import owner, seeded
 
-from qq_ai_bot.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from qq_ai_bot.persistence.models import ChatEventModel, PersonAliasModel
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.persistence.models import ChatEventModel, PersonAliasModel
 
 
 @pytest.mark.parametrize("work_input", [False, True])

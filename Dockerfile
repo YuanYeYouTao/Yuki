@@ -54,8 +54,8 @@ RUN chmod +x /app/scripts/start.sh \
     && mkdir -p /app/data /app/snowluma-data/config
 ARG YUKI_VERSION=dev
 ARG VCS_REF=unknown
-LABEL org.opencontainers.image.title="Yuki QQ Bot" \
-      org.opencontainers.image.source="https://github.com/YuanYeYouTao/Yuki-QQbot" \
+LABEL org.opencontainers.image.title="Yuki" \
+      org.opencontainers.image.source="https://github.com/YuanYeYouTao/Yuki" \
       org.opencontainers.image.licenses="AGPL-3.0-only" \
       org.opencontainers.image.version="${YUKI_VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}"

@@ -4,11 +4,11 @@ import httpx
 import pytest
 from sqlalchemy import select
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
-from qq_ai_bot.model_runtime.models import ModelTask
-from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
+from yuki.domain.messages import ChatMessage, ChatRequest
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.model_runtime.db_models import ModelInvocationModel
+from yuki.model_runtime.models import ModelTask
+from yuki.model_runtime.repository import ModelInvocationRepository
 
 
 @pytest.mark.parametrize(

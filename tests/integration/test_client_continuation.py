@@ -22,17 +22,17 @@ from tests.unit.test_app_messages import drain
 from tests.unit.test_client_api import bearer, pair
 from tests.unit.test_client_works import owner
 
-from qq_ai_bot.client_api.http import attach_client_api
-from qq_ai_bot.client_sdk import Outbox, PersonalClient
-from qq_ai_bot.container import ApplicationContainer
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.canonical_repository import create_presence, find_identity_binding
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, work
+from yuki.client_api.http import attach_client_api
+from yuki.client_sdk import Outbox, PersonalClient
+from yuki.container import ApplicationContainer
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.canonical_repository import create_presence, find_identity_binding
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects, inputs, journal, work
 
 admin = admin_fixture
 app_env = app_fixture
@@ -70,7 +70,7 @@ async def cli(url, state, token, *args):
     process = await asyncio.create_subprocess_exec(
         sys.executable,
         "-m",
-        "qq_ai_bot.cli",
+        "yuki.cli",
         "client",
         "--url",
         url,

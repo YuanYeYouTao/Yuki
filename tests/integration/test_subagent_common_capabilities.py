@@ -9,14 +9,14 @@ from tests.support.runtime_execution import make_child_executor
 from tests.support.subagents_helpers import stack
 from tests.unit.test_plugin_native_media import environment
 
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_tools import execute_subagent
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, work
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_tools import execute_subagent
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects, inputs, work
+from yuki.tool_results.artifacts import ToolArtifactRepository
 from yuki_plugin_sdk.results import ToolResult
 
 
@@ -299,13 +299,13 @@ async def test_plugin_background_child_reuses_original_job_authority_after_resta
     from tests.conftest import build_harness, make_settings
     from tests.unit.test_external_event_runtime_fences import _seed_job
 
-    from qq_ai_bot.identity.canonical_repository import ensure_presence
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.plugin_host.db_models import (
+    from yuki.identity.canonical_repository import ensure_presence
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.plugin_host.db_models import (
         PluginBackgroundTurnJobModel,
         PluginInstallationModel,
     )
-    from qq_ai_bot.services.execution_sources import BackgroundTaskSource, recover_execution_source
+    from yuki.services.execution_sources import BackgroundTaskSource, recover_execution_source
 
     _notifications, event_id, conversation = await _seed_job(database)
     async with database.sessions() as reader:
@@ -348,9 +348,9 @@ async def test_plugin_background_child_reuses_original_job_authority_after_resta
     assert recovered.actor_person_id is None and recovered.actor_user_id == ""
     provider = FakeLLMProvider(lambda _: "original plugin source checked")
     chat = build_harness(database, make_settings(database.url), provider).processor._chat
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
-    from qq_ai_bot.workspace.short_state import ShortState
-    from qq_ai_bot.workspace.store import WorkspaceStore
+    from yuki.services.main_agent_contract import MainAgentContract
+    from yuki.workspace.short_state import ShortState
+    from yuki.workspace.store import WorkspaceStore
 
     chat.runtime.runner.main_contract = MainAgentContract(
         chat, ShortState(WorkspaceStore(tmp_path / "state"))

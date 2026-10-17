@@ -9,9 +9,9 @@ import pytest
 from sqlalchemy import event, func, select, update
 from tests.unit.test_rebuild_receipt_finalization import _seed
 
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-from qq_ai_bot.persistence.models import MemoryRebuildProposalModel, MemoryRebuildRunModel
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.persistence.models import MemoryRebuildProposalModel, MemoryRebuildRunModel
 
 
 def _selection(**values):

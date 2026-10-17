@@ -21,9 +21,9 @@ from tests.support.work_compaction_capacity_helpers import _runtime
 from tests.support.work_session import WorkSession
 from tests.unit.test_runtime_recovery import setup
 
-from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import (
+from yuki.automation.models import RunStatus
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import (
     ChatMessage,
     ChatRequest,
     ChatResponse,
@@ -38,17 +38,17 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.base import LLMIncompleteResponseError, LLMUnavailableError
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-from qq_ai_bot.llm.vendor_policy import ChatWireOptions
-from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
-from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.models import (
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.base import LLMIncompleteResponseError, LLMUnavailableError
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.llm.fake import FakeLLMProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.llm.openai_compatible import OpenAICompatibleProvider
+from yuki.llm.openai_responses import OpenAIResponsesProvider
+from yuki.llm.vendor_policy import ChatWireOptions
+from yuki.model_runtime.db_models import ModelInvocationModel
+from yuki.model_runtime.executor import TaskModelExecutor
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
@@ -56,21 +56,21 @@ from qq_ai_bot.model_runtime.models import (
     ModelSearchMode,
     ModelTask,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-from qq_ai_bot.model_runtime.repository import ModelInvocationRepository
-from qq_ai_bot.model_runtime.routes import ModelRouter
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.work_activation import activate_work
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_journal import JournalUnavailable, decode_transcript, encode_transcript
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import journal, work
-from qq_ai_bot.runtime.work_session import WorkSession as RuntimeWorkSession
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.services.turn_execution import TurnExecution
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.web.models import WebMode
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import ModelProfileCatalog
+from yuki.model_runtime.repository import ModelInvocationRepository
+from yuki.model_runtime.routes import ModelRouter
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_activation import activate_work
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_journal import JournalUnavailable, decode_transcript, encode_transcript
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import journal, work
+from yuki.runtime.work_session import WorkSession as RuntimeWorkSession
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.turn_execution import TurnExecution
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.web.models import WebMode
 
 KINDS = [
     AnthropicMessagesProvider,
@@ -443,8 +443,8 @@ async def test_caller_native_declaration_allows_empty_final_and_keeps_actual_nat
     if not checkpoint_failure:
         # The suspended Work keeps the actual private tail and the provider's
         # unresolved native status for the next owner.
-        from qq_ai_bot.runtime.protocol_store import ProtocolStore
-        from qq_ai_bot.runtime.work_schema_v1 import journal
+        from yuki.runtime.protocol_store import ProtocolStore
+        from yuki.runtime.work_schema_v1 import journal
 
         async with database.sessions() as reader:
             record = await reader.scalar(
@@ -1395,8 +1395,8 @@ async def test_model_stats_summary_preserves_weighted_latency_usage_and_historic
 
     from sqlalchemy import insert
 
-    from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
-    from qq_ai_bot.model_runtime.models import ModelStats
+    from yuki.model_runtime.db_models import ModelInvocationModel
+    from yuki.model_runtime.models import ModelStats
 
     repository = ModelInvocationRepository(database)
     assert await repository.stats_summary() == (ModelStats(), {}, {})

@@ -6,16 +6,16 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text
 
-from qq_ai_bot.client_api.db_models import ClientDeviceModel, ClientLinkCodeModel
-from qq_ai_bot.client_api.errors import ClientError
-from qq_ai_bot.client_api.identity import ClientIdentityService
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import find_identity_binding, find_presence
-from qq_ai_bot.identity.db_models import IdentityBindingModel
-from qq_ai_bot.identity.person_identity import current_person_id
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.client_api.db_models import ClientDeviceModel, ClientLinkCodeModel
+from yuki.client_api.errors import ClientError
+from yuki.client_api.identity import ClientIdentityService
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.hydrate import ensure_canonical_conversation
+from yuki.domain.conversations import ConversationScope
+from yuki.identity.canonical_repository import find_identity_binding, find_presence
+from yuki.identity.db_models import IdentityBindingModel
+from yuki.identity.person_identity import current_person_id
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 async def code_for(database, account="1001"):

@@ -10,11 +10,11 @@ from sqlalchemy import func, select, update
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
-from qq_ai_bot.identity.canonical_repository import active_person_id_for
-from qq_ai_bot.llm.base import LLMProvider, LLMUnavailableError
-from qq_ai_bot.memory.enums import (
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import ChatRequest, ChatResponse
+from yuki.identity.canonical_repository import active_person_id_for
+from yuki.llm.base import LLMProvider, LLMUnavailableError
+from yuki.memory.enums import (
     MemoryRebuildCommitStatus,
     MemoryRebuildExpiredClaimPolicy,
     MemoryRebuildItemStatus,
@@ -23,24 +23,24 @@ from qq_ai_bot.memory.enums import (
     MemorySourceType,
     MemoryStatus,
 )
-from qq_ai_bot.memory.models import MemoryFactQuery
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
-from qq_ai_bot.memory.rebuild.worker import MemoryRebuildWorker
-from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.memory.models import MemoryFactQuery
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.memory.rebuild.service import MemoryRebuildService
+from yuki.memory.rebuild.worker import MemoryRebuildWorker
+from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
+from yuki.memory.service import MemoryFactService
+from yuki.memory.worker import MemoryWorker
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryJobModel,
     MemoryRebuildItemModel,
     MemoryRebuildProposalModel,
     MemoryRebuildRunModel,
 )
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.concurrency import ConcurrencyManager
 
 
 class _ExtractionProvider(LLMProvider):
@@ -147,11 +147,11 @@ async def _event(
 async def test_rebuild_requires_review_then_commits_one_receipt(database: Database) -> None:
     from types import SimpleNamespace
 
-    from qq_ai_bot.memory.embedding.jobs import MemoryEmbeddingJobRepository
-    from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile
-    from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
-    from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
-    from qq_ai_bot.persistence.models import MemoryEmbeddingJobModel
+    from yuki.memory.embedding.jobs import MemoryEmbeddingJobRepository
+    from yuki.memory.embedding.models import EmbeddingProviderProfile
+    from yuki.memory.embedding.repository import MemoryEmbeddingRepository
+    from yuki.memory.embedding.text import EmbeddingDocumentBuilder
+    from yuki.persistence.models import MemoryEmbeddingJobModel
 
     settings, ledger, facts, provider, service = await _service(database)
     profile = await MemoryEmbeddingRepository(database).ensure_profile(

@@ -49,6 +49,8 @@ The release notes cover migration steps, compatibility changes, and the scope of
 
 **Current development branch:** Personal clients, QQ and Telegram share one runtime through native adapters. Private entries use Binding + Presence + sub-session; groups use SpaceBinding + topic. Person memory stays shared through internal identities. `yuki acp` connects external ACP clients to the server, with a separate Conversation for every session and the existing Main, fixed tools and delivery receipts; see the [personal API](docs/architecture/client-api.md#acp-方向-a). Plugin API is **4.0**, Main contract **21**, and migration head **0132**. See [platform adapters and upgrades](docs/architecture/platform-adapters.md). Local validation, merge and deployment are recorded separately from the historical 3.9.0 release above.
 
+The current source uses `yuki` for both the Python package and distribution. Administration, personal clients and ACP share the `yuki` command; the server uses `yuki-bot`. Legacy command aliases are removed. Use `uv sync --all-extras` or a local Docker build for source development. Future release images use `ghcr.io/yuanyeyoutao/yuki`; this change does not publish a new version. The stable 3.9.0 downloads, image and installation steps below retain their original release artifacts.
+
 The Kun game now lives in the independent [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game) repository. Game source and dedicated migrations are no longer bundled here. The independent plugin requires a Plugin API 4.0 Host; installation and offline save migration are documented in that repository.
 
 [Conversation compact](docs/architecture/conversation-compact.md) ([#417](https://github.com/YuanYeYouTao/Yuki/issues/417), [#418](https://github.com/YuanYeYouTao/Yuki/issues/418)) uses the current Main model to condense public history or private execution context. `CONTEXT_COMPACT_TRIGGER_TOKENS` defaults to `96000` for early compaction; it is not a required size for the result. Hard model capacity follows explicit Profile settings, and unspecified limits remain unknown. Subagents share Main's tool contract and execute under their own real source and authorization. The independent Rollup and Work/ordinary summary pipelines are retired.
@@ -134,7 +136,7 @@ After configuring a fresh deployment, run from its deployment directory:
 ```bash
 docker compose config --quiet
 docker compose pull
-docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
+docker compose run --rm --no-deps --entrypoint yuki bot init-db
 docker compose up -d
 ```
 
@@ -153,7 +155,7 @@ Before upgrading, make a consistent backup of the database, configuration, plugi
 ```bash
 docker compose ps
 docker compose logs --tail 200 bot
-docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
+docker compose exec bot yuki gateway doctor --provider snowluma
 ```
 
 Keep the same Compose arguments used for deployment. Only one active connection can use a given QQ account; a duplicate connection does not displace the existing one. The installer does not replace an existing Compose file or `.env`; see [SnowLuma deployment](docs/deployment/snowluma.md) and the [upgrade instructions](docs/upgrade-3.9.0.md#旧-napcat-部署配置) for retiring old configuration.

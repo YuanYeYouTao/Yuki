@@ -4,21 +4,21 @@ import json
 
 import httpx
 
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.models import (
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.llm.openai_compatible import OpenAICompatibleProvider
+from yuki.llm.openai_responses import OpenAIResponsesProvider
+from yuki.model_runtime.executor import TaskModelExecutor
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
     ModelRoute,
     ModelTask,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-from qq_ai_bot.model_runtime.routes import ModelRouter
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import ModelProfileCatalog
+from yuki.model_runtime.routes import ModelRouter
 
 KINDS = {
     "gemini": (GeminiProvider, "gemini", ModelProtocol.GEMINI),

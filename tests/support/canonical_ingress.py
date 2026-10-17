@@ -5,12 +5,12 @@ from types import SimpleNamespace
 
 from tests.support.gateway import builtin_registry
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
-from qq_ai_bot.identity.ingress import CanonicalIngressResolver
-from qq_ai_bot.identity.routing import PresenceRouter
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from yuki.domain.conversations import ScopeType
+from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
+from yuki.identity.ingress import CanonicalIngressResolver
+from yuki.identity.routing import PresenceRouter
+from yuki.persistence.database import Database
+from yuki.persistence.repositories import EventLedgerRepository
 
 
 async def _member(*args, **kwargs):

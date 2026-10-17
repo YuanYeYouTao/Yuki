@@ -1,4 +1,4 @@
-"""Plugin capability namespace ids. Copied so the SDK does not import qq_ai_bot."""
+"""Plugin capability namespace ids. Copied so the SDK does not import yuki."""
 
 from __future__ import annotations
 

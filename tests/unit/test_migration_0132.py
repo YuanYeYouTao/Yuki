@@ -8,10 +8,10 @@ from alembic import command
 from alembic.config import Config
 from tests.unit.test_migration_0119 import _seed_0118
 
-from qq_ai_bot.client_api.identity import ClientIdentityService
-from qq_ai_bot.client_api.sessions import ClientSessions
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.schema_guard import require_canonical_schema
+from yuki.client_api.identity import ClientIdentityService
+from yuki.client_api.sessions import ClientSessions
+from yuki.persistence.database import Database
+from yuki.persistence.schema_guard import require_canonical_schema
 
 
 def test_0132_preserves_original_rows_and_adds_real_acp_request_scope(tmp_path, monkeypatch):

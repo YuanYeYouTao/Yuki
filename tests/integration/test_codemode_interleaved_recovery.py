@@ -12,12 +12,12 @@ from tests.support.correctness_wire import wire
 from tests.support.runtime_execution import make_work_resumer
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-from qq_ai_bot.conversation.observation_models import ContextObservationModel, ContextSelectionModel
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.domain.messages import ChatResponse
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, work
+from yuki.conversation.observation_models import ContextObservationModel, ContextSelectionModel
+from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.domain.messages import ChatResponse
+from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects, work
 
 MARK = "CHILD_NOTE_BEFORE_PARENT_SETTLEMENT"
 ORD = "ORDINARY_INTERLEAVED_PUBLIC_MARKER"

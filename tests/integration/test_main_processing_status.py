@@ -6,16 +6,16 @@ from dataclasses import replace
 import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import (
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import (
     ChatResponse,
     InboundMessage,
     SenderIdentity,
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.llm.base import LLMError
-from qq_ai_bot.llm.fake import FakeLLMProvider
+from yuki.llm.base import LLMError
+from yuki.llm.fake import FakeLLMProvider
 
 
 class RecordingStatus:

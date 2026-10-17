@@ -15,15 +15,15 @@ from tests.unit.test_client_api import bearer
 from tests.unit.test_client_files import app_context
 from tests.unit.test_client_works import owner, seeded
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.canonical_repository import find_identity_binding
-from qq_ai_bot.identity.db_models import PresenceModel
-from qq_ai_bot.identity.routing import RouteSendError
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.personal_entry_tool import read_entry
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.social.models import SocialError
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.identity.db_models import PresenceModel
+from yuki.identity.routing import RouteSendError
+from yuki.persistence.models import ChatEventModel
+from yuki.services.personal_entry_tool import read_entry
+from yuki.social.db_models import SocialOperationModel
+from yuki.social.models import SocialError
 
 admin = admin_fixture
 app_env = app_fixture
@@ -194,9 +194,9 @@ async def test_app_cannot_choose_other_person_route_without_binding(app_env, dat
 
 
 async def test_app_input_keeps_qq_work_contract_and_two_code_views(app_env, database, tmp_path):
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
-    from qq_ai_bot.workspace.short_state import ShortState
-    from qq_ai_bot.workspace.store import WorkspaceStore
+    from yuki.services.main_agent_contract import MainAgentContract
+    from yuki.workspace.short_state import ShortState
+    from yuki.workspace.store import WorkspaceStore
 
     env = app_env
     device, _ = await owner(env, database)
@@ -307,9 +307,9 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
 ):
     from datetime import UTC, datetime
 
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.identity.canonical_repository import create_presence
-    from qq_ai_bot.identity.db_models import IdentityBindingModel
+    from yuki.domain.conversations import ConversationScope
+    from yuki.identity.canonical_repository import create_presence
+    from yuki.identity.db_models import IdentityBindingModel
 
     env = app_env
     device, person = await owner(env, database)
@@ -362,7 +362,7 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
 
 
 async def test_delegated_current_conversation_does_not_read_other_personal_entry(app_env, database):
-    from qq_ai_bot.domain.conversations import ConversationScope
+    from yuki.domain.conversations import ConversationScope
 
     env = app_env
     device, person = await owner(env, database)

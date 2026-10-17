@@ -11,11 +11,11 @@ from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.commands_and_chat_helpers import inbound
 from tests.support.social_identity_cases import Bot, social_env
 
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import ensure_presence
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.processing_status import ProcessingStatusService
+from yuki.domain.conversations import ConversationScope
+from yuki.identity.canonical_repository import ensure_presence
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.services.processing_status import ProcessingStatusService
 
 
 class Activity:

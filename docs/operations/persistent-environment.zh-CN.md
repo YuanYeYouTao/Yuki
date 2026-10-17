@@ -46,12 +46,12 @@ Docker 自定义 bridge 的 `127.0.0.11` loopback DNS 无法由 gVisor 访问，
 
 ```sh
 sudo /opt/yuki-sandbox/deploy/sandbox/install-manager.sh --deployment-root /absolute/deployment/path
-docker compose exec --user 10001:10001 bot qq-ai-bot-cli setup environment-check
+docker compose exec --user 10001:10001 bot yuki setup environment-check
 ```
 
 部署根是 Compose 挂载 `./workspace` 的目录。安装器只记录 `/etc/yuki-sandbox/deployment.env` 中的 `YUKI_MANAGER_WORKSPACE_STORE`，保留其它配置，拒绝覆盖已配置的 artifact 根；不带参数保留既有值或旧默认路径。它不迁移家目录、不改已有容器挂载。`environment-check` 在 Bot 真实 UID 10001 下验证 artifact 目录可写和原 socket/status/ready，不再调用退役 `workspace_list`；不建容器、执行代码、调用模型或发送消息。这只证明连接，不证明真实管理员终端/公网已验收。
 
-本次需同步宿主 `src/qq_ai_bot/sandbox/`、其 `workspace/` 依赖、`deploy/sandbox/` 和原 Manager venv，保留原 systemd 配置与全部部署覆盖。Supervisor 另以单个只读源文件挂入环境。不能只更新 Bot 后声称原环境已获得 root、新代码或新网络。
+本次需同步宿主 `src/yuki/sandbox/`、其 `workspace/` 依赖、`deploy/sandbox/` 和原 Manager venv，保留原 systemd 配置与全部部署覆盖。Supervisor 另以单个只读源文件挂入环境。不能只更新 Bot 后声称原环境已获得 root、新代码或新网络。
 
 旧环境须单独安排一次明确更换：
 

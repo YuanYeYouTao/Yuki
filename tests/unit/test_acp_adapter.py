@@ -23,7 +23,7 @@ from acp.schema import (
     TextResourceContents,
 )
 
-from qq_ai_bot.acp_adapter.agent import YukiAgent
+from yuki.acp_adapter.agent import YukiAgent
 
 
 def digest(operation, target, body):
@@ -590,7 +590,7 @@ async def test_default_client_uses_standard_http_proxy_without_direct_fallback(
 
 
 def test_cli_loads_only_standard_http_environment(tmp_path, monkeypatch):
-    from qq_ai_bot.acp_adapter import cli
+    from yuki.acp_adapter import cli
 
     monkeypatch.chdir(tmp_path)
     for key in tuple(os.environ):

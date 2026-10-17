@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.persistence.database import Database
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 async def _append(
@@ -18,7 +18,7 @@ async def _append(
     actor_prefix: str = "member",
     origin: str = "user_message",
 ) -> None:
-    from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
+    from yuki.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
 
     async with uow._database.sessions() as session, session.begin():
         await ensure_presence(session, scope.bot_user_id)
@@ -48,7 +48,7 @@ _NOW = datetime(2026, 8, 24, tzinfo=UTC)
 async def _prepare_v2_private(
     database: Database, *, bot: str = "8000", peer: str = "1001"
 ) -> ConversationScope:
-    from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
+    from yuki.identity.canonical_repository import ensure_person, ensure_presence
 
     async with database.sessions() as session, session.begin():
         await ensure_presence(session, bot)
@@ -59,8 +59,8 @@ async def _prepare_v2_private(
 async def _publish_checkpoint(database, conversation_id, coverage, text="selected checkpoint"):
     from uuid import uuid4
 
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.conversation.projection_models import PromptProjectionModel
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.conversation.projection_models import PromptProjectionModel
 
     async with database.immediate_session() as session:
         owner = await session.get(CanonicalConversationModel, conversation_id)

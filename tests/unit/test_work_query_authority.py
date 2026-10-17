@@ -7,14 +7,14 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import build_harness, make_settings
 
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.automation.tools import AutomationToolService
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+from yuki.automation.models import TurnOrigin
+from yuki.automation.tools import AutomationToolService
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
+from yuki.domain.tool_actor import ToolActor
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.main_agent_backend import MainAgentBackend
 
 
 @pytest.fixture

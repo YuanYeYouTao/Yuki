@@ -7,19 +7,19 @@ import pytest
 from tests.unit.test_admin_api import admin as admin
 from tests.unit.test_admin_api import command
 
-from qq_ai_bot.application.lifecycle import LifecycleRegistry
-from qq_ai_bot.application.modules.web import WebModule
-from qq_ai_bot.domain.messages import (
+from yuki.application.lifecycle import LifecycleRegistry
+from yuki.application.modules.web import WebModule
+from yuki.domain.messages import (
     ChatMessage,
     ChatRequest,
     NativeToolDefinition,
     NativeToolType,
 )
-from qq_ai_bot.model_runtime.models import ModelProtocol, ModelTask
-from qq_ai_bot.model_runtime.pool import create_model_provider
-from qq_ai_bot.model_runtime.profiles import load_model_profile_catalog, model_profile_environment
-from qq_ai_bot.web.models import WebMode, WebSearchRequest
-from qq_ai_bot.web.route_context import current_web_model_task
+from yuki.model_runtime.models import ModelProtocol, ModelTask
+from yuki.model_runtime.pool import create_model_provider
+from yuki.model_runtime.profiles import load_model_profile_catalog, model_profile_environment
+from yuki.web.models import WebMode, WebSearchRequest
+from yuki.web.route_context import current_web_model_task
 
 
 @pytest.mark.parametrize(
@@ -124,8 +124,8 @@ async def test_admin_apply_persists_native_defaults_and_dispatches_original_prov
         http_clients.append(offline)
         return create_model_provider(profile, api_key, client=offline)
 
-    monkeypatch.setattr("qq_ai_bot.model_runtime.pool.create_model_provider", offline_provider)
-    monkeypatch.setattr("qq_ai_bot.application.modules.web.create_model_provider", offline_provider)
+    monkeypatch.setattr("yuki.model_runtime.pool.create_model_provider", offline_provider)
+    monkeypatch.setattr("yuki.application.modules.web.create_model_provider", offline_provider)
     web = WebModule(
         files._settings.web,
         lifecycle=LifecycleRegistry(),

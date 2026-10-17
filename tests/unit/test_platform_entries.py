@@ -4,13 +4,13 @@ from datetime import UTC, datetime
 
 import pytest
 
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.conversation.hydrate import ensure_canonical_conversation
+from yuki.identity.canonical_repository import (
     create_person_binding,
     create_presence,
     create_space_binding,
 )
-from qq_ai_bot.persistence.database import Database
+from yuki.persistence.database import Database
 
 
 @pytest.mark.asyncio

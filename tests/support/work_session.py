@@ -6,14 +6,14 @@ exactly as direct and Code calls do; WorkSession only owns the protocol.
 
 from types import SimpleNamespace
 
-from qq_ai_bot.capabilities.invocation import (
+from yuki.capabilities.invocation import (
     Invocation,
     InvocationIdentity,
     TrustedInvocationContext,
     child_operation_id,
 )
-from qq_ai_bot.runtime.work_session import WorkSession
-from qq_ai_bot.services.invocation_service import InvocationService
+from yuki.runtime.work_session import WorkSession
+from yuki.services.invocation_service import InvocationService
 
 __all__ = ["WorkSession", "invoke_tool"]
 
@@ -47,8 +47,8 @@ async def invoke_tool(
         )
 
     async def typed_fixture():
-        from qq_ai_bot.capabilities.results import normalize_legacy_result
-        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+        from yuki.capabilities.results import normalize_legacy_result
+        from yuki.runtime.effect_outcomes import current_result_capture
 
         result = await invoke()
         capture = current_result_capture.get()

@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
-from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.persistence.repository_records import EventRecord
+from yuki.conversation.frozen_fragments import FrozenFragments
+from yuki.domain.conversations import ScopeType
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.persistence.repository_records import EventRecord
 
 
 def _event(event_id: int, at: datetime, content: str = "消息") -> EventRecord:

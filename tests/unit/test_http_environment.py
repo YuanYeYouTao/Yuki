@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from qq_ai_bot.config import Settings
-from qq_ai_bot.http_environment import load_http_environment
+from yuki.config import Settings
+from yuki.http_environment import load_http_environment
 
 
 def test_dotenv_exports_only_standard_http_settings(
@@ -112,7 +112,7 @@ def test_missing_dotenv_does_not_change_process_environment(
 def test_bot_loads_http_environment_before_initialization(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from qq_ai_bot import main
+    from yuki import main
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(os, "environ", {"USERPROFILE": str(tmp_path), "HOME": str(tmp_path)})
@@ -135,7 +135,7 @@ def test_bot_loads_http_environment_before_initialization(
 def test_management_cli_loads_http_environment_without_exporting_keys(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from qq_ai_bot import cli
+    from yuki import cli
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(os, "environ", {"USERPROFILE": str(tmp_path), "HOME": str(tmp_path)})
@@ -160,7 +160,7 @@ def test_management_cli_loads_http_environment_without_exporting_keys(
 def test_setup_loads_proxy_from_deployment_root_before_http(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from qq_ai_bot.deployment_setup import command
+    from yuki.deployment_setup import command
 
     deployment = tmp_path / "deployment"
     deployment.mkdir()

@@ -11,9 +11,9 @@ from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import (
+from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import (
     ChatMessage,
     ChatResponse,
     InboundMessage,
@@ -21,15 +21,15 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
-from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
-from qq_ai_bot.services.turn_transcript import DispatchOrigin, TranscriptRequest, validating_request
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_repository import WorkRepository
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.services.main_agent_turns import MainAgentTurnService
+from yuki.services.turn_coordinator import HistorySourceChangedError
+from yuki.services.turn_transcript import DispatchOrigin, TranscriptRequest, validating_request
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 
 
 async def _scene(database, tmp_path, provider, *, request_limit=24, code_enabled=False):
@@ -126,8 +126,8 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
         assert "original-snapshot" not in saved.payload_json
         assert "private-work-result" not in saved.payload_json
         assert "no_active_work" not in saved.payload_json
-    from qq_ai_bot.runtime.work_activation import current_work_control
-    from qq_ai_bot.runtime.work_schema_v1 import effects, work
+    from yuki.runtime.work_activation import current_work_control
+    from yuki.runtime.work_schema_v1 import effects, work
 
     async with database.sessions() as session:
         identity = await session.scalar(select(work.c.id))
@@ -142,7 +142,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     chat.runtime.main_turns = MainAgentTurnService(
         chat._prompt_composer, chat.runtime.runner, database
     )
-    from qq_ai_bot.services import work_resume
+    from yuki.services import work_resume
 
     activate = work_resume.activate_work
     observed = False
@@ -382,7 +382,7 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
 async def test_recent_history_uses_configured_window_above_old_twenty_cap(database, tmp_path):
     from tests.unit.test_tool_effect_audit import active_work
 
-    from qq_ai_bot.domain.conversations import ConversationScope
+    from yuki.domain.conversations import ConversationScope
 
     env, owner, runtime = await active_work(database, tmp_path)
     scope = ConversationScope.group("80001", "20001")

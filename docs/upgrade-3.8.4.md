@@ -23,10 +23,10 @@
 
 1. 记录当前代码提交、镜像摘要、`.env` 版本、数据库 Alembic revision、Compose 项目名及全部覆盖文件。暂停 Bot 写入，保存一致的数据库、配置、插件与文件备份；使用持久环境时一并保存家目录和执行回执。
 2. 选择已发布的 3.8.4 镜像或经确认的开发提交构建的镜像。保留原项目名、Compose 覆盖文件、挂载与网关配置；不要用新模板覆盖已有部署目录。
-3. 用目标 Bot 镜像运行 `qq-ai-bot-cli init-db`，由 Alembic 升级到随包 head。不要手工 `stamp`、删除旧任务或重放不确定的发送。
+3. 用目标 Bot 镜像运行 `yuki init-db`，由 Alembic 升级到随包 head。不要手工 `stamp`、删除旧任务或重放不确定的发送。
 4. 仅重建改动涉及的服务，检查 `/healthz`、实际数据库 revision、QQ/OneBot 连接、定时任务、插件状态和固定工具合同。Manager 与持久环境如未更新，继续按其独立部署说明运行。
 
-聊天媒体版本首次上线需要一次停写切换：先在数据库副本演练 `python -m qq_ai_bot.operations.reset_conversations --batch-id <唯一批次>` 的预览和 `--apply-offline`，核对每个 canonical Conversation 只提升一次 generation。生产备份并停掉 Bot 后，确认没有执行中的 Work 或仍启用任务的运行中自动化，再升级到 `0072`，在 Bot 未接纳消息时执行同一批次的 `--apply-offline`，核对批次完整和 SELF 定时任务的新 generation 后再启动 Bot。已完成 `0072` 升级与同批次离线切换的开发部署应核对持久记录，不再为安装正式镜像重复重置。旧 generation 的暂停 Work 按 `/ai new` 语义取消；已终止自动化留下的运行中回执保持原样，不视为新的发送许可。切换不向 QQ 发 `/ai new`，不调用模型，也不批量重写旧历史。重复执行同批次只续未完成项；不要在 Bot 在线时运行。迁移若报 `enabled_legacy_send_requires_review`，先核验启用或暂停的旧发送脚本和实际回执，不能盲目补发。
+聊天媒体版本首次上线需要一次停写切换：先在数据库副本演练 `python -m yuki.operations.reset_conversations --batch-id <唯一批次>` 的预览和 `--apply-offline`，核对每个 canonical Conversation 只提升一次 generation。生产备份并停掉 Bot 后，确认没有执行中的 Work 或仍启用任务的运行中自动化，再升级到 `0072`，在 Bot 未接纳消息时执行同一批次的 `--apply-offline`，核对批次完整和 SELF 定时任务的新 generation 后再启动 Bot。已完成 `0072` 升级与同批次离线切换的开发部署应核对持久记录，不再为安装正式镜像重复重置。旧 generation 的暂停 Work 按 `/ai new` 语义取消；已终止自动化留下的运行中回执保持原样，不视为新的发送许可。切换不向 QQ 发 `/ai new`，不调用模型，也不批量重写旧历史。重复执行同批次只续未完成项；不要在 Bot 在线时运行。迁移若报 `enabled_legacy_send_requires_review`，先核验启用或暂停的旧发送脚本和实际回执，不能盲目补发。
 
 所有 Compose 命令应沿用部署时的项目名和覆盖文件。配置向导只填写配置，不负责停服、迁移或切换网关。首次部署可按 [README](../README.md) 的正式发布包入口安装；开发部署须自行构建并核对镜像来源。
 

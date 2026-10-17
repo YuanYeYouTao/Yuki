@@ -42,7 +42,7 @@ storage_mb = 50
 | `yuki_requires` | PEP 440 Specifier，例如 `>=3.9.0,<4.0` |
 | `permissions` | 去重后的已知权限列表；未知值拒绝加载 |
 
-保留命名空间包括 `qq_ai_bot`、`qq-ai-bot`、`yuki`、`core` 和 `system`，也不能使用这些前缀冒充核心插件。
+保留命名空间包括 `yuki`、`core` 和 `system`，也不能使用这些前缀冒充核心插件。
 
 ## `network`
 
@@ -63,6 +63,6 @@ Host 还会使用部署级全局上限取更小值；Manifest 不能扩大 Host 
 Host 对规范化后的完整 Manifest 计算 SHA-256。批准记录绑定该哈希；任何字段变化都会使旧批准失效，插件回到 `pending_approval`。这能防止插件获批后静默增加权限。
 
 ```bash
-uv run qq-ai-bot-cli plugin validate plugins/com.example.weather
-uv run qq-ai-bot-cli plugin inspect com.example.weather
+uv run yuki plugin validate plugins/com.example.weather
+uv run yuki plugin inspect com.example.weather
 ```

@@ -14,13 +14,13 @@ from sqlalchemy import select
 from tests.support.work_effect_results_helpers import execute, owned_session
 from tests.support.work_session import invoke_tool
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.domain.messages import ToolCall, ToolFunction
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
-from qq_ai_bot.sandbox.persistent import PersistentManager
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.domain.messages import ToolCall, ToolFunction
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_schema_v1 import effects
+from yuki.sandbox.db_models import SandboxTaskRunModel
+from yuki.sandbox.persistent import PersistentManager
+from yuki.workspace.store import WorkspaceStore
 
 OWNED = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 EXTERNAL = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -148,8 +148,8 @@ async def test_reading_own_running_execution_does_not_remove_original_dependency
     assert control.current["state"] == "waiting_external"
     assert control.accepted["action"] == "complete"
 
-    from qq_ai_bot.runtime.work_activation import activate_work
-    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+    from yuki.runtime.work_activation import activate_work
+    from yuki.sandbox.task_repository import SandboxTaskRepository
 
     original = await control.repository.get(control.current["id"])
     request_id = session.call_key("launch-owned")
@@ -230,10 +230,10 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
 ):
     import signal
 
-    from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-    from qq_ai_bot.sandbox import persistent
-    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
-    from qq_ai_bot.services.subagent_execution import SubagentExecution
+    from yuki.runtime.subagent_repository import SubagentRepository
+    from yuki.sandbox import persistent
+    from yuki.sandbox.task_repository import SandboxTaskRepository
+    from yuki.services.subagent_execution import SubagentExecution
 
     control, session, store = await ready(database, tmp_path)
     request_id = session.call_key("launch-owned")
@@ -338,7 +338,7 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
         # can invoke the wrapper again; its existing started file prevents a second command.
         wrapper = (
             "import sys; from pathlib import Path; "
-            "from qq_ai_bot.sandbox import environment_supervisor as s; "
+            "from yuki.sandbox import environment_supervisor as s; "
             "root, job = Path(sys.argv[1]), sys.argv[2]; "
             "s.Path = lambda value: root if value == '/var/lib/yuki-runtime' else Path(value); "
             "sys.argv = ['supervisor', job]; raise SystemExit(s.main())"

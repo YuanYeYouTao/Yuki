@@ -1,0 +1,584 @@
+"""Durable exclusive selector and proposal admission.
+
+Only a trusted host calls this repository after resolving source revisions, semantic
+support and scene permissions. It does not interpret text or grant SELF tool authority.
+Short transactions only read keyed host records and persist admission/feedback; no external
+callbacks, network, history scans, model calls or Work execution run under the write lock.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any, Literal, cast
+from uuid import uuid4
+
+from sqlalchemy import and_, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from yuki.conversation.autonomy_binding import (
+    AcceptedInitiative,
+    AutonomyBinding,
+    AutonomyOwner,
+    InitiativeSource,
+    InitiativeSourceKind,
+)
+from yuki.conversation.autonomy_db_models import (
+    AutonomyBindingModel,
+    InitiativeFeedbackModel,
+    InitiativeRunModel,
+)
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel
+from yuki.persistence.database import Database
+from yuki.persistence.unit_of_work import optional_session
+
+_ACTIVE = ("accepted", "running")
+_OUTCOMES = frozenset({"running", "completed", "no_reply", "interrupted", "failed"})
+
+
+@asynccontextmanager
+async def _feedback_session(
+    database: Database, session: AsyncSession | None
+) -> AsyncIterator[AsyncSession]:
+    if session is not None:
+        yield session
+    else:
+        async with database.immediate_session() as owned:
+            yield owned
+
+
+class AutonomyConflict(ValueError):
+    """A stale selector or conflicting replay cannot overwrite committed state."""
+
+
+@dataclass(frozen=True, slots=True)
+class AdmissionResult:
+    outcome: str
+    run: AcceptedInitiative | None = None
+
+
+def _json(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _source_values(sources: tuple[InitiativeSource, ...]) -> list[dict[str, str]]:
+    return [
+        {"kind": source.kind.value, "source_id": source.source_id, "revision": source.revision}
+        for source in sorted(sources)
+    ]
+
+
+def _binding(row: AutonomyBindingModel) -> AutonomyBinding:
+    return AutonomyBinding(
+        conversation_id=row.conversation_id,
+        generation=row.generation,
+        master_enabled=row.master_enabled,
+        external_enabled=row.external_enabled,
+        effective_owner=AutonomyOwner(row.effective_owner),
+        controller_epoch=row.controller_epoch,
+        fallback_reason=row.fallback_reason,
+        revision=row.revision,
+    )
+
+
+def _run(row: InitiativeRunModel) -> AcceptedInitiative:
+    return AcceptedInitiative(
+        run_id=row.id,
+        proposal_id=row.proposal_id,
+        conversation_id=row.conversation_id,
+        generation=row.generation,
+        space_id=row.space_id,
+        presence_id=row.presence_id,
+        controller_epoch_at_acceptance=row.controller_epoch,
+        sources=tuple(
+            InitiativeSource(
+                InitiativeSourceKind(item["kind"]), item["source_id"], item["revision"]
+            )
+            for item in json.loads(row.sources_json)
+        ),
+        owner=AutonomyOwner(row.owner),
+        target_person_id=row.target_person_id,
+        support_refs=tuple(json.loads(row.support_refs_json)),
+        state=row.state,
+        feedback_sequence=row.feedback_sequence,
+        trigger_kind=cast(Literal["source", "intrinsic"], row.trigger_kind),
+        thread_key=row.thread_key,
+    )
+
+
+class AutonomyRepository:
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def ensure_binding(self, conversation_id: str, generation: int) -> AutonomyBinding:
+        """Register a current group generation, default OFF; never enable it implicitly."""
+        async with self._database.immediate_session() as session:
+            conversation = await session.get(CanonicalConversationModel, conversation_id)
+            if (
+                conversation is None
+                or conversation.kind != "space"
+                or conversation.generation != generation
+            ):
+                raise AutonomyConflict("autonomy_conversation_changed")
+            row = await session.get(AutonomyBindingModel, (conversation_id, generation))
+            if row is None:
+                row = AutonomyBindingModel(
+                    conversation_id=conversation_id,
+                    generation=generation,
+                    master_enabled=False,
+                    external_enabled=False,
+                    effective_owner="off",
+                    controller_epoch=0,
+                    revision=1,
+                    updated_at=datetime.now(UTC),
+                )
+                session.add(row)
+                await session.flush()
+            return _binding(row)
+
+    async def get_binding(self, conversation_id: str, generation: int) -> AutonomyBinding | None:
+        async with self._database.sessions() as session:
+            row = await session.get(AutonomyBindingModel, (conversation_id, generation))
+            return _binding(row) if row is not None else None
+
+    async def transition(
+        self,
+        expected: AutonomyBinding,
+        *,
+        master_enabled: bool,
+        external_enabled: bool,
+    ) -> AutonomyBinding:
+        """CAS fences concurrent policy changes, including manual OFF."""
+        desired = expected.transition(
+            master_enabled=master_enabled,
+            external_enabled=external_enabled,
+        )
+        async with self._database.immediate_session() as session:
+            conversation = await session.get(CanonicalConversationModel, expected.conversation_id)
+            row = await session.get(
+                AutonomyBindingModel, (expected.conversation_id, expected.generation)
+            )
+            if (
+                conversation is None
+                or conversation.generation != expected.generation
+                or row is None
+                or _binding(row) != expected
+            ):
+                raise AutonomyConflict("autonomy_binding_changed")
+            if desired == expected:
+                return expected
+            changed = await session.scalar(
+                update(AutonomyBindingModel)
+                .where(
+                    AutonomyBindingModel.conversation_id == expected.conversation_id,
+                    AutonomyBindingModel.generation == expected.generation,
+                    AutonomyBindingModel.revision == expected.revision,
+                )
+                .values(
+                    master_enabled=desired.master_enabled,
+                    external_enabled=desired.external_enabled,
+                    effective_owner=desired.effective_owner.value,
+                    controller_epoch=desired.controller_epoch,
+                    revision=desired.revision,
+                    fallback_reason=desired.fallback_reason,
+                    updated_at=datetime.now(UTC),
+                )
+                .returning(AutonomyBindingModel.revision)
+            )
+            if changed is None:
+                raise AutonomyConflict("autonomy_binding_changed")
+            return desired
+
+    async def accept_host_proposal(
+        self,
+        *,
+        proposal_id: str,
+        binding: AutonomyBinding,
+        owner: AutonomyOwner,
+        space_id: str,
+        presence_id: str,
+        sources: tuple[InitiativeSource, ...],
+        target_person_id: str | None = None,
+        support_refs: tuple[str, ...] = (),
+        source_guard: tuple[InitiativeSource, ...] = (),
+        trigger_kind: Literal["source", "intrinsic"] = "source",
+        thread_key: str | None = None,
+        admission_allowed: Callable[[AsyncSession], Awaitable[bool]] | None = None,
+    ) -> AdmissionResult:
+        """Persist a host-validated opportunity, not permission to invoke an Agent.
+
+        The SELF host adapter validates source visibility before this short transaction.
+        Already accepted proposal replay returns its
+        original run even after a mode/generation switch; it never dispatches it again.
+        """
+        if not proposal_id or proposal_id != proposal_id.strip():
+            raise ValueError("initiative_proposal_id_invalid")
+        if any(not item for item in support_refs):
+            raise ValueError("initiative_support_refs_invalid")
+        if trigger_kind == "intrinsic" and (source_guard or support_refs):
+            raise ValueError("intrinsic_initiative_requires_empty_evidence")
+        now = datetime.now(UTC)
+        requested = AcceptedInitiative(
+            run_id=str(uuid4()),
+            proposal_id=proposal_id,
+            conversation_id=binding.conversation_id,
+            generation=binding.generation,
+            space_id=space_id,
+            presence_id=presence_id,
+            controller_epoch_at_acceptance=binding.controller_epoch,
+            sources=sources,
+            owner=owner,
+            target_person_id=target_person_id,
+            support_refs=support_refs,
+            trigger_kind=trigger_kind,
+            thread_key=thread_key,
+        )
+        source_json = _json(_source_values(sources))
+        support_json = _json(sorted(set(support_refs)))
+        payload = [space_id, presence_id, target_person_id, source_json, support_json]
+        if trigger_kind != "source" or thread_key is not None:
+            payload.extend((trigger_kind, thread_key))
+        payload_hash = hashlib.sha256(_json(payload).encode("utf-8")).hexdigest()
+        async with self._database.immediate_session() as session:
+            prior = await session.scalar(
+                select(InitiativeRunModel).where(
+                    InitiativeRunModel.conversation_id == binding.conversation_id,
+                    InitiativeRunModel.generation == binding.generation,
+                    InitiativeRunModel.owner == owner.value,
+                    InitiativeRunModel.controller_epoch == binding.controller_epoch,
+                    InitiativeRunModel.proposal_id == proposal_id,
+                )
+            )
+            if prior is not None:
+                if prior.payload_hash != payload_hash:
+                    raise AutonomyConflict("initiative_proposal_replay_conflict")
+                return AdmissionResult("duplicate", _run(prior))
+            now = datetime.now(UTC)
+            current = await session.get(
+                AutonomyBindingModel, (binding.conversation_id, binding.generation)
+            )
+            conversation = await session.get(CanonicalConversationModel, binding.conversation_id)
+            if (
+                current is None
+                or conversation is None
+                or conversation.generation != binding.generation
+            ):
+                return AdmissionResult("stale_binding")
+            if not current.master_enabled:
+                return AdmissionResult("disabled")
+            if not _binding(current).accepts(
+                owner=owner,
+                epoch=binding.controller_epoch,
+                conversation_id=binding.conversation_id,
+                generation=binding.generation,
+            ):
+                return AdmissionResult("stale_binding")
+            space = await session.get(CanonicalSpaceModel, space_id)
+            presence = await session.get(PresenceModel, presence_id)
+            if (
+                conversation.kind != "space"
+                or conversation.space_id != space_id
+                or space is None
+                or not space.enabled
+                or not space.autonomous_enabled
+                or presence is None
+                or not presence.enabled
+            ):
+                return AdmissionResult("scene_unavailable")
+            if source_guard:
+                # Keyed content CAS only; full semantic/lineage hydration already finished
+                # outside this short transaction.
+                from yuki.conversation.initiative_sources import (
+                    memory_revision,
+                    source_revision,
+                )
+                from yuki.persistence.models import ChatEventModel, MemoryFactModel
+
+                events = {
+                    str(row.id): row
+                    for row in (
+                        await session.scalars(
+                            select(ChatEventModel).where(
+                                ChatEventModel.id.in_(
+                                    [
+                                        int(ref.source_id)
+                                        for ref in source_guard
+                                        if ref.kind is InitiativeSourceKind.EVENT
+                                    ]
+                                )
+                            )
+                        )
+                    ).all()
+                }
+                memories = {
+                    str(row.id): row
+                    for row in (
+                        await session.scalars(
+                            select(MemoryFactModel).where(
+                                MemoryFactModel.id.in_(
+                                    [
+                                        int(ref.source_id)
+                                        for ref in source_guard
+                                        if ref.kind is InitiativeSourceKind.MEMORY
+                                    ]
+                                )
+                            )
+                        )
+                    ).all()
+                }
+                for ref in source_guard:
+                    if ref.kind is InitiativeSourceKind.EVENT:
+                        event_row = events.get(ref.source_id)
+                        if (
+                            event_row is None
+                            or event_row.canonical_conversation_id != binding.conversation_id
+                            or event_row.suppression_status not in {None, "keeper"}
+                            or str(source_revision(event_row)) != ref.revision
+                        ):
+                            return AdmissionResult("source_changed")
+                    else:
+                        memory_row = memories.get(ref.source_id)
+                        if (
+                            memory_row is None
+                            or memory_row.status != "active"
+                            or memory_row.review_state != "verified"
+                            or memory_revision(memory_row) != ref.revision
+                        ):
+                            return AdmissionResult("source_changed")
+            if admission_allowed is not None and not await admission_allowed(session):
+                return AdmissionResult("disabled")
+            row = InitiativeRunModel(
+                id=requested.run_id,
+                proposal_id=proposal_id,
+                conversation_id=binding.conversation_id,
+                generation=binding.generation,
+                owner=owner.value,
+                controller_epoch=binding.controller_epoch,
+                space_id=space_id,
+                presence_id=presence_id,
+                target_person_id=target_person_id,
+                payload_hash=payload_hash,
+                sources_json=source_json,
+                support_refs_json=support_json,
+                trigger_kind=trigger_kind,
+                thread_key=thread_key,
+                state="accepted",
+                feedback_sequence=0,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(row)
+            await session.flush()
+            return AdmissionResult("accepted", _run(row))
+
+    async def get_run(
+        self, run_id: str, *, session: AsyncSession | None = None
+    ) -> AcceptedInitiative | None:
+        """Read factual admission after restart/switch; callers still must authorize execution."""
+        async with optional_session(self._database, session, write=False) as active:
+            row = await active.get(InitiativeRunModel, run_id)
+            return _run(row) if row is not None else None
+
+    async def list_active(self) -> tuple[AcceptedInitiative, ...]:
+        """Accepted rows are a durable outbox, reconciled against original Work source IDs."""
+        async with self._database.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(InitiativeRunModel)
+                    .where(
+                        InitiativeRunModel.state.in_(_ACTIVE),
+                    )
+                    .order_by(InitiativeRunModel.created_at)
+                )
+            ).all()
+            return tuple(_run(row) for row in rows)
+
+    async def terminal_page(
+        self, *, after: str = "", ceiling: str | None = None, limit: int = 16
+    ) -> tuple[tuple[str, ...], str, str]:
+        """One stable-ID sweep; the caller's cursor is disposable scheduling state.
+
+        Freeze the upper ID for a sweep. Inserts behind the cursor and rows which
+        become terminal meanwhile are revisited on the next sweep, including old
+        generations. Mutable feedback timestamps never determine scan position.
+        """
+        async with self._database.sessions() as session:
+            if ceiling is None:
+                ceiling = (
+                    await session.scalar(
+                        select(InitiativeRunModel.id)
+                        .order_by(InitiativeRunModel.id.desc())
+                        .limit(1)
+                    )
+                    or ""
+                )
+            rows = (
+                await session.execute(
+                    select(InitiativeRunModel.id, InitiativeRunModel.state)
+                    .where(
+                        InitiativeRunModel.id > after,
+                        InitiativeRunModel.id <= ceiling,
+                    )
+                    .order_by(InitiativeRunModel.id)
+                    .limit(max(1, min(limit, 128)))
+                )
+            ).all()
+            return (
+                tuple(identity for identity, state in rows if state not in _ACTIVE),
+                ceiling,
+                rows[-1][0] if rows else "",
+            )
+
+    async def get_runs(
+        self,
+        run_ids: tuple[str, ...],
+        *,
+        session: AsyncSession,
+        errors: list[Exception] | None = None,
+    ) -> tuple[AcceptedInitiative, ...]:
+        rows = await session.scalars(
+            select(InitiativeRunModel).where(InitiativeRunModel.id.in_(run_ids))
+        )
+        result = []
+        for row in rows:
+            try:
+                result.append(_run(row))
+            except (ValueError, TypeError, KeyError) as exc:
+                if errors is None:
+                    raise
+                errors.append(exc)
+        return tuple(result)
+
+    async def latest_feedback(self, run_id: str) -> tuple[str, dict[str, Any], datetime] | None:
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(InitiativeFeedbackModel)
+                .where(
+                    InitiativeFeedbackModel.run_id == run_id,
+                )
+                .order_by(InitiativeFeedbackModel.sequence.desc())
+                .limit(1)
+            )
+            return (row.outcome, json.loads(row.payload_json), row.created_at) if row else None
+
+    async def list_current_autonomous_scopes(self) -> tuple[tuple[str, int], ...]:
+        """Find current group generations, including those missing a selector row."""
+        async with self._database.sessions() as session:
+            rows = (
+                await session.execute(
+                    select(CanonicalConversationModel.id, CanonicalConversationModel.generation)
+                    .join(
+                        CanonicalSpaceModel,
+                        CanonicalSpaceModel.id == CanonicalConversationModel.space_id,
+                    )
+                    .outerjoin(
+                        AutonomyBindingModel,
+                        and_(
+                            AutonomyBindingModel.conversation_id == CanonicalConversationModel.id,
+                            AutonomyBindingModel.generation
+                            == CanonicalConversationModel.generation,
+                        ),
+                    )
+                    .where(
+                        CanonicalConversationModel.kind == "space",
+                        or_(
+                            and_(
+                                CanonicalSpaceModel.enabled.is_(True),
+                                CanonicalSpaceModel.autonomous_enabled.is_(True),
+                            ),
+                            AutonomyBindingModel.effective_owner.in_(("legacy", "semantic")),
+                        ),
+                    )
+                    .order_by(CanonicalConversationModel.id)
+                )
+            ).all()
+            return tuple((conversation_id, generation) for conversation_id, generation in rows)
+
+    async def query_proposal(
+        self,
+        *,
+        conversation_id: str,
+        generation: int,
+        owner: AutonomyOwner,
+        controller_epoch: int,
+        proposal_id: str,
+    ) -> AcceptedInitiative | None:
+        """Recover uncertain admission by its original key without proposing or executing again."""
+        async with self._database.sessions() as session:
+            row = await session.scalar(
+                select(InitiativeRunModel).where(
+                    InitiativeRunModel.conversation_id == conversation_id,
+                    InitiativeRunModel.generation == generation,
+                    InitiativeRunModel.owner == owner.value,
+                    InitiativeRunModel.controller_epoch == controller_epoch,
+                    InitiativeRunModel.proposal_id == proposal_id,
+                )
+            )
+            return _run(row) if row is not None else None
+
+    async def record_feedback(
+        self,
+        run_id: str,
+        *,
+        sequence: int,
+        outcome: str,
+        actual_target_refs: tuple[str, ...] = (),
+        effect_refs: tuple[str, ...] = (),
+        considered_sources: tuple[InitiativeSource, ...] = (),
+        session: AsyncSession | None = None,
+    ) -> AcceptedInitiative:
+        """Commit a real host result exactly once, independent of current selector state.
+
+        References identify durable receipts/targets, never model prose. Unknown delivery
+        remains a referenced effect, not a claim that sending succeeded. Later factual
+        receipts may append to a terminal run, but cannot change its settled state or
+        dispatch it again. Identical replay is harmless.
+        """
+        if sequence < 1 or outcome not in _OUTCOMES:
+            raise ValueError("initiative_feedback_invalid")
+        for refs in (actual_target_refs, effect_refs):
+            if any(not item for item in refs):
+                raise ValueError("initiative_feedback_refs_invalid")
+        if len(set(considered_sources)) != len(considered_sources):
+            raise ValueError("initiative_feedback_sources_invalid")
+        payload = _json(
+            {
+                "actual_targets": actual_target_refs,
+                "effects": effect_refs,
+                "considered_sources": _source_values(considered_sources),
+            }
+        )
+        async with _feedback_session(self._database, session) as session:
+            row = await session.get(InitiativeRunModel, run_id)
+            if row is None:
+                raise AutonomyConflict("initiative_run_missing")
+            previous = await session.get(InitiativeFeedbackModel, (run_id, sequence))
+            if previous is not None:
+                if previous.outcome != outcome or previous.payload_json != payload:
+                    raise AutonomyConflict("initiative_feedback_replay_conflict")
+                return _run(row)
+            active = row.state in _ACTIVE
+            if not active and outcome == "running":
+                raise AutonomyConflict("initiative_run_terminal")
+            if sequence != row.feedback_sequence + 1:
+                raise AutonomyConflict("initiative_feedback_sequence_gap")
+            now = datetime.now(UTC)
+            if active:
+                row.state = outcome
+            row.feedback_sequence = sequence
+            row.updated_at = now
+            session.add(
+                InitiativeFeedbackModel(
+                    run_id=run_id,
+                    sequence=sequence,
+                    outcome=outcome,
+                    payload_json=payload,
+                    created_at=now,
+                )
+            )
+            return _run(row)

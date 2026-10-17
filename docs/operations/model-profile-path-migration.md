@@ -22,7 +22,7 @@ fi
 
 核对 `routes`、`search_connection` 和密钥引用后，将 `.env` 中的
 `MODEL_PROFILES_FILE` 改为 `webui-config/model_profiles.toml`。然后运行
-`qq-ai-bot-cli setup validate` 与 `docker compose config --quiet`；正式重建仍按原 Compose
+`yuki setup validate` 与 `docker compose config --quiet`；正式重建仍按原 Compose
 文件列表执行。Guided setup 在发现仅有旧文件时会明确要求先迁移，不自动复制或重写旧连接。
 原文件及修改前的 `.env` 应作为带时间戳的备份保留，供回退审计。
 

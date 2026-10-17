@@ -7,9 +7,9 @@ import pytest
 from sqlalchemy import event
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.plugin_host.ownership import PluginOwnershipError
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
-from qq_ai_bot.plugin_host.session_repository import PluginAgentSessionRepository
+from yuki.plugin_host.ownership import PluginOwnershipError
+from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki.plugin_host.session_repository import PluginAgentSessionRepository
 
 
 @contextmanager

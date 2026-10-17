@@ -19,7 +19,7 @@ import pytest
 import pytest_asyncio
 import trustme
 
-from qq_ai_bot.web.http_transport import create_web_http_client
+from yuki.web.http_transport import create_web_http_client
 
 
 @pytest.fixture(scope="module")

@@ -8,15 +8,15 @@ from sqlalchemy import insert, select
 from tests.support.self_initiative_memory_quality_helpers import reflection_fact
 from tests.unit.test_memory_v2 import _append_event
 
-from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.models import (
+from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.service import MemoryFactService
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
     MemoryToolReceiptModel,
 )
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from yuki.persistence.repositories import EventLedgerRepository
 
 
 @pytest.mark.parametrize("size", [1, 64, 1000])

@@ -16,25 +16,25 @@ import httpx
 import pytest
 from PIL import Image
 
-from qq_ai_bot.conversation.media_service import ConversationMediaService
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.providers.telegram import TelegramClient
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.identity.canonical_repository import (
+from yuki.conversation.media_service import ConversationMediaService
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.providers.telegram import TelegramClient
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.identity.canonical_repository import (
     create_person_binding,
     create_presence,
     create_space_binding,
 )
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
-from qq_ai_bot.services.media_resolver import MediaResolver
-from qq_ai_bot.workspace.service import WorkspaceService
-from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
+from yuki.persistence.models import ChatEventModel
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.image_preprocessor import ImagePreprocessor
+from yuki.services.media_resolver import MediaResolver
+from yuki.workspace.service import WorkspaceService
+from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
 @pytest.fixture

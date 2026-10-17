@@ -8,14 +8,14 @@ from unittest.mock import AsyncMock
 import pytest
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
-from qq_ai_bot.llm.base import LLMEmptyResponseError
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_session import WorkSession
-from qq_ai_bot.services.turn_execution import TurnExecution
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.domain.messages import ChatMessage, ChatRequest
+from yuki.llm.base import LLMEmptyResponseError
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.models import ModelExecutionPriority
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_session import WorkSession
+from yuki.services.turn_execution import TurnExecution
+from yuki.services.turn_transcript import TurnTranscript
 
 
 @pytest.mark.parametrize("worker", [False, True])

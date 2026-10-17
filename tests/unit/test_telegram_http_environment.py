@@ -15,8 +15,8 @@ import anyio
 import pytest
 import trustme
 
-from qq_ai_bot.gateway.media import MediaResolutionError
-from qq_ai_bot.gateway.providers.telegram import TelegramAPIError, TelegramClient
+from yuki.gateway.media import MediaResolutionError
+from yuki.gateway.providers.telegram import TelegramAPIError, TelegramClient
 
 _TOKEN = "fixture:not-a-real-telegram-token"
 _PROXY_PASSWORD = "fixture-proxy-password"

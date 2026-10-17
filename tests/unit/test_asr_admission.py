@@ -9,10 +9,10 @@ import pytest
 from tests.conftest import make_settings
 from tests.support.commands_and_chat_helpers import inbound
 
-from qq_ai_bot.asr.provider import QwenASRProvider
-from qq_ai_bot.asr.service import ASRService
-from qq_ai_bot.domain.audio import parse_transcripts
-from qq_ai_bot.domain.messages import AttachmentKind, MessageAttachment
+from yuki.asr.provider import QwenASRProvider
+from yuki.asr.service import ASRService
+from yuki.domain.audio import parse_transcripts
+from yuki.domain.messages import AttachmentKind, MessageAttachment
 
 
 @pytest.mark.parametrize("oversized", [False, True])
@@ -33,7 +33,7 @@ async def test_all_voice_parts_and_long_transcripts_preserve_source(
         resolve_audio=AsyncMock(return_value=SimpleNamespace(content=b"mp3")), close=AsyncMock()
     )
     prepare = AsyncMock(return_value=b"normalized-mp3")
-    monkeypatch.setattr("qq_ai_bot.asr.service.prepare_audio", prepare)
+    monkeypatch.setattr("yuki.asr.service.prepare_audio", prepare)
     message = replace(
         inbound("", message_id="audio-many", group_id="3001"),
         attachments=tuple(
@@ -67,7 +67,7 @@ async def test_all_voice_parts_and_long_transcripts_preserve_source(
 
 
 async def test_blank_transcript_still_reports_no_speech(database, monkeypatch):
-    monkeypatch.setattr("qq_ai_bot.asr.service.prepare_audio", AsyncMock(return_value=b"mp3"))
+    monkeypatch.setattr("yuki.asr.service.prepare_audio", AsyncMock(return_value=b"mp3"))
     service = ASRService(
         settings=make_settings(database.url, asr_enabled=True).asr,
         provider=SimpleNamespace(transcribe=AsyncMock(return_value=" \n\t ")),

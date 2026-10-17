@@ -46,12 +46,12 @@ The configuration installer does not install the host Manager. The Linux Docker 
 
 ```sh
 sudo /opt/yuki-sandbox/deploy/sandbox/install-manager.sh --deployment-root /absolute/deployment/path
-docker compose exec --user 10001:10001 bot qq-ai-bot-cli setup environment-check
+docker compose exec --user 10001:10001 bot yuki setup environment-check
 ```
 
 The deployment root is the Compose directory mounting `./workspace`. The installer records only `YUKI_MANAGER_WORKSPACE_STORE` in `/etc/yuki-sandbox/deployment.env`, preserves other settings and refuses to replace an already configured artifact root. Without an argument it retains the existing value or legacy default. It does not move home or alter existing mounts. `environment-check` uses actual Bot UID 10001 to check artifact-directory write access and the existing socket/status/readiness. It no longer calls retired `workspace_list`, creates no container, executes no code, calls no model and sends no messages. This proves connectivity, not live administrator/public-network acceptance.
 
-Update the host's `src/qq_ai_bot/sandbox/`, its `workspace/` dependencies, `deploy/sandbox/` and original Manager venv. Retain the original systemd configuration and every deployment override. The Supervisor is additionally mounted as one read-only source file. A Bot-image update alone does not give an existing environment root identity, current code or a different network.
+Update the host's `src/yuki/sandbox/`, its `workspace/` dependencies, `deploy/sandbox/` and original Manager venv. Retain the original systemd configuration and every deployment override. The Supervisor is additionally mounted as one read-only source file. A Bot-image update alone does not give an existing environment root identity, current code or a different network.
 
 Existing environments need one explicit replacement:
 

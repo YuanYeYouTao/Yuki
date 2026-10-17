@@ -2,7 +2,7 @@
 
 from types import SimpleNamespace
 
-from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
+from yuki.runtime.activation_bindings import ActiveWorkBindings
 
 
 async def test_exact_work_completions_survive_a_newer_scope_binding():

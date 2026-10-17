@@ -1,8 +1,8 @@
-name: qq-ai-bot
+name: yuki
 
 services:
   bot:
-    image: ghcr.io/yuanyeyoutao/yuki-qqbot:${YUKI_VERSION:?missing}
+    image: ghcr.io/yuanyeyoutao/yuki:${YUKI_VERSION:?missing}
     init: true
     restart: unless-stopped
     env_file:
@@ -23,7 +23,7 @@ services:
       COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
       APP_HOST: 0.0.0.0
       APP_PORT: 8080
-      DATABASE_URL: sqlite+aiosqlite:////app/data/qq_ai_bot.db
+      DATABASE_URL: sqlite+aiosqlite:////app/data/yuki.db
       MODEL_PROFILES_FILE: /app/webui-config/model_profiles.toml
       WORKSPACE_DIRECTORY: /app/workspace
       CONVERSATION_MEDIA_CACHE_DIRECTORY: /app/data/conversation-media-cache
@@ -47,7 +47,7 @@ services:
       - ./webui-config:/app/webui-config:ro
       - ./plugins:/app/plugins:ro
     networks:
-      - qq-ai-bot-network
+      - yuki-network
     healthcheck:
       test:
         - CMD
@@ -94,10 +94,10 @@ services:
       - ./snowluma-extra-accounts:/app/qq-accounts
       - ./social-transfer:/yuki-transfer:ro
     networks:
-      - qq-ai-bot-network
+      - yuki-network
     stop_grace_period: 30s
 
 networks:
-  qq-ai-bot-network:
-    name: qq-ai-bot-network
+  yuki-network:
+    name: yuki-network
     driver: bridge

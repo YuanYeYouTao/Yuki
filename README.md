@@ -49,6 +49,8 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 **当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence＋子会话、群按 SpaceBinding＋topic 隔离；人物记忆仍沿内部 Person。`yuki acp` 让外部 ACP 客户端连接服务器，每个 session 有独立 Conversation，沿原 Main、固定工具和发送回执，见[个人 API](docs/architecture/client-api.md#acp-方向-a)。Plugin API **4.0**、Main 合同 **21**、迁移 **0132**；配置及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地验证、合并和上线分别记录，正式 3.9.0 的历史说明保留如上。
 
+当前源码的 Python 模块和发行包统一为 `yuki`，管理、个人客户端与 ACP 共用 `yuki` 命令，服务进程使用 `yuki-bot`；旧命令别名已删除。源码开发使用 `uv sync --all-extras` 或本地 Docker 构建。新发行镜像使用 `ghcr.io/yuanyeyoutao/yuki`，尚未据此发布新版本；下方正式 3.9.0 的下载、镜像和安装步骤继续对应其原 Release 产物。
+
 养鲲已移至独立仓库 [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game)，本仓库不再附带游戏源码或专用迁移。独立版需要 Plugin API 4.0 Host；安装与旧存档离线升级见插件仓库。
 
 会话 [Compact](docs/architecture/conversation-compact.md)（[#417](https://github.com/YuanYeYouTao/Yuki/issues/417)、[#418](https://github.com/YuanYeYouTao/Yuki/issues/418)）由当前 Main 模型统一整理公共历史或私有执行尾部。`CONTEXT_COMPACT_TRIGGER_TOKENS` 默认 `96000`，用于提前整理，不要求结果必须降到该值以下；模型硬容量沿 Profile 的明确设置，未声明时保持未知。子 Agent 共用 Main 的完整工具合同，执行按自己的真实来源与授权核验；旧独立 Rollup 和 Work/ordinary 摘要链已退役。
@@ -141,7 +143,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```bash
 docker compose config --quiet
 docker compose pull
-docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
+docker compose run --rm --no-deps --entrypoint yuki bot init-db
 docker compose up -d
 ```
 
@@ -160,7 +162,7 @@ docker compose up -d
 ```bash
 docker compose ps
 docker compose logs --tail 200 bot
-docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
+docker compose exec bot yuki gateway doctor --provider snowluma
 ```
 
 所有命令沿用部署时的 Compose 参数。同一 QQ 只允许一条活动连接，重复连接不会挤掉旧连接。旧部署的 Compose 与 `.env` 不会由安装器自动替换，退役配置处理见 [SnowLuma 部署](docs/deployment/snowluma.md)与[升级指南](docs/upgrade-3.9.0.md#旧-napcat-部署配置)。

@@ -9,9 +9,9 @@ from sqlalchemy import select, update
 from tests.support.projection_sql_counts import capture_sql
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import scope
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import scope
 
 
 def assert_read_only(statements):
@@ -178,12 +178,12 @@ async def test_busy_scope_with_many_qualified_work_does_not_hide_independent_sco
     import json
     import time
 
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-    from qq_ai_bot.runtime.work_control import WorkControl
-    from qq_ai_bot.runtime.work_scheduler import WorkScheduler
-    from qq_ai_bot.runtime.work_schema_v1 import work
+    from yuki.domain.conversations import ConversationScope
+    from yuki.persistence.models import ChatEventModel
+    from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+    from yuki.runtime.work_control import WorkControl
+    from yuki.runtime.work_scheduler import WorkScheduler
+    from yuki.runtime.work_schema_v1 import work
 
     env = await social_env(database, tmp_path)
     ledger = ScopedEventLedgerUnitOfWork(database)
