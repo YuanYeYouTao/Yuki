@@ -40,6 +40,7 @@
 - `emoji.fallback_text_sent`
 
 2. 删除 manifest 中的 `runtime.config.read`、`runtime.config.write`；插件自己的配置继续使用 `plugin.config.read/write`，Yuki 运维配置通过现有管理入口处理。
-3. 将 `plugin_api` 更新为 `3.5`，重新发现、审阅并批准实际 manifest。Host 精确匹配 API 和 manifest hash；旧批准不会自动授权新合同。
+3. 为 `ctx.automation.create_task(task, request_id="...")` 提供稳定操作 ID；同一操作重试复用原 ID，不同任务使用不同 ID。
+4. 将 `plugin_api` 更新为 `3.5`，重新发现、审阅并批准实际 manifest。Host 精确匹配 API 和 manifest hash；旧批准不会自动授权新合同。
 
 加载历史批准记录时只忽略这两个已退役权限，其他未知权限仍按原失败路径处理。旧批准、审计和执行回执保留，既有权限不扩大。当前可订阅事件见 [Event Catalog](api-reference/events.md)。更早插件先完成 [API 3.4 迁移](api-3.4-migration.md)。
