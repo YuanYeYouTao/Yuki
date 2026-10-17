@@ -1,5 +1,7 @@
 """Manager failures preserve failed and unknown tool effect receipts."""
 
+import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -77,7 +79,8 @@ async def test_tool_operation_receipt(database, tool, payload, committed):
     ],
 )
 async def test_lost_manager_response_preserves_unknown_effect(monkeypatch, tool, uncertain):
-    reader = SimpleNamespace(readline=AsyncMock(side_effect=OSError("response lost")))
+    reader = asyncio.StreamReader()
+    reader.set_exception(OSError("response lost"))
     writer = SimpleNamespace(
         write=Mock(),
         drain=AsyncMock(),
@@ -97,7 +100,14 @@ async def test_lost_manager_response_preserves_unknown_effect(monkeypatch, tool,
     assert result["error"] == "sandbox_unavailable"
     assert result["uncertain"] is uncertain
     writer.write.assert_called_once()
+    assert json.loads(writer.write.call_args.args[0]) == {
+        "method": tool,
+        "args": {},
+        "request_id": "original-request",
+    }
+    writer.drain.assert_awaited_once()
     writer.close.assert_called_once()
+    writer.wait_closed.assert_awaited_once()
 
 
 async def test_connection_failure_has_no_dispatched_effect(monkeypatch):
