@@ -79,9 +79,7 @@ def make_child_executor(
             if hasattr(chat, "_prompt_composer")
             else PromptComposer(Settings(_env_file=None)).static_messages,
             lookup_plugin_host=lookup_plugin_host or (lambda _: None),
-            backend_factory=lambda runtime, allowed: MainAgentBackend(
-                chat, runtime, allowed_tools=allowed
-            ),
+            backend_factory=lambda runtime, host: MainAgentBackend(chat, runtime, plugin_host=host),
             web_capabilities=chat.web_capabilities,
         ),
     )

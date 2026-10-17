@@ -362,10 +362,10 @@ async def test_native_search_uses_actual_work_owner_without_changing_body(databa
         try:
             token = current_work_control.set(control)
             try:
-                first = await bridge._search(WebSearchRequest("核对原事实", extract_max_results=0))
+                first = await bridge._search(WebSearchRequest("核对原事实"))
             finally:
                 current_work_control.reset(token)
-            second = await bridge._search(WebSearchRequest("核对原事实", extract_max_results=0))
+            second = await bridge._search(WebSearchRequest("核对原事实"))
             assert first.sources == second.sources
             assert headers == [owner, None] and len(wire) == 2
             assert wire[0] == wire[1]

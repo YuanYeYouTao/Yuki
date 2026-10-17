@@ -2,6 +2,23 @@
 
 这页描述源码中的当前实现。上线状态以实际镜像、数据库迁移和切换记录为准。
 
+## 普通文件与交付快照
+
+普通文件的读写、搜索、目录、移动、删除和局部编辑统一走持久终端，使用正常 Linux
+文件语义；不再提供 `workspace_list/read/write/search/patch/mkdir/move/delete`，也不保留
+旧 artifact 的公开目录、分页文本读取和删除兼容接口。终端操作不要求工作区版本或 CAS。
+
+工作区只保留 `workspace_inspect` 和 `workspace_publish` 两条桥。前者将选定的真实像素交给
+原模型，后者把终端文件制作成不可变 artifact，返回内部 ID 后再由 `send_message` 发送。
+终端后来改写或删除原文件，不改变已经发布的快照与投递回执。发布与普通 artifact 读回
+没有固定 200 MiB 单文件、512 MiB 总量或 1000 对象配额；真实磁盘和平台传输错误照实返回。
+模型看图的字节与帧数预算属于实际输入准备，不等于发布文件的容量。
+
+不可变存储仍保存原来源、内容哈希与引用，供 Social 发送、插件媒体投递、Client 下载和
+短状态使用。旧导入迁移仍可列举内部快照；引用回收不依赖已删除的对象配额。普通文件
+工具退出不删除历史快照、私有工具结果或原已确认执行回执，旧外置页按原 `result_ref`
+读取，不重新读取今天的文件。
+
 ## 媒体引用与读取
 
 入站消息在原位置留下 `[图片附件0]`、`[视频附件0]` 或 `[文件附件0：名称]` 等稳定文字标记。编号对应 `chat_events.id + attachment_index`：接入在同一短事务写入真实 segment 位置、canonical Conversation、generation 和媒体元数据。标记只说明附件存在，不表示 Yuki 已看过内容。文本上下文不放 URL、网关文件 ID、Base64 或缓存路径。
@@ -19,7 +36,7 @@ Bot 在消息入账后异步预取原件，不调用视觉模型。缓存目录�
 身份、类型、大小和修改时间；未过期引用、刚替换的文件和其他来源仍保留。取消等待中的 GC
 先结束当前线程页，再释放锁，不能让后台 unlink 与新发布竞争。清理不改变接纳容量和授权规则。
 
-主 Agent 的 `get_recent_chat_history`、`search_chat_history` 和附近查询返回真实内部事件 ID，并受当前 generation floor 约束。插件在当前会话的历史搜索也遵守同一 floor。模型可按语义、发送者和消息顺序选择候选，再调用 `inspect_conversation_attachment`。执行处从本轮运行时取得当前 canonical Conversation；入站消息使用已接纳的会话 ID，不依赖主动轮专用字段。随后核验事件为该会话的入站 keeper、generation 未变化且文件未过期；模型不能提供路径、平台消息 ID 或别的会话 ID 代替来源。图片和视频帧进入原主 Agent 的原生图片输入；文档仍由本地有界 reader 解析。历史工具不调用独立 Qwen，也不扣辅助模型请求；结果标明真实来源、hash 和处理模式。
+主 Agent 的 `query_chat_history` 按 recent/search/around 返回真实内部事件 ID，并受当前 generation floor 约束。插件在当前会话的历史搜索也遵守同一 floor。模型可按语义、发送者和消息顺序选择候选，再调用 `inspect_conversation_attachment`。执行处从本轮运行时取得当前 canonical Conversation；入站消息使用已接纳的会话 ID，不依赖主动轮专用字段。随后核验事件为该会话的入站 keeper、generation 未变化且文件未过期；模型不能提供路径、平台消息 ID 或别的会话 ID 代替来源。图片和视频帧进入原主 Agent 的原生图片输入；文档仍由本地有界 reader 解析。历史工具不调用独立 Qwen，也不扣辅助模型请求；结果标明真实来源、hash 和处理模式。
 
 ## 已观察媒体与历史
 
@@ -43,8 +60,8 @@ GIF 保留有界代表帧，视频保留实际采帧秒数；视频不声称分�
 可以接纳 200 MiB 原件不代表一次看图可以读取同样多的内存。解码、文件读取和采帧不进入
 SQLite writer。没有 `image_input` 时如实报告未读，不暗中调用 Qwen 或换模型。
 
-`workspace_inspect` 接受 `path` 或 `artifact_id` 二选一和 `question`；path 可带刚读取的
-`expected_version`。Manager 通过现有工作区目录 FD 核验路径、软链接/硬链接和真实内容版本，
+`workspace_inspect` 接受 `path` 或 `artifact_id` 二选一和 `question`；path 可带已选定文件的
+`expected_version`，不要求先调用已退役的文件读取工具。Manager 通过现有工作区目录 FD 核验路径、软链接/硬链接和真实内容版本，
 返回冻结字节；这次读取不发布 artifact，也不修改文件。已发布 artifact 必须不可变。
 工作区视频因控制通道的读取预算同样限制为 20 MiB；超限明确拒绝。Agent 可自行先用终端
 生成较小文件/代表帧，再选择它查看，Host 不为其自动扫描全部工作文件或图片。
@@ -72,7 +89,7 @@ SDK `vision.analyze_current_media` 是另一个明确授予 `VISION_ANALYZE` 的
 Bot 与 sandbox Manager 的媒体读取实现须配套更新。来源、文件版本、GIF、采帧与
 原生请求配对可离线核验；实际 Provider 图片能力、端到端速度和 QQ 自然流量分别验收。
 
-`save_conversation_attachment_to_workspace` 先执行相同的临时读取授权，再显式复制到全局持久工作区。临时副本仍按原时间过期；已提升的工作文件由工作区规则管理，可在其他会话共享。提升受工作区单文件容量限制，失败不能声称文件已共享。独立插件计算会话没有主聊天临时媒体的读取权。
+`save_conversation_attachment_to_workspace` 先执行相同的临时读取授权，再显式复制到全局持久工作区。临时副本仍按原时间过期；已提升的工作文件可由其他会话的共享终端处理。提升按原 request 和快照回执处理，不受已删除的工作区单文件配额阻挡；真实磁盘或导入失败不能声称文件已共享。独立插件计算会话没有主聊天临时媒体的读取权。
 
 ## 入站语音
 

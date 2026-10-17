@@ -47,7 +47,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 升级步骤、兼容性变化与各项验证范围见发布说明。模型响应、工具请求与宿主资源仍会影响实际体验；版本更新不保证固定的延迟、费用或缓存命中率。
 
-**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence、群按 SpaceBinding＋topic 隔离会话；人物记忆仍沿内部 Person。默认模型退役任意 OneBot action、戳一戳和远端转发历史展开，公共历史及成员目录只声明已观察账本。Plugin API **4.0**、Main 合同 **20**、迁移 **0128**；配置、升级及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地实施/验证进度见[实施记录](docs/architecture/Yuki-299与多平台解耦实施记录-2026-10-16.md)，正式 3.9.0 的历史说明保留如上。
+**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence、群按 SpaceBinding＋topic 隔离会话；人物记忆仍沿内部 Person。默认模型退役任意 OneBot action、戳一戳和远端转发历史展开，公共历史及成员目录只声明已观察账本。Plugin API **4.0**、Main 合同 **21**、迁移 **0130**；配置、升级及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地实施/验证进度见[实施记录](docs/architecture/Yuki-299与多平台解耦实施记录-2026-10-16.md)，正式 3.9.0 的历史说明保留如上。
 
 养鲲已移至独立仓库 [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game)，本仓库不再附带游戏源码或专用迁移。独立版需要 Plugin API 4.0 Host；安装与旧存档离线升级见插件仓库。
 
@@ -69,14 +69,14 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 ## 持久工作环境
 
-启用后，Yuki 拥有全会话共用的 Linux 工作目录，可以保存下载文件、Git 项目、脚本与依赖。文件工具和终端操作同一份文件，普通工作文件不再按 24 小时过期。
+启用后，Yuki 拥有全会话共用的 Linux 工作目录，可以保存下载文件、Git 项目、脚本与依赖。普通文件由持久终端操作；媒体检查与不可变发布保留专用入口，普通工作文件不按 24 小时过期。
 
-- 预装 Bash、Python、Node.js、Git 和基础编译工具，支持 pip、npm，以及由 Manager 管理的 apt 安装和环境检查点。
+- 预装 Bash、Python、Node.js、Git 和基础编译工具，支持在环境内以管理员身份直接运行 apt、pip 和 npm；HOME 保持 /home/yuki。普通文件工具和专用安装入口已退役，原文件与执行回执保留。
 - 终端支持交互输入、增量输出、取消和后台执行。可以先启动一个任务，继续处理消息，再回来看结果。
 - Bot 或 Manager 重启时，环境进程可以继续运行；环境本身重启后，普通任务标记中断，已登记服务按策略恢复。
 - 选定文件发布为不可变快照后，通过对应平台的统一发送链路交付；旧 `artifact_id` 保持兼容。
 
-默认家目录容量 2 GiB，容器内存上限 512 MiB，最多一个主要执行任务、四个终端会话和两个内部服务。环境没有浏览器或桌面，也不挂载 Bot 数据库、QQ 凭据或宿主 Docker 控制接口。
+默认家目录容量 2 GiB，容器内存上限 512 MiB；执行、PTY和服务没有额外软件数量封顶，资源失败按实际系统结果处理。环境没有浏览器或桌面，也不挂载 Bot 数据库、平台凭据或宿主 Docker 控制接口。
 
 这是一项**单独部署的可选能力**，需要 Linux 宿主、gVisor 和 Yuki Manager；普通 Bot 部署包不会自动安装。配置、资源限制与恢复方式见[持久环境说明](docs/operations/persistent-environment.zh-CN.md)（[English](docs/operations/persistent-environment.md)）。
 

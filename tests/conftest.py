@@ -27,7 +27,6 @@ from qq_ai_bot.persistence.repositories import (
     MediaAnalysisRepository,
     PeopleRepository,
     PrivateUserSettingsRepository,
-    WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
@@ -131,7 +130,6 @@ def build_harness(
     ledger.set_scoped_writer(scoped_events)
     conversation_scopes = ConversationScopeRepository(database)
     memories = MemoryFactService(MemoryFactRepository(database))
-    web_sources = WebSearchSourceRepository(database)
     vision = (
         VisionService(
             provider=vision_provider,
@@ -171,7 +169,6 @@ def build_harness(
         ledger=ledger,
         memories=memories,
         web_provider=web_provider,
-        web_sources=web_sources,
         runtime_config=runtime_config,
     )
     chat = ChatService(
@@ -182,7 +179,6 @@ def build_harness(
         people=profiles,
         memories=memories,
         tools=agent_tools,
-        web_sources=web_sources,
         runtime_config=runtime_config,
         memory_partition_lookup=DatabaseMemoryPartitionLookup(database),
         conversation_scopes=conversation_scopes,

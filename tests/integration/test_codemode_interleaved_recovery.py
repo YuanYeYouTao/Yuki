@@ -51,8 +51,8 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
                     "code": "await yuki_task_control({'action': 'update', 'context_note': "
                     "{'version': 1, 'facts': [{'text': '" + MARK + "', 'refs': ['goal']}], "
                     "'unresolved': [], 'next_steps': []}})\n"
-                    "await yuki_search_chat_history({'query': 'inert-first'})\n"
-                    "await yuki_search_chat_history({'query': 'inert-second'})\n"
+                    "await yuki_query_chat_history({'view': 'search', 'query': 'inert-first'})\n"
+                    "await yuki_query_chat_history({'view': 'search', 'query': 'inert-second'})\n"
                     "'PROGRAM_RESULT_' + 'EXACTLY_ONCE'",
                     "inputs": {},
                 },
@@ -161,8 +161,8 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
         await snap("original_work_resumed")
         assert len(wires) == 8
         assert domain.log == [
-            ("search_chat_history", {"query": "inert-first"}),
-            ("search_chat_history", {"query": "inert-second"}),
+            ("query_chat_history", {"view": "search", "query": "inert-first"}),
+            ("query_chat_history", {"view": "search", "query": "inert-second"}),
         ]
         # A neutral turn may use current public history, but does not publish
         # another Work's private note into ordinary input.

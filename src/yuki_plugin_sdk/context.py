@@ -129,7 +129,6 @@ class AgentFacade(Protocol):
         instruction: str,
         *,
         context_profile: str = "none",
-        allowed_capabilities: tuple[str, ...] = (),
         max_tool_calls: int | None = None,
         max_model_requests: int | None = None,
     ) -> PluginResult: ...

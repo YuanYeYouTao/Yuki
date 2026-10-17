@@ -152,17 +152,10 @@ class AutomationToolService:
     """Expose global safe reads and owner-scoped mutations to the main Agent."""
 
     _ALLOWED_ARGUMENTS: ClassVar[dict[str, frozenset[str]]] = {
-        "automation_create": frozenset({"task", "max_runs"}),
-        "automation_list": frozenset({"match_task", "max_runs", "status", "limit", "cursor"}),
-        "automation_list_history": frozenset({"limit"}),
-        "automation_get": frozenset({"automation_id"}),
-        "automation_update": frozenset({"automation_id", "task"}),
-        "automation_pause": frozenset({"automation_id"}),
-        "automation_resume": frozenset({"automation_id"}),
-        "automation_cancel": frozenset({"automation_id"}),
-        "automation_run_now": frozenset({"automation_id"}),
-        "automation_history": frozenset({"automation_id"}),
-        "automation_diagnose": frozenset(),
+        "automation_query": frozenset(
+            {"view", "match_task", "max_runs", "status", "limit", "cursor", "automation_id"}
+        ),
+        "automation_manage": frozenset({"action", "task", "max_runs", "automation_id"}),
         "time_get_current": frozenset(),
     }
 
@@ -170,102 +163,66 @@ class AutomationToolService:
         self._service = service
 
     def definitions(self) -> tuple[ChatTool, ...]:
-        task_schema = _task_intent_schema()
-        id_schema = {"automation_id": {"type": "integer", "minimum": 1}}
-        definitions = (
+        identifier = {"type": "integer", "minimum": 1}
+        task = _task_intent_schema()
+        return (
             ChatTool(
-                name="automation_create",
-                description=_CREATE_DESCRIPTION,
-                parameters=_object_schema(
-                    {"task": task_schema, "max_runs": {"type": "integer", "minimum": 1}},
-                    required=("task",),
-                ),
-            ),
-            ChatTool(
-                name="automation_list",
+                name="automation_query",
+                result_cacheable=False,
                 description=(
-                    "列出 Yuki 的全局自动化任务简表，不按当前发言人过滤。默认只列 active，"
-                    "每条返回稳定 automation_id、任务内容、下次时间和创建者；"
-                    "查看 paused、terminal 或 all 时传 status。"
-                    "能看到任务不代表当前主体能修改；普通用户只能管理自己的任务，"
-                    "超级管理员可以管理全部任务。"
-                    "传入 match_task 可查询结构化等价的待执行任务；"
-                    "忽略显示名称，比较目标、时间、上下文和交付范围，不会自动合并或创建任务。"
+                    "查询自动化：list 为全局安全目录（默认 active），get 为单项安全摘要，"
+                    "completed 为当前主体终态历史，history 为指定任务执行历史，"
+                    "diagnose 为当前主体创建结果。目录可见不授予修改权限。"
+                    "list 可用 match_task 精确查结构等价任务，无需先查询再创建。"
                 ),
                 parameters=_object_schema(
                     {
-                        "match_task": task_schema,
-                        "max_runs": {"type": "integer", "minimum": 1},
+                        "view": {
+                            "type": "string",
+                            "enum": ["list", "get", "completed", "history", "diagnose"],
+                        },
+                        "automation_id": identifier,
+                        "match_task": task,
+                        "max_runs": identifier,
                         "status": {
                             "type": "string",
                             "enum": ["active", "paused", "current", "terminal", "all"],
                         },
-                        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
-                        "cursor": {"type": "string", "maxLength": 20},
-                    }
+                        "limit": {"type": "integer", "minimum": 1},
+                        "cursor": {"type": "string"},
+                    },
+                    required=("view",),
                 ),
             ),
             ChatTool(
-                name="automation_list_history",
+                name="automation_manage",
+                result_cacheable=False,
                 description=(
-                    "列出当前执行主体最近的终态历史；每条显示稳定 automation_id。"
-                    "全局终态目录用 automation_list(status=terminal)，沿 cursor 继续读。"
-                ),
-                parameters=_object_schema(
-                    {"limit": {"type": "integer", "minimum": 1, "maximum": 100}}
-                ),
-            ),
-            ChatTool(
-                name="automation_get",
-                description=(
-                    "按稳定 automation_id 查看一个任务的安全摘要；"
-                    "读取不授予修改权限；普通用户只能管理自己的任务，"
-                    "超级管理员可以管理全部任务。"
-                ),
-                parameters=_object_schema(id_schema, required=("automation_id",)),
-            ),
-            ChatTool(
-                name="automation_update",
-                description=(
-                    "发布完整的新 TaskSpec 版本；普通用户只能修改自己的任务，"
-                    "超级管理员可以修改任意任务且不改变原创建者。"
-                ),
-                parameters=_object_schema(
-                    {**id_schema, "task": task_schema},
-                    required=("automation_id", "task"),
-                ),
-            ),
-            ChatTool(
-                name="automation_diagnose",
-                description=(
-                    "读取当前执行主体最近的自动化创建结果，用于核实任务是否真的持久化或定位失败。"
-                ),
-                parameters=_object_schema({}),
-            ),
-            *(
-                ChatTool(
-                    name=f"automation_{operation}",
-                    description=(
-                        f"{description}自动化任务。普通用户只能管理自己的任务，"
-                        "超级管理员可以管理全部任务。"
-                    ),
-                    parameters=_object_schema(id_schema, required=("automation_id",)),
+                    "创建、更新、暂停、恢复、取消或立即调度自动化。create/update 提供完整 task；"
+                    "其他操作用原 automation_id。按创建者当前权限执行，超级管理员可管理全部。"
+                    "创建以 persisted 和 automation_id 为准；run_now 只确认入队。"
                 )
-                for operation, description in (
-                    ("pause", "暂停"),
-                    ("resume", "恢复"),
-                    ("cancel", "取消"),
-                    ("run_now", "立即调度执行一次"),
-                    ("history", "查看执行历史"),
-                )
+                + _CREATE_DESCRIPTION,
+                parameters=_object_schema(
+                    {
+                        "action": {
+                            "type": "string",
+                            "enum": ["create", "update", "pause", "resume", "cancel", "run_now"],
+                        },
+                        "automation_id": identifier,
+                        "task": task,
+                        "max_runs": identifier,
+                    },
+                    required=("action",),
+                ),
             ),
             ChatTool(
                 name="time_get_current",
-                description="读取后端可信的当前 UTC、共同默认时区的本地时间、日期和星期。",
+                result_cacheable=False,
+                description="读取可信当前 UTC、本地时间、日期和星期。",
                 parameters=_object_schema({}),
             ),
         )
-        return definitions
 
     async def execute(
         self, name: str, arguments_json: str, runtime: ToolRuntime
@@ -278,31 +235,36 @@ class AutomationToolService:
             if not isinstance(arguments, dict):
                 raise ValueError("参数必须是 JSON 对象")
         except (json.JSONDecodeError, ValueError) as exc:
-            if name == "automation_create":
-                await self._service.record_creation_failure(
-                    actor=actor,
-                    conversation_key=runtime.conversation_key,
-                    error=exc,
-                )
             return _result(error="invalid_arguments", detail=str(exc))
         allowed = self._ALLOWED_ARGUMENTS.get(name)
         if allowed is None:
             return _result(error="unknown_tool", detail=f"未知自动化工具：{name}")
+        operation = (
+            "time_get_current"
+            if name == "time_get_current"
+            else arguments.get("view" if name == "automation_query" else "action")
+        )
+        operations = (
+            {"list", "get", "completed", "history", "diagnose"}
+            if name == "automation_query"
+            else {"create", "update", "pause", "resume", "cancel", "run_now"}
+            if name == "automation_manage"
+            else {"time_get_current"}
+        )
+        if not isinstance(operation, str) or operation not in operations:
+            return _result(error="invalid_arguments", detail="未知 action/view")
         unexpected = set(arguments) - allowed
         if unexpected:
             error = ValueError(f"不接受参数：{', '.join(sorted(unexpected))}")
-            if name == "automation_create":
+            if operation == "create":
                 await self._service.record_creation_failure(
                     actor=actor,
                     conversation_key=runtime.conversation_key,
                     error=error,
                 )
-            return _result(
-                error="invalid_arguments",
-                detail=str(error),
-            )
+            return _result(error="invalid_arguments", detail=str(error))
         try:
-            if name == "automation_create":
+            if operation == "create":
                 row = await self._service.create_task(
                     arguments.get("task"),
                     actor=actor,
@@ -314,7 +276,7 @@ class AutomationToolService:
                     public_message=f"自动化任务已创建（ID {row.id}）。",
                     mutation_committed=True,
                 )
-            if name == "automation_list":
+            if operation == "list":
                 maximum = arguments.get("limit", 50)
                 if isinstance(maximum, bool) or not isinstance(maximum, int):
                     raise ValueError("limit 必须是整数")
@@ -346,7 +308,7 @@ class AutomationToolService:
                         "next_cursor": str(offset + maximum) if has_more else None,
                     }
                 )
-            if name == "automation_list_history":
+            if operation == "completed":
                 maximum = arguments.get("limit", 50)
                 if isinstance(maximum, bool) or not isinstance(maximum, int):
                     raise ValueError("limit 必须是整数")
@@ -356,9 +318,9 @@ class AutomationToolService:
                         "completed_history": [_record(row) for row in completed[:maximum]],
                     }
                 )
-            if name == "time_get_current":
+            if operation == "time_get_current":
                 return _result(data=self._service.current_time())
-            if name == "automation_diagnose":
+            if operation == "diagnose":
                 return _result(
                     data={
                         "recent_creation_outcomes": await self._service.diagnose_creation(
@@ -367,11 +329,11 @@ class AutomationToolService:
                     }
                 )
             automation_id = _automation_id(arguments)
-            if name == "automation_get":
+            if operation == "get":
                 return _result(
                     data=_directory_record(await self._service.get_visible(automation_id))
                 )
-            if name == "automation_update":
+            if operation == "update":
                 row = await self._service.update_task(
                     automation_id,
                     arguments.get("task"),
@@ -383,23 +345,23 @@ class AutomationToolService:
                     public_message=f"自动化任务已更新（ID {row.id}）。",
                     mutation_committed=True,
                 )
-            if name == "automation_pause":
+            if operation == "pause":
                 changed = await self._service.pause(
                     automation_id, actor=actor, conversation_key=runtime.conversation_key
                 )
-            elif name == "automation_resume":
+            elif operation == "resume":
                 changed = await self._service.resume(
                     automation_id, actor=actor, conversation_key=runtime.conversation_key
                 )
-            elif name == "automation_cancel":
+            elif operation == "cancel":
                 changed = await self._service.cancel(
                     automation_id, actor=actor, conversation_key=runtime.conversation_key
                 )
-            elif name == "automation_run_now":
+            elif operation == "run_now":
                 changed = await self._service.run_now(
                     automation_id, actor=actor, conversation_key=runtime.conversation_key
                 )
-            elif name == "automation_history":
+            elif operation == "history":
                 task, history_rows = await self._service.history(automation_id, actor=actor)
                 return _result(
                     data={
@@ -419,21 +381,19 @@ class AutomationToolService:
             else:
                 return _result(error="unknown_tool", detail=f"未知自动化工具：{name}")
             public_message = {
-                "automation_pause": "任务已暂停。" if changed else "任务状态没有改变。",
-                "automation_resume": "任务已恢复。" if changed else "该任务不能恢复。",
-                "automation_cancel": "任务已取消。" if changed else "任务状态没有改变。",
-                "automation_run_now": (
-                    "任务已进入待执行队列。" if changed else "该任务不能立即执行。"
-                ),
-            }[name]
+                "pause": "任务已暂停。" if changed else "任务状态没有改变。",
+                "resume": "任务已恢复。" if changed else "该任务不能恢复。",
+                "cancel": "任务已取消。" if changed else "任务状态没有改变。",
+                "run_now": ("任务已进入待执行队列。" if changed else "该任务不能立即执行。"),
+            }[operation]
             satisfied: bool | None = None
-            if name == "automation_cancel":
+            if operation == "cancel":
                 # A repeated cancel of an already cancelled task meets its request.
                 satisfied = changed or (
                     (await self._service.require_manageable(automation_id, actor)).status
                     is AutomationStatus.CANCELLED
                 )
-            elif name == "automation_resume":
+            elif operation == "resume":
                 satisfied = changed
             return replace(
                 _result(
@@ -444,7 +404,7 @@ class AutomationToolService:
                 request_postcondition_satisfied=satisfied,
             )
         except (PermissionError, ValueError) as exc:
-            if name == "automation_create":
+            if operation == "create":
                 await self._service.record_creation_failure(
                     actor=actor,
                     conversation_key=runtime.conversation_key,

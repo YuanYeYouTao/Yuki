@@ -313,7 +313,7 @@ async def test_source_change_after_accepted_automation_preserves_receipt_without
     control = await setup(database, tmp_path)
     assert control.session is not None and control.current is not None
     original_id = control.current["id"]
-    call = ToolCall("create-once", ToolFunction("automation_create", "{}"))
+    call = ToolCall("create-once", ToolFunction("automation_manage", '{"action": "create"}'))
     control.session.transcript.append(ChatMessage("assistant", "", tool_calls=(call,)))
     await control.session.save("response", (call,))
     invoke = AsyncMock(return_value='{"ok":true,"automation_id":93}')

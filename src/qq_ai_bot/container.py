@@ -363,8 +363,8 @@ class ApplicationContainer:
                 open_self_memory=self.chat.open_self_memory_session,
                 static_messages=self.chat._prompt_composer.static_messages,
                 lookup_plugin_host=self._plugin_contexts.get,
-                backend_factory=lambda runtime, allowed: MainAgentBackend(
-                    self.chat, runtime, allowed_tools=allowed
+                backend_factory=lambda runtime, host: MainAgentBackend(
+                    self.chat, runtime, plugin_host=host
                 ),
                 web_capabilities=self.chat.web_capabilities,
             ),
@@ -698,32 +698,6 @@ class ApplicationContainer:
                 conversation_id=invocation.conversation_id,
             )
 
-        agent_capabilities: set[str] = set()
-        if PluginPermission.AGENT_RUN in permissions:
-            from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
-            from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
-
-            agent_capabilities.update(SANDBOX_TOOLS | WORKSPACE_TOOLS)
-        if PluginPermission.MESSAGE_HISTORY_READ in permissions:
-            agent_capabilities.update(
-                {
-                    "search_chat_history",
-                    "get_chat_history_around",
-                    "read_conversation_history",
-                    "get_recent_chat_history",
-                    "find_contacts",
-                }
-            )
-        if (
-            PluginPermission.MEMORY_PERSON_READ in permissions
-            or PluginPermission.MEMORY_GROUP_READ in permissions
-        ):
-            agent_capabilities.add("search_memory")
-        if PluginPermission.WEB_SEARCH in permissions:
-            agent_capabilities.add("web_search")
-        if PluginPermission.WEB_READ in permissions:
-            agent_capabilities.add("read_webpage")
-
         secrets = BoundSecretsFacade(
             plugin_id=manifest.id,
             declared_names=manifest.secrets,
@@ -748,7 +722,6 @@ class ApplicationContainer:
                 memory_admin=self.memory_admin,
                 runtime_config=self.runtime_config,
                 agent_runner=self.runtime.runner,
-                agent_capabilities=frozenset(agent_capabilities),
                 web_provider=self.web_provider,
                 vision=self.vision,
                 emoji_repository=self.emoji_repository,

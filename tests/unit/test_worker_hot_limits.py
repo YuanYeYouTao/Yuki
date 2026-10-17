@@ -35,7 +35,8 @@ async def test_child_obeys_hot_limit_without_resetting_original_work(
                 0,
                 tool_calls=(
                     ToolCall(
-                        f"read-{worker_requests}", ToolFunction("get_recent_chat_history", "{}")
+                        f"read-{worker_requests}",
+                        ToolFunction("query_chat_history", '{"view": "recent"}'),
                     ),
                 ),
             )

@@ -99,10 +99,14 @@ async def test_app_memory_write_search_detail_and_correction_keep_original_perso
     assert [row["fact_id"] for row in found["data"]["memories"]] == [fact_id]
     assert found["data"]["memories"][0]["subject"] == {"person_id": person, "space_id": None}
     detail = (
-        await tools.execute("get_memory_fact", json.dumps({"fact_id": fact_id}), runtime)
+        await tools.execute(
+            "read_memory", json.dumps({"view": "fact", "fact_id": fact_id}), runtime
+        )
     ).model_payload()
     evidence = (
-        await tools.execute("get_memory_evidence", json.dumps({"fact_id": fact_id}), runtime)
+        await tools.execute(
+            "read_memory", json.dumps({"view": "evidence", "fact_id": fact_id}), runtime
+        )
     ).model_payload()
     assert detail["ok"] and evidence["ok"] and evidence["data"]["evidence"]
     corrected = (

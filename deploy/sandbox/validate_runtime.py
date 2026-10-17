@@ -37,7 +37,9 @@ async def main(socket: Path) -> None:
     )
     async with asyncio.timeout(90):
         while result.get("pending"):
-            result = await request(socket, "get_code_run", {"run_id": result["run_id"]})
+            result = await request(
+                socket, "terminal_read", {"run_id": result["run_id"], "wait_seconds": 1}
+            )
     assert result.get("status") == "succeeded", result
     published = await request(socket, "workspace_publish", {"path": "validation.txt"})
     assert published.get("immutable") is True and published.get("artifact_id"), published

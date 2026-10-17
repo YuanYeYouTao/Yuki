@@ -35,13 +35,6 @@ async def check_environment(
         return {"ok": False, "error": "manager_connection_failed"}
     if status.get("ready") is not True or status.get("workspace") != "/workspace":
         return {"ok": False, "error": "persistent_environment_not_ready"}
-    files = await client.execute(
-        "workspace_list",
-        {"path": "/workspace", "limit": 1},
-        request_id="deployment-workspace-status",
-    )
-    if files.get("error") or not isinstance(files.get("items"), list):
-        return {"ok": False, "error": "workspace_interface_unavailable"}
     # Raw status contains task/service identifiers, filenames and resource data.
     # The installation check publishes only the verified capability facts.
     return {"ok": True, "uid": expected_uid, "manager": "connected", "workspace": "/workspace"}

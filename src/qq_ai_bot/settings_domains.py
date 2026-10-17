@@ -242,12 +242,10 @@ class WebSettings(DomainSettings):
     web_search_bridge_state_path: Path = Path("data/web-search-bridge.sqlite3")
     web_search_depth: str
     web_search_max_results: int = Field(gt=0)
-    web_extract_max_results: int = Field(gt=0)
     web_timeout_seconds: float = Field(default=180.0, gt=0)
     web_max_retries: int = Field(ge=0)
     web_global_concurrency: int = Field(gt=0)
     web_source_retention_days: int = Field(gt=0)
-    web_source_max_runs_per_conversation: int = Field(gt=0)
 
     @property
     def mode(self) -> WebMode:

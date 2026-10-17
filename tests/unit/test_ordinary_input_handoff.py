@@ -200,7 +200,7 @@ async def test_observed_ordinary_input_joins_original_activation_without_work(
     database, tmp_path, reason, final, runtime_work_enabled
 ):
     provider = _PausedProvider(
-        [_tool("get_recent_chat_history", {}, "read"), ChatResponse(final, 0)]
+        [_tool("query_chat_history", {"view": "recent"}, "read"), ChatResponse(final, 0)]
     )
     _env, harness, worker, message = await _scene(
         database, tmp_path, provider, reason=reason, runtime_work_enabled=runtime_work_enabled
@@ -290,7 +290,7 @@ async def test_accepted_input_does_not_reactivate_and_duplicate_real_social_send
     # payload. No hash/cache suppresses it: the original admission owns C.
     provider = _PausedProvider(
         [
-            _tool("get_recent_chat_history", {}, "read"),
+            _tool("query_chat_history", {"view": "recent"}, "read"),
             _tool("send_message", {"text": ANSWER}, "answer"),
             "NO_REPLY",
             _tool("send_message", {"text": ANSWER}, "answer"),
@@ -324,8 +324,8 @@ async def test_other_members_public_input_keeps_original_execution_authority(
 ):
     provider = _PausedProvider(
         [
-            _tool("get_recent_chat_history", {}, "before-c"),
-            _tool("get_recent_chat_history", {}, "after-c"),
+            _tool("query_chat_history", {"view": "recent"}, "before-c"),
+            _tool("query_chat_history", {"view": "recent"}, "after-c"),
             "NO_REPLY",
         ]
     )
@@ -394,7 +394,9 @@ async def test_other_members_public_input_keeps_original_execution_authority(
 async def test_steered_voice_reuses_prepared_transcript_and_partial_failure(
     database, tmp_path, reason, source, runtime_work_enabled
 ):
-    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "read"), "NO_REPLY"])
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
+    )
     _env, harness, worker, message = await _scene(
         database, tmp_path, provider, reason=reason, runtime_work_enabled=runtime_work_enabled
     )
@@ -430,7 +432,9 @@ async def test_steered_voice_reuses_prepared_transcript_and_partial_failure(
 async def test_steered_image_and_quoted_attachment_remain_private_and_prepare_once(
     database, tmp_path
 ):
-    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "read"), "NO_REPLY"])
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
+    )
     _env, harness, worker, message = await _scene(database, tmp_path, provider)
     image = ChatImage("data:image/png;base64,c3ludGhldGlj", source="current")
     document = "原引用附件的私有提取内容"
@@ -473,7 +477,7 @@ async def test_new_identical_input_after_last_admission_keeps_its_own_send(
 ):
     provider = _PausedProvider(
         [
-            _tool("get_recent_chat_history", {}, "read"),
+            _tool("query_chat_history", {"view": "recent"}, "read"),
             _tool("send_message", {"text": ANSWER}, "answer"),
             "NO_REPLY",
             _tool("send_message", {"text": ANSWER}, "answer"),
@@ -522,7 +526,9 @@ async def test_new_identical_input_after_last_admission_keeps_its_own_send(
 async def test_late_classification_does_not_claim_old_observation_or_replace_new_latest(
     database, tmp_path, monkeypatch
 ):
-    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "read"), "NO_REPLY"])
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
+    )
     _env, harness, worker, message = await _scene(
         database, tmp_path, provider, reason="continuation"
     )
@@ -579,7 +585,10 @@ async def test_accepted_input_is_not_reactivated_after_failure_or_cancellation(
     database, tmp_path, cancel
 ):
     provider = _PausedProvider(
-        [_tool("get_recent_chat_history", {}, "read"), RuntimeError("synthetic provider failure")]
+        [
+            _tool("query_chat_history", {"view": "recent"}, "read"),
+            RuntimeError("synthetic provider failure"),
+        ]
     )
     _env, harness, worker, message = await _scene(database, tmp_path, provider)
     sender = MemorySender()
@@ -615,7 +624,7 @@ async def test_work_accepted_during_original_round_keeps_real_mailbox_authorizat
     provider = _PausedProvider(
         [
             _tool("task_control", {"action": "accept", "goal": "处理原任务"}, "accept"),
-            _tool("get_recent_chat_history", {}, "read"),
+            _tool("query_chat_history", {"view": "recent"}, "read"),
             _tool("task_control", {"action": "complete", "result": "原任务结束"}, "complete"),
             "NO_REPLY",
         ],
@@ -672,7 +681,7 @@ async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_origina
 ):
     provider = _PausedProvider(
         [
-            _tool("get_recent_chat_history", {}, "read")
+            _tool("query_chat_history", {"view": "recent"}, "read")
             if entrance == "semantic_invitation"
             else "NO_REPLY",
             "NO_REPLY",
@@ -762,7 +771,9 @@ async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_origina
 async def test_source_changed_during_attachment_preparation_is_not_accepted_with_old_material(
     database, tmp_path
 ):
-    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "read"), "NO_REPLY"])
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
+    )
     _env, harness, worker, message = await _scene(database, tmp_path, provider)
     sender = MemorySender()
     image = ChatImage("data:image/png;base64,b2xkLWltYWdl")
@@ -828,7 +839,9 @@ async def test_source_changed_during_attachment_preparation_is_not_accepted_with
 async def test_source_changed_during_asr_does_not_publish_old_transcript_or_ordinary_input(
     database, tmp_path
 ):
-    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "read"), "NO_REPLY"])
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
+    )
     _env, harness, worker, message = await _scene(
         database, tmp_path, provider, reason="continuation"
     )

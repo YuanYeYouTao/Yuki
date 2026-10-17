@@ -12,6 +12,8 @@ from dataclasses import asdict, replace
 from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
+from sqlalchemy import func, select
+
 from qq_ai_bot.domain.conversations import ConversationScope
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.llm.base import LLMInvalidRequestError
@@ -45,6 +47,39 @@ async def close_plugin_main_tasks(plugin_id: str) -> None:
     await asyncio.gather(*tasks, return_exceptions=True)
 
 
+async def _original_plugin_work(
+    ledger: EventLedgerRepository,
+    conversation_id: str | None,
+    plugin_id: str,
+    execution_id: str | None,
+) -> dict[str, Any] | None:
+    """Resolve the original durable invocation, independent of retired tool names."""
+    from qq_ai_bot.runtime.work_repository import WorkConflict
+    from qq_ai_bot.runtime.work_schema_v1 import work
+
+    async with ledger._database.sessions() as session:
+        originals = (
+            (
+                await session.execute(
+                    select(work).where(
+                        work.c.conversation_id == conversation_id,
+                        work.c.parent_work_id.is_(None),
+                        func.json_extract(work.c.source_json, "$.owner") == "plugin_invocation",
+                        func.json_extract(work.c.source_json, "$.plugin_id") == plugin_id,
+                        func.json_extract(work.c.source_json, "$.parent_execution_id")
+                        == execution_id,
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    if len(originals) > 1:
+        candidates = ",".join(str(item["id"]) for item in originals)
+        raise WorkConflict(f"plugin_invocation_ambiguous:{candidates}")
+    return dict(originals[0]) if originals else None
+
+
 async def run_plugin_main_turn(
     host: HostPluginContext,
     invocation: PluginInvocation,
@@ -59,7 +94,6 @@ async def run_plugin_main_turn(
     """Bound the callback wait while the Host retains an accepted activation."""
     from qq_ai_bot.plugin_host.facades import _invocation_actor
     from qq_ai_bot.runtime.work_activation import current_work_control
-    from qq_ai_bot.runtime.work_repository import WorkRepository
     from qq_ai_bot.services.durable_invocations import invocation_boundary
 
     anchor: int | str | None = invocation.source_event_id
@@ -113,7 +147,9 @@ async def run_plugin_main_turn(
     except TimeoutError:
         ledger = host._services.ledger
         if ledger is not None:
-            row = await WorkRepository(ledger._database).by_source(f"invocation:{key}")
+            row = await _original_plugin_work(
+                ledger, runtime.canonical_conversation_id, host.plugin_id, execution_id
+            )
             if row is not None:
                 return AgentRunResult(
                     text="",
@@ -128,7 +164,9 @@ async def run_plugin_main_turn(
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         if ledger is not None:
-            row = await WorkRepository(ledger._database).by_source(f"invocation:{key}")
+            row = await _original_plugin_work(
+                ledger, runtime.canonical_conversation_id, host.plugin_id, execution_id
+            )
             if row is not None:  # Admission raced with cancellation; keep its original ID.
                 return AgentRunResult(
                     text="",
@@ -144,7 +182,9 @@ async def run_plugin_main_turn(
     except asyncio.CancelledError:
         ledger = host._services.ledger
         row = (
-            await WorkRepository(ledger._database).by_source(f"invocation:{key}")
+            await _original_plugin_work(
+                ledger, runtime.canonical_conversation_id, host.plugin_id, execution_id
+            )
             if ledger is not None
             else None
         )
@@ -297,6 +337,11 @@ async def _execute_plugin_main_turn(
         if control is not None:
             control.validate = validate
         main = cast(MainAgentTurnService, contract.chat.runtime.main_turns)
+        previous = None
+        if control is None:
+            previous = await _original_plugin_work(
+                ledger, version.conversation_id, host.plugin_id, runtime.execution_id
+            )
         result = await main.read_result(
             replace(
                 runtime,
@@ -306,7 +351,8 @@ async def _execute_plugin_main_turn(
                     "approval_revision": host._services.approval_revision,
                 },
                 before_model_request=validate,
-            )
+            ),
+            previous=previous,
         )
         if result is not None:
             return result
@@ -330,7 +376,6 @@ async def _execute_plugin_main_turn(
             "context_profile": context_profile,
             "conversation_key": invocation.conversation_key,
             "permission": permission.value,
-            "allowed_tools": sorted(runtime.allowed_capabilities),
             "max_model_requests": runtime.max_model_requests,
             "max_tool_calls": runtime.max_tool_calls,
             "person_id": invocation.person_id,
@@ -340,11 +385,16 @@ async def _execute_plugin_main_turn(
             "actor_is_superuser": runtime.actor_is_superuser,
         }
         repository = WorkRepository(ledger._database)
-        boundary = invocation_boundary(runtime)
+        boundary = (
+            json.loads(previous["source_json"])["execution_boundary"]
+            if previous is not None
+            else invocation_boundary(runtime)
+        )
         owned = None
         async with AsyncExitStack() as activation:
             if control is None:
-                previous = await repository.by_source(f"invocation:{boundary}")
+                if previous is None:
+                    previous = await repository.by_source(f"invocation:{boundary}")
                 if contract.chat._settings.runtime_work_enabled or previous is not None:
                     source = (
                         json.loads(previous["source_json"])
@@ -376,6 +426,7 @@ async def _execute_plugin_main_turn(
                             {"action": "accept", "goal": instruction},
                             "host-invocation-admission",
                         )
+            control = current_work_control.get()
             payload = {"plugin": {"id": host.plugin_id, "source_key": actor.source_key}}
             if context_data:
                 payload["plugin"]["requested_context"] = context_data
@@ -450,7 +501,9 @@ async def _execute_plugin_main_turn(
                 context_plugin_id=host.plugin_id,
                 context_read_contract=hashlib.sha256(
                     json.dumps(
-                        [permission.value, context_profile, sorted(runtime.allowed_capabilities)],
+                        [permission.value, context_profile, control.source["allowed_tools"]]
+                        if control is not None and "allowed_tools" in control.source
+                        else [permission.value, context_profile],
                         separators=(",", ":"),
                     ).encode()
                 ).hexdigest(),
@@ -465,8 +518,7 @@ async def _execute_plugin_main_turn(
             tools = MainAgentBackend(
                 contract.chat,
                 tool_runtime,
-                allowed_tools=runtime.allowed_capabilities
-                | {"update_short_state", "read_tool_artifact"},
+                plugin_host=host,
             )
             async with contract.chat._turn_coordinator.hold(invocation.conversation_key):
                 await validate()
@@ -537,9 +589,6 @@ async def resume_plugin_work(
     if source.get("approval_revision") != host._services.approval_revision:
         raise PluginPermissionError("plugin approved version changed")
     permission = PluginPermission(source["permission"])
-    allowed = frozenset(source["allowed_tools"])
-    if not allowed <= host._services.agent_capabilities:
-        raise PluginPermissionError("plugin work capabilities changed")
     inbound = None
     if source.get("trigger_event_id") is not None:
         event = await ledger.get_event(source["trigger_event_id"])
@@ -654,7 +703,6 @@ async def resume_plugin_work(
                 runtime=replace(
                     runtime,
                     execution_id=source["parent_execution_id"],
-                    allowed_capabilities=allowed,
                     max_model_requests=min(
                         runtime.runtime_config.agent.max_model_requests,
                         source["max_model_requests"],

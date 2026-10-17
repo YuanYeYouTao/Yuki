@@ -29,7 +29,12 @@ async def test_tavily_passes_requested_counts_and_preserves_all_returned_evidenc
         if request.url.path == "/search":
             return httpx.Response(
                 200,
-                json={"results": [dict(url=url, title=title, content=snippet) for url in urls]},
+                json={
+                    "results": [
+                        dict(url=url, title=title, content=snippet, raw_content=content)
+                        for url in urls
+                    ]
+                },
             )
         return httpx.Response(
             200,
@@ -42,9 +47,7 @@ async def test_tavily_passes_requested_counts_and_preserves_all_returned_evidenc
     provider = TavilyWebSearchProvider(api_key="synthetic", client=client)
     query = "q" * 700
     try:
-        result = await provider.search(
-            WebSearchRequest(query, max_results=7, extract_max_results=5)
-        )
+        result = await provider.search(WebSearchRequest(query, max_results=7))
     finally:
         await provider.close()
     assert captured[0] == (
@@ -59,19 +62,13 @@ async def test_tavily_passes_requested_counts_and_preserves_all_returned_evidenc
             include_images=False,
         ),
     )
-    assert captured[1] == (
-        "/extract",
-        dict(urls=urls[:5], extract_depth="basic", format="markdown", include_images=False),
-    )
+    assert len(captured) == 1
     assert [source.url for source in result.sources] == urls
     assert all(
         source.title == title.strip() and source.snippet == snippet.strip()
         for source in result.sources
     )
-    assert [source.relevant_content for source in result.sources] == [content] * 5 + [
-        snippet.strip(),
-        snippet.strip(),
-    ]
+    assert [source.relevant_content for source in result.sources] == [content] * 7
 
 
 async def test_anthropic_native_search_keeps_wire_evidence_without_local_response_caps(tmp_path):
@@ -130,9 +127,7 @@ async def test_anthropic_native_search_keeps_wire_evidence_without_local_respons
         ),
     )
     try:
-        result = await provider.search(
-            WebSearchRequest("q" * 700, max_results=7, extract_max_results=0)
-        )
+        result = await provider.search(WebSearchRequest("q" * 700, max_results=7))
     finally:
         await provider.close()
         await client.aclose()
@@ -220,8 +215,10 @@ async def test_main_history_search_archives_original_requested_page(
                     ToolCall(
                         "original-history-read",
                         ToolFunction(
-                            "search_chat_history",
-                            json.dumps({"keyword": "history-needle", "limit": 101}),
+                            "query_chat_history",
+                            json.dumps(
+                                {"view": "search", "keyword": "history-needle", "limit": 101}
+                            ),
                         ),
                     ),
                 ),

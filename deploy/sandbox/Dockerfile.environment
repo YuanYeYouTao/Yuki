@@ -24,6 +24,8 @@ COPY --from=execd /execd /opt/opensandbox/execd
 COPY --from=execd /source/LICENSE /usr/share/licenses/opensandbox/LICENSE
 COPY src/qq_ai_bot/sandbox/environment_supervisor.py /opt/yuki-runtime/supervisor.py
 ENV HOME=/home/yuki \
+    USER=root \
+    LOGNAME=root \
     PYTHONUSERBASE=/home/yuki/.local \
     PATH=/home/yuki/.local/bin:/usr/local/bin:/usr/bin:/bin \
     NPM_CONFIG_PREFIX=/home/yuki/.local \
@@ -32,7 +34,7 @@ ENV HOME=/home/yuki \
     no_proxy=localhost,127.0.0.1,::1 \
     PYTHONUNBUFFERED=1
 LABEL io.yuki.environment.source="OpenSandbox@441042c288a3eacbe93b36236a9baf6f6254ad4d"
-USER 10001:10001
+USER 0:0
 WORKDIR /workspace
 ENTRYPOINT ["/opt/opensandbox/execd"]
 CMD ["--port=44772", "--log-level=4"]

@@ -82,7 +82,7 @@ async def test_app_automation_create_keeps_canonical_owner_and_original_scene(ap
         if request.messages[-1].role == "tool":
             results.append(json.loads(request.messages[-1].content))
             return "internal result"
-        return tool("automation_create", arguments, "app-reminder")
+        return tool("automation_manage", {"action": "create", **(arguments)}, "app-reminder")
 
     env.provider._responder = respond
     response = await env.client.post(

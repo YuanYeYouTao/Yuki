@@ -255,9 +255,7 @@ class ToolingRuntimeConfig:
 @dataclass(frozen=True, slots=True)
 class WebRuntimeConfig:
     search_max_results: int
-    extract_max_results: int
     source_retention_days: int
-    source_max_runs_per_conversation: int
     mode: str = "disabled"
 
 

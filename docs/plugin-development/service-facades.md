@@ -114,20 +114,22 @@ await ctx.messages.send_text(turn.text)
 
 `ctx.agent.run()` 是唯一的主 Agent 调用入口，使用固定提示词、工具声明和 short_state 编译。`context_profile` 显式选择 `none`、`current_user` 或 `current_group`；默认不加入人物或群资料。选择上下文还需要对应资料读取权限，聊天历史另外需要 `message.history.read`。
 
-调用绑定原 ToolActor、canonical Conversation 和 Presence。消息来源保原事件编号；SELF、定时等无入站消息的来源保原执行编号或自主 run，不制造真人事件。执行能力取插件实际批准与本轮允许的交集；每次物理模型请求检查当前真实身份、原来源与权限，用户权限变更不被旧 USER 快照封顶。
+调用绑定原 ToolActor、canonical Conversation 和 Presence。消息来源保原事件编号；SELF、定时等无入站消息的来源保原执行编号或自主 run，不制造真人事件。执行能力沿插件实际领域批准；每次物理模型请求检查当前真实身份、原来源与权限，用户权限变更不被旧 USER 快照封顶。
 
-主调用复用 `MainAgentBackend`，Host 根据批准权限设置执行范围：
+主调用复用 `MainAgentBackend`，Host 在执行处复用批准权限：
 
-| Manifest 批准权限 | 可请求 capability |
+| Manifest 批准权限 | 执行范围 |
 |---|---|
 | `agent.run` | 持久工作区、终端、安装、文件发布和环境服务 |
 | `message.history.read` | 当前授权会话的近期记录、搜索、原文定位与网关补查 |
-| `memory.person.read` | `memory.search`（人物范围） |
-| `memory.group.read` | `memory.search`（群范围） |
+| `memory.person.read` | 记忆搜索与详情（人物可见范围） |
+| `memory.group.read` | 记忆搜索与详情（群可见范围） |
 | `web.search` | `web_search` |
 | `web.read` | `read_webpage` |
 
-实际能力取批准权限、真实来源和显式能力参数的交集；省略 `allowed_capabilities` 使用 Host 批准的默认集合。普通用户仍只能读获准人物和会话；目录、查询和媒体输入不改变固定声明。宿主管理、QQ 发送、记忆写入和自动化仍需各自的委托，获得工作环境权限不自动获得这些能力。
+`agent.run` 不再接受可选工具名名单，也不写入 `source.allowed_tools`。历史 source、boundary、hash 和回执保原件；恢复按原 Conversation、插件与执行 ID 找回原 Work，不因工具改名重建、重发或重置预算。不会维护旧名到 action/view 的授权表。普通用户仍只能读获准人物和会话；目录、查询和媒体输入不改变固定声明。
+
+联网继续分别核 `web.search` 和 `web.read`；聊天记录与联系人沿 `message.history.read`，并保持原 Conversation 的读取范围；App 插件不能借 `read_personal_entry` 扩读其他私聊，普通 App Main 的本人跨入口显式读取不受影响。群成员沿 `group.members.read`。自动化使用现有 `automation.read/manage_self`；可信当前时间属于通用只读能力，不要求自动化批准。普通发送沿现有 `message.private.send/group.send`，附件沿 `message.media.send`；撤回自己消息复用当前会话的原发送批准并由原平台回执执行，再由原 Social 主体、目标、来源与回执执行；真实撤权后不派发新消息。每次记忆搜索与事实/证据读取按当前 Host 的 `memory.person.read/group.read` 批准投影调用范围；证据仍仅本人且需人物读取范围，入场旧快照不保留已撤销批准。并行读取各用本次执行副本，不改原来源或上下文证明。记忆持久修改沿现有 `memory.write`，`invalidate` 沿现有 SDK delete 的 `memory.delete`；后续仍核原 SELF/人物主体、事件和证据。宿主管理与其他真实业务授权仍在原领域执行处处理，工作环境批准不替代这些事实。独立 PluginSession 的 `allowed_capabilities` 合同不变。
 
 主 Agent 的 function 工具清单固定；原生工具按真实批准权限、显式配置和协议能力决定
 是否提交。原生工具由 Provider 执行，不能声称本地执行围栏逐次拦截，也不能为统一声明

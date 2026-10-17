@@ -295,12 +295,10 @@ class Settings(BaseSettings):
     web_search_bridge_state_path: Path = Path("data/web-search-bridge.sqlite3")
     web_search_depth: str = "advanced"
     web_search_max_results: int = 5
-    web_extract_max_results: int = 3
     web_timeout_seconds: float = 180.0
     web_max_retries: int = 1
     web_global_concurrency: int = 4
     web_source_retention_days: int = 7
-    web_source_max_runs_per_conversation: int = 10
 
     vision_enabled: bool = False
     vision_provider: str = "qwen"

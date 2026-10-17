@@ -17,14 +17,13 @@ from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchS
 
 
 class TavilyWebSearchProvider:
-    """Call Tavily Search then one batched Tavily Extract request."""
+    """Keep Tavily Search and explicit Extract as separate requests."""
 
     def __init__(
         self,
         *,
         api_key: str,
         search_depth: str = "advanced",
-        extract_max_results: int = 3,
         timeout_seconds: float = 180,
         max_retries: int = 1,
         global_concurrency: int = 4,
@@ -33,7 +32,6 @@ class TavilyWebSearchProvider:
         if not api_key:
             raise ValueError("TAVILY_API_KEY is required")
         self._search_depth = search_depth
-        self._extract_max_results = extract_max_results
         self._max_retries = min(max(0, max_retries), 1)
         self._semaphore = asyncio.Semaphore(global_concurrency)
         self._authorization_header = f"Bearer {api_key}"
@@ -69,41 +67,11 @@ class TavilyWebSearchProvider:
         candidates = self._search_sources(data, query)
         if not candidates:
             raise WebSearchError("empty_results", "没有找到可用的联网结果")
-        extract_limit = (
-            self._extract_max_results
-            if request.extract_max_results is None
-            else request.extract_max_results
-        )
-        selected = candidates[:extract_limit]
-        extracted: dict[str, str] = {}
-        partial_failure = False
-        if selected:
-            try:
-                extracted, partial_failure = await self._extract_batch(
-                    tuple(source.url for source in selected)
-                )
-            except WebSearchError:
-                partial_failure = True
-
-        sources = tuple(
-            WebSearchSource(
-                source_id=source.source_id,
-                title=source.title,
-                url=source.url,
-                domain=source.domain,
-                snippet=source.snippet,
-                relevant_content=extracted.get(source.url, source.snippet),
-                published_at=source.published_at,
-                provider_score=source.provider_score,
-            )
-            for source in candidates
-        )
         return WebSearchResponse(
             query=query,
-            sources=sources,
+            sources=tuple(candidates),
             provider_request_id=_optional_string(data.get("request_id")),
             latency_seconds=time.perf_counter() - started,
-            partial_failure=partial_failure,
         )
 
     async def extract(self, url: str, query: str) -> WebSearchSource:
@@ -188,7 +156,13 @@ class TavilyWebSearchProvider:
                     url=normalized,
                     domain=domain,
                     snippet=(snippet.strip() if isinstance(snippet, str) else ""),
-                    relevant_content="",
+                    relevant_content=(
+                        item["raw_content"].strip()
+                        if isinstance(item.get("raw_content"), str)
+                        else snippet.strip()
+                        if isinstance(snippet, str)
+                        else ""
+                    ),
                     published_at=_parse_datetime(
                         item.get("published_at") or item.get("published_date")
                     ),

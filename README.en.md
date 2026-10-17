@@ -47,7 +47,7 @@ See the [3.9.0 release notes](docs/releases/v3.9.0.md) for features, fixes, cont
 
 The release notes cover migration steps, compatibility changes, and the scope of validation. Actual experience still depends on model responses, tool requests, and host resources; the version does not promise fixed latency, cost, or cache rates.
 
-**Current development branch:** Personal clients, QQ and Telegram share one runtime through native platform adapters. Private entries use Binding + Presence; groups use SpaceBinding + topic. Person memory remains shared through internal identities. Default model tools retire arbitrary OneBot actions, pokes and remote forward expansion; history and member directories report observed ledger coverage. Plugin API is **4.0**, Main contract **20**, and migration head **0128**. See [platform adapters and upgrades](docs/architecture/platform-adapters.md) and the [implementation record](docs/architecture/Yuki-299与多平台解耦实施记录-2026-10-16.md). This is separate from the historical 3.9.0 release described above.
+**Current development branch:** Personal clients, QQ and Telegram share one runtime through native platform adapters. Private entries use Binding + Presence; groups use SpaceBinding + topic. Person memory remains shared through internal identities. Default model tools retire arbitrary OneBot actions, pokes and remote forward expansion; history and member directories report observed ledger coverage. Plugin API is **4.0**, Main contract **21**, and migration head **0130**. See [platform adapters and upgrades](docs/architecture/platform-adapters.md) and the [implementation record](docs/architecture/Yuki-299与多平台解耦实施记录-2026-10-16.md). This is separate from the historical 3.9.0 release described above.
 
 The Kun game now lives in the independent [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game) repository. Game source and dedicated migrations are no longer bundled here. The independent plugin requires a Plugin API 4.0 Host; installation and offline save migration are documented in that repository.
 
@@ -71,12 +71,12 @@ Availability depends on deployment configuration, model capabilities, and author
 
 When enabled, Yuki gets a shared Linux working directory across conversations. Downloads, Git repositories, scripts, and dependencies persist; ordinary workspace files do not expire after 24 hours.
 
-- Bash, Python, Node.js, Git, and basic build tools are preinstalled. The workspace supports pip and npm, plus Manager-controlled apt installation and environment checkpoints.
+- Bash, Python, Node.js, Git, and basic build tools are preinstalled. The terminal runs apt, pip and npm directly as administrator inside the environment, with HOME remaining /home/yuki. Ordinary file tools and the dedicated package-install tool are retired; files and original execution receipts remain.
 - Terminals support interactive input, incremental output, cancellation, and background execution. Yuki can start a task, continue chatting, and return to its result.
 - Processes can continue while Bot or Manager restarts. A workspace restart interrupts ordinary tasks; registered services recover according to policy.
 - Selected files are delivered through the matching platform as immutable snapshots. Legacy `artifact_id` references remain compatible.
 
-The default home-directory quota is 2 GiB and container memory limit is 512 MiB, with at most one primary execution task, four terminal sessions, and two internal services. The workspace has no browser or desktop and does not mount the Bot database, QQ credentials, or host Docker control interface.
+The default home-directory capacity is 2 GiB and container memory limit is 512 MiB. Executions, PTYs and services have no additional software count limit; resource failures follow actual system results. The environment has no browser or desktop and does not mount the Bot database, platform credentials, or host Docker control interface.
 
 This is an **optional, separately deployed capability** requiring a Linux host, gVisor, and Yuki Manager. The standard Bot deployment bundle does not install it. See the [workspace operations guide](docs/operations/persistent-environment.md) ([Chinese](docs/operations/persistent-environment.zh-CN.md)) for setup, limits, and recovery.
 

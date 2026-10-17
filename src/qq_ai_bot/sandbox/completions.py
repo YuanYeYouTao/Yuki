@@ -6,7 +6,6 @@ import json
 import sqlite3
 from typing import Any
 
-MAX_UNACKNOWLEDGED = 512
 PAGE_BYTES = 240000
 
 
@@ -18,14 +17,6 @@ class CompletionOutbox:
             "sequence INTEGER PRIMARY KEY AUTOINCREMENT, "
             "run_id TEXT UNIQUE NOT NULL, payload TEXT NOT NULL)"
         )
-
-    def reserve_available(self) -> bool:
-        # Running/queued jobs reserve space for their eventual terminal event.
-        count = self.db.execute(
-            "SELECT (SELECT COUNT(*) FROM completion_outbox) + "
-            "(SELECT COUNT(*) FROM jobs WHERE state IN ('queued','running'))"
-        ).fetchone()[0]
-        return bool(count < MAX_UNACKNOWLEDGED)
 
     def record(self, run_id: str, request_id: str, result: dict[str, Any]) -> None:
         # Caller owns the transaction containing the terminal jobs update.

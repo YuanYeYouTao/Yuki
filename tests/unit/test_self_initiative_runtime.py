@@ -510,7 +510,7 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
     async def run(messages, runtime, backend):
         # The real backend carries the frozen worker contract; no wrapper.
         assert isinstance(backend, MainAgentBackend)
-        assert backend._allowed_tools is None
+        assert backend._plugin_host is None
         assert runtime.execution_id == child_id
         assert runtime.actor_user_id == "" and runtime.origin is TurnOrigin.SELF_INITIATIVE
         inner = backend._runtime

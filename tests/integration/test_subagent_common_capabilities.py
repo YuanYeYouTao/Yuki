@@ -79,14 +79,15 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
         ),
         ("update_short_state", {"slot": 1, "text": "child updated shared state"}),
         (
-            "automation_create",
+            "automation_manage",
             {
+                "action": "create",
                 "task": {
                     "name": "child reminder",
                     "goal": "check later",
                     "trigger": {"type": "after", "seconds": 3600},
                     "delivery": {"target": "none"},
-                }
+                },
             },
         ),
         (plugin.name, {}),
@@ -164,7 +165,7 @@ async def test_real_worker_completion_keeps_original_tail_and_late_parent_mail(
     calls = (
         ("task_control", {"action": "complete", "result": "verified child result"}),
         ("send_message", {"text": "actual tail delivery"}),
-        ("subagent_message", {"text": "original detailed report"}),
+        ("subagent_control", {"action": "message", "text": "original detailed report"}),
         ("subagent_start", {"goal": "independent nested step"}),
     )
     response = ChatResponse(
@@ -243,7 +244,10 @@ async def test_nested_subagent_parent_message_control_and_cancel_follow_real_tre
         "children"
     ][0]["child_id"] == grandchild
     await execute_subagent(
-        control, "subagent_message", {"child_id": grandchild, "text": "check fact"}, "to-grandchild"
+        control,
+        "subagent_control",
+        {"action": "message", "child_id": grandchild, "text": "check fact"},
+        "to-grandchild",
     )
     grand_lease = await workers.acquire(grandchild)
     grand_row = await repository.get(grandchild)
@@ -260,7 +264,10 @@ async def test_nested_subagent_parent_message_control_and_cancel_follow_real_tre
         current=grand_row,
     )
     result = await execute_subagent(
-        grand_control, "subagent_message", {"text": "which fact?", "ask": True}, "to-child"
+        grand_control,
+        "subagent_control",
+        {"action": "message", "text": "which fact?", "ask": True},
+        "to-child",
     )
     assert result["waiting_parent"] and grand_control.ending == "waiting_user"
     async with database.sessions() as reader:

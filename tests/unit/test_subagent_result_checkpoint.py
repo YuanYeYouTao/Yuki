@@ -1378,7 +1378,7 @@ async def test_original_sandbox_runs_cancel_for_stopped_work_and_preserve_late_r
         (call.args[0], call.args[1]["run_id"], call.kwargs["request_id"])
         for call in client.execute.await_args_list
     } == {
-        ("cancel_code_run", run_id, f"worker-cancel:{run_id}")
+        ("terminal_control", run_id, f"worker-cancel:{run_id}")
         for run_id in (*unknown_runs.values(), *runs.values())
     }
     async with database.sessions() as session:

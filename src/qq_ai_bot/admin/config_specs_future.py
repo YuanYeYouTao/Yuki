@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from qq_ai_bot.admin.config_spec_helpers import (
     _G,
-    _GGU,
     _field,
     _spec,
 )
@@ -26,21 +25,6 @@ def future_config_specs() -> tuple[ConfigSpec, ...]:
             env_alias="WEB_SOURCE_RETENTION_DAYS",
             getter=_field("web_source_retention_days"),
             settings_fields=("web_source_retention_days",),
-            category="web",
-        ),
-        _spec(
-            "web.source_max_runs_per_conversation",
-            "每会话联网来源批次上限",
-            "之后新保存来源时允许保留的搜索批次数。",
-            aliases=("来源批次上限",),
-            value_type="integer",
-            minimum=1,
-            maximum=100,
-            scopes=_GGU,
-            mode=ConfigApplyMode.FUTURE_ONLY,
-            env_alias="WEB_SOURCE_MAX_RUNS_PER_CONVERSATION",
-            getter=_field("web_source_max_runs_per_conversation"),
-            settings_fields=("web_source_max_runs_per_conversation",),
             category="web",
         ),
         _spec(

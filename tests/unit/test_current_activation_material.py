@@ -558,7 +558,10 @@ async def test_parallel_tool_receipts_stay_before_later_inputs(database, tmp_pat
                             json.dumps({"slot": number, "text": f"tool-value-{number}"}),
                         ),
                     ),
-                    ToolCall(f"history-{number}", ToolFunction("get_recent_chat_history", "{}")),
+                    ToolCall(
+                        f"history-{number}",
+                        ToolFunction("query_chat_history", '{"view": "recent"}'),
+                    ),
                 ),
             )
         return "内部结束"

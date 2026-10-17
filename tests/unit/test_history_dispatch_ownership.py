@@ -98,7 +98,9 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
                 "",
                 0,
                 tool_calls=(
-                    ToolCall("resumed-history", ToolFunction("get_recent_chat_history", "{}")),
+                    ToolCall(
+                        "resumed-history", ToolFunction("query_chat_history", '{"view": "recent"}')
+                    ),
                     ToolCall(
                         "resumed-write",
                         ToolFunction(
@@ -215,7 +217,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     async with database.sessions() as reader:
         receipts = (await reader.scalars(select(effects.c.receipt_json))).all()
     assert any(
-        (outcome := json.loads(receipt).get("outcome", {})).get("tool") == "get_recent_chat_history"
+        (outcome := json.loads(receipt).get("outcome", {})).get("tool") == "query_chat_history"
         and outcome.get("ok")
         for receipt in receipts
     )
@@ -401,7 +403,9 @@ async def test_recent_history_uses_configured_window_above_old_twenty_cap(databa
         scope_type=ScopeType.GROUP,
         runtime_config=await chat._runtime_config.snapshot(),
     )
-    result = (await chat._tools.execute("get_recent_chat_history", "{}", runtime)).model_payload()
+    result = (
+        await chat._tools.execute("query_chat_history", '{"view": "recent"}', runtime)
+    ).model_payload()
     assert result["ok"], result
     rows = result["data"]["events"]
     assert len(rows) == 25

@@ -483,8 +483,6 @@ async def recover_execution_source(
         if host is None or source.get("approval_revision") != host._services.approval_revision:
             raise ValueError("plugin_work_owner_changed")
         host._require(PluginPermission(source["permission"]), require_invocation=False)
-        if not frozenset(source["allowed_tools"]) <= host._services.agent_capabilities:
-            raise ValueError("plugin_work_capabilities_changed")
         underlying = source.get("execution_source")
         if underlying is None:
             underlying = {**source, "owner": None, "origin": source["actor_source"]["origin"]}

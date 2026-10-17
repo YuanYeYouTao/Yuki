@@ -63,12 +63,12 @@ async def test_original_program_control_and_tail_survive_runner_segment_writer(
             actor_person_id=event.author_person_id,
             trigger_event_id=event.id,
         )
-    name = "subagent_message" if action == "ask" else "task_control"
+    name = "subagent_control" if action == "ask" else "task_control"
     args = {
         "complete": {"action": "complete", "result": "original result"},
         "wait": {"action": "wait", "conditions": [{"kind": "time_due", "after_seconds": 60}]},
         "need_input": {"action": "need_input", "reason": "Which file?"},
-        "ask": {"text": "Which artifact?", "ask": True},
+        "ask": {"action": "message", "text": "Which artifact?", "ask": True},
         "handoff": {"action": "accept", "goal": "independent next goal"},
     }[action]
     calls = [

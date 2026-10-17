@@ -1590,11 +1590,15 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     ).model_payload()
     assert group_only_fact.id in {row["fact_id"] for row in group_result["data"]["memories"]}
     assert (
-        await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), group_only)
+        await tools.execute(
+            "read_memory", json.dumps({"view": "fact", "fact_id": group_fact.id}), group_only
+        )
     ).model_payload()["error_code"] == "memory_not_found"
     assert (
         await tools.execute(
-            "get_memory_fact", json.dumps({"fact_id": group_only_fact.id}), group_only
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": group_only_fact.id}),
+            group_only,
         )
     ).model_payload()["ok"]
     strict_person_only = replace(person_only, memory_allowed_scopes=(MemoryScopeType.PERSON,))
@@ -1632,16 +1636,24 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     ).model_payload()
     assert group_fact.id not in {row["fact_id"] for row in self_search["data"]["memories"]}
     assert (
-        await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), self_runtime)
-    ).model_payload()["error_code"] == "memory_not_found"
-    assert (
         await tools.execute(
-            "get_memory_fact", json.dumps({"fact_id": global_fact.id}), self_runtime
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": group_fact.id}),
+            self_runtime,
         )
     ).model_payload()["error_code"] == "memory_not_found"
     assert (
         await tools.execute(
-            "get_memory_fact", json.dumps({"fact_id": group_only_fact.id}), self_runtime
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": global_fact.id}),
+            self_runtime,
+        )
+    ).model_payload()["error_code"] == "memory_not_found"
+    assert (
+        await tools.execute(
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": group_only_fact.id}),
+            self_runtime,
         )
     ).model_payload()["ok"]
     assert (
@@ -1683,22 +1695,22 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
 
     group_lookup = (
         await tools.execute(
-            "get_memory_fact",
-            json.dumps({"fact_id": group_fact.id}),
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": group_fact.id}),
             runtime,
         )
     ).model_payload()
     global_lookup = (
         await tools.execute(
-            "get_memory_fact",
-            json.dumps({"fact_id": global_fact.id}),
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": global_fact.id}),
             runtime,
         )
     ).model_payload()
     projected_lookup = (
         await tools.execute(
-            "get_memory_fact",
-            json.dumps({"fact_id": projected_fact.id}),
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": projected_fact.id}),
             runtime,
         )
     ).model_payload()
@@ -1717,7 +1729,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     )
     evidence = (
         await tools.execute(
-            "get_memory_evidence", json.dumps({"fact_id": projected_fact.id}), private_runtime
+            "read_memory",
+            json.dumps({"view": "evidence", "fact_id": projected_fact.id}),
+            private_runtime,
         )
     ).model_payload()
     assert not evidence["ok"]
@@ -1785,7 +1799,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         actor_context=None,
     )
     assert (
-        await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), cross_group)
+        await tools.execute(
+            "read_memory", json.dumps({"view": "fact", "fact_id": group_fact.id}), cross_group
+        )
     ).model_payload()["ok"]
     private_runtime = replace(
         private_runtime,
@@ -1796,7 +1812,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert await people.delete_person("1001")
     forgotten = (
         await tools.execute(
-            "get_memory_fact", json.dumps({"fact_id": global_fact.id}), private_runtime
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": global_fact.id}),
+            private_runtime,
         )
     ).model_payload()
     assert not forgotten["ok"]

@@ -24,7 +24,7 @@ def evidence_state(
     )
     if payload.get("ok") is True:
         status = "success" if rows else "empty"
-    elif payload.get("error") in {"permission_denied", "url_not_authorized"}:
+    elif payload.get("error") == "permission_denied":
         status = "denied"
     else:
         status = "failed"

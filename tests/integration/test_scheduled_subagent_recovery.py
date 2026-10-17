@@ -69,7 +69,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
                     tool_calls=(
                         ToolCall(
                             "read-original-history",
-                            ToolFunction("get_recent_chat_history", "{}"),
+                            ToolFunction("query_chat_history", '{"view": "recent"}'),
                         ),
                     ),
                 )
@@ -544,7 +544,7 @@ async def test_expired_worker_does_not_repurchase_response_lost_with_process(dat
         )
 
 
-@pytest.mark.parametrize("tool_name", ["get_recent_chat_history", "workspace_delete"])
+@pytest.mark.parametrize("tool_name", ["query_chat_history", "update_short_state"])
 async def test_actual_worker_tool_continues_after_nested_result_arrives(
     database, tmp_path, tool_name
 ):
@@ -553,8 +553,6 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
     from tests.unit.test_self_initiative_runtime import self_source
 
     from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.workspace.service import WorkspaceService
-    from qq_ai_bot.workspace.store import WorkspaceStore
 
     source, _admissions, _binding = await self_source(database)
     repository = WorkRepository(database)
@@ -568,15 +566,10 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
     await repository.release(lease)
     nested_lease = await workers.acquire(nested)
     assert nested_lease is not None
-    store = WorkspaceStore(tmp_path / "workspace")
-    original_file = tmp_path / "original.txt"
-    original_file.write_text("Checked temporary artifact.", encoding="utf-8")
-    with original_file.open("rb") as stream:
-        artifact = store.snapshot(stream.fileno(), "original.txt")
     args = (
-        {"artifact_id": artifact["artifact_id"], "expected_revision": artifact["revision"]}
-        if tool_name == "workspace_delete"
-        else {}
+        {"slot": 1, "text": "Checked original nested result."}
+        if tool_name == "update_short_state"
+        else {"view": "recent"}
     )
     observed = []
 
@@ -621,7 +614,6 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
     )
     bind_main_contract(harness, tmp_path)
     chat = harness.processor._chat
-    chat._tools.workspace_service = WorkspaceService(store)
     chat._tool_artifacts = ToolArtifactRepository(
         database, tmp_path / "artifacts", retention_seconds=60, max_artifact_bytes=100000
     )
@@ -637,9 +629,9 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
     assert len(provider.requests) == 2
     assert (await repository.get(identity))["state"] == "completed"
     assert (await repository.get(nested))["state"] == "completed"
-    if tool_name == "workspace_delete":
-        assert observed[0]["data"]["deleted"] is True
-        assert not store.list()["items"]
+    if tool_name == "update_short_state":
+        state = chat.runtime.runner.main_contract.state.snapshot()
+        assert state[0]["text"] == "Checked original nested result."
 
 
 async def test_derived_automation_rechecks_original_superuser_before_actual_effect(

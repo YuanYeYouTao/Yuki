@@ -30,7 +30,6 @@ class WebSearchRequest:
     start_date: date | None = None
     end_date: date | None = None
     max_results: int = 5
-    extract_max_results: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

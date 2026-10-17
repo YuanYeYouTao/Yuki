@@ -14,7 +14,8 @@ services:
       internal:
         ipv4_address: 172.30.251.2
       public: {}
-    # No published ports; sandbox jobs have no public network attachment.
+    # No published ports. The persistent environment shares the egress bridge;
+    # host firewall rules isolate host/private destinations, not public ports.
 networks:
   internal:
     name: yuki-sandbox-internal

@@ -72,10 +72,13 @@ Tavily 密钥是否存在推断外部搜索。全局 `WEB_MODE=disabled` 仍禁�
 模型正文的链接、总结或“已经搜索”不证明来源。没有真实来源或请求失败时直接报错，
 独立模型搜索不会退到 Tavily。显式选择 Tavily 后端才由 Tavily 搜索。
 
-`read_webpage` 是单独的页面提取；只读取用户明确发送或本轮搜索真实返回的 URL。
+搜索只返回上游已经提供的来源、正文和总结；不追加网页抓取或 Tavily Extract，
+不自动开启 `include_raw_content`。`read_webpage` 是单独的页面提取，可明确读取历史 URL，
+不要求链接先出现在当前输入或本轮搜索中。
 模型搜索和未配置搜索后端时的网页读取复用公共地址校验、DNS 固定和重定向检查的 HTTP
 下载器，提取 HTML 或纯文本，不因存在 Tavily 密钥而切换提取后端。
-显式 Tavily 后端保留其搜索与页面提取；返回内容保持原来源。
+显式 Tavily 后端的搜索与页面提取分别调用；返回内容保持原来源。
+插件 `WEB_SEARCH` 不包含 `WEB_READ` 权限，独立调用继续核原批准。
 提取失败时明确返回错误，
 不把 `provider_summary` 冒充网页原文；总结始终作为上游模型生成的外部不可信资料展示。
 
@@ -88,6 +91,14 @@ Tavily 密钥是否存在推断外部搜索。全局 `WEB_MODE=disabled` 仍禁�
 检索结果缓存位于 `WEB_SEARCH_BRIDGE_STATE_PATH`，与模型前缀缓存分开，按实际搜索连接、
 模型、参数及凭据隔离。缓存不代替执行处的来源、权限或预算核验。配置热保存只影响新
 Runner，运行中的模型和搜索连接保持原固定版本，不在同一轮中切换。
+
+新版独立搜索缓存使用 `independent-native-search-v2`；旧搜索缓存自然到期，
+明确读页的 `direct-page-v2` URL/问题键和保留时间不变。这与模型前缀缓存无关。
+迁移 `0130` 删除 `web.extract_max_results`、`web.source_max_runs_per_conversation`
+在全部 scope 的现行覆盖，保留管理历史；对应环境变量与热配置已退出，不提供兼容开关。
+新结果保存在原工具回执及 artifact 链，不再向 `web_search_runs/web_search_sources`
+重复写来源索引；旧表保留原保留期清理及人物隐私删除。已付或未知请求仍按原 ID、
+回执与原协议恢复，不因工具声明或缓存升级重新购买请求。
 
 旧 `WEB_SEARCH_BACKEND=deepseek_anthropic` 与原 `search_connection` 由升级 reader 保持
 原有官方 Anthropic 地址、`deepseek-flash` 和密钥来源，不改写主对话 Profile 的协议。

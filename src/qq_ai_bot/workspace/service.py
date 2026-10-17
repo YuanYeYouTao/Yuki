@@ -151,41 +151,10 @@ class WorkspaceService:
                 return await self._checkout(metadata, request_id)
             except ConversationMediaError as exc:
                 raise WorkspaceError(str(exc)) from exc
-        if "path" in args and "artifact_id" in args:
-            raise WorkspaceError("choose_path_or_artifact_id")
-        if (
-            name
-            in {
-                "workspace_mkdir",
-                "workspace_move",
-                "workspace_patch",
-                "workspace_search",
-                "workspace_publish",
-            }
-            or "path" in args
-        ):
+        if name == "workspace_publish":
             if self.sandbox is None:
                 raise WorkspaceError("environment_unavailable")
             return await self.sandbox.execute(name, args, request_id=request_id)
-
-        if name == "workspace_list":
-            return await asyncio.to_thread(
-                self.store.list,
-                cursor=str(args.get("cursor", "")),
-                limit=int(args.get("limit", 20)),
-            )
-        if name == "workspace_read":
-            return await asyncio.to_thread(
-                self.store.read,
-                str(args["artifact_id"]),
-                offset=int(args.get("offset", 0)),
-                limit=int(args.get("limit", 32768)),
-                expected_version=args.get("expected_version"),
-            )
-        if name == "workspace_delete":
-            return await asyncio.to_thread(
-                self.store.delete, str(args["artifact_id"]), int(args["expected_revision"])
-            )
         raise WorkspaceError("unknown_tool")
 
     async def validate_images(self, images: tuple[ChatImage, ...]) -> None:

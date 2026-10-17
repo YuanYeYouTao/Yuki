@@ -15,13 +15,10 @@ logger = logging.getLogger(__name__)
 EVIDENCE_TOOLS = frozenset(
     {
         "search_memory",
-        "get_memory_fact",
-        "get_memory_evidence",
+        "read_memory",
+        "query_chat_history",
         "web_search",
         "read_webpage",
-        "search_chat_history",
-        "get_recent_chat_history",
-        "get_chat_history_around",
     }
 )
 
