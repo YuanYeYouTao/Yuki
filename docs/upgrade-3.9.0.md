@@ -29,6 +29,14 @@
 
 升级按实际随包单一迁移head继续，不stamp、不清空会话。验收分别核Bot连接、Manager/socket、环境身份/HOME/原安装与文件、原run/receipt、实际PTY/APT/后台重连、公网TCP/UDP和localhost。Bot healthy不能替代环境迁移；未观测的自然消息和Provider cache保持未知。
 
+## 0132 ACP 独立会话
+
+#455 增加 `yuki acp` 本地 stdio 适配器，使用原个人设备凭据调用服务器。新会话返回内部 Conversation UUID；同一人的多个 ACP session 分别保存上下文，App、QQ、TG 原会话不变。运行与互操作限制见[个人 API](architecture/client-api.md#acp-方向-a)和[原任务书](architecture/Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。
+
+迁移 `0132` 从实际 `0131` 继续：复用原 thread 字段扩展私聊唯一索引，为原命令回执增加可空的 `request_conversation_id`，添加 ACP scope 索引并建立共享 ACP Presence。旧回执的 NULL、原 Person/Binding、事件、generation、已付输入和累计预算不重写；不需要 `/ai new` 或重建人物。迁移只支持前向升级。
+
+上线前停 Bot 写入并一致性备份三个数据库、配置、插件与被引用文件；保存原镜像和完整 Compose 链。只替换 Bot，保留网关、代理、持久环境及其原执行。回退需要按备份一致性恢复，不能直接对 0132 库运行旧镜像。stdio 的关闭或重启不取消服务器原 Work；重查原 session/request，不盲目补跑。ACP 工具沿现有平台固定声明，非空 MCP 配置明确不支持，不恢复动态工具。
+
 ## 版本与迁移范围
 
 | 项目 | 3.8.4 正式包 | 3.9.0 正式包 |

@@ -72,7 +72,6 @@ from qq_ai_bot.services.plugin_events import publish_notification
 from qq_ai_bot.services.processing_status import ProcessingStatusService
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
-from qq_ai_bot.services.user_profiles import UserProfileService
 from qq_ai_bot.services.vision_service import VisionService
 from qq_ai_bot.time.service import TimeContextService
 from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
@@ -135,11 +134,7 @@ class ApplicationContainer:
         self.scoped_events = persistence.scoped_events
         self.groups = persistence.groups
         self.private_users = persistence.private_users
-        self.user_profile_repository = persistence.people
-        self.people = self.user_profile_repository
-        self.user_profiles = UserProfileService(
-            self.user_profile_repository,
-        )
+        self.people = persistence.people
         self.ledger = persistence.ledger
         self.memories = persistence.memories
         self.memory_context = persistence.memory_context
@@ -585,7 +580,6 @@ class ApplicationContainer:
             effect_gate=self.conversation_effect_gate,
             groups=self.groups,
             private_users=self.private_users,
-            user_profiles=self.user_profiles,
             chat=self.chat,
             rate_limiter=self.rate_limiter,
             concurrency=self.concurrency,

@@ -17,7 +17,7 @@
 - `Space`：永久共享空间；QQ 群只是它的一种外部表现。
 - `SpaceBinding`：Space 与外部群号的绑定。
 - `Presence`：Yuki 自己的平台账号。Presence 不是 Person。
-- `CanonicalConversation`：私聊按 IdentityBinding＋Presence 区分，群聊按 SpaceBinding＋topic 区分。
+- `CanonicalConversation`：私聊按 IdentityBinding＋Presence＋可选 thread 区分，群聊按 SpaceBinding＋topic 区分。
   同一 Person 的多个入口分别保有历史、generation、检查点与模型 session；Memory 仍归 Person。
   `/ai new` 只推进命令所在会话的 generation。
 
@@ -43,6 +43,16 @@ QQ 管理员授权仍来自真实配置的有效 QQ 绑定；设备凭据不成�
 明确改名保旧名为别名；归并保目标主名，目标空时采用来源主名，来源主名入原人物别名。
 目录与资料按当前人物读取主名，无账号人物也能读取；未命名显示占位不落库。
 群名片、Space 范围别名与事件当时名称仍保原来源，同人目录命中及共同群按人物去重。
+
+人物资料只观察当前真实事件携带的昵称、群名片和已知标记，在首次入账的同一事务更新
+原人物、账号、别名与 Membership。缺失字段不擦除已有资料；明确的空群名片可以清空
+当前名片。事件当时名称仍按原消息保存，不用库中的旧名字补写该事件，也不改过去的
+公共历史。缺少名称不阻止接纳或回复，人物身份与权限继续使用内部 ID。
+
+群名来自普通入站消息或真实平台资料通知，更新原平台的既有 SpaceBinding 与 Space。
+普通消息随首次入账观察群名和 last-seen；独立资料通知遇到相同或空群名只读返回。
+改名不修改启用设置、路由或聊天历史。独立资料通知不建立聊天事件，
+不触发模型，也不要求先远端补齐资料。没有资料时保留已知值，不另设刷新缓存、TTL 或 worker。
 
 当前 Runtime/Plugin USER 配置保目标有效键，来源独有有效键连原行 ID/版本迁入目标。
 来源冲突行只保历史，不作 fallback；unset 和再次归并不会使它复活。原配置审计仍可查，
@@ -89,9 +99,11 @@ compact 检查点、raw history、按需 Memory 工具、Prompt compiler、工�
 仍是普通 outbound `message`，并通过 `caused_by_event_id` 永久指向来源 external event。模型历史与
 公共消息渲染保留因果来源标签，平台正文不被改写。
 
+ACP 使用共享 Presence 与每个原 Person 的稳定 Binding；每次 `session/new` 在该入口新建独立 thread／Conversation，`sessionId` 就是 Conversation UUID。原 App、QQ、TG 的空 thread 入口保持不变，人物资料与记忆仍归 Person。请求按实际 ACP Conversation＋原 UUID 查证，不按平台消息号重建归属。协议、结束与取消见[个人 API](client-api.md#acp-方向-a)。
+
 ## 平台入口与原生适配
 
-私聊以内部 Binding＋Presence 确定入口，群以 SpaceBinding＋topic 确定入口。每个入口各有 Conversation；同一 Person/Space 的长期身份和已定义记忆语义共享，聊天上下文不串入口。旧记录、冻结 primary alias 和 generation 不重写。
+私聊以内部 Binding＋Presence＋可选 thread 确定入口，群以 SpaceBinding＋topic 确定入口。每个入口各有 Conversation；同一 Person/Space 的长期身份和已定义记忆语义共享，聊天上下文不串入口。旧记录、冻结 primary alias 和 generation 不重写。
 
 GatewayProvider 提供连接事实、接入投影和实际原生社交操作。公共 Social 准备内部目标、核授权、claim 原操作并记录回执；各适配器编码文本、提及、引用、文件及协议实际限制。Provider 的纯发送计划不发送消息，每个实际平台步骤各有原回执。公共层不调用任意 OneBot action，也不按 Telegram/QQ 分叉一套领域服务。
 
@@ -200,16 +212,6 @@ operator CLI → Admin API ────────────────┘
 复用这些接口。合同见[个人客户端 API](client-api.md)，本地验收与部署状态分别记录。
 
 ## 数据库与安全边界
-
-人物资料刷新复用入站已取得的 runtime snapshot。已确认的空 nickname/card 仅以
-bot、账号和群为键缓存 known 标记，最多 256 项、60 秒，命中不续期；该缓存不保存
-名字或身份权威。明确入站资料优先，网络异常不产生成功空值。异步资料返回后的写入
-核对原 Person，遗忘并重建同一 QQ Binding 后不能写入迟到的旧资料。
-
-普通人物观察在原事务维护群 Binding 的 last-seen。额外群名刷新仅在取得非空群名时
-写入，不因刷新冷却、空返回或没有解析器再占 writer；真正刷新在短 writer 中读取当前
-Space/Binding，不改变启用开关。可选展示资料的数据库写入失败记录类别后继续处理，
-后续可信身份、ingest 路由和账本写入的拒绝仍按原合同执行。
 
 人物遗忘保留一整个隐私事务，包含 Work、投影失效、trace 隐私代次、领域删除与脱敏。
 Rebuild selection 在锁外一次准备全部 Binding 别名，写入前核原 Person、别名和完整

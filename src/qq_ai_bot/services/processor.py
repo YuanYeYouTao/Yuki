@@ -7,7 +7,7 @@ import hashlib
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from contextlib import AsyncExitStack, nullcontext
 from dataclasses import dataclass, replace
 from typing import Literal, Protocol, cast
@@ -50,7 +50,7 @@ from qq_ai_bot.domain.messages import (
     OutboundMessage,
     OutboundSendReceipt,
 )
-from qq_ai_bot.domain.profiles import UserProfileSnapshot
+from qq_ai_bot.domain.profiles import UserProfileSnapshot, sanitize_profile_name
 from qq_ai_bot.emoji.collector import EmojiCollector
 from qq_ai_bot.emoji.worker import EmojiWorker
 from qq_ai_bot.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
@@ -122,11 +122,6 @@ from qq_ai_bot.services.turn_coordinator import (
     TurnInterruptedError,
     TurnSupersededError,
     TurnToken,
-)
-from qq_ai_bot.services.user_profiles import (
-    UserProfileResolver,
-    UserProfileService,
-    sanitize_profile_name,
 )
 from qq_ai_bot.services.vision_service import VisionService
 from yuki_plugin_sdk.events import EventName
@@ -387,7 +382,6 @@ class MessageProcessor:
         effect_gate: ConversationEffectGate,
         groups: GroupSettingsRepository,
         private_users: PrivateUserSettingsRepository,
-        user_profiles: UserProfileService,
         chat: ChatService,
         rate_limiter: SlidingWindowRateLimiter,
         concurrency: ConcurrencyManager,
@@ -431,9 +425,7 @@ class MessageProcessor:
         self._conversation_scopes = conversation_scopes
         self._effect_gate = effect_gate
         self._groups = groups
-        self._group_name_refreshes: OrderedDict[str, float] = OrderedDict()
         self._private_users = private_users
-        self._user_profiles = user_profiles
         self._chat = chat
         self._rate_limiter = rate_limiter
         self._concurrency = concurrency
@@ -680,7 +672,6 @@ class MessageProcessor:
         self,
         message: InboundMessage,
         sender: OutboundSender,
-        profile_resolver: UserProfileResolver | None = None,
         *,
         on_committed: Callable[[ScopedAppendResult], None] | None = None,
     ) -> ProcessResult:
@@ -756,7 +747,6 @@ class MessageProcessor:
                 result = await self._handle_admitted(
                     working,
                     sender,
-                    profile_resolver,
                     admitted=admitted,
                     on_committed=on_committed,
                 )
@@ -794,7 +784,6 @@ class MessageProcessor:
         self,
         message: InboundMessage,
         sender: OutboundSender,
-        profile_resolver: UserProfileResolver | None = None,
         *,
         admitted: IngressPreAdmit,
         on_committed: Callable[[ScopedAppendResult], None] | None = None,
@@ -981,17 +970,7 @@ class MessageProcessor:
             decision.command is CommandName.NEW
             and (message.scope_type is ScopeType.PRIVATE or is_superuser)
         )
-        if is_authorized_new:
-            # Reset has no need for optional gateway profile lookups. Keep its
-            # authenticated ingress fresh while waiting for the effect gate.
-            profile = self._event_profile(message)
-        else:
-            await self._observe_group_metadata(
-                message,
-                group_policy,
-                profile_resolver,
-            )
-            profile = await self._user_profiles.capture(message, profile_resolver)
+        profile = self._event_profile(message)
         if is_authorized_new:
             await self._turn_coordinator.cancel_running_before_boundary(coordinator_key)
             try:
@@ -1997,46 +1976,6 @@ class MessageProcessor:
                 "不能声称已经查看或根据附件猜测。]"
             ),
         )
-
-    async def _observe_group_metadata(
-        self,
-        message: InboundMessage,
-        policy: EffectiveGroupPolicy | None,
-        resolver: UserProfileResolver | None,
-    ) -> None:
-        if message.group_id is None or policy is None or not policy.enabled:
-            return
-        group_name = ""
-        method = getattr(resolver, "resolve_group_name", None)
-        now = time.monotonic()
-        refresh_at = self._group_name_refreshes.get(message.group_id, float("-inf"))
-        if callable(method) and now - refresh_at >= 300:
-            # Reserve before awaiting: concurrent messages must not fan out lookups.
-            # Bound both successful and failed refresh attempts; never erase a name
-            # when a gateway returns no metadata. Network I/O precedes DB writes.
-            self._group_name_refreshes[message.group_id] = now
-            self._group_name_refreshes.move_to_end(message.group_id)
-            while len(self._group_name_refreshes) > 256:
-                self._group_name_refreshes.popitem(last=False)
-            resolve_name = cast(Callable[[str], Awaitable[str]], method)
-            try:
-                group_name = sanitize_profile_name(await resolve_name(message.group_id))
-            except (OSError, RuntimeError, TypeError, ValueError) as exc:
-                logger.warning(
-                    "group_name_resolve_failed exception_category=%s",
-                    type(exc).__name__,
-                )
-        # Ordinary person observation already updates the group's last-seen
-        # timestamp. This optional refresh only publishes a real group name;
-        # cached, unavailable or empty metadata must not add a second writer.
-        if not group_name:
-            return
-        try:
-            await self._groups.observe(message.group_id, name=group_name)
-        except SQLAlchemyError as exc:
-            # Display metadata does not authorize ingress. The authenticated
-            # route, identity and ledger fences below still apply normally.
-            logger.warning("group_metadata_write_failed exception_category=%s", type(exc).__name__)
 
     async def _effective_group_policy(self, group_id: str | None) -> EffectiveGroupPolicy | None:
         if group_id is None:

@@ -68,7 +68,6 @@ from qq_ai_bot.identity.person_state import (
     load_canonical_profile,
     load_canonical_profiles,
     observe_canonical_person,
-    observe_canonical_space,
     set_canonical_person_enabled,
     set_canonical_space_flags,
 )
@@ -1576,18 +1575,6 @@ class GroupSettingsRepository:
         return await set_canonical_space_flags(
             session, group_id, autonomous_enabled=enabled, now=now
         )
-
-    async def observe(
-        self,
-        group_id: str,
-        *,
-        name: str = "",
-    ) -> GroupSetting:
-        """Observe a current group without overwriting its access switch."""
-
-        now = datetime.now(UTC)
-        async with self._database.immediate_session() as session:
-            return await observe_canonical_space(session, group_id, name=name, now=now)
 
 
 class PrivateUserSettingsRepository:
