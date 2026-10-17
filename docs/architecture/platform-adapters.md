@@ -26,7 +26,7 @@ Provider 的 `media(handle)` 从该原生连接提供媒体适配器。附件工
 
 Telegram 没有可投影的当前正文或受支持附件时静默忽略；已有正文或媒体的引用仍保留原关系，单独的原生 reply 字段不构成当前新发言。群迁移仍沿原专用分支处理，确认更新不产生固定空输入回复。共用 Processor 对完全没有正文、附件、Bot 提及、引用内容或引用 ID 的输入，在模型固定、入账、通知当前轮和 Work/JEV 接纳之前返回，不打断正在执行的工作。QQ 的纯附件、只提及 Bot 和真实引用继续走原路径；引用解析后仍没有可处理内容时静默结束，不把旧消息自动当成新问题。媒体格式与历史投影继续遵守[媒体合同](chat-media-workspace.md)。
 
-正在输入属于临时平台状态。`GatewayProvider.activity(handle, target)` 返回可选 `PlatformActivity`，由原 Registry/Catalog 透传；适配器提供刷新间隔、`start` 和 `stop`。公共运行时用原 Conversation、Presence 和内部 source event 解析实际连接与目标，不增加模型工具、能力目录或提示词。QQ 当前只在私聊使用 SnowLuma 的 `set_input_status`，开始为 `event_type=1`，最后退出后由后台清理发送 `0`；QQ 群和 App 没有此原生动作时返回无实现。Main 开始和结束都不等待这些平台请求；状态服务保留清理任务，相邻同入口的提示只在后台保持原停止、新开始的顺序。
+正在输入属于临时平台状态。`GatewayProvider.activity(handle, target)` 返回可选 `PlatformActivity`，由原 Registry/Catalog 透传；适配器提供刷新间隔、`start` 和 `stop`。原连接能力声明用 `typing_private`、`typing_group` 表达支持范围；已知 Presence 时先从内存 Registry 判断，不支持便跳过提示的路由查询和平台请求。支持或尚无 Presence 时仍用原 Conversation、Presence 和内部 source event 解析实际连接与目标。该能力仅描述连接的原生 UI 动作，不改变固定模型工具声明或提示词。QQ 当前只在私聊使用 SnowLuma 的 `set_input_status`，开始为 `event_type=1`，最后退出后由后台清理发送 `0`；QQ 群和 App 没有此原生动作时返回无实现。Main 开始和结束都不等待这些平台请求；状态服务保留清理任务，相邻同入口的提示只在后台保持原停止、新开始的顺序。
 
 Telegram 使用 `sendChatAction(action=typing)`，保真实 chat 与 topic，每 4 秒刷新；Main 退出后取消后台刷新，不虚构停止 API。Telegram 的状态最多保留 5 秒，Bot 发消息时也会清除，见[原生 API](https://core.telegram.org/bots/api#sendchataction)。提示失败只记诊断并结束该提示，不改变 Main 结果或发送回执；可见状态不能证明模型成功、消息已发送或工作已完成。
 

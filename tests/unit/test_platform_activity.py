@@ -94,6 +94,27 @@ def test_app_does_not_claim_a_native_typing_capability():
     assert AppProvider().activity(AppHandle(), TransportTarget("person", "person-id")) is None
 
 
+async def test_connection_profiles_describe_actual_typing_scope():
+    qq = SimpleNamespace(self_id="1001")
+
+    assert "typing_private" in SnowLumaProvider().describe_connection(qq).capabilities
+    assert "typing_group" not in SnowLumaProvider().describe_connection(qq).capabilities
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, json={"ok": True, "result": {"id": 1001}})
+        )
+    ) as transport:
+        telegram = TelegramClient("offline-token", client=transport)
+        await telegram.get_me()
+        assert {"typing_private", "typing_group"} <= TelegramProvider().describe_connection(
+            telegram
+        ).capabilities
+    assert (
+        not {"typing_private", "typing_group"}
+        & AppProvider().describe_connection(AppHandle()).capabilities
+    )
+
+
 async def test_registry_activity_keeps_original_presence_across_platforms_and_multiple_bots():
     requests_a, requests_b = [], []
 

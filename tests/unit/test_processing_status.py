@@ -6,10 +6,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.commands_and_chat_helpers import inbound
+from tests.support.social_identity_cases import Bot, social_env
 
+from qq_ai_bot.domain.conversations import ConversationScope
+from qq_ai_bot.identity.canonical_repository import ensure_presence
 from qq_ai_bot.llm.fake import FakeLLMProvider
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.services.processing_status import ProcessingStatusService
@@ -46,6 +49,11 @@ def service_for(activity):
     route = SimpleNamespace(connection=object(), external_target_id="external-chat", thread_id="17")
     router = SimpleNamespace(resolve_send_for_conversation=AsyncMock(return_value=route))
     registry = SimpleNamespace(activity=Mock(return_value=activity))
+    registry.resolve_active = Mock(
+        return_value=SimpleNamespace(
+            snapshot=SimpleNamespace(capabilities=frozenset({"typing_private", "typing_group"}))
+        )
+    )
     return ProcessingStatusService(router, registry), router, registry, route
 
 
@@ -357,3 +365,113 @@ async def test_cancelled_middle_session_keeps_the_original_stop_before_a_third_s
         await third.__aexit__(None, None, None)
         await service.close()
     assert original.stops == following.stops == 1 and not service._tasks and not service._active
+
+
+async def test_qq_group_without_typing_support_never_reads_routes_or_probes_membership(
+    database, tmp_path
+):
+    env = await social_env(database, tmp_path)
+    service = ProcessingStatusService(env.router, env.registry)
+    observed = {"sql": [], "native_actions": []}
+    env.bot.calls.clear()
+
+    def statement(_connection, _cursor, sql, _parameters, _context, _many):
+        observed["sql"].append(sql.split()[0])
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", statement)
+    try:
+        async with service.during(
+            conversation_id=env.context.conversation_id,
+            presence_id=env.presence,
+            source_event_id=None,
+            group=True,
+        ):
+            await asyncio.wait_for(asyncio.shield(next(iter(service._tasks))), 1)
+        await service.close()
+        observed["native_actions"] = [name for name, _params in env.bot.calls]
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", statement)
+        await service.close()
+    assert observed == {"sql": [], "native_actions": []}
+
+
+@pytest.mark.parametrize("group", [False, True])
+async def test_supported_scope_keeps_the_original_route_and_unsupported_scope_stops_in_memory(
+    group,
+):
+    activity = Activity()
+    service, router, registry, _ = service_for(activity)
+    registry.resolve_active.return_value.snapshot.capabilities = frozenset({"typing_private"})
+    async with during(service, group=group):
+        if group:
+            await asyncio.shield(next(iter(service._tasks)))
+        else:
+            await asyncio.wait_for(activity.started.wait(), 1)
+    await service.close()
+    registry.resolve_active.assert_called_once_with("original-presence")
+    if group:
+        router.resolve_send_for_conversation.assert_not_awaited()
+        registry.activity.assert_not_called()
+    else:
+        router.resolve_send_for_conversation.assert_awaited_once_with(
+            "internal-conversation", presence_id="original-presence", source_event_id=71
+        )
+        assert activity.starts == activity.stops == 1
+
+
+async def test_unknown_presence_uses_original_route_instead_of_guessing_capabilities():
+    activity = Activity()
+    service, router, registry, _ = service_for(activity)
+    registry.resolve_active.side_effect = AssertionError("must not guess a current bot")
+    async with during(service, presence_id=None):
+        await asyncio.wait_for(activity.started.wait(), 1)
+    await service.close()
+    registry.resolve_active.assert_not_called()
+    router.resolve_send_for_conversation.assert_awaited_once_with(
+        "internal-conversation", presence_id=None, source_event_id=71
+    )
+    assert activity.starts == activity.stops == 1
+
+
+async def test_supported_private_activity_keeps_the_second_bot_entry_and_target(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    second = Bot("80002")
+    async with database.immediate_session() as writer:
+        presence_id = await ensure_presence(writer, second.self_id)
+    env.registry.connect(second, provider_id="snowluma", presence_id=presence_id)
+    event = await env.service.writer.append(
+        scope=ConversationScope.private(second.self_id, "10001", presence_id=presence_id),
+        platform_message_id="second-private-entry",
+        sender_user_id="10001",
+        direction="inbound",
+        content="原入口请求",
+    )
+    original = event.event
+    started = asyncio.Event()
+    native = second.call_api
+
+    async def call(action, **params):
+        result = await native(action, **params)
+        if action == "set_input_status" and params["event_type"] == 1:
+            started.set()
+        return result
+
+    second.call_api = call
+    env.bot.calls.clear()
+    service = ProcessingStatusService(env.router, env.registry)
+    try:
+        async with service.during(
+            conversation_id=original.canonical_conversation_id,
+            presence_id=presence_id,
+            source_event_id=original.id,
+            group=False,
+        ):
+            await asyncio.wait_for(started.wait(), 1)
+        await service.close()
+    finally:
+        await service.close()
+    assert env.bot.calls == []
+    assert second.calls == [
+        ("set_input_status", {"user_id": 10001, "event_type": 1}),
+        ("set_input_status", {"user_id": 10001, "event_type": 0}),
+    ]

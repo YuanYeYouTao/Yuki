@@ -106,6 +106,10 @@ class ProcessingStatusService:
                 await asyncio.shield(asyncio.gather(active.previous, return_exceptions=True))
             if active.users == 0:
                 return
+            if presence_id is not None:
+                capabilities = self._registry.resolve_active(presence_id).snapshot.capabilities
+                if ("typing_group" if group else "typing_private") not in capabilities:
+                    return
             async with asyncio.timeout(4.0):
                 route = await self._router.resolve_send_for_conversation(
                     conversation_id, presence_id=presence_id, source_event_id=source_event_id

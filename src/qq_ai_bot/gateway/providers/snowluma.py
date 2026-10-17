@@ -22,6 +22,7 @@ SNOWLUMA_CAPABILITIES: Final[frozenset[str]] = frozenset(
         "profile_lookup",
         "message_history",
         "media_fetch",
+        "typing_private",
     }
 )
 

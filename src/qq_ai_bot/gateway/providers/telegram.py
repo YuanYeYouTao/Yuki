@@ -178,6 +178,8 @@ class TelegramProvider:
                     "group_member_probe",
                     "profile_lookup",
                     "media_fetch",
+                    "typing_private",
+                    "typing_group",
                 }
             ),
         )
