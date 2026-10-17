@@ -7,7 +7,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import Context
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 
 from qq_ai_bot.gateway.activity import PlatformActivity
@@ -23,6 +23,7 @@ class _ActiveStatus:
     users: int = 0
     task: asyncio.Task[None] | None = None
     previous: asyncio.Task[None] | None = None
+    stop: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class ProcessingStatusService:
@@ -65,8 +66,7 @@ class ProcessingStatusService:
             if active.users == 0:
                 task = active.task
                 assert task is not None
-                if active.previous is None or active.previous.done():
-                    task.cancel()
+                active.stop.set()
                 if task.done():
                     self._finished(key, active, task)
 
@@ -81,10 +81,9 @@ class ProcessingStatusService:
             del self._active[key]
 
     async def close(self) -> None:
+        for active in self._active.values():
+            active.stop.set()
         tasks = tuple(self._tasks)
-        for task in tasks:
-            if not task.cancelling():
-                task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._tasks.difference_update(tasks)
@@ -123,11 +122,14 @@ class ProcessingStatusService:
             if activity is None:
                 return
             phase = "start"
-            while True:
+            while not active.stop.is_set():
                 async with asyncio.timeout(activity.refresh_interval_seconds):
                     await activity.start()
                 phase = "refresh"
-                await asyncio.sleep(activity.refresh_interval_seconds)
+                try:
+                    await asyncio.wait_for(active.stop.wait(), activity.refresh_interval_seconds)
+                except TimeoutError:
+                    pass
         except asyncio.CancelledError:
             pass
         except Exception as exc:

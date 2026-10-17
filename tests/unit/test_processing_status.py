@@ -251,10 +251,14 @@ async def test_ui_task_does_not_inherit_business_context():
     assert observed == [None]
 
 
-async def test_slow_stop_never_delays_main_completion_or_the_next_model_request(database):
+@pytest.mark.parametrize("inflight_phase", ["start", "stop"])
+async def test_slow_stop_never_delays_main_completion_or_the_next_model_request(
+    database, inflight_phase
+):
     entered = [asyncio.Event(), asyncio.Event()]
     release = [asyncio.Event(), asyncio.Event()]
     stop_release = asyncio.Event()
+    native_order = []
 
     class PausedModel(FakeLLMProvider):
         calls = 0
@@ -267,12 +271,25 @@ async def test_slow_stop_never_delays_main_completion_or_the_next_model_request(
             return await super().complete(request)
 
     class SlowStop(Activity):
+        async def start(self):
+            await super().start()
+            if inflight_phase == "start":
+                await stop_release.wait()
+            native_order.append("original-start-finished")
+
         async def stop(self):
             self.stops += 1
             self.stopped.set()
-            await stop_release.wait()
+            if inflight_phase == "stop":
+                await stop_release.wait()
+            native_order.append("original-stop-finished")
 
-    first, second = SlowStop(), Activity()
+    class Following(Activity):
+        async def start(self):
+            await super().start()
+            native_order.append("next-start")
+
+    first, second = SlowStop(), Following()
     first.refresh_interval_seconds = second.refresh_interval_seconds = 10
     service, _, registry, _ = service_for(first)
     registry.activity.side_effect = [first, second]
@@ -288,7 +305,10 @@ async def test_slow_stop_never_delays_main_completion_or_the_next_model_request(
         await asyncio.wait_for(first.started.wait(), 1)
         release[0].set()
         assert (await asyncio.wait_for(first_turn, 1)).reason == "chat"
-        await asyncio.wait_for(first.stopped.wait(), 1)
+        if inflight_phase == "stop":
+            await asyncio.wait_for(first.stopped.wait(), 1)
+        else:
+            assert first.stops == 0
         assert not stop_release.is_set()
         second_turn = asyncio.create_task(
             harness.processor.handle(
@@ -299,6 +319,7 @@ async def test_slow_stop_never_delays_main_completion_or_the_next_model_request(
         assert not second.started.is_set() and not stop_release.is_set()
         stop_release.set()
         await asyncio.wait_for(second.started.wait(), 1)
+        assert native_order == ["original-start-finished", "original-stop-finished", "next-start"]
         release[1].set()
         assert (await asyncio.wait_for(second_turn, 1)).reason == "chat"
         await service.close()
