@@ -281,8 +281,13 @@ class ApplicationContainer:
         from yuki.sandbox.completion_receiver import CompletionReceiver
         from yuki.sandbox.task_repository import SandboxTaskRepository
 
-        self.sandbox_tasks = SandboxTaskRepository(self.database)
+        self.sandbox_tasks = SandboxTaskRepository(
+            self.database,
+            settings=settings,
+            lookup_plugin_host=lambda identity: self._plugin_contexts.get(identity),
+        )
         self.sandbox_client = SandboxClient(settings.sandbox_socket, tasks=self.sandbox_tasks)
+        self.database.sandbox_client = self.sandbox_client
         self.sandbox_completions = CompletionReceiver(self.sandbox_client, self.sandbox_tasks)
         self.workspace_service.sandbox = self.sandbox_client
         self.agent_tools.sandbox_client = self.sandbox_client

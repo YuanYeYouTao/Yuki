@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
 
 from yuki.persistence.database import Database
 from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
+
+if TYPE_CHECKING:
+    from yuki.config import Settings
 
 
 def canonical_json(value: Any, *, limit: int) -> str:
@@ -23,8 +28,28 @@ def canonical_json(value: Any, *, limit: int) -> str:
 
 
 class SandboxTaskRepository:
-    def __init__(self, database: Database) -> None:
+    def __init__(
+        self,
+        database: Database,
+        *,
+        settings: Settings | None = None,
+        lookup_plugin_host: Callable[[str], Any] | None = None,
+    ) -> None:
         self.database = database
+        self._settings = settings
+        self._lookup_plugin_host = lookup_plugin_host
+
+    async def validate_source(self, task: SandboxTaskRunModel, request_id: str) -> None:
+        from yuki.services.execution_sources import recover_execution_source
+
+        await recover_execution_source(
+            self.database,
+            task.source_conversation_id,
+            json.loads(task.source_json),
+            request_id=request_id,
+            settings=self._settings,
+            lookup_plugin_host=self._lookup_plugin_host,
+        )
 
     async def prepare(
         self, request_id: str, arguments: dict[str, Any], source: dict[str, Any]
@@ -69,7 +94,12 @@ class SandboxTaskRepository:
         ):
             raise ValueError("invalid_task_event_anchor")
         source_json = canonical_json(source, limit=65536)
-        digest = hashlib.sha256(canonical_json(arguments, limit=262144).encode()).hexdigest()
+        serialized = (
+            json.dumps(arguments, sort_keys=True, ensure_ascii=False, allow_nan=False)
+            if arguments.get("tool") == "external_agent"
+            else canonical_json(arguments, limit=262144)
+        )
+        digest = hashlib.sha256(serialized.encode()).hexdigest()
         now = datetime.now(UTC)
         row = SandboxTaskRunModel(
             request_id=request_id,
@@ -81,7 +111,21 @@ class SandboxTaskRepository:
             updated_at=now,
         )
         try:
-            async with self.database.sessions() as session, session.begin():
+            async with self.database.immediate_session() as session:
+                if owned_work:
+                    from yuki.runtime.work_schema_v1 import work
+
+                    assert control is not None
+                    await control.repository._assert_lease(session, control.lease)
+                    live = await session.scalar(
+                        select(work.c.id).where(
+                            work.c.id == source["work_id"],
+                            work.c.generation == source["generation"],
+                            work.c.state.not_in(("completed", "failed", "cancelled")),
+                        )
+                    )
+                    if live is None:
+                        raise ValueError("invalid_task_work_source")
                 session.add(row)
                 await session.flush()
         except IntegrityError:
@@ -111,11 +155,90 @@ class SandboxTaskRepository:
     async def checkpoint(self, request_id: str, progress: dict[str, Any]) -> None:
         payload = canonical_json(progress, limit=16384)
         async with self.database.sessions() as session, session.begin():
-            await session.execute(
+            changed = await session.scalar(
                 update(SandboxTaskRunModel)
                 .where(SandboxTaskRunModel.request_id == request_id)
                 .values(progress_json=payload)
+                .returning(SandboxTaskRunModel.request_id)
             )
+            if changed is None:
+                raise ValueError("sandbox_task_source_deleted")
+
+    async def by_peer(self, peer_id: str) -> SandboxTaskRunModel | None:
+        async with self.database.sessions() as session:
+            return cast(
+                SandboxTaskRunModel | None,
+                await session.scalar(
+                    select(SandboxTaskRunModel)
+                    .where(
+                        func.json_extract(SandboxTaskRunModel.progress_json, "$.peer_id") == peer_id
+                    )
+                    .order_by(SandboxTaskRunModel.created_at)
+                    .limit(1)
+                ),
+            )
+
+    async def peers(self) -> tuple[str, ...]:
+        peer = func.json_extract(SandboxTaskRunModel.progress_json, "$.peer_id")
+        async with self.database.sessions() as session:
+            return tuple(await session.scalars(select(peer).where(peer.is_not(None)).distinct()))
+
+    async def receive_permission(self, event: dict[str, Any]) -> None:
+        """Commit the original callback and wait delivery before acknowledging its cursor."""
+        from yuki.conversation.canonical_db_models import CanonicalConversationModel
+        from yuki.runtime.work_repository import TERMINAL, WorkRepository, encode_json
+        from yuki.runtime.work_schema_v1 import inputs, work
+        from yuki.runtime.work_wait import WorkWaitRepository
+
+        async with self.database.immediate_session() as session:
+            task = await session.get(SandboxTaskRunModel, event["request_id"])
+            if task is None:
+                raise ValueError("unknown_external_agent_request")
+            progress = json.loads(task.progress_json)
+            if progress.get("peer_id") != event["peer_id"]:
+                raise ValueError("external_agent_event_peer_mismatch")
+            if task.run_id not in (None, event["run_id"]):
+                raise ValueError("external_agent_event_run_mismatch")
+            task.run_id = event["run_id"]
+            source = json.loads(task.source_json)
+            owner = (
+                (await session.execute(select(work).where(work.c.id == source["work_id"])))
+                .mappings()
+                .first()
+            )
+            if owner is None or owner["state"] in TERMINAL:
+                return
+            generation = await session.scalar(
+                select(CanonicalConversationModel.generation).where(
+                    CanonicalConversationModel.id == task.source_conversation_id
+                )
+            )
+            if generation != source["generation"] or generation != owner["generation"]:
+                return
+            payload = {
+                "text": encode_json({"kind": "acp_permission", **event}),
+                "signal": True,
+                "external_run_id": event["run_id"],
+            }
+            created = await session.scalar(
+                insert(inputs)
+                .values(
+                    conversation_id=owner["conversation_id"],
+                    generation=owner["generation"],
+                    source_key=f"acp-permission:{event['peer_id']}:{event['event_id']}",
+                    work_id=owner["id"],
+                    kind="control",
+                    ready=True,
+                    payload_json=encode_json(payload),
+                    created=datetime.now(UTC).timestamp(),
+                )
+                .on_conflict_do_nothing(index_elements=[inputs.c.source_key])
+                .returning(inputs.c.id)
+            )
+            if created is not None:
+                await WorkWaitRepository(WorkRepository(self.database)).signal_external_action(
+                    session, owner["id"], event["run_id"]
+                )
 
     async def bind_run(self, request_id: str, run_id: str) -> None:
         """Keep a returned/rediscovered Manager identity without changing the source."""

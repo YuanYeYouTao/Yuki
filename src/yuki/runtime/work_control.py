@@ -321,7 +321,7 @@ class WorkControl:
         # checkpoint into a second authority list.
         from yuki.capabilities.results import normalize_legacy_result
         from yuki.runtime.effect_outcomes import execution_evidence
-        from yuki.sandbox.environment_tools import EXECUTION_TOOLS
+        from yuki.sandbox.environment_tools import is_execution
 
         evidence = await self.repository.effect_evidence(
             self.lease,
@@ -331,11 +331,15 @@ class WorkControl:
         owners: dict[str, list[str]] = {}
         requests: dict[str, dict[str, str]] = {}
         for effect in evidence:
+            name = effect.get("tool", "")
+            execution = is_execution(name, {"action": effect.get("action")})
+            if name == "external_agent" and not execution:
+                continue
             identity = effect.get("run_id")
             if isinstance(identity, str) and (effect.get("pending") or effect.get("uncertain")):
                 owners.setdefault(effect["work_id"], []).append(identity)
             elif (
-                effect.get("tool") in EXECUTION_TOOLS | {"environment_packages", "run_python"}
+                (execution or name in {"environment_packages", "run_python"})
                 and isinstance(effect.get("request_id"), str)
                 and effect.get("uncertain")
             ):

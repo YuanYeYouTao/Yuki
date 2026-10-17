@@ -102,7 +102,8 @@ class MainAgentContract:
                     {
                         # 14: retired MCP and fixed direct view, discovery and full execution API.
                         # 19: lifecycle decisions settle after the original tool round.
-                        "version": 21,
+                        # 22: fixed external Agent invocation over original Work receipts.
+                        "version": 22,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

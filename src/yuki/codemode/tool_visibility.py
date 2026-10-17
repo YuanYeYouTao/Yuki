@@ -33,6 +33,7 @@ DIRECT_TOOL_NAMES = frozenset(
         "workspace_publish",
         "time_get_current",
         "terminal_exec",
+        "external_agent",
         "terminal_read",
         "terminal_control",
         "environment_status",

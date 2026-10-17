@@ -56,9 +56,11 @@ class Invocation:
     def durable_metadata(self) -> dict[str, Any]:
         """Only business arguments are canonicalized; Provider opaque is untouched."""
         arguments = self.call.function.arguments
+        parsed_arguments = None
         try:
+            parsed_arguments = json.loads(arguments)
             arguments = json.dumps(
-                json.loads(arguments),
+                parsed_arguments,
                 sort_keys=True,
                 ensure_ascii=False,
                 allow_nan=False,
@@ -74,6 +76,12 @@ class Invocation:
             "version": 1,
             **identity,
             "tool_id": self.call.function.name,
+            **(
+                {"action": parsed_arguments.get("action")}
+                if self.call.function.name == "external_agent"
+                and isinstance(parsed_arguments, dict)
+                else {}
+            ),
             "arguments_digest": hashlib.sha256(arguments.encode()).hexdigest(),
             "manifest_revision": self.context.manifest_revision,
             "dispatch_started": False,

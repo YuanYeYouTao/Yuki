@@ -558,7 +558,10 @@ class WorkJournal:
                 capture.evidence = historical_evidence(
                     stored
                     if row is not None and (row["state"] == "accepted" or row["kind"] == "final")
-                    else {"result": result},
+                    else {
+                        "result": result,
+                        **({"invocation": stored["invocation"]} if "invocation" in stored else {}),
+                    },
                     state=row["state"]
                     if row is not None and row["kind"] == "final"
                     else "accepted",

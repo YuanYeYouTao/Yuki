@@ -297,6 +297,15 @@ class WorkWaitRepository:
                 await self.repository.set_accepted_control(
                     session, lease, work_id, {**accepted, "wait_id": identity}
                 )
+            pending_runs = await session.scalars(
+                select(func.json_extract(inputs.c.payload_json, "$.external_run_id")).where(
+                    inputs.c.work_id == work_id,
+                    inputs.c.state == "pending",
+                    func.json_extract(inputs.c.payload_json, "$.external_run_id").is_not(None),
+                )
+            )
+            for pending_run in pending_runs:
+                await self.signal_external_action(session, work_id, pending_run)
             return {
                 "id": identity,
                 "work_id": work_id,
@@ -305,6 +314,46 @@ class WorkWaitRepository:
                 "conditions": normalized,
                 "deadline": deadline,
             }
+
+    async def signal_external_action(
+        self, session: AsyncSession, work_id: str, run_id: str
+    ) -> None:
+        """An original callback interrupts completion waits without satisfying their conditions."""
+        owner = (await session.execute(select(work).where(work.c.id == work_id))).mappings().first()
+        if owner is None or owner["state"] in {
+            "completed",
+            "failed",
+            "cancelled",
+            "suspended",
+            "waiting_user",
+        }:
+            return
+        binding = (
+            (
+                await session.execute(
+                    select(waits).where(waits.c.work_id == work_id, waits.c.status == "active")
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if binding is not None:
+            conditions = json.loads(binding["conditions_json"])
+            if any(c["kind"] == "owned_run" and c["run_id"] == run_id for c in conditions):
+                await self._deliver(
+                    session, dict(binding), conditions, "requires_action", time.time()
+                )
+        elif owner["state"] == "waiting_external":
+            await session.execute(
+                update(work)
+                .where(work.c.id == work_id, work.c.state == "waiting_external")
+                .values(
+                    state="queued",
+                    reason="external_agent_requires_action",
+                    revision=work.c.revision + 1,
+                    updated=time.time(),
+                )
+            )
 
     @staticmethod
     async def _deliver(

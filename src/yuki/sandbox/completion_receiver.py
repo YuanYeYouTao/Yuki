@@ -59,6 +59,11 @@ class CompletionReceiver:
             await asyncio.sleep(delay)
 
     async def drain_once(self) -> int:
+        failure: Exception | None = None
+        try:
+            await self.drain_peer_events()
+        except Exception as exc:
+            failure = exc
         page = await self.client.execute(
             "list_code_completions", {"after": self._cursor}, request_id="completion-read"
         )
@@ -75,7 +80,6 @@ class CompletionReceiver:
         ):
             raise ValueError("invalid_completion_cursor")
         received = 0
-        failure: Exception | None = None
         for event in events:
             try:
                 await self.tasks.receive(event)
@@ -100,3 +104,37 @@ class CompletionReceiver:
         if failure is not None:
             raise failure
         return received
+
+    async def drain_peer_events(self) -> None:
+        failure: Exception | None = None
+        for peer_id in await self.tasks.peers():
+            try:
+                await self._drain_peer(peer_id)
+            except Exception as exc:
+                failure = exc
+        if failure is not None:
+            raise failure
+
+    async def _drain_peer(self, peer_id: str) -> None:
+        cursor = None
+        while True:
+            page = await self.client.execute(
+                "acp_peer_events",
+                {"peer_id": peer_id, **({"after_cursor": cursor} if cursor is not None else {})},
+                request_id="acp-event-read",
+            )
+            if page.get("error"):
+                raise RuntimeError("external_agent_event_read_failed")
+            for event in page["events"]:
+                if event["type"] == "permission_request":
+                    await self.tasks.receive_permission({"peer_id": peer_id, **event})
+                cursor = event["cursor"]
+                acknowledged = await self.client.execute(
+                    "acp_peer_events",
+                    {"peer_id": peer_id, "after_cursor": cursor, "ack_cursor": cursor},
+                    request_id="acp-event-ack",
+                )
+                if acknowledged.get("error"):
+                    raise RuntimeError("external_agent_event_ack_failed")
+            if not page["has_more"]:
+                break

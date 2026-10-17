@@ -16,7 +16,7 @@
 
 ## 当前开发版：工具精简与持久终端升级
 
-本节描述正式3.9.0之后的开发实现，不改上方Release的`0119`、API3.5基线。#454将Main固定合同升级到21，Code API仍为`yuki.codemode.api.v2`、Plugin API仍为4.0。默认direct的平台/App内置工具为29/30项，Code完整31/32项、直调26/27项；批准插件另计。实际交付见[454实施与审查](architecture/Yuki-454工具精简实施与审查记录-2026-10-17.md)。
+本节描述正式3.9.0之后的开发实现，不改上方Release的`0119`、API3.5基线。#454精简后，#456再新增一项固定`external_agent`，当前Main合同为22，Code API仍为`yuki.codemode.api.v2`、Plugin API仍为4.0。默认direct的平台/App内置工具为30/31项，Code完整32/33项、直调27/28项；批准插件另计。实际交付见[454实施与审查](architecture/Yuki-454工具精简实施与审查记录-2026-10-17.md)。
 
 - 终端使用`terminal_exec/read/control`，control接收input/interrupt/cancel/close；按原run读取增量日志和原completion，pending后不重新提交。`get_code_run`、`terminal_write`、`cancel_code_run`和`environment_packages`不再接受新调用。旧APT/Python job、已付结果、原ID/hash/累计预算保留。
 - 普通`workspace_list/read/write/search/patch/mkdir/move/delete`整链退役，直接用同一`/workspace`上的终端。`workspace_inspect/publish`、临时会话附件提升和私有工具结果读取仍在原链；已发送版本不跟随当前文件修改。SDK普通文件接口相同退役，不能用旧名创建新效果。
@@ -33,11 +33,17 @@
 
 Python 模块与发行包统一为 `yuki`，管理／个人客户端／ACP 使用 `yuki`，服务进程使用 `yuki-bot`。旧 `qq-ai-bot-cli`、`qq-ai-bot` 可执行别名和 `qq_ai_bot` 模块已删除；源码集成与直接导入一并改为新路径，不增加旧包 shim。重新同步依赖或构建镜像，不能只移动已安装的源码目录。
 
-新部署默认 Compose 项目为 `yuki`、网络为 `yuki-network`，数据库为 `data/yuki.db`。已有部署按原完整 Compose、项目／网络、挂载与实际 `DATABASE_URL` 继续，旧数据库文件无需改名，也不另建新栈或空库。原 Person、事件、会话、已付协议与发送回执保留。本轮仅提交 PR，不合并或部署；后续获准升级时，网关、代理、Manager 与原环境不因更名重建。
+新部署默认 Compose 项目为 `yuki`、网络为 `yuki-network`，数据库为 `data/yuki.db`。已有部署按原完整 Compose、项目／网络、挂载与实际 `DATABASE_URL` 继续，旧数据库文件无需改名，也不另建新栈或空库。原 Person、事件、会话、已付协议与发送回执保留。本轮A/B合流与交付授权、实际状态见[原任务书§11](architecture/Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#11-456-方向-b-与已承诺后端收尾)。更名本身不要求重建网关或代理；ACP B需要的Manager/环境升级单独按下节和持久环境手册执行，不能把获准上线写成已经上线。
 
 旧 native／源码安装若原来没有配置 `DATABASE_URL`，升级前需将原数据库绝对路径显式写入 `.env`，让迁移和服务启动读取同一值。例如原库为 `/srv/yuki/data/qq_ai_bot.db` 时，设置 `DATABASE_URL=sqlite+aiosqlite:////srv/yuki/data/qq_ai_bot.db`。新默认只用于新部署，不自动查找旧文件、不搬库，也不应先执行默认配置在新路径建空库。
 
 未来发行镜像使用 `ghcr.io/yuanyeyoutao/yuki`；正式 3.9.0 原镜像、安装包、下载 URL 和历史说明仍属于原 Release，不冒称新名称标签已发布。使用源码开发版时本地构建；安装正式版使用固定 Release 的原安装器与 Compose。
+
+## ACP B：原持久环境托管外部 Agent
+
+`external_agent`固定提供list/prompt/get/respond/cancel/close；目录由Manager operator的`--acp-config`配置，示例见[`acp-agents.example.toml`](../deploy/sandbox/acp-agents.example.toml)。外部peer是原Work的执行资源，不是人物或另一个聊天入口；仅prompt登记新执行，原session复用、已付请求和未知结果不重发。权限沿原Work接续，原生cancel已提交不代表外部效果已撤销。
+
+除重建Bot之外，还须同步宿主`src/yuki`、Manager依赖/启动模块、原环境内`agent-client-protocol==0.12.1`和只读`/opt/yuki-runtime/acp_peer.py`。旧环境先保全原rootFS、HOME/runtime和jobs再显式更换挂载；不能用空基础镜像丢掉已有安装。执行步骤和清退范围见[持久环境](operations/persistent-environment.zh-CN.md)。Agent命令、适配器安装、登录和凭据由operator明确配置，Bot不会把全部环境或QQ凭据交给它；没有统一保证的外部usage/cache仍为未知。
 
 ## 0132 ACP 独立会话
 

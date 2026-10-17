@@ -359,6 +359,20 @@ SubagentScheduler 同样启动以恢复原子任务；新子任务接纳关闭�
 
 ## 预算、等待与异常
 
+外部 Agent 的 ACP peer 与单次 prompt 分开管理。`external_agent.prompt` 沿原 Work 的调用键登记
+SandboxTaskRun，重启和确认丢失查询原请求，不新建 peer 或重发未知 prompt。同一 Work 可用
+peer_id 续用原会话；空闲 peer 不阻止工作完成，显式关闭、真实归档或隐私清退才回收。
+真实权限请求先写原 Work 私有输入再 ACK；它可打断 any/all 的 owned_run 等待，唤醒原因是
+requires_action，不把未完成 run 标为完成，也不复活 suspended、waiting_user 或终态 Work。
+回答权限时核原来源当前授权，普通权限不一律转交用户审批。逻辑取消先撤销原 Work 子树；
+原生取消请求已接纳与远端执行真正停止分别记录。输出及工具更新由原 prompt 可靠事件分页
+读取，stopReason 不代替正文或任务效果；共享文件与外部服务自有历史也不冒称已自动擦除。
+
+外部 Agent 的各次实际工具调用仍计入原 Work 工具预算；只把 prompt 视为新执行，查询、
+权限回答及关闭不生成另一项执行。ACP 一次 prompt 可以包含多轮模型与工具调用，稳定协议
+未统一保证其内部请求次数、usage 与缓存明细。仅记录实际报告的字段，缺失保持未知，
+不把一次 prompt 伪计为一次外部真实模型请求，也不因缺少 usage 阻断正常工作。
+
 自动化创建在最终短 writer 中复核永久创建者、当前权限与 SELF 场景；
 同 creation key 读取原创建版本，不重新校验已经过去的首次日期。普通 create/update/pause/resume/cancel/run_now
 与强制管理审计共用事务，审计失败一同回滚，before 使用写时实际版本；resume/run_now
