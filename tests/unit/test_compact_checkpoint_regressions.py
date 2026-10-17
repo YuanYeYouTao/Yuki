@@ -82,7 +82,9 @@ async def test_public_compact_checkpoint_survives_projection_cache_eviction(
 
 
 @pytest.mark.parametrize("protocol", ["gemini", "openai_responses", "deepseek_responses"])
-async def test_native_compact_preserves_fitting_unobserved_tool_tail(protocol, database, tmp_path):
+async def test_native_compact_preserves_fitting_unobserved_tool_tail(
+    protocol, database, tmp_path, monkeypatch
+):
     import json
 
     import httpx
@@ -91,7 +93,7 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(protocol, d
     from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
     from qq_ai_bot.llm.gemini import GeminiProvider
     from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-    from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
+    from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
     from qq_ai_bot.services.context_compaction import (
         EXECUTION_COMPACT_INSTRUCTION,
         execution_compact_plan,
@@ -275,13 +277,15 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(protocol, d
             lambda request: "Earlier finding retained; continue original work."
         )
         runner, runtime = await _runtime(database, control, initial, summarizer)
+        monkeypatch.setattr(
+            runner._models, "capacity", lambda task: ModelCapacity(input_tokens=budget + 256)
+        )
         runtime = replace(
             runtime,
             max_model_requests=None,
             auxiliary_requests=[0],
             runtime_config=replace(
                 runtime.runtime_config,
-                context=replace(runtime.runtime_config.context, work_window_tokens=budget + 256),
                 llm=replace(runtime.runtime_config.llm, max_output_tokens=256),
             ),
         )
@@ -294,13 +298,14 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(protocol, d
         assert original_effect_key in str(prepared.request.messages)
 
 
-async def test_irreducible_raw_tail_does_not_buy_repeated_compacts(database, tmp_path):
+async def test_irreducible_raw_tail_does_not_buy_repeated_compacts(database, tmp_path, monkeypatch):
     from dataclasses import replace
 
     from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
     from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
     from qq_ai_bot.llm.fake import FakeLLMProvider
+    from qq_ai_bot.model_runtime.capacity import ModelCapacity
     from qq_ai_bot.runtime.work_repository import WorkCapacityError
     from qq_ai_bot.services.turn_execution import TurnExecution
     from qq_ai_bot.web.models import WebMode
@@ -314,13 +319,13 @@ async def test_irreducible_raw_tail_does_not_buy_repeated_compacts(database, tmp
         lambda request: "Earlier finding retained. Continue the original work."
     )
     runner, runtime = await _runtime(database, control, initial, provider)
+    monkeypatch.setattr(runner._models, "capacity", lambda task: ModelCapacity(input_tokens=4096))
     runtime = replace(
         runtime,
         max_model_requests=3,
         auxiliary_requests=[0],
         runtime_config=replace(
             runtime.runtime_config,
-            context=replace(runtime.runtime_config.context, work_window_tokens=4096),
             llm=replace(runtime.runtime_config.llm, max_output_tokens=256),
         ),
     )

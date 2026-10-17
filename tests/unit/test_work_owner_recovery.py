@@ -939,7 +939,6 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         waits = WorkWaitRepository(repository)
         wait_before = await waits.describe(parent["id"])
         with monkeypatch.context() as constrained:
-            constrained.setattr(chat, "_history_input_budget", lambda *args, **kwargs: 0)
             constrained.setattr(chat._settings, "runtime_work_enabled", False)
             async with host.bind(invocation):
                 waiting = await host.agent.run("original plugin goal")
@@ -965,7 +964,6 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         assert stored_result.data["text"] == final_text
         assert (await repository.get(parent["id"]))["source_json"] == parent["source_json"]
         with monkeypatch.context() as constrained:
-            constrained.setattr(chat, "_history_input_budget", lambda *args, **kwargs: 0)
             constrained.setattr(chat._settings, "runtime_work_enabled", False)
             for saved_result in ("text", "missing", "null"):
                 checkpoint = json.loads(parent["checkpoint_json"])

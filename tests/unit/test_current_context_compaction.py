@@ -15,7 +15,7 @@ from qq_ai_bot.domain.messages import (
     ToolFunction,
 )
 from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
+from qq_ai_bot.model_runtime.capacity import ModelCapacity, estimate_request_tokens
 from qq_ai_bot.model_runtime.models import ModelExecutionPriority
 from qq_ai_bot.runtime.work_journal import JournalUnavailable
 from qq_ai_bot.runtime.work_repository import WorkConflict
@@ -315,7 +315,9 @@ def test_compact_prefix_retains_real_tool_pairs_and_main_settings():
     assert plan.request.messages[-2].tool_call_id == call.id
 
 
-async def test_actual_overflow_compacts_paired_prefix_and_keeps_fitting_tail(database, tmp_path):
+async def test_actual_overflow_compacts_paired_prefix_and_keeps_fitting_tail(
+    database, tmp_path, monkeypatch
+):
     from qq_ai_bot.web.models import WebMode
 
     control, session, initial = await _session(database, tmp_path)
@@ -323,13 +325,13 @@ async def test_actual_overflow_compacts_paired_prefix_and_keeps_fitting_tail(dat
         session.transcript.append(ChatMessage("assistant", f"finding {index}: " + "result " * 400))
     provider = FakeLLMProvider(lambda request: "Verified findings. Continue original goal.")
     runner, runtime = await _runtime(database, control, initial, provider)
+    monkeypatch.setattr(runner._models, "capacity", lambda task: ModelCapacity(context_tokens=8192))
     runtime = replace(
         runtime,
         max_model_requests=20,
         auxiliary_requests=[0],
         runtime_config=replace(
             runtime.runtime_config,
-            context=replace(runtime.runtime_config.context, work_window_tokens=8192),
             llm=replace(runtime.runtime_config.llm, max_output_tokens=512),
         ),
     )

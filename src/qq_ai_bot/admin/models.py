@@ -160,8 +160,7 @@ class ControlAuditRef:
 @dataclass(frozen=True, slots=True)
 class ContextRuntimeConfig:
     local_event_limit: int
-    window_tokens: int = 96000
-    work_window_tokens: int = 128000
+    compact_trigger_tokens: int = 96000
 
 
 @dataclass(frozen=True, slots=True)

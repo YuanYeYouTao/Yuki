@@ -196,7 +196,7 @@ async def test_main_history_search_archives_original_requested_page(
 
     case = await setup_run(database, tmp_path, delivery="none", mode="silent")
     case.settings.runtime_work_enabled = work_enabled
-    case.settings.context_window_tokens = 500000
+    case.settings.context_compact_trigger_tokens = 500000
     store = ToolArtifactRepository(database, tmp_path / "artifacts", retention_seconds=60)
     case.chat._tool_artifacts = store
     originals = []

@@ -128,14 +128,14 @@ async def test_configuration_target_wins_unique_moves_and_unset_never_falls_back
     await _override(database, a, 0.3, key="llm.temperature", value_type="number")
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
     await merge(database, a, b)
-    assert (await runtime.snapshot(user_id=a)).context.window_tokens == 80000
+    assert (await runtime.snapshot(user_id=a)).context.compact_trigger_tokens == 80000
     assert (await runtime.snapshot(memory_scope=MemoryConfigScope(a))).llm.temperature == 0.3
     inspected = await runtime.inspect_configs(
-        ("context.window_tokens",), scope=MemoryConfigScope(a)
+        ("context.compact_trigger_tokens",), scope=MemoryConfigScope(a)
     )
     assert inspected[0].effective.value == 80000
     removed = await runtime.delete_override(
-        "context.window_tokens",
+        "context.compact_trigger_tokens",
         scope_type="user",
         scope_id=a,
         actor_user_id="operator",
@@ -143,14 +143,14 @@ async def test_configuration_target_wins_unique_moves_and_unset_never_falls_back
     )
     assert removed.success
     await merge(database, a, b)
-    assert (await runtime.snapshot(user_id=a)).context.window_tokens == make_settings(
+    assert (await runtime.snapshot(user_id=a)).context.compact_trigger_tokens == make_settings(
         database.url
-    ).context_window_tokens
+    ).context_compact_trigger_tokens
     async with database.sessions() as session:
         original = await session.scalar(
             select(RuntimeConfigOverrideModel).where(
                 RuntimeConfigOverrideModel.canonical_person_id == a,
-                RuntimeConfigOverrideModel.config_key == "context.window_tokens",
+                RuntimeConfigOverrideModel.config_key == "context.compact_trigger_tokens",
             )
         )
         assert json.loads(original.value_json) == 70000
@@ -166,7 +166,7 @@ async def test_rollback_requires_original_configuration_row_not_equal_value_vers
     a, b, _, _ = await _owners(database)
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
     change = await runtime.set_override(
-        "context.window_tokens",
+        "context.compact_trigger_tokens",
         70000,
         scope_type="user",
         scope_id=a,
@@ -211,11 +211,11 @@ async def test_rollback_requires_original_configuration_row_not_equal_value_vers
     assert result.success is not conflict
     if conflict:
         assert result.error_category == "rollback_conflict"
-        assert (await runtime.snapshot(user_id=b)).context.window_tokens == 70000
+        assert (await runtime.snapshot(user_id=b)).context.compact_trigger_tokens == 70000
     else:
-        assert (await runtime.snapshot(user_id=b)).context.window_tokens == make_settings(
+        assert (await runtime.snapshot(user_id=b)).context.compact_trigger_tokens == make_settings(
             database.url
-        ).context_window_tokens
+        ).context_compact_trigger_tokens
 
 
 async def test_route_trigger_accepts_root_to_original_binding_and_keeps_target_route(database):
@@ -339,7 +339,7 @@ async def test_rollback_human_follows_merge_but_independent_operator_does_not(
         else None
     )
     change = await runtime.set_override(
-        "context.window_tokens",
+        "context.compact_trigger_tokens",
         70000,
         scope_type="user",
         scope_id=a,
@@ -359,9 +359,9 @@ async def test_rollback_human_follows_merge_but_independent_operator_does_not(
     if control_actor:
         assert result.error_category == "permission_denied"
     else:
-        assert (await runtime.snapshot(user_id=b)).context.window_tokens == make_settings(
+        assert (await runtime.snapshot(user_id=b)).context.compact_trigger_tokens == make_settings(
             database.url
-        ).context_window_tokens
+        ).context_compact_trigger_tokens
 
 
 async def test_legacy_opaque_operator_rollback_uses_original_principal_exactly(database):
@@ -371,7 +371,7 @@ async def test_legacy_opaque_operator_rollback_uses_original_principal_exactly(d
     operator_id = str(uuid4())
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
     change = await runtime.set_override(
-        "context.window_tokens",
+        "context.compact_trigger_tokens",
         70000,
         scope_type="user",
         scope_id=a,

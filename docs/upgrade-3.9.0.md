@@ -4,6 +4,8 @@
 
 本指南对应 [Yuki 3.9.0 正式发行](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0)，随包数据库单一 head 为 `0119`，Plugin API 为 `3.5`。正式 Bot 镜像为 `ghcr.io/yuanyeyoutao/yuki-qqbot:3.9.0`，部署包、安装入口与 `SHA256SUMS` 从同一 Release 获取。完整合并范围、贡献者和交付证据见[发布说明](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/releases/v3.9.0.md)。
 
+当前源码后续的 Compact 配置变更见[0130 升级说明](#0130-compact-触发值与模型容量分开)。它不改变 3.9.0 随包 `0119` 的历史；本轮交付范围为 PR，生产环境清理、迁移和部署尚未执行。
+
 默认构建与发行使用 direct：同一 Agent loop 提供固定完整工具声明，不包含 Monty binding、原生 worker 或 launcher，`CODE_MODE_ENABLED=false`。Code Mode 已合入主线，是显式 `--target codemode` 构建与启用的可选能力；持久子 Agent 与这个可选原生组件是不同模块。切换模式保留原 Work、composition、预算和回执，不能取得重派发资格。
 
 3.9.0 正式发行支持 `linux/amd64` 与 `linux/arm64`，共用版本标签和部署包；[PR #431](https://github.com/YuanYeYouTao/Yuki/pull/431) 已合入。安装器按 Docker Engine 架构选择配置镜像，模板已删除 Bot、SnowLuma 的固定 `platform: linux/amd64`。安装器仍不覆盖现有 Compose；已有 ARM 部署需要核对实际 Bot/网关镜像支持 arm64，再从自己的 service 配置中去掉该固定平台。保留原挂载、配置和业务数据，不因此重置会话或迁移 owner。旧版发行物保持原内容，不能据此推定旧标签也有双架构镜像。
@@ -223,11 +225,11 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 
 从实际 `.env` 和 Bot 环境删除 `CONVERSATION_ROLLUP_*`、`CONTEXT_COMPACTION_WINDOW_TOKENS`、
 `WORK_COMPACTION_MAX_OUTPUT_TOKENS`、`WORK_COMPACTION_TRIGGER_RATIO`、`WORK_COMPACTION_TARGET_RATIO`。
-`0119` 同时删除对应的旧热配置 override。聊天和 Work 窗口配置继续有效，compact 使用当前 Main
-的模型设置与真实请求容量。Memory evidence compaction 是独立功能，保留其配置与工作者。
+`0119` 同时删除对应的旧热配置 override。3.9.0 当时的聊天和 Work 窗口配置继续有效，compact 使用当前 Main
+的模型设置与真实请求容量；当前源码进一步退役双窗口，见下方 `0130`。Memory evidence compaction 是独立功能，保留其配置与工作者。
 旧 `model_profiles.toml` 的 `conversation_compaction` 路由读取时跳过并给出警告，应从文件中删除。
 
-当前公共历史与私有执行尾部由 Main 的 `compact_current` 统一整理；自动 compact 只在完整请求超过真实容量时发生，手动 `/ai compact [重点]` 只处理公共历史。旧独立 Work/ordinary 摘要与后台 Rollup 链已经退役。已付响应恢复复用原件，只有派发事实而无持久响应时仍属未知，不自动重购；缓存字段缺失保持未知，不从前缀哈希推算命中率。
+3.9.0 的公共历史与私有执行尾部由 Main 的 `compact_current` 统一整理，当时自动 compact 只在完整请求超过真实容量时发生；当前源码已将提前整理触发值与模型硬容量分开，见下节。手动 `/ai compact [重点]` 仍只处理公共历史。旧独立 Work/ordinary 摘要与后台 Rollup 链已经退役。已付响应恢复复用原件，只有派发事实而无持久响应时仍属未知，不自动重购；缓存字段缺失保持未知，不从前缀哈希推算命中率。
 
 Control API 的 ConversationView 删除 `covered_through_event_id` 和 `uncovered_event_count`；
 health 删除 Rollup 组件，`/ai status` 显示已选公共 compact 的覆盖点和公共窗口更新时间。
@@ -239,4 +241,23 @@ CLI 的 `conversation recount-uncovered` 与旧专用摘要探针退役；实际
 这些 Work 按当前公共历史与原任务材料进行业务恢复，已付响应与效果沿原调用 ID 对账，不能重新购买或重发。
 迁移演练、真实模型、QQ 验收和部署按各自证据记录；文档不代替实际上线。
 
-下一大版本的多客户端重构尚未交付。当前部署继续使用现有 WebUI/控制面；未来接口、升级和数据处理以对应版本的实现及升级说明为准。
+## 0130 Compact 触发值与模型容量分开
+
+本节描述当前源码 PR 的升级变更，不表示已发布新版、已清理生产配置或已部署。现行语义见[会话 Compact](architecture/conversation-compact.md)。
+
+普通聊天、Work 和子任务统一使用 `context.compact_trigger_tokens`，默认 `96000`，环境变量为 `CONTEXT_COMPACT_TRIGGER_TOKENS`。它按完整请求的本地估值提前触发 Main 整理，不要求结果必须压到该值以下，也不代替可执行输入上限。仍可容纳的请求，不因没有可整理前缀或未产生有效检查点而被拒绝。
+
+模型硬容量只由当前 Profile 的 `max_input_tokens` 和 `context_window_tokens` 明确声明；联合窗口扣除本次输出额度后形成输入预算，两者都声明时取较小值。`None` 保持未知，不补 `262144` 或其他 Host 默认容量。运维按实际端点填写已知容量，不能从旧窗口值或模型名称推定上游规格。
+
+旧 `context.window_tokens`、`context.work_window_tokens` 与 `CONTEXT_WINDOW_TOKENS`、`WORK_CONTEXT_WINDOW_TOKENS` 退役。迁移 `0130` 仅删除这两个热配置键在全部 scope 的当前 override，保留配置变更历史、原执行、预算和已付/发送回执；不把旧值复制为 Profile 容量或新整理触发值。未显式配置新触发值时使用 `96000`。
+
+实际部署时沿现用 Compose 文件和覆盖链逐项整理，不用模板覆盖整份配置：
+
+1. 备份实际 `.env`、Compose 文件、模型配置及数据库，再检查 Bot 的 `environment`、`env_file` 和宿主导出环境。删除两个旧窗口变量；需要修改整理触发值时，仅设置 `CONTEXT_COMPACT_TRIGGER_TOKENS` 或对应热配置。
+2. 继续删除旧 Rollup 残留：`CONVERSATION_ROLLUP_*`、`CONTEXT_COMPACTION_WINDOW_TOKENS`、`WORK_COMPACTION_MAX_OUTPUT_TOKENS`、`WORK_COMPACTION_TRIGGER_RATIO`、`WORK_COMPACTION_TARGET_RATIO`。从模型文件删除退役的 `conversation_compaction` 路由。更新源码或模板不会自动清除存量部署环境；Memory evidence compaction 的配置继续保留。
+3. 在停写副本演练 `0129→0130`，核对全 scope 的旧窗口当前 override 已清退、其他配置及原执行事实保留。按实际当前 revision 运行完整迁移链，不修改冻结迁移，也不通过改 head 标记跳过升级。
+4. 核对解析后的 Bot 配置及 Profile 容量声明。生产迁移、Bot 更新和生效确认另按获准部署执行；本轮 PR 不执行这些生产步骤，不重启网关或代理。
+
+本轮不重建 Rollup、摘要路由、比例策略或摘要输出预算。整理继续沿原 Main、固定 system/工具、来源和原回执派发，压缩不重置累计预算，未知已付不盲重购，已发生消息不重发。旧请求与协议原件保留，新检查点在合法边界接续；更频繁整理不承诺改善缓存，真实命中与成本仍查上游 usage。
+
+冷恢复也保留已确认没有有效检查点的原配对回执。自动整理对相同实际候选复用该失败，不按 chain/诊断字段变化重复购买；原请求仍超出已知硬容量时保留容量失败，内容、工具或设置改变后的新候选继续按实际输入处理。已知空响应或畸形本地调用只保存真实失败类别，不补造模型响应或 usage；取消、未知派发和原生工具效果的边界不变。

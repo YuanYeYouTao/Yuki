@@ -1415,8 +1415,7 @@ class RuntimeConfigService:
             ),
             context=ContextRuntimeConfig(
                 local_event_limit=int(cast(int, value("context.local_event_limit"))),
-                window_tokens=int(cast(int, value("context.window_tokens"))),
-                work_window_tokens=int(cast(int, value("context.work_window_tokens"))),
+                compact_trigger_tokens=int(cast(int, value("context.compact_trigger_tokens"))),
             ),
             memory=MemoryRetrievalRuntimeConfig(
                 retrieval_enabled=bool(value("memory.retrieval_enabled")),

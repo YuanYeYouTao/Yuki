@@ -45,29 +45,17 @@ def hot_config_specs() -> tuple[ConfigSpec, ...]:
                 ),
             )
         ),
-        *tuple(
-            _spec(
-                key,
-                title,
-                "运行时请求容量政策；模型实际输入/联合窗口上限仍在执行前核验。",
-                value_type="integer",
-                minimum=minimum,
-                maximum=maximum,
-                scopes=_GGU,
-                getter=_field(field),
-                settings_fields=(field,),
-                category="context",
-            )
-            for key, title, field, minimum, maximum in (
-                ("context.window_tokens", "聊天输入窗口", "context_window_tokens", 8192, 2097152),
-                (
-                    "context.work_window_tokens",
-                    "Work 输入窗口",
-                    "work_context_window_tokens",
-                    8192,
-                    2097152,
-                ),
-            )
+        _spec(
+            "context.compact_trigger_tokens",
+            "自动 Compact 触发水位（tokens）",
+            "聊天与 Work 共用的自动 Compact 触发水位；模型实际输入和联合窗口容量由 Profile 声明。",
+            value_type="integer",
+            minimum=1,
+            scopes=_GGU,
+            env_alias="CONTEXT_COMPACT_TRIGGER_TOKENS",
+            getter=_field("context_compact_trigger_tokens"),
+            settings_fields=("context_compact_trigger_tokens",),
+            category="context",
         ),
         _spec(
             "memory.retrieval_enabled",

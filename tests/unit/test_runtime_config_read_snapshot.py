@@ -47,7 +47,7 @@ async def _override(
     value,
     scope="user",
     *,
-    key="context.window_tokens",
+    key="context.compact_trigger_tokens",
     value_type="integer",
 ):
     now = datetime.now(UTC)
@@ -76,18 +76,18 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
 ):
     settings = make_settings(
         database.url,
-        context_window_tokens=60000,
+        context_compact_trigger_tokens=60000,
     )
     runtime = RuntimeConfigService(settings=settings, database=database)
     person_a, person_b, space, _ = await _owners(database)
     values_a = {
-        "window_tokens": 100000,
+        "compact_trigger_tokens": 100000,
     }
     values_b = {
-        "window_tokens": 200000,
+        "compact_trigger_tokens": 200000,
     }
     space_values = {
-        "window_tokens": 80000,
+        "compact_trigger_tokens": 80000,
     }
     for name in values_a:
         value_type = "number" if name.endswith("ratio") else "integer"
@@ -111,7 +111,7 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
         space_values
         if group_override
         else {
-            "window_tokens": 60000,
+            "compact_trigger_tokens": 60000,
         }
     )
     for name, value in expected.items():
@@ -219,9 +219,9 @@ async def test_rebind_and_override_commit_between_queries_cannot_mix_snapshot_ow
 
     monkeypatch.setattr(module, "resolve_live_person_id", concurrent_rebind)
     snapshot = await runtime.snapshot(user_id=old)
-    assert changed and snapshot.context.window_tokens == 70000
-    assert (await runtime.snapshot(user_id=old)).context.window_tokens == 71000
-    assert (await runtime.snapshot(user_id=new)).context.window_tokens == 80000
+    assert changed and snapshot.context.compact_trigger_tokens == 70000
+    assert (await runtime.snapshot(user_id=old)).context.compact_trigger_tokens == 71000
+    assert (await runtime.snapshot(user_id=new)).context.compact_trigger_tokens == 80000
     with pytest.raises(CanonicalIdentityError):
         await runtime.snapshot(user_id="10001")
 
@@ -248,7 +248,7 @@ async def test_snapshot_under_wal_writer_reads_committed_config_without_dml(data
         finally:
             event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
         assert all(statement.startswith(("SELECT", "BEGIN")) for statement in sql)
-        assert result.context.window_tokens == 70000
+        assert result.context.compact_trigger_tokens == 70000
 
 
 @pytest.mark.asyncio
@@ -304,8 +304,8 @@ async def test_known_canonical_config_owners_do_not_require_an_active_qq_binding
             .where(SpaceBindingModel.space_id == space)
             .values(status="disabled")
         )
-    assert (await runtime.snapshot(user_id=person)).context.window_tokens == 70000
-    assert (await runtime.snapshot(group_id=space)).context.window_tokens == 80000
+    assert (await runtime.snapshot(user_id=person)).context.compact_trigger_tokens == 70000
+    assert (await runtime.snapshot(group_id=space)).context.compact_trigger_tokens == 80000
 
 
 @pytest.mark.asyncio

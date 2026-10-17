@@ -137,9 +137,8 @@ class Settings(BaseSettings):
     database_url: str = "sqlite+aiosqlite:///./data/qq_ai_bot.db"
     control_operators_file: Path | None = None
     processed_event_cleanup_seconds: int = 3600
-    # Active request windows are token capacities, resolved again from hot config.
-    context_window_tokens: int = Field(default=96000, ge=8192)
-    work_context_window_tokens: int = Field(default=128000, ge=8192)
+    # Chat and Work share the hot-configured automatic compact trigger.
+    context_compact_trigger_tokens: int = Field(default=96000, gt=0)
 
     global_llm_concurrency: int = 4
     per_user_requests_per_minute: int = 10
