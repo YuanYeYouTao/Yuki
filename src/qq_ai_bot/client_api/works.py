@@ -17,12 +17,13 @@ from qq_ai_bot.conversation.canonical_db_models import (
 )
 from qq_ai_bot.gateway.providers.app.ingress import AppGateway
 from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
+from qq_ai_bot.identity.ingress import IngressPreAdmit
 from qq_ai_bot.identity.person_identity import person_family_condition, same_person_id
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.work_budget_schema import budgets
 from qq_ai_bot.runtime.work_management import WorkManagementError, manage_work
 from qq_ai_bot.runtime.work_recovery_schema import deliveries
-from qq_ai_bot.runtime.work_repository import TERMINAL, WorkRepository
+from qq_ai_bot.runtime.work_repository import TERMINAL, WorkLease, WorkRepository
 from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, work
 from qq_ai_bot.runtime.work_tree import budget_root_id
 from qq_ai_bot.social.db_models import SocialOperationModel
@@ -339,17 +340,24 @@ class ClientWorks:
                 )
                 if admitted.dropped:
                     raise ClientError("unauthenticated")
-                failure = None
-                async with self.database.immediate_session() as writer:
-                    principal = await self.identity.require_device(
-                        writer, principal.device_id, binding_id=principal.binding_id
+
+                async def record_input(
+                    writer: AsyncSession,
+                    source: IngressPreAdmit = admitted,
+                    input_lease: WorkLease | None = lease,
+                    request_principal: ClientPrincipal = principal,
+                ) -> dict[str, Any] | ClientError | None:
+                    current_principal = await self.identity.require_device(
+                        writer, request_principal.device_id, binding_id=request_principal.binding_id
                     )
-                    current = await personal_work(writer, principal.person_id, identity)
+                    current = await personal_work(writer, current_principal.person_id, identity)
                     actor = json.loads(current["source_json"]).get("actor_person_id")
-                    if not actor or not await same_person_id(writer, actor, principal.person_id):
+                    if not actor or not await same_person_id(
+                        writer, actor, current_principal.person_id
+                    ):
                         raise ClientError("not_found")
                     previous = await self._replay_input(
-                        writer, principal, identity, request_id, bound
+                        writer, current_principal, identity, request_id, bound
                     )
                     if previous is not None:
                         return previous
@@ -357,7 +365,7 @@ class ClientWorks:
                         details: dict[str, JsonValue] = {"state": current["state"]}
                         await self._record(
                             writer,
-                            principal,
+                            current_principal,
                             request_id,
                             operation,
                             identity,
@@ -366,35 +374,37 @@ class ClientWorks:
                             resource=identity,
                             problem="precondition_failed",
                         )
-                        failure = ClientError("precondition_failed", details=details)
+                        return ClientError("precondition_failed", details=details)
                     else:
                         waiting = current["state"] in {
                             "waiting_user",
                             "waiting_external",
                             "suspended",
                         }
-                        if waiting and lease is None:
-                            continue
+                        if waiting and input_lease is None:
+                            return None
                         appended = await self.gateway.processor._canonical_uow.append_inbound(
-                            admitted.message, admitted, session=writer, origin="work_input"
+                            source.message, source, session=writer, origin="work_input"
                         )
                         payload = {
                             "text": body,
                             "origin": "client_input",
-                            "source_conversation_id": principal.conversation_id,
-                            "device_id": principal.device_id,
+                            "source_conversation_id": current_principal.conversation_id,
+                            "device_id": current_principal.device_id,
                         }
                         input_id = await self.repository.enqueue(
                             current["conversation_id"],
                             current["generation"],
-                            f"client-input:{principal.external_account_id}:{request_id}",
+                            f"client-input:{current_principal.external_account_id}:{request_id}",
                             kind="message",
                             event_id=appended.event.id,
                             work_id=identity,
                             ready=True,
                             payload=payload,
                             session=writer,
-                            resume=(lease, payload) if waiting and lease is not None else None,
+                            resume=(input_lease, payload)
+                            if waiting and input_lease is not None
+                            else None,
                         )
                         result: dict[str, JsonValue] = {
                             "event_id": appended.event.id,
@@ -402,7 +412,7 @@ class ClientWorks:
                         }
                         await self._record(
                             writer,
-                            principal,
+                            current_principal,
                             request_id,
                             operation,
                             identity,
@@ -410,9 +420,13 @@ class ClientWorks:
                             result,
                             resource=str(appended.event.id),
                         )
-                if failure is not None:
-                    raise failure
-                return {**result, "replay": False}
+                        return {**result, "replay": False}
+
+                outcome = await self.database.apply_snapshot_write(record_input)
+                if isinstance(outcome, ClientError):
+                    raise outcome
+                if outcome is not None:
+                    return outcome
             finally:
                 if lease is not None:
                     await self.repository.release(lease)

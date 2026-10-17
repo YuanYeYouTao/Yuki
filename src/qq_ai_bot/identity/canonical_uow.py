@@ -1,14 +1,16 @@
-"""v2 fence + receipt claim + canonical append in one BEGIN IMMEDIATE."""
+"""Canonical receipt, event and local observation in one WAL transaction."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from typing import cast
 from uuid import uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,9 +26,15 @@ from qq_ai_bot.conversation.hydrate import (
 from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.identity import AuthorKind
 from qq_ai_bot.domain.messages import InboundMessage
-from qq_ai_bot.identity.canonical_repository import trip
+from qq_ai_bot.domain.profiles import sanitize_profile_name
+from qq_ai_bot.identity.canonical_repository import find_identity_binding, trip
+from qq_ai_bot.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
 from qq_ai_bot.identity.errors import CanonicalIdentityError
 from qq_ai_bot.identity.ingress import IngressPreAdmit
+from qq_ai_bot.identity.person_state import (
+    apply_canonical_space_observation,
+    prepare_canonical_person_observation,
+)
 from qq_ai_bot.identity.receipt_compat import (
     load_claimed_keeper,
     normalize_live_json,
@@ -39,7 +47,6 @@ from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.repository_helpers import _event_record
 from qq_ai_bot.persistence.scoped_event_uow import NewGenerationResult, ScopedAppendResult
-from qq_ai_bot.persistence.unit_of_work import optional_session
 
 
 def _utcnow() -> datetime:
@@ -80,6 +87,8 @@ class CanonicalIngressUnitOfWork:
             raise CanonicalIdentityError("unclassified")
         if message.bot_user_id and message.bot_user_id != admitted.handle_external_account_id:
             raise CanonicalIdentityError("bot_handle_mismatch")
+        presence_id = admitted.presence_id
+        conversation_id = admitted.conversation_id
         scope = admitted.message.scope(bot_user_id=admitted.handle_external_account_id)
         segments = list(message.segments)
         segments.append(
@@ -98,93 +107,56 @@ class CanonicalIngressUnitOfWork:
         segments_json = json.dumps(segments, ensure_ascii=False, separators=(",", ":"))
         normalized_segments = normalize_live_json(segments_json)
         utterance_fingerprint = _fingerprint(message.text)
-        created = True
         if message.scope_type is ScopeType.GROUP:
             if admitted.space_binding_id is None:
                 raise CanonicalIdentityError("unclassified")
-            # Pre-admission authenticated this connection and checked its ingest
-            # route before accepting the message. The socket may close while the
-            # accepted event waits for a SQLite writer; the transaction below
-            # still fences a paused or transferred route.
+            # The accepted socket may close while this event waits for SQLite.
+            # Its original ingest route is still checked in the transaction.
             if admitted.connection_id is None or admitted.gateway_instance_id is None:
                 raise CanonicalIdentityError("unclassified")
         canonical_event_id = _new_id()
-        row = ChatEventModel(
-            bot_user_id=scope.bot_user_id,
-            platform_message_id=message.message_id,
-            scope_type=scope.scope_type.value,
-            group_id=scope.group_id,
-            private_peer_user_id=scope.private_peer_user_id,
-            sender_user_id=message.sender.user_id,
-            sender_nickname=message.sender.nickname[:128],
-            sender_group_card=message.sender.group_card[:128],
-            direction="inbound",
-            event_kind="message",
-            content=message.text,
-            visual_summary="",
-            segments_json=segments_json,
-            reply_to_message_id=message.reply_to_message_id,
-            reply_to_event_id=message.reply_to_event_id,
-            origin=origin,
-            occurred_at=message.received_at,
-            observed_at=now,
-            canonical_event_id=canonical_event_id,
-            canonical_conversation_id=admitted.conversation_id,
-            author_kind=admitted.author_kind,
-            author_person_id=admitted.author_person_id,
-            author_presence_id=admitted.author_presence_id,
-            ingress_presence_id=admitted.presence_id,
-            utterance_fingerprint=utterance_fingerprint,
-            suppression_status="keeper",
-            ingress_provider=admitted.provider,
-            ingress_gateway_instance_id=admitted.gateway_instance_id,
-        )
-        _validate_author_shape(row)
-        # A duplicate needs a consistent receipt/keeper/route view, not a writer.
-        async with optional_session(self._database, session, write=False) as reader:
-            if session is None:
-                await reader.execute(text("BEGIN"))
-            if message.scope_type is ScopeType.GROUP:
-                if admitted.space_binding_id is None:
-                    raise CanonicalIdentityError("unclassified")
-                fence = await self._router.ingest_status_in_session(
-                    reader,
-                    space_binding_id=admitted.space_binding_id,
-                    event_presence_id=admitted.presence_id,
-                    require_connected=False,
-                )
-                if fence != "ok":
-                    raise CanonicalIdentityError(fence)
-            existing = await _existing_claimed_event(
-                reader,
-                presence_id=admitted.presence_id,
-                event_type=message.event_type[:64],
-                platform_message_id=message.message_id[:128],
+
+        async def append(session: AsyncSession) -> ScopedAppendResult:
+            # A rolled-back SQLite write must not retain its allocated integer PK.
+            # The original canonical identity, payload and receipt key stay fixed.
+            row = ChatEventModel(
+                bot_user_id=scope.bot_user_id,
+                platform_message_id=message.message_id,
+                scope_type=scope.scope_type.value,
+                group_id=scope.group_id,
+                private_peer_user_id=scope.private_peer_user_id,
+                sender_user_id=message.sender.user_id,
+                sender_nickname=message.sender.nickname[:128],
+                sender_group_card=message.sender.group_card[:128],
+                direction="inbound",
+                event_kind="message",
+                content=message.text,
+                visual_summary="",
+                segments_json=segments_json,
+                reply_to_message_id=message.reply_to_message_id,
+                reply_to_event_id=message.reply_to_event_id,
+                origin=origin,
+                occurred_at=message.received_at,
+                observed_at=now,
+                canonical_event_id=canonical_event_id,
+                canonical_conversation_id=conversation_id,
+                author_kind=admitted.author_kind,
+                author_person_id=admitted.author_person_id,
+                author_presence_id=admitted.author_presence_id,
+                ingress_presence_id=presence_id,
+                utterance_fingerprint=utterance_fingerprint,
+                suppression_status="keeper",
+                ingress_provider=admitted.provider,
+                ingress_gateway_instance_id=admitted.gateway_instance_id,
             )
-            if existing is not None:
-                return await _reuse_claimed_inbound(
-                    reader,
-                    existing,
-                    message=message,
-                    admitted=admitted,
-                    scope=scope,
-                    segments=segments,
-                    normalized_segments=normalized_segments,
-                )
-        transaction = (
-            self._database.immediate_session()
-            if session is None
-            else optional_session(self._database, session, write=True)
-        )
-        async with transaction as session:
+            _validate_author_shape(row)
             trip("before_fence_recheck")
             if message.scope_type is ScopeType.GROUP:
-                if admitted.space_binding_id is None or admitted.presence_id is None:
-                    raise CanonicalIdentityError("unclassified")
+                assert admitted.space_binding_id is not None
                 fence = await self._router.ingest_status_in_session(
                     session,
                     space_binding_id=admitted.space_binding_id,
-                    event_presence_id=admitted.presence_id,
+                    event_presence_id=presence_id,
                     require_connected=False,
                 )
                 if fence != "ok":
@@ -192,7 +164,7 @@ class CanonicalIngressUnitOfWork:
             trip("after_fence_recheck")
             existing = await _existing_claimed_event(
                 session,
-                presence_id=admitted.presence_id,
+                presence_id=presence_id,
                 event_type=message.event_type[:64],
                 platform_message_id=message.message_id[:128],
             )
@@ -215,11 +187,22 @@ class CanonicalIngressUnitOfWork:
                     is not None
                 ):
                     raise CanonicalIdentityError("receipt_conflict")
+            await require_reply_source(
+                session,
+                conversation_id=conversation_id,
+                reply_to_event_id=message.reply_to_event_id,
+            )
+            conversation = await session.get(CanonicalConversationModel, conversation_id)
+            if conversation is None:
+                raise CanonicalIdentityError("unclassified")
+            # All owner, alias and membership preparation belongs to this read
+            # snapshot. Only the successful original receipt applies the update.
+            observation = await _prepare_observation(session, message, admitted, _utcnow())
             try:
                 async with session.begin_nested():
                     session.add(
                         CanonicalEventReceiptModel(
-                            ingress_presence_id=admitted.presence_id,
+                            ingress_presence_id=presence_id,
                             event_type=message.event_type[:64],
                             platform_message_id=message.message_id[:128],
                             canonical_event_id=canonical_event_id,
@@ -231,7 +214,7 @@ class CanonicalIngressUnitOfWork:
             except IntegrityError as exc:
                 raced = await _existing_claimed_event(
                     session,
-                    presence_id=admitted.presence_id,
+                    presence_id=presence_id,
                     event_type=message.event_type[:64],
                     platform_message_id=message.message_id[:128],
                 )
@@ -246,42 +229,40 @@ class CanonicalIngressUnitOfWork:
                     segments=segments,
                     normalized_segments=normalized_segments,
                 )
-            await require_reply_source(
-                session,
-                conversation_id=admitted.conversation_id,
-                reply_to_event_id=message.reply_to_event_id,
-            )
             trip("after_receipt_claim")
+            if observation is not None:
+                observation()
             session.add(row)
             await session.flush()
             event = _event_record(row)
             await touch_canonical_watermarks(
                 session,
-                admitted.conversation_id,
+                conversation_id,
                 event_id=row.id,
             )
             if new_generation:
                 await bump_canonical_generation(
                     session,
-                    admitted.conversation_id,
+                    conversation_id,
                     event_id=row.id,
                 )
-            conversation = await session.get(CanonicalConversationModel, admitted.conversation_id)
-            if conversation is None:
-                raise CanonicalIdentityError("unclassified")
             if not new_generation:
                 from qq_ai_bot.conversation.media_index import index_event_media
 
                 await index_event_media(
                     session,
                     event_id=row.id,
-                    conversation_id=admitted.conversation_id,
+                    conversation_id=conversation_id,
                     generation=int(conversation.generation),
                     segments=segments,
                 )
             trip("after_canonical_append")
             state = await hydrate_scope_state_from_canonical(session, scope, conversation)
-        return ScopedAppendResult(event=event, scope=state, created=created)
+            return ScopedAppendResult(event=event, scope=state, created=True)
+
+        if session is not None:
+            return await append(session)
+        return await self._database.apply_snapshot_write(append)
 
     async def append_new_generation(
         self,
@@ -297,6 +278,45 @@ class CanonicalIngressUnitOfWork:
                 and appended.scope.last_generation_change_event_id == appended.event.id
             ),
         )
+
+
+async def _prepare_observation(
+    session: AsyncSession,
+    message: InboundMessage,
+    admitted: IngressPreAdmit,
+    now: datetime,
+) -> Callable[[], None] | None:
+    if admitted.author_kind == AuthorKind.PERSON.value:
+        binding = await find_identity_binding(
+            session, message.sender.user_id, platform=message.platform
+        )
+        if binding is None or binding.person_id != admitted.author_person_id:
+            raise CanonicalIdentityError("canonical_owner_mismatch")
+        return await prepare_canonical_person_observation(
+            session,
+            binding=binding,
+            nickname=sanitize_profile_name(message.sender.nickname),
+            group_id=message.group_id,
+            group_card=sanitize_profile_name(message.sender.group_card),
+            group_name=sanitize_profile_name(message.group_name),
+            nickname_known=message.sender.nickname_known or bool(message.sender.nickname),
+            group_card_known=message.sender.group_card_known or bool(message.sender.group_card),
+            now=now,
+            space_id=admitted.space_id,
+        )
+    if admitted.space_binding_id is not None and admitted.space_id is not None:
+        space_binding = await session.get(SpaceBindingModel, admitted.space_binding_id)
+        space = await session.get(CanonicalSpaceModel, admitted.space_id)
+        if space_binding is None or space is None:
+            raise CanonicalIdentityError("unclassified")
+        return partial(
+            apply_canonical_space_observation,
+            space,
+            space_binding,
+            name=sanitize_profile_name(message.group_name),
+            now=now,
+        )
+    return None
 
 
 async def _load_receipt(

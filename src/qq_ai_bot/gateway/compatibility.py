@@ -22,14 +22,12 @@ class OneBotActionContract:
 CORE_ONEBOT_ACTIONS: Final[tuple[OneBotActionContract, ...]] = (
     OneBotActionContract("send_private_msg", "send", "send_private", ("user_id", "message")),
     OneBotActionContract("send_group_msg", "send", "send_group", ("group_id", "message")),
-    OneBotActionContract("get_group_info", "read", "profile_lookup", ("group_id",)),
     OneBotActionContract(
         "get_group_member_info",
         "read",
         "group_member_probe",
         ("group_id", "user_id"),
     ),
-    OneBotActionContract("get_stranger_info", "read", "profile_lookup", ("user_id",)),
     OneBotActionContract("get_image", "read", "media_fetch", ("file",)),
     OneBotActionContract(
         "get_group_msg_history",

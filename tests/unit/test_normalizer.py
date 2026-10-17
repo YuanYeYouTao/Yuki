@@ -64,6 +64,26 @@ def test_private_text_and_group_mention_normalize() -> None:
     assert group.sender.nickname == "tester" and group.sender.group_card == "card"
 
 
+def test_native_group_name_is_metadata_from_the_original_event() -> None:
+    event = group_event(Message("hello"))
+    payload = event.model_dump()
+    payload["group_name"] = "Native group title"
+
+    normalized = normalize_event(GroupMessageEvent.model_validate(payload))
+
+    assert normalized.group_name == "Native group title"
+    assert normalized.text == "hello"
+    assert normalize_event(event).group_name == ""
+    assert normalize_event(private_event(Message("hello"))).group_name == ""
+
+
+def test_non_text_native_group_name_does_not_become_a_display_name() -> None:
+    event = group_event(Message("hello"))
+    event.model_extra["group_name"] = {"unexpected": "value"}
+
+    assert normalize_event(event).group_name == ""
+
+
 def test_group_mention_uses_original_message_after_nonebot_strips_at() -> None:
     original = Message([MessageSegment.at(9999), MessageSegment.text(" question")])
     event = group_event(Message("question"))

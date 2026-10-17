@@ -368,9 +368,11 @@ def normalize_event(
     if isinstance(event, GroupMessageEvent):
         scope = ScopeType.GROUP
         group_id: str | None = str(event.group_id)
+        group_name = getattr(event, "group_name", "")
     elif isinstance(event, PrivateMessageEvent):
         scope = ScopeType.PRIVATE
         group_id = None
+        group_name = ""
     else:
         raise TypeError(f"unsupported OneBot event: {type(event).__name__}")
 
@@ -397,6 +399,7 @@ def normalize_event(
         bot_user_id=self_id,
         raw_text=event.raw_message,
         group_id=group_id,
+        group_name=group_name if isinstance(group_name, str) else "",
         mentions_bot=projection.mentions_yuki,
         is_self_message=sender_user_id == self_id,
         reply_text=(reply_projection.text or None) if reply_projection is not None else None,
