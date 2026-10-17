@@ -163,6 +163,7 @@ class InboundMessage:
     source_event_id: int | None = None
     source_execution_id: str | None = None
     yuki_account_ids: frozenset[str] = frozenset()
+    group_name: str = ""
 
     @property
     def source_key(self) -> str:

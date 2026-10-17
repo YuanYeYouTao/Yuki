@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from qq_ai_bot.domain.conversations import ScopeType
+
+_PROFILE_NAME_LIMIT = 128
+_CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
+_WHITESPACE = re.compile(r"\s+")
+
+
+def sanitize_profile_name(value: str) -> str:
+    """Flatten untrusted display metadata into a bounded single line."""
+
+    cleaned = _CONTROL_CHARACTERS.sub(" ", value)
+    return _WHITESPACE.sub(" ", cleaned).strip()[:_PROFILE_NAME_LIMIT]
 
 
 @dataclass(frozen=True, slots=True)

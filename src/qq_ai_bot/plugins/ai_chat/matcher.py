@@ -9,7 +9,6 @@ from nonebot.adapters.onebot.v11 import Bot, MessageEvent
 from nonebot.matcher import Matcher
 
 from qq_ai_bot.adapters.onebot.normalizer import normalize_event
-from qq_ai_bot.adapters.onebot.profiles import OneBotUserProfileResolver
 from qq_ai_bot.adapters.onebot.sender import OneBotSender
 from qq_ai_bot.container import get_container
 from qq_ai_bot.identity.errors import CanonicalIdentityError
@@ -28,12 +27,10 @@ async def handle_ai_message(bot: Bot, event: MessageEvent, matcher: Matcher) -> 
         event,
         ignored_bot_users=container.settings.ignored_bot_users,
     )
-    profile_resolver = OneBotUserProfileResolver(bot)
     try:
         result = await container.processor.handle(
             inbound,
             OneBotSender(bot, event),
-            profile_resolver,
         )
     except Exception as exc:
         logger.error(

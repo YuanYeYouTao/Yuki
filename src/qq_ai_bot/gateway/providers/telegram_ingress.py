@@ -28,6 +28,7 @@ from qq_ai_bot.identity.canonical_repository import (
     find_space_binding,
 )
 from qq_ai_bot.identity.routing import PresenceRouter
+from qq_ai_bot.identity.space_metadata import observe_space_name
 from qq_ai_bot.persistence.database import Database
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -112,6 +113,7 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
         bot_user_id=client.self_id,
         scope_type=ScopeType.PRIVATE if chat["type"] == "private" else ScopeType.GROUP,
         group_id=None if chat["type"] == "private" else chat_id,
+        group_name=chat.get("title", "") if chat["type"] != "private" else "",
         thread_id=str(raw["message_thread_id"])
         if raw.get("message_thread_id") is not None
         else None,
@@ -270,6 +272,19 @@ class TelegramGateway:
                     binding.external_space_id = current
                     binding.revision += 1
                     binding.updated_at = datetime.now(UTC)
+            return
+        if "new_chat_title" in raw and "edited_message" not in update:
+            async with self.database.sessions() as session:
+                binding = await find_space_binding(
+                    session, str(raw["chat"]["id"]), platform="telegram"
+                )
+            if binding is not None:
+                await observe_space_name(
+                    self.database,
+                    presence_id=self.presence_id,
+                    space_binding_id=binding.id,
+                    name=raw["new_chat_title"],
+                )
             return
         message = normalize_message(raw, self.client)
         if message is None:

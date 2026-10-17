@@ -8,7 +8,7 @@ as database ownership keys in this module.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -133,6 +133,36 @@ async def observe_canonical_person(
     now: datetime,
     space_id: str | None = None,
 ) -> None:
+    apply = await prepare_canonical_person_observation(
+        session,
+        binding=binding,
+        nickname=nickname,
+        group_id=group_id,
+        group_card=group_card,
+        group_name=group_name,
+        nickname_known=nickname_known,
+        group_card_known=group_card_known,
+        now=now,
+        space_id=space_id,
+    )
+    apply()
+
+
+async def prepare_canonical_person_observation(
+    session: AsyncSession,
+    *,
+    binding: IdentityBindingModel,
+    nickname: str,
+    group_id: str | None,
+    group_card: str,
+    group_name: str,
+    nickname_known: bool,
+    group_card_known: bool,
+    now: datetime,
+    space_id: str | None = None,
+) -> Callable[[], None]:
+    """Read the original owners and names before the event claims its receipt."""
+
     if binding.status != "active":
         raise CanonicalIdentityError("canonical_owner_disabled")
     person = await session.get(CanonicalPersonModel, binding.person_id)
@@ -174,63 +204,77 @@ async def observe_canonical_person(
                 session, person_id=binding.person_id, space_id=space.id, alias=group_card
             )
 
-    # All owner, alias and membership reads precede staged writes.
-    # The repository's short immediate transaction serializes first observation.
-    if not current.display_name and nickname:
-        current.display_name = nickname[:128]
-        current.updated_at = now
-        current.revision += 1
-    binding.last_seen_at = now
-    if nickname_known and nickname and binding.display_name != nickname[:128]:
-        binding.display_name = nickname[:128]
-        binding.updated_at = now
-        binding.revision += 1
-    if nickname:
-        _stage_alias(
-            session,
-            nickname_alias,
-            person_id=binding.person_id,
-            space_id=None,
-            alias=nickname,
-            alias_type="nickname",
-            now=now,
-        )
-    if space is None:
-        return
-    if space_binding is not None:
-        space_binding.last_seen_at = now
-    if group_name:
-        if space.name != group_name[:128]:
-            space.name = group_name[:128]
+    def apply() -> None:
+        if not current.display_name and nickname:
+            current.display_name = nickname[:128]
+            current.updated_at = now
+            current.revision += 1
+        binding.last_seen_at = now
+        if nickname_known and nickname and binding.display_name != nickname[:128]:
+            binding.display_name = nickname[:128]
+            binding.updated_at = now
+            binding.revision += 1
+        if nickname:
+            _stage_alias(
+                session,
+                nickname_alias,
+                person_id=binding.person_id,
+                space_id=None,
+                alias=nickname,
+                alias_type="nickname",
+                now=now,
+            )
+        if space is None:
+            return
+        apply_canonical_space_observation(space, space_binding, name=group_name, now=now)
+        if membership is None:
+            session.add(
+                MembershipModel(
+                    canonical_person_id=binding.person_id,
+                    canonical_space_id=space.id,
+                    group_card=group_card[:128] if group_card_known else "",
+                    first_seen_at=now,
+                    last_seen_at=now,
+                )
+            )
+        else:
+            if group_card_known:
+                membership.group_card = group_card[:128]
+            membership.last_seen_at = now
+        if group_card:
+            _stage_alias(
+                session,
+                card_alias,
+                person_id=binding.person_id,
+                space_id=space.id,
+                alias=group_card,
+                alias_type="group_card",
+                now=now,
+            )
+
+    return apply
+
+
+def apply_canonical_space_observation(
+    space: CanonicalSpaceModel,
+    binding: SpaceBindingModel | None,
+    *,
+    name: str,
+    now: datetime,
+) -> None:
+    """Apply only local event metadata, leaving the Space's policy unchanged."""
+
+    if binding is not None:
+        binding.last_seen_at = now
+    if name:
+        if space.name != name[:128]:
+            space.name = name[:128]
             space.updated_at = now
             space.revision += 1
-        if space_binding is not None and space_binding.display_name != group_name[:128]:
-            space_binding.display_name = group_name[:128]
-            space_binding.updated_at = now
-            space_binding.revision += 1
-    if membership is None:
-        membership = MembershipModel(
-            canonical_person_id=binding.person_id,
-            canonical_space_id=space.id,
-            group_card=group_card[:128] if group_card_known else "",
-            first_seen_at=now,
-            last_seen_at=now,
-        )
-        session.add(membership)
-    else:
-        if group_card_known:
-            membership.group_card = group_card[:128]
-        membership.last_seen_at = now
-    if group_card:
-        _stage_alias(
-            session,
-            card_alias,
-            person_id=binding.person_id,
-            space_id=space.id,
-            alias=group_card,
-            alias_type="group_card",
-            now=now,
-        )
+        if binding is not None and binding.display_name != name[:128]:
+            binding.display_name = name[:128]
+            binding.updated_at = now
+            binding.revision += 1
 
 
 async def load_canonical_profile(
@@ -555,27 +599,6 @@ async def load_canonical_group_members_by_exact_name(
         if normalized in {projection.nickname, projection.group_card, *projection.aliases}:
             result.append(projection.user_id)
     return tuple(sorted(result))
-
-
-async def observe_canonical_space(
-    session: AsyncSession,
-    group_id: str,
-    *,
-    name: str,
-    now: datetime,
-) -> GroupSetting:
-    state = await _live_space_binding(session, group_id, required=True)
-    assert state is not None
-    binding, space = state
-    binding.last_seen_at = now
-    if name and (binding.display_name != name[:128] or space.name != name[:128]):
-        binding.display_name = name[:128]
-        binding.updated_at = now
-        binding.revision += 1
-        space.name = name[:128]
-        space.updated_at = now
-        space.revision += 1
-    return _group_setting(group_id, space)
 
 
 async def load_canonical_group(
