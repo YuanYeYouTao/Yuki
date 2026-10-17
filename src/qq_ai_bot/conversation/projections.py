@@ -165,6 +165,7 @@ class PromptProjectionRepository:
         selected_summary_renderer: int | None = None,
         previous_snapshot: ProjectionSnapshot | None = None,
         previous_item_count: int | None = None,
+        write: bool = True,
     ) -> ProjectionPublication:
         """Append exact items, or explicitly replace an epoch under a compare-and-swap.
 
@@ -285,7 +286,8 @@ class PromptProjectionRepository:
                     )
 
         async def publish(session: AsyncSession) -> ProjectionSnapshot:
-            # The caller owns a short writer; preparation above does all payload IO.
+            # The same writer checks apply when an earlier compact request has
+            # already published these bytes and only business admission remains.
             source = await session.get(CanonicalConversationModel, conversation_id)
             if source is None or (source.generation, source.starts_after_event_id) != (
                 generation,
@@ -351,6 +353,11 @@ class PromptProjectionRepository:
                         raise ProjectionConflict("projection changed after prefix preparation")
                     if not prepared_prefix[1]:
                         raise ProjectionConflict("committed projection prefix cannot be rewritten")
+            if not write:
+                # This caller already holds the exact published bytes; the CAS
+                # above checks their current owner without another publication.
+                assert previous_snapshot is not None
+                return previous_snapshot
             used, count = (
                 await session.execute(
                     select(
