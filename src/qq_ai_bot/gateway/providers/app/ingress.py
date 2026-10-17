@@ -122,7 +122,7 @@ class AppGateway:
             scope_type=ScopeType.PRIVATE,
             sender=SenderIdentity(
                 binding.external_account_id,
-                nickname=binding.display_name or "本人",
+                nickname=binding.display_name,
                 nickname_known=True,
             ),
             text=text,
