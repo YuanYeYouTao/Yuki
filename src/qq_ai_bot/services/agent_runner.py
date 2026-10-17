@@ -111,6 +111,7 @@ class AgentRuntime:
     prompt_diagnostics: PromptRequestDiagnostics | None = None
     before_model_request: Callable[[], Awaitable[None]] | None = None
     canonical_conversation_id: str | None = None
+    presence_id: str | None = None
     conversation_generation: int | None = None
     dynamic_context_prepared: bool = False
     work_control: WorkControl | None = None

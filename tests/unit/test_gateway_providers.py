@@ -39,6 +39,9 @@ class _Provider:
     def media(self, handle: object) -> None:
         return None
 
+    def activity(self, handle: object, target: object) -> None:
+        return None
+
     def describe_connection(self, handle: object) -> GatewayConnectionProfile:
         return GatewayConnectionProfile(
             provider_id=self.provider_id,

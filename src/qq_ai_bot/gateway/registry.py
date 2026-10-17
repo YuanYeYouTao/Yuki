@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from uuid import uuid4
 
 from qq_ai_bot.domain.messages import InboundMessage
+from qq_ai_bot.gateway.activity import PlatformActivity
 from qq_ai_bot.gateway.media import PlatformMediaGateway
 from qq_ai_bot.gateway.models import (
     ConnectionHealth,
@@ -14,7 +15,7 @@ from qq_ai_bot.gateway.models import (
     PresenceConnectionSnapshot,
 )
 from qq_ai_bot.gateway.provider import GatewayProviderCatalog
-from qq_ai_bot.gateway.social import PlatformSocialOperations
+from qq_ai_bot.gateway.social import PlatformSocialOperations, TransportTarget
 
 
 class RegistryClosed(RuntimeError):
@@ -91,6 +92,11 @@ class GatewayConnectionRegistry:
 
     def media(self, resolution: ConnectionResolution) -> PlatformMediaGateway | None:
         return self._providers.media(resolution.snapshot.provider, resolution.bot)
+
+    def activity(
+        self, resolution: ConnectionResolution, target: TransportTarget
+    ) -> PlatformActivity | None:
+        return self._providers.activity(resolution.snapshot.provider, resolution.bot, target)
 
     def connect(
         self,

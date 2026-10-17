@@ -69,6 +69,7 @@ from qq_ai_bot.services.concurrency import ConcurrencyManager
 from qq_ai_bot.services.effect_gate import ConversationEffectGate
 from qq_ai_bot.services.native_media import NativeMediaPreparer
 from qq_ai_bot.services.plugin_events import publish_notification
+from qq_ai_bot.services.processing_status import ProcessingStatusService
 from qq_ai_bot.services.processor import MessageProcessor
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
 from qq_ai_bot.services.user_profiles import UserProfileService
@@ -226,6 +227,9 @@ class ApplicationContainer:
             ),
         )
         self.conversation_effect_gate = ConversationEffectGate()
+        self.processing_status = ProcessingStatusService(
+            self.presence_router, self.gateway_registry
+        )
         self.conversation_module = ConversationModule(
             settings=settings,
             persistence=persistence,
@@ -239,6 +243,7 @@ class ApplicationContainer:
             memory_embeddings=self.memory_embeddings,
             tool_artifacts=self.tool_artifacts,
             tool_invocations=self.tool_invocations,
+            processing_status=self.processing_status,
         )
         conversation = self.conversation_module.build()
         self.conversation = conversation
@@ -889,6 +894,7 @@ class ApplicationContainer:
         self.lifecycle.register(
             "app_gateway", start=self.app_gateway.start, close=self.app_gateway.close
         )
+        self.lifecycle.register("processing_status", close=self.processing_status.close)
         self.lifecycle.register(
             "yuki_runtime",
             start=self.runtime.start,

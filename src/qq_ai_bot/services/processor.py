@@ -692,6 +692,17 @@ class MessageProcessor:
         observe-only turns stay silent.
         """
 
+        if not (
+            message.text.strip()
+            or message.attachments
+            or message.mentions_bot
+            or (message.reply_text or "").strip()
+            or message.reply_attachments
+            or message.reply_to_message_id
+            or message.reply_to_event_id
+        ):
+            return ProcessResult(True, reason="empty")
+
         started = time.perf_counter()
         correlation = RuntimeTurnCorrelation(
             turn_id=new_runtime_turn_id(),
@@ -1660,17 +1671,8 @@ class MessageProcessor:
                 )
                 await self._chat.discard_work_input(work_input_id)
                 return ProcessResult(True, int(sent), f"vision_{visual.error_code or 'failed'}")
-            else:
-                content = _attachment_only_context(message)
-                if not content:
-                    sent = await self._send_text(
-                        message,
-                        sender,
-                        "请输入要发送给 AI 的内容。",
-                        turn_snapshot=turn_snapshot,
-                    )
-                    await self._chat.discard_work_input(work_input_id)
-                    return ProcessResult(True, int(sent), "empty")
+            await self._chat.discard_work_input(work_input_id)
+            return ProcessResult(True, reason="empty")
         if not _same_input_source(record, await self._ledger.get_event(record.id)):
             await self._chat.discard_work_input(work_input_id)
             return ProcessResult(False, reason="ordinary_source_changed")

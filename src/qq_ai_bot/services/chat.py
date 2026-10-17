@@ -108,6 +108,7 @@ from qq_ai_bot.services.plugin_events import (
     LifecycleEventPublisher,
     publish_notification,
 )
+from qq_ai_bot.services.processing_status import ProcessingStatusService
 from qq_ai_bot.services.prompt_composer import PromptComposer
 from qq_ai_bot.services.renderer import sanitize_input, sanitize_model_output
 from qq_ai_bot.services.turn_coordinator import (
@@ -245,6 +246,7 @@ class ChatService:
         tool_invocations: ToolInvocationRecorder | None = None,
         conversation_scopes: ConversationScopeRepository | None = None,
         effect_gate: ConversationEffectGate | None = None,
+        processing_status: ProcessingStatusService | None = None,
     ) -> None:
         self._memory_partition_lookup = memory_partition_lookup
         self._settings = settings
@@ -295,6 +297,7 @@ class ChatService:
                 runner,
                 self._ledger._database,
                 executions=active_bindings.executions,
+                processing_status=processing_status,
             ),
             runner,
             active_bindings,
