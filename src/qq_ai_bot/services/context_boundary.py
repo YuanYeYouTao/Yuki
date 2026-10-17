@@ -44,9 +44,7 @@ class ContextBoundary:
     @property
     def current_inputs(self) -> tuple[ChatMessage, ...]:
         return tuple(
-            candidate.message
-            for candidate in self.ordinary_inputs
-            if candidate.message is not None
+            candidate.message for candidate in self.ordinary_inputs if candidate.message is not None
         )
 
     @property

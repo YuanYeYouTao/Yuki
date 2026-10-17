@@ -806,9 +806,9 @@ async def test_derived_participation_database_error_does_not_block_selected_requ
         await provider.wait(2)
         a = await _event(database, A)
         admitted = await processor.ordinary_admissions.get(c.id)
-        assert admitted.activation_id == (
-            await processor.ordinary_admissions.get(a.id)
-        ).activation_id
+        assert (
+            admitted.activation_id == (await processor.ordinary_admissions.get(a.id)).activation_id
+        )
         assert C in _plain(provider.entered[1])
         provider.release[2].set()
         await asyncio.wait_for(_wait_for_worker(worker, key), 10)
