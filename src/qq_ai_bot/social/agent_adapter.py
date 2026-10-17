@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from qq_ai_bot.capabilities.invocation import current_invocation
 from qq_ai_bot.identity.routing import RouteSendError
+from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.origin import TurnOrigin
 from qq_ai_bot.social.models import SocialError
 from qq_ai_bot.social.service import SocialContext, SocialService
@@ -51,7 +52,6 @@ async def invoke_social(
             raise SocialError("invalid_message_arguments") from exc
     if name == "send_message" and runtime.origin is TurnOrigin.PLUGIN_BACKGROUND:
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-        from qq_ai_bot.persistence.models import ChatEventModel
 
         invocation = current_invocation.get()
         event_id = runtime.effective_trigger_event_id
