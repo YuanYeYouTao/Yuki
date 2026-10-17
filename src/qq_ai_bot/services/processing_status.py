@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 class _ActiveStatus:
     users: int = 0
     task: asyncio.Task[None] | None = None
+    previous: asyncio.Task[None] | None = None
 
 
 class ProcessingStatusService:
@@ -47,9 +48,9 @@ class ProcessingStatusService:
         active = self._active.get(key)
         if active is None or active.users == 0:
             previous = active.task if active is not None else None
-            active = _ActiveStatus()
+            active = _ActiveStatus(previous=previous)
             active.task = asyncio.create_task(
-                self._run(conversation_id, presence_id, source_event_id, group, previous),
+                self._run(conversation_id, presence_id, source_event_id, group, active),
                 name="processing-status",
                 context=Context(),
             )
@@ -64,7 +65,8 @@ class ProcessingStatusService:
             if active.users == 0:
                 task = active.task
                 assert task is not None
-                task.cancel()
+                if active.previous is None or active.previous.done():
+                    task.cancel()
                 if task.done():
                     self._finished(key, active, task)
 
@@ -94,14 +96,16 @@ class ProcessingStatusService:
         presence_id: str | None,
         source_event_id: int | None,
         group: bool,
-        previous: asyncio.Task[None] | None,
+        active: _ActiveStatus,
     ) -> None:
         activity: PlatformActivity | None = None
         phase = "resolve"
         try:
-            if previous is not None:
+            if active.previous is not None:
                 # A final QQ stop must finish before the next session starts typing.
-                await asyncio.shield(asyncio.gather(previous, return_exceptions=True))
+                await asyncio.shield(asyncio.gather(active.previous, return_exceptions=True))
+            if active.users == 0:
+                return
             async with asyncio.timeout(4.0):
                 route = await self._router.resolve_send_for_conversation(
                     conversation_id, presence_id=presence_id, source_event_id=source_event_id
@@ -121,9 +125,7 @@ class ProcessingStatusService:
                 phase = "refresh"
                 await asyncio.sleep(activity.refresh_interval_seconds)
         except asyncio.CancelledError:
-            if previous is not None:
-                # A short middle turn must not drop an older stop still in flight.
-                await asyncio.shield(asyncio.gather(previous, return_exceptions=True))
+            pass
         except Exception as exc:
             logger.warning(
                 "processing_status_failed phase=%s exception_category=%s", phase, type(exc).__name__

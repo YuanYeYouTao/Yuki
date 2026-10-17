@@ -310,7 +310,10 @@ async def test_slow_stop_never_delays_main_completion_or_the_next_model_request(
         await service.close()
 
 
-async def test_cancelled_middle_session_keeps_the_original_stop_before_a_third_start():
+@pytest.mark.parametrize("middle_started", [False, True])
+async def test_cancelled_middle_session_keeps_the_original_stop_before_a_third_start(
+    middle_started,
+):
     events = []
     release = asyncio.Event()
 
@@ -337,7 +340,8 @@ async def test_cancelled_middle_session_keeps_the_original_stop_before_a_third_s
     await first.__aexit__(None, None, None)
     await asyncio.wait_for(original.stopped.wait(), 1)
     await middle.__aenter__()
-    await asyncio.sleep(0)
+    if middle_started:
+        await asyncio.sleep(0)
     await middle.__aexit__(None, None, None)
     await asyncio.sleep(0)
     await asyncio.sleep(0)
