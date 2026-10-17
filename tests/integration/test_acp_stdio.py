@@ -14,7 +14,12 @@ import uvicorn
 from acp import Client, spawn_agent_process
 from acp.schema import ClientCapabilities, FileSystemCapabilities, ResourceContentBlock
 from fastapi import FastAPI, Request, Response
+from tests.integration.test_acp_runtime_integration import acp_runtime as acp_runtime
+from tests.integration.test_acp_runtime_integration import settled
+from tests.integration.test_client_continuation import live
 from tests.unit.test_acp_adapter import Backend, Peer, text
+
+from yuki.client_sdk import Outbox
 
 
 @asynccontextmanager
@@ -60,7 +65,7 @@ async def backend_http(backend):
         sock.close()
 
 
-def process(peer, url, state):
+def process(peer, url, state, *, token="test-device-token"):
     return spawn_agent_process(
         cast(Client, peer),
         sys.executable,
@@ -73,7 +78,7 @@ def process(peer, url, state):
         str(state),
         env={
             **os.environ,
-            "YUKI_CLIENT_TOKEN": "test-device-token",
+            "YUKI_CLIENT_TOKEN": token,
             "NO_PROXY": "localhost,127.0.0.1",
             "PYTHONPATH": os.pathsep.join(sys.path),
         },
@@ -203,3 +208,82 @@ async def test_official_stdio_attachment_only_live_and_load_retain_downloadable_
             peer.updates.clear()
             await connection.load_session(cwd=str(tmp_path), session_id=session, mcp_servers=[])
             assert peer.updates[-1][1].content == resource
+
+
+async def test_official_stdio_process_restart_recovers_original_uuid_after_lost_ack(
+    acp_runtime, tmp_path
+):
+    env = acp_runtime
+    blocked_ack, release_ack = asyncio.Event(), asyncio.Event()
+    posts = 0
+
+    async def service(scope, receive, send):
+        nonlocal posts
+        if (
+            scope["type"] == "http"
+            and scope["method"] == "POST"
+            and scope["path"].endswith("/messages")
+        ):
+            posts += 1
+
+            async def delayed_ack(message):
+                if message["type"] == "http.response.start":
+                    blocked_ack.set()
+                    await release_ack.wait()
+                await send(message)
+
+            await env.http_app(scope, receive, delayed_ack)
+        else:
+            await env.http_app(scope, receive, send)
+
+    state, identity = tmp_path / "real-stdio-state", str(uuid4())
+    body = "Keep the original paid request across the ACP process crash"
+    async with live(service) as url:
+        try:
+            async with process(Peer(), url, state, token=env.device["token"]) as (first, child):
+                await first.initialize(protocol_version=1)
+                session = await first.new_session(cwd=str(tmp_path), mcp_servers=[])
+                pending = asyncio.create_task(
+                    first.prompt(
+                        session_id=session.session_id,
+                        prompt=[text(body)],
+                        **{"yuki.requestId": identity},
+                    )
+                )
+                await asyncio.wait_for(blocked_ack.wait(), 10)
+                original = await settled(env, {"session_id": session.session_id}, identity)
+                assert original["result_event_ids"]
+                outbox = Outbox(
+                    state / "conversations" / f"{session.session_id.replace('-', '')}.sqlite3"
+                )
+                assert outbox.get(identity)["state"] == "submitted"
+                model_calls = len(env.provider.requests)
+                assert model_calls == 2
+                child.kill()
+                await asyncio.wait_for(child.wait(), 5)
+                await asyncio.wait_for(asyncio.gather(pending, return_exceptions=True), 5)
+                release_ack.set()
+            peer = Peer()
+            async with process(peer, url, state, token=env.device["token"]) as (restored, _):
+                await restored.initialize(protocol_version=1)
+                await restored.load_session(
+                    cwd=str(tmp_path), session_id=session.session_id, mcp_servers=[]
+                )
+                assert [update.content.text for _, update in peer.updates] == [
+                    body,
+                    "Confirmed ACP reply",
+                ]
+                response = await restored.prompt(
+                    session_id=session.session_id,
+                    prompt=[text(body)],
+                    **{"yuki.requestId": identity},
+                )
+                assert response.stop_reason == "end_turn"
+                assert posts == 1 and len(env.provider.requests) == model_calls
+                assert outbox.get(identity)["result"]["event_id"] == original["event_id"]
+                assert (
+                    outbox.get(identity)["result"]["result_event_ids"]
+                    == original["result_event_ids"]
+                )
+        finally:
+            release_ack.set()

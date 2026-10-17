@@ -22,7 +22,7 @@
 
 </div>
 
-Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She currently runs in QQ private chats and groups, remembers people and shared experiences, uses tools and a persistent workspace to carry work across messages. Her identity and memory live in Yuki's own database and can survive a change of model, QQ account, or gateway.
+Yuki is an open-source, self-hosted social AI agent exploring what a persistent digital life can be in real conversations. She joins conversations through QQ, Telegram and personal clients, remembers people and shared experiences, uses tools and a persistent workspace to carry work across messages. Her identity and memory live in Yuki's own database and can survive a change of model, platform account, or gateway.
 
 **The current release is 3.9.0.** Chat, SELF initiative, schedules, plugins, and task resumption share one main agent. A journal-style management WebUI shows conversations, execution traces, model usage, and workspace files. The current Main model condenses long conversations, while tasks continue from their original checkpoints and receipts. Completion and waiting decisions settle after the original tool batch or Code program finishes; parent and child tasks can continue asking questions and delivering results. The default image uses direct mode. Code Mode and the persistent workspace are optional deployments; the management WebUI is disabled by default.
 
@@ -133,10 +133,12 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 After configuring a fresh deployment, run from its deployment directory:
 
+These commands target the original stable 3.9.0 image and use its actual legacy CLI name. Current source builds use `yuki`.
+
 ```bash
 docker compose config --quiet
 docker compose pull
-docker compose run --rm --no-deps --entrypoint yuki bot init-db
+docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
 docker compose up -d
 ```
 
@@ -155,7 +157,7 @@ Before upgrading, make a consistent backup of the database, configuration, plugi
 ```bash
 docker compose ps
 docker compose logs --tail 200 bot
-docker compose exec bot yuki gateway doctor --provider snowluma
+docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 ```
 
 Keep the same Compose arguments used for deployment. Only one active connection can use a given QQ account; a duplicate connection does not displace the existing one. The installer does not replace an existing Compose file or `.env`; see [SnowLuma deployment](docs/deployment/snowluma.md) and the [upgrade instructions](docs/upgrade-3.9.0.md#旧-napcat-部署配置) for retiring old configuration.

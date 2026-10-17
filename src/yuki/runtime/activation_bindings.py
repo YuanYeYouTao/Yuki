@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from yuki.runtime.activation_tasks import ActivationTasks
 
@@ -24,7 +24,7 @@ class ActiveWorkBindings:
     def __init__(self, executions: ActivationTasks | None = None) -> None:
         self.executions = executions if executions is not None else ActivationTasks()
         self._controls: dict[str, WorkControl] = {}
-        self._completions: dict[asyncio.Future[None], WorkControl] = {}
+        self._completions: dict[asyncio.Future[None], tuple[WorkControl, asyncio.Task[Any]]] = {}
 
     def get(self, scope_key: str) -> WorkControl | None:
         return self._controls.get(scope_key)
@@ -33,15 +33,25 @@ class ActiveWorkBindings:
         """Capture only the original Work's live activation exits."""
         return tuple(
             completed
-            for completed, control in self._completions.items()
+            for completed, (control, _owner) in self._completions.items()
             if control.current is not None and control.current["id"] == work_id
         )
+
+    def owners(self, work_ids: Collection[str]) -> set[asyncio.Task[Any]]:
+        """Keep the exact old activation owner when a scope receives a newer binding."""
+        return {
+            owner
+            for control, owner in self._completions.values()
+            if control.current is not None and control.current["id"] in work_ids
+        }
 
     @contextmanager
     def bind(self, scope_key: str, control: WorkControl) -> Iterator[None]:
         with self.executions.track():
+            owner = asyncio.current_task()
+            assert owner is not None
             completed: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-            self._completions[completed] = control
+            self._completions[completed] = (control, owner)
             self._controls[scope_key] = control
             try:
                 yield

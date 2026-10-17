@@ -635,7 +635,10 @@ class ApplicationContainer:
         )
         client_gateways = {"app": self.app_gateway, "acp": self.acp_gateway}
         client_prompts = ClientPrompts(
-            self.client_api.identity, client_gateways, self.runtime.bindings
+            self.client_api.identity,
+            client_gateways,
+            self.runtime.bindings,
+            concurrency=self.concurrency,
         )
         self.telegram_gateway = None
         if settings.telegram_bot_token.get_secret_value():

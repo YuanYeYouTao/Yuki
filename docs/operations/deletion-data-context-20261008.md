@@ -73,7 +73,7 @@
 
 ## 生产备份副本演练（通过）
 
-- 只读原备份：`/opt/yuki-qqbot/backups/deletion-rehearsal-20261007T192151Z/yuki.db`，1,239,056,384 bytes，SHA256 `866e7d6eb2a8c6e2d715aefb994d3465fb5ee5feaab9077339d863a95e748bff`。独立 `upgrade.sqlite3` 以 exclusive create 创建，后续只复用哈希仍相同的既有副本，不覆盖原件。
+- 只读原备份：`/opt/yuki-qqbot/backups/deletion-rehearsal-20261007T192151Z/qq_ai_bot.db`，1,239,056,384 bytes，SHA256 `866e7d6eb2a8c6e2d715aefb994d3465fb5ee5feaab9077339d863a95e748bff`。独立 `upgrade.sqlite3` 以 exclusive create 创建，后续只复用哈希仍相同的既有副本，不覆盖原件。
 - 隔离镜像 `yuki:deletion-code`，network none、cap-drop ALL、no-new-privileges，Python entrypoint，仅只读源码与备份目录挂载，没有启动 Bot/模型/外部工具。
 - 原 head=0096、quick_check=ok、FK violation=0；135 个保留非 SQLite 内部表（含 FTS shadow 表）按原列、主键或全列稳定排序流式 SHA256/count。alembic_version 单独断言版本迁移；Speech 配置键定向删除单独计数。
 - 原已无 MCP 两表；真实 Speech 退役表行数：generations=108、profiles=1、references=6、person preferences=0；Speech 配置键=0。未伪造空表补齐。

@@ -95,6 +95,7 @@ class ConversationTurnCoordinator:
 
         to_cancel: set[asyncio.Task[object]] = set()
         to_join: set[asyncio.Task[object]] = set()
+        current = asyncio.current_task()
         async with self._guard:
             state = self._states.setdefault(conversation_key, _TurnState())
             if preserve_active:
@@ -107,6 +108,7 @@ class ConversationTurnCoordinator:
                     if (
                         registered.token.origin == TurnOrigin.USER_MESSAGE
                         and not registered.effect_started
+                        and task is not current
                         and not task.done()
                     ):
                         to_join.add(task)
@@ -120,7 +122,11 @@ class ConversationTurnCoordinator:
             ):
                 for stage in ("admission", "generation"):
                     prior_task = state.tasks.get(stage)
-                    if prior_task is not None and not prior_task.done():
+                    if (
+                        prior_task is not None
+                        and prior_task is not current
+                        and not prior_task.done()
+                    ):
                         prior_registration = state.registrations.get(prior_task)
                         if prior_registration is None or not prior_registration.effect_started:
                             if (
@@ -135,12 +141,8 @@ class ConversationTurnCoordinator:
             state.mutation_started = False
             state.protected_version = state.version if protect_from_observations else None
             token = TurnToken(conversation_key, state.version, origin)
-        current = asyncio.current_task()
         for task in to_cancel:
-            if task is not current:
-                task.cancel()
-        if current is not None:
-            to_join.discard(current)
+            task.cancel()
         if to_join:
             # Join the captured original owners, never whoever next owns this key.
             # Repeated input/caller cancellation must not interrupt their cleanup.
@@ -197,9 +199,8 @@ class ConversationTurnCoordinator:
                 raise TurnSupersededError("turn was superseded before stage registration")
             registered = state.registrations.get(typed_task)
             if registered is None:
-                state.registrations[typed_task] = _RegisteredTurn(
-                    token, effect_started=state.mutation_started
-                )
+                registered = _RegisteredTurn(token, effect_started=state.mutation_started)
+                state.registrations[typed_task] = registered
             elif registered.token != token:
                 raise TurnSupersededError("task already belongs to another turn")
             else:
@@ -208,6 +209,8 @@ class ConversationTurnCoordinator:
         try:
             yield
         except asyncio.CancelledError as exc:
+            if not registered.cancellation_requested:
+                raise
             if stage == "admission":
                 raise TurnInterruptedError("turn interrupted by a newer message") from exc
             raise TurnSupersededError("generation superseded by a newer message") from exc
@@ -324,36 +327,43 @@ class ConversationTurnCoordinator:
     async def cancel_interruptible(self, conversation_key: str) -> bool:
         """Explicitly cancel registered admission/generation work for `/ai stop`."""
 
+        current = asyncio.current_task()
         async with self._guard:
             state = self._states.get(conversation_key)
             if state is None:
                 return False
-            tasks = tuple(task for task in state.tasks.values() if not task.done())
+            tasks = tuple(
+                task for task in state.tasks.values() if task is not current and not task.done()
+            )
+            for task in tasks:
+                state.registrations[task].cancellation_requested = True
             state.version += 1
-        current = asyncio.current_task()
         cancelled = False
         for task in tasks:
-            if task is not current:
-                task.cancel()
-                cancelled = True
+            task.cancel()
+            cancelled = True
         return cancelled
 
     async def cancel_running_before_boundary(self, conversation_key: str) -> bool:
         """Cancel prior registered stages without advancing the already-admitted command token."""
 
+        current = asyncio.current_task()
         async with self._guard:
             state = self._states.get(conversation_key)
             tasks = (
-                tuple(task for task in state.tasks.values() if not task.done())
+                tuple(
+                    task for task in state.tasks.values() if task is not current and not task.done()
+                )
                 if state is not None
                 else ()
             )
-        current = asyncio.current_task()
+            if state is not None:
+                for task in tasks:
+                    state.registrations[task].cancellation_requested = True
         cancelled = False
         for task in tasks:
-            if task is not current:
-                task.cancel()
-                cancelled = True
+            task.cancel()
+            cancelled = True
         return cancelled
 
     def is_current(self, token: TurnToken) -> bool:

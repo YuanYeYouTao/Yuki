@@ -13,8 +13,8 @@
 本次不修改 Self Reflection、Dream、Extraction 的任务策略，不删除历史、不重建 Rollup 数据模型。
 ## 验证与部署
 
-- [PR #91](https://github.com/YuanYeYouTao/Yuki/pull/91) 已合并到 main：`ccf224279715eb90157a529a5dfedb21e3e4dbbe`。
-- [最终 CI](https://github.com/YuanYeYouTao/Yuki/actions/runs/34807927853) 全通过：921 项测试、19 项迁移矩阵，以及 Docker、类型、格式、插件合同、语音和记忆质量检查。
+- [PR #91](https://github.com/YuanYeYouTao/Yuki-QQbot/pull/91) 已合并到 main：`ccf224279715eb90157a529a5dfedb21e3e4dbbe`。
+- [最终 CI](https://github.com/YuanYeYouTao/Yuki-QQbot/actions/runs/34807927853) 全通过：921 项测试、19 项迁移矩阵，以及 Docker、类型、格式、插件合同、语音和记忆质量检查。
 - 协议补充的 27 项定向测试通过：Chat Completions 的 `length` 不再伪装正常完成；两种协议均可区分截断与 reasoning-only，诊断不保留推理正文。
 - 本地完整 Dockerfile 构建成功；服务器使用原依赖镜像加源码更新层构建，619 个源码/迁移文件 SHA-256 校验通过。
 - 镜像 `ghcr.io/yuanyeyoutao/yuki-qqbot:rollup-c7bcac8`，源码 `c7bcac86614354edaddc7fb355fb88419928109d` 与合并后的 main 运行代码一致。未另发正式版本或推送 GHCR 标签。

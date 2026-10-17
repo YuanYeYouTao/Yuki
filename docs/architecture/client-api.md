@@ -218,7 +218,7 @@ Python 参考客户端可用 `entry_conversation_id=` 选择 ACP 会话，每个
 
 GET 原消息请求仍返回入账与已确认的 Social 结果，另有 `turn.state`（running、ended、unknown）
 与真实 `turn.outcome`；精确关联的原 Work 另以 `work_id/state/revision/reason/active` 返回。Main 结束、
-Work 完成和消息已发出是不同事实。`work.active` 只反映原 Work 尚未退出的现场 activation，终态也要等该原执行收拢、读取已准入的尾部发送回执后再结束 ACP prompt。没有现场任务且缺持久结束事实时保持 unknown；入账 ACK、
+Work 完成和消息已发出是不同事实。`work.active` 只反映原 Work 及其后代尚未退出的现场 activation，终态也要等该原执行收拢、读取已准入的尾部发送回执后再结束 ACP prompt。没有现场任务且缺持久结束事实时保持 unknown；入账 ACK、
 模型 final、无 activity 或静默时间都不当作完成，不补跑原模型。普通轮结束投影复用原命令回执，
 不建第二套任务、请求日志或完成计数器。
 
@@ -227,6 +227,10 @@ Work 完成和消息已发出是不同事实。`work.active` 只反映原 Work �
 它不执行 Main、不重启 Work、不推进 generation。`session/prompt` 等原 turn，必要时继续读原 Work；
 等待用户、暂停、失败与 unknown 如实处理。cancel 等后台实际收拢并读完已有确认输出后，
 原 prompt 才返回 cancelled；关闭 stdio 或 HTTP 连接不自动发取消命令。
+
+取消按原事件关联的 Work 子树撤权；父 Work 已完成或失败时保留其终态，只取消仍可运行的后代。
+现场模型请求按原 activation owner 捕获，不能按当前同名 scope 取消后来接管的新 Work。
+已 claim 的 Social 发送继续沿原回执结算；外部精确取消保留 CancelledError，不冒充新消息替换。
 
 首次提交前适配器持久保存原 Yuki UUID；HTTP 确认丢失先查同号，重传仍用原正文和原 UUID。
 标准 ACP prompt 没有跨重启业务请求号，JSON-RPC id 只关联一次连接；相同文字的新 RPC 可能是

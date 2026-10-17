@@ -22,7 +22,7 @@
 
 </div>
 
-Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何在真实社交场景中持续存在。她当前运行在 QQ 私聊和群聊中，记住人与共同经历，也能使用工具和持久工作环境完成跨消息的任务。身份和记忆由自己的数据库保存，更换模型、QQ 账号或网关时可以继续沿用。
+Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何在真实社交场景中持续存在。她通过 QQ、Telegram 和个人客户端参与对话，记住人与共同经历，也能使用工具和持久工作环境完成跨消息的任务。身份和记忆由自己的数据库保存，更换模型、平台账号或网关时可以继续沿用。
 
 **当前正式版为 3.9.0。** 聊天、SELF 自主参与、定时任务、插件和长任务续跑共用同一主 Agent。你可以在手帐式管理 WebUI 中查看聊天、执行轨迹、模型用量和工作区；长会话由当前 Main 模型整理，任务沿原检查点与真实回执继续。完成或等待决定会在原工具批次、Code 程序收拢后结算，父子任务也能继续问答和交付。默认使用 direct 镜像，Code Mode 与持久工作环境按需部署，管理 WebUI 默认关闭。
 
@@ -140,10 +140,12 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 
 首次部署在配置完成后，进入部署目录执行：
 
+以下命令针对正式 3.9.0 原镜像，使用该产物实际包含的旧 CLI 名称；当前源码构建统一使用 `yuki`。
+
 ```bash
 docker compose config --quiet
 docker compose pull
-docker compose run --rm --no-deps --entrypoint yuki bot init-db
+docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
 docker compose up -d
 ```
 
@@ -162,7 +164,7 @@ docker compose up -d
 ```bash
 docker compose ps
 docker compose logs --tail 200 bot
-docker compose exec bot yuki gateway doctor --provider snowluma
+docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 ```
 
 所有命令沿用部署时的 Compose 参数。同一 QQ 只允许一条活动连接，重复连接不会挤掉旧连接。旧部署的 Compose 与 `.env` 不会由安装器自动替换，退役配置处理见 [SnowLuma 部署](docs/deployment/snowluma.md)与[升级指南](docs/upgrade-3.9.0.md#旧-napcat-部署配置)。

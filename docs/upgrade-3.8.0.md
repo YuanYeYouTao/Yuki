@@ -50,9 +50,9 @@ docker compose --profile napcat --profile snowluma --profile speech ps --all
 
 将下列三个 SQLite 文件作为不可分割的一组复制到部署目录之外：
 
-- `data/yuki.db`
-- `data/yuki.db-wal`
-- `data/yuki.db-shm`
+- `data/qq_ai_bot.db`
+- `data/qq_ai_bot.db-wal`
+- `data/qq_ai_bot.db-shm`
 
 同时保存：
 
@@ -87,7 +87,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1 -Version 3.8.0
 在不启动长期运行 Bot 的情况下执行数据库初始化/升级：
 
 ```bash
-docker compose run --rm --no-deps --entrypoint yuki bot init-db
+docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
 ```
 
 `0049` 在应用更改前验证：

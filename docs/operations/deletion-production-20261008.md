@@ -16,7 +16,7 @@
 
 | 文件 | bytes | SHA-256 |
 | --- | ---: | --- |
-| yuki.db | 1247981568 | `4a1622d26cda431a9c6a69f26509b70f1720e3a180b52bbfacffa3f98ea00406` |
+| qq_ai_bot.db | 1247981568 | `4a1622d26cda431a9c6a69f26509b70f1720e3a180b52bbfacffa3f98ea00406` |
 | state.tar.gz | 2039043470 | `20cf12a26750c10595e1405298dd7e760295e186b8d7bf4124bc83242fdc7e2c` |
 | compose.tar.gz | 6735 | `bdfba500d0d90ee1792424201e255b81cab6f2879ac39454cb7e6776e4a49c32` |
 

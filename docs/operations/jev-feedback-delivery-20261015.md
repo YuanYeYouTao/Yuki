@@ -115,7 +115,7 @@ Host PR [#445](https://github.com/YuanYeYouTao/Yuki/pull/445) 的最终 Quality 
 
 | 文件 | 字节数 | SHA-256 |
 | --- | ---: | --- |
-| `yuki.db` | 1,981,579,264 | `af326aa41d32a5c6dc9861a50d2c615057c1f39981cc4a4647e0e2bd4894bc65` |
+| `qq_ai_bot.db` | 1,981,579,264 | `af326aa41d32a5c6dc9861a50d2c615057c1f39981cc4a4647e0e2bd4894bc65` |
 | `participation.sqlite3` | 5,369,856 | `17b7c39cd56f51496388e249b7b2a28e69b32bec0c10c309e8a23b2c156689b5` |
 | `bot-state.tar.gz` | 2,141,138,314 | `08584d656e18d0416ef41c7b7bdf99b3a8806e84cff021906feffa05b4442f76` |
 

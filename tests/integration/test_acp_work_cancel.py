@@ -33,7 +33,7 @@ def scripted(steps):
     return respond
 
 
-async def prepare_resumable_work(env):
+async def prepare_resumable_work(env, *, queue_input=True):
     session = await new_session(env)
     request_id = str(uuid4())
     env.provider._responder = scripted(
@@ -51,12 +51,13 @@ async def prepare_resumable_work(env):
     original = await settled(env, session, request_id)
     work_id = original["work"]["work_id"]
     assert original["work"]["state"] == "waiting_user"
-    accepted = await env.http.post(
-        f"/client/v1/works/{work_id}/inputs",
-        headers=selected(env, session),
-        json={"request_id": str(uuid4()), "text": "Use Taipei"},
-    )
-    assert accepted.status_code == 200, accepted.text
+    if queue_input:
+        accepted = await env.http.post(
+            f"/client/v1/works/{work_id}/inputs",
+            headers=selected(env, session),
+            json={"request_id": str(uuid4()), "text": "Use Taipei"},
+        )
+        assert accepted.status_code == 200, accepted.text
     env.provider._responder = scripted(
         [
             ("send_message", {"text": "Already claimed ACP result"}),
@@ -67,12 +68,14 @@ async def prepare_resumable_work(env):
 
 
 @pytest.mark.parametrize("cancel_waiter", [False, True])
-@pytest.mark.parametrize("child_worker", [False, True])
+@pytest.mark.parametrize("work_kind", ["root", "child", "completed_parent"])
 async def test_cancel_joins_original_work_tree_and_flushes_already_claimed_send(
-    acp_runtime, database, monkeypatch, cancel_waiter, child_worker
+    acp_runtime, database, monkeypatch, cancel_waiter, work_kind
 ):
     env = acp_runtime
-    session, request_id, work_id = await prepare_resumable_work(env)
+    session, request_id, work_id = await prepare_resumable_work(
+        env, queue_input=work_kind != "completed_parent"
+    )
     claimed, release = asyncio.Event(), asyncio.Event()
     send = AppSocialOperations.send
 
@@ -98,13 +101,21 @@ async def test_cancel_joins_original_work_tree_and_flushes_already_claimed_send(
     monkeypatch.setattr(prompt_service, "manage_work", mark_cancel)
     monkeypatch.setattr(AsyncSession, "commit", committed)
     execution_id = work_id
-    if child_worker:
-        repository = WorkRepository(database)
+    repository = WorkRepository(database)
+    if work_kind != "root":
         parent = await repository.get(work_id)
         lease = await repository.acquire(parent["conversation_id"], parent["generation"])
         execution_id = await SubagentRepository(repository).start(
             lease, work_id, str(uuid4()), {"goal": "Send the original ACP child result"}
         )
+        if work_kind == "completed_parent":
+            await repository.accept_control(
+                lease,
+                work_id,
+                {"action": "complete", "call_key": "parent-done", "result": "retained"},
+            )
+            parent = await repository.get(work_id)
+            parent = await repository.transition(lease, work_id, parent["revision"], "completed")
         await repository.release(lease)
         await env.app.subagent_execution.prepare()
         owners = [asyncio.create_task(env.app.subagent_execution.run(execution_id))]
@@ -115,7 +126,7 @@ async def test_cancel_joins_original_work_tree_and_flushes_already_claimed_send(
     try:
         async with asyncio.timeout(15):
             await claimed.wait()
-            if child_worker:
+            if work_kind != "root":
                 assert not env.app.runtime.bindings.completions(work_id)
                 assert env.app.runtime.bindings.completions(execution_id)
             cancellation = asyncio.create_task(
@@ -130,7 +141,8 @@ async def test_cancel_joins_original_work_tree_and_flushes_already_claimed_send(
             )
             facts = pending.json()["data"]
             assert facts["turn"]["state"] == "ended"
-            assert facts["work"]["state"] == "cancelled"
+            expected_state = "completed" if work_kind == "completed_parent" else "cancelled"
+            assert facts["work"]["state"] == expected_state
             assert facts["work"]["active"] is True
             assert not cancellation.done()
             assert not facts["result_event_ids"]
@@ -151,12 +163,18 @@ async def test_cancel_joins_original_work_tree_and_flushes_already_claimed_send(
             assert response.status_code == 200, response.text
             finished = response.json()["data"]
             assert finished["cancelled"]
+            assert finished["work"]["state"] == expected_state
             assert finished["work"]["active"] is False
             assert len(finished["result_event_ids"]) == 1
             await asyncio.gather(*owners)
             assert all(completed.done() and not completed.cancelled() for completed in completions)
             assert not env.app.runtime.bindings.completions(work_id)
             assert not env.app.runtime.bindings.completions(execution_id)
+            assert (await repository.get(execution_id))["state"] == "cancelled"
+            if work_kind == "completed_parent":
+                unchanged = await repository.get(work_id)
+                assert unchanged["state"] == parent["state"]
+                assert unchanged["revision"] == parent["revision"]
             repeated = await env.http.post(
                 f"/client/v1/acp/sessions/{session['session_id']}/requests/{request_id}/cancel",
                 headers=bearer(env.device["token"]),
@@ -167,6 +185,84 @@ async def test_cancel_joins_original_work_tree_and_flushes_already_claimed_send(
         await asyncio.gather(*owners)
         if cancellation is not None and not cancellation.cancelled():
             await cancellation
+
+
+async def test_cancel_completed_parent_stops_only_its_child_model(
+    acp_runtime, database, monkeypatch
+):
+    env = acp_runtime
+    repository = WorkRepository(database)
+    prompts = []
+    for _ in range(2):
+        session, request_id, work_id = await prepare_resumable_work(env, queue_input=False)
+        parent = await repository.get(work_id)
+        lease = await repository.acquire(parent["conversation_id"], parent["generation"])
+        child_id = await SubagentRepository(repository).start(
+            lease, work_id, str(uuid4()), {"goal": "Keep this original child's model separate"}
+        )
+        await repository.accept_control(
+            lease, work_id, {"action": "complete", "call_key": "parent-done", "result": "retained"}
+        )
+        parent = await repository.get(work_id)
+        parent = await repository.transition(lease, work_id, parent["revision"], "completed")
+        await repository.release(lease)
+        prompts.append((session, request_id, parent, child_id))
+    entered = {child_id: asyncio.Event() for _, _, _, child_id in prompts}
+    cancelled = {child_id: asyncio.Event() for _, _, _, child_id in prompts}
+    release = asyncio.Event()
+
+    async def wait_in_model(request):
+        env.provider.requests.append(request)
+        child_id = next(identity for identity in entered if identity in str(request.messages))
+        entered[child_id].set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            cancelled[child_id].set()
+            raise
+        return ChatResponse(content="Completed the independent child model", latency_seconds=0)
+
+    monkeypatch.setattr(env.provider, "complete", wait_in_model)
+    await env.app.subagent_execution.prepare()
+    owners = [
+        asyncio.create_task(env.app.subagent_execution.run(child_id))
+        for _, _, _, child_id in prompts
+    ]
+    try:
+        async with asyncio.timeout(15):
+            await asyncio.gather(*(event.wait() for event in entered.values()))
+            request_count = len(env.provider.requests)
+            session, request_id, parent, child_id = prompts[0]
+            response = await env.http.post(
+                f"/client/v1/acp/sessions/{session['session_id']}/requests/{request_id}/cancel",
+                headers=bearer(env.device["token"]),
+            )
+            assert response.status_code == 200, response.text
+            facts = response.json()["data"]
+            assert facts["cancelled"]
+            assert facts["work"]["state"] == "completed"
+            assert facts["work"]["active"] is False
+            assert not facts["result_event_ids"]
+            assert cancelled[child_id].is_set()
+            assert len(env.provider.requests) == request_count
+            assert (await repository.get(child_id))["state"] == "cancelled"
+            unchanged = await repository.get(parent["id"])
+            assert unchanged["state"] == parent["state"]
+            assert unchanged["revision"] == parent["revision"]
+            other_session, other_request_id, _, other_child = prompts[1]
+            assert not owners[1].done() and not cancelled[other_child].is_set()
+            assert (await repository.get(other_child))["state"] == "running"
+            other = await env.http.get(
+                f"/client/v1/requests/{other_request_id}", headers=selected(env, other_session)
+            )
+            assert other.json()["data"]["work"]["active"] is True
+            assert not release.is_set()
+            release.set()
+            await asyncio.gather(*owners)
+            assert (await repository.get(other_child))["state"] == "completed"
+    finally:
+        release.set()
+        await asyncio.gather(*owners)
 
 
 async def test_results_use_a_new_snapshot_after_the_original_activation_exits(

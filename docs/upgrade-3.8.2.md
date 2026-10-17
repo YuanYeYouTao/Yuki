@@ -21,16 +21,16 @@ install.sh / install.ps1 只在空目录下载、校验部署包，并运行配�
 ```sh
 docker compose config --quiet
 docker compose pull
-docker compose run --rm --no-deps --entrypoint yuki bot init-db
+docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
 docker compose up -d
 ```
 
 若向导选择了插件，在 Bot 健康后应用已确认的选择：
 
 ```sh
-docker compose exec -T bot yuki setup apply-pending --deployment-root /app --no-color
+docker compose exec -T bot qq-ai-bot-cli setup apply-pending --deployment-root /app --no-color
 docker compose up -d --no-deps --force-recreate bot
-docker compose exec -T bot yuki setup verify --deployment-root /app --no-color
+docker compose exec -T bot qq-ai-bot-cli setup verify --deployment-root /app --no-color
 ```
 
 网关或 TTS 的配置变更需要按对应组件说明单独处理；向导留下的动作标记不会自行重建服务。
@@ -50,9 +50,9 @@ artifact、工作区、Manager 回执及部署配置，检查副本完整性后�
 在 Bot 停止写库期间，以目标镜像依次运行：
 
 ```sh
-docker compose run --rm --no-deps --entrypoint yuki bot init-db
-docker compose run --rm --no-deps --entrypoint yuki bot conversation recount-uncovered
-docker compose run --rm --no-deps --entrypoint yuki bot conversation recount-uncovered --check
+docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot init-db
+docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot conversation recount-uncovered
+docker compose run --rm --no-deps --entrypoint qq-ai-bot-cli bot conversation recount-uncovered --check
 ```
 
 使用内置 GitHub Monitor 的部署还应在停库期间运行队列迁移检查：

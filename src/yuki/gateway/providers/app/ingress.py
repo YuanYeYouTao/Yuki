@@ -218,11 +218,6 @@ class AppGateway:
             error = None
             try:
                 result = await self.processor.handle(inbound, sender, on_committed=committed)
-                owner = asyncio.current_task()
-                if result.reason == "turn_interrupted" and owner is not None and owner.cancelling():
-                    # The shared turn coordinator translates task cancellation
-                    # into an interruption; retain the local request's cancellation.
-                    raise asyncio.CancelledError
                 return result
             except BaseException as exc:
                 error = exc

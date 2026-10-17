@@ -72,10 +72,10 @@ QQ 网关、RSS、Manager、持久环境与已写文件不随 Bot 重建。
 
 ## 上线记录（2026-09-13）
 
-- [PR #84](https://github.com/YuanYeYouTao/Yuki/pull/84) 已合并，运行代码为
+- [PR #84](https://github.com/YuanYeYouTao/Yuki-QQbot/pull/84) 已合并，运行代码为
   `447578f02a63f6e71f5f083af86a50e826b6b3fe`；镜像为
   `ghcr.io/yuanyeyoutao/yuki-qqbot:runtime-recovery-447578f`。
-- 合并后的 [CI](https://github.com/YuanYeYouTao/Yuki/actions/runs/34748190249) 全部通过。
+- 合并后的 [CI](https://github.com/YuanYeYouTao/Yuki-QQbot/actions/runs/34748190249) 全部通过。
   本地集中定向回归 94 项通过，另验证输入准备与任务结算竞态；Ruff、Linux 目标 mypy 通过。
 - 生产快照离线迁移约 19.5 秒，44,038 条聊天事件、237 条执行效果、189 条沙箱任务内容不变，
   累计预算未清零。隔离快照中的 5 次合成事件追加，最长写事务约 89.2 ms，写事务内历史扫描为 0；

@@ -33,7 +33,9 @@
 
 Python 模块与发行包统一为 `yuki`，管理／个人客户端／ACP 使用 `yuki`，服务进程使用 `yuki-bot`。旧 `qq-ai-bot-cli`、`qq-ai-bot` 可执行别名和 `qq_ai_bot` 模块已删除；源码集成与直接导入一并改为新路径，不增加旧包 shim。重新同步依赖或构建镜像，不能只移动已安装的源码目录。
 
-新部署默认 Compose 项目为 `yuki`、网络为 `yuki-network`，数据库为 `data/yuki.db`。已有部署按原完整 Compose、项目／网络、挂载与实际 `DATABASE_URL` 继续，旧数据库文件无需改名，也不另建新栈或空库。原 Person、事件、会话、已付协议与发送回执保留。本轮生产采用新名称本地构建的 Bot 镜像，网关、代理、Manager 与原环境不因更名重建。
+新部署默认 Compose 项目为 `yuki`、网络为 `yuki-network`，数据库为 `data/yuki.db`。已有部署按原完整 Compose、项目／网络、挂载与实际 `DATABASE_URL` 继续，旧数据库文件无需改名，也不另建新栈或空库。原 Person、事件、会话、已付协议与发送回执保留。本轮仅提交 PR，不合并或部署；后续获准升级时，网关、代理、Manager 与原环境不因更名重建。
+
+旧 native／源码安装若原来没有配置 `DATABASE_URL`，升级前需将原数据库绝对路径显式写入 `.env`，让迁移和服务启动读取同一值。例如原库为 `/srv/yuki/data/qq_ai_bot.db` 时，设置 `DATABASE_URL=sqlite+aiosqlite:////srv/yuki/data/qq_ai_bot.db`。新默认只用于新部署，不自动查找旧文件、不搬库，也不应先执行默认配置在新路径建空库。
 
 未来发行镜像使用 `ghcr.io/yuanyeyoutao/yuki`；正式 3.9.0 原镜像、安装包、下载 URL 和历史说明仍属于原 Release，不冒称新名称标签已发布。使用源码开发版时本地构建；安装正式版使用固定 Release 的原安装器与 Compose。
 
@@ -171,7 +173,7 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 1. 从 `v3.9.0` Release 获取部署资产并核对 `SHA256SUMS`，固定目标提交与镜像，核随包 head、Docker 主机架构、配置与插件版本。
 2. 在独立数据库和文件副本演练迁移及启动，核原身份、Work、预算、协议和发送回执；不启动第二个主动 Bot 写生产库或向 QQ 发消息。
 3. 停止旧 Bot，保存一致数据库、配置、插件、媒体、工具正文、协议对象和持久环境回执；只在迁移涉及其他实际写者时暂停对应写入。QQ 网关与无关服务保留原部署，不要求所有 Manager 任务先达到终态。
-4. 完成配置、授权和语音保全后，沿原 Compose 参数用目标镜像执行 `yuki init-db`，核 head `0119`。来自正式 3.8.3/3.8.4 的旧投递计划先在停写副本运行 `work import-legacy-deliveries --dry-run` 再导入；原计划、未知效果和预算保留。已经完成该导入的开发部署不重复处理。
+4. 完成配置、授权和语音保全后，沿原 Compose 参数用目标镜像执行原镜像实际入口 `qq-ai-bot-cli init-db`，核 head `0119`（本步仅针对正式 3.9.0；当前源码入口为 `yuki`）。来自正式 3.8.3/3.8.4 的旧投递计划先在停写副本运行 `work import-legacy-deliveries --dry-run` 再导入；原计划、未知效果和预算保留。已经完成该导入的开发部署不重复处理。
 5. 启动一个 Bot，核真实 revision、数据库、QQ 连接、工具合同、模型路由与 worker。启动健康、真实 API、自然聊天和长任务交付分别验收。
 
 ## 回退与已知问题

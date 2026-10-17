@@ -43,7 +43,10 @@ async def test_missing_terminal_receipt_remains_unknown_without_replaying_main(a
 
     # A cold reader has no original in-process owner or durable terminal fact.
     prompts = ClientPrompts(
-        env.identity, {"app": env.gateway}, env.harness.processor._chat.runtime.bindings
+        env.identity,
+        {"app": env.gateway},
+        env.harness.processor._chat.runtime.bindings,
+        concurrency=env.harness.processor._concurrency,
     )
     requests = ClientRequests(env.identity, prompts=prompts)
     facts = await requests.get(principal, request_id)
@@ -64,7 +67,10 @@ async def test_late_cancel_joins_blocked_terminal_writer_without_relabelling_mai
     env = app_env
     device, principal, request_id = await client_prompt(env)
     prompts = ClientPrompts(
-        env.identity, {"app": env.gateway}, env.harness.processor._chat.runtime.bindings
+        env.identity,
+        {"app": env.gateway},
+        env.harness.processor._chat.runtime.bindings,
+        concurrency=env.harness.processor._concurrency,
     )
     main_finished, begin_write, writing = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
@@ -95,7 +101,10 @@ async def test_original_cancel_receipt_is_idempotent_after_owner_is_gone(app_env
     env = app_env
     device, principal, request_id = await client_prompt(env)
     prompts = ClientPrompts(
-        env.identity, {"app": env.gateway}, env.harness.processor._chat.runtime.bindings
+        env.identity,
+        {"app": env.gateway},
+        env.harness.processor._chat.runtime.bindings,
+        concurrency=env.harness.processor._concurrency,
     )
     entered = asyncio.Event()
 
@@ -121,7 +130,10 @@ async def test_revoked_device_cannot_cancel_an_accepted_prompt(app_env, monkeypa
     env = app_env
     device, principal, request_id = await client_prompt(env)
     prompts = ClientPrompts(
-        env.identity, {"app": env.gateway}, env.harness.processor._chat.runtime.bindings
+        env.identity,
+        {"app": env.gateway},
+        env.harness.processor._chat.runtime.bindings,
+        concurrency=env.harness.processor._concurrency,
     )
     entered, release = asyncio.Event(), asyncio.Event()
     complete = env.provider.complete

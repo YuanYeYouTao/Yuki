@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
@@ -22,6 +22,7 @@ from yuki.runtime.activation_bindings import ActiveWorkBindings
 from yuki.runtime.work_management import manage_work
 from yuki.runtime.work_schema_v1 import work
 from yuki.runtime.work_tree import descendant_work_ids
+from yuki.services.concurrency import ConcurrencyManager
 
 if TYPE_CHECKING:
     from yuki.services.processor import ProcessResult
@@ -90,17 +91,17 @@ class ClientPrompts:
         identity: ClientIdentityService,
         gateways: Mapping[str, AppGateway],
         active_bindings: ActiveWorkBindings,
+        *,
+        concurrency: ConcurrencyManager,
     ) -> None:
         self.identity = identity
         self.gateways = dict(gateways)
         self.active_bindings = active_bindings
+        self.concurrency = concurrency
         for gateway in self.gateways.values():
             gateway.on_finished = self.finish
 
-    async def _work_completions(
-        self, session: AsyncSession, work_id: str
-    ) -> tuple[asyncio.Future[None], ...]:
-        tree = await descendant_work_ids(session, work_id, include_self=True)
+    def _work_completions(self, tree: Iterable[str]) -> tuple[asyncio.Future[None], ...]:
         return tuple(
             completed
             for identity in tree
@@ -197,7 +198,7 @@ class ClientPrompts:
         else:
             turn = {"state": "unknown", "outcome": None}
         linked = await associated_work(session, principal, event)
-        completions = await self._work_completions(session, linked["id"]) if linked else ()
+        tree = await descendant_work_ids(session, linked["id"], include_self=True) if linked else ()
         return {
             "turn": turn,
             "work": {
@@ -205,7 +206,7 @@ class ClientPrompts:
                 "state": linked["state"],
                 "revision": linked["revision"],
                 "reason": linked["reason"],
-                "active": bool(completions),
+                "active": bool(self._work_completions(tree)),
             }
             if linked is not None
             else None,
@@ -227,6 +228,7 @@ class ClientPrompts:
         async def stop_original() -> dict[str, Any]:
             cancelled = False
             completions: tuple[asyncio.Future[None], ...] = ()
+            model_tasks: tuple[asyncio.Task[Any], ...] = ()
             if captured is not None and not captured.done():
                 if not captured.cancelling():
                     captured.cancel()
@@ -239,18 +241,35 @@ class ClientPrompts:
                     raise ClientError("not_found")
                 linked = await associated_work(writer, current, original)
                 if linked is not None:
-                    completions = await self._work_completions(writer, linked["id"])
-                    if linked["state"] == "cancelled":
-                        cancelled = True
-                    elif linked["state"] not in _TERMINAL_WORK:
-                        await manage_work(
-                            writer,
-                            linked["id"],
-                            linked["revision"],
-                            "cancel",
-                            reason="client_prompt_cancelled",
-                        )
-                        cancelled = True
+                    tree = await descendant_work_ids(writer, linked["id"], include_self=True)
+                    completions = self._work_completions(tree)
+                    model_tasks = self.concurrency.request_tasks(self.active_bindings.owners(tree))
+                    for identity in tree:
+                        status = (
+                            await writer.execute(
+                                select(work.c.state, work.c.revision).where(work.c.id == identity)
+                            )
+                        ).one()
+                        if status.state == "cancelled":
+                            cancelled = True
+                        elif status.state not in _TERMINAL_WORK:
+                            await manage_work(
+                                writer,
+                                identity,
+                                status.revision,
+                                "cancel",
+                                reason="client_prompt_cancelled",
+                            )
+                            cancelled = True
+            # Provider owners are captured before revocation. Social effects and
+            # their activation owners remain alive to settle original receipts.
+            for task in model_tasks:
+                if not task.done():
+                    task.cancel()
+            if model_tasks:
+                await asyncio.gather(
+                    *(asyncio.shield(task) for task in model_tasks), return_exceptions=True
+                )
             # Already claimed effects keep their original execution and receipt.
             # Join this Work tree's captured activations, not a conversation batch task.
             if completions:

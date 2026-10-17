@@ -83,34 +83,34 @@ src行数使用关闭rename检测的numstat；文件删除清单使用Git -M检�
 
 两个基线都存在、最终删除的6个产品路径（也是相对main的全部D文件）：
 
-- `src/yuki/application/module.py`
-- `src/yuki/application/provider_registry.py`
-- `src/yuki/capabilities/registry.py`
-- `src/yuki/memory/runtime/command_plane.py`
-- `src/yuki/memory/runtime/finalizer.py`
-- `src/yuki/observability/__init__.py`
+- `src/qq_ai_bot/application/module.py`
+- `src/qq_ai_bot/application/provider_registry.py`
+- `src/qq_ai_bot/capabilities/registry.py`
+- `src/qq_ai_bot/memory/runtime/command_plane.py`
+- `src/qq_ai_bot/memory/runtime/finalizer.py`
+- `src/qq_ai_bot/observability/__init__.py`
 
 另19个相对Pi删除的产品路径在固定main已经不存在，是集成继承main语音退役的闭包，不能全部记为本轮新删：
 
-- `src/yuki/admin/config_specs_speech.py`
-- `src/yuki/application/modules/speech.py`
-- `src/yuki/speech/__init__.py`
-- `src/yuki/speech/admin.py`
-- `src/yuki/speech/cache.py`
-- `src/yuki/speech/db_models.py`
-- `src/yuki/speech/delivery.py`
-- `src/yuki/speech/genie_client.py`
-- `src/yuki/speech/language.py`
-- `src/yuki/speech/models.py`
-- `src/yuki/speech/paths.py`
-- `src/yuki/speech/preference_repository.py`
-- `src/yuki/speech/preference_service.py`
-- `src/yuki/speech/profiles.py`
-- `src/yuki/speech/provider.py`
-- `src/yuki/speech/repository.py`
-- `src/yuki/speech/service.py`
-- `src/yuki/speech/style_resolver.py`
-- `src/yuki/speech/text_normalizer.py`
+- `src/qq_ai_bot/admin/config_specs_speech.py`
+- `src/qq_ai_bot/application/modules/speech.py`
+- `src/qq_ai_bot/speech/__init__.py`
+- `src/qq_ai_bot/speech/admin.py`
+- `src/qq_ai_bot/speech/cache.py`
+- `src/qq_ai_bot/speech/db_models.py`
+- `src/qq_ai_bot/speech/delivery.py`
+- `src/qq_ai_bot/speech/genie_client.py`
+- `src/qq_ai_bot/speech/language.py`
+- `src/qq_ai_bot/speech/models.py`
+- `src/qq_ai_bot/speech/paths.py`
+- `src/qq_ai_bot/speech/preference_repository.py`
+- `src/qq_ai_bot/speech/preference_service.py`
+- `src/qq_ai_bot/speech/profiles.py`
+- `src/qq_ai_bot/speech/provider.py`
+- `src/qq_ai_bot/speech/repository.py`
+- `src/qq_ai_bot/speech/service.py`
+- `src/qq_ai_bot/speech/style_resolver.py`
+- `src/qq_ai_bot/speech/text_normalizer.py`
 
 因此相对Pi实际删除产品文件25个、全树65个；其中全树59个在main基线已不存在。原AgentState移动到tests/support及两个迁移改号不计为D文件。必要历史reader按原Work/operation ID保留，唯一owner与具体退出条件见三个分工报告和终审表。完整机器可读指标见私有final-deletion-delivery-metrics.json。
 

@@ -737,25 +737,25 @@
     {
       "path": "docs/emoji-system/administration.md",
       "review": "current-retained",
-      "reason": "src/yuki/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
       "result": "updated"
     },
     {
       "path": "docs/emoji-system/architecture.md",
       "review": "current-retained",
-      "reason": "src/yuki/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
       "result": "retained"
     },
     {
       "path": "docs/emoji-system/automation.md",
       "review": "current-retained",
-      "reason": "src/yuki/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
       "result": "retained"
     },
     {
       "path": "docs/emoji-system/collection.md",
       "review": "current-retained",
-      "reason": "src/yuki/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
       "result": "retained"
     },
     {
@@ -767,19 +767,19 @@
     {
       "path": "docs/emoji-system/lifecycle.md",
       "review": "current-retained",
-      "reason": "src/yuki/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
       "result": "retained"
     },
     {
       "path": "docs/emoji-system/planner-integration.md",
       "review": "current-retained",
-      "reason": "src/yuki/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
       "result": "retained"
     },
     {
       "path": "docs/emoji-system/plugin-api.md",
       "review": "current-retained",
-      "reason": "src/yuki/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
       "result": "retained"
     },
     {
@@ -791,13 +791,13 @@
     {
       "path": "docs/emoji-system/storage-and-cleanup.md",
       "review": "current-retained",
-      "reason": "src/yuki/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
       "result": "retained"
     },
     {
       "path": "docs/emoji-system/vision-analysis.md",
       "review": "current-retained",
-      "reason": "src/yuki/emoji selector/lifecycle/store; SocialService explicit-request delivery",
+      "reason": "src/qq_ai_bot/emoji selector/lifecycle/store; SocialService explicit-request delivery",
       "result": "retained"
     },
     {
@@ -1133,7 +1133,7 @@
     {
       "path": "docs/plugin-development/admission-signals.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
@@ -1163,19 +1163,19 @@
     {
       "path": "docs/plugin-development/api-3.3-migration.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/api-reference/emoji.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/api-reference/events.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
@@ -1187,43 +1187,43 @@
     {
       "path": "docs/plugin-development/api-reference/permissions.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/api-reference/registrar.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/api-reference/results.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/architecture.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/automation.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/background-services.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/commands.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
@@ -1235,7 +1235,7 @@
     {
       "path": "docs/plugin-development/config-and-secrets.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
@@ -1247,7 +1247,7 @@
     {
       "path": "docs/plugin-development/events.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
@@ -1259,13 +1259,13 @@
     {
       "path": "docs/plugin-development/lifecycle.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/manifest.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
@@ -1283,31 +1283,31 @@
     {
       "path": "docs/plugin-development/networking.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/permissions.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/prompts.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/publishing.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
       "path": "docs/plugin-development/quickstart.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
@@ -1325,7 +1325,7 @@
     {
       "path": "docs/plugin-development/storage.md",
       "review": "current-retained",
-      "reason": "src/yuki_plugin_sdk; src/yuki/plugin_host; CLI/Control approval and current permissions",
+      "reason": "src/yuki_plugin_sdk; src/qq_ai_bot/plugin_host; CLI/Control approval and current permissions",
       "result": "retained"
     },
     {
@@ -1553,7 +1553,7 @@
     {
       "path": "docs/speech/recognition.md",
       "review": "current-retained",
-      "reason": "src/yuki/speech ASR; migration0055; active incoming-only scope",
+      "reason": "src/qq_ai_bot/speech ASR; migration0055; active incoming-only scope",
       "result": "retained"
     },
     {
@@ -1601,7 +1601,7 @@
     {
       "path": "plugins/github-monitor/README.md",
       "review": "updated",
-      "reason": "Yuki `>=3.8.1,<4.0`; Plugin API `3.1`; docker compose up -d --build --no-deps bot; 常规聊天只可能看到有界的\n`external_untrusted` recent-event dig; YUKI_VERSION=3.8.1 docker compose run; 排障时优先使用 `test`，不要用回放代替普通测试。; yuki plugin approve github-monitor; Authenticated explicit CLI approval",
+      "reason": "Yuki `>=3.8.1,<4.0`; Plugin API `3.1`; docker compose up -d --build --no-deps bot; 常规聊天只可能看到有界的\n`external_untrusted` recent-event dig; YUKI_VERSION=3.8.1 docker compose run; 排障时优先使用 `test`，不要用回放代替普通测试。; qq-ai-bot-cli plugin approve github-monitor; Authenticated explicit CLI approval",
       "result": "updated"
     },
     {
@@ -1613,7 +1613,7 @@
     {
       "path": "plugins/io.github.yuanyeyoutao.kun-game/README.md",
       "review": "updated",
-      "reason": "Plugin API 3.2; Planner; yuki plugin approve io.github.yuanyeyouta; Authenticated explicit CLI approval",
+      "reason": "Plugin API 3.2; Planner; qq-ai-bot-cli plugin approve io.github.yuanyeyouta; Authenticated explicit CLI approval",
       "result": "updated"
     },
     {
