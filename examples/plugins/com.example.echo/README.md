@@ -22,8 +22,10 @@ await ctx.automation.create_task({
     "goal": "一分钟后复述 hello，并发送给原请求方。",
     "trigger": {"type": "after", "seconds": 60},
     "delivery": {"target": "auto"},
-})
+}, request_id="echo-repeat")
 ```
+
+同一操作重试时复用原 `request_id`；创建不同任务时使用不同 ID。
 
 在仓库根目录运行：
 
