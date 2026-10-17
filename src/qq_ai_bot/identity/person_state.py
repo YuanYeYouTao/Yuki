@@ -557,27 +557,6 @@ async def load_canonical_group_members_by_exact_name(
     return tuple(sorted(result))
 
 
-async def observe_canonical_space(
-    session: AsyncSession,
-    group_id: str,
-    *,
-    name: str,
-    now: datetime,
-) -> GroupSetting:
-    state = await _live_space_binding(session, group_id, required=True)
-    assert state is not None
-    binding, space = state
-    binding.last_seen_at = now
-    if name and (binding.display_name != name[:128] or space.name != name[:128]):
-        binding.display_name = name[:128]
-        binding.updated_at = now
-        binding.revision += 1
-        space.name = name[:128]
-        space.updated_at = now
-        space.revision += 1
-    return _group_setting(group_id, space)
-
-
 async def load_canonical_group(
     session: AsyncSession,
     space_id: str,

@@ -1,4 +1,4 @@
-"""Profile persistence, OneBot resolution, and privacy-boundary tests."""
+"""Canonical person observations and inbound message fixtures."""
 
 from __future__ import annotations
 

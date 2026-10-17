@@ -19,7 +19,6 @@ SNOWLUMA_CAPABILITIES: Final[frozenset[str]] = frozenset(
         "send_private",
         "send_group",
         "group_member_probe",
-        "profile_lookup",
         "message_history",
         "media_fetch",
         "typing_private",

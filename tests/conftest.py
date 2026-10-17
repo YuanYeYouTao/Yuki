@@ -40,7 +40,6 @@ from qq_ai_bot.services.media_resolver import MediaResolver
 from qq_ai_bot.services.processor import DirectPluginCommandResolver, MessageProcessor
 from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
 from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
-from qq_ai_bot.services.user_profiles import UserProfileService
 from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
 from qq_ai_bot.services.vision_service import VisionService
 from qq_ai_bot.vision.base import VisionProvider
@@ -124,7 +123,6 @@ def build_harness(
     profiles = PeopleRepository(
         database,
     )
-    user_profiles = UserProfileService(profiles)
     scoped_events = ScopedEventLedgerUnitOfWork(database)
     ledger = EventLedgerRepository(database)
     ledger.set_scoped_writer(scoped_events)
@@ -197,7 +195,6 @@ def build_harness(
         effect_gate=effect_gate,
         groups=groups,
         private_users=private_users,
-        user_profiles=user_profiles,
         chat=chat,
         rate_limiter=SlidingWindowRateLimiter(
             per_user=settings.per_user_requests_per_minute,
