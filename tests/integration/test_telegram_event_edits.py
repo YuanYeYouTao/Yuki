@@ -17,7 +17,10 @@ from qq_ai_bot.conversation import media_service
 from qq_ai_bot.conversation.media_service import ConversationMediaError, ConversationMediaService
 from qq_ai_bot.domain.messages import AttachmentKind, ChatMessage
 from qq_ai_bot.gateway.media import PlatformMediaFile
+from qq_ai_bot.gateway.provider import GatewayProviderCatalog
+from qq_ai_bot.gateway.providers.telegram import TelegramProvider
 from qq_ai_bot.gateway.providers.telegram_ingress import normalize_message
+from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
 from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
 from qq_ai_bot.persistence.repository_helpers import _event_record
 from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
@@ -112,7 +115,7 @@ async def test_edit_version_uses_edit_time_across_random_update_ids_and_replay(
 
 
 @pytest.fixture
-async def media_reader(database, tmp_path):
+async def media_reader(database, tmp_path, telegram_env):
     def png(color):
         stream = io.BytesIO()
         Image.new("RGB", (2, 2), color).save(stream, "PNG")
@@ -126,11 +129,25 @@ async def media_reader(database, tmp_path):
             downloads.append(file)
             return PlatformMediaFile(content=contents[file], content_type="image/png")
 
+    gateway = Gateway()
+
+    class MediaProvider(TelegramProvider):
+        def media(self, handle):
+            return gateway
+
+    registry = GatewayConnectionRegistry(providers=GatewayProviderCatalog((MediaProvider(),)))
+    registry.connect(
+        telegram_env.gateway.client,
+        provider_id="telegram",
+        presence_id=telegram_env.gateway.presence_id,
+    )
     resolver = MediaResolver()
-    service = ConversationMediaService(database, tmp_path / "cache", resolver, ImagePreprocessor())
+    service = ConversationMediaService(
+        database, tmp_path / "cache", resolver, ImagePreprocessor(), gateway_registry=registry
+    )
     try:
         yield SimpleNamespace(
-            service=service, gateway=Gateway(), contents=contents, downloads=downloads
+            service=service, gateway=gateway, contents=contents, downloads=downloads
         )
     finally:
         await service.close()
@@ -143,7 +160,6 @@ async def _path(reader, source):
         attachment_index=0,
         conversation_id=source.canonical_conversation_id,
         generation=1,
-        gateway=reader.gateway,
     )
 
 

@@ -20,7 +20,10 @@ from tests.support.workspace_snapshots import snapshot_bytes
 
 from qq_ai_bot.capabilities.invocation import direct_invocations
 from qq_ai_bot.capabilities.results import normalize_legacy_result
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
+from qq_ai_bot.conversation.canonical_db_models import (
+    CanonicalConversationModel,
+    SpaceActiveRouteModel,
+)
 from qq_ai_bot.domain.messages import ToolCall, ToolFunction
 from qq_ai_bot.gateway.providers import builtin_provider_catalog
 from qq_ai_bot.gateway.providers.telegram import TelegramClient
@@ -85,6 +88,8 @@ async def native_env(database, tmp_path):
             result = {"id": 80001, "is_bot": True, "username": "offline_yuki"}
         elif method == "getChatMember":
             result = {"status": "administrator", "user": {"id": params["user_id"]}}
+        elif method == "deleteMessage":
+            result = True
         elif method in {"sendMessage", "sendDocument", "sendPhoto"}:
             if method == failure.method:
                 if failure.timeout:
@@ -164,12 +169,100 @@ async def native_env(database, tmp_path):
             db=database,
             registry=registry,
             client=client,
+            gateway=gateway,
         )
         await gateway.close()
 
 
 def sends(env):
     return [item for item in env.wire if item[0].startswith("send")]
+
+
+async def test_native_recall_uses_original_presence_and_internal_event_in_topic(native_env):
+    env = native_env
+    await env.gateway.receive(update(2, chat=-10042, topic=17, text="!ai original topic"))
+    if env.gateway._turns:
+        await asyncio.gather(*tuple(env.gateway._turns))
+    async with env.db.sessions() as session:
+        source = await session.scalar(
+            select(ChatEventModel)
+            .where(ChatEventModel.id > env.event.id, ChatEventModel.direction == "inbound")
+            .order_by(ChatEventModel.id.desc())
+        )
+        conversation = await session.get(
+            CanonicalConversationModel, source.canonical_conversation_id
+        )
+    assert conversation.thread_id == "17"
+    context = replace(
+        env.context,
+        call_id="topic-send",
+        conversation_id=conversation.id,
+        trigger_event_id=source.id,
+        visible_event_ids=frozenset({source.id}),
+    )
+    sent = await env.service.execute(
+        "send_message", {"text": "original reply", "reply_to_event_id": source.id}, context
+    )
+    assert sent["status"] == "succeeded"
+    send_params = sends(env)[-1][1]
+    assert send_params["message_thread_id"] == 17
+    assert send_params["reply_parameters"] == {"message_id": 2}
+    async with env.db.sessions() as session:
+        event = await session.get(ChatEventModel, sent["event_id"])
+        original = (
+            event.content,
+            event.segments_json,
+            event.platform_message_id,
+            event.canonical_conversation_id,
+            event.author_presence_id,
+            event.reply_to_event_id,
+        )
+    assert event.author_presence_id == source.ingress_presence_id
+    assert event.canonical_conversation_id == conversation.id
+    assert await env.service.router.cas_takeover_space(conversation.space_id) == "taken"
+    other_requests = []
+
+    def other_http(request):
+        other_requests.append(request)
+        return httpx.Response(200, json={"ok": True, "result": {"id": 80002}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(other_http)) as transport:
+        other = TelegramClient("another-offline-token", client=transport)
+        await other.get_me()
+        async with env.db.immediate_session() as session:
+            other_presence = await create_presence(
+                session,
+                external_account_id=other.self_id,
+                platform="telegram",
+                now=datetime.now(UTC),
+            )
+            route = await session.get(SpaceActiveRouteModel, conversation.space_id)
+            route.presence_id = other_presence.id
+        env.registry.connect(other, provider_id="telegram", presence_id=other_presence.id)
+        other_requests.clear()
+        recall_context = replace(context, call_id="topic-recall")
+        args = {"event_id": sent["event_id"]}
+        result = await env.service.execute("recall_own_message", args, recall_context)
+        assert result["status"] == "succeeded"
+        assert result["presence_id"] == source.ingress_presence_id
+        assert await env.service.execute("recall_own_message", args, recall_context) == result
+        assert not other_requests
+    deletes = [params for method, params, _ in env.wire if method == "deleteMessage"]
+    assert deletes == [{"chat_id": "-10042", "message_id": int(original[2].rsplit(":", 1)[-1])}]
+    async with env.db.sessions() as session:
+        kept = await session.get(ChatEventModel, sent["event_id"])
+        original_source = await session.get(ChatEventModel, source.id)
+        topic = await session.get(CanonicalConversationModel, conversation.id)
+    assert (
+        kept.content,
+        kept.segments_json,
+        kept.platform_message_id,
+        kept.canonical_conversation_id,
+        kept.author_presence_id,
+        kept.reply_to_event_id,
+    ) == original
+    assert original_source.content == "!ai original topic"
+    assert topic.thread_id == "17"
 
 
 async def test_native_text_limit_counts_decoded_mentions_and_preserves_reply(native_env):

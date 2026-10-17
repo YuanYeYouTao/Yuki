@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Final, final
+from typing import Final, cast, final
 
+from qq_ai_bot.adapters.onebot.media import OneBotMediaAdapter, OneBotMediaHandle
 from qq_ai_bot.adapters.onebot.social import OneBotSocialOperations
 from qq_ai_bot.domain.messages import InboundMessage
 from qq_ai_bot.gateway.provider import GatewayConnectionProfile
@@ -29,6 +30,9 @@ class SnowLumaProvider:
 
     def __init__(self, transfer_root: Path | None = None, gateway_root: str = "") -> None:
         self.social = OneBotSocialOperations(transfer_root, gateway_root)
+
+    def media(self, handle: object) -> OneBotMediaAdapter:
+        return OneBotMediaAdapter(cast(OneBotMediaHandle, handle))
 
     def project_inbound(self, message: InboundMessage, yuki_ids: frozenset[str]) -> InboundMessage:
         from qq_ai_bot.adapters.onebot.normalizer import reproject_inbound_mentions

@@ -1,6 +1,6 @@
 # 平台适配与升级
 
-本页描述 #299 与多平台解耦分支的源码合同，不代表正式 Release 或生产部署。
+本页描述当前源码合同；正式 Release 与实际生产部署版本分别记录。
 
 实现后13项复审缺口已本地补修，见[复审记录](Yuki-299与多平台解耦复审记录-2026-10-16.md)及其正式验证；真实平台、原生Code VM及合并上线状态另列。
 
@@ -9,6 +9,8 @@
 QQ、Telegram 和个人客户端共用身份、事件账本、Main、Work、Memory、自动化与插件 Host。后续平台继续实现同一 `GatewayProvider`，加入已有 `GatewayProviderCatalog`；不复制领域服务，不在公共服务里增加平台名称分支。
 
 Provider 提供真实连接资料、入站投影和 `PlatformSocialOperations`。发送计划 `plan_send` 是无 I/O 的协议布局，每一项对应 Social 原操作下的一个实际派发与持久回执。`send` 每次只执行一项；原生长度限制、mentions、引用、文件上传及响应解析由适配器完成。公共 Social 管授权、原来源、预算、claim、事件和回执。媒体接口 `PlatformMediaGateway` 同样只在边界解析平台文件，并返回真实字节及媒体类型。
+
+Provider 的 `media(handle)` 从该原生连接提供媒体适配器。附件工具按所选原事件的 `ingress_presence_id` 取原接收连接，不读取工具上下文的当前网关，也不按平台账号数字补归属。已有缓存、公共 URL 和内联资料不要求原连接在线；只有解析原生文件引用才取得原 Presence 的连接，不把旧 file_id 交给另一 Bot。App 上传沿已保存缓存读取，没有远端文件查询能力时返回真实不可用。
 
 新增平台至少覆盖原生入站、接纳后确认、重复/编辑、连接启停、媒体、实际发送/撤回和失败事实。没有某项原生能力时，按真实不可用处理，不伪造 OneBot action 或成功结果。默认模型工具合同固定，目录查询不改变声明，权限在实际执行时核验。
 
@@ -34,15 +36,32 @@ Provider 提供真实连接资料、入站投影和 `PlatformSocialOperations`�
 
 在部署使用的环境文件设置 `TELEGRAM_BOT_TOKEN`。源码使用 long polling，支持普通 Bot 私聊、群及 topic、文字和常见媒体、引用、命令与原执行来源。QQ-only 可不配置此项；App/TG-only 不需要虚填 QQ 管理员或 SnowLuma 凭据。
 
+Telegram API 与平台文件下载共用同一原生 HTTP 客户端，沿标准 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`、`NO_PROXY` 和 CA 环境配置；修改后重新创建 Bot 容器。无需 Telegram 专属代理开关，代理失败不自动改成直连，详见[代理配置](../operations/http-proxy.zh-CN.md)。
+
 平台更新确认表示事件已按原入口入账或明确忽略，不表示 Main 或平台发送已经完成。原更新重投返回原事件；编辑更新原事件，不再次启动 Main 或重发。原生群迁移保留真实 SpaceBinding/Space。已接纳 Work 沿原 journal 和回执恢复；普通无 Work 聊天遇进程中断，不自动重新购买模型请求或重发。Channel、Business 和 inline 不伪装成普通用户会话。
 
 Bot 必须具备实际群权限及所需可见性。未收到的消息不属于已观察历史。Token、下载凭据和平台 file_id 留在 Telegram 边界，不进入模型工具结果；跨平台传文件沿工作区快照/字节重新准备。
+
+### 固定工具的 Telegram 适配范围
+
+TG 与 QQ 使用同一份平台 Main 工具合同，默认 direct 为 29 项；不按当前平台动态增删声明。
+
+| 工具 | Telegram 路径与范围 |
+| --- | --- |
+| `send_message` | 原生文字、图片和文件；真实提及、内部事件引用、topic 与 caption 由适配器转换，每次派发保原回执。 |
+| `recall_own_message` | 内部出站事件定位原发送 Presence，再执行 `deleteMessage`，当前主动账号不能替代原账号。 |
+| `query_chat_history` / `read_conversation_history` | 授权内部事件账本；已观察范围，不查询 Telegram 服务器完整历史。 |
+| `find_contacts` / `get_group_members` | 内部人物、群与已观察成员目录；不冒充 TG 完整成员列表。 |
+| `inspect_conversation_attachment` / `save_conversation_attachment_to_workspace` | 原事件附件与真实接收账号；命中缓存可离线使用，原生文件未缓存时才经原账号 `getFile` 下载字节。 |
+| 记忆、终端、工作区、搜索、任务、子 Agent 与自动化 | 共用领域服务、内部执行和来源，不复制 TG 专属工具；仍需各功能正常配置与真实权限。 |
+
+`get_my_capabilities` 查询当前主体的权限和配置能力，不代表 Telegram 机器人管理员权限探测。原生协议离线回归不等于已有真实 TG 账号收发验收；Token、实际网络、群权限与自然运行分别核对。
 
 ## 从已有数据升级
 
 迁移顺序为 `0122` 会话入口、`0123` Memory 操作身份、`0124` 通知 Conversation、`0126` 监控目标、`0127` Rebuild 原 canonical 目标与 `0128` 通知原媒体 handle。保留既有库、挂载和配置，运行真实随包迁移；不能 `stamp` 跳过，也不能覆盖旧库来回退代码。
 
-Plugin API 升为 **4.0**，Main 合同为 **20**，Code API 仍为 `yuki.codemode.api.v2`。新插件的 Person/Space 参数使用内部 ID，通知可明确原 Conversation；同名参数旧的裸平台号语义不能静默沿用，详见 [API 4.0 迁移](../plugin-development/api-4.0-migration.md)。旧 frozen 请求、checkpoint、通知 source、outbox 和回执不改写成新调用。
+Plugin API 升为 **4.0**，Main 合同为 **21**，Code API 仍为 `yuki.codemode.api.v2`。新插件的 Person/Space 参数使用内部 ID，通知可明确原 Conversation；同名参数旧的裸平台号语义不能静默沿用，详见 [API 4.0 迁移](../plugin-development/api-4.0-migration.md)。旧 frozen 请求、checkpoint、通知 source、outbox 和回执不改写成新调用。
 
 监控旧状态只按真实历史 grant 迁移。来源未知、存在歧义或目标合并冲突时，完整保留源 JSON 并报告具体升级问题，不能创建空状态覆盖它，也不能用今天的同数字账号猜 owner。监控迁移保原游标、源指纹、正文、notification/source_event ID、状态和已接受投递，不能重新抓取或重发代替恢复。
 
