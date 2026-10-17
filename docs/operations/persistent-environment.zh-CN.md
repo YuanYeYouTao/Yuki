@@ -15,6 +15,7 @@ Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人
 | `terminal_exec` | 启动一个原执行，约五秒交回原 `run_id`；`tty=true` 提供保留目录、变量和函数的真实交互 Bash |
 | `terminal_read` | 按原 `run_id` 和字节游标读进展、退出码及原终态 `completion/artifact`；`wait_seconds` 默认零，只等待观察 |
 | `terminal_control` | `input` 发送原样文本，`interrupt` 发送 SIGINT，`cancel/close` 停止原任务；已写文件保留 |
+| `external_agent` | 列出运维配置的 ACP Agent，提交或读取原 prompt、回答其权限、取消该 prompt，或显式关闭原 peer |
 
 执行默认不计时；显式 `timeout_seconds=0` 也不设期限，正值使用指定期限，没有软件最大值。取消一次读取只取消观察，不停止命令。空输出不表示完成，非零退出不撤销此前文件写入；日志轮转会明确标记游标丢失。
 
@@ -25,6 +26,16 @@ Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人
 普通文件读写、搜索、目录、修改和删除使用终端。八项普通 `workspace_*` CRUD、公开 artifact 目录/文本分页/删除及普通覆盖 CAS 全链退出，不保留新调用别名。`workspace_inspect` 仍把指定媒体交给模型，`workspace_publish` 固化不可变 artifact 并通过统一发送工具交付。会话附件提升、私有工具 artifact 和真实媒体桥保留；终端不能直接读 Bot 临时缓存或私有索引。已发布版本不随后续文件修改变化。
 
 artifact manifest 使用独立 SQLite。文件准备、SHA256 和 fsync 在写事务外完成；短写事务核验真实 revision/不可变事实并提交 metadata。读取先安全打开原文件 FD，再释放读取事务并校验内容。发布异常只回收私有 pending 文件；结果未知时不删除已 rename 的 blob，留给按真实引用工作的原 GC。普通发布不设 200 MiB、512 MiB 或对象数量经验门槛；模型媒体与平台传输仍受其真实容量限制。
+
+### 原环境中的 ACP peer
+
+Manager 用 `--acp-config /etc/yuki-sandbox/acp-agents.toml`，或既有 systemd 环境中的 `YUKI_MANAGER_ACP_CONFIG`，读取[运维配置示例](../../deploy/sandbox/acp-agents.example.toml)。固定 `external_agent` 工具只接收 `list|prompt|get|respond|cancel|close` 和原句柄，不接收可执行程序、参数、环境变量或工作目录。list 仅读配置，不启动 Agent，只返回 ID/说明，不返回凭据。配置存在不证明 adapter 或登录可用。
+
+仅依赖标准库的 peer 启动文件在同一 Linux 环境中运行，延迟载入 `agent-client-protocol==0.12.1`，持有长驻 Agent 连接和 session。每次 prompt 有独立原 Manager job 与 Bot 执行回执；prompt 或 Work 结束不自动关闭 peer、不丢弃缓存。prompt 结果、文本/工具/文件更新与权限回调沿原 runtime 挂载，保存可靠 inbox/accepted/results 原件与字节游标事件。JSON-RPC stdout 与诊断 stderr 独立，Manager 不将终端日志解析为协议。查询只分页返回原 prompt 更新，并保留独立 canonical completion；权限事件 ACK 不阻止重读原结果。
+
+Bot/Manager 重连观察同一批文件和原进程，不再次调用 `initialize`、`session/new` 或 `session/prompt`。peer 真正死亡且已接纳派发而无原结果时，原 prompt 保 uncertain。原生取消只作用于原 prompt；`terminal_read` 与 `terminal_control` 能识别这类 prompt job，不会杀掉可复用 peer。显式 close 在原 Manager jobs 持久接纳 closing 意图后才返回，包括 close 先于 peer-open 的情况。purge 等待原 peer 真正退出后，删除该 peer 的协议/spec/prompt 正文，保留最小原 ID、hash 与终态事实；其他 peer、共用 HOME、运维登录文件与已发布 artifact 保留。这不代表已删除供应商侧历史或外部程序在 HOME 写下的全部文件。
+
+默认 `permission_mode="allow"` 沿现有已授权管理员执行。运维显式 `"ask"` 时，原 SDK 问题等待同一 peer/prompt/question 的回答或取消，沿原 Work 输入回接。外部文本是工具证据，最终交付仍走 Main/Social。Bot 只记自身委托和模型调用，不伪造外部 Agent 内部轮数；供应商未给出的 usage/cache 保持未知。
 
 ## 恢复、资源与网络
 
@@ -51,14 +62,22 @@ docker compose exec --user 10001:10001 bot yuki setup environment-check
 
 部署根是 Compose 挂载 `./workspace` 的目录。安装器只记录 `/etc/yuki-sandbox/deployment.env` 中的 `YUKI_MANAGER_WORKSPACE_STORE`，保留其它配置，拒绝覆盖已配置的 artifact 根；不带参数保留既有值或旧默认路径。它不迁移家目录、不改已有容器挂载。`environment-check` 在 Bot 真实 UID 10001 下验证 artifact 目录可写和原 socket/status/ready，不再调用退役 `workspace_list`；不建容器、执行代码、调用模型或发送消息。这只证明连接，不证明真实管理员终端/公网已验收。
 
-本次需同步宿主 `src/yuki/sandbox/`、其 `workspace/` 依赖、`deploy/sandbox/` 和原 Manager venv，保留原 systemd 配置与全部部署覆盖。Supervisor 另以单个只读源文件挂入环境。不能只更新 Bot 后声称原环境已获得 root、新代码或新网络。
+本次需同步宿主 `src/yuki/sandbox/`、其 `workspace/` 依赖、`deploy/sandbox/` 和原 Manager venv，保留原 systemd 配置与全部部署覆盖。Supervisor 和 `acp_peer.py` 分别以只读源文件挂入环境。ACP SDK 在环境 Python 运行，宿主 Manager venv 无需安装。不能只更新 Bot 后声称原环境已获得 root、新代码或新网络。
+
+新环境镜像已包含 ACP SDK 0.12.1；旧 rootFS 快照保留原安装，需显式原地补 SDK：
+
+```sh
+sudo sh /opt/yuki-sandbox/deploy/sandbox/install-acp-sdk.sh --container yuki-environment
+```
+
+脚本只安装固定 SDK、核实版本并检查 peer 只读挂载，不重建环境。缺挂载时沿下述流程明确更换，并保原完整 rootFS；已有 checkpoint 选中时，仅修改 `--image` 不能完成升级。所选供应商 adapter 通过原管理员终端安装，例如环境 Node 22 下 `npm install -g @agentclientprotocol/codex-acp@2.2.2 @agentclientprotocol/claude-agent-acp@0.93.0`，再配置真实登录或显式运维环境；配置示例本身不安装、不认证。peer 保留环境标准代理/CA 变量，显式 Agent 环境优先，不继承 Bot 凭据。
 
 旧环境须单独安排一次明确更换：
 
 1. 记录原容器 ID/启动时间、网络/挂载、Manager 当前检查点与活跃运行。可先让工作完成；若主动停环境，按真实代际中断处理，不自动重跑普通任务或未知安装。
 2. 停 Manager 和原环境，在同一停写窗口一致备份 `jobs.sqlite3`、home/runtime、artifact/short_state 和 Bot 原回执库；保存原环境完整 rootFS 的私有 Docker commit 镜像。commit 不含 bind mount，家目录和运行记录必须另备份。
 3. 保留原 HOME、运行文件和旧镜像，归档已停原容器。离线将原 `environment_state.checkpoint_image` 指向此次完整 rootFS 快照，不改原 run/request/hash、completion、服务或预算。Manager 优先此值，单改 `--image` 不覆盖已有检查点。
-4. 更新 Manager/防火墙，由原 Manager 创建唯一活动环境：同一 HOME/runtime、同一 execd、`--user 0:0`、当前只读 Supervisor、公网 bridge。创建显式覆盖旧镜像用户/代理默认值，保原 HOME 路径与 apt/pip/npm 安装。不得启动第二活动环境共享家目录，不得用空基础镜像替代原 rootFS。
+4. 更新 Manager/防火墙，由原 Manager 创建唯一活动环境：同一 HOME/runtime、同一 execd、`--user 0:0`、当前只读 Supervisor/ACP peer、公网 bridge。创建显式覆盖旧镜像用户/代理默认值，保原 HOME 路径与 apt/pip/npm 安装。不得启动第二活动环境共享家目录，不得用空基础镜像替代原 rootFS。
 5. 核实实际 UID/HOME、旧文件/安装、Supervisor 挂载、原回执、服务恢复和公网/私网边界；另记 Bot health、固定工具与自然流量。镜像本地构建并校验传输，不重启 Docker、QQ、代理或无关同机服务。
 
 rootFS 快照的镜像配置可能含原 execd secret，应作为私有运维备份保管，不公开推送或输出。回退保留最新消息、家目录、运行记录和回执库，不能用旧整库覆盖新事实。仅回退 Bot 时可保环境运行；实际环境身份/网络更换必须查容器和数据，不能以 healthy 替代。
@@ -66,6 +85,8 @@ rootFS 快照的镜像配置可能含原 execd secret，应作为私有运维备
 ## 定向验收
 
 `tests/unit/test_terminal_environment.py` 覆盖原 Manager SQLite、旧 APT 不重放、无经验计数准入、原 rootFS 选择、网络规则 shell 脚本，以及隔离原生 Supervisor 的 PTY、输入、文件、后台和显式超时。工作区桥与 Work receipt 回归另覆盖发布、媒体和 owned/external run。这些不冒充实际 gVisor、管理员安装或公网测量。
+
+`tests/unit/test_acp_manager.py` 实跑原 SQLite/文件协议恢复、prompt 完成与 peer 生命周期分离、原生取消别名、原更新分页/ACK、close 先于 open、启动/关闭竞争与定向 purge。`tests/integration/test_acp_manager_peer.py` 将真实 Manager 和 SDK peer 接入本地 stdio Agent，验证权限挂起时 Manager 重启、原 prompt 复用、更新和 canonical completion，仅替代 execd/Supervisor 启动；`tests/integration/test_acp_host_peer.py` 另验证 SDK 回调与生命周期。这些测试不代表付费供应商执行、生产上线、真实缓存命中或费用节省。
 
 `deploy/sandbox/validate_runtime.py` 仅对显式隔离 socket 做真实终端/发布探针。部署还须记录管理员身份、原安装保留、execd 重连、包管理、服务、网络和资源行为。不发真实 QQ 测试消息，不从声明缩小推算 cache/费用。
 

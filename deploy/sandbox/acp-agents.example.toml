@@ -1,0 +1,23 @@
+# Manager operator configuration. This file is not a model tool manifest.
+# Install the selected adapters inside the original environment first.
+
+[agents.codex]
+description = "Codex ACP in the shared Linux environment"
+command = "/home/yuki/.local/bin/codex-acp"
+cwd = "/workspace"
+# Existing administrator execution is already authorized. Set ask explicitly
+# only when permission callbacks must wait for the original Work's response.
+permission_mode = "allow"
+
+[agents.claude]
+description = "Claude Agent ACP in the shared Linux environment"
+command = "/home/yuki/.local/bin/claude-agent-acp"
+cwd = "/workspace"
+permission_mode = "allow"
+
+# Keep login files in the original HOME, or resolve explicit operator variables.
+# Values are resolved by Manager at peer creation, never returned by agent list.
+# [agents.codex.env_from]
+# OPENAI_API_KEY = "YUKI_EXTERNAL_CODEX_API_KEY"
+# [agents.claude.env_from]
+# ANTHROPIC_API_KEY = "YUKI_EXTERNAL_CLAUDE_API_KEY"

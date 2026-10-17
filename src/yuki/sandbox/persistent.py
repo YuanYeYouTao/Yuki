@@ -23,6 +23,8 @@ from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
 
+from yuki.sandbox.acp_manager import ACP_KINDS, ACPResources
+from yuki.sandbox.acp_peer import read_protocol_line
 from yuki.sandbox.completions import CompletionOutbox
 from yuki.sandbox.environment_tools import EXECUTION_TOOLS
 from yuki.sandbox.execd import Execd
@@ -49,6 +51,7 @@ class PersistentManager:
         *,
         runtime: str = "runsc",
         resolv_conf: Path | None = None,
+        acp_config: Path | None = None,
         testing: bool = False,
         name: str = "yuki-environment",
     ) -> None:
@@ -100,6 +103,7 @@ class PersistentManager:
         self.file_lock = asyncio.Lock()
         self.last_prune = 0.0
         self.last_layer_check = 0.0
+        self.acp = ACPResources(self, acp_config)
 
     async def command(self, *args: str, deadline_seconds: float = 30) -> tuple[int, bytes]:
         proc = await asyncio.create_subprocess_exec(
@@ -172,7 +176,7 @@ class PersistentManager:
     async def serve(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         try:
             async with asyncio.timeout(30):
-                raw = await reader.readline()
+                raw = await read_protocol_line(reader)
             request = json.loads(raw)
             if not isinstance(request, dict):
                 raise ValueError("invalid_request")
@@ -266,6 +270,8 @@ class PersistentManager:
         }
 
     def get(self, identity: str) -> dict[str, Any]:
+        if self.acp.kind(identity) in ACP_KINDS:
+            return self.acp.view(identity)
         row = self.db.execute("SELECT * FROM jobs WHERE id=?", (identifier(identity),)).fetchone()
         if row is None:
             return {"error": "run_not_found"}
@@ -287,7 +293,7 @@ class PersistentManager:
         meta = self.db.execute(
             "SELECT kind FROM environment_jobs WHERE id=?", (identity,)
         ).fetchone()
-        if meta and meta[0] == "service":
+        if meta and meta[0] in {"service", "acp_peer", "acp_control"}:
             with self.db:
                 changed = self.db.execute(
                     "UPDATE jobs SET state=?,result=? WHERE id=? AND state IN ('queued','running')",
@@ -295,7 +301,7 @@ class PersistentManager:
                 ).rowcount
             return bool(changed)
         changed = self._finish_receipt(identity, state, result)
-        if changed and state in TERMINAL:
+        if changed and state in TERMINAL and not (meta and meta[0] in ACP_KINDS):
             with self.db:
                 # Hash/source receipts survive; finished executable payloads need
                 # not grow the Manager database for the lifetime of the home.
@@ -391,6 +397,9 @@ class PersistentManager:
                 "--mount",
                 f"type=bind,src={Path(__file__).with_name('environment_supervisor.py').resolve()},"
                 "dst=/opt/yuki-runtime/supervisor.py,readonly",
+                "--mount",
+                f"type=bind,src={Path(__file__).with_name('acp_peer.py').resolve()},"
+                "dst=/opt/yuki-runtime/acp_peer.py,readonly",
                 "--env",
                 f"EXECD_ACCESS_TOKEN={token}",
             ]
@@ -436,7 +445,7 @@ class PersistentManager:
         ).fetchall():
             self.finish(row[0], "failed", {"error": "environment_migrated", "interrupted": True})
         for row in self.active():
-            if row["kind"] not in EXECUTION_TOOLS | {"service"}:
+            if row["kind"] not in EXECUTION_TOOLS | {"service", "acp_peer"}:
                 # Retired jobs never gain another dispatch from an upgrade.
                 # A native start/terminal receipt still belongs to the old run.
                 try:
@@ -460,7 +469,7 @@ class PersistentManager:
         return self.db.execute(
             "SELECT jobs.*,environment_jobs.kind,session_id,container_id,dispatched "
             "FROM jobs JOIN environment_jobs USING(id) "
-            "WHERE jobs.state IN ('queued','running')"
+            "WHERE jobs.state IN ('queued','running') AND kind NOT IN ('acp_prompt','acp_control')"
         ).fetchall()
 
     async def attach(self, identity: str, session: str, *, tty: bool) -> None:
@@ -528,6 +537,11 @@ class PersistentManager:
             "tty": bool(args.get("tty")),
             "timeout_seconds": args.get("timeout_seconds", 0),
         }
+        if kind == "acp_peer":
+            spec.update(
+                acp_peer=args,
+                argv=["/usr/local/bin/python", "-I", "/opt/yuki-runtime/acp_peer.py", identity],
+            )
         if kind == "service":
             spec["timeout_seconds"] = 0
         (root / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
@@ -542,7 +556,15 @@ class PersistentManager:
         if row is None or row["dispatched"] or self.get(identity)["status"] in TERMINAL:
             return
         args = json.loads(row["payload"])
-        spec = await asyncio.to_thread(self.prepare_spec, identity, args, row["kind"])
+        try:
+            spec = await asyncio.to_thread(self.prepare_spec, identity, args, row["kind"])
+        finally:
+            if row["kind"] == "acp_peer" and self.get(identity).get("purged"):
+                directory = self.runtime_root / identity
+                if directory.exists():
+                    shutil.rmtree(directory)
+        if row["kind"] == "acp_peer" and self.get(identity)["status"] in TERMINAL:
+            return
         assert self.execd is not None
         response = await self.execd.request(
             "POST",
@@ -554,6 +576,11 @@ class PersistentManager:
             },
         )
         session = response["session_id"]
+        if row["kind"] == "acp_peer" and self.get(identity)["status"] in TERMINAL:
+            # Creating an execd PTY has not dispatched the Supervisor. A close
+            # received while creating it must never regain launch permission.
+            await self.execd.request("DELETE", f"/pty/{session}")
+            return
         # Commit dispatch before the only action that can actually execute code.
         with self.db:
             self.db.execute(
@@ -607,6 +634,10 @@ class PersistentManager:
 
     async def control(self, identity: str, action: str, text: str = "") -> dict[str, Any]:
         identity = identifier(identity)
+        if self.acp.kind(identity) == "acp_prompt":
+            if action not in {"cancel", "close", "interrupt"}:
+                raise ValueError("acp_prompt_requires_permission_reply")
+            return self.acp.control("cancel", {"run_id": identity}, f"prompt-cancel:{identity}")
         result = self.get(identity)
         if result.get("error") or result.get("status") in TERMINAL:
             return result
@@ -921,6 +952,8 @@ class PersistentManager:
         if not isinstance(method, str) or not isinstance(args, dict):
             return {"error": "invalid_arguments"}
         try:
+            if method.startswith("acp_"):
+                return await self.acp.handle(method, args, request.get("request_id", ""))
             if method in EXECUTION_TOOLS:
                 return await self.submit(method, dict(args), request.get("request_id", ""))
             if method in {
@@ -944,6 +977,11 @@ class PersistentManager:
                     or wait_seconds < 0
                 ):
                     raise ValueError("invalid_wait_seconds")
+                if self.acp.kind(identity) == "acp_prompt":
+                    self.acp.refresh()
+                    if wait_seconds:
+                        await self.wait_result(identity, wait_seconds=wait_seconds)
+                    return self.acp.query(identity, args.get("cursor"))
                 completion = (
                     await self.wait_result(identity, wait_seconds=wait_seconds)
                     if wait_seconds
@@ -1017,6 +1055,10 @@ class PersistentManager:
             for key, task in tuple(self.pumps.items()):
                 if task.done():
                     self.pumps.pop(key, None)
+            try:
+                self.acp.refresh()
+            except (OSError, ValueError):
+                LOGGER.warning("acp_receipt_reconcile_pending")
             if time.time() - self.last_layer_check > 15:
                 current = await self.inspect_container()
                 self.last_layer_check = time.time()
@@ -1065,6 +1107,7 @@ class PersistentManager:
         for row in self.db.execute(
             "SELECT jobs.id FROM jobs JOIN environment_jobs USING(id) "
             "WHERE state IN ('succeeded','failed','cancelled') AND created<? "
+            "AND kind NOT IN ('acp_peer','acp_prompt','acp_control') "
             "AND jobs.id NOT IN (SELECT run_id FROM completion_outbox)",
             (time.time() - 7 * 86400,),
         ).fetchall():
