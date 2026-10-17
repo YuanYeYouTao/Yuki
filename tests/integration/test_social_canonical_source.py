@@ -9,15 +9,69 @@ from sqlalchemy import select
 from tests.support.social_identity_cases import social_env
 
 from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-from qq_ai_bot.domain.conversations import ScopeType
+from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
 from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
 from qq_ai_bot.domain.tool_actor import ToolActor
 from qq_ai_bot.identity.canonical_repository import ensure_person
 from qq_ai_bot.identity.db_models import IdentityBindingModel
 from qq_ai_bot.persistence.models import ChatEventModel
 from qq_ai_bot.runtime.origin import TurnOrigin
+from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.social.agent_adapter import invoke_social
 from qq_ai_bot.social.models import SocialError
+
+
+async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_receipt(
+    database, tmp_path
+):
+    env = await social_env(database, tmp_path)
+    async with database.sessions() as session:
+        original = await session.scalar(select(ChatEventModel))
+    current = await env.service.writer.append(
+        scope=ConversationScope.group("80001", "20001"),
+        platform_message_id="ordinary-reply",
+        sender_user_id="10001",
+        direction="inbound",
+        content="read the quoted message",
+        reply_to_event_id=original.id,
+        reply_to_message_id=original.platform_message_id,
+    )
+    inbound = InboundMessage(
+        "ordinary-reply",
+        "message",
+        ScopeType.GROUP,
+        SenderIdentity("10001"),
+        "read the quoted message",
+        bot_user_id="80001",
+        group_id="20001",
+        source_event_id=current.event.id,
+        reply_to_event_id=original.id,
+        person_id=env.person,
+        conversation_id=env.context.conversation_id,
+        presence_id=env.presence,
+        space_id=env.space,
+    )
+    runtime = ToolRuntime(inbound=inbound, visible_event_ids=frozenset({original.id}))
+    arguments = {"text": "reply delivered", "reply_to_event_id": original.id}
+    token = current_invocation.set(ToolInvocationContext(runtime, call_id="ordinary-reply-send"))
+    try:
+        result = await invoke_social(env.service, "send_message", arguments, runtime)
+    finally:
+        current_invocation.reset(token)
+    assert result["status"] == "succeeded"
+    sends = [params for action, params in env.bot.calls if action == "send_group_msg"]
+    assert len(sends) == 1
+    assert sends[0]["message"][0] == {"type": "reply", "data": {"id": original.platform_message_id}}
+    receipt = await env.service.receipts.find(
+        f"{env.context.conversation_id}:event:{current.event.id}", "ordinary-reply-send"
+    )
+    assert receipt is not None and receipt.operation_id == result["operation_id"]
+    assert receipt.status == "succeeded" and receipt.event_id == result["event_id"]
+    async with database.sessions() as session:
+        sent = await session.get(ChatEventModel, receipt.event_id)
+    assert sent.direction == "outbound" and sent.content == "reply delivered"
+    assert sent.canonical_conversation_id == current.event.canonical_conversation_id
+    assert sent.reply_to_event_id == original.id
 
 
 async def test_current_reply_rechecks_original_source_before_claim(database, tmp_path, monkeypatch):
