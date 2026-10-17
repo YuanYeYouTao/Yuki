@@ -269,7 +269,7 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
             tool_calls=(
                 ToolCall(
                     "original-fact",
-                    ToolFunction("get_memory_fact", json.dumps({"fact_id": fact.id})),
+                    ToolFunction("read_memory", json.dumps({"view": "fact", "fact_id": fact.id})),
                 ),
             ),
         )

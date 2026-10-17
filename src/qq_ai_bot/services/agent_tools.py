@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
@@ -61,7 +60,6 @@ from qq_ai_bot.persistence.models import MembershipModel
 from qq_ai_bot.persistence.people_repository import PeopleRepository
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
-    WebSearchSourceRepository,
 )
 from qq_ai_bot.runtime.errors import InvalidTurnContextError
 from qq_ai_bot.sandbox.environment_tools import EXECUTION_TOOLS, SANDBOX_TOOLS
@@ -80,7 +78,6 @@ from qq_ai_bot.web.models import (
 )
 from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
 
-_URL_IN_TEXT = re.compile(r"https?://[^\s<>'\"]+", re.IGNORECASE)
 _MEMORY_CHANGE_ORIGINS = frozenset(
     {
         TurnOrigin.USER_MESSAGE,
@@ -120,7 +117,7 @@ _MEMORY_READ_TOOL: ContextVar[str] = ContextVar("memory_read_tool", default="")
 _OBSERVED_MEMORY_READS = frozenset(
     {
         "search_memory",
-        "get_memory_fact",
+        "read_memory",
     }
 )
 
@@ -394,7 +391,6 @@ class AgentToolService:
         memory_context: MemoryContextService | None = None,
         memory_mutations: MemoryMutationService | None = None,
         web_provider: WebSearchProvider | None = None,
-        web_sources: WebSearchSourceRepository | None = None,
         runtime_config: RuntimeConfigService | None = None,
         permission_catalog: PermissionCatalogService | None = None,
     ) -> None:
@@ -416,7 +412,6 @@ class AgentToolService:
         self._memory_context = memory_context
         self._memory_mutations = memory_mutations
         self._web_provider = web_provider
-        self._web_sources = web_sources
         self._runtime_config = runtime_config or RuntimeConfigService(
             settings=settings,
             database=ledger._database,
@@ -461,52 +456,28 @@ class AgentToolService:
                 ),
             ),
             ChatTool(
-                name="get_recent_chat_history",
+                name="query_chat_history",
                 result_cacheable=False,
                 description=(
-                    "读取当前会话授权账本中的近期记录，不调用平台网关补查。"
-                    "当用户问刚才说了什么、当前对话历史或人物上下文时使用。"
-                ),
-                parameters=_object_schema({}),
-            ),
-            ChatTool(
-                name="search_chat_history",
-                description=(
-                    "查找旧聊天的原话、熟人线索或未写入结构化记忆的经历；"
-                    "可按内部 Person、Space 编号和时间约束。"
+                    "读取当前 Conversation 的授权账本：recent 取近期消息，search 按 keyword、"
+                    "内部 Person/Space 和 start_at/end_at 时间查原话；"
+                    "around 按内部 event_id 取前后记录。"
+                    "不调用平台补查，不接受平台消息号。before/after 是 around 的消息条数。"
                 ),
                 parameters=_object_schema(
                     {
+                        "view": {"type": "string", "enum": ["recent", "search", "around"]},
                         "keyword": {"type": "string"},
                         "person_id": {"type": "string"},
                         "space_id": {"type": "string"},
-                        "after": {
-                            "type": "string",
-                            "description": "ISO 8601 时间，可省略",
-                        },
-                        "before": {
-                            "type": "string",
-                            "description": "ISO 8601 时间，可省略",
-                        },
+                        "start_at": {"type": "string", "description": "ISO 8601 起点"},
+                        "end_at": {"type": "string", "description": "ISO 8601 终点"},
                         "limit": {"type": "integer", "minimum": 1},
-                    },
-                    required=("keyword",),
-                ),
-            ),
-            ChatTool(
-                name="get_chat_history_around",
-                description=(
-                    "读取当前会话账本中某条消息前后的原文。"
-                    "只用内部 event_id 定位。"
-                    "默认半径很小；需要对齐摘要覆盖区间里的原话时使用。"
-                ),
-                parameters=_object_schema(
-                    {
                         "event_id": {"type": "integer", "minimum": 1},
                         "before": {"type": "integer", "minimum": 0},
                         "after": {"type": "integer", "minimum": 0},
                     },
-                    required=("event_id",),
+                    required=("view",),
                 ),
             ),
             ChatTool(
@@ -516,7 +487,7 @@ class AgentToolService:
                     "人物、人物群、群及可见 SELF；当前群或提及不自动缩小范围。"
                     "仅明确限定目标时填写 target，姓名和群名须精确；歧义先澄清，拒绝不换范围重试。"
                     "结果有界且可能非穷尽，缺证据可改用不同查询补查。"
-                    "原始聊天用 search_chat_history。"
+                    "原始聊天用 query_chat_history(view=search)。"
                 ),
                 parameters=_object_schema(
                     {
@@ -547,22 +518,19 @@ class AgentToolService:
                 ),
             ),
             ChatTool(
-                name="get_memory_fact",
-                description="按上下文中已有 fact_id 读取当前用户有权查看的一条记忆事实。",
-                parameters=_object_schema(
-                    {"fact_id": {"type": "integer", "minimum": 1}},
-                    required=("fact_id",),
+                name="read_memory",
+                description=(
+                    "按内部 fact_id 读取记忆。view=fact 返回有权查看的事实；"
+                    "view=evidence 只返回本人记忆的有界证据摘要，"
+                    "不暴露他人来源身份，也不记作已读事实。"
                 ),
-            ),
-            ChatTool(
-                name="get_memory_evidence",
-                description=("读取当前用户本人记忆的有界证据摘要；不会返回其他人的证据来源身份。"),
                 parameters=_object_schema(
                     {
+                        "view": {"type": "string", "enum": ["fact", "evidence"]},
                         "fact_id": {"type": "integer", "minimum": 1},
                         "limit": {"type": "integer", "minimum": 1, "maximum": 20},
                     },
-                    required=("fact_id",),
+                    required=("view", "fact_id"),
                 ),
             ),
         ]
@@ -777,9 +745,8 @@ class AgentToolService:
                     ChatTool(
                         name="read_webpage",
                         description=(
-                            "通过受控提取服务读取一个公开网页。仅当用户明确发送 URL、要求"
-                            "阅读某网页，或本轮 web_search 已找到该网页时使用；不要用于"
-                            "猜测或扫描地址。"
+                            "读取一个明确的公开网页 URL，可来自本轮或历史。question 指定所需内容；"
+                            "搜索不自动下载页面，需正文时显式调用此工具。"
                         ),
                         parameters=_object_schema(
                             {
@@ -1037,20 +1004,25 @@ class AgentToolService:
                     self._log_memory_read_intent(arguments, parse_memory_tool_intent(arguments))
                 if name == "get_my_capabilities":
                     return self._my_capabilities(arguments, runtime)
-                if name == "get_recent_chat_history":
-                    return await self._recent_history(runtime)
-                if name == "search_chat_history":
-                    return await self._search(arguments, runtime)
-                if name == "get_chat_history_around":
-                    return await self._history_around(arguments, runtime)
+                if name == "query_chat_history":
+                    view = arguments.get("view")
+                    if view == "recent":
+                        return await self._recent_history(runtime)
+                    if view == "search":
+                        return await self._search(arguments, runtime)
+                    if view == "around":
+                        return await self._history_around(arguments, runtime)
+                    return self._result(error="invalid_arguments", detail="未知 history view")
                 if name == "search_memory":
                     result = await self._search_memory(arguments, runtime)
                     return await self._capture_memory_tool_result(result, runtime)
-                if name == "get_memory_fact":
-                    result = await self._memory_fact(arguments, runtime)
-                    return await self._capture_memory_tool_result(result, runtime)
-                if name == "get_memory_evidence":
-                    return await self._memory_evidence(arguments, runtime)
+                if name == "read_memory":
+                    if arguments.get("view") == "fact":
+                        result = await self._memory_fact(arguments, runtime)
+                        return await self._capture_memory_tool_result(result, runtime)
+                    if arguments.get("view") == "evidence":
+                        return await self._memory_evidence(arguments, runtime)
+                    return self._result(error="invalid_arguments", detail="未知 memory view")
                 if name == "memory_change":
                     return await self._memory_change(arguments, runtime)
                 if name == "web_search":
@@ -1156,8 +1128,8 @@ class AgentToolService:
             scope=runtime.conversation_scope(),
             person_id=self._optional_string(arguments.get("person_id")),
             space_id=self._optional_string(arguments.get("space_id")),
-            after=self._parse_time(arguments.get("after")),
-            before=self._parse_time(arguments.get("before")),
+            after=self._parse_time(arguments.get("start_at")),
+            before=self._parse_time(arguments.get("end_at")),
             limit=int(arguments.get("limit", 20)),
             message_only=True,
         )
@@ -1734,6 +1706,11 @@ class AgentToolService:
             raise ValueError("fact_id 必须是正整数")
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 20:
             raise ValueError("limit 必须是 1～20 的整数")
+        if (
+            runtime.memory_allowed_scopes is not None
+            and MemoryScopeType.PERSON not in runtime.memory_allowed_scopes
+        ):
+            return self._result(error="memory_not_found", detail="没有找到可查看的本人事实")
         fact = await self._memories.get_fact(fact_id)
         if fact is None or not await self._can_read_own_person_fact(fact, runtime):
             return self._result(error="memory_not_found", detail="没有找到可查看的本人事实")
@@ -2127,7 +2104,7 @@ class AgentToolService:
     async def _web_search(
         self, arguments: dict[str, Any], runtime: ToolRuntime
     ) -> ToolExecutionResult:
-        provider, sources = self._web_dependencies()
+        provider = self._web_dependencies()
         query = arguments.get("query")
         if not isinstance(query, str):
             return self._web_result(error="invalid_query", detail="query 必须是字符串")
@@ -2152,7 +2129,6 @@ class AgentToolService:
                 error="invalid_date_range",
                 detail="start_date 不能晚于 end_date",
             )
-        await sources.preflight_conversation_correlation(runtime.effective_conversation_id)
         response = await provider.search(
             WebSearchRequest(
                 query=query,
@@ -2161,16 +2137,14 @@ class AgentToolService:
                 start_date=start_date,
                 end_date=end_date,
                 max_results=self._runtime().web.search_max_results,
-                extract_max_results=self._runtime().web.extract_max_results,
             )
         )
-        await self._persist_web_response(response, runtime, sources)
         return self._web_result(data=self._web_response_json(response))
 
     async def _read_webpage(
         self, arguments: dict[str, Any], runtime: ToolRuntime
     ) -> ToolExecutionResult:
-        provider, sources = self._web_dependencies()
+        provider = self._web_dependencies()
         raw_url = arguments.get("url")
         if not isinstance(raw_url, str):
             return self._web_result(error="invalid_url", detail="url 必须是字符串")
@@ -2184,23 +2158,6 @@ class AgentToolService:
                 error="invalid_question",
                 detail="question 不能为空",
             )
-        explicitly_sent = (
-            normalized in self._inbound_urls(runtime.inbound)
-            if runtime.inbound is not None
-            else normalized in self._text_urls(runtime.require_actor().instruction)
-        )
-        previously_found = await sources.used_url_for_trigger(
-            conversation_key=runtime.conversation_key,
-            trigger_event_id=runtime.effective_trigger_event_id,
-            execution_id=runtime.execution_id or None,
-            url=normalized,
-        )
-        if not explicitly_sent and not previously_found:
-            return self._web_result(
-                error="url_not_authorized",
-                detail="只能读取用户明确发送或本轮搜索实际返回的网页",
-            )
-        await sources.preflight_conversation_correlation(runtime.effective_conversation_id)
         source = await provider.extract(normalized, question)
         response = WebSearchResponse(
             query=question,
@@ -2210,7 +2167,6 @@ class AgentToolService:
             partial_failure=False,
             provider=source.provider,
         )
-        await self._persist_web_response(response, runtime, sources)
         return self._web_result(data=self._web_response_json(response))
 
     def pin_web_provider(self) -> AbstractContextManager[None]:
@@ -2228,12 +2184,9 @@ class AgentToolService:
         return (
             self._settings.web.mode in {WebMode.NATIVE, WebMode.TAVILY, WebMode.BOTH}
             and self._web_provider is not None
-            and self._web_sources is not None
         )
 
-    def _web_dependencies(
-        self,
-    ) -> tuple[WebSearchProvider, WebSearchSourceRepository]:
+    def _web_dependencies(self) -> WebSearchProvider:
         if (
             self._settings.web.mode
             not in {
@@ -2242,33 +2195,9 @@ class AgentToolService:
                 WebMode.BOTH,
             }
             or self._web_provider is None
-            or self._web_sources is None
         ):
             raise WebSearchError("web_disabled", "联网搜索尚未启用")
-        return self._web_provider, self._web_sources
-
-    async def _persist_web_response(
-        self,
-        response: WebSearchResponse,
-        runtime: ToolRuntime,
-        repository: WebSearchSourceRepository,
-    ) -> None:
-        if not runtime.conversation_key or (
-            runtime.effective_trigger_event_id is None and not runtime.execution_id
-        ):
-            raise WebSearchError("missing_runtime", "联网工具缺少当前会话信息")
-        await repository.save_response(
-            conversation_key=runtime.conversation_key,
-            trigger_message_id=runtime.trigger_message_id,
-            trigger_event_id=runtime.effective_trigger_event_id,
-            execution_id=runtime.execution_id or None,
-            provider=response.provider,
-            response=response,
-            max_runs=self._runtime().web.source_max_runs_per_conversation,
-            canonical_conversation_id=runtime.effective_conversation_id,
-            bot_user_id=runtime.effective_bot_user_id,
-            ingress_presence_id=runtime.effective_presence_id,
-        )
+        return self._web_provider
 
     @staticmethod
     def _web_response_json(response: WebSearchResponse) -> dict[str, Any]:
@@ -2314,24 +2243,6 @@ class AgentToolService:
             return date.fromisoformat(value)
         except ValueError as exc:
             raise WebSearchError("invalid_date", f"{name} 必须是 YYYY-MM-DD") from exc
-
-    @staticmethod
-    def _inbound_urls(inbound: InboundMessage) -> frozenset[str]:
-        text = "\n".join(
-            value for value in (inbound.text, inbound.raw_text, inbound.reply_text or "") if value
-        )
-        return AgentToolService._text_urls(text)
-
-    @staticmethod
-    def _text_urls(text: str) -> frozenset[str]:
-        urls: set[str] = set()
-        for match in _URL_IN_TEXT.findall(text):
-            candidate = match.rstrip(".,;:!?)]}，。；：！？）》】")
-            try:
-                urls.add(normalize_public_url(candidate))
-            except WebSearchError:
-                continue
-        return frozenset(urls)
 
     @staticmethod
     def _parse_time(value: Any) -> datetime | None:

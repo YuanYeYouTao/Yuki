@@ -375,12 +375,12 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             full = {tool.name: tool for tool in await app.main_agent_contract.definitions()}
             assert SANDBOX_TOOLS | WORKSPACE_TOOLS <= full.keys()
             assert {
-                "automation_create",
+                "automation_manage",
                 "task_control",
                 "update_short_state",
                 "send_message",
             } <= full.keys()
-            schema = full["automation_create"].parameters
+            schema = full["automation_manage"].parameters
             assert "steps" not in json.dumps(schema) and "goal" in json.dumps(schema)
             async with database.sessions() as reader:
                 public = "\n".join(

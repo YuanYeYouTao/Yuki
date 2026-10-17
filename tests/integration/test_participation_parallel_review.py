@@ -190,7 +190,9 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
 async def test_selected_same_main_input_survives_late_participation_exit(
     database, tmp_path, monkeypatch, late_exit
 ):
-    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "original-read"), "NO_REPLY"])
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "original-read"), "NO_REPLY"]
+    )
     env, harness, worker, message = await _scene(
         database, tmp_path, provider, reason="continuation"
     )

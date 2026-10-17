@@ -2592,11 +2592,19 @@ class WorkRepository:
                     if effect_key is not None and (
                         previous.get("request_id") != request_id
                         or previous.get("run_id") not in (None, run_id)
-                        or previous.get("tool") not in EXECUTION_TOOLS
+                        or previous.get("tool")
+                        not in EXECUTION_TOOLS | {"environment_packages", "run_python"}
                     ):
                         continue
                     if previous.get("tool") not in (
-                        EXECUTION_TOOLS | {"terminal_write", "terminal_control", "cancel_code_run"}
+                        EXECUTION_TOOLS
+                        | {
+                            "environment_packages",
+                            "run_python",
+                            "terminal_write",
+                            "terminal_control",
+                            "cancel_code_run",
+                        }
                     ):
                         continue
                     merged = {**previous, **outcome}

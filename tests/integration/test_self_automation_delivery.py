@@ -1,6 +1,8 @@
 """SELF schedules retain their own actor and use the ordinary Main path."""
 
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import func, select
@@ -121,7 +123,7 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
                     "evidence_quote": "member",
                 },
             ),
-            ("get_memory_fact", None),
+            ("read_memory", None),
         ]
     )
     if accept_work:
@@ -138,8 +140,11 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
         if index >= len(calls):
             return "NO_REPLY"
         name, arguments = calls[index]
-        if name == "get_memory_fact":
-            arguments = {"fact_id": responses["memory_change"]["data"]["new_fact_id"]}
+        if name == "read_memory":
+            arguments = {
+                "view": "fact",
+                "fact_id": responses["memory_change"]["data"]["new_fact_id"],
+            }
         return ChatResponse(
             "",
             0,
@@ -154,7 +159,7 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
     assert result.status is RunStatus.SUCCEEDED, responses
     assert responses["memory_change"]["data"]["ok"]
     assert (
-        responses["get_memory_fact"]["data"]["memory"]["content"]
+        responses["read_memory"]["data"]["memory"]["content"]
         == calls[1 + int(accept_work)][1]["new_content"]
     )
     async with database.sessions() as session:
@@ -215,9 +220,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
     from qq_ai_bot.plugin_host import main_turn
     from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
     from qq_ai_bot.runtime.work_schema_v1 import effects
-    from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
     from qq_ai_bot.workspace.service import WorkspaceService
-    from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
     from yuki_plugin_sdk.permissions import PluginPermission
 
     case = await setup_run(
@@ -231,6 +234,9 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
     recorder = ToolInvocationRepository(database)
     case.chat._tool_invocations = recorder
     case.chat._tools.workspace_service = WorkspaceService(case.env.store)
+    case.chat._tools.sandbox_client = SimpleNamespace(
+        execute=AsyncMock(return_value={"ready": True, "workspace": "/workspace"})
+    )
     host = HostPluginContext(
         plugin_id="test.scheduled-self-read",
         approved_permissions=(PluginPermission.AGENT_RUN,),
@@ -239,7 +245,6 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
             ledger=case.harness.ledger,
             agent_runner=case.chat.runtime.runner,
             runtime_config=case.chat._runtime_config,
-            agent_capabilities=SANDBOX_TOOLS | WORKSPACE_TOOLS,
         ),
     )
     runtimes, sources = [], []
@@ -270,7 +275,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
                 "",
                 0,
                 tool_calls=(
-                    ToolCall("sdk-approved-read", ToolFunction("workspace_list", "{}")),
+                    ToolCall("sdk-approved-read", ToolFunction("environment_status", "{}")),
                     ToolCall("sdk-not-granted", ToolFunction("memory_change", "{}")),
                 ),
             )
@@ -301,7 +306,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
     try:
         with host.invocation_scope(host.plugin_id, sources[0]):
             sdk_result = await host.agent.run(
-                "Read published workspace artifacts through the approved SDK tool"
+                "Read the shared environment through the approved SDK tool"
             )
         assert sdk_result.ok and sdk_result.data["text"] == "SDK read complete"
         root = f"automation:{result.id}:{case.row.script_hash}"
@@ -314,7 +319,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
             receipts = list(
                 await session.scalars(
                     select(MemoryToolReceiptModel).where(
-                        MemoryToolReceiptModel.tool_name == "workspace_list"
+                        MemoryToolReceiptModel.tool_name == "environment_status"
                     )
                 )
             )
@@ -372,7 +377,7 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
             assert (
                 await session.scalar(
                     select(func.count(MemoryToolReceiptModel.id)).where(
-                        MemoryToolReceiptModel.tool_name == "workspace_list"
+                        MemoryToolReceiptModel.tool_name == "environment_status"
                     )
                 )
                 == 1
@@ -460,7 +465,7 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
     calls = (
         ("get_group_members", {}),
         ("memory_change", write),
-        ("get_memory_fact", None),
+        ("read_memory", None),
         ("task_control", {"action": "complete", "result": "原工作已写入记忆"}),
     )
 
@@ -475,8 +480,11 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
         if index >= len(calls):
             return "NO_REPLY"
         name, arguments = calls[index]
-        if name == "get_memory_fact":
-            arguments = {"fact_id": responses["memory_change"]["data"]["new_fact_id"]}
+        if name == "read_memory":
+            arguments = {
+                "view": "fact",
+                "fact_id": responses["memory_change"]["data"]["new_fact_id"],
+            }
         return ChatResponse(
             "",
             0,
@@ -513,7 +521,7 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
     assert actor.principal_kind == "self" and actor.initiative_run_id is None
     assert actor.person_id is None and actor.event_id is None and actor.user_id == ""
     assert responses["memory_change"]["data"]["ok"]
-    assert responses["get_memory_fact"]["data"]["memory"]["content"] == write["new_content"]
+    assert responses["read_memory"]["data"]["memory"]["content"] == write["new_content"]
     async with database.sessions() as session:
         receipt = await session.scalar(
             select(MemoryToolReceiptModel).where(

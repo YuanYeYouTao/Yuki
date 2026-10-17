@@ -12,10 +12,10 @@ import base64
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import secrets
-import shlex
 import shutil
 import sqlite3
 import time
@@ -33,7 +33,6 @@ from qq_ai_bot.workspace.store import WorkspaceError, WorkspaceStore
 LABEL = "io.yuki.sandbox=persistent-v1"
 CONTAINER = "yuki-environment"
 SEGMENT = 4 * 1024 * 1024
-PACKAGE_BUDGET = 1024 * 1024 * 1024
 LOG_BUDGET = 128 * 1024 * 1024
 LOGGER = logging.getLogger(__name__)
 
@@ -54,9 +53,7 @@ class PersistentManager:
     ) -> None:
         self.root, self.store, self.image = root.resolve(), store, image
         self.network, self.proxy = network, proxy
-        self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=4)
-        self.current: str | None = None
-        self.cancelled: set[str] = set()
+        self.queue: asyncio.Queue[str] = asyncio.Queue()
         self._waiters: dict[str, set[asyncio.Event]] = {}
         self.ready = False
         self.root.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -99,11 +96,8 @@ class PersistentManager:
         self.connections: dict[str, Any] = {}
         self.pumps: dict[str, asyncio.Task[None]] = {}
         self.file_lock = asyncio.Lock()
-        self.launch_lock = asyncio.Lock()
         self.last_prune = 0.0
-        self.layer_bytes = 0
         self.last_layer_check = 0.0
-        self.base_image_size = int(self.setting("base_image_size", "0"))
 
     async def command(self, *args: str, deadline_seconds: float = 30) -> tuple[int, bytes]:
         proc = await asyncio.create_subprocess_exec(
@@ -177,12 +171,12 @@ class PersistentManager:
         try:
             async with asyncio.timeout(30):
                 raw = await reader.readline()
-                request = json.loads(raw)
-                if not isinstance(request, dict):
-                    raise ValueError("invalid_request")
-                result = await self.handle(request)
-                writer.write(json.dumps(result).encode() + b"\n")
-                await writer.drain()
+            request = json.loads(raw)
+            if not isinstance(request, dict):
+                raise ValueError("invalid_request")
+            result = await self.handle(request)
+            writer.write(json.dumps(result).encode() + b"\n")
+            await writer.drain()
         except (ValueError, OSError, TimeoutError):
             writer.write(b'{"error":"invalid_request"}\n')
         finally:
@@ -197,18 +191,12 @@ class PersistentManager:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO environment_state VALUES (?,?)", (key, value))
 
-    def resource_limits(self) -> dict[str, int]:
+    def resource_limits(self) -> dict[str, int | float]:
         limits = {
             "memory_mib": int(self.setting("resource_memory_mib", "512")),
-            "cpus": int(self.setting("resource_cpus", "1")),
+            "cpus": float(self.setting("resource_cpus", "1")),
             "cpu_shares": int(self.setting("resource_cpu_shares", "1024")),
         }
-        if not (
-            128 <= limits["memory_mib"] <= 16384
-            and 1 <= limits["cpus"] <= 16
-            and 2 <= limits["cpu_shares"] <= 262144
-        ):
-            raise ValueError("invalid_environment_resource_limits")
         return limits
 
     @staticmethod
@@ -337,21 +325,13 @@ class PersistentManager:
             if os.geteuid() == 0:
                 os.chown(directory, 10001, 10001)
         await asyncio.to_thread(self.store.cleanup)
-        if not self.base_image_size:
-            code, size = await self.command(
-                "docker", "image", "inspect", "--format", "{{.Size}}", self.image
-            )
-            if code:
-                raise RuntimeError("environment_image_missing")
-            self.base_image_size = int(size)
-            self.set_setting("base_image_size", str(self.base_image_size))
         if not self.testing:
             code, runtimes = await self.command("docker", "info", "--format", "{{json .Runtimes}}")
             if code or self.runtime not in json.loads(runtimes):
                 raise RuntimeError("gvisor_unavailable")
-            code, network = await self.command("docker", "network", "inspect", self.network)
-            if code or not json.loads(network)[0].get("Internal"):
-                raise RuntimeError("private_network_required")
+            code, _ = await self.command("docker", "network", "inspect", self.network)
+            if code:
+                raise RuntimeError("environment_network_missing")
             for interface in ("yuki-sandbox0", "yuki-egress0"):
                 code, _ = await self.command(
                     "iptables", "-C", "INPUT", "-i", interface, "-j", "DROP"
@@ -378,7 +358,7 @@ class PersistentManager:
                 "--network",
                 self.network,
                 "--user",
-                "10001:10001",
+                "0:0",
                 "--memory",
                 f"{limits['memory_mib']}m",
                 "--memory-swap",
@@ -406,9 +386,16 @@ class PersistentManager:
                 f"type=bind,src={self.home},dst=/home/yuki",
                 "--mount",
                 f"type=bind,src={self.runtime_root},dst=/var/lib/yuki-runtime",
+                "--mount",
+                f"type=bind,src={Path(__file__).with_name('environment_supervisor.py').resolve()},"
+                "dst=/opt/yuki-runtime/supervisor.py,readonly",
                 "--env",
                 f"EXECD_ACCESS_TOKEN={token}",
             ]
+            # Rootfs snapshots retain their old container configuration. Override
+            # its former user/proxy defaults without discarding installed files.
+            for value in ("HOME=/home/yuki", "USER=root", "LOGNAME=root"):
+                args.extend(("--env", value))
             for variable in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
                 args.extend(("--env", f"{variable}={self.proxy}"))
             args.append(image)
@@ -445,7 +432,21 @@ class PersistentManager:
         ).fetchall():
             self.finish(row[0], "failed", {"error": "environment_migrated", "interrupted": True})
         for row in self.active():
-            if not row["dispatched"]:
+            if row["kind"] not in EXECUTION_TOOLS | {"service"}:
+                # Retired jobs never gain another dispatch from an upgrade.
+                # A native start/terminal receipt still belongs to the old run.
+                try:
+                    self.read_state_file(row["id"], "started", limit=1)
+                    started = True
+                except FileNotFoundError:
+                    started = False
+                except WorkspaceError:
+                    started = True  # No proof of non-execution; preserve the original unknown.
+                if not row["dispatched"] and not started and not self.status_record(row["id"]):
+                    self.finish(row["id"], "cancelled", {"error": "retired_execution_not_started"})
+                else:
+                    await self.reconcile(row)
+            elif not row["dispatched"]:
                 self.queue.put_nowait(row["id"])
             else:
                 await self.reconcile(row)
@@ -484,8 +485,6 @@ class PersistentManager:
                 key: record[key] for key in ("exit_code", "error", "finished_at") if key in record
             }
             result.update(self.output(identity))
-            if row["kind"] == "environment_packages" and record["status"] == "succeeded":
-                await self.checkpoint(identity, result)
             self.finish(identity, record["status"], result)
             connection = self.connections.pop(identity, None)
             if connection:
@@ -516,42 +515,17 @@ class PersistentManager:
         if os.geteuid() == 0:
             os.chown(
                 state,
-                0 if kind == "environment_packages" else 10001,
-                0 if kind == "environment_packages" else 10001,
+                0,
+                0,
             )
         spec = {
             "cwd": args.get("cwd", "/workspace"),
             "command": args.get("command", ""),
             "tty": bool(args.get("tty")),
-            "timeout_seconds": args.get("timeout_seconds", 1800),
+            "timeout_seconds": args.get("timeout_seconds", 0),
         }
         if kind == "service":
             spec["timeout_seconds"] = 0
-        if kind == "environment_packages":
-            action = args["action"]
-            packages = " ".join(shlex.quote(item) for item in args.get("packages", []))
-            command = (
-                "/usr/bin/dpkg --configure -a && /usr/bin/apt-get -f install -y"
-                if action == "repair"
-                else (
-                    f"/usr/bin/apt-get update -qq && /usr/bin/apt-get {action} "
-                    f"-y --no-install-recommends {packages}"
-                )
-            )
-            spec.update(
-                capture=True,
-                tty=False,
-                timeout_seconds=1800,
-                argv=[
-                    "/bin/bash",
-                    "--noprofile",
-                    "--norc",
-                    "-c",
-                    "export DEBIAN_FRONTEND=noninteractive; "
-                    + command
-                    + " && /usr/bin/apt-get clean && /bin/rm -rf /var/lib/apt/lists/*",
-                ],
-            )
         (root / "spec.json").write_text(json.dumps(spec), encoding="utf-8")
         (root / "spec.json").chmod(0o444)
         return spec
@@ -566,18 +540,16 @@ class PersistentManager:
         args = json.loads(row["payload"])
         spec = await asyncio.to_thread(self.prepare_spec, identity, args, row["kind"])
         assert self.execd is not None
-        session = None
-        if row["kind"] != "environment_packages":
-            response = await self.execd.request(
-                "POST",
-                "/pty",
-                {
-                    "cwd": spec["cwd"],
-                    "command": "exec /usr/local/bin/python -I /opt/yuki-runtime/supervisor.py "
-                    + identity,
-                },
-            )
-            session = response["session_id"]
+        response = await self.execd.request(
+            "POST",
+            "/pty",
+            {
+                "cwd": spec["cwd"],
+                "command": "exec /usr/local/bin/python -I /opt/yuki-runtime/supervisor.py "
+                + identity,
+            },
+        )
+        session = response["session_id"]
         # Commit dispatch before the only action that can actually execute code.
         with self.db:
             self.db.execute(
@@ -585,103 +557,22 @@ class PersistentManager:
                 (session, self.container_id, identity),
             )
             self.db.execute("UPDATE jobs SET state='running' WHERE id=?", (identity,))
-        if session:
-            await self.attach(identity, session, tty=bool(spec["tty"]))
-        else:
-            code, _ = await self.command(
-                "docker",
-                "exec",
-                "-d",
-                "-u",
-                "0:0",
-                "-e",
-                "HOME=/root",
-                "-e",
-                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                "-e",
-                "PYTHONUSERBASE=/root/.local",
-                "-e",
-                "PYTHONPATH=",
-                self.name,
-                "/usr/local/bin/python",
-                "-I",
-                "/opt/yuki-runtime/supervisor.py",
-                identity,
-            )
-            if code:
-                raise RuntimeError("package_dispatch_unknown")
-
-    async def checkpoint(self, identity: str, result: dict[str, Any]) -> None:
-        marker = f"checkpoint:{identity}"
-        if self.setting(marker):
-            result["checkpoint"] = self.setting(marker)
-            return
-        image = f"yuki-environment-checkpoint:{identity}"
-        code, _ = await self.command(
-            "docker", "commit", "--pause=false", self.name, image, deadline_seconds=120
-        )
-        if code:
-            result["checkpoint_error"] = "checkpoint_failed_environment_retained"
-            return
-        old = self.setting("checkpoint_image")
-        obsolete = self.setting("previous_checkpoint_image")
-        self.set_setting("previous_checkpoint_image", old or self.image)
-        self.set_setting("checkpoint_image", image)
-        self.set_setting(marker, image)
-        code, versions = await self.command(
-            "docker",
-            "exec",
-            "-u",
-            "0:0",
-            self.name,
-            "/usr/bin/dpkg-query",
-            "-W",
-            "-f=${Package}\t${Version}\n",
-        )
-        if not code:
-            (self.root / f"packages-{identity}.txt").write_bytes(versions)
-        result["checkpoint"] = image
-        if (
-            obsolete
-            and obsolete not in {old, self.image, image}
-            and obsolete.startswith("yuki-environment-checkpoint:")
-        ):
-            await self.command("docker", "image", "rm", obsolete)
+        await self.attach(identity, session, tty=bool(spec["tty"]))
 
     def validate_execution(self, method: str, args: dict[str, Any]) -> None:
-        if method == "environment_packages":
-            if args.get("action") not in {"install", "remove", "repair"}:
-                raise ValueError("invalid_package_action")
-            packages = args.get("packages", [])
-            if (
-                not isinstance(packages, list)
-                or len(packages) > 30
-                or (not packages and args["action"] != "repair")
-                or any(
-                    not isinstance(p, str)
-                    or not re.fullmatch(
-                        r"[a-z0-9][a-z0-9+.-]*(?::amd64)?(?:=[A-Za-z0-9.+:~_-]+)?", p
-                    )
-                    for p in packages
-                )
-            ):
-                raise ValueError("invalid_packages")
-        else:
-            if (
-                not isinstance(args.get("command"), str)
-                or not 1 <= len(args["command"].encode()) <= 65536
-            ):
-                raise ValueError("invalid_command")
-            if type(args.get("tty", False)) is not bool:
-                raise ValueError("invalid_tty")
-        cwd = args.get("cwd", "/workspace")
-        if not isinstance(cwd, str) or not cwd.startswith("/") or "\x00" in cwd or len(cwd) > 4096:
+        if not isinstance(args.get("command"), str):
+            raise ValueError("invalid_command")
+        if type(args.get("tty", False)) is not bool:
+            raise ValueError("invalid_tty")
+        if not isinstance(args.get("cwd", "/workspace"), str):
             raise ValueError("invalid_cwd")
-        timeout = args.get("timeout_seconds", 1800)
-        if type(timeout) is not int or not 0 <= timeout <= 86400:
+        timeout = args.get("timeout_seconds", 0)
+        if type(timeout) is not int or timeout < 0:
             raise ValueError("invalid_timeout")
 
     async def submit(self, method: str, args: dict[str, Any], request_id: str) -> dict[str, Any]:
+        if method not in EXECUTION_TOOLS | {"service"}:
+            return {"error": "unknown_method"}
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 256:
             return {"error": "invalid_request_id"}
         self.validate_execution(method, args)
@@ -698,47 +589,6 @@ class PersistentManager:
             )
         if not self.ready:
             return {"error": "environment_unavailable", "retryable": False}
-        if not self.testing and self.available_memory() < 256 * 1024 * 1024:
-            return {
-                "error": "host_memory_pressure",
-                "available_bytes": self.available_memory(),
-                "retryable": False,
-            }
-        active = self.active()
-        category = "tty" if method == "terminal_exec" and args.get("tty") else "execution"
-        if category == "tty":
-            used = sum(
-                row["kind"] == "terminal_exec" and bool(json.loads(row["payload"]).get("tty"))
-                for row in active
-            )
-            limit = 4
-        else:
-            used = sum(
-                row["kind"] != "service" and not json.loads(row["payload"]).get("tty")
-                for row in active
-            )
-            limit = 1
-        if method != "service" and used >= limit:
-            return {
-                "error": "environment_busy",
-                "active_run_ids": [row["id"] for row in active],
-                "retryable": False,
-            }
-        if (
-            method == "environment_packages"
-            and args["action"] == "install"
-            and (
-                self.layer_bytes >= PACKAGE_BUDGET
-                or (not self.testing and shutil.disk_usage(self.root).free < 2 * 1024**3)
-            )
-        ):
-            return {
-                "error": "package_budget_exhausted",
-                "used_bytes": self.layer_bytes,
-                "budget_bytes": PACKAGE_BUDGET,
-            }
-        if self.queue.full() or (method != "service" and not self.completions.reserve_available()):
-            return {"error": "completion_backlog_full", "retryable": False}
         identity = str(uuid4())
         with self.db:
             self.db.execute(
@@ -778,7 +628,7 @@ class PersistentManager:
         if action == "interrupt":
             await connection.send(json.dumps({"type": "signal", "signal": "SIGINT"}))
         elif action == "input":
-            if not isinstance(text, str) or len(text.encode()) > 8192:
+            if not isinstance(text, str):
                 raise ValueError("invalid_terminal_input")
             await connection.send(json.dumps({"type": "stdin", "data": text}))
         else:
@@ -788,17 +638,6 @@ class PersistentManager:
     def file_operation(self, method: str, args: dict[str, Any]) -> dict[str, Any]:
         path = args.get("path", "")
         version = args.get("expected_version")
-        if method == "workspace_list":
-            return self.files.listing(
-                path, cursor=args.get("cursor", ""), limit=args.get("limit", 50)
-            )
-        if method == "workspace_read":
-            return self.files.read(
-                path,
-                offset=args.get("offset", 0),
-                limit=args.get("limit", 32768),
-                expected_version=args.get("expected_version"),
-            )
         if method in {"workspace_media_read", "workspace_media_validate"}:
             # Private Host/Manager operations, never tool declarations. Read
             # from a safely opened workspace FD, outside any SQLite writer.
@@ -836,20 +675,6 @@ class PersistentManager:
                         raise WorkspaceError("file_changed_during_read")
                     result["base64"] = base64.b64encode(data).decode("ascii")
                 return result
-        if method == "workspace_write":
-            return self.files.write(path, args["text"].encode(), expected_version=version)
-        if method == "workspace_mkdir":
-            return self.files.mkdir(path)
-        if method == "workspace_move":
-            return self.files.move(path, args["destination"], expected_version=version)
-        if method == "workspace_delete":
-            return self.files.delete(path, expected_version=version)
-        if method == "workspace_patch":
-            return self.files.patch(
-                path, args["old_text"], args["new_text"], expected_version=str(version)
-            )
-        if method == "workspace_search":
-            return self.files.search(args["query"], path=path)
         if method == "workspace_publish":
             with self.files.open_file(path) as fd:
                 current, _ = self.files.fingerprint(fd)
@@ -870,13 +695,14 @@ class PersistentManager:
     async def file_request(
         self, method: str, args: dict[str, Any], request_id: str
     ) -> dict[str, Any]:
-        read = method in {
-            "workspace_list",
-            "workspace_read",
-            "workspace_search",
+        if method not in {
             "workspace_media_read",
             "workspace_media_validate",
-        }
+            "workspace_publish",
+            "workspace_checkout",
+        }:
+            return {"error": "unknown_method"}
+        read = method in {"workspace_media_read", "workspace_media_validate"}
         async with self.file_lock:
             args = dict(args)
             digest = hashlib.sha256(json.dumps([method, args], sort_keys=True).encode()).hexdigest()
@@ -922,7 +748,8 @@ class PersistentManager:
                     name = args.get("name", artifact_id)
                     self.files.parts(name)
                     try:
-                        self.files.read(name)
+                        with self.files.open_file(name):
+                            pass
                     except FileNotFoundError:
                         args["path"] = name
                     else:
@@ -977,17 +804,12 @@ class PersistentManager:
             "home": "/home/yuki",
             "workspace": "/workspace",
             "storage": self.disk_status(),
-            "package_layer_bytes": self.layer_bytes,
-            "package_budget_bytes": PACKAGE_BUDGET,
             "checkpoint": self.setting("checkpoint_image", self.image),
             "host_available_bytes": self.available_memory(),
             "limits": {
                 **self.resource_limits(),
                 "swap_mib": 128,
                 "pids": 128,
-                "executions": 1,
-                "services": 2,
-                "terminals": 4,
             },
             "runs": [
                 dict(row)
@@ -1008,7 +830,7 @@ class PersistentManager:
         action, name = args.get("action"), args.get("name", "")
         if action == "status" and not name:
             return {"services": self.environment_status()["services"]}
-        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", name):
+        if not isinstance(name, str) or not name:
             raise ValueError("invalid_service_name")
         row = self.db.execute("SELECT * FROM environment_services WHERE name=?", (name,)).fetchone()
         if action == "register":
@@ -1016,13 +838,6 @@ class PersistentManager:
             restart = args.get("restart", "on-failure")
             if restart not in {"always", "on-failure", "never"}:
                 raise ValueError("invalid_restart_policy")
-            if row and row["enabled"]:
-                return {"error": "stop_service_before_update"}
-            if (
-                not row
-                and self.db.execute("SELECT count(*) FROM environment_services").fetchone()[0] >= 2
-            ):
-                return {"error": "service_limit"}
             spec = {
                 "command": args["command"],
                 "cwd": args.get("cwd", "/workspace"),
@@ -1075,16 +890,6 @@ class PersistentManager:
         for row in self.db.execute("SELECT * FROM environment_services WHERE enabled=1").fetchall():
             previous = self.get(row["run_id"]) if row["run_id"] else {}
             if previous.get("pending"):
-                record = self.status_record(row["run_id"])
-                if (
-                    time.time() - float(record.get("started_at", time.time())) > 60
-                    and row["attempts"] > 1
-                ):
-                    with self.db:
-                        self.db.execute(
-                            "UPDATE environment_services SET attempts=1 WHERE name=?",
-                            (row["name"],),
-                        )
                 continue
             if row["next_start"] > time.time():
                 continue
@@ -1094,9 +899,7 @@ class PersistentManager:
                 or (spec["restart"] == "on-failure" and previous.get("status") == "succeeded")
             ):
                 continue
-            if row["attempts"] >= 5:
-                continue
-            result = await self.submit("service", spec, f"service:{row['name']}:{uuid4()}")
+            result = await self.submit("service", spec, f"service:{uuid4()}")
             if result.get("run_id"):
                 with self.db:
                     self.db.execute(
@@ -1104,7 +907,7 @@ class PersistentManager:
                         "tempts=attempts+1,next_start=? WHERE name=?",
                         (
                             result["run_id"],
-                            time.time() + min(300, 2 ** row["attempts"] * 5),
+                            time.time() + 5,
                             row["name"],
                         ),
                     )
@@ -1115,30 +918,44 @@ class PersistentManager:
             return {"error": "invalid_arguments"}
         try:
             if method in EXECUTION_TOOLS:
-                async with self.launch_lock:
-                    return await self.submit(method, dict(args), request.get("request_id", ""))
-            if method.startswith("workspace_"):
+                return await self.submit(method, dict(args), request.get("request_id", ""))
+            if method in {
+                "workspace_media_read",
+                "workspace_media_validate",
+                "workspace_publish",
+                "workspace_checkout",
+            }:
                 return await self.file_request(method, args, request.get("request_id", ""))
             if method == "environment_status":
                 return self.environment_status()
             if method == "environment_service":
                 return await self.service(args)
             if method == "terminal_read":
-                completion = self.get(identifier(args.get("run_id")))
+                identity = identifier(args.get("run_id"))
+                wait_seconds = args.get("wait_seconds", 0)
+                if (
+                    isinstance(wait_seconds, bool)
+                    or not isinstance(wait_seconds, (int, float))
+                    or not math.isfinite(wait_seconds)
+                    or wait_seconds < 0
+                ):
+                    raise ValueError("invalid_wait_seconds")
+                completion = (
+                    await self.wait_result(identity, wait_seconds=wait_seconds)
+                    if wait_seconds
+                    else self.get(identity)
+                )
+                if completion.get("error"):
+                    return completion
                 return {
                     **completion,
-                    **self.output(identifier(args.get("run_id")), args.get("cursor", 0)),
+                    **self.output(identity, args.get("cursor", 0)),
                     **({"completion": completion} if completion.get("status") in TERMINAL else {}),
                 }
-            if method in {"terminal_write", "terminal_control", "cancel_code_run"}:
-                action = (
-                    "input"
-                    if method == "terminal_write"
-                    else "cancel"
-                    if method == "cancel_code_run"
-                    else args.get("action", "")
+            if method == "terminal_control":
+                return await self.control(
+                    str(args.get("run_id")), args.get("action", ""), args.get("text", "")
                 )
-                return await self.control(str(args.get("run_id")), action, args.get("text", ""))
             if method == "list_code_completions":
                 return self.completions.pending(args.get("limit", 20), args.get("after", 0))
             if method == "ack_code_completion":
@@ -1151,8 +968,6 @@ class PersistentManager:
                     "SELECT id FROM jobs WHERE request_id=?", (original_id,)
                 ).fetchone()
                 return self.get(prior["id"]) if prior else {"error": "unknown_request"}
-            if method == "get_code_run":
-                return await self.wait_result(identifier(args.get("run_id")))
             return {"error": "unknown_method"}
         except (WorkspaceError, ValueError, KeyError, TypeError) as exc:
             return {
@@ -1199,18 +1014,8 @@ class PersistentManager:
                 if task.done():
                     self.pumps.pop(key, None)
             if time.time() - self.last_layer_check > 15:
-                current = await self.inspect_container(size=True)
+                current = await self.inspect_container()
                 self.last_layer_check = time.time()
-                if current:
-                    code, image_size = await self.command(
-                        "docker", "image", "inspect", "--format", "{{.Size}}", current["Image"]
-                    )
-                    self.layer_bytes = (
-                        int(current.get("SizeRw", 0))
-                        + max(0, int(image_size) - self.base_image_size)
-                        if not code
-                        else PACKAGE_BUDGET
-                    )
                 if (
                     not current
                     or not current["State"]["Running"]
@@ -1231,15 +1036,6 @@ class PersistentManager:
                         await self.recover()
                     except Exception:
                         LOGGER.warning("environment_recovery_pending")
-                if self.layer_bytes > PACKAGE_BUDGET or (
-                    not self.testing and shutil.disk_usage(self.root).free < 1024**3
-                ):
-                    for row in self.active():
-                        if (
-                            row["kind"] == "environment_packages"
-                            and json.loads(row["payload"]).get("action") == "install"
-                        ):
-                            await self.control(row["id"], "cancel")
             if self.ready:
                 await self.restore_services()
             if time.time() - self.last_prune > 60:
@@ -1301,7 +1097,8 @@ class PersistentManager:
                     path = f"imported/{identity}/{path}"
                 if not previous:
                     try:
-                        self.files.read(path)
+                        with self.files.open_file(path):
+                            pass
                     except FileNotFoundError:
                         pass
                     else:
@@ -1316,10 +1113,11 @@ class PersistentManager:
                         )
                 alias = f"by-id/{identity}"
                 try:
-                    alias_record = self.files.read(alias)
+                    with self.files.open_file(alias) as fd:
+                        alias_version, _ = self.files.fingerprint(fd)
                 except FileNotFoundError:
-                    alias_record = self.files.write(alias, content)
-                if alias_record["version"] != metadata["sha256"]:
+                    alias_version = self.files.write(alias, content)["version"]
+                if alias_version != metadata["sha256"]:
                     raise WorkspaceError("legacy_alias_checksum_failed")
                 records.append(
                     {**metadata, "path": f"/workspace/{path}", "legacy_path": f"/workspace/{alias}"}
@@ -1328,7 +1126,8 @@ class PersistentManager:
             if not cursor:
                 break
         try:
-            version = self.files.read("manifest.json")["version"]
+            with self.files.open_file("manifest.json") as fd:
+                version, _ = self.files.fingerprint(fd)
         except FileNotFoundError:
             version = None
         self.files.write("manifest.json", json.dumps(records, ensure_ascii=False).encode(), version)

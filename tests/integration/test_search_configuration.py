@@ -181,9 +181,7 @@ async def test_admin_apply_persists_native_defaults_and_dispatches_original_prov
         else:
             token = current_web_model_task.set(ModelTask.CHAT_AGENT)
             try:
-                response = await provider.search(
-                    WebSearchRequest("actual query", extract_max_results=0)
-                )
+                response = await provider.search(WebSearchRequest("actual query"))
             finally:
                 current_web_model_task.reset(token)
             sources = response.sources

@@ -74,12 +74,14 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
     assert wire["evidence_state"]
     assert "memory_grounding_policy" not in wire
     assert len(json.dumps(wire, ensure_ascii=False)) <= settings.agent_tool_result_max_characters
-    for name in ("get_memory_fact", "get_memory_evidence"):
-        result = await tools.execute(name, json.dumps({"fact_id": fact.id}), runtime)
+    for view in ("fact", "evidence"):
+        result = await tools.execute(
+            "read_memory", json.dumps({"view": view, "fact_id": fact.id}), runtime
+        )
         payload = result.model_payload()
         assert payload["ok"], payload
         assert "memory_grounding_policy" not in payload
-        if name == "get_memory_fact":
+        if view == "fact":
             assert payload["evidence_state"]
             assert payload["data"]["memory"]["content"] == content
         else:

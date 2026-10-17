@@ -72,7 +72,7 @@ Yuki 3.0.0 对 MemoryFacade 做了正式 contract freeze：稳定方法为 `list
 ```python
 agent.result(work_id) -> PluginResult
 agent.resume(work_id, text, *, request_id) -> PluginResult
-agent.run(instruction, *, context_profile="none", allowed_capabilities=(),
+agent.run(instruction, *, context_profile="none",
           max_tool_calls=None, max_model_requests=None) -> PluginResult
 
 agent_sessions.create(CreateAgentSessionRequest) -> AgentSession
@@ -83,7 +83,8 @@ agent_sessions.close(session_id: UUID) -> AgentSession
 
 `agent.run` 复用真实 Host actor/source；无入站消息的 SELF 或定时来源同样进入 Main。
 同来源及参数读取原 Work 与结果，恢复保原来源、执行 ID、回执和预算；不同来源不会共用结果。
-当前真实 Person 的权限在执行处核验，SELF 保自身主体。已有 Work 上下文本身不禁用独立调用，
+当前真实 Person 的权限在执行处核验，SELF 保自身主体。主调用不再接收工具名子集；
+现有插件领域批准在执行处核验，旧 Work 不因退役名称失配而重建或重买。已有 Work 上下文本身不禁用独立调用，
 同会话已占用的执行租约沿原执行层处理。
 
 ## Web / HTTP / Vision / Media
@@ -96,6 +97,10 @@ vision.analyze_current_media(question="") -> PluginResult
 media.get_current() -> tuple[Mapping, ...]
 media.create_artifact(*, data, content_type, filename, ttl_seconds=86400) -> MediaArtifactHandle
 ```
+
+`web.search` 只返回供应商已有来源、内容和总结，不自动抓页或调用 Extract。
+`web.read` 明确读取选定的公开 URL，可使用历史链接；两者分别需要 `web.search`、
+`web.read` 批准，搜索权限不包含读页权限。
 
 `auth_secret` 只能引用 Manifest 已声明的 Secret。Host 仅在同源请求中注入 Bearer credential，跨源重定向会移除；响应只返回 ETag、Last-Modified、Retry-After、Link 和有限的 Rate Limit / request-id Header。
 

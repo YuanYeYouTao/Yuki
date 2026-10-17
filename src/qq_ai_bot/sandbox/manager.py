@@ -34,8 +34,8 @@ async def main() -> None:
     parser.add_argument("--image", required=True)
     parser.add_argument("--persistent-home", type=Path, required=True)
     parser.add_argument("--migrate-only", action="store_true")
-    parser.add_argument("--network", default="yuki-sandbox-internal")
-    parser.add_argument("--proxy", default="http://172.30.251.2:3128")
+    parser.add_argument("--network", default="yuki-sandbox-egress")
+    parser.add_argument("--proxy", default="")
     args = parser.parse_args()
     from qq_ai_bot.sandbox.persistent import PersistentManager
 

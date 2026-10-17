@@ -2,7 +2,7 @@
 
 日期：2026-10-16。状态：**只读调研和讨论方案，未授权、未实施任何工具删改**。
 
-2026-10-17 状态补充：上述状态仅指本页原调研阶段。后续已授权并本地实现通用工具/平台适配、内部ID、固定入口合同、默认raw第二出口退役和新READ调用重新执行，见[实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)。§5的进一步取消/查询/自动化/历史入口合并和说明精简仍是未实施候选，不在[人物身份任务书](Yuki-人物身份解耦与原回执修复任务书-2026-10-17.md)范围内。工具精简由[#454](https://github.com/YuanYeYouTao/Yuki/issues/454)统一跟踪；本次发现的搜索问题与待实施清单补入[§5.1](#51-454-搜索与读页职责清理任务)。下文旧工具数量和源码行号保持原基线，不当作当前工具数；聊天检索能力增强另与[#448](https://github.com/YuanYeYouTao/Yuki/issues/448)协调。
+2026-10-17 状态补充：上述状态仅指本页原调研阶段。通用工具/平台适配、内部ID、固定入口合同、默认raw第二出口退役和新READ调用重新执行已随 [PR #458](https://github.com/YuanYeYouTao/Yuki/pull/458) 进入 main。进一步精简和 W01–W06 搜索清理统一见 [#454任务书](Yuki-454工具精简与统一执行任务书-2026-10-17.md)，代码已实施，至少五轮复审、联合验证及实际交付见[实施审查](Yuki-454工具精简实施与审查记录-2026-10-17.md)。最新要求改为终端优先：补环境内管理员PTY、正常联网并删除软件门槛，八项普通工作区接口和专用包管理退出，只保媒体/发布桥，默认54/55→29/30；direct/Code及平台/App分别统计。下文旧数量和源码行号保原基线，§5为当时讨论，不能据旧CAS/保留建议恢复退役工具；§5.1保搜索事故，不另维护实施清单。聊天检索增强仍与[#448](https://github.com/YuanYeYouTao/Yuki/issues/448)协调。
 
 本文与 #299 同步 main 的审查任务书分开：先说明现有会话和工具事实，再给出可讨论的精简方向。工具出现在声明里不代表调用者有权执行，也不代表对应网关、模型服务或沙箱已经可用。
 
@@ -199,7 +199,7 @@ Memoh 将定义交模型和执行分开；ExecuteTools 只匹配该次可执行�
 
 ## 5. Yuki 可讨论的删除／合并／保留候选
 
-下表保留原讨论候选，不把尚未定案的项目当作删除决定。搜索职责清理已按本次要求纳入 §5.1，待与 #454 统一实施；本次仅更新计划和 issue。优先级按“能否删除真实重复，且保住原能力”排列，不按谁的工具数更少。
+下表保留原阶段的讨论依据，不作当前执行清单。最新 [#454任务书](Yuki-454工具精简与统一执行任务书-2026-10-17.md)已改为完整自由终端、普通文件八项整链删除，只保媒体/发布桥与自动化query/manage，默认direct和可选Code分别统计。任务书尚未实施，原表的“再讨论”、CAS或保守保留结论不覆盖新方案，也不恢复上版五项facade。
 
 | 候选 | 当前实据与可讨论改法 | 代价与必须保留的语义 |
 | --- | --- | --- |
@@ -221,7 +221,7 @@ Memoh 将定义交模型和执行分开；ExecuteTools 只匹配该次可执行�
 
 ### 5.1 #454 搜索与读页职责清理任务
 
-补充日期：2026-10-17，UTC+8；核查产品基线为 main `d2e8a99822638206ddc88be3436286384a87ca8e`。以下项目已经纳入 #454，**尚未实施**。本节是 #454 的搜索实施清单；[搜索专项任务书（固定研究快照）](https://github.com/YuanYeYouTao/Yuki/blob/5ccfa88cea401858aa3640af083566cab175d776/docs/architecture/Yuki-%E6%90%9C%E7%B4%A2%E4%B8%8E%E7%BD%91%E9%A1%B5%E8%AF%BB%E5%8F%96%E8%A7%A3%E8%80%A6%E4%BB%BB%E5%8A%A1%E4%B9%A6-2026-10-17.md)保留事故、Memoh/pi 对照、消费者、S01–S14 与 V01–V15 的详细依据，后续完成状态在本节统一更新。
+补充日期：2026-10-17，UTC+8；核查产品基线为 main `d2e8a99822638206ddc88be3436286384a87ca8e`。搜索任务已经纳入 #454，**尚未实施**。W01–W06 的完整实施清单和后续状态已移入 [#454 统一任务书 §4](Yuki-454工具精简与统一执行任务书-2026-10-17.md)；本节保留事故依据。[搜索专项任务书（固定研究快照）](https://github.com/YuanYeYouTao/Yuki/blob/5ccfa88cea401858aa3640af083566cab175d776/docs/architecture/Yuki-%E6%90%9C%E7%B4%A2%E4%B8%8E%E7%BD%91%E9%A1%B5%E8%AF%BB%E5%8F%96%E8%A7%A3%E8%80%A6%E4%BB%BB%E5%8A%A1%E4%B9%A6-2026-10-17.md)继续保留 Memoh/pi 对照、消费者及 S01–S14/V01–V15 的详细研究范围。
 
 **发现的问题。** 当天下午 event `106957`／tool invocation `13970` 和 event `106958`／tool invocation `13971` 的搜索模型分别只耗时 16.048、25.091 秒，但工具耗时 151.595、160.977 秒；两次都在模型返回后额外等了约 135 秒的自动抓页。后一轮等待 Conversation 108.143 秒。来源是 Google grounding 引用 URL，抓页未取得逐来源正文；现有证据不能把这段额外等待归因于 SQLite 写锁。前三页并发等待，并非三页串行各等 135 秒。
 
@@ -229,14 +229,7 @@ Memoh 将定义交模型和执行分开；ExecuteTools 只匹配该次可执行�
 
 **目标行为。** 固定保留 `web_search`、`read_webpage` 和 SDK `search/read`；搜索交回供应商已经返回的来源、摘录、已有正文、总结及 usage，只有明确读页才由 Yuki 追加下载。Gemini 没有逐来源正文时如实为空，`provider_summary` 不冒充原文。各协议上游真实的搜索／open_page 动作和原内容继续保留；不加自动读页、重搜、后端切换、URL 名单或新开关。
 
-| 项目 | 对应专项任务 | 待实施内容与完成证据 |
-| --- | --- | --- |
-| W01 搜索只做搜索 | S01–S02 | 删除 `web/native_bridge.py` 自动提取任务／gather／`extract_failed` 链及 Tavily `search` 后的 `/extract`；保显式 `extract`、真实来源动作与原生失败。Gemini、Messages、Responses、Tavily 均覆盖，搜索不再由 Yuki 追加来源 HTTP／Extract 请求，也不偷偷开启 `include_raw_content` |
-| W02 删除提取数量全链 | S03–S04 | 删除 `WebSearchRequest.extract_max_results`、Main/SDK 注入，以及 `WEB_EXTRACT_MAX_RESULTS/web.extract_max_results` 的 Settings、runtime snapshot、Admin spec/service、装配、示例、说明与对应测试。不改成默认零，不留兼容开关；现行值要求正数，不能建议设零规避 |
-| W03 允许明确读取历史 URL | S07 | 删除 Main 当前输入 URL 比对、`used_url_for_trigger` 和 `url_not_authorized` 分支，删除“必须先本轮搜索”的说明。继续核真实来源、联网批准和插件 `WEB_READ`；`WEB_SEARCH` 不获得读页权限，不扩大人物证据或其他入口原文的可见范围 |
-| W04 删除重复来源新写入 | S08–S09 | 删除 `_persist_web_response/save_response`、仅为该索引准备的预读、无用查询及 AgentToolService/ChatService/Conversation 装配注入；退役 `WEB_SOURCE_MAX_RUNS_PER_CONVERSATION/web.source_max_runs_per_conversation`。新搜索与读取均不再写第二份来源索引；旧表、ORM、冻结迁移、过期清理、人物隐私删除和 `source_retention_days` 保留 |
-| W05 升级、回执与缓存 | S10–S11 | 下个冻结迁移精确删除上述退役 key 所有 scope 的现行覆盖，保管理历史；旧 key 按已有未知配置语义处理。新搜索语义沿既有 cache namespace 升版，旧检索缓存自然过期；页面 `direct-page-v2` 的 URL/问题键与 TTL 不变，代理/超时不进入缓存身份。更新 Main/SDK/Provider/升级文档和工具说明，声明变更沿合法新链产生 revision |
-| W06 完整执行与恢复验证 | S12 | 真实 Runner/SQLite/假网关覆盖搜索→明确读页→统一发送，direct/Code、平台/App 与插件沿同一能力；覆盖跨轮读页、真实撤权、读页失败/取消、旧已接纳结果、未知付费请求、metadata-only 与 artifact 缺失。读页失败不推翻成功搜索，不因新 cache/声明重发已付或未知调用，保原 ID、工具配对、Work 和累计预算 |
+六项仍完整保留：W01 取消搜索后隐含抓页，W02 删除提取数量配置全链，W03 删除本轮 URL 门槛，W04 停止重复来源索引新写入，W05 升级/回执/缓存，W06 完整执行与恢复验证。具体删除点、原专项编号及完成状态统一见新任务书，不能因文档合并漏掉任何一项。
 
 **代理修复是独立的已提交部分。** [PR #459](https://github.com/YuanYeYouTao/Yuki/pull/459)（head `5ccfa88c`）已经实现 S05/S06/S13/S14：reader 必填注入、独立 Web 超时、标准代理与 CA、启动及 Compose 接线。登记时 PR 仍开放，Ruff/Mypy 已通过、全量 pytest 运行中，尚未合并或上线；不把它列为 W01–W06 已完成，也不在后续重复实现。部署和自然流量验收另按该 PR 实际回执记录。
 
@@ -246,7 +239,7 @@ Memoh 将定义交模型和执行分开；ExecuteTools 只匹配该次可执行�
 
 ## 6. 后续决策需要的最小证据
 
-§5.1 已纳入 #454 的后续实施清单；其余候选定案后再补对应实现和验证计划。所需证据限于受影响能力：新声明与旧合同的真实差量；两个入口 direct／Code 的匹配；实际 source／ToolActor 和私有结果授权；原 Work／调用键／unknown 与已确认回执的读取；旧已付请求和公共前缀不被重写；替代入口是否仍完成原工作。
+后续实现与匹配验证统一见 [#454 任务书](Yuki-454工具精简与统一执行任务书-2026-10-17.md)，不再等待本节另列一份计划。所需证据限于受影响能力：新声明与旧合同的真实差量；两个入口 direct／Code 的匹配；实际 source／ToolActor 和私有结果授权；原 Work／调用键／unknown 与已确认回执的读取；旧已付请求和公共前缀不被重写；替代入口是否仍完成原工作。
 
 费用与缓存另看同 Provider、同任务的真实 usage：prompt/cached 字段都齐全的样本可计算比例；缺样单列。未抓取真实 Provider 请求、没有有效使用样本时，只报告声明字节，不给收益百分比，也不以固定命中阈值新增完成门槛。
 

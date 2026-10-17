@@ -143,6 +143,7 @@ async def invoke_social(
             TurnOrigin.USER_MESSAGE,
             TurnOrigin.AUTONOMOUS_GROUP,
             TurnOrigin.SCHEDULED_AUTOMATION,
+            TurnOrigin.PLUGIN_SESSION,
         }
         or runtime.tools_closed
     ):

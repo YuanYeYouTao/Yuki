@@ -1486,11 +1486,7 @@ class RuntimeConfigService:
             web=WebRuntimeConfig(
                 mode=self._settings.web.mode.value,
                 search_max_results=int(cast(int, value("web.search_max_results"))),
-                extract_max_results=int(cast(int, value("web.extract_max_results"))),
                 source_retention_days=int(cast(int, value("web.source_retention_days"))),
-                source_max_runs_per_conversation=int(
-                    cast(int, value("web.source_max_runs_per_conversation"))
-                ),
             ),
             vision=VisionRuntimeConfig(
                 max_images_per_turn=int(cast(int, value("vision.max_images_per_turn"))),

@@ -38,7 +38,7 @@ def children(parent: int) -> set[int]:
             except (OSError, ValueError, IndexError):
                 pass
     found = {parent}
-    for _ in range(32):
+    while True:
         added = {pid for pid, ppid in pairs.items() if ppid in found} - found
         if not added:
             break

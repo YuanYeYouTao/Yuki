@@ -4,7 +4,7 @@
 不再维护子 Agent 独有的 SQLite BUSY 重试或旧沙箱进度预算。
 
 主 Yuki 用 `subagent_start` 登记并派出子任务，继续处理聊天；通过
-`subagent_message` 补充要求，通过 `subagent_control` 查询、取消或恢复同一目标。
+`subagent_control(action=message)` 补充要求，通过 `subagent_control` 查询、取消或恢复同一目标。
 派生本身已经登记工作，工作者无需再次 `task_control.accept`。
 
 工作者沿部署的 direct / Code Mode 执行，复用 `MainAgentContract` 的完整声明、核心 system、
@@ -40,7 +40,7 @@
 迁移前私聊曾由两个 QQ Bot 共用 Conversation 的真实旧执行，只能用原内部事件、原
 Presence 与旧持久 alias 证明其入口；新的私聊按 Binding + Presence 分开，不借旧 alias 合并。
 
-子 Agent 用自己的 Work 作为嵌套子任务的父节点。`subagent_message` 指定 child_id 时联系
+子 Agent 用自己的 Work 作为嵌套子任务的父节点。`subagent_control(action=message)` 指定 child_id 时联系
 自己的子任务；省略时联系自己的父任务。实际提问保存后，只有父任务仍非终态时才接纳 `waiting_parent=true` 并提议子任务等待；父已经终态时仍保存问题，返回 `waiting_parent=false`，不暂停子任务或复活父任务。同一原批次、程序中剩余获准的通信、派生、保存和交付继续收拢。子孙通信和管理核验
 真实方向与树关系。只读 Work 目录使用 Main 的同一范围，目录信息不授予修改或取消权限。
 工作者默认跟随 Main 模型；Provider/合同变化沿原合法边界恢复，不暗换协议。

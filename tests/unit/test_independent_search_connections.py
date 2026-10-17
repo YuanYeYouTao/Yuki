@@ -270,11 +270,12 @@ async def test_model_search_and_page_reading_never_select_tavily_by_key(
     try:
         bridge = routed.bridges[ModelTask.CHAT_AGENT]
         assert isinstance(bridge.extractor, DirectPageExtractor)
-        result = await routed.search(WebSearchRequest("query", extract_max_results=1))
+        result = await routed.search(WebSearchRequest("query"))
         assert result.provider_request_id == "original-search-request"
         assert (result.prompt_tokens, result.completion_tokens) == (15, 4)
         assert result.cached_prompt_tokens is None
-        assert result.sources[0].relevant_content == "Page"
+        assert result.sources[0].relevant_content == ""
+        direct.assert_not_awaited()
         assert await routed.extract(source.url, "query") == source
         assert len(model.requests) == 1
         direct.assert_awaited_once_with(source.url, "query")

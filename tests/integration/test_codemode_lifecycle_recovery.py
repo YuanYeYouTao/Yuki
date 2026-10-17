@@ -474,7 +474,7 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     )
     calls = [
         ("yuki_lookup", {"q": "first"}),
-        ("yuki_subagent_message", {"text": "Which artifact?", "ask": True}),
+        ("yuki_subagent_control", {"action": "message", "text": "Which artifact?", "ask": True}),
         ("yuki_workspace_write", {"path": "after question"}),
     ]
     if not native:
@@ -483,7 +483,8 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     outer = outer_call(
         env,
         "await yuki_lookup({'q':'first'})\n"
-        "q = await yuki_subagent_message({'text':'Which artifact?','ask':True})\n"
+        "q = await yuki_subagent_control({'action':'message',"
+        "'text':'Which artifact?','ask':True})\n"
         "await yuki_workspace_write({'path':'after question'})\n"
         "print('child tail completed')\n"
         "[q['ok'], q['data']['waiting_parent'], 6 * 7]",
@@ -497,7 +498,7 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
         async def save_then_crash(self, key, state, receipt, **kwargs):
             nonlocal crashed
             await original(self, key, state, receipt, **kwargs)
-            if receipt.get("outcome", {}).get("tool") == "subagent_message" and not crashed:
+            if receipt.get("outcome", {}).get("tool") == "subagent_control" and not crashed:
                 crashed = True
                 raise asyncio.CancelledError("crash after durable child question")
 
@@ -545,7 +546,7 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     questions = [
         row
         for row in rows.values()
-        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "subagent_message"
+        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "subagent_control"
     ]
     assert len(questions) == 1 and tools == 2
     _, parent_tools, root = await effect_rows(database, parent_env.control.current["id"])

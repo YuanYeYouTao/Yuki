@@ -202,7 +202,7 @@ class FakeMemoryFacade:
 class FakeAgentFacade:
     def __init__(self, response: str = "fake agent response") -> None:
         self.response = response
-        self.calls: list[tuple[str, tuple[str, ...]]] = []
+        self.calls: list[str] = []
 
     async def result(self, work_id: str) -> PluginResult:
         return PluginResult(ok=False, error_code="work_not_found_or_archived")
@@ -215,11 +215,10 @@ class FakeAgentFacade:
         instruction: str,
         *,
         context_profile: str = "none",
-        allowed_capabilities: tuple[str, ...] = (),
         max_tool_calls: int | None = None,
         max_model_requests: int | None = None,
     ) -> PluginResult:
-        self.calls.append((instruction, allowed_capabilities))
+        self.calls.append(instruction)
         return PluginResult(
             data={
                 "text": self.response,

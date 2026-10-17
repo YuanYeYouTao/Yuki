@@ -267,14 +267,26 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
     monkeypatch.setattr(manager, "wait_result", observe)
     process = None
     try:
-        assert (await manager.submit(kind, args, request_id))["run_id"] == OWNED
+        if kind == "terminal_exec":
+            assert (await manager.submit(kind, args, request_id))["run_id"] == OWNED
+        else:
+            # An upgrade observes the original dispatched APT intent; the retired
+            # package entry does not receive a new submission or another launch.
+            with manager.db:
+                manager.db.execute(
+                    "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
+                    (OWNED, request_id, "original-proof", json.dumps(args), "running", "{}", 0),
+                )
+                manager.db.execute(
+                    "INSERT INTO environment_jobs VALUES (?,?,?,?,?)",
+                    (OWNED, kind, None, "original-container", 1),
+                )
+            manager.state_path(OWNED).mkdir(parents=True)
         await launch(session, store, tool_name=kind)
         budget = await control.repository.get(control.current["id"])
         if kind == "terminal_exec":
             with pytest.raises(TimeoutError, match="handshake lost"):
                 await manager.launch(OWNED)
-        else:
-            await manager.launch(OWNED)
         state = manager.state_path(OWNED)
         if already_started:
             (state / "started").touch()
@@ -291,7 +303,11 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
         await manager.reconcile(manager.active()[0])
         assert manager.get(OWNED)["status"] == "running"
         assert dict(manager.active()[0]) == original
-        assert (await manager.submit(kind, args, request_id))["run_id"] == OWNED
+        assert (
+            await manager.handle(
+                {"method": "get_code_run_by_request", "args": {"request_id": request_id}}
+            )
+        )["run_id"] == OWNED
         if kind == "terminal_exec":
             assert transport.request.await_count == 1
             assert transport.request.await_args.args[:2] == ("POST", "/pty")
@@ -300,8 +316,7 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
                 (EXTERNAL,),
             ]
         else:
-            assert command.await_count == 1
-            assert command.await_args.args[:3] == ("docker", "exec", "-d")
+            command.assert_not_awaited()
             transport.request.assert_not_awaited()
             transport.connect.assert_not_awaited()
         assert not manager.completions.pending()["events"]
@@ -316,7 +331,7 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
             assert receipt["request_id"] == request_id and receipt["run_id"] == OWNED
             assert receipt["result"]["status"] == "failed"
             assert receipt["result"]["exit_code"] == 7 and receipt["result"]["pending"] is False
-            assert command.await_count == 1
+            command.assert_not_awaited()
             return
 
         # Execute the real Supervisor in an isolated runtime directory. An attach
@@ -356,7 +371,10 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
                 assert control.current["state"] == "cancelled"
 
                 async def cancel(method, arguments, *, request_id):
-                    assert method == "cancel_code_run" and arguments["run_id"] == OWNED
+                    assert method == "terminal_control" and arguments == {
+                        "run_id": OWNED,
+                        "action": "cancel",
+                    }
                     assert request_id == f"worker-cancel:{OWNED}"
                     return await manager.control(OWNED, "cancel")
 
@@ -499,9 +517,8 @@ async def test_unknown_mutation_remains_unknown_without_vetoing_new_call_or_comp
     assert json.loads(retained["receipt_json"])["outcome"]["uncertain"] is True
 
 
-@pytest.mark.parametrize("tool", ["get_code_run", "terminal_read"])
 async def test_external_running_read_through_real_kernel_does_not_block_completion(
-    database, tmp_path, monkeypatch, tool
+    database, tmp_path, monkeypatch
 ):
     from tests.support.sandbox_submission_unknown_lifecycle_helpers import (
         host_case,
@@ -527,12 +544,14 @@ async def test_external_running_read_through_real_kernel_does_not_block_completi
         work,
         backend,
         runtime,
-        ToolCall("external-status", ToolFunction(tool, json.dumps({"run_id": EXTERNAL}))),
+        ToolCall(
+            "external-status", ToolFunction("terminal_read", json.dumps({"run_id": EXTERNAL}))
+        ),
     )
     public = json.loads(result.calls[0][1])
     assert public["ok"] is True and public["process"]["pending"] is True
     assert public["mutation_committed"] is False
-    assert [item["method"] for item in wire] == ["terminal_exec", tool]
+    assert [item["method"] for item in wire] == ["terminal_exec", "terminal_read"]
     # The read does not create an owned SandboxTask for the observed run.
     assert await tasks.get(wire[1]["request_id"]) is None
     assert (await complete(work.control))["ok"] is True

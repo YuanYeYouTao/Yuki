@@ -359,3 +359,26 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
         and "not a new instruction" in result["authorization"]
     )
     assert not env.calls
+
+
+async def test_delegated_current_conversation_does_not_read_other_personal_entry(app_env, database):
+    from qq_ai_bot.domain.conversations import ConversationScope
+
+    env = app_env
+    device, person = await owner(env, database)
+    own = await seeded(env, database)
+    principal = await env.identity.authenticate(device["token"])
+    runtime = SimpleNamespace(
+        effective_conversation_id=principal.conversation_id,
+        require_actor=lambda: SimpleNamespace(person_id=person),
+        read_target_id=person,
+        read_scope=ConversationScope.private(
+            "yuki-app", person, platform="app", conversation_id=principal.conversation_id
+        ),
+    )
+    with pytest.raises(SocialError, match="not_found"):
+        await read_entry(database, runtime, {"conversation_id": own.row["conversation_id"]})
+    # Ordinary App Main has no delegated current-Conversation read scope.
+    runtime.read_target_id = None
+    result = await read_entry(database, runtime, {"conversation_id": own.row["conversation_id"]})
+    assert result["items"][0]["event_id"] == own.event.id

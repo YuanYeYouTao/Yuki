@@ -58,7 +58,7 @@ async def test_checkout_interrupted_after_write_replays_original_unknown_receipt
         result = await manager.file_request("workspace_checkout", args, "original-checkout")
         assert result["error"] == "file_mutation_unknown_read_current_version"
         assert result["retryable"] is False and len(calls) == 1
-        assert manager.files.read("target.txt")["text"] == "immutable original bytes"
+        assert (manager.files.root / "target.txt").read_bytes() == b"immutable original bytes"
         changed = await manager.file_request(
             "workspace_checkout", {**args, "name": "different.txt"}, "original-checkout"
         )
@@ -107,7 +107,7 @@ async def test_old_completed_checkout_returns_original_receipt(tmp_path, monkeyp
         monkeypatch.setattr(manager, "file_operation", no_replay)
         assert await manager.file_request("workspace_checkout", args, "legacy-checkout") == result
         if collision:
-            assert manager.files.read("target.txt")["text"] == "another file"
+            assert (manager.files.root / "target.txt").read_bytes() == b"another file"
         changed = await manager.file_request(
             "workspace_checkout", {**args, "name": "changed.txt"}, "legacy-checkout"
         )

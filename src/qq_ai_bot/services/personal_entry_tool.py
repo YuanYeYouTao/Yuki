@@ -71,6 +71,8 @@ async def read_entry(database: Database, runtime: Any, args: dict[str, Any]) -> 
                 CanonicalConversationModel.id != source[0].id,
             )
         )
+        if getattr(runtime, "read_target_id", None) is not None:
+            query = query.where(CanonicalConversationModel.id == runtime.read_scope.conversation_id)
         query = (
             query.where(IdentityBindingModel.id == args["binding_id"])
             if args.get("binding_id")

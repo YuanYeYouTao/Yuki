@@ -19,6 +19,7 @@ from qq_ai_bot.domain.messages import (
     NativeToolDefinition,
     NativeToolStatus,
     NativeToolType,
+    ResponseCitation,
 )
 from qq_ai_bot.llm.base import LLMError, LLMProvider
 from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
@@ -64,7 +65,7 @@ class NativeSearchBridge:
         self._namespace = hashlib.sha256(
             json.dumps(
                 {
-                    "version": "independent-native-search-v1",
+                    "version": "independent-native-search-v2",
                     "profile": profile.model_dump(mode="json"),
                     "credential": credential,
                 },
@@ -90,8 +91,8 @@ class NativeSearchBridge:
         ):
             return cached
         result = await self._search(normalized_request)
-        # A failed extraction or incomplete native response may recover on
-        # the next request; do not pin that partial receipt for ten minutes.
+        # An incomplete native response may recover on the next request;
+        # do not pin that partial receipt for ten minutes.
         if not result.partial_failure:
             await asyncio.to_thread(self.state.access, key, result)
         return result
@@ -165,8 +166,24 @@ class NativeSearchBridge:
             for event in response.native_tool_events
             if event.tool_type is NativeToolType.WEB_SEARCH
         }
-        for citation in response.citations:
-            if citation.origin not in {CitationOrigin.ANNOTATION, CitationOrigin.NATIVE_RESULT}:
+        citations = list(response.citations)
+        citations.extend(
+            ResponseCitation(
+                url=event.url,
+                origin=CitationOrigin.OPEN_PAGE_ACTION,
+                call_id=event.call_id,
+            )
+            for event in search_events.values()
+            if event.status is NativeToolStatus.COMPLETED
+            and event.action_type == "open_page"
+            and event.url
+        )
+        for citation in citations:
+            if citation.origin not in {
+                CitationOrigin.ANNOTATION,
+                CitationOrigin.NATIVE_RESULT,
+                CitationOrigin.OPEN_PAGE_ACTION,
+            }:
                 continue
             if citation.call_id is not None:
                 event = search_events.get(citation.call_id)
@@ -209,52 +226,9 @@ class NativeSearchBridge:
             response.completion_tokens,
             response.cached_prompt_tokens,
         )
-        sources = list(found.values())
-        extract_failed = False
-        if request.extract_max_results:
-            extractor = self.extractor
-
-            async def extract_source(index: int) -> None:
-                nonlocal extract_failed
-                try:
-                    page = await extractor.extract(sources[index].url, request.query)
-                    sources[index] = replace(
-                        sources[index],
-                        snippet=page.snippet,
-                        relevant_content=page.relevant_content,
-                    )
-                except WebSearchError:
-                    extract_failed = True
-
-            # Assign by original index so response order is independent of completion order.
-            extracts = [
-                asyncio.create_task(extract_source(index))
-                for index in range(min(len(sources), request.extract_max_results or 0))
-            ]
-            gathered = asyncio.gather(*extracts)
-            try:
-                # Own child cancellation below; repeated caller cancellation must
-                # not interrupt a child's transport cleanup for a second time.
-                await asyncio.shield(gathered)
-            except BaseException:
-                # gather can raise while siblings are still on wire. Cancel and join
-                # every child before releasing the bridge slot, including repeated cancellation.
-                for child in extracts:
-                    if not child.done() and not child.cancelling():
-                        child.cancel()
-                joined = asyncio.gather(*extracts, return_exceptions=True)
-                while not joined.done():
-                    try:
-                        await asyncio.shield(joined)
-                    except asyncio.CancelledError:
-                        continue
-                joined.result()
-                if gathered.done() and not gathered.cancelled():
-                    gathered.exception()
-                raise
         return WebSearchResponse(
             query=request.query,
-            sources=tuple(sources),
+            sources=tuple(found.values()),
             provider_request_id=response.provider_request_id,
             latency_seconds=response.latency_seconds,
             partial_failure=(
@@ -267,7 +241,6 @@ class NativeSearchBridge:
                 or request.start_date is not None
                 or request.end_date is not None
                 or request.time_range is not None
-                or extract_failed
             ),
             provider=self.name,
             prompt_tokens=response.prompt_tokens,

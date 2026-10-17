@@ -776,8 +776,10 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         harness.processor._chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     frozen = await contract.definitions()
-    frozen_around = next(item for item in frozen if item.name == "get_chat_history_around")
-    assert frozen_around.parameters["required"] == ["event_id"]
+    frozen_around = next(item for item in frozen if item.name == "query_chat_history")
+    assert frozen_around.parameters["required"] == ["view"]
+    assert "around" in frozen_around.parameters["properties"]["view"]["enum"]
+    assert "event_id" in frozen_around.parameters["properties"]
     assert "platform_message_id" not in frozen_around.parameters["properties"]
     assert contract.health()["frozen"] is True
     assert contract.revision
@@ -801,7 +803,9 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     )
     tools._memories.list_group = AsyncMock(return_value=())  # type: ignore[method-assign]
     tools._ledger.search = AsyncMock(return_value=())  # type: ignore[method-assign]
-    recent = (await tools.execute("get_recent_chat_history", "{}", group_runtime)).model_payload()
+    recent = (
+        await tools.execute("query_chat_history", '{"view": "recent"}', group_runtime)
+    ).model_payload()
     actual_record = EventRecord(
         id=123,
         visual_summary="",
@@ -817,20 +821,26 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     )
     tools._ledger.list_scope_around = AsyncMock(return_value=(actual_record, (), ()))
     around_tool = next(
-        tool for tool in tools.definitions(group_runtime) if tool.name == "get_chat_history_around"
+        tool for tool in tools.definitions(group_runtime) if tool.name == "query_chat_history"
     )
-    assert around_tool.parameters["required"] == ["event_id"]
+    assert around_tool.parameters["required"] == ["view"]
+    assert "around" in around_tool.parameters["properties"]["view"]["enum"]
+    assert "event_id" in around_tool.parameters["properties"]
     assert "platform_message_id" not in around_tool.parameters["properties"]
     invalid_history = (
         await tools.execute(
-            "get_chat_history_around", '{"platform_message_id":"history-attachment"}', group_runtime
+            "query_chat_history",
+            '{"view": "around", "platform_message_id": "history-attachment"}',
+            group_runtime,
         )
     ).model_payload()
     assert not invalid_history["ok"]
     assert tools._ledger.list_scope_around.await_count == 0
     actual_history = (
         await tools.execute(
-            "get_chat_history_around", json.dumps({"event_id": actual_record.id}), group_runtime
+            "query_chat_history",
+            json.dumps({"view": "around", "event_id": actual_record.id}),
+            group_runtime,
         )
     ).model_payload()
     assert actual_history["ok"]
@@ -839,12 +849,21 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     ]
     tools._ledger.list_scope_around = AsyncMock(return_value=(None, (), ()))
     around = (
-        await tools.execute("get_chat_history_around", '{"event_id":999}', group_runtime)
+        await tools.execute(
+            "query_chat_history", '{"view": "around", "event_id": 999}', group_runtime
+        )
     ).model_payload()
     scoped_search = (
         await tools.execute(
-            "search_chat_history",
-            '{"keyword":"release","person_id":"other-person","space_id":"other-space"}',
+            "query_chat_history",
+            json.dumps(
+                {
+                    "view": "search",
+                    "keyword": "release",
+                    "person_id": "other-person",
+                    "space_id": "other-space",
+                }
+            ),
             group_runtime,
         )
     ).model_payload()
@@ -857,20 +876,26 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert tools._ledger.search.await_args.kwargs["scope"].conversation_id == "space-100"
     assert tools._ledger.search.await_args.kwargs["space_id"] == "other-space"
     valid_search = (
-        await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
+        await tools.execute(
+            "query_chat_history", '{"view": "search", "keyword": "release"}', group_runtime
+        )
     ).model_payload()
     assert valid_search["ok"] is True
     assert valid_search["data"] == {"events": [], "returned_count": 0, "truncated": False}
     tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 1000)] * 12)
     longer_search = (
-        await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
+        await tools.execute(
+            "query_chat_history", '{"view": "search", "keyword": "release"}', group_runtime
+        )
     ).model_payload()
     assert longer_search["ok"]
     assert longer_search["data"]["returned_count"] == 12
     assert not longer_search["data"]["truncated"]
     tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 2000)] * 20)
     bounded_search = (
-        await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
+        await tools.execute(
+            "query_chat_history", '{"view": "search", "keyword": "release"}', group_runtime
+        )
     ).model_payload()
     assert bounded_search["ok"]
     assert not bounded_search["data"]["truncated"]

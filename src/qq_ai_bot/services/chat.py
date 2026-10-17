@@ -67,7 +67,6 @@ from qq_ai_bot.persistence.event_repository import ConversationReadVersion
 from qq_ai_bot.persistence.repositories import (
     EventLedgerRepository,
     PeopleRepository,
-    WebSearchSourceRepository,
 )
 from qq_ai_bot.persistence.repository_records import EventRecord
 from qq_ai_bot.runtime.context_preparation import prepare_context
@@ -235,7 +234,6 @@ class ChatService:
         people: PeopleRepository,
         memories: MemoryFactService,
         tools: AgentToolService,
-        web_sources: WebSearchSourceRepository,
         runtime_config: RuntimeConfigService,
         memory_context: MemoryContextService | None = None,
         memory_partition_lookup: MemoryPartitionLookup,
@@ -261,7 +259,6 @@ class ChatService:
         self._people = people
         self._memories = memories
         self._tools = tools
-        self._web_sources = web_sources
         self._runtime_config = runtime_config
         runner = AgentRunner(models, concurrency)
         self._automation_tools: AutomationToolProvider | None = None
@@ -796,7 +793,7 @@ class ChatService:
                         return cast(
                             dict[str, Any],
                             await client.execute(
-                                "get_code_run",
+                                "terminal_read",
                                 {"run_id": run_id},
                                 request_id=f"work-check:{run_id}",
                             ),

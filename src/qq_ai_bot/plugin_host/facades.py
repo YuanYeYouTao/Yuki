@@ -253,7 +253,7 @@ def _owned_work_result(row: Mapping[str, Any], source: Mapping[str, Any]) -> _Ho
             work_id=row["id"],
             work_state=row["state"],
         ),
-        source["allowed_tools"],
+        source.get("allowed_tools", ()),
         reason=checkpoint.get("reason", row.get("reason")),
     )
     # These are query displays, not new dispatches by this callback.
@@ -281,7 +281,6 @@ class PluginInvocation:
     gateway: OneBotFacadeGateway | None = field(default=None, repr=False)
     runtime_config: RuntimeConfigSnapshot | None = field(default=None, repr=False)
     delegated_authority: DelegatedAuthority | None = field(default=None, repr=False)
-    allowed_capabilities: frozenset[str] = field(default_factory=frozenset)
     source_event_id: int | None = None
     legacy_conversation_key: str | None = None
     person_id: str | None = None
@@ -399,7 +398,6 @@ class PluginFacadeServices:
     media_artifacts: PluginMediaArtifactStore | None = None
     native_media: NativeMediaPreparer | None = None
     media_storage_mb: int = 10
-    agent_capabilities: frozenset[str] = field(default_factory=frozenset)
 
 
 @dataclass(frozen=True, slots=True)
@@ -670,9 +668,6 @@ class HostPluginContext:
             delegated_authority=cast(
                 DelegatedAuthority | None,
                 getattr(runtime, "delegated_authority", None),
-            ),
-            allowed_capabilities=frozenset(
-                cast(Iterable[str], getattr(runtime, "allowed_capabilities", ()))
             ),
         )
         return self.bind(invocation)
@@ -1463,8 +1458,6 @@ class _AgentFacade:
             raise PluginPermissionError("plugin approved version changed")
         permission = PluginPermission(source["permission"])
         self._host._require(permission, require_invocation=False)
-        if not frozenset(source["allowed_tools"]) <= self._host._services.agent_capabilities:
-            raise PluginPermissionError("plugin work capabilities were revoked")
         from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
 
         async with ledger._database.sessions() as session:
@@ -1478,7 +1471,7 @@ class _AgentFacade:
                     work_id=work_id,
                     work_state="cancelled",
                 ),
-                source["allowed_tools"],
+                source.get("allowed_tools", ()),
             )
         checkpoint = json.loads(row["checkpoint_json"])
         if checkpoint.get("archived"):
@@ -1525,24 +1518,12 @@ class _AgentFacade:
         instruction: str,
         *,
         context_profile: str = "none",
-        allowed_capabilities: tuple[str, ...] = (),
         max_tool_calls: int | None = None,
         max_model_requests: int | None = None,
     ) -> PluginResult:
         invocation = self._host._require(PluginPermission.AGENT_RUN)
         assert invocation is not None
         _, base_runtime = await _agent_dependencies(self._host, invocation)
-        requested = (
-            frozenset(allowed_capabilities)
-            if allowed_capabilities
-            else self._host._services.agent_capabilities
-        )
-        effective = requested & self._host._services.agent_capabilities
-        if invocation.allowed_capabilities:
-            effective &= invocation.allowed_capabilities
-        has_privileged = any(_privileged_capability(item) for item in effective)
-        if has_privileged and not await self._host._is_real_superuser(invocation):
-            raise PluginPermissionError("requested Agent capabilities require SUPERUSERS")
         tool_limit = min(
             max_tool_calls
             if max_tool_calls is not None
@@ -1557,7 +1538,6 @@ class _AgentFacade:
         )
         runtime = replace(
             base_runtime,
-            allowed_capabilities=effective,
             max_tool_calls=max(0, tool_limit),
             max_model_requests=max(1, request_limit),
         )
@@ -1571,7 +1551,7 @@ class _AgentFacade:
             permission=PluginPermission.AGENT_RUN,
             context_profile=context_profile,
         )
-        return _agent_result(result, effective)
+        return _agent_result(result, ())
 
 
 class _AgentSessionsFacade:
@@ -1614,7 +1594,6 @@ class _WebFacade:
                 WebSearchRequest(
                     query=query,
                     max_results=runtime.web.search_max_results,
-                    extract_max_results=runtime.web.extract_max_results,
                 )
             )
         except WebSearchError as exc:
@@ -2557,7 +2536,11 @@ async def _agent_dependencies(
         bot_user_id=invocation.bot_user_id,
         gateway=invocation.gateway,
         runtime_config=runtime,
-        allowed_capabilities=frozenset(),
+        allowed_capabilities=(
+            frozenset({"web"})
+            if PluginPermission.WEB_SEARCH in host._approved_permissions
+            else frozenset()
+        ),
         max_tool_calls=runtime.agent.max_tool_calls,
         max_model_requests=runtime.agent.max_model_requests,
         canonical_conversation_id=invocation.conversation_id,
@@ -3297,11 +3280,6 @@ def _safe_json(value: object, *, depth: int = 0) -> JsonValue:
                 result[name] = _safe_json(item, depth=depth + 1)
         return result
     return str(value)[:1_000]
-
-
-def _privileged_capability(name: str) -> bool:
-    lowered = name.casefold()
-    return lowered.startswith(("admin.", "onebot.", "runtime."))
 
 
 def _bounded_limit(value: int, *, maximum: int = 100) -> int:

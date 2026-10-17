@@ -59,7 +59,7 @@ class SubagentExecutionDependencies:
     open_self_memory: Callable[..., Awaitable[Any]]
     static_messages: Callable[[], tuple[ChatMessage, ...]]
     lookup_plugin_host: Callable[[str], Any]
-    backend_factory: Callable[[ToolRuntime, frozenset[str] | None], AgentToolBackend]
+    backend_factory: Callable[[ToolRuntime, Any], AgentToolBackend]
     web_capabilities: Callable[[RuntimeConfigSnapshot], frozenset[str]]
 
 
@@ -109,7 +109,9 @@ class SubagentExecution:
             )
         for run_id in ids:
             await self.services.sandbox_client.execute(
-                "cancel_code_run", {"run_id": run_id}, request_id=f"worker-cancel:{run_id}"
+                "terminal_control",
+                {"run_id": run_id, "action": "cancel"},
+                request_id=f"worker-cancel:{run_id}",
             )
 
     async def run(self, identity: str) -> str | None:
@@ -244,12 +246,7 @@ class SubagentExecution:
                                 session, recovered.actor_person_id, settings.superusers
                             )
                     delegated = source.get("owner") == "plugin_invocation"
-                    allowed = (
-                        frozenset(source["allowed_tools"])
-                        | {"update_short_state", "read_tool_artifact"}
-                        if delegated
-                        else None
-                    )
+                    host: Any = None
                     memory_scopes = None
                     if delegated:
                         from qq_ai_bot.memory.enums import MemoryScopeType
@@ -308,6 +305,9 @@ class SubagentExecution:
                             presence_id=recovered.presence_id,
                             conversation_id=recovered.conversation_id,
                         ),
+                        read_target_id=(recovered.target_space_id or recovered.actor_person_id)
+                        if delegated
+                        else None,
                         target_presence_id=recovered.presence_id,
                         before_model_request=validate,
                         context_plugin_id=source.get("plugin_id") if delegated else None,
@@ -317,7 +317,11 @@ class SubagentExecution:
                                 [
                                     source["permission"],
                                     source["context_profile"],
-                                    source["allowed_tools"],
+                                    *(
+                                        [source["allowed_tools"]]
+                                        if "allowed_tools" in source
+                                        else []
+                                    ),
                                 ],
                                 separators=(",", ":"),
                             ).encode()
@@ -338,7 +342,7 @@ class SubagentExecution:
                         if contract is not None
                         else None
                     )
-                    backend = self.services.backend_factory(tool_runtime, allowed)
+                    backend = self.services.backend_factory(tool_runtime, host)
                     brief = json.loads(child["brief_json"])
                     brief.update(
                         child_id=identity,
@@ -357,7 +361,11 @@ class SubagentExecution:
                         replace(
                             InvocationContextFactory.from_tools(
                                 tool_runtime,
-                                allowed_capabilities=frozenset(source["allowed_tools"])
+                                allowed_capabilities=(
+                                    frozenset({"web"})
+                                    if PluginPermission.WEB_SEARCH in host._approved_permissions
+                                    else frozenset()
+                                )
                                 if delegated
                                 else self.services.web_capabilities(config),
                                 max_tool_calls=None,

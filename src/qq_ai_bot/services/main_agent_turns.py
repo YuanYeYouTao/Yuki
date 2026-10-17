@@ -7,6 +7,7 @@ import hashlib
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -576,7 +577,9 @@ class MainAgentTurnService:
                 public_compaction=public_compaction,
             )
 
-    async def read_result(self, runtime: AgentRuntime) -> AgentRunResult | None:
+    async def read_result(
+        self, runtime: AgentRuntime, *, previous: dict[str, Any] | None = None
+    ) -> AgentRunResult | None:
         control = runtime.work_control or current_work_control.get()
         if (
             control is not None
@@ -588,9 +591,10 @@ class MainAgentTurnService:
         from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
         from qq_ai_bot.services.durable_invocations import invocation_boundary
 
-        previous = await WorkRepository(self._invocations.database).by_source(
-            f"invocation:{invocation_boundary(runtime)}"
-        )
+        if previous is None:
+            previous = await WorkRepository(self._invocations.database).by_source(
+                f"invocation:{invocation_boundary(runtime)}"
+            )
         if previous is None:
             return None
         async with self._invocations.database.sessions() as session:

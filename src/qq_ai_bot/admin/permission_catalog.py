@@ -425,7 +425,8 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         category="automation",
         display_name="创建本人自动化",
         description=(
-            "通过 automation_create 工具提交 TaskSpec，持久化完整任务安排，到点激活主 Agent。"
+            "通过 automation_manage(action=create) 提交 TaskSpec，持久化完整任务安排，"
+            "到点激活主 Agent。"
         ),
         minimum_level=PermissionLevel.USER,
         mutating=True,
@@ -450,7 +451,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         category="automation",
         display_name="查看自动化完成历史",
         description=(
-            "通过 automation_list_history 或 /ai automation completed 单独列出已结束任务。"
+            "通过 automation_query(view=completed) 或 /ai automation completed 单独列出已结束任务。"
         ),
         minimum_level=PermissionLevel.USER,
         mutating=False,
@@ -474,7 +475,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         kind=CapabilityKind.COMMAND,
         category="automation",
         display_name="更新本人自动化",
-        description="通过 automation_update 发布 TaskSpec 的新任务版本。",
+        description="通过 automation_manage(action=update) 发布 TaskSpec 的新任务版本。",
         minimum_level=PermissionLevel.USER,
         mutating=True,
         target_scopes=("self", "current_group"),

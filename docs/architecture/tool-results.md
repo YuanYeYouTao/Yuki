@@ -23,23 +23,13 @@ Artifact 存储沿配置计量；结构读取不再叠加固定文件大小、�
 读取 `limit` 默认 8000、工具声明上限 32000；返回长度受当前结果字符预算控制，持久回执不再叠加字节拒绝。非空字符串必须前进，预算不足明确报错，不能把空页当结束。
 字符串页直接返回，不再生成套娃 Artifact。
 
-## 工作区文件与脚本数据
+## 环境文件与旧脚本结果
 
-`workspace_read` 的 `limit` 是每页字节数，范围 4–32768、默认 32768。
-`offset/next_offset/size` 的单位是字节，UTF-8 尾部不完整字符留到下一页。
-后续页传首读的 `expected_version`；文件变化返回 `version_conflict`，读取期间变化返回
-`file_changed_during_read`。已发布 artifact 快照也接受该校验。
+普通文件内容由终端读取、搜索与过滤，八项通用工作区工具已退出新声明与执行。媒体仍用 `workspace_inspect` 交给原模型；文件用 `workspace_publish` 固化不可变版本，再沿统一 `send_message` 交付。普通终端文件不附加CAS、分页文本协议或经验文件配额。
 
-文件页明确返回 `read_state=inline/binary`、`text`、`eof` 和 `truncated`。
-模型结果超过预算时 `read_state=externalized`、`text=null`，保留原文件大小、版本、
-页游标和 artifact 引用。真正空文件是 `size=0/text=""/eof=true`；文件末尾的空页仍有原大小。
-错误使用 `ok=false/error_code`，不伪装成成功空文本。
+旧 Code 调用的 workspace_read 外置页仍按已接受子调用的原 result_ref 取回，核原授权、generation、隐私、完整性和VM返回容量；不能重新读取今天的文件或重做原调用。原件丢失、损坏或无权读取时保缺失事实，不伪造空页。新调用不再生产这套工作区分页回填。
 
-Code Mode 需要的数据页与给主模型的摘要分别限额。Host 只为 `workspace_read` 从该子调用
-已接受回执绑定的 artifact 取回完整页，核验当前读取授权、generation、隐私代次、完整性和
-256 KiB VM 返回上限；分段或中断恢复使用原页，不读取后来改动的工作文件。
-丢失、损坏或无权读取时保留 `complete=false/text=null/result_ref`，不重跑原读取。
-`complete` 表示当前回执页完整，整个文件结束以 `eof` 为准；模型仍只收到有界的程序结果。
+终端查询保原run、进度游标和completion；读取成功不等于进程成功，空stdout不等于结束，非零退出也不能否定已写文件。展示预算与进程寿命分开，完整结果和原回执仍由各自存储保留。
 
 ## 文本兼容
 

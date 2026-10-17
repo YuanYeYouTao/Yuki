@@ -1,4 +1,4 @@
-"""Transactional artifact snapshots; persistent by default, with bounded storage."""
+"""Persistent immutable artifact snapshots and their original provenance."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import time
 from collections.abc import Iterator
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
-from itertools import islice
 from pathlib import Path
 from typing import Any, cast
 from uuid import UUID, uuid4
@@ -32,20 +31,8 @@ class PreparedArtifact:
 
 
 class WorkspaceStore:
-    def __init__(
-        self,
-        root: Path,
-        *,
-        capacity: int = 512 * 1024 * 1024,
-        max_file: int = 200 * 1024 * 1024,
-        max_objects: int = 1000,
-    ) -> None:
+    def __init__(self, root: Path) -> None:
         self.root = root.absolute()
-        self.capacity, self.max_file, self.max_objects = (
-            capacity,
-            max_file,
-            max_objects,
-        )
 
     @contextmanager
     def _transaction(self, *, write: bool = True) -> Iterator[sqlite3.Connection]:
@@ -171,7 +158,7 @@ class WorkspaceStore:
                 safe = False
             if not safe:
                 invalid.append((row["id"], row["blob"], row["revision"]))
-        candidates = list(islice(self.root.glob("*.blob"), self.max_objects + 128))
+        candidates = list(self.root.glob("*.blob"))
         with self._transaction() as db:
             count = self._prune_metadata(db)
             db.executemany("DELETE FROM artifacts WHERE id=? AND blob=? AND revision=?", invalid)
@@ -182,16 +169,6 @@ class WorkspaceStore:
             ]
         self._unlink(garbage)
         return count
-
-    @staticmethod
-    def _validate_name(name: str) -> None:
-        if (
-            not name
-            or len(name) > 128
-            or Path(name).name != name
-            or any(c in name for c in "\\/:\x00")
-        ):
-            raise WorkspaceError("invalid_artifact_name")
 
     def _publish_file(self, item: PreparedArtifact) -> None:
         if item.pending.parent != self.root:
@@ -210,8 +187,7 @@ class WorkspaceStore:
         with ExitStack() as resources:
             with self._transaction(write=False) as db:
                 row = self._row(db, artifact_id)
-                limit = self.max_file if max_bytes is None else min(self.max_file, max_bytes)
-                if limit < 0 or row["size"] > limit:
+                if max_bytes is not None and row["size"] > max_bytes:
                     raise WorkspaceError("artifact_too_large")
                 path = self._blob(row["blob"])
                 if path.is_symlink():
@@ -219,17 +195,13 @@ class WorkspaceStore:
                 descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
                 stream = resources.enter_context(os.fdopen(descriptor, "rb"))
                 info = os.fstat(stream.fileno())
-                if (
-                    not stat.S_ISREG(info.st_mode)
-                    or info.st_nlink != 1
-                    or info.st_size > self.max_file
-                ):
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
                     raise WorkspaceError("unsafe_artifact")
-                if info.st_size > limit:
+                if max_bytes is not None and info.st_size > max_bytes:
                     raise WorkspaceError("artifact_too_large")
                 metadata = self._metadata(row)
             # The open FD pins the selected immutable blob after releasing SQLite.
-            data = stream.read(limit + 1)
+            data = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
             if len(data) != row["size"] or hashlib.sha256(data).hexdigest() != row["sha256"]:
                 raise WorkspaceError("artifact_corrupt")
             return metadata, data
@@ -246,8 +218,8 @@ class WorkspaceStore:
         if not name or len(name) > 128 or any(c in name for c in "\\/:\x00"):
             raise WorkspaceError("invalid_artifact_name")
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_size > self.max_file:
-            raise WorkspaceError("artifact_too_large")
+        if not stat.S_ISREG(before.st_mode):
+            raise WorkspaceError("unsafe_artifact")
         identity, blob = self._id(artifact_id) if artifact_id else str(uuid4()), f"{uuid4()}.blob"
         # Initialize and validate the existing manifest before preparing the file.
         with self._transaction(write=False):
@@ -260,8 +232,6 @@ class WorkspaceStore:
             with path.open("xb") as output:
                 while chunk := os.read(descriptor, 65536):
                     total += len(chunk)
-                    if total > self.max_file:
-                        raise WorkspaceError("artifact_too_large")
                     digest.update(chunk)
                     output.write(chunk)
                 output.flush()
@@ -290,11 +260,6 @@ class WorkspaceStore:
                         raise WorkspaceError("snapshot_identity_conflict")
                     result = self._metadata(existing)
                 else:
-                    size, count = db.execute(
-                        "SELECT coalesce(sum(size),0),count(*) FROM artifacts"
-                    ).fetchone()
-                    if size + total > self.capacity or count >= self.max_objects:
-                        raise WorkspaceError("workspace_full")
                     self._publish_file(
                         PreparedArtifact(name, path, blob, digest.hexdigest(), total)
                     )
@@ -323,83 +288,13 @@ class WorkspaceStore:
         finally:
             self._unlink([path])
 
-    def read(
-        self,
-        artifact_id: str,
-        *,
-        offset: int = 0,
-        limit: int = 32768,
-        expected_version: str | None = None,
-    ) -> dict[str, Any]:
-        if type(offset) is not int or offset < 0:
-            raise WorkspaceError("invalid_offset")
-        if type(limit) is not int or not 4 <= limit <= 32768:
-            raise WorkspaceError("invalid_limit")
-        metadata, data = self.read_bytes(artifact_id)
-        if expected_version is not None and metadata["sha256"] != expected_version:
-            raise WorkspaceError("version_conflict")
-        page = data[offset : offset + limit]
-        result = {
-            **metadata,
-            "version": metadata["sha256"],
-            "offset": offset,
-            "next_offset": offset + len(page),
-            "offset_unit": "bytes",
-            "truncated": offset + len(page) < len(data),
-            "eof": offset + len(page) >= len(data),
-            "external_untrusted": True,
-        }
-        try:
-            import codecs
-
-            decoder = codecs.getincrementaldecoder("utf-8")()
-            value = decoder.decode(page, final=offset + len(page) >= len(data))
-            consumed = len(page) - len(decoder.getstate()[0])
-        except UnicodeDecodeError:
-            return {**result, "binary": True, "read_state": "binary", "text": None}
-        if "\x00" in value:
-            return {**result, "binary": True, "read_state": "binary", "text": None}
-        return {
-            **result,
-            "read_state": "inline",
-            "text": value,
-            "offset": offset,
-            "next_offset": offset + consumed,
-            "truncated": offset + consumed < len(data),
-            "eof": offset + consumed >= len(data),
-        }
-
-    def list(
-        self, *, cursor: str = "", limit: int = 20, number: int | None = None
-    ) -> dict[str, Any]:
+    def list(self, *, cursor: str = "", limit: int = 20) -> dict[str, Any]:
         if cursor:
             self._id(cursor)
         if not 1 <= limit <= 100:
             raise WorkspaceError("invalid_limit")
-        if number is not None and (
-            type(number) is not int or not 1 <= number <= 1_000_000 or cursor
-        ):
-            raise WorkspaceError("invalid_page_number")
         with self._transaction(write=False) as db:
             now = time.time()
-            if number is not None:
-                total = int(
-                    db.execute(
-                        "SELECT count(*) FROM artifacts WHERE expires_at>?", (now,)
-                    ).fetchone()[0]
-                )
-                rows = db.execute(
-                    "SELECT *, EXISTS(SELECT 1 FROM artifact_snapshots s WHERE s.id=artifacts.id) "
-                    "AS immutable FROM artifacts WHERE expires_at>? "
-                    "ORDER BY modified_at DESC, id DESC LIMIT ? OFFSET ?",
-                    (now, limit, (number - 1) * limit),
-                ).fetchall()
-                return {
-                    "items": [self._metadata(row) for row in rows],
-                    "next_cursor": None,
-                    "total": total,
-                    "number": number,
-                }
             rows = db.execute(
                 "SELECT *, EXISTS(SELECT 1 FROM artifact_snapshots s WHERE s.id=artifacts.id) "
                 "AS immutable FROM artifacts WHERE expires_at>? AND id>? ORDER BY id LIMIT ?",
@@ -409,12 +304,3 @@ class WorkspaceStore:
                 "items": [self._metadata(row) for row in rows[:limit]],
                 "next_cursor": rows[limit - 1]["id"] if len(rows) > limit else None,
             }
-
-    def delete(self, artifact_id: str, expected_revision: int) -> dict[str, Any]:
-        with self._transaction() as db:
-            row = self._row(db, artifact_id)
-            if row["revision"] != expected_revision:
-                raise WorkspaceError("version_conflict")
-            db.execute("DELETE FROM artifacts WHERE id=?", (artifact_id,))
-        self.cleanup()
-        return {"deleted": True, "artifact_id": artifact_id}

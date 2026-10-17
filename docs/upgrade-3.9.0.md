@@ -14,6 +14,21 @@
 
 3.9.0 包含 [PR #276](https://github.com/YuanYeYouTao/Yuki/pull/276) 的 NapCat 退役；当时的开发部署事实见[任务书与交付状态](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/architecture/Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)及[上线回执](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/operations/napcat-retirement-20261009.md)。旧部署需按下文清理实际执行配置，原私密资料保留。
 
+## 当前开发版：工具精简与持久终端升级
+
+本节描述正式3.9.0之后的开发实现，不改上方Release的`0119`、API3.5基线。#454将Main固定合同升级到21，Code API仍为`yuki.codemode.api.v2`、Plugin API仍为4.0。默认direct的平台/App内置工具为29/30项，Code完整31/32项、直调26/27项；批准插件另计。实际交付见[454实施与审查](architecture/Yuki-454工具精简实施与审查记录-2026-10-17.md)。
+
+- 终端使用`terminal_exec/read/control`，control接收input/interrupt/cancel/close；按原run读取增量日志和原completion，pending后不重新提交。`get_code_run`、`terminal_write`、`cancel_code_run`和`environment_packages`不再接受新调用。旧APT/Python job、已付结果、原ID/hash/累计预算保留。
+- 普通`workspace_list/read/write/search/patch/mkdir/move/delete`整链退役，直接用同一`/workspace`上的终端。`workspace_inspect/publish`、临时会话附件提升和私有工具结果读取仍在原链；已发送版本不跟随当前文件修改。SDK普通文件接口相同退役，不能用旧名创建新效果。
+- 自动化使用`automation_query(view=…)`、`automation_manage(action=…)`；当前会话历史用`query_chat_history(view=recent/search/around)`；记忆用`read_memory(view=fact/evidence)`；子任务消息并入`subagent_control(action=message)`。原owner、Person/Conversation、创建键、版本、问题/回执语义继续生效。插件委托不再按可选工具名二次缩名单，实际调用复用Host现有领域批准；SDK独立session合同未因此合并。
+- 搜索不再暗中追加网页提取；`web_search`与显式`read_webpage`分开。删除`WEB_EXTRACT_MAX_RESULTS`和`WEB_SOURCE_MAX_RUNS_PER_CONVERSATION`及对应热配置，同时退出当轮`used_url_for_trigger`来源门禁；升级迁移只清退当前override，历史配置审计与原搜索/页面结果保留。缓存采用新搜索语义，不重购已付或未知请求。
+
+持久终端以环境内管理员执行，HOME仍为`/home/yuki`。apt直接在同一execd/PTY链运行；软件数量、默认1800秒/最长一天、经验内存余量、回执积压和文件发布配额已移除。实际容器资源、OS错误、协议流控和宿主隔离继续按事实处理。
+
+**已有持久环境不能只替换Bot镜像。** 先停写并一致性备份Bot数据库、配置/插件、workspace与artifact引用，保存Manager的jobs数据库、原unit/argv/源码、原HOME/runtime和当前环境rootFS。rootFS镜像可能含execd凭据，必须留在本机私有备份中。停止原Manager与环境后，从原rootFS、原HOME/runtime恢复同一个环境；保旧容器/镜像供查证，不能拿发行基础镜像覆盖后装软件。同步实际checkpoint指向完整快照、管理员身份、现行Supervisor、专属公网bridge/NAT与Manager控制连接回包规则。原在途执行如实记录中断/未知，不自动重跑。SnowLuma、代理和其他服务保持原实例。
+
+升级按实际随包单一迁移head继续，不stamp、不清空会话。验收分别核Bot连接、Manager/socket、环境身份/HOME/原安装与文件、原run/receipt、实际PTY/APT/后台重连、公网TCP/UDP和localhost。Bot healthy不能替代环境迁移；未观测的自然消息和Provider cache保持未知。
+
 ## 版本与迁移范围
 
 | 项目 | 3.8.4 正式包 | 3.9.0 正式包 |

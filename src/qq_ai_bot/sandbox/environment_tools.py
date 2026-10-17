@@ -6,20 +6,18 @@ from typing import Any
 
 from qq_ai_bot.domain.messages import ChatTool
 
-EXECUTION_TOOLS = frozenset({"terminal_exec", "environment_packages"})
-READ_TOOLS = frozenset({"get_code_run", "terminal_read", "environment_status"})
+EXECUTION_TOOLS = frozenset({"terminal_exec"})
+READ_TOOLS = frozenset({"terminal_read", "environment_status"})
 ENVIRONMENT_TOOLS = frozenset(
     {
         "terminal_exec",
         "terminal_read",
-        "terminal_write",
         "terminal_control",
         "environment_status",
-        "environment_packages",
         "environment_service",
     }
 )
-SANDBOX_TOOLS = ENVIRONMENT_TOOLS | {"get_code_run", "cancel_code_run"}
+SANDBOX_TOOLS = ENVIRONMENT_TOOLS
 
 
 def tool(
@@ -50,61 +48,49 @@ def environment_tools() -> tuple[ChatTool, ...]:
     return (
         tool(
             "terminal_exec",
-            "在 Yuki 的持久 Linux 环境运行 Bash 命令。/workspace 与文件工具共享，"
-            "HOME=/home/yuki；pip/npm 依赖长期保留。约"
-            " 5 秒返回，pending 时查询 run_id，勿重复执行。"
-            "tty=true 可运行交互程序；command=bash 可创建保"
-            "持目录、变量和函数的终端，再用 terminal_write 输入。"
-            "无桌面，公网 HTTP/HTTPS 经代理，内部服务用 environment_service 登记。",
+            "以管理员身份操作 Yuki 自己的持久 Linux 环境，HOME=/home/yuki，"
+            "文件在 /workspace；可直接使用 Bash、Python、Node、apt、pip/npm 和公网。"
+            "默认持续运行，约5秒返回原 run_id；pending 后用 terminal_read 查询，勿重提命令。"
+            "tty=true 支持交互，terminal_control(action=input) 发送输入。",
             {
-                "command": {"type": "string", "maxLength": 65536},
+                "command": text,
                 "cwd": text,
                 "tty": {"type": "boolean"},
-                "timeout_seconds": {"type": "integer", "minimum": 0, "maximum": 86400},
+                "timeout_seconds": {"type": "integer", "minimum": 0},
             },
             ("command",),
         ),
         tool(
             "terminal_read",
-            "按字节游标读取终端增量输出和任务状态。返回 next_cursor；旧输出已轮转会明确标记。"
-            "空输出不代表完成；使用 status、pending 和 exit_code 判断。",
-            {**run, **cursor},
+            "按原 run_id 读取增量输出、状态、退出码及终态 completion/artifact；"
+            "也可查旧安装或代码任务。"
+            "wait_seconds 只等待观察，不停止进程；next_cursor 续读，"
+            "轮转丢失会标记，空输出不代表完成。",
+            {**run, **cursor, "wait_seconds": {"type": "number", "minimum": 0}},
             ("run_id",),
             read=True,
         ),
         tool(
-            "terminal_write",
-            "向正在运行的终端发送原样输入；回车需包含换行。不会创建第二个命令任务。",
-            {**run, "text": {"type": "string", "maxLength": 8192}},
-            ("run_id", "text"),
-        ),
-        tool(
             "terminal_control",
-            "中断、取消或关闭指定终端。INT 相当于 Ctrl+C；取消停止此任务，保留已写入的工作区文件。",
-            {**run, "action": {"type": "string", "enum": ["interrupt", "cancel", "close"]}},
+            "控制原终端：input 发送原样 text（回车显式写换行），interrupt 相当于 Ctrl+C，"
+            "cancel 停止原任务，close 关闭会话。已写文件保留，不创建第二个命令。",
+            {
+                **run,
+                "action": {"type": "string", "enum": ["input", "interrupt", "cancel", "close"]},
+                "text": text,
+            },
             ("run_id", "action"),
         ),
         tool(
             "environment_status",
-            "查看持久环境、容量、任务、终端与已登记服务。资源不足时先查询并整理，不盲目重试。",
+            "查看持久环境、实际容量、任务、终端与已登记服务。",
             {},
             read=True,
         ),
         tool(
-            "environment_packages",
-            "在沙箱内安装或移除 apt 系统软件包；无需人工批准。串行执行并保存成功检查点，"
-            "约 5 秒返回任务 ID。Python/Node 依赖直接通过 terminal_exec 使用 pip/npm 安装。",
-            {
-                "action": {"type": "string", "enum": ["install", "remove", "repair"]},
-                "packages": {"type": "array", "items": text, "maxItems": 30},
-            },
-            ("action",),
-        ),
-        tool(
             "environment_service",
             "管理环境内部后台服务；登记后可跨服务器重启恢复。"
-            "服务只在沙箱内部监听，HTTP 请求可使用 loca"
-            "lhost。故障重启有次数上限，停止后不会自动重启。",
+            "环境内服务可通过 localhost 访问；按 restart 策略恢复，显式停止后不自动重启。",
             {
                 "action": {
                     "type": "string",

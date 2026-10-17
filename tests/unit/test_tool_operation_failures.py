@@ -22,13 +22,13 @@ from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
 @pytest.mark.parametrize(
     ("tool", "payload", "committed"),
     [
-        ("workspace_write", {"error": "version_conflict"}, False),
-        ("workspace_patch", {"error": "workspace_full"}, False),
-        ("terminal_exec", {"error": "environment_busy"}, False),
-        ("terminal_write", {"error": "idempotency_conflict"}, False),
-        ("workspace_move", {"error": "sandbox_unavailable", "uncertain": True}, None),
+        ("workspace_publish", {"error": "version_conflict"}, False),
+        ("workspace_publish", {"error": "workspace_full"}, False),
+        ("terminal_exec", {"error": "environment_unavailable"}, False),
+        ("terminal_control", {"error": "idempotency_conflict"}, False),
+        ("workspace_publish", {"error": "sandbox_unavailable", "uncertain": True}, None),
         ("terminal_exec", {"error": "sandbox_submission_unknown", "uncertain": True}, None),
-        ("workspace_write", {"path": "result.txt", "version": "new"}, True),
+        ("workspace_publish", {"artifact_id": "published-snapshot", "immutable": True}, True),
     ],
 )
 async def test_tool_operation_receipt(database, tool, payload, committed):
@@ -70,9 +70,9 @@ async def test_tool_operation_receipt(database, tool, payload, committed):
 @pytest.mark.parametrize(
     ("tool", "uncertain"),
     [
-        ("workspace_write", True),
-        ("terminal_write", True),
-        ("workspace_read", False),
+        ("workspace_publish", True),
+        ("terminal_control", True),
+        ("workspace_media_read", False),
         ("terminal_read", False),
     ],
 )
@@ -105,7 +105,7 @@ async def test_connection_failure_has_no_dispatched_effect(monkeypatch):
         "asyncio.open_unix_connection", AsyncMock(side_effect=OSError("offline")), raising=False
     )
     result = await SandboxClient(Path("/unused.sock")).execute(
-        "workspace_write",
+        "workspace_publish",
         {},
         request_id="original-request",
     )

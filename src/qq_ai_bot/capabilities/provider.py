@@ -31,14 +31,8 @@ _RESIDENT_YUKI_TOOLS = (
             "read_conversation_history",
             "read_personal_entry",
             "recall_own_message",
-            "workspace_list",
-            "workspace_read",
-            "workspace_write",
             "inspect_conversation_attachment",
             "save_conversation_attachment_to_workspace",
-            "workspace_delete",
-            "get_code_run",
-            "cancel_code_run",
         }
     )
     | SANDBOX_TOOLS
@@ -63,12 +57,6 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         )
         for name in WORKSPACE_TOOLS
     },
-    "workspace_list": ("workspace.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
-    "workspace_read": ("workspace.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
-    "workspace_write": ("workspace.write", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
-    "workspace_delete": ("workspace.write", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
-    "get_code_run": ("sandbox.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
-    "cancel_code_run": ("sandbox.cancel", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
     "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "read_personal_entry": ("social.entry.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "send_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
@@ -93,33 +81,10 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         CapabilityEffect.READ_STATE,
         CapabilityRisk.READ,
     ),
-    "get_recent_chat_history": (
-        "memory.history.recent",
-        CapabilityEffect.EXTERNAL_READ,
-        CapabilityRisk.READ,
-    ),
-    "search_chat_history": (
-        "memory.history.search",
-        CapabilityEffect.READ_STATE,
-        CapabilityRisk.READ,
-    ),
-    "get_chat_history_around": (
-        "memory.history.around",
-        CapabilityEffect.READ_STATE,
-        CapabilityRisk.READ,
-    ),
+    "query_chat_history": ("memory.history", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "read_memory": ("memory.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "search_memory": (
         "memory.search",
-        CapabilityEffect.READ_STATE,
-        CapabilityRisk.READ,
-    ),
-    "get_memory_fact": (
-        "memory.fact.read",
-        CapabilityEffect.READ_STATE,
-        CapabilityRisk.READ,
-    ),
-    "get_memory_evidence": (
-        "memory.evidence.read",
         CapabilityEffect.READ_STATE,
         CapabilityRisk.READ,
     ),
@@ -133,10 +98,9 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
 }
 
 _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
+    "query_chat_history": ("聊天原话", "近期消息", "以前聊过", "附近消息"),
+    "read_memory": ("记忆详情", "记忆证据"),
     "get_my_capabilities": ("我能改什么", "权限范围", "有哪些设置"),
-    "get_recent_chat_history": ("刚才说了什么", "最近消息", "当前对话历史"),
-    "search_chat_history": ("以前聊过", "查记录", "历史消息"),
-    "get_chat_history_around": ("这条前后", "附近消息", "对齐原话"),
     "search_memory": ("记得他", "人物记忆", "群记忆", "自我记忆", "你的经历"),
     "memory_change": ("记住", "忘记", "纠正记忆", "保存记忆"),
     "web_search": ("搜索", "联网", "查资料", "最新新闻", "搜下", "上网"),
@@ -146,42 +110,11 @@ _CORE_USE_WHEN: dict[str, tuple[str, ...]] = {
 }
 
 
-_AUTOMATION_READ = frozenset(
-    {
-        "automation_list",
-        "automation_list_history",
-        "automation_get",
-        "automation_history",
-        "time_get_current",
-    }
-)
+_AUTOMATION_READ = frozenset({"automation_query"})
 
 _CORE_SEARCH_TAGS: dict[str, tuple[str, ...]] = {
-    "get_recent_chat_history": (
-        "刚才",
-        "刚刚",
-        "最近消息",
-        "聊天记录",
-        "对话历史",
-        "前面说了什么",
-    ),
-    "search_chat_history": (
-        "之前",
-        "以前",
-        "历史消息",
-        "聊天记录",
-        "说过",
-        "提过",
-        "查记录",
-        "以前聊过",
-    ),
-    "get_chat_history_around": (
-        "这条前后",
-        "附近消息",
-        "对齐原话",
-        "原文",
-        "前后几条",
-    ),
+    "query_chat_history": ("聊天记录", "原文", "前后几条", "以前聊过"),
+    "read_memory": ("事实详情", "证据摘要"),
     "search_memory": (
         "人物记忆",
         "群友记忆",
@@ -295,6 +228,8 @@ class ChatToolCapabilityProvider:
                 return None
             return mapped
         if self._source is CapabilityTrustSource.AUTOMATION:
+            if tool.name == "time_get_current":
+                return "kernel.time", CapabilityEffect.READ_STATE, CapabilityRisk.READ
             if tool.name in _AUTOMATION_READ:
                 return "automation.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ
             return "automation.write", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE

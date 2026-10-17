@@ -46,7 +46,7 @@ async def query_environment(database):
 @pytest.mark.asyncio
 async def test_queries_do_not_require_automation_or_mutation_admission(query_environment):
     chat, runtime = query_environment
-    backend = MainAgentBackend(chat, runtime, allowed_tools=frozenset())
+    backend = MainAgentBackend(chat, runtime)
     for action in ("get", "list"):
         assert backend.work_query_allowed(action)
 
@@ -69,7 +69,7 @@ async def test_queries_require_trusted_internal_actor(query_environment):
 @pytest.mark.asyncio
 async def test_delegated_query_scope_and_closed_profiles_are_enforced(query_environment):
     chat, runtime = query_environment
-    delegated = MainAgentBackend(chat, runtime, allowed_tools=frozenset({"automation_get"}))
+    delegated = MainAgentBackend(chat, runtime)
     assert delegated.work_query_allowed("get")
     assert delegated.work_query_allowed("list")
     closed = MainAgentBackend(chat, replace(runtime, tools_closed=True))

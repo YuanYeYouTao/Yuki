@@ -111,7 +111,6 @@ class ConversationModule:
             memory_context=persistence.memory_context,
             memory_mutations=memory_mutations,
             web_provider=self._web_provider,
-            web_sources=persistence.web_sources,
             runtime_config=self._runtime_config,
             permission_catalog=self._permission_catalog,
         )
@@ -125,7 +124,6 @@ class ConversationModule:
             memory_context=persistence.memory_context,
             memory_partition_lookup=DatabaseMemoryPartitionLookup(persistence.database),
             tools=agent_tools,
-            web_sources=persistence.web_sources,
             runtime_config=self._runtime_config,
             prompt_composer=PromptComposer(settings, prompt_registry),
             turn_coordinator=self._turns,

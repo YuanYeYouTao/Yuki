@@ -17,7 +17,7 @@ def subagent_tools() -> tuple[ChatTool, ...]:
         tool(
             "subagent_start",
             "将复杂工作交给后台工作者，立即返回 ID；可以继续聊天。"
-            "已有子任务用 control/message，勿重复派生。",
+            "已有子任务用 subagent_control，勿重复派生。",
             {
                 "goal": {"type": "string"},
                 "context": string,
@@ -30,30 +30,22 @@ def subagent_tools() -> tuple[ChatTool, ...]:
             "subagent_control",
             "查询、取消或继续自己的持久子任务；完成后可继续原上下文，已归档会明确返回。"
             "已有子任务直接按 ID 管理，无需先 accept 新任务；"
-            "resume 可用 instruction 补充要求。",
+            "resume 用 instruction 继续；message 用 text 补充或提问，省略 child_id 联系父任务。"
+            "向父 ask=true 保存问题并按回执等待；reply_to 回答原问题。",
             {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "status", "result", "cancel", "resume"],
+                    "enum": ["list", "status", "result", "cancel", "resume", "message"],
                 },
                 "child_id": string,
                 "instruction": string,
+                "text": string,
+                "ask": {"type": "boolean"},
+                "reply_to": string,
                 "limit": {"type": "integer", "minimum": 1, "maximum": 50},
                 "cursor": {"type": "string", "maxLength": 36},
             },
             ("action",),
-        ),
-        tool(
-            "subagent_message",
-            "向自己的子任务发送补充、问题或回答；省略 child_id 时联系自己的父任务。"
-            "向父任务 ask=true 保存问题；父仍可接续时等待回答，否则按回执继续。",
-            {
-                "child_id": string,
-                "text": string,
-                "ask": {"type": "boolean"},
-                "reply_to": string,
-            },
-            ("text",),
         ),
     )
 
@@ -70,7 +62,7 @@ async def execute_subagent(
         spawned_id = await repository.start(control.lease, control.current["id"], key, args)
         return {"ok": True, "child_id": spawned_id, "state": "queued", "pending": True}
     identity = args.get("child_id")
-    to_parent = name == "subagent_message" and identity is None
+    to_parent = args.get("action") == "message" and identity is None
     if to_parent:
         if control.current is None or control.current["parent_work_id"] is None:
             raise ValueError("subagent_parent_unavailable")
@@ -87,20 +79,20 @@ async def execute_subagent(
         parent_id = control.lease.work_id or child["parent_work_id"]
     else:
         parent_id = control.lease.work_id
-    if name == "subagent_message":
+    if args.get("action") == "message":
         ask = bool(args.get("ask"))
         receipt = await repository.message(
             control.lease,
             parent_id,
             cast(str, identity),
             key,
-            args["text"],
+            args.get("text"),
             ask=ask,
             reply_to=args.get("reply_to"),
             to_parent=to_parent,
         )
         if receipt["waiting_parent"]:
-            await control._accept("need_input", key, reason=args["text"])
+            await control._accept("need_input", key, reason=args.get("text"))
         return {"ok": True, **receipt}
     action = args.get("action")
     next_cursor = None

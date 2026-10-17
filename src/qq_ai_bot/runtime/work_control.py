@@ -20,9 +20,7 @@ if TYPE_CHECKING:
     from qq_ai_bot.runtime.work_session import WorkSession
 
 
-WORK_CONTROL_NAMES = frozenset(
-    {"task_control", "subagent_start", "subagent_control", "subagent_message"}
-)
+WORK_CONTROL_NAMES = frozenset({"task_control", "subagent_start", "subagent_control"})
 
 
 # Accepted lifecycle actions and the Work state each one proposes to the writer.
@@ -337,7 +335,7 @@ class WorkControl:
             if isinstance(identity, str) and (effect.get("pending") or effect.get("uncertain")):
                 owners.setdefault(effect["work_id"], []).append(identity)
             elif (
-                effect.get("tool") in EXECUTION_TOOLS
+                effect.get("tool") in EXECUTION_TOOLS | {"environment_packages", "run_python"}
                 and isinstance(effect.get("request_id"), str)
                 and effect.get("uncertain")
             ):
@@ -749,8 +747,9 @@ class WorkControl:
 
                 return await execute_subagent(
                     self,
-                    "subagent_message",
+                    "subagent_control",
                     {
+                        "action": "message",
                         "text": args.get("text") if action == "answer" else args.get("reason"),
                         "ask": action == "need_input",
                     },

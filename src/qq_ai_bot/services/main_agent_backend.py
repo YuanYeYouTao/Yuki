@@ -29,15 +29,20 @@ from qq_ai_bot.capabilities.exposure import NO_LONGER_AUTHORIZED
 from qq_ai_bot.capabilities.invocation import Invocation
 from qq_ai_bot.capabilities.runtime import TurnCapabilityRuntime
 from qq_ai_bot.capabilities.validation import UNDECLARED_TOOL
+from qq_ai_bot.domain.conversations import ScopeType
 from qq_ai_bot.domain.messages import ChatImage, ToolCall, ToolFunction
 from qq_ai_bot.llm.base import LLMError
+from qq_ai_bot.memory.enums import MemoryScopeType
 from qq_ai_bot.runtime.origin import TurnOrigin as RuntimeTurnOrigin
 from qq_ai_bot.runtime.work_budget import WorkBudgetExceeded
 from qq_ai_bot.services.agent_runner import AgentRuntime, AgentToolBackend
 from qq_ai_bot.services.agent_tools import ToolRuntime
 from qq_ai_bot.services.turn_coordinator import TurnSupersededError
+from yuki_plugin_sdk.errors import PluginPermissionError
+from yuki_plugin_sdk.permissions import PluginPermission
 
 if TYPE_CHECKING:
+    from qq_ai_bot.plugin_host.facades import HostPluginContext
     from qq_ai_bot.services.chat import ChatService
 
 logger = logging.getLogger(__name__)
@@ -95,11 +100,11 @@ class MainAgentBackend(AgentToolBackend):
         service: ChatService,
         runtime: ToolRuntime,
         *,
-        allowed_tools: frozenset[str] | None = None,
+        plugin_host: HostPluginContext | None = None,
     ) -> None:
         self._service = service
         self._runtime = runtime
-        self._allowed_tools = allowed_tools
+        self._plugin_host = plugin_host
         self._memory_session = getattr(runtime, "memory_session", None)
         self.messages_sent = 0
         self.sent_current_texts: list[str] = []
@@ -143,8 +148,6 @@ class MainAgentBackend(AgentToolBackend):
             # Recording lifecycle state grants no business or send authority.
             # Even a restricted calculation must be able to answer or stop.
             return True
-        if self._allowed_tools is not None and name not in self._allowed_tools:
-            return False
         return not self._runtime.tools_closed
 
     def work_query_allowed(self, action: str) -> bool:
@@ -251,8 +254,6 @@ class MainAgentBackend(AgentToolBackend):
         runtime: AgentRuntime = invocation.context.runtime
         if name != "send_message" and self._runtime.before_model_request is not None:
             await self._runtime.before_model_request()
-        if self._allowed_tools is not None and name not in self._allowed_tools:
-            return _refused_result(name, "capability_not_allowed")
         contract = self._service.runtime.runner.main_contract
         if contract is not None and not contract.plugin_binding_current(name):
             return _refused_result(name, "plugin_tool_contract_changed", restart_required=True)
@@ -372,12 +373,48 @@ class MainAgentBackend(AgentToolBackend):
 
                 async def invoke_binding() -> ToolExecutionResult:
                     nonlocal binding_started
+                    binding_runtime = execution_runtime
+                    host = self._plugin_host
+                    try:
+                        await self._require_plugin_domain(effective_descriptor, parsed)
+                        if host is not None and effective_descriptor.namespace_id in {
+                            "memory.read",
+                            "memory.search",
+                        }:
+                            host._require_any(
+                                (
+                                    PluginPermission.MEMORY_PERSON_READ,
+                                    PluginPermission.MEMORY_GROUP_READ,
+                                ),
+                                require_invocation=False,
+                            )
+                            scopes = (
+                                (MemoryScopeType.PERSON, MemoryScopeType.PERSON_GROUP)
+                                if PluginPermission.MEMORY_PERSON_READ in host._approved_permissions
+                                else ()
+                            ) + (
+                                (MemoryScopeType.GROUP,)
+                                if PluginPermission.MEMORY_GROUP_READ in host._approved_permissions
+                                else ()
+                            )
+                            binding_runtime = replace(
+                                execution_runtime, memory_allowed_scopes=scopes
+                            )
+                    except PluginPermissionError as exc:
+                        return ToolExecutionResult(
+                            ok=False,
+                            error_code="permission_denied",
+                            public_message=str(exc),
+                            mutation_committed=False,
+                            provider_id=descriptor.provider_id,
+                            tool_name=descriptor.provider_tool_name or descriptor.model_name,
+                        )
                     binding_started = True
                     if self.counts_toward_limit(name, runtime):
                         self.failed_tool_calls += 1
                     return await binding.invoke(
                         {str(key): value for key, value in parsed.items()},
-                        ToolInvocationContext(runtime=execution_runtime, call_id=receipt_call_id),
+                        ToolInvocationContext(runtime=binding_runtime, call_id=receipt_call_id),
                     )
 
                 outcome = await self._service.run_effect(
@@ -504,6 +541,68 @@ class MainAgentBackend(AgentToolBackend):
                     tool_call_id=receipt_call_id,
                 )
         return result
+
+    async def _require_plugin_domain(
+        self, descriptor: CapabilityDescriptor, arguments: dict[str, Any]
+    ) -> None:
+        """Reuse the live Host's domain grants; fixed tool names grant no authority."""
+        host = self._plugin_host
+        if host is None:
+            return
+        namespace = descriptor.namespace_id
+        permission: PluginPermission | None = None
+        if namespace.startswith(("sandbox.", "workspace.")):
+            permission = PluginPermission.AGENT_RUN
+        elif namespace in {
+            "memory.history",
+            "social.history",
+            "social.contacts",
+            "social.entry.read",
+        }:
+            permission = PluginPermission.MESSAGE_HISTORY_READ
+        elif namespace == "social.members":
+            permission = PluginPermission.GROUP_MEMBERS_READ
+        elif namespace == "memory.state.write":
+            permission = (
+                PluginPermission.MEMORY_DELETE
+                if arguments.get("operation") == "invalidate"
+                else PluginPermission.MEMORY_WRITE
+            )
+        elif namespace == "web.search":
+            permission = PluginPermission.WEB_SEARCH
+        elif namespace == "web.read":
+            permission = PluginPermission.WEB_READ
+        elif namespace == "automation.read":
+            permission = PluginPermission.AUTOMATION_READ
+        elif namespace == "automation.write":
+            permission = PluginPermission.AUTOMATION_MANAGE_SELF
+        elif namespace == "social.recall":
+            permission = (
+                PluginPermission.MESSAGE_GROUP_SEND
+                if self._runtime.effective_scope_type is ScopeType.GROUP
+                else PluginPermission.MESSAGE_PRIVATE_SEND
+            )
+            host._require(permission, require_invocation=False)
+            event = await self._service._ledger.get_event(int(arguments["event_id"]))
+            if (
+                event is not None
+                and event.canonical_conversation_id != self._runtime.effective_conversation_id
+            ):
+                raise PluginPermissionError("message is outside the original Conversation")
+        elif namespace == "social.send":
+            if arguments.get("artifact_id") or arguments.get("emoji"):
+                permission = PluginPermission.MESSAGE_MEDIA_SEND
+            else:
+                target = arguments.get("target")
+                kind = target.get("kind") if isinstance(target, dict) else None
+                group = kind == "space" or (kind is None and self._runtime.current_group_id)
+                permission = (
+                    PluginPermission.MESSAGE_GROUP_SEND
+                    if group
+                    else PluginPermission.MESSAGE_PRIVATE_SEND
+                )
+        if permission is not None:
+            host._require(permission, require_invocation=False)
 
     async def observe_response(self, response: Any, runtime: AgentRuntime) -> None:
         """Apply sparse own-state evidence, using the original main-turn binding."""

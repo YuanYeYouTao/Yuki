@@ -308,7 +308,6 @@ class WebModule:
         return TavilyWebSearchProvider(
             api_key=settings.tavily_api_key,
             search_depth=settings.web_search_depth,
-            extract_max_results=settings.web_extract_max_results,
             timeout_seconds=settings.web_timeout_seconds,
             max_retries=settings.web_max_retries,
             global_concurrency=settings.web_global_concurrency,
