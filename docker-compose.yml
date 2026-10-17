@@ -8,7 +8,17 @@ services:
     env_file:
       - path: .env
         required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
+      HTTP_PROXY: "${http_proxy-${HTTP_PROXY-}}"
+      http_proxy: "${http_proxy-${HTTP_PROXY-}}"
+      HTTPS_PROXY: "${https_proxy-${HTTPS_PROXY-}}"
+      https_proxy: "${https_proxy-${HTTPS_PROXY-}}"
+      ALL_PROXY: "${all_proxy-${ALL_PROXY-}}"
+      all_proxy: "${all_proxy-${ALL_PROXY-}}"
+      NO_PROXY: "${no_proxy-${NO_PROXY-localhost,127.0.0.1,::1,bot,snowluma}}"
+      no_proxy: "${no_proxy-${NO_PROXY-localhost,127.0.0.1,::1,bot,snowluma}}"
       CODE_MODE_ENABLED: "false"
       COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
       APP_HOST: 0.0.0.0
