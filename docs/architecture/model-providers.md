@@ -271,9 +271,10 @@ Main 容量准备通过 `PreparedModelInput` 显式交给 Executor。只有同�
 记录上游返回的输入、输出、缓存 Token 和实际 HTTP 请求数；无可信 grounding 记失败，
 失败不会转为 Tavily 搜索；没有上游用量时保留未知。
 
-应用层 `provider_cache_shape_diagnostics` 只覆盖归一 messages/tools，明确排除 native
-continuation 正文。缓存前缀与首差异以各适配器最终 HTTP body 的 `WireRequestObserver`
-为准；相同 messages 的不同原生签名仍可能改变最终输入。代理上游最后一跳不在此观测内。
+缓存查证使用实际物理 HTTP 请求及上游返回的 usage，缺字段保留未知。
+删除旧应用层 cache-shape 代理哈希与常态 WireRequestObserver 全量哈希/链路缓存；
+需要比较前缀时在获准查询的原请求上离线比较，不为每次业务调用重复序列化历史。
+相同 messages 的不同原生签名仍可能改变最终输入，代理上游最后一跳不在本机观测内。
 主 Agent 从真实 Conversation、generation 与当前 Work 分支传递 `x-session-id` 请求元数据；
 编号不写进模型正文，不使用每次激活的 chain UUID 或 prompt hash。每个请求单独建 Header，
 不修改共享连接。没有真实代次的独立调用不借其他会话编号。

@@ -93,8 +93,6 @@ from yuki.persistence.models import (
     MemoryToolReceiptModel,
     PersonAliasModel,
     RuntimeConfigOverrideModel,
-    RuntimeTurnObservationModel,
-    ToolInvocationModel,
     WebSearchRunModel,
 )
 from yuki.persistence.repository_records import (
@@ -110,7 +108,6 @@ from yuki.plugin_host.db_models import (
     PluginNotificationOutboxModel,
     PluginStateModel,
 )
-from yuki.runtime.observability import hash_conversation_key
 from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
 from yuki.sandbox.resource_cleanup import ResourceCleanupPreparation
 
@@ -1494,7 +1491,6 @@ class PeopleRepository:
 
         Inbound FKs to canonical_conversations (current schema/ORM):
         RESTRICT: chat_events, conversation_scopes, web_search_runs,
-        tool_invocations, runtime_turn_observations,
         plugin_notification_outbox, plugin_background_turn_jobs,
         model_invocations.
         CASCADE: canonical Conversation projections.
@@ -1519,24 +1515,11 @@ class PeopleRepository:
         alias_keys = await PeopleRepository._private_conversation_alias_keys(
             session, conversation_ids, owner_externals
         )
-        plain_hashes = tuple(hash_conversation_key(key) for key in alias_keys)
-        observation_match = [RuntimeTurnObservationModel.canonical_person_id == person_id]
-        tool_match = []
         web_match = []
         if conversation_ids:
-            observation_match.append(
-                RuntimeTurnObservationModel.canonical_conversation_id.in_(conversation_ids)
-            )
-            tool_match.append(ToolInvocationModel.canonical_conversation_id.in_(conversation_ids))
             web_match.append(WebSearchRunModel.canonical_conversation_id.in_(conversation_ids))
-        if plain_hashes:
-            observation_match.append(
-                RuntimeTurnObservationModel.conversation_key_hash.in_(plain_hashes)
-            )
-            tool_match.append(ToolInvocationModel.conversation_key_hash.in_(plain_hashes))
         if alias_keys:
             web_match.append(WebSearchRunModel.conversation_key.in_(alias_keys))
-        await session.execute(delete(RuntimeTurnObservationModel).where(or_(*observation_match)))
         # Prompts and tool results can mention a Person in any conversation.
         # Disposable diagnostics must not retain content after privacy deletion.
         from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -1555,8 +1538,6 @@ class PeopleRepository:
             )
         )
         await session.execute(delete(ExecutionTraceEntryModel))
-        if tool_match:
-            await session.execute(delete(ToolInvocationModel).where(or_(*tool_match)))
         if web_match:
             await session.execute(delete(WebSearchRunModel).where(or_(*web_match)))
         if conversation_ids:

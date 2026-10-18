@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -34,7 +33,6 @@ from yuki.domain.messages import (
     ModelResponseStatus,
     NativeToolDefinition,
     NativeToolEvent,
-    PromptRequestDiagnostics,
     ProviderContinuation,
     ResponseCitation,
 )
@@ -52,7 +50,6 @@ from yuki.model_runtime.capacity import estimate_request_tokens
 from yuki.model_runtime.dispatch_guard import model_dispatch_guard
 from yuki.model_runtime.executor import PreparedModelInput
 from yuki.model_runtime.models import ModelCapability, ModelExecutionPriority
-from yuki.prompting.serializer import serialized_messages_hash
 from yuki.runtime.execution_receipts import current_receipts
 from yuki.runtime.work_control import WorkControl, WorkInputsPreparing
 from yuki.runtime.work_repository import WorkCapacityError
@@ -874,7 +871,6 @@ class TurnExecution:
     ) -> _PreparedRequest | End | LoopSignal:
         """Prepare capacity/compaction before the original request admission."""
         await self._finalize_initial_layout()
-        diagnostics = self.runtime.prompt_diagnostics
         sequence = self.state.transcript.request()
         if self.state.control is not None and self.state.control.session is not None:
             sequence = replace(
@@ -885,28 +881,6 @@ class TurnExecution:
                     else DispatchOrigin.COMPOSED_INITIAL
                 ),
             )
-            if self.state.control.session.uses_recovery_transcript:
-                guard = self.state.control.session.source_guard
-                diagnostics = PromptRequestDiagnostics(
-                    conversation_prefix_hash=serialized_messages_hash(sequence.messages),
-                    prompt_snapshot_fingerprint=hashlib.sha256(
-                        json.dumps(
-                            guard.snapshot()
-                            if guard is not None
-                            else {
-                                "conversation_id": self.state.control.lease.conversation_id,
-                                "source_revision": self.state.control.session.source_revision,
-                            },
-                            sort_keys=True,
-                            default=str,
-                        ).encode()
-                    ).hexdigest(),
-                    static_prompt_revision=hashlib.sha256(
-                        "\n\n".join(
-                            m.content or "" for m in sequence.messages if m.role == "system"
-                        ).encode()
-                    ).hexdigest(),
-                )
         control = self.state.control
         work_id = (
             control.current["id"]
@@ -947,11 +921,6 @@ class TurnExecution:
             tool_choice="auto" if self.state.definitions or native_definitions else None,
             native_tools=native_definitions,
             continuation=sequence.continuation,
-            conversation_prefix_hash=(diagnostics.conversation_prefix_hash if diagnostics else ""),
-            prompt_snapshot_fingerprint=(
-                diagnostics.prompt_snapshot_fingerprint if diagnostics else ""
-            ),
-            static_prompt_revision=(diagnostics.static_prompt_revision if diagnostics else ""),
         )
         self.state.evidence_observation.request(
             request_index + 1,

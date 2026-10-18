@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from typing import Any
 
-from yuki.domain.messages import ChatMessage
 from yuki.prompting.models import PromptChannel, PromptContribution, PromptTrust
 
 
@@ -41,30 +39,3 @@ def serialize_dynamic(contributions: tuple[PromptContribution, ...]) -> str:
             source = "" if contribution.source == "core" else contribution.source
             parts.append(f"{source}资料{trust}：{value}")
     return "\n".join(parts)
-
-
-def serialized_messages_hash(messages: tuple[ChatMessage, ...]) -> str:
-    """Hash the actual canonical bytes of a provider-neutral message prefix."""
-
-    payload = [
-        {
-            "role": message.role,
-            "content": message.content,
-            "tool_calls": [
-                {
-                    "id": call.id,
-                    "type": call.type,
-                    "function": {
-                        "name": call.function.name,
-                        "arguments": call.function.arguments,
-                    },
-                }
-                for call in message.tool_calls
-            ],
-            "tool_call_id": message.tool_call_id,
-            "reasoning_content": message.reasoning_content,
-        }
-        for message in messages
-    ]
-    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()

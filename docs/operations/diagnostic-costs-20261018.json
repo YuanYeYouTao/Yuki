@@ -1,0 +1,622 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-18",
+  "baseline": {
+    "label": "baseline-029ca22b",
+    "source": "C:\\Users\\bymay\\AppData\\Local\\Temp\\yuki-diag-baseline-029ca22b",
+    "repeats": 3,
+    "workload": {
+      "history_messages": 64,
+      "model_calls": 3,
+      "tool_batches": 2,
+      "tool_calls": 2,
+      "http": "MockTransport only; no network/model/platform messages"
+    },
+    "samples": [
+      {
+        "sql": {
+          "SELECT": 35,
+          "INSERT": 34,
+          "COMMIT": 34
+        },
+        "trace_rows": 31,
+        "trace_kinds": {
+          "turn_start": 1,
+          "model_start": 3,
+          "model_route": 3,
+          "provider_start": 3,
+          "provider_response": 3,
+          "provider_end": 3,
+          "model_phases": 3,
+          "model_end": 3,
+          "tool_batch_start": 2,
+          "tool_start": 2,
+          "tool_end": 2,
+          "tool_batch_end": 2,
+          "turn_end": 1
+        },
+        "json_bytes": 1006391,
+        "gzip_bytes": 13171,
+        "foreground_seconds": 0.20433269999921322,
+        "drained_seconds": 0.22455550031736493,
+        "max_observed_transaction_seconds": 0.1880000000819564,
+        "writer": {
+          "committed": 34,
+          "failures": 0,
+          "dropped": 0
+        },
+        "wire_sha256": [
+          "a2c2536412c32b646961194314f2bdc024c9cdd26a5c425ebb20321492545ce9",
+          "1bc836a5e0430b2446169fb7a7e0a3d4fd6a6e544a3cf173e5c5f8eae9807a67",
+          "57dcd12ed90fb05cc06c755165ababd45e39f3971f5c4d23e1146a9b38c53315"
+        ],
+        "tool_calls": [
+          "call-0",
+          "call-1"
+        ],
+        "result": {
+          "text": "final answer",
+          "model_requests": 3,
+          "tool_calls_used": 2
+        }
+      },
+      {
+        "sql": {
+          "SELECT": 35,
+          "INSERT": 34,
+          "COMMIT": 34
+        },
+        "trace_rows": 31,
+        "trace_kinds": {
+          "turn_start": 1,
+          "model_start": 3,
+          "model_route": 3,
+          "provider_start": 3,
+          "provider_response": 3,
+          "provider_end": 3,
+          "model_phases": 3,
+          "model_end": 3,
+          "tool_batch_start": 2,
+          "tool_start": 2,
+          "tool_end": 2,
+          "tool_batch_end": 2,
+          "turn_end": 1
+        },
+        "json_bytes": 1006397,
+        "gzip_bytes": 13178,
+        "foreground_seconds": 0.11354129994288087,
+        "drained_seconds": 0.130137600004673,
+        "max_observed_transaction_seconds": 0.016000000294297934,
+        "writer": {
+          "committed": 34,
+          "failures": 0,
+          "dropped": 0
+        },
+        "wire_sha256": [
+          "a2c2536412c32b646961194314f2bdc024c9cdd26a5c425ebb20321492545ce9",
+          "1bc836a5e0430b2446169fb7a7e0a3d4fd6a6e544a3cf173e5c5f8eae9807a67",
+          "57dcd12ed90fb05cc06c755165ababd45e39f3971f5c4d23e1146a9b38c53315"
+        ],
+        "tool_calls": [
+          "call-0",
+          "call-1"
+        ],
+        "result": {
+          "text": "final answer",
+          "model_requests": 3,
+          "tool_calls_used": 2
+        }
+      },
+      {
+        "sql": {
+          "SELECT": 35,
+          "INSERT": 34,
+          "COMMIT": 34
+        },
+        "trace_rows": 31,
+        "trace_kinds": {
+          "turn_start": 1,
+          "model_start": 3,
+          "model_route": 3,
+          "provider_start": 3,
+          "provider_response": 3,
+          "provider_end": 3,
+          "model_phases": 3,
+          "model_end": 3,
+          "tool_batch_start": 2,
+          "tool_start": 2,
+          "tool_end": 2,
+          "tool_batch_end": 2,
+          "turn_end": 1
+        },
+        "json_bytes": 1006391,
+        "gzip_bytes": 13175,
+        "foreground_seconds": 0.13581120036542416,
+        "drained_seconds": 0.15308470046147704,
+        "max_observed_transaction_seconds": 0.016000000294297934,
+        "writer": {
+          "committed": 34,
+          "failures": 0,
+          "dropped": 0
+        },
+        "wire_sha256": [
+          "a2c2536412c32b646961194314f2bdc024c9cdd26a5c425ebb20321492545ce9",
+          "1bc836a5e0430b2446169fb7a7e0a3d4fd6a6e544a3cf173e5c5f8eae9807a67",
+          "57dcd12ed90fb05cc06c755165ababd45e39f3971f5c4d23e1146a9b38c53315"
+        ],
+        "tool_calls": [
+          "call-0",
+          "call-1"
+        ],
+        "result": {
+          "text": "final answer",
+          "model_requests": 3,
+          "tool_calls_used": 2
+        }
+      }
+    ],
+    "median": {
+      "foreground_seconds": 0.13581120036542416,
+      "drained_seconds": 0.15308470046147704,
+      "max_observed_transaction_seconds": 0.016000000294297934,
+      "trace_rows": 31,
+      "json_bytes": 1006391,
+      "gzip_bytes": 13175
+    },
+    "limits": [
+      "SQLite/Runners/executor/HTTP and tool coordinator are actual implementations; the business body uses a fixed synthetic three-call transcript.",
+      "Diagnostic wrappers measured; this is not a full Processor/online latency sample.",
+      "Times on a shared Windows development machine are not production speedup proof."
+    ]
+  },
+  "candidate": {
+    "label": "candidate-final",
+    "source": "C:\\Users\\bymay\\.codex\\worktrees\\issue-456-acp-host\\Yuki-QQbot",
+    "repeats": 3,
+    "workload": {
+      "history_messages": 64,
+      "model_calls": 3,
+      "tool_batches": 2,
+      "tool_calls": 2,
+      "http": "MockTransport only; no network/model/platform messages"
+    },
+    "samples": [
+      {
+        "sql": {
+          "SELECT": 1,
+          "INSERT": 18,
+          "COMMIT": 18
+        },
+        "trace_rows": 15,
+        "trace_kinds": {
+          "turn_start": 1,
+          "provider_start": 3,
+          "provider_response": 3,
+          "model_phases": 3,
+          "tool_start": 2,
+          "tool_end": 2,
+          "turn_end": 1
+        },
+        "json_bytes": 422622,
+        "gzip_bytes": 6631,
+        "foreground_seconds": 0.05637349979951978,
+        "drained_seconds": 0.06883469969034195,
+        "max_observed_transaction_seconds": 0.1559999999590218,
+        "writer": {
+          "committed": 18,
+          "failures": 0,
+          "dropped": 0
+        },
+        "wire_sha256": [
+          "a2c2536412c32b646961194314f2bdc024c9cdd26a5c425ebb20321492545ce9",
+          "1bc836a5e0430b2446169fb7a7e0a3d4fd6a6e544a3cf173e5c5f8eae9807a67",
+          "57dcd12ed90fb05cc06c755165ababd45e39f3971f5c4d23e1146a9b38c53315"
+        ],
+        "tool_calls": [
+          "call-0",
+          "call-1"
+        ],
+        "result": {
+          "text": "final answer",
+          "model_requests": 3,
+          "tool_calls_used": 2
+        }
+      },
+      {
+        "sql": {
+          "SELECT": 1,
+          "INSERT": 18,
+          "COMMIT": 18
+        },
+        "trace_rows": 15,
+        "trace_kinds": {
+          "turn_start": 1,
+          "provider_start": 3,
+          "provider_response": 3,
+          "model_phases": 3,
+          "tool_start": 2,
+          "tool_end": 2,
+          "turn_end": 1
+        },
+        "json_bytes": 422622,
+        "gzip_bytes": 6626,
+        "foreground_seconds": 0.05410930002108216,
+        "drained_seconds": 0.0651768003590405,
+        "max_observed_transaction_seconds": 0.014999999664723873,
+        "writer": {
+          "committed": 18,
+          "failures": 0,
+          "dropped": 0
+        },
+        "wire_sha256": [
+          "a2c2536412c32b646961194314f2bdc024c9cdd26a5c425ebb20321492545ce9",
+          "1bc836a5e0430b2446169fb7a7e0a3d4fd6a6e544a3cf173e5c5f8eae9807a67",
+          "57dcd12ed90fb05cc06c755165ababd45e39f3971f5c4d23e1146a9b38c53315"
+        ],
+        "tool_calls": [
+          "call-0",
+          "call-1"
+        ],
+        "result": {
+          "text": "final answer",
+          "model_requests": 3,
+          "tool_calls_used": 2
+        }
+      },
+      {
+        "sql": {
+          "SELECT": 1,
+          "INSERT": 18,
+          "COMMIT": 18
+        },
+        "trace_rows": 15,
+        "trace_kinds": {
+          "turn_start": 1,
+          "provider_start": 3,
+          "provider_response": 3,
+          "model_phases": 3,
+          "tool_start": 2,
+          "tool_end": 2,
+          "turn_end": 1
+        },
+        "json_bytes": 422623,
+        "gzip_bytes": 6629,
+        "foreground_seconds": 0.06180180003866553,
+        "drained_seconds": 0.07457439973950386,
+        "max_observed_transaction_seconds": 0.015999999828636646,
+        "writer": {
+          "committed": 18,
+          "failures": 0,
+          "dropped": 0
+        },
+        "wire_sha256": [
+          "a2c2536412c32b646961194314f2bdc024c9cdd26a5c425ebb20321492545ce9",
+          "1bc836a5e0430b2446169fb7a7e0a3d4fd6a6e544a3cf173e5c5f8eae9807a67",
+          "57dcd12ed90fb05cc06c755165ababd45e39f3971f5c4d23e1146a9b38c53315"
+        ],
+        "tool_calls": [
+          "call-0",
+          "call-1"
+        ],
+        "result": {
+          "text": "final answer",
+          "model_requests": 3,
+          "tool_calls_used": 2
+        }
+      }
+    ],
+    "median": {
+      "foreground_seconds": 0.05637349979951978,
+      "drained_seconds": 0.06883469969034195,
+      "max_observed_transaction_seconds": 0.015999999828636646,
+      "trace_rows": 15,
+      "json_bytes": 422622,
+      "gzip_bytes": 6629
+    },
+    "limits": [
+      "SQLite/Runners/executor/HTTP and tool coordinator are actual implementations; the business body uses a fixed synthetic three-call transcript.",
+      "Diagnostic wrappers measured; this is not a full Processor/online latency sample.",
+      "Times on a shared Windows development machine are not production speedup proof."
+    ]
+  },
+  "environment": "Windows-11-10.0.22631-SP0",
+  "method": {
+    "engine": "Actual SQLite, AgentRunner.run and tool execution, ToolInvocationCoordinator, TaskModelExecutor, HTTP adapters, recorder/writer",
+    "workload": "64 synthetic history messages, 3 successful HTTP calls, 2 read-only tools; isolated databases",
+    "transport": "httpx.MockTransport, no external requests; each HTTP callback drains diagnostics to guarantee identical complete coverage",
+    "comparison": "3 independent databases per version, baseline imports archived source; byte hashes of all 3 outgoing requests, original tool calls and business results match",
+    "timing_boundary": "Artificial drain barriers exclude end-to-end timing conclusions; wall times below are diagnostic workload observations only",
+    "script_sha256": "90d116dff35bb236e7a2f35f002a7c0bb65e487d50fd00942f286da7c9a618e9"
+  },
+  "assertions": {
+    "outgoing_http_bytes_equal": true,
+    "tool_calls_and_results_equal": true,
+    "dropped_records": 0,
+    "failed_records": 0
+  },
+  "production_payload_projection": {
+    "sample": "original turn of model70031/source108396",
+    "observed_at": "2026-10-18T17:24:38.256714+08:00",
+    "before": {
+      "rows": 39,
+      "json_bytes": 614584,
+      "gzip_bytes": 203495
+    },
+    "after": {
+      "rows": 22,
+      "json_bytes": 258849,
+      "gzip_bytes": 92090
+    },
+    "by_kind": {
+      "chat_processing_start": {
+        "rows": 1,
+        "json_bytes": 27,
+        "gzip_bytes": 47
+      },
+      "conversation_lock": {
+        "rows": 1,
+        "json_bytes": 145,
+        "gzip_bytes": 130
+      },
+      "chat_preparation": {
+        "rows": 1,
+        "json_bytes": 475,
+        "gzip_bytes": 323
+      },
+      "turn_start": {
+        "rows": 1,
+        "json_bytes": 46,
+        "gzip_bytes": 66
+      },
+      "provider_start": {
+        "rows": 3,
+        "json_bytes": 248166,
+        "gzip_bytes": 85557
+      },
+      "provider_response": {
+        "rows": 3,
+        "json_bytes": 1975,
+        "gzip_bytes": 1355
+      },
+      "model_phases": {
+        "rows": 3,
+        "json_bytes": 4118,
+        "gzip_bytes": 2112
+      },
+      "tool_start": {
+        "rows": 2,
+        "json_bytes": 517,
+        "gzip_bytes": 499
+      },
+      "social_delivery": {
+        "rows": 3,
+        "json_bytes": 315,
+        "gzip_bytes": 339
+      },
+      "tool_end": {
+        "rows": 2,
+        "json_bytes": 1971,
+        "gzip_bytes": 1024
+      },
+      "turn_end": {
+        "rows": 1,
+        "json_bytes": 265,
+        "gzip_bytes": 185
+      },
+      "phase_metrics": {
+        "rows": 1,
+        "json_bytes": 829,
+        "gzip_bytes": 453
+      }
+    },
+    "actual_http_payloads_unchanged": true,
+    "scope": "actual original JSON only decoded in local memory; no business replay, model, tool, message or body export; payload transform only, not measured online speedup",
+    "empty_success_end_removed": "Generic None result; actual sample chat_processing_end removed"
+  },
+  "rejected_batch_experiment": {
+    "decision": "Rejected ready-segment batch and removed candidate implementation. Final implementation uses one prepared conditional INSERT per transaction.",
+    "environment": "Windows isolated SQLite, real SQLAlchemy/aiosqlite, actual TraceRecorder conditional INSERT; three repeats; not a production latency benchmark.",
+    "raw_report": "C:\\Users\\bymay\\AppData\\Local\\Temp\\yuki471-diagnostic-ready-batch-bench-result.json",
+    "raw_sha256": "ad549bc72db8407521c0ed248d272769239e9c2eb8e0e98f9e839d8d413d8cc9",
+    "report_file_mtime_utc": "2026-10-18T09:20:56.633406+00:00",
+    "groups": {
+      "16_serial": {
+        "elapsed_s": {
+          "min": 0.04926660005003214,
+          "median": 0.05128810042515397,
+          "max": 0.06457150029018521
+        },
+        "business_writer_wait_s": {
+          "min": 0.006801399867981672,
+          "median": 0.009092099964618683,
+          "max": 0.024453799705952406
+        },
+        "max_held_lower_bound_s": {
+          "min": 0.01500000013038516,
+          "median": 0.01500000013038516,
+          "max": 0.015999999828636646
+        }
+      },
+      "16_ready_batch": {
+        "elapsed_s": {
+          "min": 0.03229629993438721,
+          "median": 0.03367969999089837,
+          "max": 0.07683419995009899
+        },
+        "business_writer_wait_s": {
+          "min": 0.02695589978247881,
+          "median": 0.03367209993302822,
+          "max": 0.05967110022902489
+        },
+        "max_held_lower_bound_s": {
+          "min": 0.030999999959021807,
+          "median": 0.03200000012293458,
+          "max": 0.07799999974668026
+        }
+      },
+      "256_serial": {
+        "elapsed_s": {
+          "min": 0.29596260003745556,
+          "median": 0.31123939994722605,
+          "max": 0.33929780032485723
+        },
+        "business_writer_wait_s": {
+          "min": 0.008138300385326147,
+          "median": 0.008289100136607885,
+          "max": 0.04395550023764372
+        },
+        "max_held_lower_bound_s": {
+          "min": 0.014999999664723873,
+          "median": 0.016000000294297934,
+          "max": 0.016000000294297934
+        }
+      },
+      "256_ready_batch": {
+        "elapsed_s": {
+          "min": 0.09914879966527224,
+          "median": 0.10124630015343428,
+          "max": 0.14751450018957257
+        },
+        "business_writer_wait_s": {
+          "min": 0.10874000005424023,
+          "median": 0.11069689970463514,
+          "max": 0.1517738001421094
+        },
+        "max_held_lower_bound_s": {
+          "min": 0.0940000000409782,
+          "median": 0.10900000017136335,
+          "max": 0.14100000029429793
+        }
+      }
+    },
+    "limits": [
+      "Raw commits include two fixed setup/control commits beyond diagnostic commits.",
+      "The candidate measurements preceded the later diagnostic compiled-cache ownership fix; both candidate modes used the same original cache behavior.",
+      "Original benchmark script imported the now-deleted candidate writer and cannot reproduce the experimental batch after removal without restoring that candidate.",
+      "The measured business-writer wait worsened even though diagnostic throughput improved."
+    ],
+    "rows": [
+      {
+        "mode": "serial",
+        "n": 256,
+        "compressed_bytes_each": 512,
+        "elapsed_s": 0.29596260003745556,
+        "business_writer_wait_s": 0.008138300385326147,
+        "max_held_lower_bound_s": 0.014999999664723873,
+        "commits": 258
+      },
+      {
+        "mode": "ready_batch",
+        "n": 256,
+        "compressed_bytes_each": 512,
+        "elapsed_s": 0.10124630015343428,
+        "business_writer_wait_s": 0.11069689970463514,
+        "max_held_lower_bound_s": 0.0940000000409782,
+        "commits": 3
+      },
+      {
+        "mode": "serial",
+        "n": 256,
+        "compressed_bytes_each": 512,
+        "elapsed_s": 0.33929780032485723,
+        "business_writer_wait_s": 0.04395550023764372,
+        "max_held_lower_bound_s": 0.016000000294297934,
+        "commits": 258
+      },
+      {
+        "mode": "ready_batch",
+        "n": 256,
+        "compressed_bytes_each": 512,
+        "elapsed_s": 0.14751450018957257,
+        "business_writer_wait_s": 0.1517738001421094,
+        "max_held_lower_bound_s": 0.14100000029429793,
+        "commits": 3
+      },
+      {
+        "mode": "serial",
+        "n": 256,
+        "compressed_bytes_each": 512,
+        "elapsed_s": 0.31123939994722605,
+        "business_writer_wait_s": 0.008289100136607885,
+        "max_held_lower_bound_s": 0.016000000294297934,
+        "commits": 258
+      },
+      {
+        "mode": "ready_batch",
+        "n": 256,
+        "compressed_bytes_each": 512,
+        "elapsed_s": 0.09914879966527224,
+        "business_writer_wait_s": 0.10874000005424023,
+        "max_held_lower_bound_s": 0.10900000017136335,
+        "commits": 3
+      },
+      {
+        "mode": "serial",
+        "n": 16,
+        "compressed_bytes_each": 262144,
+        "elapsed_s": 0.05128810042515397,
+        "business_writer_wait_s": 0.006801399867981672,
+        "max_held_lower_bound_s": 0.015999999828636646,
+        "commits": 18
+      },
+      {
+        "mode": "ready_batch",
+        "n": 16,
+        "compressed_bytes_each": 262144,
+        "elapsed_s": 0.03229629993438721,
+        "business_writer_wait_s": 0.03367209993302822,
+        "max_held_lower_bound_s": 0.03200000012293458,
+        "commits": 3
+      },
+      {
+        "mode": "serial",
+        "n": 16,
+        "compressed_bytes_each": 262144,
+        "elapsed_s": 0.04926660005003214,
+        "business_writer_wait_s": 0.024453799705952406,
+        "max_held_lower_bound_s": 0.01500000013038516,
+        "commits": 18
+      },
+      {
+        "mode": "ready_batch",
+        "n": 16,
+        "compressed_bytes_each": 262144,
+        "elapsed_s": 0.03367969999089837,
+        "business_writer_wait_s": 0.02695589978247881,
+        "max_held_lower_bound_s": 0.030999999959021807,
+        "commits": 3
+      },
+      {
+        "mode": "serial",
+        "n": 16,
+        "compressed_bytes_each": 262144,
+        "elapsed_s": 0.06457150029018521,
+        "business_writer_wait_s": 0.009092099964618683,
+        "max_held_lower_bound_s": 0.01500000013038516,
+        "commits": 18
+      },
+      {
+        "mode": "ready_batch",
+        "n": 16,
+        "compressed_bytes_each": 262144,
+        "elapsed_s": 0.07683419995009899,
+        "business_writer_wait_s": 0.05967110022902489,
+        "max_held_lower_bound_s": 0.07799999974668026,
+        "commits": 3
+      }
+    ]
+  },
+  "limits": [
+    "Production sample transformations are read-only in-memory projections, not deployed acceptance.",
+    "SQL preflight removal does not remove conditional INSERT source/privacy checks.",
+    "No fixed production latency or cache improvement is inferred.",
+    "Single short transactions retained; batch experiment is rejected because it worsened competing writer waits."
+  ],
+  "baseline_commit": "029ca22bb082b27818c038b86ef45207e28a0c2b",
+  "candidate_branch": "codex/diagnostic-write-optimization",
+  "additional_transaction_deletions": {
+    "tool_invocations": "Entire unconsumed telemetry chain retired; actual MemoryToolReceipt kept. Not exercised by the minimal benchmark backend.",
+    "runtime_turn_observations": "Entire unconsumed turn-tail telemetry chain retired; execution IDs, timings and actual send receipts kept. Processor tail not exercised by benchmark.",
+    "existing_reflection_cycle": "Read-only source_key lookup skips snapshot aggregation and zero-row INSERT; verified while another SQLite writer holds its transaction. Not part of Runner benchmark."
+  }
+}

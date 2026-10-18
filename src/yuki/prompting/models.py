@@ -73,10 +73,6 @@ class PromptMetrics(BaseModel):
     estimated_tokens: int
     contribution_count: int
     message_count: int
-    stable_prefix_hash: str
-    conversation_prefix_hash: str = ""
-    request_shape_hash: str = ""
-    prompt_snapshot_fingerprint: str = ""
 
 
 class CompiledPrompt(BaseModel):

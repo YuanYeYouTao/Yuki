@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from collections.abc import Awaitable, Callable, Set
 from dataclasses import dataclass
 from typing import Any
@@ -22,7 +20,7 @@ from yuki.prompting import (
 )
 from yuki.prompting.contracts import core_contract
 from yuki.prompting.contributors import static_text
-from yuki.prompting.models import CompiledPrompt, PromptMetrics
+from yuki.prompting.models import PromptMetrics
 from yuki.services.context_assembler import AssembledContext
 from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.context_compaction import PublicCompactContext, render_context_checkpoint
@@ -132,7 +130,12 @@ class PromptComposer:
             history=history,
             current_message=context.current_message,
         )
-        return self._finalize(context, compiled)
+        return PromptComposition(
+            messages=compiled.messages,
+            metrics=compiled.metrics,
+            read_version=context.read_version,
+            visible_event_ids=context.visible_event_ids,
+        )
 
     @staticmethod
     def _conversation_history(context: AssembledContext) -> tuple[ChatMessage, ...]:
@@ -141,38 +144,4 @@ class PromptComposer:
         return (
             render_context_checkpoint(context.checkpoint_text, context.prompt_effective_coverage),
             *context.history_messages,
-        )
-
-    def _finalize(
-        self,
-        context: AssembledContext,
-        compiled: CompiledPrompt,
-    ) -> PromptComposition:
-        snapshot = {
-            "conversation_id": context.prompt_conversation_id,
-            "scope_key": context.prompt_scope_key,
-            "generation": context.prompt_generation,
-            "coverage": context.prompt_effective_coverage,
-            "checkpoint_revision": context.prompt_checkpoint_revision,
-            "raw_tail_end_event_id": context.prompt_raw_tail_end_event_id,
-            "conversation_prefix_hash": compiled.metrics.conversation_prefix_hash,
-        }
-        serialized = json.dumps(
-            snapshot,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        metrics = compiled.metrics.model_copy(
-            update={
-                "prompt_snapshot_fingerprint": hashlib.sha256(
-                    serialized.encode("utf-8")
-                ).hexdigest()
-            }
-        )
-        return PromptComposition(
-            messages=compiled.messages,
-            metrics=metrics,
-            read_version=context.read_version,
-            visible_event_ids=context.visible_event_ids,
         )

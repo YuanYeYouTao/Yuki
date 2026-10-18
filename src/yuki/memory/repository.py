@@ -1629,6 +1629,11 @@ class MemoryJobRepository:
     ) -> tuple[bool, str]:
         now = datetime.now(UTC)
         async with self._database.sessions() as session, session.begin():
+            stored_key = await session.scalar(
+                select(MemoryJobModel.conversation_key).where(MemoryJobModel.event_id == event_id)
+            )
+            if stored_key is not None:
+                return False, stored_key
             event = await session.get(ChatEventModel, event_id)
             if event is None:
                 logger.warning(

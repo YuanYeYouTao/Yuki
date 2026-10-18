@@ -363,9 +363,6 @@ def test_legacy_publication_keeps_hash_receipts_and_resumes_original_main_work(
                         read_version=private_version,
                         history_fragments=(((private.event.id,), history),),
                         history_event_fragments=(((private.event.id,), history),),
-                        prompt_conversation_id=private_version.conversation_id,
-                        prompt_scope_key=private_scope.key,
-                        prompt_generation=private_version.generation,
                         projection_scope="",
                     )
 

@@ -1095,10 +1095,10 @@ class SelfReflectionRepository:
 
         async def publish(session: AsyncSession) -> None:
             session.autoflush = False
-            run = await session.get(MemorySelfReflectionRunModel, run_id)
-            if run is None or run.checkpoint_json != expected:
-                raise MemoryPartitionResolutionError("checkpoint_changed")
             if expected is None:
+                run = await session.get(MemorySelfReflectionRunModel, run_id)
+                if run is None or run.checkpoint_json is not None:
+                    raise MemoryPartitionResolutionError("checkpoint_changed")
                 events = {
                     row.id: _event_record(row)
                     for row in await session.scalars(

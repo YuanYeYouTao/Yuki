@@ -122,6 +122,51 @@ async def test_final_checkpoint_cas_cannot_restore_privacy_cleared_original(data
     assert hashlib.sha256(raw.encode()).hexdigest() == digest
 
 
+async def test_progress_checkpoint_keeps_original_cas_during_concurrent_write(
+    database, monkeypatch
+):
+    repository, _source, run_id, raw = await checkpoint_source(database)
+    await repository.save_checkpoint(run_id, raw)
+    execute = AsyncSession.execute
+    interleaved = False
+    errors = []
+
+    async def concurrent_metadata(session, statement, *args, **kwargs):
+        nonlocal interleaved
+        if not interleaved and str(statement).startswith(
+            "UPDATE memory_self_reflection_runs SET checkpoint_json="
+        ):
+            from sqlalchemy import update
+
+            interleaved = True
+            async with database.immediate_session() as writer:
+                await writer.execute(
+                    update(MemorySelfReflectionRunModel)
+                    .where(MemorySelfReflectionRunModel.id == run_id)
+                    .values(error_category="concurrent_metadata")
+                )
+        return await execute(session, statement, *args, **kwargs)
+
+    def record_error(context):
+        errors.append(getattr(context.original_exception, "sqlite_errorcode", None))
+
+    monkeypatch.setattr(AsyncSession, "execute", concurrent_metadata)
+    changed = raw + " "
+    sql_event.listen(database.engine.sync_engine, "handle_error", record_error)
+    try:
+        await repository.save_checkpoint(run_id, changed, expected=raw)
+    finally:
+        sql_event.remove(database.engine.sync_engine, "handle_error", record_error)
+    assert interleaved and not errors
+    assert await repository.load_checkpoint(run_id) == changed
+    async with database.sessions() as reader:
+        run = await reader.get(MemorySelfReflectionRunModel, run_id)
+        assert run.error_category == "concurrent_metadata"
+    with pytest.raises(MemoryPartitionResolutionError, match="checkpoint_changed"):
+        await repository.save_checkpoint(run_id, raw, expected=raw)
+    assert await repository.load_checkpoint(run_id) == changed
+
+
 async def test_forget_commit_between_source_read_and_checkpoint_write_rechecks_wal(
     database, monkeypatch
 ):

@@ -310,3 +310,11 @@ CLI 的 `conversation recount-uncovered` 与旧专用摘要探针退役；实际
 获准上线时先按原流程停写和备份数据库，在副本运行实际 revision 至 head 的完整迁移链，核对当前片段顺序、摘要/覆盖点、原工作与回执及外键完整性，再替换 Bot。无需 reset 会话、提前 compact 或清除已付原件。0133 的定向升级/降级测试只验证结构与当前表示可还原，不把整个旧迁移链或旧镜像宣称为可无损回退；生产恢复沿原备份和向前修补流程执行。
 
 本轮共享源索引只在原 projection repository 的内存预算内回收，冷启动仍读取数据库原件，不增加配置、后台预装配或队列。实现与离线成本证据见[实施记录](operations/context-pipeline-implementation-20261018.md)；最终完整模型请求仍需展开与编码，真实 Provider 缓存命中另看 usage。
+
+## 0134 诊断写入删减
+
+迁移清退已无现行读者的 `tool_invocations`、`runtime_turn_observations` 两张旧统计表，以及 `execution_trace_entries` 上 roots、operation_id 两条无消费者索引。其余表事实和执行过程原行、正文不变；原 turn、Work、source event、已投递事件、Conversation 和过期清理索引保留。元数据查询只取元数据，正文仍需原独立权限。退役统计数据不重建，0134 只能向前修补；恢复旧部署须使用升级前一致备份。
+
+新记录在实际 HTTP 层保存请求和返回，逻辑层只保存当前故障定位需要的关联、状态、真实 usage 与耗时，不再重复保存全套上下文。旧记录按原格式与保留期继续读取，查询不补造已删除的事件或新字段。业务账本、已付请求检查点、Memory 证据及 Social 回执不属于这次可丢诊断删减。
+
+上线仍按当前 revision 到 head 的副本迁移、停写一致备份和 Bot-only 流程执行；不以删除日志、reset 会话或重发效果代替升级。实现、测试、合并和线上性能采样各自记录，当前说明不宣称已上线。

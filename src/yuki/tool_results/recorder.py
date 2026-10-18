@@ -1,4 +1,4 @@
-"""Source-authorized tool evidence and content-free invocation diagnostics."""
+"""Source-authorized durable tool receipts for Memory reflection."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import func, insert, literal, select, text
+from sqlalchemy import func, literal, select, text
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from yuki.conversation.autonomy_db_models import InitiativeRunModel
@@ -15,7 +15,7 @@ from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.correlation import (
     load_correlated_chat_event,
     require_live_conversation,
-    stamp_conversation_correlation,
+    try_live_conversation_id,
 )
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.identity.db_models import (
@@ -24,13 +24,10 @@ from yuki.identity.db_models import (
     PresenceModel,
 )
 from yuki.persistence.database import Database
-from yuki.persistence.diagnostic_writer import DiagnosticWriter
 from yuki.persistence.models import (
     ChatEventModel,
     MemoryToolReceiptModel,
-    ToolInvocationModel,
 )
-from yuki.runtime.observability import claim_runtime_turn_id
 from yuki.tool_results.redaction import redact_sensitive_data, redact_sensitive_text
 
 
@@ -48,52 +45,25 @@ def _redact_reflection_result(value: str) -> str:
     )
 
 
-class ToolInvocationRepository:
+class ToolReceiptRepository:
     def __init__(
         self,
         database: Database,
         *,
-        writer: DiagnosticWriter | None = None,
         reflection_excerpt_characters: int = 2000,
         reflection_retention_days: int = 7,
     ) -> None:
         self._database = database
-        self.writer = writer
         self._reflection_excerpt_characters = max(1, min(reflection_excerpt_characters, 8000))
         self._reflection_retention_days = max(1, min(reflection_retention_days, 30))
 
-    async def preflight_conversation_correlation(
-        self,
-        canonical_conversation_id: str | None,
-    ) -> None:
-        """Fail closed when a supplied canonical Conversation is not live.
-
-        Uses the same canonical kind/existence helpers as
-        ``stamp_conversation_correlation`` (``require_live_conversation``).
-        The short read-only session is closed before the caller may connect.
-        A provided id that is the wrong kind, a Presence/Person/Space id, or a
-        missing/stale Conversation fails closed here.
-        """
-
-        from yuki.persistence.unit_of_work import optional_session
-
-        if canonical_conversation_id is None or not str(canonical_conversation_id).strip():
-            return
-        async with optional_session(self._database, None, write=False) as session:
-            await require_live_conversation(session, canonical_conversation_id)
-
-    async def record_invocation(
+    async def record_receipt(
         self,
         *,
-        conversation_key: str,
         provider_id: str,
         tool_name: str,
         success: bool,
-        latency_seconds: float,
-        result_size: int,
-        artifact_created: bool,
         error_category: str | None,
-        trigger_message_id: str = "",
         trigger_event_id: int | None = None,
         bot_user_id: str = "",
         result_excerpt: str = "",
@@ -105,8 +75,9 @@ class ToolInvocationRepository:
         execution_id: str | None = None,
         audit_source: tuple[str, int, int] | None = None,
     ) -> None:
-        # Evidence remains source-authorized synchronous persistence; only the
-        # content-free invocation is disposable telemetry.
+        # Without an original source there is no Memory evidence to persist.
+        if initiative_run_id is None and principal_kind != "self" and trigger_event_id is None:
+            return
         if (initiative_run_id is not None or principal_kind == "self") and (
             trigger_event_id is not None
             or not tool_call_id
@@ -121,22 +92,10 @@ class ToolInvocationRepository:
             raise ValueError("tool_audit_source_mismatch")
         now = datetime.now(UTC)
         redacted = _redact_reflection_result(result_excerpt.strip())
-        invocation = ToolInvocationModel(
-            runtime_turn_id=claim_runtime_turn_id(),
-            conversation_key_hash=hashlib.sha256(conversation_key.encode()).hexdigest(),
-            provider_id=provider_id[:128],
-            tool_name=tool_name[:255],
-            success=success,
-            latency_seconds=max(0.0, latency_seconds),
-            result_size=max(0, result_size),
-            artifact_created=artifact_created,
-            error_category=error_category[:128] if error_category else None,
-            created_at=now,
-        )
         receipt: dict[str, Any] | None = None
         guards: list[Any] = []
         async with self._database.sessions() as session:
-            await stamp_conversation_correlation(session, invocation, canonical_conversation_id)
+            proven_conversation = await try_live_conversation_id(session, canonical_conversation_id)
             privacy_generation = (
                 audit_source[2]
                 if audit_source is not None
@@ -163,19 +122,15 @@ class ToolInvocationRepository:
                     require_live=False,
                     require_group_projection=False,
                 )
-                await stamp_conversation_correlation(
-                    session, invocation, source.canonical_conversation_id
-                )
-                invocation.conversation_key_hash = hashlib.sha256(
-                    source.partition.encode()
-                ).hexdigest()
+                if source.canonical_conversation_id != proven_conversation:
+                    await require_live_conversation(session, source.canonical_conversation_id)
                 receipt = {
                     "trigger_event_id": None,
                     "initiative_run_id": initiative_run_id,
                     "bot_user_id": source.bot_user_id,
                     "canonical_person_id": None,
                     "canonical_space_id": source.space_id,
-                    "conversation_key_hash": invocation.conversation_key_hash,
+                    "conversation_key_hash": hashlib.sha256(source.partition.encode()).hexdigest(),
                 }
                 # Historical evidence can stay readable; a delayed write cannot
                 # resurrect an old generation or disabled source after erasure.
@@ -224,10 +179,8 @@ class ToolInvocationRepository:
                     bot_user_id=bot_user_id,
                     ingress_presence_id=ingress_presence_id,
                 )
-                if event is not None:
-                    await stamp_conversation_correlation(
-                        session, invocation, event.canonical_conversation_id
-                    )
+                if event is not None and event.canonical_conversation_id != proven_conversation:
+                    await require_live_conversation(session, event.canonical_conversation_id)
                 from yuki.identity.memory_guard import refuse_legacy_live_event
 
                 if event is not None and not await refuse_legacy_live_event(session, event):
@@ -353,12 +306,12 @@ class ToolInvocationRepository:
                 tool_call_id=tool_call_id,
                 execution_id=execution_id,
                 source_call_key=key,
-                provider_id=invocation.provider_id,
-                tool_name=invocation.tool_name,
+                provider_id=provider_id[:128],
+                tool_name=tool_name[:255],
                 success=success,
                 result_excerpt=redacted[: self._reflection_excerpt_characters],
                 result_characters=len(redacted),
-                error_category=invocation.error_category,
+                error_category=error_category[:128] if error_category else None,
                 created_at=now,
                 expires_at=now + timedelta(days=self._reflection_retention_days),
             )
@@ -390,20 +343,6 @@ class ToolInvocationRepository:
                     from yuki.memory.partition import MemoryPartitionResolutionError
 
                     raise MemoryPartitionResolutionError("tool_receipt_source_changed")
-        frozen = tuple(
-            (column.name, getattr(invocation, column.name))
-            for column in invocation.__table__.columns
-            if column.name != "id"
-        )
-        if self.writer is not None:
-            size = 1024 + sum(len(value.encode()) for _, value in frozen if isinstance(value, str))
-            self.writer.submit(
-                "tool_invocation",
-                size,
-                lambda: self._insert_telemetry(frozen, privacy_generation, audit_source),
-            )
-        else:
-            await self._insert_telemetry(frozen, privacy_generation, audit_source)
 
     @staticmethod
     def _audit_source_guard(audit_source: tuple[str, int, int]) -> Any:
@@ -416,37 +355,3 @@ class ToolInvocationRepository:
             )
             .exists()
         )
-
-    async def _insert_telemetry(
-        self,
-        frozen: tuple[tuple[str, Any], ...],
-        privacy_generation: int,
-        audit_source: tuple[str, int, int] | None = None,
-    ) -> None:
-        table = ToolInvocationModel.__table__
-        values = dict(frozen)
-        guard = (
-            func.coalesce(
-                select(ExecutionTraceStateModel.privacy_generation)
-                .where(ExecutionTraceStateModel.id == 1)
-                .scalar_subquery(),
-                0,
-            )
-            == privacy_generation
-        )
-        if audit_source is not None:
-            guard &= self._audit_source_guard(audit_source)
-        async with self._database.sessions() as session, session.begin():
-            await session.execute(
-                insert(ToolInvocationModel).from_select(
-                    list(values),
-                    select(
-                        *(literal(value, type_=table.c[key].type) for key, value in values.items())
-                    ).where(guard),
-                    include_defaults=False,
-                )
-            )
-
-
-def _as_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

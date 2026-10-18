@@ -32,7 +32,6 @@ from yuki.persistence.repositories import (
     WebSearchSourceRepository,
 )
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from yuki.persistence.turn_observations import RuntimeTurnObservationRepository
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,7 +55,6 @@ class PersistenceBundle:
     media_analyses: MediaAnalysisRepository
     emoji_descriptions: EmojiDescriptionRepository
     emoji_repository: EmojiRepository
-    turn_observations: RuntimeTurnObservationRepository
 
 
 class PersistenceModule:
@@ -125,5 +123,4 @@ class PersistenceModule:
             media_analyses=MediaAnalysisRepository(database),
             emoji_descriptions=EmojiDescriptionRepository(database),
             emoji_repository=EmojiRepository(database),
-            turn_observations=RuntimeTurnObservationRepository(database),
         )

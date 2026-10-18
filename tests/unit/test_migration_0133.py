@@ -93,6 +93,7 @@ def test_chunk_upgrade_copies_current_representation_and_keeps_receipts(tmp_path
         ):
             assert (low, high) == (min(json.loads(ids), default=0), max(json.loads(ids), default=0))
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
+    command.upgrade(config, "head")
     asyncio.run(require_canonical_schema(url))
 
 

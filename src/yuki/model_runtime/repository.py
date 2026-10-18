@@ -6,17 +6,16 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sqlalchemy import exists, func, insert, literal, select
+from sqlalchemy import func, insert, literal, select
 
-from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.correlation import stamp_conversation_correlation
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.execution_trace.payload import PayloadCapacityError, freeze_payload
-from yuki.execution_trace.recorder import _require_trace_source, current_trace
+from yuki.execution_trace.recorder import _trace_source_guards, current_trace
 from yuki.model_runtime.db_models import ModelInvocationModel
 from yuki.model_runtime.models import ModelInvocationRecord, ModelStats, ModelTask
 from yuki.persistence.database import Database
-from yuki.persistence.diagnostic_writer import DiagnosticWriter
+from yuki.persistence.diagnostic_writer import DiagnosticWrite, DiagnosticWriter
 from yuki.runtime.observability import claim_runtime_turn_id
 
 
@@ -112,7 +111,7 @@ class ModelInvocationRepository:
             self.writer.submit(
                 "model_invocation",
                 reserved,
-                lambda: self._prepare_and_insert(frozen, privacy_generation),
+                lambda: self._prepare_write(frozen, privacy_generation),
             )
             return None
         async with self._database.sessions() as session:
@@ -122,14 +121,9 @@ class ModelInvocationRepository:
             await session.flush()
             return self._record(row)
 
-    async def _prepare_and_insert(
+    async def _prepare_write(
         self, frozen: tuple[tuple[str, Any], ...], privacy_generation: int
-    ) -> None:
-        async with self._database.sessions() as session:
-            await _require_trace_source(session, dict(frozen)["canonical_conversation_id"], None)
-        await self._insert(frozen, privacy_generation)
-
-    async def _insert(self, frozen: tuple[tuple[str, Any], ...], privacy_generation: int) -> None:
+    ) -> DiagnosticWrite:
         values = dict(frozen)
         table = ModelInvocationModel.__table__
         current_generation = (
@@ -140,21 +134,10 @@ class ModelInvocationRepository:
         guarded = select(
             *(literal(value, type_=table.c[key].type) for key, value in values.items())
         ).where(func.coalesce(current_generation, 0) == privacy_generation)
-        if values["canonical_conversation_id"] is not None:
-            guarded = guarded.where(
-                exists(
-                    select(CanonicalConversationModel.id).where(
-                        CanonicalConversationModel.id == values["canonical_conversation_id"]
-                    )
-                )
-            )
-        async with self._database.sessions() as session, session.begin():
-            result = await session.execute(
-                insert(ModelInvocationModel).from_select(list(values), guarded)
-            )
-            if getattr(result, "rowcount", 0) == 0:
-                # Visible disposable gap; never retry a guarded/unknown commit.
-                raise ValueError("model_invocation_privacy_or_source_changed")
+        guarded = guarded.where(*_trace_source_guards(values["canonical_conversation_id"], None))
+        return DiagnosticWrite(
+            self._database, insert(ModelInvocationModel).from_select(list(values), guarded)
+        )
 
     async def stats(self, *, task: ModelTask | None = None) -> ModelStats:
         statement = self._stats_statement()

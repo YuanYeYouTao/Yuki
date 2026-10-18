@@ -18,6 +18,7 @@ from sqlalchemy import (
     delete,
     false,
     func,
+    literal,
     literal_column,
     or_,
     select,
@@ -165,33 +166,35 @@ class WorkRepository:
             return None
 
         async with self.database.immediate_session() as session:
-            now = time.time()
-            actual_generation = await session.scalar(
-                select(CanonicalConversationModel.generation).where(
-                    CanonicalConversationModel.id == conversation_id
-                )
-            )
-            if actual_generation != generation:
-                return None
-            await session.execute(
-                insert(scope)
-                .values(
-                    conversation_id=conversation_id,
-                    generation=generation,
-                )
-                .on_conflict_do_nothing(index_elements=[scope.c.conversation_id])
+            now = (func.julianday("now") - 2440587.5) * 86400
+            candidate = insert(scope).from_select(
+                ("conversation_id", "generation", "owner", "lease_until", "fence"),
+                select(
+                    CanonicalConversationModel.id,
+                    CanonicalConversationModel.generation,
+                    literal(owner),
+                    now + seconds,
+                    literal(1),
+                ).where(
+                    CanonicalConversationModel.id == conversation_id,
+                    CanonicalConversationModel.generation == generation,
+                ),
             )
             row = (
                 (
                     await session.execute(
-                        update(scope)
-                        .where(
-                            scope.c.conversation_id == conversation_id,
-                            scope.c.generation == generation,
-                            scope.c.lease_until <= now,
-                        )
-                        .values(owner=owner, lease_until=now + seconds, fence=scope.c.fence + 1)
-                        .returning(scope)
+                        candidate.on_conflict_do_update(
+                            index_elements=[scope.c.conversation_id],
+                            set_={
+                                "owner": owner,
+                                "lease_until": now + seconds,
+                                "fence": scope.c.fence + 1,
+                            },
+                            where=and_(
+                                scope.c.generation == generation,
+                                scope.c.lease_until <= now,
+                            ),
+                        ).returning(scope)
                     )
                 )
                 .mappings()

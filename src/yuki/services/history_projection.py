@@ -188,7 +188,6 @@ async def prepare_history(
         )
     )
 
-    collect_phase_metrics(candidate_count=1)
     extended_messages = extended.messages_view()
     # Capacity is decided once by Main against its complete request.
     selected_context = replace(

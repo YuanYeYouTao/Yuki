@@ -42,7 +42,6 @@ from yuki.conversation.ordinary_admission import (
 from yuki.conversation.scope import ConversationTurnSnapshot, runtime_conversation_key
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.domain.identity import AuthorKind
 from yuki.domain.messages import (
     ChatImage,
     InboundMessage,
@@ -79,11 +78,8 @@ from yuki.runtime.activation_outcome import (
 )
 from yuki.runtime.observability import (
     RuntimeTurnCorrelation,
-    TurnObservationRecorder,
     bind_runtime_turn,
-    build_turn_observation,
     new_runtime_turn_id,
-    record_observation_safely,
 )
 from yuki.runtime.work_repository import WorkCapacityError, WorkConflict
 from yuki.services.admin.config_admin import ConfigAdminService
@@ -139,24 +135,6 @@ class GroupRecoveryHandler(Protocol):
     async def enable(self, bot: object, message: InboundMessage) -> str | None: ...
 
     async def hint(self, bot: object, message: InboundMessage, reason: str) -> str | None: ...
-
-
-def _observation_canonical_refs(
-    message: InboundMessage,
-    admitted: IngressPreAdmit | None,
-) -> tuple[str | None, str | None, str | None]:
-    """Project canonical hydrate IDs onto a runtime observation.
-
-    Group rows store Space, not the speaker Person. Yuki / external_bot /
-    system authors never receive ``canonical_person_id``.
-    """
-
-    conversation_id = message.conversation_id
-    if message.scope_type is ScopeType.GROUP:
-        return conversation_id, None, message.space_id
-    author_kind = admitted.author_kind if admitted is not None else None
-    person_id = message.person_id if author_kind == AuthorKind.PERSON.value else None
-    return conversation_id, person_id, None
 
 
 class AdmissionSignalProvider(Protocol):
@@ -412,7 +390,6 @@ class MessageProcessor:
         event_publisher: LifecycleEventPublisher | None = None,
         emoji_collector: EmojiCollector | None = None,
         emoji_worker: EmojiWorker | None = None,
-        turn_observations: TurnObservationRecorder | None = None,
         canonical_ingress: CanonicalIngressResolver,
         group_recovery: GroupRecoveryHandler | None = None,
         client_links: ClientLinkCommands | None = None,
@@ -420,7 +397,6 @@ class MessageProcessor:
     ) -> None:
         database = ledger._database
         self._client_links = client_links
-        self._turn_observations = turn_observations
         self._settings = settings
         self._asr = asr_service
         self._conversation_scopes = conversation_scopes
@@ -678,14 +654,7 @@ class MessageProcessor:
         *,
         on_committed: Callable[[ScopedAppendResult], None] | None = None,
     ) -> ProcessResult:
-        """Bind one opaque runtime turn correlation around real message handling.
-
-        The correlation travels as ambient context to every persistence write
-        point (model invocations, tool invocations, memory recall receipts).
-        A content-free observation row is recorded only for turns that actually
-        engaged those write points or failed unexpectedly; pure command /
-        observe-only turns stay silent.
-        """
+        """Bind the original execution correlation around real message handling."""
 
         if not (
             message.text.strip()
@@ -698,90 +667,51 @@ class MessageProcessor:
         ):
             return ProcessResult(True, reason="empty")
 
-        started = time.perf_counter()
         correlation = RuntimeTurnCorrelation(
             turn_id=new_runtime_turn_id(),
             origin=TurnOrigin.USER_MESSAGE,
         )
-        result: ProcessResult | None = None
-        error_category: str | None = None
-        working = message
-        admitted: IngressPreAdmit | None = None
         # Media capability checks run before AgentRunner. Pin at admission so a
         # hot provider switch cannot change the model between those two steps.
         with bind_runtime_turn(correlation), self._chat.pin_model_runtime():
-            try:
-                if (
-                    self._client_links is not None
-                    and message.platform not in LOCAL_CLIENT_PLATFORMS
-                    and self._client_links.is_request(message)
-                ):
-                    link_response = await self._client_links.execute(
-                        getattr(sender, "bot", None), message
-                    )
-                    await sender.send(OutboundMessage(text=link_response))
-                    result = ProcessResult(True, sent_messages=1, reason="client_link")
-                    return result
-                if self._group_recovery is not None and self._group_recovery.is_enable_request(
-                    message
-                ):
-                    limited = await self._rate_limiter.check(
-                        user_id=message.sender.user_id,
-                        group_id=message.group_id,
-                        category="command",
-                    )
-                    if not limited.allowed:
-                        result = ProcessResult(False, reason="rate_limited")
-                        return result
-                    response = await self._group_recovery.enable(
-                        getattr(sender, "bot", None), message
-                    )
-                    if response is not None:
-                        await sender.send(OutboundMessage(text=response))
-                        result = ProcessResult(True, sent_messages=1, reason="group_recovery")
-                        return result
-                admitted = await self._canonical_ingress.pre_admit(
+            if (
+                self._client_links is not None
+                and message.platform not in LOCAL_CLIENT_PLATFORMS
+                and self._client_links.is_request(message)
+            ):
+                link_response = await self._client_links.execute(
                     getattr(sender, "bot", None), message
                 )
-                if admitted.dropped:
-                    result = await self._handle_ingress_drop(message, sender, admitted.reason)
-                    return result
-                working = admitted.message
-                result = await self._handle_admitted(
-                    working,
-                    sender,
-                    admitted=admitted,
-                    on_committed=on_committed,
-                )
+                await sender.send(OutboundMessage(text=link_response))
+                result = ProcessResult(True, sent_messages=1, reason="client_link")
                 return result
-            except BaseException as exc:
-                error_category = type(exc).__name__
-                raise
-            finally:
-                if correlation.touched or error_category is not None:
-                    conversation_id, person_id, space_id = _observation_canonical_refs(
-                        working,
-                        admitted,
-                    )
-                    observation = build_turn_observation(
-                        correlation,
-                        scope_type=working.scope_type.value,
-                        conversation_key=runtime_conversation_key(
-                            identity=working.scope(),
-                            inbound=working,
-                        ),
-                        admission_outcome=result.reason if result is not None else None,
-                        handled=result.handled if result is not None else False,
-                        sent_messages=result.sent_messages if result is not None else 0,
-                        error_category=error_category,
-                        total_latency_ms=int((time.perf_counter() - started) * 1000),
-                        subject_user_id=working.sender.user_id,
-                        group_id=working.group_id,
-                        canonical_conversation_id=conversation_id,
-                        canonical_person_id=person_id,
-                        canonical_space_id=space_id,
-                    )
-                    await record_observation_safely(self._turn_observations, observation)
+            if self._group_recovery is not None and self._group_recovery.is_enable_request(message):
+                limited = await self._rate_limiter.check(
+                    user_id=message.sender.user_id,
+                    group_id=message.group_id,
+                    category="command",
+                )
+                if not limited.allowed:
+                    result = ProcessResult(False, reason="rate_limited")
+                    return result
+                response = await self._group_recovery.enable(getattr(sender, "bot", None), message)
+                if response is not None:
+                    await sender.send(OutboundMessage(text=response))
+                    result = ProcessResult(True, sent_messages=1, reason="group_recovery")
+                    return result
+            admitted = await self._canonical_ingress.pre_admit(
+                getattr(sender, "bot", None), message
+            )
+            if admitted.dropped:
+                result = await self._handle_ingress_drop(message, sender, admitted.reason)
+                return result
+            result = await self._handle_admitted(
+                admitted.message,
+                sender,
+                admitted=admitted,
+                on_committed=on_committed,
+            )
+            return result
 
     async def _handle_admitted(
         self,

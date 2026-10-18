@@ -116,4 +116,6 @@ async def test_shared_entrypoints_put_platform_only_in_current_context(platform,
     assert context.metadata_payload["platform"] == platform
     assert context.history_messages == ()
     if entry != "plugin":
-        assert context.prompt_scope_key == turn.scope_key
+        assert context.read_version.conversation_id == turn.conversation_id
+        assert context.read_version.generation == turn.generation
+        assert context.read_version.scope == identity

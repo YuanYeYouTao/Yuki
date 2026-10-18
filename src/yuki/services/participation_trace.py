@@ -9,7 +9,7 @@ from yuki_participation.controller import ActorIdentity, original_actor
 from yuki_participation.models import Observation, Snapshot
 from yuki_participation.observer import SemanticObserver
 
-from yuki.execution_trace.recorder import TraceRecorder, record_trace, trace_span
+from yuki.execution_trace.recorder import TraceRecorder, trace_span
 from yuki.identity.person_identity import current_person_ids
 from yuki.persistence.database import Database
 
@@ -72,21 +72,14 @@ class TracedSemanticObserver:
                 status = (
                     exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
                 )
-                await record_trace(
-                    "semantic_failure",
-                    {
-                        "error_category": type(exc).__name__,
-                        "http_status": status,
-                        "elapsed_seconds": time.monotonic() - started,
-                    },
-                )
-                raise
-            await record_trace(
-                "semantic_result",
-                {
-                    "observation": result.model_dump(mode="json"),
+                span.result = {
+                    "error_category": type(exc).__name__,
+                    "http_status": status,
                     "elapsed_seconds": time.monotonic() - started,
-                },
-            )
-            span.result = {"observation_id": result.observation_id}
+                }
+                raise
+            span.result = {
+                "observation": result.model_dump(mode="json", exclude={"snapshot"}),
+                "elapsed_seconds": time.monotonic() - started,
+            }
             return result

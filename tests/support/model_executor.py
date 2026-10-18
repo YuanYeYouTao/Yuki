@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import replace
 
 from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.execution_trace.recorder import TraceRecorder
@@ -12,7 +11,6 @@ from yuki.model_runtime.executor import (
     ModelCompleter,
     ModelExecutor,
     PreparedModelInput,
-    request_shape_hash,
 )
 from yuki.model_runtime.models import (
     ModelCapability,
@@ -41,17 +39,7 @@ class InjectedModelExecutor:
         prepared_capacity: PreparedModelInput | None = None,
     ) -> ChatResponse:
         del task, priority, canonical_conversation_id
-        normalized = replace(
-            request,
-            request_shape_hash=request_shape_hash(
-                request,
-                provider="fake",
-                model=self._model,
-                profile_id="legacy",
-                protocol=ModelProtocol.CHAT_COMPLETIONS.value,
-            ),
-        )
-        return await self._provider.complete(normalized)
+        return await self._provider.complete(request)
 
     def model_name(self, task: ModelTask) -> str:
         del task

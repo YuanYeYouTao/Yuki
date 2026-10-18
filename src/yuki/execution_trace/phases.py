@@ -14,12 +14,8 @@ current_metrics: ContextVar[dict[str, float] | None] = ContextVar("trace_metrics
 current_model_phases: ContextVar[ModelPhases | None] = ContextVar("model_phases", default=None)
 _METRICS = frozenset(
     {
-        "N",
         "F",
         "E",
-        "K",
-        "candidate_count",
-        "estimate_count",
         "item_count",
         "payload_bytes",
         "protocol_lock_wait_seconds",
@@ -28,8 +24,6 @@ _METRICS = frozenset(
         "work_restore_source_read_seconds",
         "source_guard_read_seconds",
         "source_guard_final_read_seconds",
-        "projection_snapshot_read_seconds",
-        "projection_snapshot_publish_seconds",
         "projection_sources_read_seconds",
         "inbound_admission_seconds",
         "participation_binding_seconds",
@@ -117,6 +111,7 @@ class ModelPhases:
     exclusive: dict[str, float] = field(default_factory=dict)
     nested: dict[str, float] = field(default_factory=dict)
     attempts: int = 0
+    metadata: dict[str, object] = field(default_factory=dict)
 
     def switch(self, name: str) -> None:
         now = time.perf_counter()
@@ -126,6 +121,7 @@ class ModelPhases:
     def snapshot(self, outcome: str) -> dict[str, object]:
         self.switch(self.phase)
         return {
+            **self.metadata,
             "phase_version": 1,
             "outcome": outcome,
             "logical_call_seconds": self.changed - self.started,

@@ -61,7 +61,7 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
     probe = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
     probe.control.current = None
     probe.control.source_key = "truly-new-source"
-    execute = probe.runner._execute_tool_batch_impl
+    execute = probe.runner._execute_tool_batch
     armed = True
 
     async def interrupted(pending, *args, **kwargs):
@@ -71,7 +71,7 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
             raise RegistrationCrash()
         return await execute(pending, *args, **kwargs)
 
-    monkeypatch.setattr(probe.runner, "_execute_tool_batch_impl", interrupted)
+    monkeypatch.setattr(probe.runner, "_execute_tool_batch", interrupted)
     with pytest.raises(RegistrationCrash):
         await run(probe)
     original_key = probe.control.session.call_key("first-accept")
@@ -241,7 +241,7 @@ async def test_new_response_may_reuse_provider_id_without_losing_its_undispatche
         ),
     )
     probe = await case(database, tmp_path, [first, second])
-    execute = probe.runner._execute_tool_batch_impl
+    execute = probe.runner._execute_tool_batch
     armed = True
 
     async def interrupted(pending, *args, **kwargs):
@@ -255,7 +255,7 @@ async def test_new_response_may_reuse_provider_id_without_losing_its_undispatche
             raise RegistrationCrash()
         return await execute(pending, *args, **kwargs)
 
-    monkeypatch.setattr(probe.runner, "_execute_tool_batch_impl", interrupted)
+    monkeypatch.setattr(probe.runner, "_execute_tool_batch", interrupted)
     with pytest.raises(RegistrationCrash):
         await run(probe)
     original_key = probe.control.session.call_key("same-id")
@@ -410,7 +410,7 @@ async def test_recovered_worker_defers_all_tool_media_across_another_code_segmen
     probe, executed, images = await _media_recovery_case(
         database, tmp_path, monkeypatch, new_image=True, code=True
     )
-    execute = probe.runner._execute_tool_batch_impl
+    execute = probe.runner._execute_tool_batch
     remaining_code_yields = 2
 
     async def code_boundary(pending, *args, **kwargs):
@@ -430,7 +430,7 @@ async def test_recovered_worker_defers_all_tool_media_across_another_code_segmen
     async def intercept(pending, backend, runtime, **kwargs):
         return await code_boundary(pending, backend, runtime=runtime, **kwargs)
 
-    monkeypatch.setattr(probe.runner, "_execute_tool_batch_impl", intercept)
+    monkeypatch.setattr(probe.runner, "_execute_tool_batch", intercept)
     for _segment in range(2):
         recovered, session, transcript = await _restore_worker_response(probe)
         assert (

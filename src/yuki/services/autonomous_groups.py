@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
@@ -25,11 +24,8 @@ from yuki.llm.base import LLMError
 from yuki.plugin_host.admission_adapter import PluginAdmissionSignalAdapter
 from yuki.runtime.observability import (
     RuntimeTurnCorrelation,
-    TurnObservationRecorder,
     bind_runtime_turn,
-    build_turn_observation,
     new_runtime_turn_id,
-    record_observation_safely,
 )
 from yuki.services.chat import ChatService
 from yuki.services.plugin_events import content_free_turn_payload, publish_notification
@@ -44,16 +40,6 @@ if TYPE_CHECKING:
     from yuki.services.semantic_participation import SemanticParticipationService
 
 logger = logging.getLogger(__name__)
-
-
-def _authoritative_autonomous_observation_refs(
-    message: InboundMessage | None,
-) -> tuple[str | None, str | None]:
-    """Thread hydrated Conversation/Space only. Never derive from raw group/QQ."""
-
-    if message is None:
-        return None, None
-    return message.conversation_id, message.space_id
 
 
 @dataclass(slots=True)
@@ -79,7 +65,6 @@ class AutonomousGroupService:
         runtime_config: RuntimeConfigService | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
         admission_signals: PluginAdmissionSignalAdapter | None = None,
-        turn_observations: TurnObservationRecorder | None = None,
         participation: SemanticParticipationService | None = None,
     ) -> None:
         self._participation = participation
@@ -88,7 +73,6 @@ class AutonomousGroupService:
         self._admission_features = admission_features
         self._coordinator = turn_coordinator or chat._turn_coordinator
         self._admission_signals = admission_signals
-        self._turn_observations = turn_observations
         self._states: dict[str, _GroupState] = {}
         self._closed = False
 
@@ -244,47 +228,16 @@ class AutonomousGroupService:
         revision: int,
         runtime: RuntimeConfigSnapshot,
     ) -> None:
-        """Bind one fresh runtime turn correlation per autonomous attempt.
+        """Bind one fresh runtime turn correlation per autonomous attempt."""
 
-        A completed attempt records the actual confirmed delivery count.
-        """
-
-        started = time.perf_counter()
         state = self._states.get(scope_key)
-        selected = state.message if state is not None else None
         ordinary = state is not None and state.ordinary_attempt is not None
         correlation = RuntimeTurnCorrelation(
             turn_id=new_runtime_turn_id(),
             origin=TurnOrigin.USER_MESSAGE if ordinary else TurnOrigin.AUTONOMOUS_GROUP,
         )
-        error_category: str | None = None
-        sent_messages = 0
-        observation_key = scope_key
-        canonical_conversation_id, canonical_space_id = _authoritative_autonomous_observation_refs(
-            selected
-        )
         with bind_runtime_turn(correlation):
-            try:
-                sent_messages = await self._admit_latest(scope_key, revision, runtime)
-            except BaseException as exc:
-                error_category = type(exc).__name__
-                raise
-            finally:
-                if correlation.touched or error_category is not None:
-                    observation = build_turn_observation(
-                        correlation,
-                        scope_type="group",
-                        conversation_key=observation_key,
-                        admission_outcome="ordinary_deferred" if ordinary else "autonomous_group",
-                        handled=error_category is None,
-                        sent_messages=sent_messages,
-                        error_category=error_category,
-                        total_latency_ms=int((time.perf_counter() - started) * 1000),
-                        canonical_conversation_id=canonical_conversation_id,
-                        canonical_person_id=None,
-                        canonical_space_id=canonical_space_id,
-                    )
-                    await record_observation_safely(self._turn_observations, observation)
+            await self._admit_latest(scope_key, revision, runtime)
 
     async def _admit_latest(
         self,

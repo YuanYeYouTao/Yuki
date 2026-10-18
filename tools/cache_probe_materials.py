@@ -623,10 +623,6 @@ async def run_snapshot_arm(args) -> None:
             messages=composition.messages,
             continuation=None,
             continuation_items=(),
-            conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
-            prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
-            static_prompt_revision=composition.metrics.stable_prefix_hash,
-            request_shape_hash="",
             request_chain_id="",
             **(
                 {

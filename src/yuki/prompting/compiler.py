@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import math
 from dataclasses import replace
 
@@ -14,10 +13,7 @@ from yuki.prompting.models import (
     PromptProgram,
     PromptStability,
 )
-from yuki.prompting.serializer import (
-    serialize_dynamic,
-    serialized_messages_hash,
-)
+from yuki.prompting.serializer import serialize_dynamic
 
 
 class PromptCompiler:
@@ -57,13 +53,6 @@ class PromptCompiler:
             messages.append(_with_current_material(current_message, dynamic_text))
         elif dynamic_text:
             messages.append(ChatMessage(role="user", content=dynamic_text))
-        stable_hash = hashlib.sha256(stable_text.encode("utf-8")).hexdigest()
-        prefix_messages = (
-            tuple(messages[:-1]) if current_message or dynamic_text else tuple(messages)
-        )
-        conversation_prefix_hash = (
-            serialized_messages_hash(prefix_messages) if prefix_messages else ""
-        )
         history_characters = sum(len(item.content or "") for item in history)
         current_message_characters = len(current_message.content or "") if current_message else 0
         total_characters = sum(len(message.content or "") for message in messages)
@@ -79,8 +68,6 @@ class PromptCompiler:
                 estimated_tokens=math.ceil(total_characters / 4),
                 contribution_count=len(static) + len(dynamic),
                 message_count=len(messages),
-                stable_prefix_hash=stable_hash,
-                conversation_prefix_hash=conversation_prefix_hash,
             ),
         )
 

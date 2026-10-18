@@ -44,7 +44,7 @@ from yuki.persistence.models import (
     MemorySelfReflectionStateModel,
     MemoryToolReceiptModel,
 )
-from yuki.tool_results.recorder import ToolInvocationRepository
+from yuki.tool_results.recorder import ToolReceiptRepository
 
 
 async def seed(database):
@@ -106,16 +106,12 @@ async def record(
     reflection_excerpt_characters=2000,
     **extra,
 ):
-    await ToolInvocationRepository(
+    await ToolReceiptRepository(
         database, reflection_excerpt_characters=reflection_excerpt_characters
-    ).record_invocation(
-        conversation_key=event.scope.key,
+    ).record_receipt(
         provider_id="core",
         tool_name="terminal_exec",
         success=True,
-        latency_seconds=0,
-        result_size=10,
-        artifact_created=False,
         error_category=None,
         initiative_run_id=run_id,
         execution_id="execution-1",
@@ -1113,7 +1109,7 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
     chat = harness.processor._chat
     chat._tools.social_service = env.service
     chat._tools._memory_mutations = mutations
-    chat._tool_invocations = ToolInvocationRepository(database)
+    chat._tool_receipts = ToolReceiptRepository(database)
     chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
     owner = WorkRepository(database)
     source = {

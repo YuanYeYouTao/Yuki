@@ -654,9 +654,9 @@ async def test_group_migration_preserves_original_work_and_native_send(
         load_tools=chat.runtime.runner.main_contract.definitions,
     )
     if origin == "self_initiative":
-        from yuki.tool_results.recorder import ToolInvocationRepository
+        from yuki.tool_results.recorder import ToolReceiptRepository
 
-        chat._tool_invocations = ToolInvocationRepository(database)
+        chat._tool_receipts = ToolReceiptRepository(database)
     requests_before_worker = len(env.model.requests)
     assert await executor.run(child_id) is None
     final = await works.get(child_id)

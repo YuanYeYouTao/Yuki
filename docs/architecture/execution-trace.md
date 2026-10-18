@@ -19,7 +19,9 @@
   只记录真正发生的观察或接纳尝试，不按采样 tick 制造空记录；不创建第二个 observer。
   来源沿原 `event:<chat_events.id>` 或 memory ref；无来源提议不伪造聊天事件。
   不记录鉴权头、原 Provider 错误正文或凭据；旧快照不回填为完整判定历史。
-- 保存初始编译消息、逐次模型调用、实际 HTTP JSON 请求与返回、工具批次及逐项结果。
+- 实际物理 HTTP attempt 保存一份请求与返回；逻辑模型只记录当前定位需要的路由、状态、真实 usage 和阶段耗时。turn 不再复制初始上下文，逻辑模型不再复制请求或返回正文。
+- 工具参数和结果只在单项调用记录，不再复制工具批次的整份参数与结果；空的 Provider 成功结束事件不保存。Jev Snapshot 保存一次，观察结果不再携带同一 Snapshot。
+- 旧工具统计 `tool_invocations`、回合统计 `runtime_turn_observations` 没有现行读者，整链与两张表退役。真实 MemoryToolReceipt、原效果/发送回执、模型用量和关联 ID 保留；CodeMode 子操作结果只保存在原调用 span，不额外复制一条结果事件。
 - HTTP 重试分别记录；请求准备、响应收到、上游拒绝和取消分别标明，不把准备当作送达。
 - 保存 Provider 实际返回的可读思考；没有返回时不伪造。加密思考、签名与不透明续跑块
   只留类型/摘要提示，原恢复 journal 保持原样。
@@ -49,11 +51,11 @@ EXECUTION_TRACE_MAX_PAYLOAD_BYTES。超过上限保留明确 omitted 元数据�
 turn、Work、activation、execution、Conversation/事件、发生时间及原 privacy generation，
 在原始资源准入检查之后才复制独立的 dict/list/dataclass 快照；不可变字符串和 HTTP 返回
 bytes 可共享，消费者不持有原 response、session、WorkControl 或 live ContextVar。
-每条来源的窄标量 SQL、原 Social 回执/出站事件核验、正文编码及短条件 INSERT 均在同一个
-空 Context 的消费者中执行。来源只读 session 结束后才进入 writer；只接受原 ID 的类型、
-存在及归属，不能补填当前 owner、Work 或 privacy generation。发生时的 Work/activation/
-generation 是历史元数据，不以消费时 lease 仍相同为条件。来源改属/删除及隐私删除代次
-还在 INSERT 中原子复核，失败只丢样，不恢复业务、不重试未知诊断提交。
+空 Context 消费者先完成正文编码与 SQL 准备，原 ID 类型、存在、归属、隐私代次及
+Social 回执/出站事件条件直接在 INSERT 中原子核验，删除逐条独立来源 preflight 查询。
+不能补填当前 owner、Work 或 privacy generation。发生时的 Work/activation/generation
+是历史元数据，不以消费时 lease 仍相同为条件。条件不符只丢该诊断，不恢复业务，
+不重试未知诊断提交。
 
 队列最多等待 256 条，共享 32 MiB 原始资源预留（包含 active item）。预留涵盖独立快照、
 容器与媒体/不透明字段引用、JSON/string/UTF-8/gzip 临时峰值及输出；每条包含 512 KiB
@@ -65,10 +67,10 @@ codec 工作空间下界，再按结构、路径和字符数保守估计。深�
 计量它；不能称为零成本。模型返回及 Provider 名额释放不等待可丢来源读取、编码或写锁。
 
 固定慢准备日志位于消费者：encode_call_inclusive 包含线程排队/事件循环恢复，
-encode_execution 是成功编码在线程内的执行耗时，source_validation 包含只读 session
-退出，prepare 不包含最终 INSERT。不能相减宣称精确线程队列等待。writer 的
-phase_timings 分别计 snapshot_call/source_validation/encode_call_inclusive/encode_execution/
-diagnostic_write；原 commit_call 字段现在表示完整消费者调用，不能解释为纯 commit。
+encode_execution 是成功编码在线程内的执行耗时，prepare 不包含最终 INSERT。
+不能相减宣称精确线程队列等待。writer 的 phase_timings 记录
+snapshot_call/encode_call_inclusive/encode_execution/diagnostic_write；已删除的
+独立 source_validation 阶段不再计量。commit_call 表示完整消费者调用，不能解释为纯 commit。
 这些观测不写 SQLite、不带正文、参数或凭据。未进入或未完成的编码不伪造完整执行耗时。
 模型用量统计和过程面板因此是最终可见的诊断视图，不能作为完整计费或真实效果账本。
 轮次结束信息只报告当时已知的缺口；稍后提交失败由诊断日志与生命周期 health 中的
@@ -89,12 +91,17 @@ failures 报告，不能将早期的零缺口解释为全部记录已提交。
 管理 API 与 `admin trace <turn|work|event> <id>` 提供原执行轨迹的只读查询。
 `event` 使用内部 `chat_events.id`；按真实 turn、Work 或来源事件筛选，并按诊断保留期过滤。
 元数据使用 `control.execution.metadata.read`；显式请求正文另需
-`control.execution.content.read`。正文默认不下发，读取时按原压缩格式核验大小与摘要。
+`control.execution.content.read`。元数据查询不加载 gzip 正文；显式读取正文时按原压缩格式核验大小与摘要。
 
 `after` 是原 trace 行 ID，返回最多 `limit` 项及下一游标。不从平台消息号重建内部事件身份。
 不公开私有 journal、媒体宿主路径、HTTP 凭据或 Provider 不透明恢复状态。
 查询不触发模型、重跑或真实效果，诊断缺失不改变 Work 的持久执行事实。
 当前路由、授权与错误语义见[管理 API](admin-api.md)。
+
+现行查询使用 Conversation、turn、Work、source event、已投递事件和 expiry 索引。
+0134 删除没有现行消费者的 roots、operation_id 两条索引，保留历史行和正文。
+实际 HTTP 请求与响应用于明确的故障查证；不再常态运行另一套全量输入哈希、
+链路 LRU 或逐次前缀比较日志。上游缓存仍以真实 usage 和缺样覆盖率为准。
 
 ## 验收
 
@@ -119,16 +126,16 @@ holder 仅覆盖已安装钩子的 engine，不代表系统所有连接。诊断
 新增 `model_phases` 使用 phase_version=1：logical_call 从共享 execute 入口到结果/异常
 准备完成，success/error/cancel 使用同一单调边界；preparation、slot_wait、slot_hold、
 response_preparation 是互斥区间。slot_hold 在实际 Provider 名额取得/释放处切换，保留整次
-complete 与重试生命周期。nested_seconds 中的 dispatch、attempt dispatch、payload/wire、
-trace_snapshot、transport、response parse、retry budget/backoff 是嵌套明细，不与主阶段相加；
+complete 与重试生命周期。nested_seconds 中的 attempt_dispatch_preparation、payload_preparation、
+trace_snapshot、transport、响应准备和 retry budget/backoff 是嵌套明细，不与主阶段相加；
 HTTP transport 含 httpx 自身连接池/调度，不等于精确网络服务时间。physical_attempt_count
 只计实际 HTTP post。配置/容量拒绝可为零，native 工具不确定运输按原单次请求合同处理。
 旧记录没有 phase_version/分段时标 unknown，不反推历史分段。
 
 conversation_lock 记录 coordinator 与 conversation 的 request→acquire 单调等待；固定
 runtime_lock_timing 日志还报告等待中取消/拒绝。chat_processing 原起点仍在取得锁之后，
-不能将入口到处理的全部时差归为会话锁。phase_metrics 按同 turn 记录固定 N/F/E/K、
-item/byte、candidate/estimate 次数和 protocol lock wait/held，来源计数可缺失，不伪造零。
+不能将入口到处理的全部时差归为会话锁。phase_metrics 按同 turn 记录 F/E、实际
+item/byte 和 protocol lock wait/held，来源计数可缺失，不伪造零。
 这些累计计数不参与授权、预算、回放或 cache。跨进程 age 继续使用原 UTC/epoch 时间。
 
 入站准备的数值计时暂存在原 RuntimeTurnCorrelation，Main 进入既有 trace 后并入

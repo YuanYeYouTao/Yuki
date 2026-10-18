@@ -63,11 +63,7 @@ class AssembledContext:
     visible_event_ids: Set[int] = frozenset()
     history_anchor_event_id: int | None = None
     checkpoint_text: str = ""
-    prompt_conversation_id: str = ""
-    prompt_scope_key: str = ""
-    prompt_generation: int = 0
     prompt_effective_coverage: int = 0
-    prompt_checkpoint_revision: int = 0
     prompt_raw_tail_end_event_id: int = 0
     read_version: ConversationReadVersion | None = None
     history_fragments: tuple[tuple[tuple[int, ...], ChatMessage], ...] = ()
@@ -136,7 +132,6 @@ class ContextAssembler:
             metrics=ContextMetrics(0, 0, 0, 0, False),
             visible_event_ids=frozenset(original.visible_event_ids),
             read_version=original,
-            prompt_generation=original.generation,
             recovery_protocol=True,
         )
 
@@ -168,7 +163,7 @@ class ContextAssembler:
             from yuki.services.turn_coordinator import HistorySourceChangedError
 
             raise HistorySourceChangedError(snapshot.read_version)
-        return replace(context, prompt_scope_key=turn.scope_key)
+        return context
 
     def _prepared_context(
         self,
@@ -232,15 +227,7 @@ class ContextAssembler:
             visible_event_ids=visible,
             history_anchor_event_id=prepared.first_event_id or current_id,
             checkpoint_text=snapshot.checkpoint_text,
-            prompt_conversation_id=snapshot.read_version.conversation_id or ""
-            if snapshot.read_version
-            else "",
-            prompt_scope_key=snapshot.read_version.scope.key
-            if snapshot.read_version
-            else identity.key,
-            prompt_generation=snapshot.read_version.generation if snapshot.read_version else 0,
             prompt_effective_coverage=snapshot.coverage_end,
-            prompt_checkpoint_revision=snapshot.revision,
             prompt_raw_tail_end_event_id=snapshot.raw_tail_end_event_id,
             read_version=snapshot.read_version,
             history_fragments=grouped,
@@ -361,7 +348,7 @@ class ContextAssembler:
             current_event=current,
         )
         await self._validate_history_source(snapshot, current)
-        return replace(context, prompt_scope_key=turn.scope_key)
+        return context
 
     async def _assemble_actorless_turn(
         self,
@@ -409,7 +396,7 @@ class ContextAssembler:
             projection_scope="main",
         )
         await self._validate_history_source(snapshot, event)
-        return replace(context, prompt_scope_key=turn.scope_key)
+        return context
 
     @staticmethod
     def _external_wakeup_message(

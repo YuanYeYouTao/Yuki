@@ -10,7 +10,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from tests.conftest import make_settings
 from tests.integration.test_plugin_frozen_binding import write_plugin
 from tests.support.model_profiles import write_fake_profiles
@@ -305,8 +305,22 @@ async def test_trace_metadata_and_content_have_separate_permissions(admin, datab
         )
     url = "/admin/v1/traces/turn/fixture-turn"
     reader = {"Authorization": f"Bearer {READER}"}
-    metadata = await client.get(url, headers=reader)
+    statements = []
+
+    def capture(_connection, _cursor, statement, _parameters, _context, _many):
+        if (
+            statement.lstrip().upper().startswith("SELECT")
+            and "execution_trace_entries" in statement
+        ):
+            statements.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+    try:
+        metadata = await client.get(url, headers=reader)
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     assert metadata.status_code == 200 and "private fixture content" not in metadata.text
+    assert statements and all("payload_gzip" not in statement for statement in statements)
     assert (await client.get(url, params={"content": True}, headers=reader)).status_code == 403
     content = await client.get(url, params={"content": True})
     assert content.status_code == 200 and "private fixture content" in content.text

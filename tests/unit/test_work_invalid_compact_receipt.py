@@ -75,6 +75,15 @@ async def test_invalid_paid_compact_survives_pairing_reopen_and_next_candidate(
     assert saved["source_json"] == original_source
     assert (saved["model_requests"], saved["tool_calls"]) == (1, 0)
 
+    failed["request"].update(
+        {
+            "request_shape_hash": "legacy-request-shape",
+            "conversation_prefix_hash": "legacy-conversation-prefix",
+            "prompt_snapshot_fingerprint": "legacy-snapshot",
+            "static_prompt_revision": "legacy-static-prefix",
+        }
+    )
+    restored.progress["context_compaction"] = deepcopy(failed)
     await restored.save("paired")
     await database.close()
     reopened = WorkSession(control, session.contract)

@@ -1,4 +1,4 @@
-"""One bounded disposable consumer, including source validation and encoding."""
+"""Bounded disposable preparation followed by one short conditional write."""
 
 from __future__ import annotations
 
@@ -10,6 +10,10 @@ from contextvars import Context
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Executable
+
+from yuki.persistence.database import Database
 from yuki.persistence.sqlite_diagnostics import TimingSummary
 
 logger = logging.getLogger(__name__)
@@ -19,8 +23,28 @@ logger = logging.getLogger(__name__)
 class _Write:
     kind: str
     size: int
-    commit: Callable[[], Awaitable[Any]]
+    prepare: Callable[[], Awaitable[DiagnosticWrite]]
     enqueued_at: float
+
+
+@dataclass(frozen=True, slots=True)
+class DiagnosticWrite:
+    """Prepared SQL only; no session, encoder, live scope or external work."""
+
+    database: Database
+    statement: Executable
+    failed: Callable[[], None] | None = None
+
+    async def execute(self, session: AsyncSession) -> bool:
+        # Cached literal INSERTs retain their first payload after the original
+        # reservation ends. Diagnostics must release that private body too.
+        result = await session.execute(self.statement, execution_options={"compiled_cache": None})
+        return getattr(result, "rowcount", 0) != 0
+
+    async def commit(self) -> bool:
+        async with self.database.sessions() as session, session.begin():
+            accepted = await self.execute(session)
+        return accepted
 
 
 class DiagnosticWriter:
@@ -43,7 +67,6 @@ class DiagnosticWriter:
             name: TimingSummary()
             for name in (
                 "snapshot_call",
-                "source_validation",
                 "encode_call_inclusive",
                 "encode_execution",
                 "diagnostic_write",
@@ -80,7 +103,9 @@ class DiagnosticWriter:
             self.dropped,
         )
 
-    def submit(self, kind: str, size: int, commit: Callable[[], Awaitable[Any]]) -> bool:
+    def submit(
+        self, kind: str, size: int, prepare: Callable[[], Awaitable[DiagnosticWrite]]
+    ) -> bool:
         if size < 0:
             raise ValueError("invalid_diagnostic_size")
         if (
@@ -93,38 +118,66 @@ class DiagnosticWriter:
             self.drop(kind)
             return False
         self._bytes += size
-        self._queue.put_nowait(_Write(kind, size, commit, time.monotonic()))
+        self._queue.put_nowait(_Write(kind, size, prepare, time.monotonic()))
         return True
 
     async def _consume(self) -> None:
         while True:
             item = await self._queue.get()
-            started = time.monotonic()
-            self._queue_wait.record(started - item.enqueued_at)
             try:
-                await item.commit()
-                self.committed += 1
-            except asyncio.CancelledError:
-                self.dropped += 1
-                raise
-            except Exception as exc:
-                self.failures += 1
-                logger.error(
-                    "diagnostic_commit_failed kind=%s category=%s coverage_incomplete=true",
-                    item.kind,
-                    type(exc).__name__,
-                )
-                # Only the fixed category is retained. Worker exception cycles
-                # must not keep a completed payload alive until a later GC pass.
-                exc.__traceback__ = None
-                exc.__context__ = None
-                exc.__cause__ = None
+                await self._prepare_and_commit(item)
             finally:
-                self._commit_call.record(time.monotonic() - started)
                 self._bytes -= item.size
                 self._queue.task_done()
-                # Awaiting the next get must not retain the previous payload.
+                # The active item owns its reservation through encoder/commit
+                # completion, then the idle consumer retains no payload.
                 del item
+
+    async def _prepare_and_commit(self, item: _Write) -> None:
+        prepared: DiagnosticWrite | None = None
+        started = time.monotonic()
+        self._queue_wait.record(started - item.enqueued_at)
+        try:
+            prepared = await item.prepare()
+            writing = time.monotonic()
+            try:
+                accepted = await prepared.commit()
+            finally:
+                self.record_phase("diagnostic_write", time.monotonic() - writing)
+            # Publish after transaction exit, never from rowcount alone.
+            if accepted:
+                self.committed += 1
+            else:
+                if prepared.failed:
+                    prepared.failed()
+                self.failures += 1
+                logger.warning(
+                    "diagnostic_discarded kind=%s coverage_incomplete=true "
+                    "reason=privacy_or_source_changed",
+                    item.kind,
+                )
+        except asyncio.CancelledError:
+            self.dropped += 1
+            if prepared is not None and prepared.failed:
+                prepared.failed()
+            raise
+        except Exception as exc:
+            if prepared is not None and prepared.failed:
+                prepared.failed()
+            self._failed(item.kind, exc)
+        finally:
+            self._commit_call.record(time.monotonic() - started)
+
+    def _failed(self, kind: str, exc: Exception) -> None:
+        self.failures += 1
+        logger.error(
+            "diagnostic_commit_failed kind=%s category=%s coverage_incomplete=true",
+            kind,
+            type(exc).__name__,
+        )
+        exc.__traceback__ = None
+        exc.__context__ = None
+        exc.__cause__ = None
 
     async def drain(self) -> None:
         await self._queue.join()

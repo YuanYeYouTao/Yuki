@@ -45,7 +45,6 @@ from yuki.domain.messages import (
     OutboundMedia,
     OutboundMessage,
     OutboundSendReceipt,
-    PromptRequestDiagnostics,
 )
 from yuki.domain.profiles import UserProfileSnapshot
 from yuki.execution_trace.phases import collect_phase_metrics, timed_lock, turn_detail
@@ -178,19 +177,14 @@ class PluginToolProvider(Protocol):
     ) -> ToolExecutionResult: ...
 
 
-class ToolInvocationRecorder(Protocol):
-    async def record_invocation(
+class ToolReceiptRecorder(Protocol):
+    async def record_receipt(
         self,
         *,
-        conversation_key: str,
         provider_id: str,
         tool_name: str,
         success: bool,
-        latency_seconds: float,
-        result_size: int,
-        artifact_created: bool,
         error_category: str | None,
-        trigger_message_id: str,
         trigger_event_id: int | None = None,
         bot_user_id: str,
         result_excerpt: str,
@@ -243,7 +237,7 @@ class ChatService:
         turn_coordinator: ConversationTurnCoordinator | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
         tool_artifacts: ToolArtifactWriter | None = None,
-        tool_invocations: ToolInvocationRecorder | None = None,
+        tool_receipts: ToolReceiptRecorder | None = None,
         conversation_scopes: ConversationScopeRepository | None = None,
         effect_gate: ConversationEffectGate | None = None,
         processing_status: ProcessingStatusService | None = None,
@@ -266,7 +260,7 @@ class ChatService:
         self._automation_tools: AutomationToolProvider | None = None
         self._plugin_tools: PluginToolProvider | None = None
         self._tool_artifacts = tool_artifacts
-        self._tool_invocations = tool_invocations
+        self._tool_receipts = tool_receipts
         if memory_context is None:
             memory_repository = MemoryFactRepository(self._ledger._database)
             memory_context = MemoryContextService(
@@ -851,7 +845,7 @@ class ChatService:
                 (
                     messages,
                     visible_event_ids,
-                    prompt_diagnostics,
+                    preparation_model_requests,
                     read_version,
                     commit_projection,
                     observation_boundary,
@@ -893,7 +887,7 @@ class ChatService:
                     visible_event_ids=visible_event_ids,
                     selection_query=content,
                     memory_session=memory_session,
-                    prompt_diagnostics=prompt_diagnostics,
+                    preparation_model_requests=preparation_model_requests,
                     before_model_request=validate_context,
                     observation_boundary=observation_boundary,
                     public_compaction=public_compaction,
@@ -935,38 +929,30 @@ class ChatService:
         )
         return TurnMemorySession.open(origin=origin)
 
-    async def _record_tool_invocation(
+    async def _record_tool_receipt(
         self,
         *,
         runtime: ToolRuntime,
         provider_id: str,
         tool_name: str,
         success: bool,
-        latency_seconds: float,
-        result_size: int,
-        artifact_created: bool,
         error_category: str | None,
         result_excerpt: str,
         tool_call_id: str | None = None,
     ) -> None:
-        if self._tool_invocations is None:
+        if self._tool_receipts is None:
             return
         from yuki.services.invocation_service import defer_tool_audit, tool_audit_source
 
         audit_source = tool_audit_source(tool_call_id) if tool_call_id is not None else None
 
         async def record() -> None:
-            assert self._tool_invocations is not None
-            await self._tool_invocations.record_invocation(
-                conversation_key=runtime.conversation_key,
+            assert self._tool_receipts is not None
+            await self._tool_receipts.record_receipt(
                 provider_id=provider_id,
                 tool_name=tool_name,
                 success=success,
-                latency_seconds=latency_seconds,
-                result_size=result_size,
-                artifact_created=artifact_created,
                 error_category=error_category,
-                trigger_message_id=runtime.trigger_message_id,
                 trigger_event_id=runtime.effective_trigger_event_id,
                 bot_user_id=runtime.effective_bot_user_id or "bot",
                 result_excerpt=result_excerpt,
@@ -1004,7 +990,7 @@ class ChatService:
             (
                 messages,
                 visible,
-                diagnostics,
+                preparation_model_requests,
                 version,
                 commit,
                 boundary,
@@ -1025,7 +1011,7 @@ class ChatService:
                 runtime_config=config,
                 turn_snapshot=turn_snapshot,
                 visible_event_ids=visible,
-                prompt_diagnostics=diagnostics,
+                preparation_model_requests=preparation_model_requests,
                 before_model_request=validate,
                 observation_boundary=boundary,
                 public_compaction=public,
@@ -1062,7 +1048,7 @@ class ChatService:
     ) -> tuple[
         tuple[ChatMessage, ...],
         Set[int],
-        PromptRequestDiagnostics,
+        int,
         ConversationReadVersion | None,
         Callable[[], Awaitable[None]] | None,
         ContextBoundaryReader | None,
@@ -1107,12 +1093,7 @@ class ChatService:
         return (
             messages,
             composition.visible_event_ids,
-            PromptRequestDiagnostics(
-                conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
-                prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
-                static_prompt_revision=composition.metrics.stable_prefix_hash,
-                preparation_model_requests=composition.preparation_model_requests,
-            ),
+            composition.preparation_model_requests,
             composition.read_version,
             composition.commit_projection,
             composition.observation_boundary,
@@ -1434,12 +1415,7 @@ class ChatService:
                 observation_boundary=composition.observation_boundary,
                 public_compaction=composition.public_compaction,
                 selection_query=content,
-                prompt_diagnostics=PromptRequestDiagnostics(
-                    conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
-                    prompt_snapshot_fingerprint=composition.metrics.prompt_snapshot_fingerprint,
-                    static_prompt_revision=composition.metrics.stable_prefix_hash,
-                    preparation_model_requests=composition.preparation_model_requests,
-                ),
+                preparation_model_requests=composition.preparation_model_requests,
                 before_model_request=self._context_validator(
                     composition.read_version,
                     before_model_request,
@@ -1563,12 +1539,7 @@ class ChatService:
                 observation_boundary=composition.observation_boundary,
                 public_compaction=composition.public_compaction,
                 selection_query=f"{event.content}\n{trigger.agent_intent}".strip(),
-                prompt_diagnostics=PromptRequestDiagnostics(
-                    conversation_prefix_hash=composition.metrics.conversation_prefix_hash,
-                    prompt_snapshot_fingerprint=(composition.metrics.prompt_snapshot_fingerprint),
-                    static_prompt_revision=composition.metrics.stable_prefix_hash,
-                    preparation_model_requests=composition.preparation_model_requests,
-                ),
+                preparation_model_requests=composition.preparation_model_requests,
                 before_model_request=self._context_validator(
                     composition.read_version, before_model_request, composition.commit_projection
                 ),
@@ -1585,7 +1556,7 @@ class ChatService:
                     source_runtime,
                     runtime_config=runtime,
                     before_model_request=tool_runtime.before_model_request,
-                    prompt_diagnostics=tool_runtime.prompt_diagnostics,
+                    preparation_model_requests=tool_runtime.preparation_model_requests,
                     visible_event_ids=tool_runtime.visible_event_ids,
                     observation_boundary=tool_runtime.observation_boundary,
                     public_compaction=tool_runtime.public_compaction,
