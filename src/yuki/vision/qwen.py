@@ -30,10 +30,10 @@ _VISION_SYSTEM_PROMPT = """你是独立的图片观察服务，不生成最终�
 _VISION_TASK_PROMPT = """分析模式：{analysis_mode}
 用户问题：{question}
 
-请仔细观察图片后完成任务。可以并且应当尝试识别动漫、游戏、影视、虚拟人物、吉祥物、
-网络表情角色和作品来源；禁止猜测现实人物身份不等于禁止识别虚构角色。若无法确定，给出
-最多三个候选角色，并用服装、发型、配色、配饰、物种、画风、OCR 或标志性特征说明依据。
-表情包还要说明情绪、动作、梗意和常见使用语境。OCR 看不清时不要编造。
+围绕用户问题和分析模式观察图片。出现可辨认的动漫、游戏、影视、虚拟人物、吉祥物或网络
+表情角色时，可以尝试识别角色和作品。存在视觉依据但无法确定时，可给出最多三个候选，
+说明服装、发型、配色、配饰、物种、画风、OCR 或标志性特征；没有依据时留空，不强行猜测。
+表情包说明情绪、动作、梗意和常见使用语境；OCR 模式重点提取清晰文字，看不清时注明。
 
 只返回以下 JSON，不要 Markdown 代码块或额外说明：
 {{"items":[{{"index":1,"description":"可见内容","ocr_text":"清晰文字",
@@ -44,7 +44,7 @@ _VISION_TASK_PROMPT = """分析模式：{analysis_mode}
 "confidence":0.0}}],"notable_objects":["显著对象"],"uncertainty":"不确定之处",
 "confidence":0.0}}],"overall_description":"整体观察"}}
 
-角色无法确认时，recognized_character 保持空字符串并填写候选项；不要为了给出名字而编造。"""
+角色无法确认时，recognized_character 保持空字符串；无角色或无依据时，候选项留空。"""
 
 
 Sleep = Callable[[float], Awaitable[None]]

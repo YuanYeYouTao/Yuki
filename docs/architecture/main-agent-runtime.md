@@ -54,7 +54,10 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 当前场景只用简短的群聊/私聊说明，不预取称呼全集、记忆引用或关系评分。短期记录只展示当前有内容的 slot/text，写入只需要 slot/text，返回本次槽位结果；清空和到期仍沿原存储语义处理。插件资料保留实际来源。
 
 `Settings` 从 `SYSTEM_PROMPT_FILE` 读取人设正文；`PromptComposer` 将其与
-`prompting.contracts.core_contract`、Memory grounding 合成静态系统段。Main 的系统约束、
+`prompting.contracts.core_contract`、Memory grounding 合成静态系统段。
+人设文件保留身份、性格、关系、喜好与语气示例；分条与前缀、默认聊天表达、
+正式任务表达、查证及自主工作等通用规则统一放在 `core_contract`，示例文件不再重复保存。
+Main 的系统约束、
 插件资料、外部事件、聊天历史、附件、网页结果和 compact 检查点不再附加概括性“不可信”
 提醒；原事件类型、来源、内部身份及 `<runtime_context>` 的程序资料标签仍按原载体保留。
 工具执行继续由后端核验真实授权，已有付费请求、工具声明和冻结历史不追溯改写。
@@ -465,7 +468,7 @@ work_id 或 usage 不授予恢复、控制或预算权。查询不重计旧累�
 明确管理命令和模型完全不可用时的运行状态反馈与普通 Agent 正文区分。
 
 较长的用户交互任务可在 `task_control.accept` 声明 `reporting=interactive`；
-省略沿用原节奏，`quiet` 用于用户要求安静执行。主 Agent 合同固定包含可选字段，
+省略沿用原节奏，`quiet` 用于用户要求安静、SELF 自主工作及后台维护。主 Agent 合同固定包含可选字段，
 不按每次任务修改 schema。reporting 不改变原来源的发送权限。
 `update` 仅改变 reporting 时不修改目标或解除等待；quiet 与 interactive 可按任务需要调整。
 该元数据保存于原 checkpoint 的

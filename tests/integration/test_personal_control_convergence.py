@@ -274,6 +274,64 @@ async def test_sdk_keeps_running_and_unknown_with_confirmed_output_pending(
         await asyncio.gather(*tuple(env.app.app_gateway.tasks), return_exceptions=True)
 
 
+async def test_request_projection_keeps_running_when_receipt_commits_during_read(
+    acp_runtime, tmp_path, monkeypatch
+):
+    import yuki.client_api.requests as request_queries
+
+    env = acp_runtime
+    complete = env.provider._complete
+    awaiting_final, release = asyncio.Event(), asyncio.Event()
+
+    async def blocked(request):
+        if request.messages[-1].role == "tool":
+            awaiting_final.set()
+            await release.wait()
+        return await complete(request)
+
+    monkeypatch.setattr(env.provider, "_complete", blocked)
+    client = PersonalClient(
+        "http://test", env.device["token"], Outbox(tmp_path / "projection.sqlite"), http=env.http
+    )
+    identity = await client.prepare_message("Keep the original result while its turn settles")
+    await client.submit(identity)
+    try:
+        await awaiting_final.wait()
+        principal = await env.app.client_api.identity.authenticate(env.device["token"])
+        original_task = env.app.app_gateway.request_task(principal.conversation_id, identity)
+        assert original_task is not None and not original_task.done()
+        reader_task = asyncio.current_task()
+        personal_command = request_queries.personal_command
+        interleaved = False
+
+        async def finish_after_receipt_read(session, person_id, request_id, **kwargs):
+            nonlocal interleaved
+            receipt = await personal_command(session, person_id, request_id, **kwargs)
+            if asyncio.current_task() is reader_task and request_id == identity and not interleaved:
+                interleaved = True
+                assert receipt is None
+                # Commit the real receipt and retire its live task after this
+                # query has already observed the original absent receipt.
+                release.set()
+                await original_task
+                assert env.app.app_gateway.request_task(principal.conversation_id, identity) is None
+            return receipt
+
+        monkeypatch.setattr(request_queries, "personal_command", finish_after_receipt_read)
+        observed = await ClientRequests(
+            env.app.client_api.identity, prompts=env.app.client_api.prompts
+        ).get(principal, identity)
+        assert interleaved
+        assert observed["found"] and observed["turn"]["state"] == "running"
+        assert observed["result_event_ids"]
+        ended = await client.query(identity)
+        assert ended["turn"] == {"state": "ended", "outcome": "chat"}
+        assert ended["result_event_ids"] == observed["result_event_ids"]
+    finally:
+        release.set()
+        await asyncio.gather(*tuple(env.app.app_gateway.tasks), return_exceptions=True)
+
+
 @pytest.mark.parametrize("cancel", [False, True])
 async def test_standard_stdio_answer_resumes_original_work_and_controls_its_outputs(
     acp_runtime, database, tmp_path, cancel

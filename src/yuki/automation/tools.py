@@ -22,7 +22,7 @@ _CREATE_DESCRIPTION = (
     "创建持久化安排。到期激活同一个主 Agent，完整处理目标与约束，包括固定文字提醒。"
     "运行时使用主 Agent 的完整工具，按创建者当前权限执行，无需选择工具或预算。"
     "需要到时发消息时明确设置 delivery.target：群聊用 current_group，私聊用 self_private；"
-    "none 表示请求内部处理；是否发言由真实目标、完整要求与主 Agent 决定。"
+    "none 要求静默内部处理；其他目标选择投递对象，是否需要发言仍按任务要求判断。"
     "创建时不要提前执行任务；收到 confirmation='persisted' 和 automation_id 才表示成功。"
 )
 
@@ -128,8 +128,8 @@ def _task_intent_schema() -> dict[str, object]:
                         "type": "string",
                         "enum": ["auto", "self_private", "current_group", "none"],
                         "description": (
-                            "到时发消息用 current_group 或 self_private；none 只做内部工作，"
-                            "不会投递；auto 由创建时会话选择目标。SELF 没有私人目标。"
+                            "到时发消息用 current_group 或 self_private；none 要求静默内部处理；"
+                            "auto 由创建时会话选择目标。SELF 没有私人目标。"
                         ),
                     },
                 },
@@ -200,7 +200,7 @@ class AutomationToolService:
                 description=(
                     "创建、更新、暂停、恢复、取消或立即调度自动化。create/update 提供完整 task；"
                     "其他操作用原 automation_id。按创建者当前权限执行，超级管理员可管理全部。"
-                    "创建以 persisted 和 automation_id 为准；run_now 只确认入队。"
+                    "run_now 只确认入队。"
                 )
                 + _CREATE_DESCRIPTION,
                 parameters=_object_schema(

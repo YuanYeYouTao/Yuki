@@ -204,7 +204,8 @@ class WorkSession:
                     role="user",
                     content=(
                         "[持续工作恢复：使用当前获准上下文接续原工作。"
-                        "以下为已记录执行证据；先查询原 run_id，不能盲目重跑或重复发送。]\n"
+                        "以下为已记录执行证据；状态不明的执行先查原 run_id，"
+                        "不能盲目重跑或重复发送。]\n"
                         + json.dumps(evidence, ensure_ascii=False)
                     ),
                 )
@@ -576,7 +577,9 @@ class WorkSession:
                             "继续原目标，按回执接续；原文按需回读。业务续跑只保留当前聊天、"
                             "这份工作材料和上一段尚未观察的回执，不恢复此前整段工具往返。"
                             "按需用 task_control(update, context_note) 保存必要发现和下一步，"
-                            "沿原来源 refs 留下资料。根据目标和真实结果决定是否 complete。"
+                            "沿原来源 refs 留下资料。目标仍需跟进时登记 wait，"
+                            "确需真人补充时用 need_input；整个目标结束才 complete。"
+                            "没有新变化或无需发言，不等于持续目标已经结束。"
                         ),
                     },
                     ensure_ascii=False,

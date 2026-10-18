@@ -82,19 +82,16 @@ _INSTRUCTION = """\
 同一天、同一群、相同参与者或前后相邻，都不能单独证明属于同一件事。Dream 不必修改每个候选，
 也不必覆盖全部输入；未处理的来源保持原样，留给后续整理。
 
-每条合成或重组的正文只表达一个中心事件、事实或长期主题，source_refs 只引用支持它的来源。
-一条 output 若能回答两个独立问题，或 focus 需要用“从 A 到 B”“A 并 B”“一整天聊了很多事”
-才能概括，它仍是混合的，应继续拆分或舍弃较不重要的部分；宽泛的一天、一次对话或一串经过
-本身不是长期主题。关系变化、私密谈话或情感经历，与之后的工具任务、提醒、点单等功能性经历
-回答的是不同问题，即使在同一来源或前后相邻，也要拆成不同 output。逐句反查：删掉某句若不改变
-focus 的核心经过、结果或认识，就不保留它；旁支话题、无关任务、仅用于按时间串联的细节和没有
-长期价值的普通聊天细节都删掉。
+每条合成或重组的正文围绕一个可独立召回的中心事件、事实或长期主题，source_refs 只引用支持它
+的来源。按内容的实际关联分组，保留理解该中心所需的经过、结果和背景；相邻但无关的话题分开，
+不靠日期、参与者或概括句的措辞判断是否属于同一经历。省去没有长期价值的重复和旁支，
+不为缩短正文删去会改变原意的细节。
 
 只能引用 memory_N 别名，不能输出数据库 ID 或改变 scope/kind/key/category。merge、synthesize、
 resolve 必须提供属于 source_refs 的 anchor_ref；keep、contest、recompose 省略 anchor_ref。
 content 只用于 synthesize；importance 只用于 synthesize 和 recompose 的每个 output；outputs
-只用于 recompose，每个 output 给出 focus、source_refs、content 和 importance。不同 action 的
-source_refs 不能重叠。
+只用于 recompose，每个 output 给出 focus、source_refs、content 和 importance。不同 action
+实际处理的来源不能重叠；recompose 只处理其 outputs 实际引用的来源。
 
 source_type=explicit 或 authority=explicit 的记忆是不可变锚点：不能被 synthesize、recompose、
 contest、失效或作为 merge 的被吞并来源；自动重复记忆可以 merge 到唯一显式锚点，两个显式锚点

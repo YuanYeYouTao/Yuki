@@ -122,11 +122,7 @@ class Settings(BaseSettings):
     llm_flash_model: str = ""
     model_profiles_file: Path = Path("webui-config/model_profiles.toml")
     model_stats_recent_error_limit: int = 5
-    system_prompt: str = (
-        "你是 AI 助手 Yuki。请只输出给用户的最终回答，不要输出隐藏的推理过程。"
-        "不要声称执行了未实际成功的工具、代码、命令或文件访问。"
-        "只有联网工具实际成功时，才能说明已经搜索或读取网页。"
-    )
+    system_prompt: str = "你是 AI 助手 Yuki。自然、清楚地交流并认真完成委托，不输出隐藏的推理过程。"
     system_prompt_file: Path | None = None
     # Compatibility for deployments created before BOT_PERSONA_FILE existed.
     yuki_persona_file: Path | None = None
