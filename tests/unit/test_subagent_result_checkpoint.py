@@ -439,7 +439,7 @@ async def test_verified_mutation_child_completes_without_extra_result_prose(
         if (value := json.loads(json.loads(item["payload_json"])["text"]))["child_id"] == identity
     )
     assert signal["child_id"] == identity and signal["state"] == "completed"
-    assert "subagent_control(action=result, child_id=原ID)" in signal["detail"]
+    assert signal["text"] == receipt["text"]
     assert await repo.get(identity) == original
     async with database.sessions() as reader:
         assert (
