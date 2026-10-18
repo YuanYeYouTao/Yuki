@@ -201,7 +201,13 @@ OrdinaryReason = Literal["group_open", "semantic_invitation", "continuation"]
 
 
 class OrdinaryParticipationService(Protocol):
-    async def binding_for_event(self, event_id: int) -> OrdinaryParticipationBinding | None: ...
+    async def binding_for_event(
+        self,
+        event_id: int,
+        *,
+        record: EventRecord | None = None,
+        runtime: RuntimeConfigSnapshot | None = None,
+    ) -> OrdinaryParticipationBinding | None: ...
 
     async def continuation_for_event(
         self, event_id: int, *, check_budget: bool = True
@@ -1057,7 +1063,9 @@ class MessageProcessor:
         binding = None
         if self._participation is not None and record.author_is_human():
             with turn_detail("participation_binding"):
-                binding = await self._participation.binding_for_event(record.id)
+                binding = await self._participation.binding_for_event(
+                    record.id, record=record, runtime=runtime_snapshot
+                )
         return await self._handle_foreground(
             message,
             sender,
