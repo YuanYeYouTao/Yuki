@@ -31,48 +31,141 @@ from yuki.services.participation_feedback import (
 from yuki.services.participation_identity import actor_identity
 
 if TYPE_CHECKING:
-    from yuki.services.semantic_participation import SemanticParticipationService, _Session
+    from yuki.admin.models import RuntimeConfigSnapshot
+    from yuki.services.semantic_participation import Scene, SemanticParticipationService, _Session
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def event_scope(
-    service: SemanticParticipationService, event_id: int
+    service: SemanticParticipationService,
+    event_id: int,
+    *,
+    record: EventRecord | None = None,
+    runtime: RuntimeConfigSnapshot | None = None,
 ) -> AsyncIterator[tuple[EventRecord, _Session, ScopedEvent, Callable[[str], str]] | None]:
-    row = await service.app.ledger.get_event(event_id)
-    if row is None or not row.canonical_conversation_id or service._store is None:
+    # These immutable reads do not own a Controller. Another conversation can
+    # prepare its input while the existing application lock is occupied.
+    row = record if record is not None else await service.app.ledger.get_event(event_id)
+    if row is None or not row.canonical_conversation_id:
         yield None
         return
     scene = await service._scene(row.canonical_conversation_id)
     if scene is None or not scene.enabled:
         yield None
         return
-    runtime = await service.app.runtime_config.snapshot(group_id=scene.space_id)
+    if runtime is None:
+        runtime = await service.app.runtime_config.snapshot(group_id=scene.space_id)
     if not runtime.conversation_policy().semantic_participation_enabled:
         yield None
         return
+    async with service._lock:
+        if service._store is None:
+            yield None
+            return
+        # Preparation may have waited behind another application. Do not replace
+        # a newer route/generation with the scene read before that wait.
+        current = await service._scene(scene.conversation_id)
+        if current is None or not current.enabled or current.generation != scene.generation:
+            yield None
+            return
+        if current.space_id != scene.space_id:
+            runtime = await service.app.runtime_config.snapshot(group_id=current.space_id)
+        async with hydrated_scope(service, row, current, runtime) as found:
+            yield found
+
+
+@asynccontextmanager
+async def hydrated_scope(
+    service: SemanticParticipationService,
+    row: EventRecord,
+    scene: Scene,
+    runtime: RuntimeConfigSnapshot,
+) -> AsyncIterator[tuple[EventRecord, _Session, ScopedEvent, Callable[[str], str]] | None]:
+    """Recover an owner under the existing application/session locks."""
     item = await service._session(scene)
     item.pins += 1
     try:
         await sync_scope_effects(service, item)
-        await service._hydrate(item, runtime=runtime)
+        if await service._hydrate(item, runtime=runtime) is None:
+            yield None
+            return
         await service._validate_boundaries(item)
         identity = await actor_identity(
             service, item, (row.author_person_id,) if row.author_person_id else ()
         )
         event = service._event(row, item, actor_identity=identity)
-        if (
-            event is None
-            or event.kind != "human"
-            or not await service._source_current(item, event.ref)
-        ):
+        if event is None or event.kind != "human":
             yield None
         else:
             item.controller.observe_committed_event(event)
             yield row, item, event, identity
     finally:
         item.pins -= 1
+
+
+@asynccontextmanager
+async def admitted_scope(
+    service: SemanticParticipationService, conversation_id: str, generation: int, event_id: int
+) -> AsyncIterator[
+    tuple[OrdinaryAdmission, _Session, ScopedEvent, UnitBinding, Callable[[str], str] | None] | None
+]:
+    """Apply feedback to its real admitted owner; hydrate only on cold recovery."""
+    async with service._lock:
+        if service._store is None:
+            yield None
+            return
+        sources = await service.ordinary.current_sources(conversation_id, generation, (event_id,))
+        if not sources:
+            yield None
+            return
+        admission, row = sources[0]
+        item = service._sessions.get((conversation_id, generation))
+        if item is None:
+            scene = await service._scene(conversation_id)
+            if scene is None or not scene.enabled or scene.generation != generation:
+                yield None
+                return
+            runtime = await service.app.runtime_config.snapshot(group_id=scene.space_id)
+            if not runtime.conversation_policy().semantic_participation_enabled:
+                yield None
+                return
+            async with hydrated_scope(service, row, scene, runtime) as found:
+                if found is None:
+                    yield None
+                    return
+                unit = await observe_admitted_input(service, found[1], admission, found[2])
+                yield (admission, found[1], found[2], unit, found[3]) if unit is not None else None
+            return
+        item.pins += 1
+        try:
+            event = service._event(row, item)
+            if event is None:
+                yield None
+                return
+            unit = await observe_admitted_input(service, item, admission, event)
+            yield (admission, item, event, unit, None) if unit is not None else None
+        finally:
+            item.pins -= 1
+
+
+async def observe_admitted_input(
+    service: SemanticParticipationService,
+    item: _Session,
+    admission: OrdinaryAdmission,
+    event: ScopedEvent,
+) -> UnitBinding | None:
+    unit = admission_unit_binding(admission)
+    if unit is None or not all((await service._sources_current(item, unit.basis)).values()):
+        return None
+    # The admission may have committed while its derived feedback failed. Both
+    # input feedback and the later hint recover that exact input idempotently.
+    item.controller.observe_committed_event(event)
+    item.controller.observe_unit_input(
+        unit, event.ref, continuation=admission_continuation(admission)
+    )
+    return unit
 
 
 def invitation_unit(
@@ -153,9 +246,13 @@ def _continuation_basis(
 
 
 async def binding_for_event(
-    service: SemanticParticipationService, event_id: int
+    service: SemanticParticipationService,
+    event_id: int,
+    *,
+    record: EventRecord | None = None,
+    runtime: RuntimeConfigSnapshot | None = None,
 ) -> OrdinaryParticipationBinding | None:
-    async with service._lock, event_scope(service, event_id) as found:
+    async with event_scope(service, event_id, record=record, runtime=runtime) as found:
         if found is None:
             return None
         row, item, event, identity = found
@@ -176,6 +273,8 @@ async def binding_for_event(
             return None
         # A direct real input can establish its own unit. This is Host admission,
         # never an observed semantic interpretation of an unscored focus.
+        if not await service._source_current(item, event.ref):
+            return None
         return host_binding(
             row, item, ParticipationUnit(thread=event.thread, target=event.author), (event.ref,)
         )
@@ -185,7 +284,7 @@ async def continuation_for_event(
     service: SemanticParticipationService, event_id: int, *, check_budget: bool = True
 ) -> tuple[OrdinaryParticipationBinding, ImplicitReason] | None:
     """Classify an implicit source: a verified invitation first, then a matched unit."""
-    async with service._lock, event_scope(service, event_id) as found:
+    async with event_scope(service, event_id) as found:
         if found is None:
             return None
         row, item, event, identity = found
@@ -250,39 +349,13 @@ async def on_ordinary_admitted(
 ) -> None:
     if binding is None:
         return
-    async with service._lock:
-        sources = await service.ordinary.current_sources(
-            binding.conversation_id, binding.generation, (admission.event_id,)
-        )
-        if not sources:
+    async with admitted_scope(
+        service, binding.conversation_id, binding.generation, admission.event_id
+    ) as found:
+        if found is None:
             return
-        current, row = sources[0]
-        unit = admission_unit_binding(current)
-        if unit is None:
-            return
-
-        async def apply(item: _Session, event: ScopedEvent) -> None:
-            if not all((await service._sources_current(item, unit.basis)).values()):
-                return
-            item.controller.observe_committed_event(event)
-            item.controller.observe_unit_input(
-                unit,
-                event.ref,
-                continuation=admission_continuation(current),
-            )
-            await service._save(item)
-
-        item = service._sessions.get((binding.conversation_id, binding.generation))
-        if item is not None:
-            event = service._event(row, item)
-            if event is not None:
-                await apply(item, event)
-            return
-        # A restarted host recovers the original controller; normal feedback
-        # updates the owner prepared for this admission without rescanning history.
-        async with event_scope(service, admission.event_id) as found:
-            if found is not None and str(source_revision(found[0])) == current.source_revision:
-                await apply(found[1], found[2])
+        _, item, _, _, _ = found
+        await service._save(item)
 
 
 async def observe_main_response(
@@ -298,18 +371,14 @@ async def observe_main_response(
         return
     if not await service.app.chat.validate_turn_snapshot(snapshot):
         return
-    async with service._lock, event_scope(service, event_id) as found:
+    async with admitted_scope(
+        service, snapshot.conversation_id, snapshot.generation, event_id
+    ) as found:
         if found is None:
             return
-        _, item, event, identity = found
-        admission = await service.ordinary.current(
-            event_id, conversation_id=item.scene.conversation_id, generation=snapshot.generation
-        )
-        unit = admission_unit_binding(admission) if admission is not None else None
-        if admission is None or unit is None:
-            return
-        if not all((await service._sources_current(item, unit.basis)).values()):
-            return
+        admission, item, event, unit, identity = found
+        if identity is None:
+            identity = await actor_identity(service, item, (event.author,))
         # Dispatch ordering is source time, not the arrival time of a late response.
         report = SelfReport(
             run_ref=admission.activation_id,

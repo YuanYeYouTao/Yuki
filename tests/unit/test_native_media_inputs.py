@@ -13,6 +13,7 @@ from PIL import Image
 
 from yuki.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
 from yuki.services.native_media import NativeMediaPreparer
+from yuki.vision.models import DownloadedMedia
 from yuki.workspace.inspect import WorkspaceInspector
 from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
@@ -42,6 +43,25 @@ def test_shared_preparer_preserves_gif_pixels_and_budgets():
     with pytest.raises(ImagePreprocessingError, match="预算"):
         NativeMediaPreparer(ImagePreprocessor(), max_bytes=1).prepare_image(
             _image(), source="workspace"
+        )
+
+
+@pytest.mark.parametrize("animated", [False, True])
+def test_raw_and_verified_image_inputs_preserve_pixels_and_reject_wrong_hash(animated):
+    data = _image(animated=animated)
+    downloaded = DownloadedMedia(
+        content=data,
+        content_type=None,
+        content_hash=hashlib.sha256(data).hexdigest(),
+        byte_size=len(data),
+    )
+    preparer = NativeMediaPreparer(ImagePreprocessor())
+    images = preparer.prepare_image(data, source="reply")
+    assert images == preparer.prepare_image(downloaded, source="reply")
+    assert all(image.source == "reply" for image in images)
+    with pytest.raises(ImagePreprocessingError, match="校验失败"):
+        preparer.prepare_image(
+            downloaded.model_copy(update={"content_hash": "0" * 64}), source="reply"
         )
 
 
