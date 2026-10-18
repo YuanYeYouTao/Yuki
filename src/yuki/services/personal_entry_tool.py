@@ -7,6 +7,7 @@ from sqlalchemy import select, text
 from yuki.client_api.views import public_event
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatTool
+from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.identity.person_identity import person_family_condition
 from yuki.persistence.database import Database
@@ -17,7 +18,8 @@ ENTRY_TOOL = ChatTool(
     name="read_personal_entry",
     result_cacheable=False,
     description=(
-        "仅在 App 主会话显式读取本人其他私聊入口的账本窗口。返回平台、绑定、会话及内部事件 ID，"
+        "仅在 App/ACP 个人会话显式读取本人其他私聊入口的账本窗口。"
+        "返回平台、绑定、会话及内部事件 ID，"
         "不读取群聊、不修改任何会话。"
     ),
     parameters={
@@ -53,7 +55,7 @@ async def read_entry(database: Database, runtime: Any, args: dict[str, Any]) -> 
                     CanonicalConversationModel.id == runtime.effective_conversation_id,
                     CanonicalConversationModel.kind == "private",
                     person_family_condition(CanonicalConversationModel.person_id, actor.person_id),
-                    IdentityBindingModel.platform == "app",
+                    IdentityBindingModel.platform.in_(LOCAL_CLIENT_PLATFORMS),
                 )
             )
         ).first()
@@ -78,10 +80,23 @@ async def read_entry(database: Database, runtime: Any, args: dict[str, Any]) -> 
             if args.get("binding_id")
             else query.where(CanonicalConversationModel.id == args["conversation_id"])
         )
-        target = (await session.execute(query)).first()
-        if target is None:
+        targets = (await session.execute(query.order_by(CanonicalConversationModel.id))).all()
+        if not targets:
             raise SocialError("not_found")
-        conversation, binding = target
+        if len(targets) > 1:
+            return {
+                "error": "conversation_required",
+                "binding_id": args["binding_id"],
+                "conversations": [
+                    {
+                        "conversation_id": conversation.id,
+                        "platform": binding.platform,
+                        "generation": conversation.generation,
+                    }
+                    for conversation, binding in targets
+                ],
+            }
+        conversation, binding = targets[0]
         events = select(ChatEventModel).where(
             ChatEventModel.canonical_conversation_id == conversation.id,
             ChatEventModel.suppression_status == "keeper",

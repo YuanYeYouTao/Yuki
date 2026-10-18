@@ -105,7 +105,7 @@ async def _stack(
     database: Database,
 ) -> tuple[GatewayConnectionRegistry, CanonicalIngressResolver, CanonicalIngressUnitOfWork]:
     configure_identity_write_settings(
-        IdentityWriteSettings(superusers=frozenset({"9000"}), ignored_bot_users=frozenset({"7777"}))
+        IdentityWriteSettings(ignored_bot_users=frozenset({"7777"}))
     )
     registry = builtin_registry(gateway_instance_id="gw-test")
     router = PresenceRouter(
@@ -394,7 +394,7 @@ def test_any_presence_mention_and_reply_overlay() -> None:
 async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
     database: Database,
 ) -> None:
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    configure_identity_write_settings(IdentityWriteSettings())
     registry = GatewayConnectionRegistry(
         providers=GatewayProviderCatalog(
             (_LagrangeProvider(),),

@@ -11,11 +11,14 @@ from sqlalchemy import select, update
 from tests.support.subagents_helpers import stack
 
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
-from yuki.admin_api.commands import AdminCommands
+from yuki.admin.operations.base import CommandExecutor
+from yuki.admin.operations.identity import IdentityOperations
+from yuki.client_api.identity import ClientIdentityService
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.identity import PrincipalId
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.identity.person_identity import merge_persons
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
 from yuki.persistence.models import AdminOperationEventModel
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -121,7 +124,11 @@ class CleanupClient:
 def forget(database, person, entry):
     if entry == "personal":
         return lambda: PeopleRepository(database).delete_person_id(person)
-    commands = AdminCommands(database, None, None)
+    commands = IdentityOperations(
+        CommandExecutor(database),
+        ClientIdentityService(database),
+        PeopleRepository(database, memory_rebuilds=MemoryRebuildRepository(database)),
+    )
     principal = ControlPrincipal(
         principal_id=PrincipalId(uuid4()),
         person_id=None,

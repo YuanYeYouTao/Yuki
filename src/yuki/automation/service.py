@@ -605,7 +605,7 @@ class AutomationService:
         )
         async with transaction as active:
             context = await resolve_control_context(
-                active, self._settings, owner_id=owner_id, conversation_id=conversation_id
+                active, owner_id=owner_id, conversation_id=conversation_id
             )
             task = prepare_task(
                 task,
@@ -666,7 +666,7 @@ class AutomationService:
             if conversation_id is not None and not isinstance(conversation_id, str):
                 raise PermissionError("invalid automation scene")
             context = await resolve_control_context(
-                active, self._settings, owner_id=owner_id, conversation_id=conversation_id
+                active, owner_id=owner_id, conversation_id=conversation_id
             )
             task = prepare_task(
                 task,
@@ -781,7 +781,7 @@ class AutomationService:
         async with optional_session(self._repository._database, session, write=False) as reader:
             permission = (
                 PermissionLevel.SUPERUSER
-                if await person_is_superuser(reader, creator_person_id, self._settings.superusers)
+                if await person_is_superuser(reader, creator_person_id)
                 else PermissionLevel.USER
             )
         return (
@@ -876,7 +876,6 @@ class AutomationService:
                 _, conversation_id = await bind_automation_conversation(session, row)
             context = await resolve_control_context(
                 session,
-                self._settings,
                 owner_id=owner_person_id,
                 conversation_id=conversation_id,
                 presence_id=row.canonical_presence_id,

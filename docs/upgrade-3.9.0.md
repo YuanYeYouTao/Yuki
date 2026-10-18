@@ -6,6 +6,8 @@
 
 当前源码后续的 Compact 配置变更见[0130 升级说明](#0130-compact-触发值与模型容量分开)。它不改变 3.9.0 随包 `0119` 的历史；本轮交付范围为 PR，生产环境清理、迁移和部署尚未执行。
 
+开发版本的 `0136/0137` 改为 Person 持久超管资格，并删除设备 GET 活跃度写入；旧部署须先导出只读候选，再清旧名单并由独立 operator 按内部人物 ID 授权。具体顺序和新命令见[人物授权升级与管理命令迁移](operations/person-admin-control-plane-upgrade.md)。
+
 默认构建与发行使用 direct：同一 Agent loop 提供固定完整工具声明，不包含 Monty binding、原生 worker 或 launcher，`CODE_MODE_ENABLED=false`。Code Mode 已合入主线，是显式 `--target codemode` 构建与启用的可选能力；持久子 Agent 与这个可选原生组件是不同模块。切换模式保留原 Work、composition、预算和回执，不能取得重派发资格。
 
 3.9.0 正式发行支持 `linux/amd64` 与 `linux/arm64`，共用版本标签和部署包；[PR #431](https://github.com/YuanYeYouTao/Yuki/pull/431) 已合入。安装器按 Docker Engine 架构选择配置镜像，模板已删除 Bot、SnowLuma 的固定 `platform: linux/amd64`。安装器仍不覆盖现有 Compose；已有 ARM 部署需要核对实际 Bot/网关镜像支持 arm64，再从自己的 service 配置中去掉该固定平台。保留原挂载、配置和业务数据，不因此重置会话或迁移 owner。旧版发行物保持原内容，不能据此推定旧标签也有双架构镜像。
@@ -16,7 +18,7 @@
 
 ## 当前开发版：工具精简与持久终端升级
 
-本节描述正式3.9.0之后的开发实现，不改上方Release的`0119`、API3.5基线。#454精简后，#456再新增一项固定`external_agent`，当前Main合同为22，Code API仍为`yuki.codemode.api.v2`、Plugin API仍为4.0。默认direct的平台/App内置工具为30/31项，Code完整32/33项、直调27/28项；批准插件另计。实际交付见[454实施与审查](architecture/Yuki-454工具精简实施与审查记录-2026-10-17.md)。
+本节描述正式3.9.0之后的开发实现，不改上方Release的`0119`、API3.5基线。#454精简后，#456再新增一项固定`external_agent`，当前Main合同为23，Code API仍为`yuki.codemode.api.v2`、Plugin API仍为4.0。默认direct的平台/App内置工具为30/31项，Code完整32/33项、直调27/28项；批准插件另计。实际交付见[454实施与审查](architecture/Yuki-454工具精简实施与审查记录-2026-10-17.md)。
 
 - 终端使用`terminal_exec/read/control`，control接收input/interrupt/cancel/close；按原run读取增量日志和原completion，pending后不重新提交。`get_code_run`、`terminal_write`、`cancel_code_run`和`environment_packages`不再接受新调用。旧APT/Python job、已付结果、原ID/hash/累计预算保留。
 - 普通`workspace_list/read/write/search/patch/mkdir/move/delete`整链退役，直接用同一`/workspace`上的终端。`workspace_inspect/publish`、临时会话附件提升和私有工具结果读取仍在原链；已发送版本不跟随当前文件修改。SDK普通文件接口相同退役，不能用旧名创建新效果。

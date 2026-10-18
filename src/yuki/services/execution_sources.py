@@ -9,7 +9,6 @@ from typing import Any, Literal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.config import Settings
 from yuki.conversation.autonomy_db_models import InitiativeRunModel
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import InboundMessage, SenderIdentity
@@ -279,7 +278,6 @@ async def recover_automation_source(
     source: dict[str, Any],
     *,
     request_id: str,
-    settings: Settings | None,
 ) -> AutomationTaskSource:
     from yuki.automation.repository import AutomationRepository
     from yuki.runtime.work_schema_v1 import work
@@ -341,10 +339,9 @@ async def recover_automation_source(
         else:
             from yuki.automation.control_context import resolve_execution_identity
 
-            assert settings is not None and actor_person is not None
+            assert actor_person is not None
             actor_user, permission = await resolve_execution_identity(
                 session,
-                settings,
                 owner_id=actor_person,
                 conversation_id=conversation.id,
                 presence_id=presence.id,
@@ -473,7 +470,6 @@ async def recover_execution_source(
     source: dict[str, Any],
     *,
     request_id: str,
-    settings: Settings | None = None,
     lookup_plugin_host: Callable[[str], Any] | None = None,
 ) -> MessageTaskSource | SelfTaskSource | AutomationTaskSource | BackgroundTaskSource:
     if source.get("owner") == "plugin_invocation":
@@ -491,7 +487,6 @@ async def recover_execution_source(
             conversation_id,
             underlying,
             request_id=request_id,
-            settings=settings,
             lookup_plugin_host=lookup_plugin_host,
         )
     if source.get("owner") == "plugin_background":
@@ -500,7 +495,7 @@ async def recover_execution_source(
         )
     if source.get("origin") == TurnOrigin.SCHEDULED_AUTOMATION.value:
         return await recover_automation_source(
-            database, conversation_id, source, request_id=request_id, settings=settings
+            database, conversation_id, source, request_id=request_id
         )
     if source.get("origin") == TurnOrigin.SELF_INITIATIVE.value:
         return await recover_self_source(database, conversation_id, source, request_id=request_id)

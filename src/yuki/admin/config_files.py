@@ -250,7 +250,6 @@ class ConfigFileService:
                         type(name) is not str
                         or KEY_ALIAS.fullmatch(name) is None
                         or type(value) is not str
-                        or name in saved_keys
                         or not any(
                             isinstance(profile, dict) and profile.get("api_key_env") == name
                             for profile in profiles.values()

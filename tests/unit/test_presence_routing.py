@@ -51,7 +51,7 @@ async def _true(*_args: object, **_kwargs: object) -> bool:
 async def test_takeover_zero_one_many_and_route_pause(database: Database) -> None:
     from yuki.identity.ingress import _ensure_person_id
 
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    configure_identity_write_settings(IdentityWriteSettings())
     registry = builtin_registry(gateway_instance_id="gw-route")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
@@ -105,7 +105,7 @@ async def test_transient_disconnect_preserves_routes_until_same_presence_reconne
     from yuki.identity.db_models import SpaceBindingModel
     from yuki.identity.ingress import _ensure_person_id
 
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    configure_identity_write_settings(IdentityWriteSettings())
     registry = builtin_registry(gateway_instance_id="gw-gen")
     router = PresenceRouter(database, registry, membership_probe=_true)
     monitor = RouteMonitor(router)
@@ -234,7 +234,7 @@ async def test_transient_disconnect_preserves_routes_until_same_presence_reconne
 
 @pytest.mark.asyncio
 async def test_space_takeover_zero_one_many_and_membership_probe(database: Database) -> None:
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    configure_identity_write_settings(IdentityWriteSettings())
     calls: list[str] = []
 
     async def _probe(bot: object, group_id: str, user_id: str) -> bool:
@@ -298,7 +298,7 @@ async def test_space_takeover_zero_one_many_and_membership_probe(database: Datab
 async def test_authoritative_ingest_survives_second_presence(database: Database) -> None:
     from yuki.identity.db_models import SpaceBindingModel
 
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    configure_identity_write_settings(IdentityWriteSettings())
     registry = builtin_registry(gateway_instance_id="gw-ingest")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
@@ -351,7 +351,7 @@ async def test_reconcile_paused_is_idempotent_and_keeps_explicit_pause(
 ) -> None:
     from yuki.identity.ingress import _ensure_person_id
 
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    configure_identity_write_settings(IdentityWriteSettings())
     registry = builtin_registry(gateway_instance_id="gw-pause")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
@@ -415,7 +415,7 @@ async def test_ingest_eligible_does_not_block_person_or_space_send(
     from yuki.identity.db_models import PresenceModel
     from yuki.identity.ingress import _ensure_person_id
 
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    configure_identity_write_settings(IdentityWriteSettings())
     registry = builtin_registry(gateway_instance_id="gw-elig")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot = _Bot("8000")
@@ -454,7 +454,7 @@ async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
     from yuki.identity.db_models import IdentityBindingModel
     from yuki.identity.ingress import _ensure_person_id
 
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    configure_identity_write_settings(IdentityWriteSettings())
     registry = builtin_registry(gateway_instance_id="gw-cas-person")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
@@ -512,7 +512,7 @@ async def test_person_takeover_cas_does_not_overwrite_concurrent_write(
 async def test_space_takeover_cas_does_not_overwrite_concurrent_write(
     database: Database,
 ) -> None:
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    configure_identity_write_settings(IdentityWriteSettings())
     registry = builtin_registry(gateway_instance_id="gw-cas-space")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")
@@ -565,7 +565,7 @@ async def test_ingest_provision_cas_does_not_overwrite_concurrent_write(
 ) -> None:
     from yuki.identity.db_models import SpaceBindingModel
 
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    configure_identity_write_settings(IdentityWriteSettings())
     registry = builtin_registry(gateway_instance_id="gw-cas-ingest")
     router = PresenceRouter(database, registry, membership_probe=_true)
     bot_a = _Bot("8000")

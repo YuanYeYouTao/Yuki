@@ -12,7 +12,7 @@ from tests.support.runtime_execution import make_child_executor
 
 from yuki.automation.models import RunStatus
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.identity.db_models import IdentityBindingModel, SpaceBindingModel
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, SpaceBindingModel
 from yuki.runtime.subagent_repository import SubagentRepository
 from yuki.runtime.subagent_scheduler import SubagentScheduler
 from yuki.runtime.work_repository import WorkRepository
@@ -174,7 +174,6 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
         child["conversation_id"],
         source,
         request_id=child["id"],
-        settings=case.settings,
     )
     if principal == "person":
         recovered = await recover_execution_source(
@@ -182,7 +181,6 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             child["conversation_id"],
             {**source, "actor_user_id": "old-derived-account"},
             request_id=child["id"],
-            settings=case.settings,
         )
         assert recovered.actor_person_id == source["actor_person_id"]
         assert recovered.actor_user_id == "old-derived-account"
@@ -198,7 +196,6 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
                 child["conversation_id"],
                 {**source, **changed},
                 request_id=child["id"],
-                settings=case.settings,
             )
     async with database.sessions() as session, session.begin():
         await session.execute(
@@ -214,7 +211,6 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
         child["conversation_id"],
         source,
         request_id=child["id"],
-        settings=case.settings,
     )
     assert recovered.generation == source["generation"]
     assert recovered.presence_id == source["presence_id"]
@@ -646,28 +642,9 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     from yuki.runtime.work_budget_schema import budgets
     from yuki.runtime.work_scheduler import WorkScheduler
 
-    case = await setup_run(
-        database, tmp_path, delivery="none", mode="silent", superusers_csv="10001"
-    )
+    case = await setup_run(database, tmp_path, delivery="none", mode="silent", privileged=True)
     settings = case.settings
-    settings.superusers_csv = "9001"
-    del settings.__dict__["superusers"]
     assert await case.env.router.cas_takeover_person(case.env.person) == "taken"
-    privileged_binding = str(uuid4())
-    async with database.immediate_session() as writer:
-        writer.add(
-            IdentityBindingModel(
-                id=privileged_binding,
-                person_id=case.env.person,
-                platform="qq",
-                external_account_id="9001",
-                status="active",
-                first_seen_at=case.clock.now(),
-                last_seen_at=case.clock.now(),
-                created_at=case.clock.now(),
-                updated_at=case.clock.now(),
-            )
-        )
 
     def respond(_request):
         if len(case.provider.requests) == 1:
@@ -712,13 +689,13 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     async def complete(request):
         response = await original_complete(request)
         if len(case.provider.requests) == 3:
-            # Revoke the privileged account while the authorized request is
-            # in flight. The permanent Person and selected 10001 route stay.
+            # Revoke the Person qualification while the request is in flight.
+            # Its accounts and original execution scene remain unchanged.
             async with database.immediate_session() as writer:
                 await writer.execute(
-                    update(IdentityBindingModel)
-                    .where(IdentityBindingModel.id == privileged_binding)
-                    .values(status="disabled")
+                    update(CanonicalPersonModel)
+                    .where(CanonicalPersonModel.id == case.env.person)
+                    .values(is_superuser=False)
                 )
         return response
 
@@ -738,9 +715,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     async def capture_main(**kwargs):
         resumed_runtime.append(kwargs["source_runtime"])
         async with database.sessions() as reader:
-            account, permission = await resolve_execution_identity(
-                reader, settings, owner_id=case.env.person
-            )
+            account, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
             assert account == "" and permission is PermissionLevel.SUPERUSER
         return await case.chat.generate_origin_turn(**kwargs)
 
@@ -774,9 +749,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     original_parent = await repository.get(parent["id"])
     assert original_parent["state"] == "completed" and original_parent["model_requests"] == 2
     async with database.sessions() as reader:
-        account, permission = await resolve_execution_identity(
-            reader, settings, owner_id=case.env.person
-        )
+        account, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
         assert account == "" and permission is PermissionLevel.USER
         assert (
             await reader.scalar(select(budgets.c.models).where(budgets.c.root_id == parent["id"]))

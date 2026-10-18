@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import overload
 
 from sqlalchemy import select
@@ -33,7 +32,6 @@ SUPERUSER_CAPABILITIES: frozenset[str] = USER_CAPABILITIES | frozenset(
     {
         "control.preference.mutate",
         "control.group.mutate",
-        "control.private_access.mutate",
         "control.config.read",
         "control.config.mutate",
         "control.audit.read",
@@ -54,6 +52,35 @@ SUPERUSER_CAPABILITIES: frozenset[str] = USER_CAPABILITIES | frozenset(
         "control.operation.read",
         "control.operation.cancel",
         "control.operation.retry",
+        "control.plugin.config.content.read",
+        "control.plugin.config.mutate",
+        "control.config.file.content.read",
+        "control.config.file.mutate",
+        "control.execution.metadata.read",
+        "control.execution.content.read",
+        "control.work.mutate",
+        "control.work.read",
+        "conversation.metadata.read",
+        "identity.person.create",
+        "identity.person.read",
+        "identity.person.enable",
+        "identity.person.disable",
+        "identity.person.superuser",
+        "identity.person.merge",
+        "identity.person.rename",
+        "identity.person.forget",
+        "identity.binding.attach",
+        "identity.binding.read",
+        "identity.binding.read_external",
+        "identity.binding.enable",
+        "identity.binding.disable",
+        "identity.binding.transfer",
+        "identity.client.pair",
+        "identity.client.revoke",
+        "identity.presence.read",
+        "identity.presence.start",
+        "identity.presence.stop",
+        "identity.presence.set_ingest",
     }
 )
 PRINCIPAL_NOT_FOUND = "没有找到可用的控制主体。"
@@ -69,30 +96,39 @@ class ControlPrincipalLookupError(PermissionError):
 class ControlAccess:
     """Control authorization uses already-resolved Person and Space identities."""
 
-    def __init__(self, database: Database, *, superuser_ids: Iterable[str]) -> None:
+    def __init__(self, database: Database) -> None:
         self._database = database
-        self._superuser_ids = frozenset(str(item) for item in superuser_ids)
 
     async def principal_for_person(self, person_id: str | None) -> ControlPrincipal:
         async with self._database.sessions() as session:
             person = await session.get(CanonicalPersonModel, person_id) if person_id else None
             if person is None or not person.enabled:
                 raise ControlPrincipalLookupError()
+            original_person_id = person.id
             person = await session.get(
                 CanonicalPersonModel, await current_person_id(session, person.id)
             )
             assert person is not None
             if not person.enabled:
                 raise ControlPrincipalLookupError()
-            privileged = await person_is_superuser(session, person.id, self._superuser_ids)
-        return self._principal(PersonId.parse(person.id), privileged, PrincipalSource.PLATFORM)
+            privileged = await person_is_superuser(session, original_person_id)
+        return self._principal(
+            PersonId.parse(person.id),
+            privileged,
+            PrincipalSource.PLATFORM,
+            source_person_id=PersonId.parse(original_person_id),
+        )
 
     @staticmethod
     def _principal(
-        person_id: PersonId, privileged: bool, source: PrincipalSource
+        person_id: PersonId,
+        privileged: bool,
+        source: PrincipalSource,
+        *,
+        source_person_id: PersonId | None = None,
     ) -> ControlPrincipal:
         return ControlPrincipal(
-            principal_id=PrincipalId.parse(person_id.text),
+            principal_id=PrincipalId.parse((source_person_id or person_id).text),
             person_id=person_id,
             source=source,
             roles=("superuser",) if privileged else (),
@@ -121,8 +157,13 @@ class ControlAccess:
             if not current.enabled:
                 raise ControlPrincipalLookupError()
             person_id = PersonId.parse(current.id)
-            privileged = await person_is_superuser(session, person_id.text, self._superuser_ids)
-        return self._principal(person_id, privileged, PrincipalSource.QQ)
+            privileged = await person_is_superuser(session, person_id.text)
+        return self._principal(
+            person_id,
+            privileged,
+            PrincipalSource.QQ,
+            source_person_id=PersonId.parse(original.id),
+        )
 
     async def person_target(self, person_id: str) -> PersonControlTarget:
         async with self._database.sessions() as session:
@@ -133,11 +174,9 @@ class ControlAccess:
                 CanonicalPersonModel, await current_person_id(session, person.id)
             )
             assert person is not None
-            protected = await person_is_superuser(session, person.id, self._superuser_ids)
         return PersonControlTarget(
             person_id=PersonId.parse(person.id),
             storage_user_id=person.id,
-            lockout_protected=protected,
         )
 
     async def space_target(self, space_id: str) -> SpaceControlTarget:

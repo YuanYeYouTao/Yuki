@@ -4,12 +4,10 @@ from yuki.services.admin.config_admin import ConfigAdminService
 from yuki.services.admin.group_admin import GroupAdminService
 from yuki.services.admin.memory_admin import MemoryAdminService
 from yuki.services.admin.preference_admin import PreferenceAdminService
-from yuki.services.admin.private_access_admin import PrivateAccessAdminService
 
 __all__ = [
     "ConfigAdminService",
     "GroupAdminService",
     "MemoryAdminService",
     "PreferenceAdminService",
-    "PrivateAccessAdminService",
 ]

@@ -60,7 +60,9 @@ class Sender(MemorySender):
         self.bot = bot
 
 
-def message(text: str = "/ai on", *, message_id: str = "restore-1") -> InboundMessage:
+def message(
+    text: str = "/ai admin group current enable", *, message_id: str = "restore-1"
+) -> InboundMessage:
     return InboundMessage(
         message_id=message_id,
         event_type="message:group:normal",
@@ -200,7 +202,7 @@ async def test_superuser_on_recovers_legacy_pauses_and_commands_without_chat_sid
     sender = Sender(bot)
     hint = await app.processor.handle(message("/ai status"), sender)
     assert hint.reason == "group_route_paused"
-    assert "/ai on" in sender.messages[-1].text
+    assert "/ai admin group current enable" in sender.messages[-1].text
     result = await app.processor.handle(message(), sender)
     assert result.reason == "group_recovery"
     assert "恢复可用路由" in sender.messages[-1].text
@@ -231,14 +233,11 @@ async def test_superuser_on_recovers_legacy_pauses_and_commands_without_chat_sid
         "disabled_presence",
         "ineligible_presence",
         "disabled_person",
-        "image",
     ],
 )
 async def test_recovery_rejects_untrusted_or_unreachable_requests(
     database: Database, case: str
 ) -> None:
-    from yuki.domain.messages import AttachmentKind, MessageAttachment
-
     app, bot, presence, space, binding = await stack(database)
     await pause(database, space, binding)
     request = message()
@@ -270,10 +269,6 @@ async def test_recovery_rejects_untrusted_or_unreachable_requests(
             person = await session.get(CanonicalPersonModel, actor.person_id)
             assert person is not None
             person.enabled = False
-    elif case == "image":
-        request = replace(
-            request, attachments=(MessageAttachment(kind=AttachmentKind.IMAGE, label="image"),)
-        )
     before = await state(database, space, binding)
     sender = Sender(bot)
     await app.processor.handle(request, sender)
@@ -683,7 +678,7 @@ async def test_new_group_original_control_request_recovers_receipt_and_rejects_r
 ) -> None:
     app, bot, presence, _space, _binding = await stack(database)
     bot.groups |= {NEW_GROUP}
-    access = ControlAccess(database, superuser_ids=frozenset({"9000"}))
+    access = ControlAccess(database)
     principal = await access.qq_recovery_principal("9000")
     context = access.context(principal, await access.qq_recovery_space_target(NEW_GROUP))
     assert context.canonical_target.space_id is None
@@ -749,3 +744,20 @@ async def test_new_group_original_control_request_recovers_receipt_and_rejects_r
         assert (
             await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 1
         )
+
+
+@pytest.mark.asyncio
+async def test_recovery_with_attachment_uses_the_same_authorized_route(database):
+    from yuki.domain.messages import AttachmentKind, MessageAttachment
+
+    app, bot, _presence, space, binding = await stack(database)
+    await pause(database, space, binding)
+    request = replace(
+        message(), attachments=(MessageAttachment(kind=AttachmentKind.IMAGE, label="image"),)
+    )
+    sender = Sender(bot)
+    result = await app.processor.handle(request, sender)
+    assert result.reason == "group_recovery"
+    after = await state(database, space, binding)
+    assert after[1:3] == (False, False)
+    await app.close()

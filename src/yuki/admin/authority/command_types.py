@@ -30,11 +30,18 @@ class ControlCommandError(Exception):
 class CommandOperation(StrEnum):
     PERSON_CREATE = "identity.person.create"
     PERSON_DISABLE = "identity.person.disable"
+    PERSON_ENABLE = "identity.person.enable"
+    PERSON_SUPERUSER = "identity.person.superuser"
+    BINDING_ENABLE = "identity.binding.enable"
+    PRESENCE_STATE = "identity.presence.state"
     BINDING_ATTACH = "identity.binding.attach"
     BINDING_DISABLE = "identity.binding.disable"
     PLUGIN_MUTATE = "control.plugin.mutate"
     PLUGIN_CONFIGURE = "control.plugin.configure"
     CONFIG_FILE_SAVE = "control.config.file.save"
+    CONFIG_MUTATE = "control.config.mutate"
+    GROUP_MUTATE = "control.group.mutate"
+    EMOJI_MUTATE = "control.emoji.mutate"
     WORK_MUTATE = "control.work.mutate"
 
 
@@ -156,6 +163,19 @@ def project_replayed_result(
         state = _object(raw_state, {"enabled", "revision"})
         if type(state["enabled"]) is not bool or _person(resource_id) != semantic_target_id:
             raise _error()
+    elif (
+        operation == CommandOperation.PLUGIN_MUTATE
+        and material.get("action") == "doctor"
+        and isinstance(raw_state, Mapping)
+        and "diagnostics" in raw_state
+    ):
+        state = _object(raw_state, {"resource", "revision", "status", "diagnostics"})
+        if state["resource"] != resource_id or resource_id != semantic_target_id:
+            raise _error()
+    elif operation in {CommandOperation.CONFIG_MUTATE, CommandOperation.EMOJI_MUTATE}:
+        state = _object(raw_state, {"resource", "revision", "status", "change"})
+        if state["resource"] != resource_id or resource_id != semantic_target_id:
+            raise _error()
     elif operation == CommandOperation.BINDING_ATTACH:
         state = _object(raw_state, {"binding_id", "person_id", "platform", "status", "revision"})
         if (
@@ -176,7 +196,7 @@ def project_replayed_result(
             _person(resource_id)
         elif resource_id != semantic_target_id:
             raise _error()
-        if operation == CommandOperation.BINDING_DISABLE:
+        if operation in {CommandOperation.BINDING_DISABLE, CommandOperation.BINDING_ENABLE}:
             _binding(resource_id)
     if _revision(state["revision"]) != revision:
         raise _error()
@@ -277,11 +297,18 @@ def failure_audit_target_type(operation: str) -> str:
     targets = {
         CommandOperation.PERSON_CREATE: "person",
         CommandOperation.PERSON_DISABLE: "person",
+        CommandOperation.PERSON_ENABLE: "person",
+        CommandOperation.PERSON_SUPERUSER: "person",
+        CommandOperation.BINDING_ENABLE: "identity_binding",
+        CommandOperation.PRESENCE_STATE: "presence",
         CommandOperation.BINDING_ATTACH: "person",
         CommandOperation.BINDING_DISABLE: "identity_binding",
         CommandOperation.PLUGIN_MUTATE: "plugin",
         CommandOperation.PLUGIN_CONFIGURE: "plugin",
         CommandOperation.CONFIG_FILE_SAVE: "config",
+        CommandOperation.CONFIG_MUTATE: "config",
+        CommandOperation.GROUP_MUTATE: "group",
+        CommandOperation.EMOJI_MUTATE: "emoji",
         CommandOperation.WORK_MUTATE: "work",
     }
     try:

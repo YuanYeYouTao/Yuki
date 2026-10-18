@@ -34,7 +34,7 @@ from yuki.domain.messages import (
     ToolFunction,
 )
 from yuki.identity.canonical_repository import ensure_person
-from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from yuki.llm.fake import FakeLLMProvider
 from yuki.memory.runtime.turn_session import TurnMemorySession
 from yuki.persistence.models import ChatEventModel
@@ -335,10 +335,13 @@ async def test_other_members_public_input_keeps_original_execution_authority(
         database,
         tmp_path,
         provider,
-        superusers_csv="10001" if a_is_superuser else "10002",
     )
     async with database.immediate_session() as writer:
         c_person = await ensure_person(writer, "10002")
+        actor = await writer.get(CanonicalPersonModel, env.person)
+        actor.is_superuser = a_is_superuser
+        other = await writer.get(CanonicalPersonModel, c_person)
+        other.is_superuser = not a_is_superuser
     incoming = replace(message(3, C), sender=SenderIdentity("10002"), person_id=c_person)
     tools = harness.processor._chat._tools
     chat = harness.processor._chat

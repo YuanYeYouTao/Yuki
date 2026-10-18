@@ -21,6 +21,7 @@ from yuki.conversation.canonical_db_models import (
 )
 from yuki.domain.conversations import ConversationScope
 from yuki.execution_trace.phases import model_detail
+from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.gateway.social import (
     TransportMedia,
     TransportMention,
@@ -258,7 +259,7 @@ class SocialService:
                 )
                 .where(CanonicalConversationModel.id == context.conversation_id)
             )
-        if platform != "app":
+        if platform not in LOCAL_CLIENT_PLATFORMS:
             return None
         target = await self.target("person", selected, context)
         await self.check_target(target)

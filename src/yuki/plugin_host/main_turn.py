@@ -321,7 +321,6 @@ async def _execute_plugin_main_turn(
                     cast(str, version.conversation_id),
                     execution_source,
                     request_id=actor.execution_id,
-                    settings=contract.chat._settings,
                 )
                 recovered_actor = cast(SelfTaskSource | AutomationTaskSource, recovered).actor(
                     actor.execution_id
@@ -651,7 +650,6 @@ async def resume_plugin_work(
             work["conversation_id"],
             source["execution_source"],
             request_id=actor.execution_id,
-            settings=getattr(host._services.agent_runner, "code_mode_settings", None),
         )
         actor = cast(SelfTaskSource | AutomationTaskSource, recovered).actor(actor.execution_id)
     invocation = PluginInvocation(
