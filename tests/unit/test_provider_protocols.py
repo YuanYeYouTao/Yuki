@@ -7,6 +7,7 @@ from dataclasses import replace
 import httpx
 import pytest
 from tests.support.model_profiles import write_fake_profiles
+from tests.support.provider_parsing import parse_response
 
 # P10: explicit backend/Invocation fixture; original behavioral assertions retained.
 from yuki.config import Settings
@@ -126,7 +127,10 @@ async def test_business_session_metadata_is_per_request_and_outside_prompt(kind)
         adapter = provider(kind, client, headers={"x-client-label": "shared-profile"})
         ids = ["yuki:conversation-a:g2:main", "yuki:conversation-b:g4:work:real-work", None]
         await asyncio.gather(
-            *(adapter._post(replace(request(), provider_session_id=identity)) for identity in ids)
+            *(
+                adapter._post(adapter._prepare(replace(request(), provider_session_id=identity)))
+                for identity in ids
+            )
         )
         assert [identity for identity, _ in captured] == ids
         assert captured[0][1] == captured[1][1] == captured[2][1]
@@ -383,7 +387,8 @@ async def test_mistral_thinking_chunks_are_private_and_replay_losslessly():
             {"type": "thinking", "thinking": [{"type": "text", "text": "private"}]},
             {"type": "text", "text": "answer"},
         ]
-        answer = adapter._parse(
+        answer = parse_response(
+            adapter,
             httpx.Response(
                 200, json={"choices": [{"finish_reason": "stop", "message": {"content": chunks}}]}
             ),
@@ -409,9 +414,9 @@ async def test_deepseek_chat_dsml_remains_unexecuted_text():
                 "choices": [{"finish_reason": "stop", "message": {"content": markup}}],
             },
         )
-        result = adapter._parse(response, request())
+        result = parse_response(adapter, response, request())
         assert result.content == markup and result.tool_calls == ()
-        assert adapter._parse(response, replace(request(), tools=())).content == markup
+        assert parse_response(adapter, response, replace(request(), tools=())).content == markup
 
 
 async def test_gemini_parallel_receipts_keep_signature_and_call_order():
@@ -425,7 +430,8 @@ async def test_gemini_parallel_receipts_keep_signature_and_call_order():
             }
             for index in (1, 2)
         ]
-        answer = adapter._parse(
+        answer = parse_response(
+            adapter,
             httpx.Response(
                 200, json={"candidates": [{"finishReason": "STOP", "content": {"parts": parts}}]}
             ),
@@ -460,7 +466,8 @@ async def test_gemini_38_flash_native_wire_and_usage_without_paid_call():
         assert "thinkingBudget" not in payload["generationConfig"]["thinkingConfig"]
         assert "temperature" not in payload["generationConfig"]
         assert payload["tools"][0]["functionDeclarations"][0]["name"] == "inspect"
-        answer = adapter._parse(
+        answer = parse_response(
+            adapter,
             httpx.Response(
                 200,
                 json={
@@ -575,7 +582,7 @@ async def test_claude_cache_creation_usage_keeps_missing_distinct_from_zero(usag
                 **usage_extra,
             },
         }
-        answer = adapter._parse(httpx.Response(200, json=body), request())
+        answer = parse_response(adapter, httpx.Response(200, json=body), request())
         expected_input = 10 if expected == 0 else None
         expected_total = 12 if expected == 0 else None
         assert answer.prompt_tokens == expected_input
@@ -794,7 +801,8 @@ async def test_claude_native_search_error_is_not_reported_as_completed():
         configured = replace(
             request(), native_tools=(NativeToolDefinition(NativeToolType.WEB_SEARCH),)
         )
-        answer = adapter._parse(
+        answer = parse_response(
+            adapter,
             httpx.Response(
                 200,
                 json={
@@ -828,7 +836,8 @@ async def test_rejected_provider_response_keeps_only_numeric_usage_diagnostics()
     async with httpx.AsyncClient() as client:
         gemini = provider(GeminiProvider, client)
         with pytest.raises(LLMInvalidResponseError) as gemini_error:
-            gemini._parse(
+            parse_response(
+                gemini,
                 httpx.Response(
                     200,
                     json={
@@ -856,7 +865,8 @@ async def test_rejected_provider_response_keeps_only_numeric_usage_diagnostics()
         }
         claude = provider(AnthropicMessagesProvider, client)
         with pytest.raises(LLMInvalidResponseError) as claude_error:
-            claude._parse(
+            parse_response(
+                claude,
                 httpx.Response(
                     200,
                     json={
@@ -891,18 +901,15 @@ async def test_rejected_provider_response_keeps_only_numeric_usage_diagnostics()
         }
         deepseek = provider(DeepSeekResponsesProvider, client)
         assert deepseek._reported_usage(
-            httpx.Response(
-                400,
-                json={
-                    "error": {"message": "private response body"},
-                    "usage": {
-                        "input_tokens": 12,
-                        "output_tokens": 5,
-                        "total_tokens": 17,
-                        "output_tokens_details": {"reasoning_tokens": 3},
-                    },
+            {
+                "error": {"message": "private response body"},
+                "usage": {
+                    "input_tokens": 12,
+                    "output_tokens": 5,
+                    "total_tokens": 17,
+                    "output_tokens_details": {"reasoning_tokens": 3},
                 },
-            )
+            }
         ) == {
             "prompt_tokens": 12,
             "completion_tokens": 5,

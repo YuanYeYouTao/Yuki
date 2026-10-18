@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Set
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -116,7 +117,7 @@ class WorkSession:
         self,
         initial: TurnTranscript,
         *,
-        visible_event_ids: frozenset[int] = frozenset(),
+        visible_event_ids: Set[int] = frozenset(),
         public_compaction: PublicCompactContext | None = None,
     ) -> TurnTranscript:
         control = self.control

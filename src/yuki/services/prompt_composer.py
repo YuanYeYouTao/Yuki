@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Set
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,7 +34,7 @@ from yuki.services.prompt_registry import PromptRegistry, PromptTarget
 class PromptComposition:
     messages: tuple[ChatMessage, ...]
     metrics: PromptMetrics
-    visible_event_ids: frozenset[int] = frozenset()
+    visible_event_ids: Set[int] = frozenset()
     read_version: ConversationReadVersion | None = None
     commit_projection: Callable[[], Awaitable[None]] | None = None
     preparation_model_requests: int = 0
@@ -137,7 +137,7 @@ class PromptComposer:
     @staticmethod
     def _conversation_history(context: AssembledContext) -> tuple[ChatMessage, ...]:
         if not context.checkpoint_text.strip():
-            return context.history_messages
+            return tuple(context.history_messages)
         return (
             render_context_checkpoint(context.checkpoint_text, context.prompt_effective_coverage),
             *context.history_messages,

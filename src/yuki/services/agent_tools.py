@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Set
 from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -142,7 +142,7 @@ class ToolRuntime:
     read_target_id: str | None = None
     turn_token: TurnToken | None = None
     turn_snapshot: ConversationTurnSnapshot | None = None
-    visible_event_ids: frozenset[int] = frozenset()
+    visible_event_ids: Set[int] = frozenset()
     selection_query: str = ""
     sandbox_source: dict[str, Any] | None = None
     execution_id: str = ""

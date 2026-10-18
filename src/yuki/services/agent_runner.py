@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Set
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING, Any, Protocol
@@ -122,7 +122,7 @@ class AgentRuntime:
     manifest_revision: str = ""
     invocation_source: dict[str, Any] | None = None
     invocation_goal: str | None = None
-    visible_event_ids: frozenset[int] = frozenset()
+    visible_event_ids: Set[int] = frozenset()
     auxiliary_requests: list[int] | None = None
     preparation_model_requests: int = 0
     observation_boundary: ContextBoundaryReader | None = None

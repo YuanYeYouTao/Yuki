@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import TYPE_CHECKING
 
-from yuki.domain.messages import ChatImage, ChatMessage, ProviderContinuation
+from yuki.domain.messages import (
+    ChatImage,
+    ChatMessage,
+    FunctionCallOutput,
+    ProviderContinuation,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -76,6 +81,10 @@ def estimate_request_tokens(request: ChatRequest) -> int:
     Host catalog fields and request diagnostics are never sent to a model. This
     accounting view does not modify the submitted request or provider protocol.
     """
+    return _estimate_input_tokens(_request_input(request))
+
+
+def _request_input(request: ChatRequest) -> dict[str, object]:
     value: dict[str, object] = {
         "messages": [_message_input(message) for message in request.messages],
         "model": request.model,
@@ -104,10 +113,100 @@ def estimate_request_tokens(request: ChatRequest) -> int:
             _message_input(item) if isinstance(item, ChatMessage) else asdict(item)
             for item in request.continuation_items
         ]
-    return _estimate_input_tokens(value)
+    return value
+
+
+@dataclass(frozen=True, slots=True)
+class InputTokenCost:
+    """Additive serialized character/media counts; round only the whole input."""
+
+    ascii: int = 0
+    non_ascii: int = 0
+    media: int = 0
+
+    def __add__(self, other: InputTokenCost) -> InputTokenCost:
+        return InputTokenCost(
+            self.ascii + other.ascii, self.non_ascii + other.non_ascii, self.media + other.media
+        )
+
+    @property
+    def tokens(self) -> int:
+        return (self.ascii + 2) // 3 + self.non_ascii * 2 + self.media
+
+
+@dataclass(frozen=True, slots=True)
+class InputSequenceCost:
+    """JSON list contents, retaining the exact delimiter and whole-input rounding."""
+
+    items: InputTokenCost = InputTokenCost()
+    count: int = 0
+
+    def __add__(self, other: InputSequenceCost) -> InputSequenceCost:
+        return InputSequenceCost(self.items + other.items, self.count + other.count)
+
+    @property
+    def interior(self) -> InputTokenCost:
+        return self.items + InputTokenCost(ascii=max(0, self.count - 1) * 2)
+
+
+def message_token_cost(message: ChatMessage) -> InputSequenceCost:
+    return InputSequenceCost(_input_token_cost(_message_input(message)), 1)
+
+
+_EMPTY_SEQUENCE = InputSequenceCost()
+
+
+class RequestTokenCounter:
+    """Scan one transcript once, following its actual checkpoint replacement rules.
+
+    Settings/declarations are fixed by the caller's normalized request. A new
+    opaque checkpoint replaces the earlier checkpoint and delta, so estimates
+    need not be monotonic; no candidate protocol is flattened or approximated.
+    """
+
+    def __init__(self, request: ChatRequest) -> None:
+        self._base = _input_token_cost(
+            _request_input(replace(request, messages=(), continuation=None, continuation_items=()))
+        )
+        self.messages = InputSequenceCost()
+        self._continuation: InputTokenCost | None = None
+        self._items = InputSequenceCost()
+
+    def append(self, entry: ChatMessage | FunctionCallOutput | ProviderContinuation) -> None:
+        if isinstance(entry, ProviderContinuation):
+            self._continuation = _input_token_cost(entry)
+            self._items = InputSequenceCost()
+        elif self._continuation is None:
+            if isinstance(entry, ChatMessage):
+                self.messages += message_token_cost(entry)
+        else:
+            self._items += (
+                message_token_cost(entry)
+                if isinstance(entry, ChatMessage)
+                else InputSequenceCost(_input_token_cost(asdict(entry)), 1)
+            )
+
+    def estimate(self, extra: InputSequenceCost = _EMPTY_SEQUENCE) -> int:
+        addition = extra
+        messages = self.messages + addition if self._continuation is None else self.messages
+        total = self._base + messages.interior
+        if self._continuation is not None:
+            total += InputTokenCost(ascii=len(', "continuation": ')) + self._continuation
+        items = self._items + addition if self._continuation is not None else self._items
+        if items.count:
+            total += InputTokenCost(ascii=len(', "continuation_items": []')) + items.interior
+        return total.tokens
+
+    def estimate_messages(self, messages: InputSequenceCost) -> int:
+        """A fresh portable request under the same normalized settings."""
+        return (self._base + messages.interior).tokens
 
 
 def _estimate_input_tokens(value: object) -> int:
+    return _input_token_cost(value).tokens
+
+
+def _input_token_cost(value: object) -> InputTokenCost:
     media_tokens = 0
     model_input = value
 
@@ -161,4 +260,5 @@ def _estimate_input_tokens(value: object) -> int:
         return value
 
     serialized = json.dumps(without_binary(value), ensure_ascii=False, default=str)
-    return estimate_text_tokens(serialized) + media_tokens
+    ascii_count = sum(ord(character) < 128 for character in serialized)
+    return InputTokenCost(ascii_count, len(serialized) - ascii_count, media_tokens)

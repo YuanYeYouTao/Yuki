@@ -9,6 +9,7 @@ import pytest
 from sqlalchemy import select, update
 from tests.conftest import MemorySender
 from tests.support.background_authority import approve_background_plugin
+from tests.support.projection import projection_record
 from tests.unit.test_history_dispatch_ownership import _scene
 
 from yuki.conversation.observation_models import ContextObservationModel, ContextSelectionModel
@@ -41,12 +42,15 @@ from yuki.services.turn_transcript import TranscriptRequest, validating_request
 
 async def _saved(database):
     async with database.sessions() as reader:
-        return (await reader.scalars(select(PromptProjectionModel))).one()
+        return await projection_record(
+            reader, (await reader.scalars(select(PromptProjectionModel))).one()
+        )
 
 
 async def _assert_public_chat_only(database):
     async with database.sessions() as reader:
-        for row in await reader.scalars(select(PromptProjectionModel)):
+        for projection in await reader.scalars(select(PromptProjectionModel)):
+            row = await projection_record(reader, projection)
             assert "短记录：" not in row.payload_json
             assert "当前是群聊。" not in row.payload_json
             assert "dynamic_snapshot" not in row.payload_json
@@ -197,6 +201,8 @@ async def test_repeated_source_keeps_entire_adopted_group_and_current_activation
         kwargs["context"],
         current_event_id=repeated.id,
         current_message=current,
+        history_incremental=False,
+        prepared_fragments=None,
         history_fragments=tuple(
             (ids, ChatMessage("user", "未采用的重新分组候选"))
             for ids, _ in kwargs["context"].history_fragments
@@ -253,6 +259,8 @@ async def test_eventless_activation_does_not_create_public_trigger_after_evictio
         kwargs["context"],
         current_event_id=None,
         projection_scope="main",
+        history_incremental=False,
+        prepared_fragments=None,
         current_message=ChatMessage("user", "真实无事件执行要求"),
     )
     for text in ("activation-A", "activation-B", "activation-A"):

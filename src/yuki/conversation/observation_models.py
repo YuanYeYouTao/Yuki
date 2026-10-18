@@ -58,6 +58,7 @@ class ContextSelectionModel(Base):
         UniqueConstraint("view_key", "source_key", name="uq_context_selection_source"),
         Index("ix_context_selection_view", "view_key", "id"),
         Index("ix_context_selection_scope", "conversation_id", "generation"),
+        Index("ix_context_selection_range", "view_key", "generation", "max_event_id", "id"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -68,5 +69,7 @@ class ContextSelectionModel(Base):
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
     source_key: Mapped[str] = mapped_column(String(256), nullable=False)
     event_ids_json: Mapped[str] = mapped_column(Text, nullable=False)
+    min_event_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_event_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

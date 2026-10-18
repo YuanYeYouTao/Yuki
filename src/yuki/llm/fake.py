@@ -7,6 +7,7 @@ from collections.abc import Callable
 
 from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.llm.base import LLMEmptyResponseError, LLMProvider
+from yuki.model_runtime.dispatch_guard import check_model_dispatch
 
 
 class FakeLLMProvider(LLMProvider):
@@ -37,6 +38,11 @@ class FakeLLMProvider(LLMProvider):
         return f"FakeLLM: {content}"
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
+        await check_model_dispatch()
+        return await self._complete(request)
+
+    async def _complete(self, request: ChatRequest) -> ChatResponse:
+        """Offline response after dispatch; test providers can model transport waits."""
         self.requests.append(request)
         if self._delay_seconds:
             await asyncio.sleep(self._delay_seconds)

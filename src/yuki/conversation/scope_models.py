@@ -4,9 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from yuki.domain.conversations import ConversationScope
 from yuki.persistence.repository_records import EventRecord
+
+if TYPE_CHECKING:
+    from yuki.conversation.frozen_fragments import FrozenFragments
+    from yuki.conversation.projections import ProjectionSnapshot
+    from yuki.conversation.prompt_history import PromptHistorySource
+    from yuki.event_prompt import EventPromptReferences
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +39,11 @@ class ConversationPromptSnapshot:
     effective_coverage: int
     raw_tail_end_event_id: int
     prompt_source_revision: int
+    projection: ProjectionSnapshot | None = None
+    source: PromptHistorySource | None = None
+    references: EventPromptReferences | None = None
+    current_event: EventRecord | None = None
+    frozen_prefix: FrozenFragments | None = None
 
 
 class ConversationCoverageError(RuntimeError):

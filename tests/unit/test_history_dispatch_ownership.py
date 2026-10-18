@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.projection import projection_record
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import social_env
 
@@ -120,7 +121,9 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     assert result.reason == "chat" and len(provider.requests) == 2
     repository = WorkRepository(database)
     async with database.sessions() as session:
-        saved = (await session.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            session, (await session.scalars(select(PromptProjectionModel))).one()
+        )
         original = (saved.epoch_id, saved.revision, saved.payload_json)
         assert saved.invalidated_reason is None
         assert "original-snapshot" not in saved.payload_json
@@ -202,7 +205,9 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     assert "new-unsubmitted-state" in serialized
     assert not any(message.tool_calls for message in provider.requests[2].messages)
     async with database.sessions() as session:
-        saved = (await session.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            session, (await session.scalars(select(PromptProjectionModel))).one()
+        )
         assert saved.epoch_id == original[0]
         original_records = json.loads(original[2])
         assert json.loads(saved.payload_json)[: len(original_records)] == original_records
@@ -248,7 +253,9 @@ async def _pending_composition(database, tmp_path):
 async def test_recovery_origin_does_not_invalidate_a_new_composition(database, tmp_path):
     _, composition = await _pending_composition(database, tmp_path)
     async with database.sessions() as session:
-        saved = (await session.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            session, (await session.scalars(select(PromptProjectionModel))).one()
+        )
         original = (saved.epoch_id, saved.revision, saved.payload_json)
     sequence = TranscriptRequest(
         messages=(ChatMessage(role="user", content="private restored task"),),
@@ -259,7 +266,9 @@ async def test_recovery_origin_does_not_invalidate_a_new_composition(database, t
     with validating_request(sequence):
         await composition.commit_projection()
     async with database.sessions() as session:
-        saved = (await session.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            session, (await session.scalars(select(PromptProjectionModel))).one()
+        )
         assert (saved.epoch_id, saved.revision, saved.payload_json) == original
         assert saved.invalidated_reason is None
 
@@ -280,7 +289,9 @@ async def test_recovery_origin_still_checks_source_authority(database, tmp_path)
 async def test_projection_rejects_changed_actual_dispatch(database, tmp_path):
     _, composition = await _pending_composition(database, tmp_path)
     async with database.sessions() as reader:
-        before = (await reader.scalars(select(PromptProjectionModel))).one()
+        before = await projection_record(
+            reader, (await reader.scalars(select(PromptProjectionModel))).one()
+        )
         original = (before.epoch_id, before.revision, before.payload_json)
     sequence = TranscriptRequest(
         messages=(*composition.messages[:-1], ChatMessage(role="user", content="changed dispatch")),
@@ -290,7 +301,9 @@ async def test_projection_rejects_changed_actual_dispatch(database, tmp_path):
     with validating_request(sequence):
         await composition.commit_projection()
     async with database.sessions() as session:
-        saved = (await session.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            session, (await session.scalars(select(PromptProjectionModel))).one()
+        )
         assert saved.invalidated_reason is None
         assert (saved.epoch_id, saved.revision, saved.payload_json) == original
         assert "changed dispatch" not in saved.payload_json
@@ -317,7 +330,9 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
     result = await harness.processor.handle(message, MemorySender())
     assert result.reason == "chat" and len(provider.requests) == 2
     async with database.sessions() as reader:
-        saved = (await reader.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            reader, (await reader.scalars(select(PromptProjectionModel))).one()
+        )
         original_epoch, original_key = saved.epoch_id, saved.view_key
         assert "original-snapshot" not in saved.payload_json
         original_event = await reader.scalar(
@@ -330,7 +345,9 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
         async with database.sessions() as writer, writer.begin():
             await writer.delete(await writer.get(ChatEventModel, original_event))
         async with database.sessions() as reader:
-            retired = await reader.get(PromptProjectionModel, original_key)
+            retired = await projection_record(
+                reader, await reader.get(PromptProjectionModel, original_key)
+            )
             assert retired.invalidated_reason == "deleted_event"
             assert retired.payload_json == "[]"
     elif boundary == "profile":
@@ -361,7 +378,10 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
     assert "current-safe-snapshot" in current_input
     assert "original-snapshot" not in current_input
     async with database.sessions() as reader:
-        rows = (await reader.scalars(select(PromptProjectionModel))).all()
+        rows = [
+            await projection_record(reader, row)
+            for row in (await reader.scalars(select(PromptProjectionModel))).all()
+        ]
         active = [row for row in rows if row.invalidated_reason is None]
         current = next(row for row in active if next_message.text in row.payload_json)
         if boundary == "deleted":

@@ -32,8 +32,9 @@ from yuki.conversation.observations import (
     encode,
     validate_observations,
 )
+from yuki.conversation.projection_chunks_schema import PROJECTION_TRIGGERS_0133
 from yuki.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
-from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.conversation.projection_models import PromptProjectionChunkModel, PromptProjectionModel
 from yuki.domain.conversations import ConversationScope
 from yuki.identity.canonical_repository import ensure_space
 from yuki.persistence.database import Database
@@ -445,7 +446,15 @@ def test_upgrade_retires_public_packages_without_deleting_real_occurrences_or_pr
                 assert (
                     await reader.scalar(text("SELECT version_num FROM alembic_version")) == "0109"
                 )
-                cache = await reader.get(PromptProjectionModel, VIEW)
+                cache = (
+                    await reader.execute(
+                        text(
+                            "SELECT payload_json,byte_size FROM prompt_projections "
+                            "WHERE view_key=:view"
+                        ),
+                        {"view": VIEW},
+                    )
+                ).one()
                 assert (cache.payload_json, cache.byte_size) == ("[]", 2)
                 columns = {
                     row[1]
@@ -797,7 +806,6 @@ async def test_metadata_trigger_invalidates_selected_chat_and_keeps_private_sour
                 context_key="b" * 64,
                 revision=1,
                 rebuild_reason="bootstrap",
-                payload_json="[]",
                 byte_size=2,
                 updated_at=datetime.now(UTC),
             )
@@ -812,7 +820,7 @@ async def test_metadata_trigger_invalidates_selected_chat_and_keeps_private_sour
         await writer.execute(text("UPDATE chat_events SET audio_transcript='实际语音'"))
     async with database.sessions() as reader:
         row = await reader.get(PromptProjectionModel, VIEW)
-        assert (row.payload_json, row.byte_size) == ("[]", 2)
+        assert (row.tail_ordinal, row.item_count, row.byte_size) == (0, 0, 2)
         installed = dict(
             (
                 await reader.execute(
@@ -820,7 +828,7 @@ async def test_metadata_trigger_invalidates_selected_chat_and_keeps_private_sour
                 )
             ).all()
         )
-        for name, expected in PROJECTION_TRIGGERS_0119.items():
+        for name, expected in PROJECTION_TRIGGERS_0133.items():
             assert " ".join(installed[name].replace("IF NOT EXISTS ", "").split()) == " ".join(
                 expected.split()
             )
@@ -888,20 +896,26 @@ async def _trigger_sources(database, tmp_path, privacy_update):
             writer.add(representation)
             owner = await writer.get(CanonicalConversationModel, event.canonical_conversation_id)
             body = encode([json.loads(representation.payload_json)])
+            projection = PromptProjectionModel(
+                view_key=view,
+                conversation_id=owner.id,
+                generation=1,
+                source_revision=owner.prompt_source_revision,
+                starts_after_event_id=0,
+                epoch_id=str(uuid4()),
+                context_key="b" * 64,
+                revision=1,
+                rebuild_reason="bootstrap",
+                tail_ordinal=1,
+                item_count=1,
+                byte_size=len(body.encode()),
+                updated_at=datetime.now(UTC),
+            )
+            writer.add(projection)
+            await writer.flush()
             writer.add(
-                PromptProjectionModel(
-                    view_key=view,
-                    conversation_id=owner.id,
-                    generation=1,
-                    source_revision=owner.prompt_source_revision,
-                    starts_after_event_id=0,
-                    epoch_id=str(uuid4()),
-                    context_key="b" * 64,
-                    revision=1,
-                    rebuild_reason="bootstrap",
-                    payload_json=body,
-                    byte_size=len(body.encode()),
-                    updated_at=datetime.now(UTC),
+                PromptProjectionChunkModel(
+                    view_key=view, epoch_id=projection.epoch_id, ordinal=1, payload_json=body
                 )
             )
     return env, main_event, other_event, identities, other_space
@@ -914,7 +928,7 @@ _TRIGGER_OPERATIONS = (
     ("prompt_projection_audio_update", "audio", "source_changed", 1, 0),
     ("prompt_projection_owner_update", "owner", "source_changed", 1, 0),
     ("prompt_projection_event_metadata_update", "nickname", "source_changed", 1, 0),
-    ("context_selection_source_changed", "source_revision", None, 1, 0),
+    ("context_selection_source_changed", "source_revision", "source_changed", 1, 0),
     ("prompt_projection_reset", "cut", "reset", 1, 0),
     ("context_observation_privacy", "privacy_update", None, 0, 0),
     ("context_observation_privacy_initial", "privacy_insert", None, 0, 0),
@@ -1029,17 +1043,26 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
             original = caches[view]
             if increment and reason is not None:
                 assert (
-                    current["payload_json"],
+                    current["tail_ordinal"],
+                    current["item_count"],
                     current["byte_size"],
                     current["invalidated_reason"],
-                ) == ("[]", 2, reason)
+                ) == (0, 0, 2, reason)
+                assert not list(
+                    await reader.scalars(
+                        select(PromptProjectionChunkModel.ordinal).where(
+                            PromptProjectionChunkModel.view_key == view
+                        )
+                    )
+                )
                 assert current["revision"] > original["revision"]
                 assert all(
                     current[key] == value
                     for key, value in original.items()
                     if key
                     not in {
-                        "payload_json",
+                        "tail_ordinal",
+                        "item_count",
                         "byte_size",
                         "invalidated_reason",
                         "revision",

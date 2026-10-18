@@ -131,6 +131,15 @@ runtime_lock_timing 日志还报告等待中取消/拒绝。chat_processing 原�
 item/byte、candidate/estimate 次数和 protocol lock wait/held，来源计数可缺失，不伪造零。
 这些累计计数不参与授权、预算、回放或 cache。跨进程 age 继续使用原 UTC/epoch 时间。
 
+入站准备的数值计时暂存在原 RuntimeTurnCorrelation，Main 进入既有 trace 后并入
+phase_metrics；普通 observe-only 输入仍不因此创建 trace。inbound_admission、
+participation_binding/feedback、wait_matching、attachment_preparation 分别描述原应用阶段，
+不覆盖 adapter 在 matcher 前的引用查询。Social 的 preparation、claim、transport、settlement
+分开记录，transport 等到平台 ACK，settlement 是 ACK 后原回执提交；客户端显示时刻未知。
+tool_admission 计原 T2 接纳，tool_result_persistence 计正常结果原件保存；外层 tool span
+仍包含完整调用，不能重复相加，也不能把缺样的异常路径补成零。计时不改变 writer、预算、
+来源核验或回执顺序，不含正文和参数。
+
 真实 Runner + 隔离 SQLite + 假 Provider/网关验证完整轮次，四种 HTTP 协议验证实际请求。
 覆盖工具拒绝/复用/并行、重试、截断、取消、重启、journal 删除后仍可查、媒体过期语义、
 权限拒绝、跨会话 cursor、隐私删除与清理。不得用付费模型或真实 QQ 消息完成这些检查。

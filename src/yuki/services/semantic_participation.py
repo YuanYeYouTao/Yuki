@@ -635,7 +635,11 @@ class SemanticParticipationService:
         )
 
     async def _hydrate(
-        self, item: _Session, direct: dict[int, bool] | None = None
+        self,
+        item: _Session,
+        direct: dict[int, bool] | None = None,
+        *,
+        runtime: RuntimeConfigSnapshot | None = None,
     ) -> RuntimeConfigSnapshot | None:
         version, rows = await self.app.ledger.read_scope_context(
             item.scene.identity, limit=64, message_only=True
@@ -739,12 +743,10 @@ class SemanticParticipationService:
             admission_unit_binding,
         )
 
-        runtime = cast(
-            RuntimeConfigSnapshot,
-            await self.app.runtime_config.snapshot(
+        if runtime is None:
+            runtime = await self.app.runtime_config.snapshot(
                 group_id=item.scene.space_id if item.scene.enabled else None
-            ),
-        )
+            )
         observe_enabled = (
             item.scene.enabled and runtime.conversation_policy().semantic_participation_enabled
         )

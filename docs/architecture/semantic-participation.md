@@ -13,6 +13,10 @@
 
 人物同一性查询从原checkpoint读取actor/target事实，再由Host按内部ID批量解析当前人物；`participation_actor_ids()`不评估参与资格、不重放belief，也不修改checkpoint。来源分页、水合及冷恢复不得为收集人物ID调用全局`participating_units()`；当前参与判定仍只在真实决策处计算。
 
+普通输入的 binding 准备与接纳反馈复用原 scope 控制器。反馈读取真实已提交 admission 和当前
+来源，局部应用原输入，不再重新扫描效果、读取配置和 hydrate 整页；进程重启缺少控制器时
+仍沿原恢复路径水合。参与的全局锁保留原语义，本轮没有竞争收益证据，不宣称已经收窄锁。
+
 `SemanticParticipationService` 读取已提交的 canonical 群事件，按
 Conversation/generation 保存控制器快照。新观察只以真实人类事件为焦点，context 可包含真实人类和 SELF 发言；
 来源沿带版本的内部 event ID 传递。后台 Memory 扫描、seed 事件及 recall/contact 新候选已退出，

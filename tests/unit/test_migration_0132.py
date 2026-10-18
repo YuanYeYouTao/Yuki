@@ -75,6 +75,10 @@ def test_0132_preserves_original_rows_and_adds_real_acp_request_scope(tmp_path, 
             assert connection.execute(f'SELECT * FROM "{table}"').fetchall() == rows
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
 
+    # The assertions above cover the frozen 0132 boundary. Exercise today's
+    # identity services only after bringing that preserved database to head.
+    command.upgrade(config, "head")
+
     async def exercise():
         await require_canonical_schema(url)
         database = Database(url)

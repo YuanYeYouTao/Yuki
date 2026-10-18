@@ -152,6 +152,30 @@ class OrdinaryAdmissionRepository:
         *,
         session: AsyncSession | None = None,
     ) -> tuple[OrdinaryAdmission, ...]:
+        return tuple(
+            _dto(row)
+            for row, _event in await self._current_rows(
+                conversation_id, generation, event_ids, session=session
+            )
+        )
+
+    async def current_sources(
+        self, conversation_id: str, generation: int, event_ids: tuple[int, ...]
+    ) -> tuple[tuple[OrdinaryAdmission, EventRecord], ...]:
+        """Return the original source already read by current-admission validation."""
+        return tuple(
+            (_dto(row), _event_record(event))
+            for row, event in await self._current_rows(conversation_id, generation, event_ids)
+        )
+
+    async def _current_rows(
+        self,
+        conversation_id: str | None,
+        generation: int | None,
+        event_ids: tuple[int, ...],
+        *,
+        session: AsyncSession | None = None,
+    ) -> tuple[tuple[OrdinaryTurnAdmissionModel, ChatEventModel], ...]:
         if not event_ids:
             return ()
         a, e, c = OrdinaryTurnAdmissionModel, ChatEventModel, CanonicalConversationModel
@@ -213,7 +237,7 @@ class OrdinaryAdmissionRepository:
                 await active.execute(text("BEGIN"))
             rows = (await active.execute(query)).all()
             return tuple(
-                _dto(row)
+                (row, event)
                 for row, event in rows
                 if str(source_revision(event)) == row.source_revision
             )

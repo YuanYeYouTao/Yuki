@@ -31,7 +31,6 @@ from yuki.llm.anthropic_messages import AnthropicMessagesProvider
 from yuki.llm.base import LLMError, LLMUnsupportedFeatureError
 from yuki.llm.gemini import GeminiProvider
 from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
-from yuki.model_runtime.dispatch_guard import check_model_dispatch
 from yuki.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
@@ -77,6 +76,15 @@ def _profile_request(request: ChatRequest, profile: ModelProfile) -> ChatRequest
             else request.reasoning_effort
         ),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedModelInput:
+    """One owned normalized request and its complete local capacity estimate."""
+
+    request: ChatRequest
+    input_tokens: int
+    profile: ModelProfile | None = None
 
 
 @dataclass(slots=True, weakref_slot=True)
@@ -243,7 +251,7 @@ class BackgroundModelPreempted(RuntimeError):
 
 
 class ModelCompleter(Protocol):
-    """Provider completion contract consumed by the physical dispatch owner."""
+    """Provider owns its physical dispatch fence; Executor owns admission."""
 
     async def complete(self, request: ChatRequest) -> ChatResponse: ...
 
@@ -258,6 +266,7 @@ class ModelExecutor(Protocol):
         *,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
+        prepared_capacity: PreparedModelInput | None = None,
     ) -> ChatResponse: ...
 
     def model_name(self, task: ModelTask) -> str: ...
@@ -271,6 +280,8 @@ class ModelExecutor(Protocol):
     def capacity(self, task: ModelTask) -> ModelCapacity: ...
 
     def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest: ...
+
+    def prepare_capacity(self, task: ModelTask, request: ChatRequest) -> PreparedModelInput: ...
 
     def profile_revision(self, task: ModelTask) -> str: ...
 
@@ -423,6 +434,7 @@ class TaskModelExecutor:
         *,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
+        prepared_capacity: PreparedModelInput | None = None,
     ) -> ChatResponse:
         phases = ModelPhases()
         phase_token = current_model_phases.set(phases)
@@ -441,6 +453,7 @@ class TaskModelExecutor:
                             request,
                             priority=priority,
                             canonical_conversation_id=canonical_conversation_id,
+                            prepared_capacity=prepared_capacity,
                         )
                     except asyncio.CancelledError:
                         outcome = "cancelled"
@@ -467,6 +480,7 @@ class TaskModelExecutor:
         *,
         priority: ModelExecutionPriority,
         canonical_conversation_id: str | None,
+        prepared_capacity: PreparedModelInput | None,
     ) -> ChatResponse:
         required: set[ModelCapability] = set()
         if request.tools:
@@ -524,9 +538,19 @@ class TaskModelExecutor:
             output_tokens=profile.default_max_output_tokens,
         )
         budget = capacity.input_budget(output_tokens=request.max_output_tokens)
+        reused = (
+            prepared_capacity is not None
+            and prepared_capacity.request is request
+            and prepared_capacity.profile is profile
+        )
+        normalized_input = request if reused else _profile_request(request, profile)
         if budget is not None:
             with model_detail("token_estimation"):
-                estimated = estimate_request_tokens(_profile_request(request, profile))
+                estimated = (
+                    prepared_capacity.input_tokens
+                    if reused and prepared_capacity is not None
+                    else estimate_request_tokens(normalized_input)
+                )
             if estimated > budget:
                 raise LLMUnsupportedFeatureError(
                     "request exceeds configured provider input capacity"
@@ -538,7 +562,7 @@ class TaskModelExecutor:
         )
         with model_detail("cache_shape_preparation"):
             normalized = replace(
-                _profile_request(request, profile),
+                normalized_input,
                 request_shape_hash=request_shape_hash(
                     request,
                     provider=profile.provider,
@@ -945,8 +969,6 @@ class TaskModelExecutor:
                 self._priority_condition.notify_all()
         switch_model_phase("slot_hold")
         try:
-            with model_detail("dispatch_preparation"):
-                await check_model_dispatch()
             return await provider.complete(request)
         finally:
             async with self._priority_condition:
@@ -1021,6 +1043,11 @@ class TaskModelExecutor:
     def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest:
         _route, profile = self._runtime()[0].route(task)
         return _profile_request(request, profile)
+
+    def prepare_capacity(self, task: ModelTask, request: ChatRequest) -> PreparedModelInput:
+        _route, profile = self._runtime()[0].route(task)
+        normalized = _profile_request(request, profile)
+        return PreparedModelInput(normalized, estimate_request_tokens(normalized), profile)
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
         _route, profile = self._runtime()[0].route(task)

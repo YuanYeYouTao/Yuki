@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from sqlalchemy.dialects.sqlite import insert
@@ -20,7 +21,11 @@ from yuki.domain.messages import (
     FunctionCallOutput,
     ProviderContinuation,
 )
-from yuki.model_runtime.capacity import estimate_request_tokens
+from yuki.model_runtime.capacity import (
+    InputSequenceCost,
+    RequestTokenCounter,
+    message_token_cost,
+)
 from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.runtime.work_repository import WorkCapacityError
 from yuki.services.turn_transcript import TurnTranscript, tool_result_evidence
@@ -183,10 +188,10 @@ async def current_public_compact(
         # older paid response must not replace it with an earlier coverage.
         coverage = previous.selected_summary_coverage
         summary = previous.selected_summary_text
-        retained = FrozenFragments.load(previous.items())
+        retained = previous.fragments
     grouped: list[EventFragment] = []
-    for item, message in zip(context.fragments.items, context.fragments.messages(), strict=True):
-        ids = tuple(item["event_ids"])
+    for fragment in context.fragments.iter_fragments():
+        ids, message = fragment.event_ids, fragment.message
         fresh = tuple(identity for identity in ids if identity > coverage)
         if not fresh:
             continue
@@ -221,7 +226,7 @@ async def public_compact_publication(
         expected_source_revision=public["source_revision"],
         starts_after_event_id=public["starts_after_event_id"],
         context_key=public["context_key"],
-        items=public["items"],
+        fragments=FrozenFragments.load(public["items"]),
         expected_epoch=previous.epoch_id if previous else None,
         expected_revision=previous.revision if previous else 0,
         rebuild_reason=reason or "compact",
@@ -229,6 +234,7 @@ async def public_compact_publication(
         selected_summary_coverage=public["coverage"],
         selected_summary_kind="compact",
         selected_summary_renderer=SUMMARY_RENDERER_VERSION,
+        previous_snapshot=previous,
     )
 
 
@@ -251,13 +257,26 @@ def public_compact_plan(
     focus: str = "",
 ) -> ExecutionCompactPlan:
     instruction = PUBLIC_COMPACT_INSTRUCTION + ("\n整理重点：" + focus if focus else "")
-    leading = context.messages[: len(context.messages) - len(context.fragments.items)]
-    low, high = 1, len(context.fragments.items)
-    fitting: tuple[int, FrozenFragments, TurnTranscript, ChatRequest] | None = None
-    while low <= high:
-        boundary = (low + high) // 2
-        covered = FrozenFragments.load(list(context.fragments.items[:boundary]))
-        prefix = TurnTranscript((*leading, *covered.messages()))
+    fragments = tuple(context.fragments.iter_fragments())
+    leading = context.messages[: len(context.messages) - len(fragments)]
+    boundary = 0
+    if input_budget is None:
+        boundary = len(fragments)
+    else:
+        counter = RequestTokenCounter(
+            prepare(replace(main_request, messages=(), continuation=None, continuation_items=()))
+        )
+        instruction_cost = message_token_cost(ChatMessage("user", instruction))
+        for message in leading:
+            counter.append(message)
+        for ordinal, fragment in enumerate(fragments, start=1):
+            counter.append(fragment.message)
+            if counter.estimate(instruction_cost) > input_budget:
+                break
+            boundary = ordinal
+    if boundary:
+        covered = fragments[:boundary]
+        prefix = TurnTranscript((*leading, *(fragment.message for fragment in covered)))
         prefix.chain_id = original.chain_id
         prefix.append(ChatMessage("user", instruction))
         request = replace(
@@ -266,14 +285,7 @@ def public_compact_plan(
             continuation=None,
             continuation_items=(),
         )
-        if input_budget is not None and estimate_request_tokens(prepare(request)) > input_budget:
-            high = boundary - 1
-            continue
-        fitting = boundary, covered, prefix, request
-        low = boundary + 1
-    if fitting is not None:
-        boundary, covered, prefix, request = fitting
-        retained = FrozenFragments.load(list(context.fragments.items[boundary:]))
+        retained = FrozenFragments.from_blocks((fragments[boundary:],))
         private = original.entries()[len(initial) :]
         if any(not isinstance(item, ChatMessage) for item in private):
             raise WorkCapacityError("model_request_capacity")
@@ -287,7 +299,9 @@ def public_compact_plan(
                 "source_revision": context.version.prompt_source_revision,
                 "starts_after_event_id": context.version.starts_after_event_id,
                 "context_key": context.context_key,
-                "coverage": max(covered.event_ids),
+                "coverage": max(
+                    identity for fragment in covered for identity in fragment.event_ids
+                ),
                 "items": list(retained.items),
                 "static_count": context.static_count,
                 "public_count": len(context.messages),
@@ -341,6 +355,145 @@ def compacted_transcript(state: dict[str, Any]) -> TurnTranscript:
     return result
 
 
+@dataclass(frozen=True, slots=True)
+class _RetainedItem:
+    start: int
+    message: ChatMessage
+    required_from: int | None = None
+
+
+def _native_tail_items(
+    entries: tuple[ChatMessage | FunctionCallOutput | ProviderContinuation, ...],
+    recorded: dict[int, ChatMessage],
+    last_response: ChatMessage | None,
+    call_key: Callable[[str], str] | None,
+    *,
+    offset: int = 0,
+) -> tuple[_RetainedItem, ...]:
+    """Convert each portable round once, remembering its original entry boundary."""
+    result: list[_RetainedItem] = []
+    results: dict[str, str] = {}
+    response: ChatMessage | None = None
+    response_start: int | None = None
+    results_start: int | None = None
+    required_from: int | None = None
+
+    def flush_round() -> None:
+        nonlocal response, response_start, results_start, required_from
+        if results:
+            message = tool_result_evidence(
+                response, results, call_key=call_key if response is last_response else None
+            )
+            start = response_start if response is not None else results_start
+        elif response is not None and response.content:
+            message = replace(response, reasoning_content=None)
+            start = response_start
+        else:
+            response = None
+            response_start = None
+            return
+        assert start is not None
+        if response is last_response:
+            required_from = start if response is None or response.tool_calls else None
+        result.append(_RetainedItem(start, message, required_from))
+        results.clear()
+        results_start = None
+        response = None
+        response_start = None
+
+    for index, item in enumerate(entries, start=offset):
+        if isinstance(item, ProviderContinuation):
+            flush_round()
+            response, response_start = recorded.get(index), index
+        elif isinstance(item, FunctionCallOutput):
+            results[item.call_id] = item.output
+            if results_start is None:
+                results_start = index
+        elif item.tool_call_id:
+            results[item.tool_call_id] = item.content or ""
+            if results_start is None:
+                results_start = index
+        elif item.tool_calls:
+            response, response_start = item, index
+        else:
+            flush_round()
+            result.append(
+                _RetainedItem(index, replace(item, reasoning_content=None), required_from)
+            )
+    flush_round()
+    return tuple(result)
+
+
+def _message_key(message: ChatMessage) -> tuple[object, ...]:
+    # Opaque values can contain mutable JSON. Use the portable fields to index
+    # candidates, then compare the complete message for exact membership.
+    return (
+        message.role,
+        message.content,
+        message.tool_calls,
+        message.tool_call_id,
+        message.reasoning_content,
+        message.images,
+    )
+
+
+class _TailIndex:
+    """Suffix membership and additive costs for every already-paired boundary."""
+
+    def __init__(
+        self,
+        items: tuple[_RetainedItem, ...],
+        count: int,
+        initial: tuple[ChatMessage, ...],
+        retained_public: tuple[ChatMessage, ...],
+    ) -> None:
+        self.items = items
+        self.starts = tuple(item.start for item in items)
+        initial_index: dict[tuple[object, ...], list[ChatMessage]] = {}
+        for message in initial:
+            initial_index.setdefault(_message_key(message), []).append(message)
+        self.public = tuple(
+            message
+            for message in retained_public
+            if message not in initial_index.get(_message_key(message), ())
+        )
+        public_index: dict[tuple[object, ...], list[int]] = {}
+        for ordinal, message in enumerate(self.public):
+            public_index.setdefault(_message_key(message), []).append(ordinal)
+        self.last_public = [-1] * len(self.public)
+        required = [InputSequenceCost()] * (count + 1)
+        for item in items:
+            for ordinal in public_index.get(_message_key(item.message), ()):
+                if item.message == self.public[ordinal]:
+                    self.last_public[ordinal] = item.start
+            if item.required_from is not None:
+                required[item.required_from] += message_token_cost(item.message)
+        self.required_cost = [InputSequenceCost()] * (count + 1)
+        running = InputSequenceCost()
+        for boundary in range(count, -1, -1):
+            running += required[boundary]
+            self.required_cost[boundary] = running
+        growth = [InputSequenceCost()] * (count + 1)
+        for ordinal, message in enumerate(self.public):
+            growth[self.last_public[ordinal] + 1] += message_token_cost(message)
+        self.public_cost: list[InputSequenceCost] = []
+        running = InputSequenceCost()
+        for extra in growth:
+            running += extra
+            self.public_cost.append(running)
+
+    def retained(self, boundary: int) -> tuple[ChatMessage, ...]:
+        public = tuple(
+            message
+            for message, last in zip(self.public, self.last_public, strict=True)
+            if last < boundary
+        )
+        return (
+            *public,
+            *(item.message for item in self.items[bisect_left(self.starts, boundary) :]),
+        )
+
+
 def execution_compact_plan(
     transcript: TurnTranscript,
     initial: tuple[ChatMessage, ...],
@@ -352,10 +505,11 @@ def execution_compact_plan(
     call_key: Callable[[str], str] | None = None,
     responses: tuple[ChatMessage, ...] = (),
 ) -> ExecutionCompactPlan:
-    """Cover the latest fitting paired prefix, preserving its exact protocol.
+    """Select the latest fitting paired prefix without cloning every candidate.
 
-    The following raw suffix stays in order. An unfinished call/result group
-    is never split and a provider checkpoint is never rewritten or flattened.
+    Checkpoints replace earlier protocol state, so candidate costs can decrease.
+    Scan their actual serialized character/media costs once and select by the
+    original boundary order; never binary-search across checkpoint changes.
     """
     entries = transcript.entries()
     checkpoints = [
@@ -366,9 +520,20 @@ def execution_compact_plan(
         if responses
         else {}
     )
+    counter = (
+        RequestTokenCounter(
+            prepare(replace(main_request, messages=(), continuation=None, continuation_items=()))
+        )
+        if input_budget is not None
+        else None
+    )
+    instruction = ChatMessage("user", EXECUTION_COMPACT_INSTRUCTION)
+    instruction_cost = message_token_cost(instruction) if counter is not None else None
     pending: set[str] = set()
     candidates: list[int] = []
     for index, entry in enumerate(entries):
+        if counter is not None:
+            counter.append(entry)
         if index in recorded:
             pending.update(call.id for call in recorded[index].tool_calls)
         elif isinstance(entry, ChatMessage):
@@ -384,9 +549,16 @@ def execution_compact_plan(
             and not (
                 index + 1 < len(entries) and isinstance(entries[index + 1], FunctionCallOutput)
             )
+            and (
+                counter is None
+                or (
+                    instruction_cost is not None
+                    and counter.estimate(instruction_cost) <= cast(int, input_budget)
+                )
+            )
         ):
             candidates.append(index + 1)
-    if pending:
+    if pending or not candidates:
         raise WorkCapacityError("model_request_capacity")
     last_response = (
         recorded[checkpoints[-1]]
@@ -400,94 +572,81 @@ def execution_compact_plan(
             None,
         )
     )
-    for boundary in reversed(candidates):
-        prefix = transcript.prefix(boundary)
-        prefix.append(ChatMessage("user", EXECUTION_COMPACT_INSTRUCTION))
-        sequence = prefix.request()
-        request = replace(
-            main_request,
-            messages=sequence.messages,
-            continuation=sequence.continuation,
-            continuation_items=sequence.items,
-        )
-        if input_budget is not None and estimate_request_tokens(prepare(request)) > input_budget:
-            continue
+    native_from = [False] * (len(entries) + 1)
+    for index in range(len(entries) - 1, -1, -1):
+        native_from[index] = native_from[index + 1] or not isinstance(entries[index], ChatMessage)
+    if counter is None:
+        boundary = candidates[-1]
         suffix = entries[boundary:]
-        native_suffix = any(not isinstance(item, ChatMessage) for item in suffix)
-        kept_items: list[ChatMessage] = []
-        required: list[ChatMessage] = []
-        unobserved = False
-        if native_suffix:
-            results: dict[str, str] = {}
-            response: ChatMessage | None = None
-
-            def flush_round(
-                results: dict[str, str] = results,
-                kept_items: list[ChatMessage] = kept_items,
-                required: list[ChatMessage] = required,
-            ) -> None:
-                nonlocal response, unobserved
-                if results:
-                    message = tool_result_evidence(
-                        response, results, call_key=call_key if response is last_response else None
-                    )
-                elif response is not None and response.content:
-                    message = replace(response, reasoning_content=None)
-                else:
-                    response = None
-                    return
-                kept_items.append(message)
-                if response is last_response:
-                    unobserved = bool(response.tool_calls) if response else True
-                if unobserved:
-                    required.append(message)
-                results.clear()
-                response = None
-
-            for index, item in enumerate(suffix, start=boundary):
-                if isinstance(item, ProviderContinuation):
-                    flush_round()
-                    response = recorded.get(index)
-                elif isinstance(item, FunctionCallOutput):
-                    results[item.call_id] = item.output
-                elif item.tool_call_id:
-                    results[item.tool_call_id] = item.content or ""
-                elif item.tool_calls:
-                    response = item
-                else:
-                    flush_round()
-                    kept_items.append(replace(item, reasoning_content=None))
-                    if unobserved:
-                        required.append(kept_items[-1])
-            flush_round()
-        else:
-            for item in suffix:
-                assert isinstance(item, ChatMessage)
-                kept_items.append(item)
-                if item is last_response:
-                    unobserved = bool(item.tool_calls)
-                if unobserved:
-                    required.append(item)
-        kept = tuple(kept_items)
+        kept = (
+            tuple(
+                item.message
+                for item in _native_tail_items(
+                    suffix, recorded, last_response, call_key, offset=boundary
+                )
+            )
+            if native_from[boundary]
+            else tuple(item for item in suffix if isinstance(item, ChatMessage))
+        )
         public = tuple(
             message for message in retained_public if message not in initial and message not in kept
         )
-        # Older retained findings can be covered by another legitimate batch.
-        # The unobserved last round must fit as actual evidence; compacting only
-        # its earlier prefix cannot make an oversized result usable.
-        if input_budget is not None and (
-            estimate_request_tokens(
-                prepare(
-                    replace(
-                        main_request,
-                        messages=(*initial, *public, *required),
-                        continuation=None,
-                        continuation_items=(),
-                    )
-                )
+        retained = (*public, *kept)
+    else:
+        first_candidate = candidates[0]
+        last_response_index = next(
+            (index for index, item in enumerate(entries) if item is last_response), None
+        )
+        raw = tuple(
+            _RetainedItem(
+                index,
+                item,
+                last_response_index
+                if last_response_index is not None
+                and index >= last_response_index
+                and last_response is not None
+                and last_response.tool_calls
+                else None,
             )
-            > input_budget
-        ):
-            continue
-        return ExecutionCompactPlan(request, prefix, (*public, *kept))
-    raise WorkCapacityError("model_request_capacity")
+            for index, item in enumerate(entries)
+            if index >= first_candidate and isinstance(item, ChatMessage)
+        )
+        raw_index = _TailIndex(raw, len(entries), initial, retained_public)
+        native_index = (
+            _TailIndex(
+                _native_tail_items(
+                    entries[first_candidate:],
+                    recorded,
+                    last_response,
+                    call_key,
+                    offset=first_candidate,
+                ),
+                len(entries),
+                initial,
+                retained_public,
+            )
+            if native_from[first_candidate]
+            else raw_index
+        )
+        initial_cost = InputSequenceCost()
+        for message in initial:
+            initial_cost += message_token_cost(message)
+        for boundary in reversed(candidates):
+            selected = native_index if native_from[boundary] else raw_index
+            if counter.estimate_messages(
+                initial_cost + selected.public_cost[boundary] + selected.required_cost[boundary]
+            ) <= cast(int, input_budget):
+                retained = selected.retained(boundary)
+                break
+        else:
+            raise WorkCapacityError("model_request_capacity")
+    prefix = transcript.prefix(boundary)
+    prefix.append(instruction)
+    sequence = prefix.request()
+    request = replace(
+        main_request,
+        messages=sequence.messages,
+        continuation=sequence.continuation,
+        continuation_items=sequence.items,
+    )
+    return ExecutionCompactPlan(request, prefix, retained)

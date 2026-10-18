@@ -178,7 +178,7 @@ async def test_recall_rechecks_connection_before_claim(social_env, monkeypatch):
         return receipt
 
     monkeypatch.setattr(env.service.receipts, "prepare", disconnect_before_claim)
-    with pytest.raises(RouteSendError, match="original_presence_unavailable"):
+    with pytest.raises(RouteSendError, match="disconnected"):
         await env.service.execute(
             "recall_own_message", {"event_id": event_id}, replace(env.context, call_id="recall")
         )

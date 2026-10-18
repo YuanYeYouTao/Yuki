@@ -1,0 +1,779 @@
+{
+  "source_revision": "815897032b4e77e6e7f11ea2d63d74a7fd4e674d",
+  "date": "2026-10-18",
+  "status": "offline planning evidence; no product implementation",
+  "production_access": false,
+  "paid_model_or_platform_send": false,
+  "limits": "Independent component experiments; overlapping times cannot be summed; current and prototype data are synthetic; no production SLA or cache hit conclusions",
+  "cpu_components": {
+    "source_revision": "815897032b4e77e6e7f11ea2d63d74a7fd4e674d",
+    "scope": "isolated component CPU baseline, no production, DB, model, network; independent stages overlap and must not be summed as real end-to-end time; no candidate implementation",
+    "python": "3.12.13 (main, Jul 18 2026, 17:08:38) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.22631-SP0",
+    "sqlite": "3.53.1",
+    "dataset": "7 alternating senders; each eighth event replies to predecessor; no real attachments or tool/private payload; nine timed warm samples per stage after one warmup; object creation outside measurements",
+    "results": [
+      {
+        "events": 100,
+        "body_characters_each": 80,
+        "frozen_payload_utf8_bytes": 21244,
+        "stages": {
+          "render_all": {
+            "median_ms": 1.102,
+            "min_ms": 1.0333,
+            "max_ms": 1.2318,
+            "samples": 9
+          },
+          "decode_frozen_load": {
+            "median_ms": 0.414,
+            "min_ms": 0.406,
+            "max_ms": 0.5695,
+            "samples": 9
+          },
+          "extend_existing_all_already_frozen": {
+            "median_ms": 0.3451,
+            "min_ms": 0.327,
+            "max_ms": 0.4276,
+            "samples": 9
+          },
+          "extend_only_one_new": {
+            "median_ms": 0.3994,
+            "min_ms": 0.325,
+            "max_ms": 0.6951,
+            "samples": 9
+          },
+          "messages_twice": {
+            "median_ms": 0.3528,
+            "min_ms": 0.3368,
+            "max_ms": 0.4523,
+            "samples": 9
+          },
+          "append_current_one": {
+            "median_ms": 0.587,
+            "min_ms": 0.5415,
+            "max_ms": 0.7637,
+            "samples": 9
+          },
+          "prepare_commit_cpu_core_no_sql": {
+            "median_ms": 0.9292,
+            "min_ms": 0.9038,
+            "max_ms": 1.1816,
+            "samples": 9
+          },
+          "composer_once": {
+            "median_ms": 0.2267,
+            "min_ms": 0.2003,
+            "max_ms": 0.2796,
+            "samples": 9
+          }
+        }
+      },
+      {
+        "events": 1000,
+        "body_characters_each": 80,
+        "frozen_payload_utf8_bytes": 214649,
+        "stages": {
+          "render_all": {
+            "median_ms": 11.6178,
+            "min_ms": 11.0381,
+            "max_ms": 12.3924,
+            "samples": 9
+          },
+          "decode_frozen_load": {
+            "median_ms": 4.4575,
+            "min_ms": 4.218,
+            "max_ms": 5.4905,
+            "samples": 9
+          },
+          "extend_existing_all_already_frozen": {
+            "median_ms": 3.5492,
+            "min_ms": 3.2937,
+            "max_ms": 28.8029,
+            "samples": 9
+          },
+          "extend_only_one_new": {
+            "median_ms": 3.5698,
+            "min_ms": 3.156,
+            "max_ms": 3.978,
+            "samples": 9
+          },
+          "messages_twice": {
+            "median_ms": 3.5252,
+            "min_ms": 3.4768,
+            "max_ms": 4.5255,
+            "samples": 9
+          },
+          "append_current_one": {
+            "median_ms": 6.1037,
+            "min_ms": 5.7674,
+            "max_ms": 28.513,
+            "samples": 9
+          },
+          "prepare_commit_cpu_core_no_sql": {
+            "median_ms": 10.4071,
+            "min_ms": 9.3549,
+            "max_ms": 11.1241,
+            "samples": 9
+          },
+          "composer_once": {
+            "median_ms": 1.6012,
+            "min_ms": 1.5125,
+            "max_ms": 2.2384,
+            "samples": 9
+          }
+        }
+      },
+      {
+        "events": 5000,
+        "body_characters_each": 80,
+        "frozen_payload_utf8_bytes": 1082649,
+        "stages": {
+          "render_all": {
+            "median_ms": 61.7699,
+            "min_ms": 59.1806,
+            "max_ms": 100.4307,
+            "samples": 9
+          },
+          "decode_frozen_load": {
+            "median_ms": 25.4843,
+            "min_ms": 23.0137,
+            "max_ms": 57.9734,
+            "samples": 9
+          },
+          "extend_existing_all_already_frozen": {
+            "median_ms": 20.1828,
+            "min_ms": 19.3157,
+            "max_ms": 53.8741,
+            "samples": 9
+          },
+          "extend_only_one_new": {
+            "median_ms": 19.8054,
+            "min_ms": 18.7758,
+            "max_ms": 54.5387,
+            "samples": 9
+          },
+          "messages_twice": {
+            "median_ms": 19.0517,
+            "min_ms": 18.2911,
+            "max_ms": 50.2154,
+            "samples": 9
+          },
+          "append_current_one": {
+            "median_ms": 33.487,
+            "min_ms": 32.0793,
+            "max_ms": 68.7875,
+            "samples": 9
+          },
+          "prepare_commit_cpu_core_no_sql": {
+            "median_ms": 56.1194,
+            "min_ms": 50.6145,
+            "max_ms": 95.3098,
+            "samples": 9
+          },
+          "composer_once": {
+            "median_ms": 9.0017,
+            "min_ms": 8.3277,
+            "max_ms": 43.6505,
+            "samples": 9
+          }
+        }
+      },
+      {
+        "events": 1000,
+        "body_characters_each": 2000,
+        "frozen_payload_utf8_bytes": 2134649,
+        "stages": {
+          "render_all": {
+            "median_ms": 22.9552,
+            "min_ms": 21.4907,
+            "max_ms": 25.3882,
+            "samples": 9
+          },
+          "decode_frozen_load": {
+            "median_ms": 7.9559,
+            "min_ms": 7.0755,
+            "max_ms": 42.4058,
+            "samples": 9
+          },
+          "extend_existing_all_already_frozen": {
+            "median_ms": 3.6576,
+            "min_ms": 3.4996,
+            "max_ms": 4.1063,
+            "samples": 9
+          },
+          "extend_only_one_new": {
+            "median_ms": 3.8305,
+            "min_ms": 3.4573,
+            "max_ms": 4.9533,
+            "samples": 9
+          },
+          "messages_twice": {
+            "median_ms": 3.6056,
+            "min_ms": 3.4304,
+            "max_ms": 3.7984,
+            "samples": 9
+          },
+          "append_current_one": {
+            "median_ms": 6.5458,
+            "min_ms": 6.1271,
+            "max_ms": 32.4088,
+            "samples": 9
+          },
+          "prepare_commit_cpu_core_no_sql": {
+            "median_ms": 28.5287,
+            "min_ms": 27.199,
+            "max_ms": 32.4052,
+            "samples": 9
+          },
+          "composer_once": {
+            "median_ms": 11.9447,
+            "min_ms": 11.0168,
+            "max_ms": 12.5684,
+            "samples": 9
+          }
+        }
+      },
+      {
+        "events": 5000,
+        "body_characters_each": 500,
+        "frozen_payload_utf8_bytes": 3182649,
+        "stages": {
+          "render_all": {
+            "median_ms": 82.4218,
+            "min_ms": 74.9564,
+            "max_ms": 123.8817,
+            "samples": 9
+          },
+          "decode_frozen_load": {
+            "median_ms": 31.727,
+            "min_ms": 29.3346,
+            "max_ms": 71.8906,
+            "samples": 9
+          },
+          "extend_existing_all_already_frozen": {
+            "median_ms": 21.1178,
+            "min_ms": 18.771,
+            "max_ms": 54.998,
+            "samples": 9
+          },
+          "extend_only_one_new": {
+            "median_ms": 20.1225,
+            "min_ms": 19.0229,
+            "max_ms": 60.8466,
+            "samples": 9
+          },
+          "messages_twice": {
+            "median_ms": 21.1487,
+            "min_ms": 19.1848,
+            "max_ms": 56.2327,
+            "samples": 9
+          },
+          "append_current_one": {
+            "median_ms": 37.1752,
+            "min_ms": 33.1357,
+            "max_ms": 73.068,
+            "samples": 9
+          },
+          "prepare_commit_cpu_core_no_sql": {
+            "median_ms": 81.9266,
+            "min_ms": 75.7742,
+            "max_ms": 112.6582,
+            "samples": 9
+          },
+          "composer_once": {
+            "median_ms": 21.7393,
+            "min_ms": 20.6688,
+            "max_ms": 53.051,
+            "samples": 9
+          }
+        }
+      }
+    ]
+  },
+  "group_baseline": {
+    "scope": "pure CPU current renderer, same sender and exact same valid timestamp, no DB/model/network, no candidate implementation",
+    "results": [
+      {
+        "events": 250,
+        "groups": 1,
+        "group_body_bytes": 24676,
+        "median_ms": 3.2852,
+        "samples": 5
+      },
+      {
+        "events": 1000,
+        "groups": 1,
+        "group_body_bytes": 98927,
+        "median_ms": 16.0393,
+        "samples": 5
+      },
+      {
+        "events": 4000,
+        "groups": 1,
+        "group_body_bytes": 398927,
+        "median_ms": 118.6528,
+        "samples": 5
+      },
+      {
+        "events": 8000,
+        "groups": 1,
+        "group_body_bytes": 798927,
+        "median_ms": 1120.0063,
+        "samples": 5
+      }
+    ]
+  },
+  "linear_group_candidate": {
+    "source_revision": "815897032b4e77e6e7f11ea2d63d74a7fd4e674d",
+    "scope": "Temp-only prototype, pure CPU current renderer vs linear group accumulation, no product change, DB, network, model or production",
+    "python": "3.12.13 (main, Jul 18 2026, 17:08:38) [MSC v.1944 64 bit (AMD64)]",
+    "platform": "Windows-11-10.0.22631-SP0",
+    "method": "Same immutable input rows and renderer/reference table for both algorithms. Row construction and renderer initialization excluded. One equality/warmup per size, then five samples each, alternating order, GC collection outside timed section. Only sample median; no production percentile claim.",
+    "benchmark_dataset": "One canonical person, same display name and exact same UTC timestamp; body is Chinese synthetic label plus 80 ASCII x characters. IDs 1..N, no real user content.",
+    "equivalence": {
+      "named_cases": [
+        {
+          "name": "empty",
+          "rows": 0,
+          "groups": 0,
+          "individual": 0
+        },
+        {
+          "name": "real_single_0",
+          "rows": 1,
+          "groups": 1,
+          "individual": 1
+        },
+        {
+          "name": "real_single_1",
+          "rows": 1,
+          "groups": 1,
+          "individual": 1
+        },
+        {
+          "name": "real_single_2",
+          "rows": 1,
+          "groups": 1,
+          "individual": 1
+        },
+        {
+          "name": "real_single_3",
+          "rows": 1,
+          "groups": 0,
+          "individual": 0
+        },
+        {
+          "name": "real_single_4",
+          "rows": 1,
+          "groups": 0,
+          "individual": 0
+        },
+        {
+          "name": "real_single_5",
+          "rows": 1,
+          "groups": 1,
+          "individual": 1
+        },
+        {
+          "name": "raw_single_0",
+          "rows": 1,
+          "groups": 0,
+          "individual": 0
+        },
+        {
+          "name": "raw_single_1",
+          "rows": 1,
+          "groups": 0,
+          "individual": 0
+        },
+        {
+          "name": "raw_single_2",
+          "rows": 1,
+          "groups": 0,
+          "individual": 0
+        },
+        {
+          "name": "raw_single_3",
+          "rows": 1,
+          "groups": 1,
+          "individual": 1
+        },
+        {
+          "name": "raw_single_4",
+          "rows": 1,
+          "groups": 1,
+          "individual": 1
+        },
+        {
+          "name": "raw_single_5",
+          "rows": 1,
+          "groups": 1,
+          "individual": 1
+        },
+        {
+          "name": "raw_merge_preserves_first_and_strips_only_later_rendered",
+          "rows": 3,
+          "groups": 1,
+          "individual": 3
+        },
+        {
+          "name": "raw_no_newline_starts_another_group",
+          "rows": 3,
+          "groups": 2,
+          "individual": 3
+        },
+        {
+          "name": "span_inclusive_300_seconds",
+          "rows": 2,
+          "groups": 1,
+          "individual": 2
+        },
+        {
+          "name": "span_just_over",
+          "rows": 2,
+          "groups": 2,
+          "individual": 2
+        },
+        {
+          "name": "span_uses_group_start_not_rolling_last",
+          "rows": 3,
+          "groups": 2,
+          "individual": 3
+        },
+        {
+          "name": "backward_timestamp",
+          "rows": 3,
+          "groups": 2,
+          "individual": 3
+        },
+        {
+          "name": "same_span_crosses_local_day",
+          "rows": 2,
+          "groups": 2,
+          "individual": 2
+        },
+        {
+          "name": "naive_stored_utc",
+          "rows": 2,
+          "groups": 1,
+          "individual": 2
+        },
+        {
+          "name": "same_person_different_binding_platform",
+          "rows": 2,
+          "groups": 1,
+          "individual": 2
+        },
+        {
+          "name": "same_native_different_person",
+          "rows": 2,
+          "groups": 2,
+          "individual": 2
+        },
+        {
+          "name": "same_person_changed_display_name",
+          "rows": 2,
+          "groups": 2,
+          "individual": 2
+        },
+        {
+          "name": "different_yuki_presence",
+          "rows": 2,
+          "groups": 2,
+          "individual": 2
+        },
+        {
+          "name": "ordinary_and_proactive_and_causes",
+          "rows": 5,
+          "groups": 4,
+          "individual": 5
+        },
+        {
+          "name": "skipped_external_does_not_split_visible_group",
+          "rows": 3,
+          "groups": 1,
+          "individual": 2
+        },
+        {
+          "name": "reply_uses_full_original_reference_table",
+          "rows": 1,
+          "groups": 1,
+          "individual": 1
+        },
+        {
+          "name": "reply_missing_reference_table",
+          "rows": 1,
+          "groups": 1,
+          "individual": 1
+        },
+        {
+          "name": "reply_suppressed_target",
+          "rows": 1,
+          "groups": 1,
+          "individual": 1
+        },
+        {
+          "name": "reply_target_other_conversation",
+          "rows": 1,
+          "groups": 1,
+          "individual": 1
+        },
+        {
+          "name": "canonical_mentions_and_forward_multiline",
+          "rows": 2,
+          "groups": 1,
+          "individual": 2
+        }
+      ],
+      "named_case_count": 32,
+      "random_seed": 20261018,
+      "random_case_count": 400,
+      "all_full_grouped_and_individual_tuples_equal": true,
+      "reply_table_dependency_confirmed": true
+    },
+    "results": [
+      {
+        "events": 250,
+        "groups": 1,
+        "group_body_utf8_bytes": 24673,
+        "grouped_and_individual_sha256": "1d8ab1132d7634b141de0fb5a7179953b06fb89df32b1746539c20cb83bf01f3",
+        "current_samples_ms": [
+          3.237099852412939,
+          3.692000173032284,
+          3.101600334048271,
+          3.4030997194349766,
+          3.230299800634384
+        ],
+        "prototype_samples_ms": [
+          2.5628996081650257,
+          2.898300066590309,
+          2.650799695402384,
+          2.7115996927022934,
+          2.5924001820385456
+        ],
+        "current_median_ms": 3.2371,
+        "prototype_median_ms": 2.6508,
+        "ratio_current_over_prototype": 1.221,
+        "samples_each": 5
+      },
+      {
+        "events": 1000,
+        "groups": 1,
+        "group_body_utf8_bytes": 98924,
+        "grouped_and_individual_sha256": "fd0687d3f0ebe7f21babf04fbce2d8ceff0620508ea774eecd15d8b2265f6bd3",
+        "current_samples_ms": [
+          15.448300167918205,
+          15.135399997234344,
+          14.587599784135818,
+          14.808900188654661,
+          14.584300108253956
+        ],
+        "prototype_samples_ms": [
+          10.682199615985155,
+          11.100800242275,
+          11.308599729090929,
+          10.21389989182353,
+          10.66739996895194
+        ],
+        "current_median_ms": 14.8089,
+        "prototype_median_ms": 10.6822,
+        "ratio_current_over_prototype": 1.386,
+        "samples_each": 5
+      },
+      {
+        "events": 4000,
+        "groups": 1,
+        "group_body_utf8_bytes": 398924,
+        "grouped_and_individual_sha256": "8ceaf21d235c4c0f9c2a00a8a7cc2465a8f1fe354f0581211fdb1c268e989e63",
+        "current_samples_ms": [
+          194.28439997136593,
+          160.67259991541505,
+          134.92530025541782,
+          152.71499985828996,
+          139.5911001600325
+        ],
+        "prototype_samples_ms": [
+          43.487600050866604,
+          41.677000001072884,
+          44.68540009111166,
+          46.859600115567446,
+          44.62689999490976
+        ],
+        "current_median_ms": 152.715,
+        "prototype_median_ms": 44.6269,
+        "ratio_current_over_prototype": 3.422,
+        "samples_each": 5
+      },
+      {
+        "events": 8000,
+        "groups": 1,
+        "group_body_utf8_bytes": 798924,
+        "grouped_and_individual_sha256": "79fa1a36199ee3acc3af4daed1fb9f4722b69c365f6e186e923ee902e1aff561",
+        "current_samples_ms": [
+          1081.7740000784397,
+          1030.5780000053346,
+          1081.1339002102613,
+          1092.0779998414218,
+          1039.343699812889
+        ],
+        "prototype_samples_ms": [
+          85.95219999551773,
+          86.88679989427328,
+          85.84599988535047,
+          86.74860000610352,
+          92.43409987539053
+        ],
+        "current_median_ms": 1081.1339,
+        "prototype_median_ms": 86.7486,
+        "ratio_current_over_prototype": 12.463,
+        "samples_each": 5
+      }
+    ],
+    "implementation_state": "prototype only; repository source and production unchanged"
+  },
+  "sql_query_and_blob": {
+    "kind": "synthetic-local-only",
+    "sqlite_version": "3.53.1",
+    "rows": 30000,
+    "event_content_chars": 1024,
+    "indexes": "current SQLAlchemy column/check/index DDL; FK constraints omitted (foreign_keys OFF); 128 projections, 2 canonical Conversations",
+    "queries": {
+      "full_tail": {
+        "rows": 15000,
+        "vm_steps": 720129,
+        "median_ms": 116.284,
+        "plan": [
+          "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+        ]
+      },
+      "hot_delta_20": {
+        "rows": 20,
+        "vm_steps": 979,
+        "median_ms": 0.103,
+        "plan": [
+          "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+        ]
+      },
+      "all_ids_15000": {
+        "rows": 15000,
+        "vm_steps": 135129,
+        "median_ms": 30.783,
+        "plan": [
+          "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+        ]
+      },
+      "ids_page256": {
+        "rows": 256,
+        "vm_steps": 2688,
+        "median_ms": 0.12,
+        "plan": [
+          "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+        ]
+      },
+      "exact_missing_5": {
+        "rows": 5,
+        "vm_steps": 353,
+        "median_ms": 0.032,
+        "plan": [
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ]
+      },
+      "selection_metadata_all": {
+        "rows": 2000,
+        "vm_steps": 16058,
+        "median_ms": 0.921,
+        "plan": [
+          "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+        ]
+      },
+      "selection_keys_5": {
+        "rows": 5,
+        "vm_steps": 99,
+        "median_ms": 0.011,
+        "plan": [
+          "SEARCH model_context_selections USING INDEX sqlite_autoindex_model_context_selections_1 (view_key=? AND source_key=?)"
+        ]
+      },
+      "projection_header": {
+        "rows": 1,
+        "vm_steps": 24,
+        "median_ms": 0.005,
+        "plan": [
+          "SEARCH p USING INDEX sqlite_autoindex_prompt_projections_1 (view_key=?)",
+          "SEARCH c USING COVERING INDEX sqlite_autoindex_canonical_conversations_1 (id=?)"
+        ]
+      }
+    },
+    "candidate_partial_index": {
+      "all_ids_15000": {
+        "rows": 15000,
+        "vm_steps": 60154,
+        "median_ms": 4.105,
+        "plan": [
+          "SEARCH chat_events USING COVERING INDEX candidate_public_ids (canonical_conversation_id=? AND id>? AND id<?)"
+        ]
+      },
+      "hot_delta_20": {
+        "rows": 20,
+        "vm_steps": 1117,
+        "median_ms": 0.097,
+        "plan": [
+          "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+        ]
+      },
+      "exact_missing_5": {
+        "rows": 5,
+        "vm_steps": 365,
+        "median_ms": 0.03,
+        "plan": [
+          "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+        ]
+      }
+    },
+    "payload_bytes": {
+      "old": 673449,
+      "new": 675134,
+      "suffix": 1686
+    },
+    "writes": {
+      "whole_blob": {
+        "ms": 2.597,
+        "wal_bytes": 692192,
+        "current_bytes": 675134
+      },
+      "sqlite_concat_same_blob": {
+        "ms": 4.896,
+        "wal_bytes": 692192,
+        "current_bytes": 675134
+      },
+      "existing_selection_insert_5_only_header": {
+        "ms": 1.256,
+        "wal_bytes": 61832,
+        "warning": "storage-only cost, not a complete epoch/order migration design"
+      }
+    },
+    "audit_predicate_note": "Probe used suppression_status=keeper; product keeper_event_clause is IS NULL OR keeper. Column is NOT NULL in source0132, but SQLite partial-index predicate matching must be retested with exact production query; no claim that candidate partial-index gain is already established for product."
+  },
+  "chunk_storage_candidate": {
+    "kind": "candidate-derived-storage-lab-only",
+    "sqlite_version": "3.53.1",
+    "old_items": 2000,
+    "delta_items": 5,
+    "delta_json_bytes": 1686,
+    "append_ms": 0.626,
+    "append_wal_bytes": 20632,
+    "query_plans": {
+      "cold_chunks": [
+        "SEARCH chunks USING INDEX sqlite_autoindex_chunks_1 (view_key=? AND epoch_id=?)"
+      ],
+      "hot_chunks": [
+        "SEARCH chunks USING INDEX sqlite_autoindex_chunks_1 (view_key=? AND epoch_id=? AND ordinal>?)"
+      ],
+      "head_cas": [
+        "SEARCH heads USING INDEX sqlite_autoindex_heads_1 (view_key=?)"
+      ]
+    },
+    "stale_cas_rowcount": 0,
+    "stale_cas_chunks_unchanged": true
+  }
+}

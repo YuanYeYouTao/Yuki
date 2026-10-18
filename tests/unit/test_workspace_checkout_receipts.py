@@ -3,12 +3,17 @@
 import asyncio
 import hashlib
 import json
+import os
 
 import pytest
 from tests.support.workspace_snapshots import snapshot_bytes
 
 from yuki.sandbox.persistent import PersistentManager
 from yuki.workspace.store import WorkspaceStore
+
+pytestmark = pytest.mark.skipif(
+    os.name != "posix", reason="Manager safe workspace FDs require POSIX"
+)
 
 
 @pytest.mark.parametrize("legacy", [False, True])

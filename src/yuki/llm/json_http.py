@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from abc import abstractmethod
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -21,6 +22,7 @@ from yuki.execution_trace.recorder import record_http_response, trace_span
 from yuki.llm.base import (
     LLMConfigurationError,
     LLMError,
+    LLMInvalidResponseError,
     LLMProvider,
     LLMTimeoutError,
     LLMUnavailableError,
@@ -28,8 +30,16 @@ from yuki.llm.base import (
 )
 from yuki.llm.http_errors import check_provider_response
 from yuki.llm.protocol_state import integer
-from yuki.llm.wire_diagnostics import WireRequestObserver
+from yuki.llm.wire_diagnostics import WireFingerprint, WireRequestObserver
 from yuki.model_runtime.request_accounting import current_provider_attempts
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedHTTP:
+    request: httpx.Request
+    payload: dict[str, Any]
+    fingerprint: WireFingerprint
+    chain_id: str
 
 
 class JSONHTTPProvider(LLMProvider):
@@ -62,7 +72,13 @@ class JSONHTTPProvider(LLMProvider):
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]: ...
 
     @abstractmethod
-    def _parse(self, response: httpx.Response, request: ChatRequest) -> ChatResponse: ...
+    def _parse(self, response: httpx.Response, request: ChatRequest, payload: Any) -> ChatResponse:
+        """Read the attempt-owned decoded body without mutating it.
+
+        Opaque state retained beyond this response must keep its existing owned
+        copies. The raw response remains available for byte-derived protocol IDs.
+        """
+        ...
 
     def _path(self, request: ChatRequest) -> str:
         return "chat/completions"
@@ -96,9 +112,7 @@ class JSONHTTPProvider(LLMProvider):
             }
         }
 
-    async def _post(self, request: ChatRequest) -> httpx.Response:
-        from yuki.model_runtime.dispatch_guard import check_model_dispatch
-
+    def _prepare(self, request: ChatRequest) -> _PreparedHTTP:
         with model_detail("payload_preparation"):
             payload = self._build_payload(request)
             headers = self._request_headers()
@@ -111,14 +125,25 @@ class JSONHTTPProvider(LLMProvider):
                 json=payload,
                 timeout=self._timeout,
             )
-            self._wire_observer.observe(
+            return _PreparedHTTP(
+                prepared,
                 payload,
-                self.protocol,
-                chain_id=request.request_chain_id,
-                provider=self.provider_name,
+                WireFingerprint.of(payload, self.protocol, provider=self.provider_name),
+                request.request_chain_id,
             )
+
+    async def _post(self, prepared: _PreparedHTTP) -> tuple[httpx.Response, Any]:
+        from yuki.model_runtime.dispatch_guard import check_model_dispatch
+
+        self._wire_observer.observe(
+            prepared.fingerprint,
+            self.protocol,
+            chain_id=prepared.chain_id,
+            provider=self.provider_name,
+        )
         async with trace_span(
-            "provider", {"protocol": self.protocol, "body": payload, "dispatch": "prepared"}
+            "provider",
+            {"protocol": self.protocol, "body": prepared.payload, "dispatch": "prepared"},
         ):
             # Keep the real permission/budget fence immediately before HTTP dispatch.
             with model_detail("attempt_dispatch_preparation"):
@@ -139,7 +164,7 @@ class JSONHTTPProvider(LLMProvider):
                 phases.attempts += 1
             try:
                 with model_detail("transport"):
-                    response = await self._client.send(prepared)
+                    response = await self._client.send(prepared.request)
                 await record_http_response(response)
                 try:
                     check_provider_response(response)
@@ -163,16 +188,18 @@ class JSONHTTPProvider(LLMProvider):
                 if finish is not None:
                     await finish("failed", None)
                 raise
+            try:
+                body = response.json()
+            except ValueError as exc:
+                if finish is not None:
+                    await finish("unknown", None)
+                raise LLMInvalidResponseError("provider returned invalid JSON") from exc
             if finish is not None:
-                try:
-                    body = response.json()
-                except ValueError:
-                    body = {}
-                body = body if isinstance(body, dict) else {}
-                usage = self._usage_diagnostics(body).get("usage", {})
+                mapping = body if isinstance(body, dict) else {}
+                usage = self._usage_diagnostics(mapping).get("usage", {})
                 usage = usage if isinstance(usage, dict) else {}
-                await finish(str(body.get("status", "unknown")), usage.get("completion_tokens"))
-        return response
+                await finish(str(mapping.get("status", "unknown")), usage.get("completion_tokens"))
+        return response, body
 
     async def complete(self, request: ChatRequest) -> ChatResponse:
         from dataclasses import replace
@@ -185,6 +212,7 @@ class JSONHTTPProvider(LLMProvider):
         # Provider-executed tools have no local receipt for uncertain transport outcomes.
         attempts = 1 if request.native_tools else self._max_retries + 1
         retry_errors: tuple[type[Exception], ...] = (*self.transport_errors, RetryableProviderError)
+        prepared = self._prepare(request)
 
         async def retry_sleep(seconds: float) -> None:
             with model_detail("retry_backoff"):
@@ -203,7 +231,7 @@ class JSONHTTPProvider(LLMProvider):
                     if work is not None and attempt.retry_state.attempt_number > 1:
                         with model_detail("retry_budget_preparation"):
                             await work.reserve_request(auxiliary=True)
-                    response = await self._post(request)
+                    response, raw_body = await self._post(prepared)
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError("LLM request timed out") from exc
         except retry_errors as exc:
@@ -212,17 +240,13 @@ class JSONHTTPProvider(LLMProvider):
                 diagnostics=getattr(exc, "diagnostics", {}),
             ) from exc
         counter = current_provider_attempts.get()
-        try:
-            raw_body = response.json()
-        except ValueError:
-            raw_body = {}
         diagnostics = self._usage_diagnostics(raw_body) if isinstance(raw_body, dict) else {}
         reported_usage = diagnostics.get("usage", {})
         if counter is not None and isinstance(reported_usage, dict):
             counter.reported_usage(reported_usage.get("total_tokens"), usage=reported_usage)
         try:
             with model_detail("provider_response_preparation"):
-                parsed = self._parse(response, request)
+                parsed = self._parse(response, request, raw_body)
         except LLMError as exc:
             if reported_usage:
                 exc.diagnostics = {**exc.diagnostics, "usage": reported_usage}

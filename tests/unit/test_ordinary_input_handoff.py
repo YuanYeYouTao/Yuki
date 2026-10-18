@@ -22,7 +22,7 @@ from tests.unit.test_auto_reply_merge import (
 from yuki.asr.service import AudioInput
 from yuki.conversation.initiative_sources import source_revision
 from yuki.conversation.ordinary_admission import OrdinaryParticipationBinding
-from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.conversation.projection_models import PromptProjectionChunkModel
 from yuki.domain.messages import (
     AttachmentKind,
     ChatImage,
@@ -78,7 +78,7 @@ class _PausedProvider(FakeLLMProvider):
             raise response
         return response
 
-    async def complete(self, request):
+    async def _complete(self, request):
         self.entered.append(request)
         control = current_work_control.get()
         self.controls.append((control is not None, control.current if control else None))
@@ -86,7 +86,7 @@ class _PausedProvider(FakeLLMProvider):
         if number in self.arrived:
             self.arrived[number].set()
             await self.release[number].wait()
-        return await super().complete(request)
+        return await super()._complete(request)
 
     async def wait(self, number):
         await asyncio.wait_for(self.arrived[number].wait(), 10)
@@ -465,7 +465,7 @@ async def test_steered_image_and_quoted_attachment_remain_private_and_prepare_on
         assert "看一下引用的文件" in _plain(provider.requests[1])
         assert media.prepare.await_count == 1 and len(provider.requests) == 2
         async with database.sessions() as reader:
-            public = list(await reader.scalars(select(PromptProjectionModel.payload_json)))
+            public = list(await reader.scalars(select(PromptProjectionChunkModel.payload_json)))
         assert public and all(
             document not in value and image.data_url not in value for value in public
         )

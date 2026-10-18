@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, cast
@@ -45,7 +46,7 @@ class ConversationReadVersion:
     generation: int
     starts_after_event_id: int
     prompt_source_revision: int = 0
-    visible_event_ids: tuple[int, ...] = field(default=(), compare=False)
+    visible_event_ids: Collection[int] = field(default=(), compare=False)
     selected_summary_text: str | None = field(default=None, compare=False)
     observation_sources: tuple[tuple[str, int], ...] = field(default=(), compare=False)
     observation_actor_id: str = field(default="", compare=False)

@@ -12,7 +12,10 @@ from alembic.config import Config
 from pydantic import ValidationError
 from sqlalchemy import insert, select, text, update
 from tests.conftest import build_harness, make_settings
-from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversations
+from tests.support.legacy_conversation_seed import (
+    enable_projection_columns_for_legacy_seed,
+    seed_pre_0119_social_conversations,
+)
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import social_env
 
@@ -116,6 +119,7 @@ def test_legacy_publication_keeps_hash_receipts_and_resumes_original_main_work(
         client = None
         try:
             await seed_pre_0119_social_conversations(database, private=private_read)
+            await enable_projection_columns_for_legacy_seed(database)
             env = await social_env(database, tmp_path)
             settings = make_settings(
                 url,
@@ -750,7 +754,7 @@ def test_legacy_publication_keeps_hash_receipts_and_resumes_original_main_work(
                 assert all(
                     private_text not in payload
                     for payload in await reader.scalars(
-                        text("SELECT payload_json FROM prompt_projections")
+                        text("SELECT payload_json FROM prompt_projection_chunks")
                     )
                 )
                 assert (

@@ -10,11 +10,13 @@ import json
 import math
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import nullcontext
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
-from sqlalchemy import and_, func, literal, select, tuple_, update
+from sqlalchemy import and_, func, literal, select, text, tuple_, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -99,6 +101,12 @@ def normalize_conditions(raw: Any, now: float) -> list[dict[str, Any]]:
         else:
             raise ValueError("unknown_wait_condition")
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class WorkInputMatch:
+    input_id: int
+    kind: Literal["reply", "wait"]
 
 
 class WorkWaitRepository:
@@ -616,26 +624,98 @@ class WorkWaitRepository:
             await on_delivery(session, delivered_input)
         return delivered_input if delivered_input is not None else (0 if matched_any else None)
 
-    async def match_user_reply(self, event_id: int) -> int | None:
+    async def match_input(
+        self,
+        event_id: int,
+        *,
+        on_delivery: Callable[[AsyncSession, int], Awaitable[None]] | None = None,
+        prepare_source: Callable[[], Awaitable[bool]] | None = None,
+    ) -> WorkInputMatch | None:
+        """Prepare quoted/App replies and conversation waits in one read view."""
+        async with self.repository.database.sessions() as observer:
+            await observer.execute(text("BEGIN"))
+            source = (
+                await observer.execute(
+                    select(
+                        ChatEventModel.canonical_conversation_id,
+                        ChatEventModel.reply_to_event_id,
+                        PresenceModel.platform,
+                    )
+                    .outerjoin(
+                        PresenceModel, PresenceModel.id == ChatEventModel.ingress_presence_id
+                    )
+                    .where(ChatEventModel.id == event_id)
+                )
+            ).one_or_none()
+            if source is None or source.canonical_conversation_id is None:
+                return None
+            conditions = tuple(
+                await observer.scalars(
+                    select(waits.c.conditions_json).where(
+                        waits.c.conversation_id == source.canonical_conversation_id,
+                        waits.c.status == "active",
+                    )
+                )
+            )
+            reply_candidate = (
+                await observer.scalar(
+                    select(work.c.id)
+                    .where(
+                        work.c.conversation_id == source.canonical_conversation_id,
+                        work.c.state == "waiting_user",
+                    )
+                    .limit(1)
+                )
+                if source.reply_to_event_id is not None or source.platform == "app"
+                else None
+            )
+        if reply_candidate is not None:
+            async with self.repository.database.immediate_session() as session:
+                explicit = await self.match_user_reply(event_id, session=session)
+            if explicit is not None:
+                return WorkInputMatch(explicit, "reply")
+        matching = any(
+            condition["kind"] == "conversation"
+            and condition["matched"] is None
+            and event_id > condition["after_event_id"]
+            for encoded in conditions
+            for condition in json.loads(encoded)
+        )
+        if not matching or (prepare_source is not None and not await prepare_source()):
+            return None
+        async with self.repository.database.immediate_session() as session:
+            matched = await self.match_event(
+                event_id=event_id, kind="conversation", session=session, on_delivery=on_delivery
+            )
+        return WorkInputMatch(matched, "wait") if matched is not None else None
+
+    async def match_user_reply(
+        self, event_id: int, *, session: AsyncSession | None = None
+    ) -> int | None:
         """Resume a quoted question, or the same Person's current App waiting Work."""
         from yuki.runtime.execution_receipts import PROCESS_ID
         from yuki.social.db_models import SocialOperationModel
 
-        async with self.repository.database.sessions() as observer:
-            event = await observer.get(ChatEventModel, event_id)
-            if event is None:
-                return None
-            if (
-                event.reply_to_event_id is None
-                and await observer.scalar(
-                    select(PresenceModel.platform).where(
-                        PresenceModel.id == event.ingress_presence_id
+        if session is None:
+            async with self.repository.database.sessions() as observer:
+                event = await observer.get(ChatEventModel, event_id)
+                if event is None:
+                    return None
+                if (
+                    event.reply_to_event_id is None
+                    and await observer.scalar(
+                        select(PresenceModel.platform).where(
+                            PresenceModel.id == event.ingress_presence_id
+                        )
                     )
-                )
-                != "app"
-            ):
-                return None
-        async with self.repository.database.immediate_session() as session:
+                    != "app"
+                ):
+                    return None
+        async with (
+            self.repository.database.immediate_session()
+            if session is None
+            else nullcontext(session)
+        ) as session:
             event = await session.get(ChatEventModel, event_id)
             if (
                 event is None

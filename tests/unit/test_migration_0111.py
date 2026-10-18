@@ -7,7 +7,10 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import select, text
 from tests.support.automation_unified_delivery_helpers import setup_run
-from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversations
+from tests.support.legacy_conversation_seed import (
+    enable_projection_columns_for_legacy_seed,
+    seed_pre_0119_social_conversations,
+)
 from tests.unit.test_self_initiative_memory import _service, record
 
 from yuki.automation.models import RunStatus
@@ -38,6 +41,7 @@ def test_0111_preserves_original_receipts_and_writes_real_scheduled_self_source(
         database = Database(url)
         try:
             await seed_pre_0119_social_conversations(database)
+            await enable_projection_columns_for_legacy_seed(database)
             case = await setup_run(
                 database,
                 tmp_path,

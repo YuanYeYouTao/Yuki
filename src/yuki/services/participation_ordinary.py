@@ -56,7 +56,7 @@ async def event_scope(
     item.pins += 1
     try:
         await sync_scope_effects(service, item)
-        await service._hydrate(item)
+        await service._hydrate(item, runtime=runtime)
         await service._validate_boundaries(item)
         identity = await actor_identity(
             service, item, (row.author_person_id,) if row.author_person_id else ()
@@ -250,27 +250,39 @@ async def on_ordinary_admitted(
 ) -> None:
     if binding is None:
         return
-    async with service._lock, event_scope(service, admission.event_id) as found:
-        if found is None:
-            return
-        _, item, event, _identity = found
-        current = await service.ordinary.current(
-            admission.event_id,
-            conversation_id=binding.conversation_id,
-            generation=binding.generation,
+    async with service._lock:
+        sources = await service.ordinary.current_sources(
+            binding.conversation_id, binding.generation, (admission.event_id,)
         )
-        unit = admission_unit_binding(current) if current is not None else None
-        if (
-            current is not None
-            and unit is not None
-            and all((await service._sources_current(item, unit.basis)).values())
-        ):
+        if not sources:
+            return
+        current, row = sources[0]
+        unit = admission_unit_binding(current)
+        if unit is None:
+            return
+
+        async def apply(item: _Session, event: ScopedEvent) -> None:
+            if not all((await service._sources_current(item, unit.basis)).values()):
+                return
+            item.controller.observe_committed_event(event)
             item.controller.observe_unit_input(
                 unit,
                 event.ref,
                 continuation=admission_continuation(current),
             )
             await service._save(item)
+
+        item = service._sessions.get((binding.conversation_id, binding.generation))
+        if item is not None:
+            event = service._event(row, item)
+            if event is not None:
+                await apply(item, event)
+            return
+        # A restarted host recovers the original controller; normal feedback
+        # updates the owner prepared for this admission without rescanning history.
+        async with event_scope(service, admission.event_id) as found:
+            if found is not None and str(source_revision(found[0])) == current.source_revision:
+                await apply(found[1], found[2])
 
 
 async def observe_main_response(

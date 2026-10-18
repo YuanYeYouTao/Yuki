@@ -21,6 +21,7 @@ from yuki.conversation.ordinary_admission import (
 )
 from yuki.conversation.projections import (
     ProjectionCapacityError,
+    ProjectionConflict,
     PromptProjectionRepository,
 )
 from yuki.domain.messages import ChatMessage, InboundMessage
@@ -65,6 +66,7 @@ class MainAgentTurnService:
         *,
         executions: ActivationTasks | None = None,
         processing_status: ProcessingStatusService | None = None,
+        projections: PromptProjectionRepository | None = None,
     ) -> None:
         self._composer = composer
         self._runner = runner
@@ -74,11 +76,15 @@ class MainAgentTurnService:
             DurableInvocations(database, self._run_prepared, self.executions) if database else None
         )
         self._projections = (
-            PromptProjectionRepository(
-                database,
+            projections
+            if projections is not None
+            else (
+                PromptProjectionRepository(
+                    database,
+                )
+                if database is not None
+                else None
             )
-            if database is not None
-            else None
         )
 
     async def recovery_contract(
@@ -120,9 +126,8 @@ class MainAgentTurnService:
                     short_state=state,
                 )
 
-            composition = compose_context(context)
             if getattr(context, "recovery_protocol", False):
-                return composition
+                return compose_context(context)
             if (
                 self._projections is None
                 or contract is None
@@ -130,7 +135,7 @@ class MainAgentTurnService:
                 or context.read_version is None
                 or context.read_version.conversation_id is None
             ):
-                return composition
+                return compose_context(context)
             version = context.read_version
             conversation_id = version.conversation_id
             assert conversation_id is not None
@@ -211,7 +216,7 @@ class MainAgentTurnService:
                         if work_session is not None
                         else ordinary_source_guard
                     )
-                    original_guard = guard.snapshot() if guard is not None else None
+                    original_guard = guard.fork() if guard is not None else None
                     original_revision = (
                         work_session.source_revision if work_session is not None else None
                     )
@@ -220,7 +225,7 @@ class MainAgentTurnService:
                     if guard is not None:
                         from yuki.services.turn_coordinator import HistorySourceChangedError
 
-                        selected_guard = WorkSourceGuard.restore(guard.snapshot())
+                        selected_guard = guard.fork()
                         try:
                             valid = await selected_guard.check(
                                 control, database=repository.database
@@ -240,18 +245,13 @@ class MainAgentTurnService:
 
                     def stage() -> None:
                         if guard is not None and selected_guard is not None:
-                            guard.version = selected_guard.version
-                            guard.fingerprint = selected_guard.fingerprint
-                            guard.additional_events = selected_guard.additional_events
+                            guard.adopt(selected_guard)
                             if work_session is not None and selected_revision is not None:
                                 work_session.source_revision = selected_revision
 
                     def rollback() -> None:
                         if guard is not None and original_guard is not None:
-                            restored = type(guard).restore(original_guard)
-                            guard.version = restored.version
-                            guard.fingerprint = restored.fingerprint
-                            guard.additional_events = restored.additional_events
+                            guard.adopt(original_guard)
                         if work_session is not None and original_revision is not None:
                             work_session.source_revision = original_revision
 
@@ -259,7 +259,6 @@ class MainAgentTurnService:
                         nonlocal projection_closed
                         assert snapshot is not None
                         prepared.committed = snapshot
-                        prepared.committed_input = list(submitted.items)
                         projection_closed = True
 
                     candidate = PreparedContextBoundary(publish, stage, rollback, finalize)
@@ -383,7 +382,7 @@ class MainAgentTurnService:
                     previous = prepared.committed
                     if previous is None:
                         raise ValueError("chat boundary requires an initial dispatched projection")
-                    old = FrozenFragments.load(previous.items())
+                    old = previous.fragments
                     selected = old.extend_history(delta, delta)
                     control = current_work_control.get()
                     if (
@@ -406,7 +405,7 @@ class MainAgentTurnService:
                     if guard is not None:
                         # Prove the original sources before publishing new ones.
                         # A rejected candidate must not mutate its persisted guard.
-                        selected_guard = WorkSourceGuard.restore(guard.snapshot())
+                        selected_guard = guard.fork()
                         try:
                             valid = await selected_guard.check(
                                 control,
@@ -436,7 +435,7 @@ class MainAgentTurnService:
                         expected_source_revision=current_version.prompt_source_revision,
                         starts_after_event_id=current_version.starts_after_event_id,
                         context_key=prepared.context_key,
-                        items=list(selected.items),
+                        fragments=selected,
                         expected_epoch=None if rebuild else previous.epoch_id,
                         expected_revision=0 if rebuild else previous.revision,
                         rebuild_reason="source_changed" if rebuild else None,
@@ -447,7 +446,7 @@ class MainAgentTurnService:
                         previous_snapshot=previous,
                         write=not already_published,
                     )
-                    original_guard = guard.snapshot() if guard is not None else None
+                    original_guard = guard.fork() if guard is not None else None
                     snapshot = None
 
                     async def publish(session: AsyncSession) -> None:
@@ -472,9 +471,7 @@ class MainAgentTurnService:
 
                     def stage() -> None:
                         if guard is not None and selected_guard is not None:
-                            guard.version = selected_guard.version
-                            guard.fingerprint = selected_guard.fingerprint
-                            guard.additional_events = selected_guard.additional_events
+                            guard.adopt(selected_guard)
                             if (
                                 control is not None
                                 and control.session is not None
@@ -484,10 +481,7 @@ class MainAgentTurnService:
 
                     def rollback() -> None:
                         if guard is not None and original_guard is not None:
-                            restored = type(guard).restore(original_guard)
-                            guard.version = restored.version
-                            guard.fingerprint = restored.fingerprint
-                            guard.additional_events = restored.additional_events
+                            guard.adopt(original_guard)
                         if (
                             control is not None
                             and control.session is not None
@@ -499,7 +493,6 @@ class MainAgentTurnService:
                         nonlocal committed, observation_watermark
                         assert snapshot is not None
                         prepared.committed = snapshot
-                        prepared.committed_input = list(selected.items)
                         observation_watermark = max(selected_event_ids)
                         committed = True
 
@@ -536,6 +529,18 @@ class MainAgentTurnService:
                 summary: str, coverage: int, retained: FrozenFragments
             ) -> tuple[ChatMessage, ...]:
                 nonlocal composition, fragments, version, projection_closed
+                published = await repository.read(view_key)
+                if (
+                    published is None
+                    or published.selected_summary_text != summary
+                    or published.selected_summary_coverage != coverage
+                    or tuple(published.fragments.iter_fragments())
+                    != tuple(retained.iter_fragments())
+                ):
+                    raise ProjectionConflict("public compact changed before adoption")
+                # Paid material is a DTO from its original journal, not a
+                # structural ancestor. Adopt only the proved published owner.
+                retained = published.fragments
                 version = replace(version, selected_summary_text=summary)
                 prepared.context = replace(
                     prepared.context,
@@ -546,10 +551,7 @@ class MainAgentTurnService:
                     read_version=version,
                 )
                 prepared.fragments = retained
-                prepared.committed = await repository.read(view_key)
-                prepared.committed_input = (
-                    prepared.committed.items() if prepared.committed is not None else None
-                )
+                prepared.committed = published
                 prepared.reason = None
                 composition = compose_context(prepared.context)
                 fragments = (

@@ -254,11 +254,7 @@ class AnthropicMessagesProvider(JSONHTTPProvider):
             }
         return payload
 
-    def _parse(self, response: httpx.Response, request: ChatRequest) -> ChatResponse:
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise LLMInvalidResponseError("provider returned invalid JSON") from exc
+    def _parse(self, response: httpx.Response, request: ChatRequest, payload: Any) -> ChatResponse:
         if not isinstance(payload, dict):
             raise LLMInvalidResponseError("Claude returned invalid content blocks")
         if not isinstance(payload.get("content"), list):
