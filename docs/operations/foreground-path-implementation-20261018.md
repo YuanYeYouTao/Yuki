@@ -41,6 +41,11 @@ Social 消息校验 2→1，多条分条计算 2→1。没有减少必要 claim/
 
 ## 验证与交付边界
 
+检查本次 CI 时发现原 `main a12f9dd1` 的[全量基线](https://github.com/YuanYeYouTao/Yuki/actions/runs/39127802227)已是 2 failed / 3067 passed / 90 skipped，耗时约 33 分钟。本分支附带修复这两项，避免把已知基线红灯留给本次优化：
+
+- 复用 [#476](https://github.com/YuanYeYouTao/Yuki/pull/476) 已提出的独立修复：ingress 透传已有 `reply_to_event_id`，优先按原内部 ID、同 Conversation 和 keeper 解析，不先丢掉它再从平台编号反查。引用本身带来的真实正文继续进入正常 Main；原测试不再把它断言为无输入，并同时核对内部 ID 与引用正文。没有引入 #476 的人物授权、迁移或管理重构。
+- 复用 #476 的 compact 前缀断言：历史长度翻倍时选中的有限前缀一致，不固定要求覆盖 20 个事件。另外删除旧 `prepare(messages=())` 得到的空序列化计数与 `0≤0` 断言；保留真实 coverage 与观察到的耗时，不把它描述成 SQL 或 CPU 扩展性实测。
+
 新增真实 SQLite 回归覆盖锁外准备、等待期间 reset/close、同 scope 冷恢复唯一性、来源修订/撤回、已提交未反馈输入的局部恢复、重复 continuation 不重复累计，以及取消保存后的真实 revision。另有真实入口到受控 Telegram ACK 的整链测试：quiet 先持久化，再依原顺序发送两条；同次 Main 的合法发送不会被自己的 quiet 追溯阻止，出站账本与原 Social 回执对应，重复入站不创建新 Main 或发送。
 
 该整链测试检查逻辑请求前缀和固定 tools；Provider wire、当前轮资料、输入交接及 usage/cache 字段另复用原回归。所有测试使用假模型与受控传输，没有调用付费模型或真实 QQ/TG 账号；它们不证明生产缓存命中率或自然流量延迟。
@@ -55,6 +60,7 @@ Social 消息校验 2→1，多条分条计算 2→1。没有减少必要 claim/
 | Social 并发、身份、原生发送、完整回执、canonical 来源与 SELF 自动化 | 分批去重 84 项通过 |
 | 原生媒体、共享原件与相关准备回归 | 25 passed，1 项 POSIX-only 在 Windows 跳过 |
 | 最后复用已验证 UnitBinding 后的冷热反馈、恢复及发送整链复验 | 31 passed |
+| 基线修复后的空输入、compact、canonical ingress、原接入回执与反馈发送整链 | 63 passed |
 | `ruff check .`、受影响 Python 文件格式、`git diff --check` | 通过 |
 | `mypy --platform linux src` | 631 份源码通过 |
 
