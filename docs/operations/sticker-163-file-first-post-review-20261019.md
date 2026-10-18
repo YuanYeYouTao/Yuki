@@ -68,3 +68,10 @@ TG旧IMAGE无MIME原件按真实字节处理TGS/WebM，Workspace无TGS预览时�
 扩展第三遍只读反查§3.2/S01–S16/F01–F17与全消费者：原Library自动收藏/首次创建赢家caption、TGS预览、CLI主动维护、纯emoji与正文先发、原Social分步回执/unknown恢复、SDK/通知/自动化、旧capability真实receipt reader、Main当前索引和固定prefix。补掉工具schema仍称“当前会话”的旧范围文案，path说明纳入共享cache；不是新增授权或分流。其余未发现新的实质缺口。
 
 原#163十一模块在新媒体实现下120 passed/93.65s，覆盖文件引擎、标签并发、主动维护、正文/纯emoji/恢复、真实FD发布、一次Qwen、direct/Code装配、主动收藏及平台通知。最后死分支后另跑21项shared/caption/TGS通过。全源码Linux mypy634份、全仓Ruff通过；完整CI、PR、合并和生产仍按真实后续结果记录，不把这些专项冒充全量或平台自然流量验收。
+
+
+## PR阶段启动顺序反查
+
+PR #480 首版9dfeb1d8的checks/integration通过时，继续检查部署启动恢复，实际发现G66。真实PluginManager正常stop把仍enabled/原grant未撤的插件状态写回approved，emoji owner早于plugin.start恢复会把原pending误close为permission_denied。正式新回归贯通真实Container、磁盘插件生命周期、PluginNotificationRepository授权/事件与原Social配图；套回旧顺序实际红，调整注册到plugins/manifest之后、Runtime之前后，含原direct/Code装配三项通过，container Mypy与Ruff通过。
+
+这次只改真实生命周期依赖顺序，不放宽授权、不增加启动状态或等待门槛。首版CI只作为首版证据；修复后PR新head重新运行完整Quality。实际生产尚未切换。

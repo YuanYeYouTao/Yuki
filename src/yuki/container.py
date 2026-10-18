@@ -821,9 +821,6 @@ class ApplicationContainer:
         )
         self.lifecycle.register("sticker_library", close=self.emoji_library.close)
         self.lifecycle.register(
-            "emoji_delivery", start=self.emoji_delivery.start, close=self.emoji_delivery.close
-        )
-        self.lifecycle.register(
             "memory_embeddings",
             start=self.memory_embeddings.start,
             close=self.memory_embeddings.close,
@@ -837,6 +834,9 @@ class ApplicationContainer:
         )
         self.plugin_module.register_lifecycle(self.plugins, self.lifecycle)
         self.lifecycle.register("main_agent_manifest", start=self._freeze_main_manifest)
+        self.lifecycle.register(
+            "emoji_delivery", start=self.emoji_delivery.start, close=self.emoji_delivery.close
+        )
         self.lifecycle.register(
             "semantic_participation",
             start=self.semantic_participation.start,
