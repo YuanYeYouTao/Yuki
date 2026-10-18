@@ -27,6 +27,7 @@ from yuki.emoji.models import (
     EmojiScopeState,
     StoredEmojiMedia,
 )
+from yuki.identity.authority import person_is_superuser
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.person_identity import person_family_condition
 from yuki.persistence.database import Database
@@ -38,6 +39,11 @@ from yuki.services.canonical_owners import (
 )
 
 EmojiJobType = Literal["analyze", "reanalyze", "rebuild_preview"]
+
+
+async def _require_admin(session: AsyncSession, person_id: str | None) -> None:
+    if person_id is not None and not await person_is_superuser(session, person_id):
+        raise PermissionError("表情管理资格已撤销。")
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +148,7 @@ class EmojiRepository:
         source_emoji_id: str = "",
         source_package_id: str = "",
         now: datetime | None = None,
+        actor_person_id: str | None = None,
     ) -> tuple[EmojiAsset, bool]:
         timestamp = now or datetime.now(UTC)
         asset_id = str(uuid.uuid4())
@@ -172,6 +179,7 @@ class EmojiRepository:
             "updated_at": timestamp,
         }
         async with self._database.immediate_session() as session:
+            await _require_admin(session, actor_person_id)
             person_id = await resolve_live_person_id(session, person_id) if person_id else None
             space_id = await resolve_live_space_id(session, space_id) if space_id else None
             values["canonical_first_seen_person_id"] = person_id
@@ -261,9 +269,11 @@ class EmojiRepository:
         *,
         now: datetime | None = None,
         session: AsyncSession | None = None,
+        actor_person_id: str | None = None,
     ) -> EmojiAsset:
         timestamp = now or datetime.now(UTC)
         async with optional_session(self._database, session, write=True) as active:
+            await _require_admin(active, actor_person_id)
             row = await active.get(EmojiAssetModel, emoji_id)
             if row is None:
                 raise LookupError("emoji asset not found")
@@ -278,9 +288,15 @@ class EmojiRepository:
             return self._asset(row)
 
     async def set_pinned(
-        self, emoji_id: str, pinned: bool, *, session: AsyncSession | None = None
+        self,
+        emoji_id: str,
+        pinned: bool,
+        *,
+        session: AsyncSession | None = None,
+        actor_person_id: str | None = None,
     ) -> EmojiAsset:
         async with optional_session(self._database, session, write=True) as active:
+            await _require_admin(active, actor_person_id)
             row = await active.get(EmojiAssetModel, emoji_id)
             if row is None:
                 raise LookupError("emoji asset not found")
@@ -301,12 +317,14 @@ class EmojiRepository:
         replacement_id: str | None = None,
         capacity: int | None = None,
         require_recognized: bool = False,
+        actor_person_id: str | None = None,
     ) -> EmojiScopeState:
         self._validate_scope(scope_type, scope_id)
         if weight < 0:
             raise ValueError("emoji scope weight must be non-negative")
         timestamp = now or datetime.now(UTC)
         async with self._database.immediate_session() as session:
+            await _require_admin(session, actor_person_id)
             if job is not None and (
                 job.emoji_id != emoji_id
                 or await session.scalar(select(EmojiJobModel.id).where(_job_claim(job))) is None
@@ -431,9 +449,11 @@ class EmojiRepository:
         *,
         scope_type: Literal["global", "group"],
         scope_id: str = "",
+        actor_person_id: str | None = None,
     ) -> bool:
         self._validate_scope(scope_type, scope_id)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            await _require_admin(session, actor_person_id)
             if scope_type == "group":
                 space_id = await resolve_live_space_id(session, scope_id)
                 result = await session.execute(
@@ -616,11 +636,19 @@ class EmojiRepository:
                 )
             return bool(await session.scalar(statement))
 
-    async def set_group_enabled(self, emoji_id: str, *, group_id: str, enabled: bool) -> None:
+    async def set_group_enabled(
+        self,
+        emoji_id: str,
+        *,
+        group_id: str,
+        enabled: bool,
+        actor_person_id: str | None = None,
+    ) -> None:
         if not group_id:
             raise ValueError("group_id is required")
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            await _require_admin(session, actor_person_id)
             asset = await session.get(EmojiAssetModel, emoji_id)
             if asset is None:
                 raise LookupError("emoji asset not found")
@@ -700,9 +728,16 @@ class EmojiRepository:
             rows = (await session.scalars(statement)).all()
             return tuple(self._asset(row) for row in rows)
 
-    async def enqueue(self, emoji_id: str, job_type: EmojiJobType = "analyze") -> bool:
+    async def enqueue(
+        self,
+        emoji_id: str,
+        job_type: EmojiJobType = "analyze",
+        *,
+        actor_person_id: str | None = None,
+    ) -> bool:
         timestamp = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+        async with self._database.immediate_session() as session:
+            await _require_admin(session, actor_person_id)
             statement = insert(EmojiJobModel).values(
                 emoji_id=emoji_id,
                 job_type=job_type,
@@ -899,8 +934,9 @@ class EmojiRepository:
             ).all()
             return tuple(self._asset(row) for row in rows)
 
-    async def delete_asset(self, emoji_id: str) -> bool:
-        async with self._database.sessions() as session, session.begin():
+    async def delete_asset(self, emoji_id: str, *, actor_person_id: str | None = None) -> bool:
+        async with self._database.immediate_session() as session:
+            await _require_admin(session, actor_person_id)
             result = await session.execute(
                 delete(EmojiAssetModel).where(
                     EmojiAssetModel.id == emoji_id,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -16,6 +17,7 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import Any, get_origin
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 import httpx
 import tomlkit
@@ -94,6 +96,68 @@ class SetupConfiguration:
     model_profiles: str
     pending_plugins: tuple[str, ...] | None
     write_model_profiles: bool = True
+    operator_policy: str | None = None
+
+
+def prepare_operator_configuration(paths: SetupPaths, environment: dict[str, str]) -> str | None:
+    """Provision the existing operator format once; preserve deployed policies and credentials."""
+    if environment.get("CONTROL_OPERATORS_FILE", "").strip():
+        return None
+    environment["CONTROL_OPERATORS_FILE"] = "config/control-operators.toml"
+    if (paths.root / environment["CONTROL_OPERATORS_FILE"]).is_file():
+        return None
+    token = environment.get("YUKI_CONTROL_OPERATOR_TOKEN", "").strip()
+    if not token or token.casefold().startswith("replace-with-"):
+        token = secrets.token_urlsafe(32)
+        environment["YUKI_CONTROL_OPERATOR_TOKEN"] = token
+    if token and (not token.isascii() or not 32 <= len(token) <= 4096):
+        raise SetupValidationError("YUKI_CONTROL_OPERATOR_TOKEN 必须是至少 32 字符的 ASCII 凭据")
+    return tomlkit.dumps(
+        {
+            "operators": [
+                {
+                    "principal_id": str(uuid4()),
+                    "token_env": "YUKI_CONTROL_OPERATOR_TOKEN",
+                    "enabled": True,
+                    "roles": ["operator"],
+                    "capabilities": [
+                        "control.system.read",
+                        "control.health.read",
+                        "control.operation.read",
+                        "control.config.read",
+                        "control.config.mutate",
+                        "control.config.file.content.read",
+                        "control.config.file.mutate",
+                        "control.plugin.read",
+                        "control.plugin.mutate",
+                        "control.plugin.config.content.read",
+                        "control.plugin.config.mutate",
+                        "control.work.read",
+                        "control.work.mutate",
+                        "control.execution.metadata.read",
+                        "control.execution.content.read",
+                        "identity.person.read",
+                        "identity.person.create",
+                        "identity.person.enable",
+                        "identity.person.disable",
+                        "identity.person.superuser",
+                        "identity.person.forget",
+                        "identity.person.merge",
+                        "identity.person.rename",
+                        "identity.binding.read",
+                        "identity.binding.attach",
+                        "identity.binding.enable",
+                        "identity.binding.disable",
+                        "identity.binding.transfer",
+                        "identity.client.pair",
+                        "identity.client.revoke",
+                        "identity.presence.read",
+                        "identity.presence.set_ingest",
+                    ],
+                }
+            ]
+        }
+    )
 
 
 def require_migrated_model_profiles(paths: SetupPaths) -> None:
@@ -343,6 +407,10 @@ def commit_configuration(
     targets: dict[Path, bytes] = {
         paths.env: document.merge(configuration.environment).encode("utf-8"),
     }
+    if configuration.operator_policy is not None:
+        targets[paths.root / "config/control-operators.toml"] = (
+            configuration.operator_policy.encode("utf-8")
+        )
     if configuration.write_model_profiles:
         targets[paths.model_profiles] = configuration.model_profiles.encode("utf-8")
     if configuration.pending_plugins is not None:
@@ -358,7 +426,11 @@ def commit_configuration(
             + "\n"
         ).encode("utf-8")
     previous = {path: path.read_bytes() if path.is_file() else None for path in targets}
-    restart_sensitive = {paths.env, paths.model_profiles}
+    restart_sensitive = {
+        paths.env,
+        paths.model_profiles,
+        paths.root / "config/control-operators.toml",
+    }
     configuration_changed = any(
         path in restart_sensitive and previous[path] != content for path, content in targets.items()
     )

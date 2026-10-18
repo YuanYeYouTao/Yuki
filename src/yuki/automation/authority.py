@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
 from enum import StrEnum
 
 from pydantic import ConfigDict, model_validator
 
 from yuki.automation.models import StrictModel, TurnOrigin
-from yuki.config import Settings
 from yuki_plugin_sdk.models import PermissionLevel as SdkPermissionLevel
 
 
@@ -52,14 +50,6 @@ class DelegatedAuthority(StrictModel):
         elif self.principal_kind != "person" or self.permission_level is PermissionLevel.SELF:
             raise ValueError("invalid_person_automation_authority")
         return self
-
-
-def permission_for_accounts(settings: Settings, account_ids: Iterable[str]) -> PermissionLevel:
-    """Current role from live account ids. Empty input is a regular user."""
-
-    if any(item in settings.superusers for item in account_ids):
-        return PermissionLevel.SUPERUSER
-    return PermissionLevel.USER
 
 
 def _permission_level_allowed(

@@ -2,11 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-from collections.abc import Iterator
-from contextlib import contextmanager
-
 import nonebot
 from fastapi import FastAPI
 from nonebot.adapters.onebot.v11 import Bot
@@ -23,21 +18,6 @@ from yuki.http_environment import load_http_environment
 from yuki.logging import configure_logging
 from yuki.persistence.instance_lock import SQLiteApplicationLock
 from yuki.persistence.schema_guard import require_canonical_schema
-
-
-@contextmanager
-def _nonebot_superusers_environment(superusers: frozenset[str]) -> Iterator[None]:
-    """Expose SUPERUSERS in the JSON form expected by NoneBot during initialization."""
-
-    previous = os.environ.get("SUPERUSERS")
-    os.environ["SUPERUSERS"] = json.dumps(sorted(superusers))
-    try:
-        yield
-    finally:
-        if previous is None:
-            os.environ.pop("SUPERUSERS", None)
-        else:
-            os.environ["SUPERUSERS"] = previous
 
 
 def register_health_routes(app: FastAPI) -> None:
@@ -60,19 +40,13 @@ def bootstrap(settings: Settings | None = None) -> None:
 
     load_http_environment()
     app_settings = settings or Settings()
-    # Yuki accepts the long-standing comma-separated SUPERUSERS setting, while
-    # NoneBot's environment source parses its own field as JSON before applying
-    # the explicit value below. Temporarily normalize the shared variable so a
-    # valid Yuki deployment cannot fail before the application starts.
-    with _nonebot_superusers_environment(app_settings.superusers):
-        nonebot.init(
-            driver="~fastapi",
-            host=app_settings.app_host,
-            port=app_settings.app_port,
-            log_level=app_settings.log_level,
-            superusers=set(app_settings.superusers),
-            onebot_access_token=app_settings.onebot_access_token or None,
-        )
+    nonebot.init(
+        driver="~fastapi",
+        host=app_settings.app_host,
+        port=app_settings.app_port,
+        log_level=app_settings.log_level,
+        onebot_access_token=app_settings.onebot_access_token or None,
+    )
     configure_logging(app_settings.log_level)
     driver = nonebot.get_driver()
     if app_settings.onebot_access_token:

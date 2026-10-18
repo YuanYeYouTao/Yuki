@@ -127,13 +127,16 @@ class EmojiLifecycleService:
         target: EmojiLifecycleStatus,
         *,
         session: AsyncSession | None = None,
+        actor_person_id: str | None = None,
     ) -> EmojiAsset:
         asset = await self._require(emoji_id, session=session)
         if target == asset.status:
             return asset
         if target not in _ALLOWED_TRANSITIONS[asset.status]:
             raise ValueError(f"illegal emoji transition: {asset.status.value} -> {target.value}")
-        updated = await self._repository.set_status(emoji_id, target, session=session)
+        updated = await self._repository.set_status(
+            emoji_id, target, session=session, actor_person_id=actor_person_id
+        )
         event = {
             EmojiLifecycleStatus.REJECTED: EventName.EMOJI_REJECTED,
             EmojiLifecycleStatus.BANNED: EventName.EMOJI_BANNED,
@@ -154,6 +157,7 @@ class EmojiLifecycleService:
         scope_id: str,
         runtime: EmojiRuntimeConfig,
         job: EmojiJob | None = None,
+        actor_person_id: str | None = None,
     ) -> None:
         asset = await self._require(emoji_id)
         if asset.status not in {
@@ -196,6 +200,7 @@ class EmojiLifecycleService:
             replacement_id=replacement_id,
             capacity=capacity,
             require_recognized=True,
+            actor_person_id=actor_person_id,
         )
         await publish_notification(
             self._event_publisher,
@@ -213,11 +218,13 @@ class EmojiLifecycleService:
         *,
         scope_type: Literal["global", "group"],
         scope_id: str,
+        actor_person_id: str | None = None,
     ) -> bool:
         removed = await self._repository.remove_scope(
             emoji_id,
             scope_type=scope_type,
             scope_id=scope_id,
+            actor_person_id=actor_person_id,
         )
         if removed:
             await publish_notification(

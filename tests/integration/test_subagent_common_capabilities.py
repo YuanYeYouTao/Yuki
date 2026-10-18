@@ -21,9 +21,7 @@ from yuki_plugin_sdk.results import ToolResult
 
 
 async def _message_child(database, tmp_path, *, privileged=False):
-    case = await setup_run(
-        database, tmp_path, mode="silent", superusers_csv="10001" if privileged else "9000"
-    )
+    case = await setup_run(database, tmp_path, mode="silent", privileged=privileged)
     async with database.sessions() as reader:
         event = await reader.scalar(select(ChatEventModel))
     source = {

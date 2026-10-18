@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import time
 
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from yuki.admin.audit import AdminAuditService
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
 from yuki.admin.authority.targets import PersonControlTarget
 from yuki.admin.models import ControlAuditRef
 from yuki.domain.control import DecisionContext
 from yuki.memory.models import MemoryFact
-from yuki.memory.service import MemoryFactService
 from yuki.services.admin.control_auth import (
     person_storage_id,
     require_capability,
@@ -29,11 +26,9 @@ class PreferenceAdminService:
     def __init__(
         self,
         *,
-        memories: MemoryFactService,
         audit: AdminAuditService,
-        memory_mutations: MemoryAdminService | None = None,
+        memory_mutations: MemoryAdminService,
     ) -> None:
-        self._memories = memories
         self._audit = audit
         self._memory_mutations = memory_mutations
 
@@ -44,8 +39,9 @@ class PreferenceAdminService:
     ) -> tuple[MemoryFact, ...]:
         require_self_or_capability(context, "control.preference.mutate", audit)
         require_capability(context, "control.preference.read")
-        return await self._memories.list_preferences(
-            person_id=person_storage_id(context),
+        target = person_storage_id(context)
+        return await self._memory_mutations.list_explicit_preferences(
+            _preference_trigger(context, audit), target, target_person_id=target
         )
 
     async def set_preference(
@@ -63,79 +59,38 @@ class PreferenceAdminService:
         if not normalized_key or not normalized_value:
             raise ValueError("偏好键和值不能为空")
         started = time.perf_counter()
-        if self._memory_mutations is not None:
-            matching = [
-                row
-                for row in await self._memories.list_preferences(
-                    person_id=target,
-                )
-                if row.key == normalized_key
-            ]
-            if len(matching) > 1:
-                raise ValueError("同一偏好键存在多条记忆，请按事实 ID 指定要修改的记录")
-            existing = matching[0] if matching else None
-            row = await self._memory_mutations.set_explicit_preference(
-                _preference_trigger(context, audit),
-                target,
-                normalized_key,
-                normalized_value,
-                existing=existing,
-                target_person_id=target,
+        matching = [
+            row
+            for row in await self._memory_mutations.list_explicit_preferences(
+                _preference_trigger(context, audit), target, target_person_id=target
             )
-            await self._audit.record(
-                actor=audit,
-                capability="preference",
-                operation="set",
-                target_type="user",
-                target_id=target,
-                before={
-                    "key": normalized_key,
-                    "preference_value": existing.value if existing else None,
-                },
-                after={"key": normalized_key, "preference_value": normalized_value},
-                success=True,
-                duration_seconds=time.perf_counter() - started,
-            )
-            return row
-
-        async def write(session: AsyncSession) -> MemoryFact:
-            matching = [
-                row
-                for row in await self._memories.list_preferences(
-                    person_id=target,
-                    session=session,
-                )
-                if row.key == normalized_key
-            ]
-            if len(matching) > 1:
-                raise ValueError("同一偏好键存在多条记忆，请按事实 ID 指定要修改的记录")
-            existing = matching[0] if matching else None
-            row = await self._memories.set_preference(
-                target,
-                normalized_key,
-                normalized_value,
-                session=session,
-                person_id=target,
-            )
-            await self._audit.record(
-                actor=audit,
-                capability="preference",
-                operation="set",
-                target_type="user",
-                target_id=target,
-                before={
-                    "key": normalized_key,
-                    "preference_value": existing.value if existing else None,
-                },
-                after={"key": normalized_key, "preference_value": normalized_value},
-                success=True,
-                duration_seconds=time.perf_counter() - started,
-                session=session,
-            )
-            return row
-
-        row = await self._memories.repository.apply_evidence_write(write)
-        await self._memories.schedule_embedding(row.id)
+            if row.key == normalized_key
+        ]
+        if len(matching) > 1:
+            raise ValueError("同一偏好键存在多条记忆，请按事实 ID 指定要修改的记录")
+        existing = matching[0] if matching else None
+        row = await self._memory_mutations.set_explicit_preference(
+            _preference_trigger(context, audit),
+            target,
+            normalized_key,
+            normalized_value,
+            existing=existing,
+            target_person_id=target,
+        )
+        await self._audit.record(
+            actor=audit,
+            capability="preference",
+            operation="set",
+            target_type="user",
+            target_id=target,
+            before={
+                "key": normalized_key,
+                "preference_value": existing.value if existing else None,
+            },
+            after={"key": normalized_key, "preference_value": normalized_value},
+            success=True,
+            duration_seconds=time.perf_counter() - started,
+        )
         return row
 
     async def delete_preference(
@@ -149,80 +104,41 @@ class PreferenceAdminService:
         target = person_storage_id(context)
         normalized_key = key.strip()
         started = time.perf_counter()
-        if self._memory_mutations is not None:
-            matching = [
-                row
-                for row in await self._memories.list_preferences(
-                    person_id=target,
-                )
-                if row.key == normalized_key
-            ]
-            if len(matching) > 1:
-                raise ValueError("同一偏好键存在多条记忆，请按事实 ID 指定要修改的记录")
-            existing = matching[0] if matching else None
-            deleted = bool(
-                existing is not None
-                and await self._memory_mutations.delete_explicit_preference(
-                    _preference_trigger(context, audit),
-                    target,
-                    existing,
-                    target_person_id=target,
-                )
+        matching = [
+            row
+            for row in await self._memory_mutations.list_explicit_preferences(
+                _preference_trigger(context, audit), target, target_person_id=target
             )
-            await self._audit.record(
-                actor=audit,
-                capability="preference",
-                operation="delete",
-                target_type="user",
-                target_id=target,
-                before={
-                    "key": normalized_key,
-                    "preference_value": existing.value if existing else None,
-                },
-                after=None,
-                success=deleted,
-                error_category=None if deleted else "not_found",
-                duration_seconds=time.perf_counter() - started,
-            )
-            return deleted
-
-        async def write(session: AsyncSession) -> bool:
-            matching = [
-                row
-                for row in await self._memories.list_preferences(
-                    person_id=target,
-                    session=session,
-                )
-                if row.key == normalized_key
-            ]
-            if len(matching) > 1:
-                raise ValueError("同一偏好键存在多条记忆，请按事实 ID 指定要修改的记录")
-            existing = matching[0] if matching else None
-            deleted = await self._memories.delete_preference(
+            if row.key == normalized_key
+        ]
+        if len(matching) > 1:
+            raise ValueError("同一偏好键存在多条记忆，请按事实 ID 指定要修改的记录")
+        existing = matching[0] if matching else None
+        deleted = bool(
+            existing is not None
+            and await self._memory_mutations.delete_explicit_preference(
+                _preference_trigger(context, audit),
                 target,
-                normalized_key,
-                session=session,
-                person_id=target,
+                existing,
+                target_person_id=target,
             )
-            await self._audit.record(
-                actor=audit,
-                capability="preference",
-                operation="delete",
-                target_type="user",
-                target_id=target,
-                before={
-                    "key": normalized_key,
-                    "preference_value": existing.value if existing else None,
-                },
-                after=None,
-                success=deleted,
-                error_category=None if deleted else "not_found",
-                duration_seconds=time.perf_counter() - started,
-                session=session,
-            )
-            return deleted
-
-        return await self._memories.repository.apply_evidence_write(write)
+        )
+        await self._audit.record(
+            actor=audit,
+            capability="preference",
+            operation="delete",
+            target_type="user",
+            target_id=target,
+            before={
+                "key": normalized_key,
+                "preference_value": existing.value if existing else None,
+            },
+            after=None,
+            success=deleted,
+            error_category=None if deleted else "not_found",
+            duration_seconds=time.perf_counter() - started,
+        )
+        return deleted
 
 
 def _preference_trigger(
@@ -241,5 +157,11 @@ def _preference_trigger(
         decision_actor_type=audit.decision_actor_type,
         decision_actor_id=audit.decision_actor_id,
         actor_is_superuser="superuser" in principal.roles,
-        person_id=principal.person_id.text if principal.person_id else None,
+        person_id=(
+            principal.principal_id.text
+            if principal.source in {PrincipalSource.PLATFORM, PrincipalSource.QQ}
+            else principal.person_id.text
+            if principal.person_id
+            else None
+        ),
     )

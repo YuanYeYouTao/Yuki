@@ -1343,18 +1343,22 @@ class MemoryFactRepository:
             for row in rows
         )
 
-    async def list_state_events(self, fact_id: int) -> tuple[MemoryFactStateEvent, ...]:
-        async with self._database.sessions() as session:
-            rows = (
-                await session.scalars(
-                    select(MemoryFactStateEventModel)
-                    .where(MemoryFactStateEventModel.fact_id == fact_id)
-                    .order_by(
-                        MemoryFactStateEventModel.created_at,
-                        MemoryFactStateEventModel.id,
-                    )
+    async def list_state_events(
+        self, fact_id: int, *, session: AsyncSession | None = None
+    ) -> tuple[MemoryFactStateEvent, ...]:
+        if session is None:
+            async with self._database.sessions() as owned:
+                return await self.list_state_events(fact_id, session=owned)
+        rows = (
+            await session.scalars(
+                select(MemoryFactStateEventModel)
+                .where(MemoryFactStateEventModel.fact_id == fact_id)
+                .order_by(
+                    MemoryFactStateEventModel.created_at,
+                    MemoryFactStateEventModel.id,
                 )
-            ).all()
+            )
+        ).all()
         return tuple(
             MemoryFactStateEvent(
                 id=row.id,

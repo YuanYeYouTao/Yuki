@@ -34,12 +34,13 @@ class AutomationCommandHandler:
 
         if self._automation is None:
             return "自动化功能当前未启用。"
+        assert message.person_id is not None
         parts = argument.split()
         operation = parts.pop(0).casefold() if parts else "list"
         if operation == "list":
             if parts:
                 return "格式：/ai automation list"
-            rows = await self._automation.list_current(message.sender.user_id)
+            rows = await self._automation.list_current(message.person_id)
             if not rows:
                 return "当前没有运行中或已暂停的自动化任务。\n已结束任务：/ai automation completed"
             lines = ["最近当前任务："]
@@ -53,7 +54,7 @@ class AutomationCommandHandler:
         if operation in {"completed", "archive"}:
             if parts:
                 return "格式：/ai automation completed"
-            rows = await self._automation.list_completed(message.sender.user_id)
+            rows = await self._automation.list_completed(message.person_id)
             if not rows:
                 return "完成历史为空。"
             lines = ["最近完成历史："]

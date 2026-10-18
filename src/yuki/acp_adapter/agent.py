@@ -348,7 +348,14 @@ class YukiAgent:
             await client.prepare_message(text, request_id=identity)
             active.submitted = True
             try:
-                await self._submit(client, identity)
+                try:
+                    await self._submit(client, identity)
+                except ClientProblem:
+                    # A replay can already have a failed original turn. Its confirmed
+                    # output still belongs to this prompt and must be flushed by _finish.
+                    original = await client.query(identity)
+                    if not original["found"] or original["operation_kind"] != "message":
+                        raise
             finally:
                 active.ready.set()
             return await self._finish(client, session_id, active)

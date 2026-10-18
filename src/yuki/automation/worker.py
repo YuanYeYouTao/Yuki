@@ -153,7 +153,6 @@ class AutomationWorker:
                     assert automation.canonical_creator_person_id is not None
                     actor_user_id, _ = await resolve_execution_identity(
                         session,
-                        self._settings,
                         owner_id=automation.canonical_creator_person_id,
                         conversation_id=conversation_id,
                         presence_id=presence.id,
@@ -256,7 +255,7 @@ class AutomationWorker:
                     state.id,
                     source,
                     request_id=execution_id,
-                    settings=self._settings,
+
                 )
 
                 async def validate() -> None:
@@ -265,7 +264,7 @@ class AutomationWorker:
                         state.id,
                         source,
                         request_id=execution_id,
-                        settings=self._settings,
+
                     )
                     if fresh != recovered:
                         raise ValueError("automation_source_changed")

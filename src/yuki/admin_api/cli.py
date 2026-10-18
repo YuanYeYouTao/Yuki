@@ -1,4 +1,4 @@
-"""Finite management CLI; credentials and secret values stay out of arguments."""
+"""Explicit management CLI over the running Bot's operator API."""
 
 from __future__ import annotations
 
@@ -19,12 +19,17 @@ def _mutation(parser: argparse.ArgumentParser, *, revision: bool = True) -> None
         parser.add_argument("--revision", type=int, required=True)
 
 
+def _listing(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--after", default="")
+    parser.add_argument("--limit", type=int, default=100)
+
+
 def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    admin = subparsers.add_parser("admin", help="通过 Bearer API 管理运行中的 Yuki")
+    admin = subparsers.add_parser("admin", help="通过 operator API 管理正在运行的 Yuki")
     commands = admin.add_subparsers(dest="admin_command", required=True)
     commands.add_parser("health")
     operation = commands.add_parser("operation")
-    operation.add_argument("id", help="原 operation ID 或本 operator 的 request UUID")
+    operation.add_argument("id", help="原 operation ID 或本 operator 的请求 UUID")
     trace = commands.add_parser("trace")
     trace.add_argument("kind", choices=("turn", "work", "event"))
     trace.add_argument("id")
@@ -32,14 +37,16 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     trace.add_argument("--after", type=int, default=0)
     trace.add_argument("--limit", type=int, default=100)
     person = commands.add_parser("person").add_subparsers(dest="person_action", required=True)
+    _listing(person.add_parser("list"))
     created = person.add_parser("create")
     created.add_argument("--display-name", default="")
     _mutation(created, revision=False)
     shown = person.add_parser("show")
     shown.add_argument("id")
-    disabled = person.add_parser("disable")
-    disabled.add_argument("id")
-    _mutation(disabled)
+    for action in ("enable", "disable"):
+        state = person.add_parser(action)
+        state.add_argument("id")
+        _mutation(state)
     forgotten = person.add_parser("forget")
     forgotten.add_argument("id")
     _mutation(forgotten, revision=False)
@@ -51,6 +58,11 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     renamed.add_argument("id")
     renamed.add_argument("display_name")
     _mutation(renamed, revision=False)
+    role = person.add_parser("superuser").add_subparsers(dest="superuser_action", required=True)
+    for action in ("grant", "revoke"):
+        state = role.add_parser(action)
+        state.add_argument("id")
+        _mutation(state)
     personal = commands.add_parser("client").add_subparsers(dest="client_action", required=True)
     pair = personal.add_parser("pair")
     pair.add_argument("--person", required=True)
@@ -59,36 +71,57 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     revoke.add_argument("id")
     _mutation(revoke, revision=False)
     binding = commands.add_parser("binding").add_subparsers(dest="binding_action", required=True)
-    attach = binding.add_parser("attach")
-    attach.add_argument("--person", required=True)
-    attach.add_argument("--platform", required=True)
-    attach.add_argument("--account", required=True)
-    attach.add_argument("--display-name", default="")
-    _mutation(attach)
+    listing = binding.add_parser("list")
+    _listing(listing)
+    listing.add_argument("--person")
+    listing.add_argument("--platform")
+    listing.add_argument("--account")
+    attached = binding.add_parser("attach")
+    attached.add_argument("--person", required=True)
+    attached.add_argument("--platform", required=True)
+    attached.add_argument("--account", required=True)
+    attached.add_argument("--display-name", default="")
+    _mutation(attached)
     shown = binding.add_parser("show")
     shown.add_argument("id")
-    disabled = binding.add_parser("disable")
-    disabled.add_argument("id")
-    _mutation(disabled)
+    for action in ("enable", "disable"):
+        state = binding.add_parser(action)
+        state.add_argument("id")
+        _mutation(state)
     transfer = binding.add_parser("transfer")
     transfer.add_argument("id")
     transfer.add_argument("--to-person", required=True)
     _mutation(transfer, revision=False)
+    presence = commands.add_parser("presence").add_subparsers(dest="presence_action", required=True)
+    _listing(presence.add_parser("list"))
+    shown = presence.add_parser("show")
+    shown.add_argument("id")
+    for action in ("enable", "disable", "ingest"):
+        state = presence.add_parser(action)
+        state.add_argument("id")
+        _mutation(state)
+        if action == "ingest":
+            state.add_argument("state", choices=("on", "off"))
     model = commands.add_parser("model").add_subparsers(dest="model_action", required=True)
     model.add_parser("show")
     apply = model.add_parser("apply")
-    apply.add_argument("file", type=Path, help="model_profiles 的 TOML 或 JSON document")
+    apply.add_argument("file", type=Path)
     _mutation(apply)
     secret = model.add_parser("secret").add_subparsers(dest="secret_action", required=True)
     setting = secret.add_parser("set")
     setting.add_argument("name")
-    setting.add_argument("--from-env", required=True, help="从指定环境变量读取新密钥")
+    setting.add_argument("--from-env", required=True)
     _mutation(setting)
     work = commands.add_parser("work").add_subparsers(dest="work_action", required=True)
+    listing = work.add_parser("list")
+    _listing(listing)
+    listing.add_argument("--state")
+    shown = work.add_parser("show")
+    shown.add_argument("id")
     for action in ("cancel", "resume"):
-        parser = work.add_parser(action)
-        parser.add_argument("id")
-        _mutation(parser)
+        state = work.add_parser(action)
+        state.add_argument("id")
+        _mutation(state)
 
 
 async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
@@ -103,67 +136,10 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
             data = await read(
                 client,
                 f"traces/{args.kind}/{args.id}",
-                content=args.content,
                 after=args.after,
                 limit=args.limit,
+                content=args.content,
             )
-        elif kind == "person":
-            if args.person_action == "show":
-                data = await read(client, f"persons/{args.id}")
-            elif args.person_action in {"merge", "rename"}:
-                values = (
-                    {"to_person": args.to_person}
-                    if args.person_action == "merge"
-                    else {"display_name": args.display_name}
-                )
-                data = await identity_mutation(
-                    client,
-                    f"persons/{args.id}/{args.person_action}",
-                    request_id=args.request_id,
-                    **values,
-                )
-            elif args.person_action == "forget":
-                data = await identity_mutation(
-                    client, f"persons/{args.id}/forget", request_id=args.request_id
-                )
-            else:
-                path = "persons" if args.person_action == "create" else f"persons/{args.id}/disable"
-                fields = (
-                    {"display_name": args.display_name}
-                    if args.person_action == "create" and args.display_name
-                    else {}
-                )
-                data = await mutate(
-                    client,
-                    path,
-                    getattr(args, "revision", 0),
-                    request_id=args.request_id,
-                    **fields,
-                )
-        elif kind == "binding":
-            if args.binding_action == "show":
-                data = await read(client, f"bindings/{args.id}")
-            elif args.binding_action == "attach":
-                data = await mutate(
-                    client,
-                    f"persons/{args.person}/bindings",
-                    args.revision,
-                    request_id=args.request_id,
-                    platform=args.platform,
-                    external_account_id=args.account,
-                    display_name=args.display_name,
-                )
-            elif args.binding_action == "transfer":
-                data = await identity_mutation(
-                    client,
-                    f"bindings/{args.id}/transfer",
-                    request_id=args.request_id,
-                    to_person=args.to_person,
-                )
-            else:
-                data = await mutate(
-                    client, f"bindings/{args.id}/disable", args.revision, request_id=args.request_id
-                )
         elif kind == "client":
             path = (
                 f"persons/{args.person}/client-pair"
@@ -175,8 +151,8 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
             if args.model_action == "show":
                 data = await read(client, "models")
             elif args.model_action == "apply":
-                raw = args.file.read_text(encoding="utf-8")
-                document = tomllib.loads(raw) if args.file.suffix == ".toml" else json.loads(raw)
+                text = args.file.read_text(encoding="utf-8")
+                document = json.loads(text) if args.file.suffix == ".json" else tomllib.loads(text)
                 data = await mutate(
                     client,
                     "models/apply",
@@ -194,11 +170,77 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
                     value=os.environ[args.from_env],
                 )
         else:
-            data = await mutate(
-                client,
-                f"works/{args.id}/{args.work_action}",
-                args.revision,
-                request_id=args.request_id,
-            )
+            action = getattr(args, f"{kind}_action")
+            plural = {
+                "person": "persons",
+                "binding": "bindings",
+                "presence": "presences",
+                "work": "works",
+            }[kind]
+            if action == "list":
+                params: dict[str, Any] = {"after": args.after, "limit": args.limit}
+                if kind == "binding":
+                    params.update(
+                        {
+                            key: value
+                            for key, value in {
+                                "person_id": args.person,
+                                "platform": args.platform,
+                                "external_account_id": args.account,
+                            }.items()
+                            if value is not None
+                        }
+                    )
+                elif kind == "work" and args.state is not None:
+                    params["state"] = args.state
+                data = await read(client, plural, **params)
+            elif action == "show":
+                data = await read(client, f"{plural}/{args.id}")
+            elif kind == "person" and action == "create":
+                data = await mutate(
+                    client, "persons", 0, request_id=args.request_id, display_name=args.display_name
+                )
+            elif action in {"forget", "merge", "rename", "transfer"}:
+                values = (
+                    {"to_person": args.to_person}
+                    if action in {"merge", "transfer"}
+                    else {"display_name": args.display_name}
+                    if action == "rename"
+                    else {}
+                )
+                data = await identity_mutation(
+                    client, f"{plural}/{args.id}/{action}", request_id=args.request_id, **values
+                )
+            elif kind == "binding" and action == "attach":
+                data = await mutate(
+                    client,
+                    f"persons/{args.person}/bindings",
+                    args.revision,
+                    request_id=args.request_id,
+                    platform=args.platform,
+                    external_account_id=args.account,
+                    display_name=args.display_name,
+                )
+            elif kind == "presence":
+                values = (
+                    {"ingest_eligible": args.state == "on"}
+                    if action == "ingest"
+                    else {"enabled": action == "enable"}
+                )
+                data = await mutate(
+                    client,
+                    f"presences/{args.id}",
+                    args.revision,
+                    request_id=args.request_id,
+                    **values,
+                )
+            else:
+                suffix = f"superuser/{args.superuser_action}" if action == "superuser" else action
+                data = await mutate(
+                    client,
+                    f"{plural}/{args.id}/{suffix}",
+                    args.revision,
+                    request_id=args.request_id,
+                )
         print(json.dumps(data, ensure_ascii=False, indent=2))
         return 0

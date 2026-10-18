@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import insert, select, update
-from tests.unit.test_memory_rebuild import _service
+from tests.unit.test_memory_rebuild import _admin, _service
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ScopeType
@@ -73,7 +73,7 @@ async def _seed(
             input_characters=count * 6,
             estimated_extraction_requests=count,
         ),
-        actor_user_id="9000",
+        actor_user_id=await _admin(database),
     )
     async with database.sessions() as session, session.begin():
         original = await session.get(ChatEventModel, first.id)

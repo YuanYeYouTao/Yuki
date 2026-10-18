@@ -57,7 +57,9 @@ def _problem(code: ProblemCode) -> Problem:
 
 
 def _dump_json(value: Mapping[str, JsonValue]) -> str:
-    return json.dumps(dict(value), ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return json.dumps(
+        dict(value), ensure_ascii=True, sort_keys=True, separators=(",", ":"), default=dict
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,6 +370,8 @@ class CommandReceiptRepository:
             ControlCommandReceiptModel(
                 principal_id=principal.principal_id.text,
                 request_id=command.request_id.text,
+                source_event_id=command.source_event_id,
+                expected_revision=command.expected_revision,
                 payload_hash=payload_hash,
                 status="running",
                 audit_id=audit.id,
@@ -756,6 +760,8 @@ class CommandReceiptRepository:
         receipt = existing_receipt or ControlCommandReceiptModel(
             principal_id=principal.principal_id.text,
             request_id=command.request_id.text,
+            source_event_id=command.source_event_id,
+            expected_revision=command.expected_revision,
             payload_hash=payload_hash,
             created_at=stamp,
         )
@@ -821,6 +827,8 @@ class CommandReceiptRepository:
         receipt = existing_receipt or ControlCommandReceiptModel(
             principal_id=principal.principal_id.text,
             request_id=command.request_id.text,
+            source_event_id=command.source_event_id,
+            expected_revision=command.expected_revision,
             payload_hash=payload_hash,
             created_at=stamp,
         )

@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from yuki.codemode.contract import CODE_API_REVISION
 from yuki.codemode.tool_visibility import DIRECT_TOOL_NAMES, LOOKUP_TOOLS, model_definitions
 from yuki.domain.messages import ChatTool
+from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.runtime.work_control import work_control_tools
 from yuki.services.agent_tools import ToolRuntime
 from yuki.workspace.short_state import STATE_TOOL, ShortState
@@ -102,8 +103,8 @@ class MainAgentContract:
                     {
                         # 14: retired MCP and fixed direct view, discovery and full execution API.
                         # 19: lifecycle decisions settle after the original tool round.
-                        # 22: fixed external Agent invocation over original Work receipts.
-                        "version": 22,
+                        # 23: first-party App/ACP share the fixed personal entry view.
+                        "version": 23,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),
@@ -160,7 +161,7 @@ class MainAgentContract:
                 )
                 .where(CanonicalConversationModel.id == conversation_id)
             )
-        return "app" if platform == "app" else "platform"
+        return "app" if platform in LOCAL_CLIENT_PLATFORMS else "platform"
 
     def plugin_binding_current(self, name: str) -> bool:
         expected = self.plugin_contracts.get(name)

@@ -14,10 +14,12 @@ from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
 from yuki.admin.authority.commands import ControlCommand
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
-from yuki.admin_api.commands import AdminCommands
+from yuki.admin.operations.base import CommandExecutor
+from yuki.admin.operations.work import WorkOperations
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.identity import PrincipalId, RequestId
 from yuki.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.llm.base import LLMUnavailableError
 from yuki.llm.fake import FakeLLMProvider
 from yuki.runtime.work_control import WorkControl
@@ -45,7 +47,7 @@ async def public_action(database, row, action):
         expected_revision=row["revision"],
         payload={"resource_id": row["id"], "action": action},
     )
-    return await AdminCommands(database, None, None).work_action(
+    return await WorkOperations(CommandExecutor(database)).work_action(
         principal, row["id"], action, command
     )
 
@@ -90,7 +92,9 @@ def original_responses(provider):
 
 
 @pytest.mark.parametrize("current_superuser", [False, True])
-async def test_message_work_recovery_uses_current_superusers(database, tmp_path, current_superuser):
+async def test_message_work_recovery_uses_current_person_qualification(
+    database, tmp_path, current_superuser
+):
     provider = FakeLLMProvider()
     provider._responder = original_responses(provider)
     env, harness, chat, _, message = await _scene(database, tmp_path, provider, request_limit=1)
@@ -106,9 +110,10 @@ async def test_message_work_recovery_uses_current_superusers(database, tmp_path,
             .where(work.c.id == original["id"])
             .values(source_json=json.dumps(frozen_source))
         )
-    settings = make_settings(
-        database.url, superusers_csv=message.sender.user_id if current_superuser else ""
-    )
+    async with database.immediate_session() as writer:
+        actor = await writer.get(CanonicalPersonModel, message.person_id)
+        actor.is_superuser = current_superuser
+    settings = make_settings(database.url)
     authorities = []
 
     async def capture_wakeup(**kwargs):
@@ -687,12 +692,11 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         from yuki.automation.control_context import resolve_execution_identity
         from yuki.identity.db_models import IdentityBindingModel
 
-        assert "9000" in case.settings.superusers
-        case.settings.superusers_csv = "9000,9001"
-        del case.settings.__dict__["superusers"]
         await case.env.router.cas_takeover_person(case.env.person)
         now = case.clock.now()
         async with database.immediate_session() as writer:
+            person = await writer.get(CanonicalPersonModel, case.env.person)
+            person.is_superuser = True
             writer.add(
                 IdentityBindingModel(
                     id=str(uuid4()),
@@ -707,9 +711,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
                 )
             )
         async with database.sessions() as reader:
-            actor, permission = await resolve_execution_identity(
-                reader, case.settings, owner_id=case.env.person
-            )
+            actor, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
         assert actor == "" and permission is PermissionLevel.SUPERUSER
     resumed_actors = []
 
@@ -989,7 +991,9 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
     if revoked:
         host._approved_permissions = frozenset()
     elif authority == "promoted":
-        host._superuser_ids = frozenset({message.sender.user_id})
+        async with database.immediate_session() as writer:
+            person = await writer.get(CanonicalPersonModel, message.person_id)
+            person.is_superuser = True
     main = chat.runtime.main_turns
     original_run = main.run
     resumed_authorities = []

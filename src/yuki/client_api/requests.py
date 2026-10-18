@@ -221,12 +221,21 @@ class ClientRequests:
             )
             from yuki.client_api.prompts import message_payload
 
+            problem = None
+            if command is not None and command.problem_code:
+                from yuki.persistence.models import AdminOperationEventModel
+
+                audit = await session.get(AdminOperationEventModel, command.audit_id)
+                assert audit is not None
+                problem = {"code": command.problem_code, **json.loads(audit.after_json)}
             facts = {
                 "found": True,
                 "operation_kind": "message",
                 "event_id": event.id,
                 "conversation_id": event.canonical_conversation_id,
                 "target": principal.conversation_id,
+                "problem_code": command.problem_code if command is not None else None,
+                "problem": problem,
                 "payload_hash": fingerprint(
                     "message",
                     principal.conversation_id,

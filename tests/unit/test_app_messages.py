@@ -17,6 +17,7 @@ from yuki.admin_api.http import attach_admin_api
 from yuki.client_api.files import ClientFiles
 from yuki.client_api.http import ClientApi, attach_client_api
 from yuki.client_api.messages import ClientMessages
+from yuki.client_api.prompts import ClientPrompts
 from yuki.client_api.views import ClientViews
 from yuki.client_api.works import ClientWorks
 from yuki.conversation.media_service import ConversationMediaService
@@ -92,16 +93,22 @@ async def app_env(database, admin, tmp_path):
     social.workspace = store
     gateway = AppGateway(database, registry, harness.processor, social)
     await gateway.start()
-    messages = ClientMessages(api.commands.identities, gateway)
-    works = ClientWorks(api.commands.identities, gateway)
-    views = ClientViews(api.commands.identities, works)
-    files = ClientFiles(ConversationUploads(api.commands.identities, media), views, store)
+    prompts = ClientPrompts(
+        api.identities,
+        {"app": gateway},
+        harness.processor._chat.runtime.bindings,
+        concurrency=harness.concurrency,
+    )
+    messages = ClientMessages(api.identities, gateway, prompts=prompts)
+    works = ClientWorks(api.identities, gateway)
+    views = ClientViews(api.identities, works)
+    files = ClientFiles(ConversationUploads(api.identities, media), views, store)
     messages.files = files
     app = FastAPI()
     attach_admin_api(app, lambda: api)
     attach_client_api(
         app,
-        lambda: ClientApi(api.commands.identities, messages, works, views, files),
+        lambda: ClientApi(api.identities, messages, works, views, files, prompts),
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -113,7 +120,7 @@ async def app_env(database, admin, tmp_path):
             harness=harness,
             calls=calls,
             provider=provider,
-            identity=api.commands.identities,
+            identity=api.identities,
             service=messages,
             social=social,
             files=files,
@@ -489,16 +496,26 @@ async def test_app_execution_preserves_entry_and_uses_only_its_persons_real_gran
         superuser = await find_identity_binding(session, "9000")
         account, permission = await resolve_execution_identity(
             session,
-            env.harness.settings,
             owner_id=person,
             conversation_id=principal.conversation_id,
         )
     assert account == principal.external_account_id and permission is PermissionLevel.USER
     await env.identity.transfer_for_operator(superuser.id, person, str(uuid4()), str(uuid4()))
     async with database.sessions() as session:
+        _, permission = await resolve_execution_identity(
+            session,
+            owner_id=person,
+            conversation_id=principal.conversation_id,
+        )
+    assert permission is PermissionLevel.USER
+    from yuki.identity.db_models import CanonicalPersonModel
+
+    async with database.immediate_session() as writer:
+        owner = await writer.get(CanonicalPersonModel, person)
+        owner.is_superuser = True
+    async with database.sessions() as session:
         account, permission = await resolve_execution_identity(
             session,
-            env.harness.settings,
             owner_id=person,
             conversation_id=principal.conversation_id,
         )

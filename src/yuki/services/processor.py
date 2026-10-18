@@ -17,12 +17,10 @@ from pydantic import ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.admin.audit import AdminAuditService
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import (
     RuntimeConfigSnapshot,
 )
-from yuki.admin.permission_catalog import PermissionCatalogService
 from yuki.asr.service import ASRService, AudioInput
 from yuki.automation.models import TurnOrigin
 from yuki.automation.repository import AutomationRepository
@@ -82,11 +80,6 @@ from yuki.runtime.observability import (
     new_runtime_turn_id,
 )
 from yuki.runtime.work_repository import WorkCapacityError, WorkConflict
-from yuki.services.admin.config_admin import ConfigAdminService
-from yuki.services.admin.group_admin import GroupAdminService
-from yuki.services.admin.memory_admin import MemoryAdminService
-from yuki.services.admin.preference_admin import PreferenceAdminService
-from yuki.services.admin.private_access_admin import PrivateAccessAdminService
 from yuki.services.attachment_inputs import AttachmentInputService
 from yuki.services.autonomous_groups import AutonomousGroupService
 from yuki.services.chat import ChatService, OutboundSender
@@ -152,7 +145,6 @@ class DirectPluginCommandResolver(Protocol):
 
 
 RATE_LIMIT_MESSAGE = "请求过于频繁，请稍后再试。"
-IMAGE_WRITE_ISOLATION_MESSAGE = "图片或回复图片所在的轮次不会执行写入操作，请改用纯文本消息。"
 IMAGE_FAILURE_MESSAGE = "这张图片暂时没有识别成功，可以重新发送一张更清晰的版本。"
 IMAGE_RATE_LIMIT_MESSAGE = "图片理解请求过于频繁，请稍后再试。"
 IMAGE_QUEUE_BUSY_MESSAGE = "当前图片识别任务较多，请稍后再试。"
@@ -350,7 +342,7 @@ class MessageProcessor:
         from yuki.identity.authority import person_is_superuser
 
         async with self._ledger._database.sessions() as session:
-            return await person_is_superuser(session, person_id, self._settings.superusers)
+            return await person_is_superuser(session, person_id)
 
     def __init__(
         self,
@@ -364,18 +356,12 @@ class MessageProcessor:
         chat: ChatService,
         rate_limiter: SlidingWindowRateLimiter,
         concurrency: ConcurrencyManager,
-        onebot_connected: Callable[[], bool],
+        command_service: CommandService,
         people: PeopleRepository | None = None,
         memories: MemoryFactService | None = None,
         memory_worker: MemoryWorker | None = None,
         autonomous_groups: AutonomousGroupService | None = None,
         runtime_config: RuntimeConfigService | None = None,
-        memory_admin: MemoryAdminService | None = None,
-        preference_admin: PreferenceAdminService | None = None,
-        group_admin: GroupAdminService | None = None,
-        private_access_admin: PrivateAccessAdminService | None = None,
-        config_admin: ConfigAdminService | None = None,
-        permission_catalog: PermissionCatalogService | None = None,
         vision_service: VisionService | None = None,
         asr_service: ASRService | None = None,
         attachment_inputs: AttachmentInputService | None = None,
@@ -383,7 +369,6 @@ class MessageProcessor:
         automation_service: AutomationService | None = None,
         automation_repository: AutomationRepository | None = None,
         automation_worker: AutomationWorker | None = None,
-        command_service: CommandService | None = None,
         direct_plugin_commands: DirectPluginCommandResolver | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
         admission_signals: AdmissionSignalProvider | None = None,
@@ -406,7 +391,6 @@ class MessageProcessor:
         self._chat = chat
         self._rate_limiter = rate_limiter
         self._concurrency = concurrency
-        self._onebot_connected = onebot_connected
         self._ledger = ledger
         self.ordinary_admissions = OrdinaryAdmissionRepository(database)
         self._participation: OrdinaryParticipationService | None = None
@@ -429,53 +413,12 @@ class MessageProcessor:
         )
         self._turn_coordinator = turn_coordinator or chat._turn_coordinator
         self._admission_signals = admission_signals
-        audit = AdminAuditService(database)
-        self._memory_admin = memory_admin or MemoryAdminService(
-            settings=settings,
-            memories=self._memories,
-            audit=audit,
-        )
-        self._preference_admin = preference_admin or PreferenceAdminService(
-            memories=self._memories,
-            audit=audit,
-        )
-        self._group_admin = group_admin or GroupAdminService(
-            groups=self._groups,
-            audit=audit,
-        )
-        self._private_access_admin = private_access_admin or PrivateAccessAdminService(
-            private_users=self._private_users,
-            audit=audit,
-        )
-        self._config_admin = config_admin or ConfigAdminService(self._runtime_config)
-        self._permission_catalog = permission_catalog or PermissionCatalogService(
-            settings=settings,
-            config_registry=self._runtime_config.registry,
-        )
         self._native_images = attachment_inputs
         self._conversation_media = conversation_media
         self._automation = automation_service
         self._automation_repository = automation_repository
         self._automation_worker = automation_worker
-        self._commands = command_service or CommandService(
-            settings=settings,
-            people=self._people,
-            memories=self._memories,
-            concurrency=concurrency,
-            onebot_connected=onebot_connected,
-            runtime_config=self._runtime_config,
-            memory_admin=self._memory_admin,
-            preference_admin=self._preference_admin,
-            group_admin=self._group_admin,
-            private_access_admin=self._private_access_admin,
-            config_admin=self._config_admin,
-            permission_catalog=self._permission_catalog,
-            vision_service=vision_service,
-            automation_service=automation_service,
-            automation_repository=automation_repository,
-            automation_worker=automation_worker,
-            turn_coordinator=self._turn_coordinator,
-        )
+        self._commands = command_service
         self._direct_plugin_commands = direct_plugin_commands
         self._event_publisher: LifecycleEventPublisher | None = None
         self._emoji_collector = emoji_collector
@@ -597,7 +540,6 @@ class MessageProcessor:
                 runtime,
                 PolicyDecision(True, observed.message.text, reason=reason),
                 None,
-                False,
                 False,
                 True,
                 observed.created,
@@ -742,9 +684,11 @@ class MessageProcessor:
         private_policy = await self._effective_private_policy(message)
         direct_match = (
             self._direct_plugin_commands.match(message.text)
-            if self._direct_plugin_commands is not None and admitted.provider != "app"
+            if self._direct_plugin_commands is not None
+            and admitted.provider not in LOCAL_CLIENT_PLATFORMS
             else None
         )
+        is_superuser = await self._person_is_superuser(message.person_id)
         decision = evaluate_message(
             message,
             self._settings,
@@ -752,12 +696,12 @@ class MessageProcessor:
             private_policy=private_policy,
             direct_triggered=direct_match is not None,
             yuki_account_ids=yuki_account_ids,
-            commands_enabled=admitted.provider != "app",
+            commands_enabled=admitted.provider not in LOCAL_CLIENT_PLATFORMS,
+            actor_is_superuser=is_superuser,
         )
         if decision.reason == "bot_message":
             await self._publish_turn_rejected(message, decision.reason)
             return ProcessResult(False, reason=decision.reason)
-        is_superuser = await self._person_is_superuser(message.person_id)
         admin_candidate = bool(
             is_superuser
             and direct_match is None
@@ -843,7 +787,9 @@ class MessageProcessor:
         # A non-explicit keeper resend must not advance the version that a
         # pending source of another real message is waiting on.
         app_message = (
-            admitted.provider == "app" and decision.command is None and direct_match is None
+            admitted.provider in LOCAL_CLIENT_PLATFORMS
+            and decision.command is None
+            and direct_match is None
         )
         turn_token = await notify() if direct_turn and not app_message else None
         has_visual_input = VisionService.has_visual_input(message) or (
@@ -851,21 +797,6 @@ class MessageProcessor:
             and any(
                 a.kind.value in {"video", "file"}
                 for a in (*message.attachments, *message.reply_attachments)
-            )
-        )
-        image_blocks_command = bool(
-            has_visual_input
-            and (
-                direct_match is not None
-                or (
-                    decision.command is not None
-                    and self._commands.may_write(decision.command, decision.content)
-                )
-            )
-            and not (
-                direct_match is None
-                and decision.command is CommandName.EMOJI
-                and decision.content.strip().casefold().startswith("import")
             )
         )
         if decision.should_respond or admin_candidate:
@@ -887,7 +818,7 @@ class MessageProcessor:
             )
 
         # forgetme is deliberately neither re-observed nor re-written to the ledger.
-        if decision.command is CommandName.FORGETME and not image_blocks_command:
+        if decision.command is CommandName.FORGETME:
             profile = self._event_profile(message)
             return await self._handle_privacy_command(
                 message,
@@ -922,9 +853,15 @@ class MessageProcessor:
                     "当前会话正在完成上一项操作，请稍后再试。",
                 )
                 return ProcessResult(True, int(sent), "new_effect_gate_timeout")
-            record = switched.event
-            created = switched.generation_changed
-            scope_state = switched.scope
+            except CanonicalIdentityError as exc:
+                if exc.category != "capability_denied":
+                    raise
+                appended = await self._canonical_uow.append_inbound(message, admitted)
+                record, created, scope_state = appended.event, appended.created, appended.scope
+            else:
+                record = switched.event
+                created = switched.generation_changed
+                scope_state = switched.scope
         else:
             with turn_detail("inbound_admission"):
                 appended = await self._canonical_uow.append_inbound(message, admitted)
@@ -966,8 +903,8 @@ class MessageProcessor:
             transport_scope_key=(identity.key if identity.key != coordinator_key else None),
         )
         is_explicit_emoji_import = bool(
-            decision.command is CommandName.EMOJI
-            and decision.content.strip().casefold().startswith("import")
+            decision.command is CommandName.ADMIN
+            and decision.content.strip().casefold() == "emoji import"
         )
         if (
             self._emoji_collector is not None
@@ -1069,7 +1006,6 @@ class MessageProcessor:
             decision,
             direct_match,
             admin_candidate,
-            image_blocks_command,
             direct_turn,
             created,
             has_visual_input,
@@ -1089,7 +1025,6 @@ class MessageProcessor:
         decision: PolicyDecision,
         direct_match: DirectCommandMatch | None,
         admin_candidate: bool,
-        image_blocks_command: bool,
         direct_turn: bool,
         created: bool,
         has_visual_input: bool,
@@ -1115,7 +1050,6 @@ class MessageProcessor:
                 decision,
                 direct_match,
                 admin_candidate,
-                image_blocks_command,
                 direct_turn,
                 created,
                 has_visual_input,
@@ -1363,7 +1297,6 @@ class MessageProcessor:
         decision: PolicyDecision,
         direct_match: DirectCommandMatch | None,
         admin_candidate: bool,
-        image_blocks_command: bool,
         direct_turn: bool,
         created: bool,
         has_visual_input: bool,
@@ -1401,14 +1334,6 @@ class MessageProcessor:
                 return ProcessResult(True, int(sent), f"{rate.scope}_rate_limited")
 
         if direct_match is not None:
-            if image_blocks_command:
-                sent = await self._send_text(
-                    message,
-                    sender,
-                    IMAGE_WRITE_ISOLATION_MESSAGE,
-                    turn_snapshot=turn_snapshot,
-                )
-                return ProcessResult(True, int(sent), "image_write_isolated")
             try:
                 return await self._handle_direct_plugin_command(
                     direct_match,
@@ -1423,14 +1348,6 @@ class MessageProcessor:
                 return ProcessResult(True, reason="turn_interrupted")
 
         if decision.command is not None:
-            if image_blocks_command:
-                sent = await self._send_text(
-                    message,
-                    sender,
-                    IMAGE_WRITE_ISOLATION_MESSAGE,
-                    turn_snapshot=turn_snapshot,
-                )
-                return ProcessResult(True, int(sent), "image_write_isolated")
             try:
                 return await self._handle_command(
                     decision.command,
@@ -1995,13 +1912,18 @@ class MessageProcessor:
             if execution.compact_focus is not None:
                 if turn_snapshot is None:
                     raise ValueError("compact requires a canonical turn snapshot")
-                text = await self._chat.compact(
-                    message,
-                    identity,
-                    profile,
-                    execution.compact_focus,
-                    turn_snapshot,
-                )
+                try:
+                    text = await self._chat.compact(
+                        message,
+                        identity,
+                        profile,
+                        execution.compact_focus,
+                        turn_snapshot,
+                    )
+                except PermissionError as exc:
+                    if str(exc) != "manual_public_compaction_requires_current_superuser":
+                        raise
+                    text = "权限不足：群聊公共历史压缩需要当前超级管理员资格。"
                 execution = CommandExecution(text, record_reply=False)
             return await self._deliver_command_execution(
                 execution=execution,

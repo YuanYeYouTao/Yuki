@@ -47,7 +47,6 @@ class SandboxTaskRepository:
             task.source_conversation_id,
             json.loads(task.source_json),
             request_id=request_id,
-            settings=self._settings,
             lookup_plugin_host=self._lookup_plugin_host,
         )
 

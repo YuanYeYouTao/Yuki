@@ -21,6 +21,9 @@ async def enable_history_column_for_legacy_seed(database: Database) -> None:
         await writer.execute(
             text("ALTER TABLE persons ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
         )
+        await writer.execute(
+            text("ALTER TABLE persons ADD COLUMN is_superuser BOOLEAN NOT NULL DEFAULT 0")
+        )
     original_close = database.close
 
     async def close_seed() -> None:
@@ -30,6 +33,7 @@ async def enable_history_column_for_legacy_seed(database: Database) -> None:
                     text("ALTER TABLE identity_bindings DROP COLUMN history_starts_at")
                 )
                 await writer.execute(text("ALTER TABLE persons DROP COLUMN display_name"))
+                await writer.execute(text("ALTER TABLE persons DROP COLUMN is_superuser"))
                 await writer.execute(text("ALTER TABLE persons DROP COLUMN merged_into_person_id"))
         finally:
             await original_close()

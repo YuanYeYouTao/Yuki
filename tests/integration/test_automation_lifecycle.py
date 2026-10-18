@@ -233,7 +233,7 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
             original["conversation_id"],
             json.loads(original["source_json"]),
             request_id=original["id"],
-            settings=case.settings,
+
         )
     await case.repository.settle_work_occurrences()
     assert (await case.repository.run_history(case.row.id))[0].status is RunStatus.CANCELLED
@@ -345,12 +345,12 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
             "instruction": step["arguments"]["instruction"],
         }
         recovered = await recover_automation_source(
-            database, state.id, source, request_id=execution_id, settings=case.settings
+            database, state.id, source, request_id=execution_id
         )
 
         async def validate(source=source, execution_id=execution_id):
             await recover_automation_source(
-                database, state.id, source, request_id=execution_id, settings=case.settings
+                database, state.id, source, request_id=execution_id
             )
 
         operations = [("task_control", {"action": "accept", "goal": source["instruction"]})]

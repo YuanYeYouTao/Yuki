@@ -18,21 +18,15 @@ class CommandName(StrEnum):
     COMPACT = "compact"
     STATUS = "status"
     STOP = "stop"
-    ON = "on"
-    OFF = "off"
     PING = "ping"
     WHOAMI = "whoami"
     FORGETME = "forgetme"
-    PRIVATE = "private"
-    GROUP = "group"
     MEMORY = "memory"
     PREFERENCE = "preference"
     CAPABILITIES = "capabilities"
-    CONFIG = "config"
     AUTOMATION = "automation"
+    ADMIN = "admin"
     PLUGIN = "plugin"
-    EMOJI = "emoji"
-    MODEL = "model"
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +97,7 @@ def evaluate_message(
     direct_triggered: bool = False,
     commands_enabled: bool = True,
     yuki_account_ids: frozenset[str] = frozenset(),
+    actor_is_superuser: bool = False,
 ) -> PolicyDecision:
     """Apply self/bot, allowlist, group, mention, reply-to-bot, prefix, and command rules."""
 
@@ -114,11 +109,10 @@ def evaluate_message(
         if commands_enabled
         else (None, message.text, False)
     )
-    is_superuser = message.sender.user_id in settings.superusers
 
     if message.scope_type is ScopeType.PRIVATE:
         private_policy_effective = private_policy or EffectivePrivatePolicy(True)
-        if not is_superuser and not private_policy_effective.enabled:
+        if not actor_is_superuser and not private_policy_effective.enabled:
             return PolicyDecision(False, reason="private_not_allowed")
         return PolicyDecision(True, content=content, command=command, reason="private_allowed")
 
@@ -129,16 +123,6 @@ def evaluate_message(
     )
 
     if not group_policy_effective.enabled:
-        is_enable_command = command is CommandName.ON or (
-            command is CommandName.GROUP and content.casefold().endswith(" on")
-        )
-        if is_superuser and is_enable_command:
-            return PolicyDecision(
-                True,
-                content=content,
-                command=command,
-                reason="superuser_group_enable",
-            )
         return PolicyDecision(False, reason="group_disabled")
     reply_to_bot = replies_to_bot(message, yuki_account_ids=yuki_account_ids)
     if message.mentions_bot or prefix_triggered or direct_triggered or reply_to_bot:
@@ -159,17 +143,3 @@ def evaluate_message(
             reason="group_open",
         )
     return PolicyDecision(False, reason="group_not_triggered")
-
-
-def command_requires_superuser(command: CommandName) -> bool:
-    """Return whether a command mutates group-wide state."""
-
-    return command in {
-        CommandName.ON,
-        CommandName.OFF,
-        CommandName.PRIVATE,
-        CommandName.GROUP,
-        CommandName.CONFIG,
-        CommandName.EMOJI,
-        CommandName.MODEL,
-    }

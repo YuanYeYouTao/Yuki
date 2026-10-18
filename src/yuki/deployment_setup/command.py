@@ -33,6 +33,7 @@ from yuki.deployment_setup.service import (
     load_plugin_setup_states,
     main_protocol,
     model_profiles_use_flash,
+    prepare_operator_configuration,
     require_migrated_model_profiles,
     selected_gateway_providers,
     validate_configuration,
@@ -543,9 +544,6 @@ def _page_gateway(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None
         gateways=gateways,
     )
     if "snowluma" in gateways:
-        environment["SUPERUSERS"] = _ask_qq(
-            ui, default=_real_value(environment.get("SUPERUSERS", ""))
-        )
         environment["ONEBOT_ACCESS_TOKEN"] = _token_or_existing(
             environment.get("ONEBOT_ACCESS_TOKEN", "")
         )
@@ -593,11 +591,23 @@ def _review_and_commit(
             )
             profiles = tomlkit.dumps(normalized)
             write_model_profiles = True
+    operator_policy = prepare_operator_configuration(paths, draft.environment)
+    operator_file = Path(draft.environment["CONTROL_OPERATORS_FILE"])
+    if not operator_file.is_absolute():
+        operator_file = paths.root / operator_file
+    operator_document = operator_policy or (
+        operator_file.read_text(encoding="utf-8") if operator_file.is_file() else ""
+    )
+    operator_declarations = tomllib.loads(operator_document).get("operators", ())
+    token_envs = tuple(
+        item["token_env"] for item in operator_declarations if item.get("enabled", True)
+    )
     configuration = SetupConfiguration(
         environment=draft.environment,
         model_profiles=profiles,
         pending_plugins=draft.pending_plugins,
         write_model_profiles=write_model_profiles,
+        operator_policy=operator_policy,
     )
     validate_configuration(paths, configuration)
     ui.success("Settings、模型路由和本地配置合同有效")
@@ -618,7 +628,33 @@ def _review_and_commit(
     if backup is not None:
         ui.info(f"原配置已备份到 {backup.relative_to(paths.root)}")
     ui.success("配置写入完成")
-    ui.info("安装脚本只保存配置；请按升级指南启动服务和核验数据库。")
+    ui.info("请先启动 Bot 并核验数据库；operator 入口使用现有 HTTP 服务。")
+    ui.info("operator policy：" + draft.environment["CONTROL_OPERATORS_FILE"])
+    if operator_policy is not None:
+        ui.info("凭据保存在 .env 的 YUKI_CONTROL_OPERATOR_TOKEN；向导不显示凭据。")
+    else:
+        ui.info("已保留现有 operator policy 和凭据。")
+    for token_env in token_envs:
+        ui.info(f"operator 服务端凭据引用：{token_env}；管理 CLI 使用同一值的环境引用。")
+    if len(token_envs) == 1:
+        credential = f'YUKI_CONTROL_CREDENTIAL="${{{token_envs[0]}}}"'
+        ui.info(
+            f"容器内运行管理 CLI：docker compose exec bot sh -c '{credential} yuki admin health'"
+        )
+    ui.info("依次运行 admin person create --display-name 名称、admin person show <Person ID>，")
+    ui.info("再运行 admin person superuser grant <Person ID> --revision <当前 revision>。")
+    ui.info("通过 admin client pair --person <Person ID> 配对 App/ACP；管理不需要 QQ 账号。")
+    if draft.pending_plugins is not None:
+        if len(token_envs) == 1:
+            ui.info(
+                "Bot 完成迁移后应用插件选择：docker compose exec bot sh -c "
+                f"'{credential} yuki setup apply-pending'"
+            )
+        else:
+            ui.info(
+                "将 YUKI_CONTROL_CREDENTIAL 设为上述有 control.plugin.mutate 权限的 operator "
+                "token_env 对应值，再运行 docker compose exec bot yuki setup apply-pending。"
+            )
     ui.warning("路径文件工具和终端还需要 Linux 宿主的持久环境 Manager，默认 Compose 不安装它。")
     ui.info("按 docs/operations/persistent-environment.md 准备宿主依赖并连接当前部署目录。")
     ui.info(
@@ -767,10 +803,7 @@ def _render_summary(
     *,
     pending_plugins: tuple[str, ...] | None,
 ) -> None:
-    superusers = _real_value(environment.get("SUPERUSERS", ""))
-    if superusers:
-        masked_qq = superusers[-4:].rjust(len(superusers), "*")
-        ui.line(f"管理员 QQ：{masked_qq}")
+    ui.line("管理入口：operator CLI；超级管理员资格保存在 Person")
     ui.line(f"主模型协议：{protocol}")
     ui.line(f"主模型：{environment['LLM_MODEL']}")
     ui.line("主模型 API Key：已配置")
@@ -846,13 +879,6 @@ def _ask_required_secret(ui: TerminalUI, label: str, existing: str) -> str:
         f"{label} 未填写。本地验证失败：启用此功能必须提供凭据；"
         "向导不会联网判断 API Key 是否真实有效"
     )
-
-
-def _ask_qq(ui: TerminalUI, *, default: str) -> str:
-    value = ui.ask("管理员 QQ（可留空，operator 管理不依赖 QQ 账号）", default=default)
-    if value and not value.isdigit():
-        raise SetupValidationError("管理员 QQ 必须是数字")
-    return value
 
 
 def _require_base_configuration(environment: dict[str, str]) -> None:

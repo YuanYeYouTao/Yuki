@@ -89,7 +89,6 @@ async def test_sdk_child_recovers_original_self_source_and_current_plugin_grant(
         child["conversation_id"],
         source,
         request_id=child["id"],
-        settings=harness.settings,
         lookup_plugin_host=hosts.get,
     )
     assert isinstance(recovered, SelfTaskSource)
@@ -121,7 +120,6 @@ async def test_sdk_child_recovers_original_self_source_and_current_plugin_grant(
                 child["conversation_id"],
                 source,
                 request_id=child["id"],
-                settings=harness.settings,
                 lookup_plugin_host=hosts.get,
             )
     finally:

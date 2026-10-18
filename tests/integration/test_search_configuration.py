@@ -35,7 +35,7 @@ async def test_admin_apply_persists_native_defaults_and_dispatches_original_prov
     admin, monkeypatch, tmp_path, vendor, protocol, endpoint
 ):
     client, api, _, models, profiles_path = admin
-    files = api.commands.files
+    files = api.commands.model.files
     files._settings = type(files._settings).model_validate(
         {
             **files._settings.model_dump(),

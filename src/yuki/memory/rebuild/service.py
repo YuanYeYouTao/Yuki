@@ -9,10 +9,12 @@ from dataclasses import dataclass, replace
 from typing import Any
 from weakref import WeakSet
 
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.config import Settings
+from yuki.identity.authority import person_is_superuser
 from yuki.memory.claim_processor import (
     MemoryClaimProcessor,
     MemoryClaimProcessResult,
@@ -45,6 +47,7 @@ from yuki.memory.rebuild.models import (
     MemoryRebuildSelection,
 )
 from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.model_runtime.dispatch_guard import model_dispatch_guard
 from yuki.model_runtime.models import ModelTask
 from yuki.persistence.models import MemoryRebuildProposalModel, MemoryRebuildRunModel
 from yuki.persistence.repositories import EventLedgerRepository
@@ -279,12 +282,35 @@ class MemoryRebuildService:
         return self._active_in_flight_calls
 
     async def _authorize(self, actor_user_id: str) -> None:
-        from yuki.identity.authority import person_is_superuser
-
         async with self.repository.database.sessions() as session:
-            allowed = await person_is_superuser(session, actor_user_id, self.settings.superusers)
+            allowed = await person_is_superuser(session, actor_user_id)
         if not allowed:
             raise PermissionError("memory rebuild requires the current real superuser")
+
+    async def _run_authorized(self, run_id: str, *, session: AsyncSession) -> bool:
+        creator = await session.scalar(
+            select(MemoryRebuildRunModel.created_by_user_id).where(
+                MemoryRebuildRunModel.public_id == run_id
+            )
+        )
+        return await person_is_superuser(session, creator)
+
+    async def _pause_unauthorized_run(self, run: MemoryRebuildRun) -> None:
+        await self.repository.transition(
+            run.public_id,
+            expected={run.status},
+            status=MemoryRebuildRunStatus.EXTRACTION_PAUSED
+            if run.status is MemoryRebuildRunStatus.EXTRACTING
+            else MemoryRebuildRunStatus.COMMIT_PAUSED,
+            error_category="initiator_permission_denied",
+        )
+
+    async def _continue_run(self, run: MemoryRebuildRun) -> bool:
+        async with self.repository.database.sessions() as session:
+            allowed = await self._run_authorized(run.public_id, session=session)
+        if not allowed:
+            await self._pause_unauthorized_run(run)
+        return allowed
 
     def _available(self) -> None:
         if not self.settings.memory_rebuild_enabled:
@@ -521,6 +547,8 @@ class MemoryRebuildService:
     async def process_extraction_once(self, run: MemoryRebuildRun) -> int:
         if run.status is not MemoryRebuildRunStatus.EXTRACTING:
             return 0
+        if not await self._continue_run(run):
+            return 0
         pending = await self.repository.pending_extraction_events(
             run.public_id, limit=self.settings.memory_rebuild_scan_batch_size
         )
@@ -579,6 +607,8 @@ class MemoryRebuildService:
             current = await self._require(run.public_id)
             if current.status is not MemoryRebuildRunStatus.EXTRACTING:
                 return "deferred"
+            if not await self._continue_run(current):
+                return "deferred"
             event = await self._adapt_event(source_event, run.selection.third_party_mode)
             event_hash = source_event_fingerprint(event)
             item_id, acquired, item_status = await self.repository.ensure_item(
@@ -601,12 +631,26 @@ class MemoryRebuildService:
                     limit=self.settings.memory_rebuild_context_event_limit,
                     message_only=True,
                 )
+                if not await self._continue_run(current):
+                    await self.repository.defer_item(
+                        item_id, category="initiator_permission_denied"
+                    )
+                    return "deferred"
                 task = asyncio.current_task()
                 if task is not None:
                     self._in_flight_tasks.setdefault(run.public_id, set()).add(task)
                 self._active_in_flight_calls += 1
                 try:
-                    extracted = await self.extractor.extract(event, context=context)
+
+                    async def authorize_dispatch() -> None:
+                        active = await self._require(run.public_id)
+                        if active.status is not MemoryRebuildRunStatus.EXTRACTING:
+                            raise PermissionError("rebuild_run_not_extracting")
+                        if not await self._continue_run(active):
+                            raise PermissionError("rebuild_initiator_permission_denied")
+
+                    with model_dispatch_guard(authorize_dispatch):
+                        extracted = await self.extractor.extract(event, context=context)
                 finally:
                     self._active_in_flight_calls -= 1
                     if task is not None:
@@ -647,6 +691,9 @@ class MemoryRebuildService:
                 if asyncio.current_task() in self._cancelled_tasks:
                     return "deferred"
                 raise
+            except PermissionError:
+                await self.repository.defer_item(item_id, category="initiator_permission_denied")
+                return "deferred"
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 await self.repository.fail_item(
                     item_id,
@@ -659,6 +706,8 @@ class MemoryRebuildService:
     async def process_commit_once(self, run: MemoryRebuildRun) -> int:
         if run.status is not MemoryRebuildRunStatus.COMMITTING:
             return 0
+        if not await self._continue_run(run):
+            return 0
         rows = await self.repository.next_commit_rows(
             run.public_id,
             limit=self.settings.memory_rebuild_commit_batch_size,
@@ -668,6 +717,8 @@ class MemoryRebuildService:
         for proposal, item, stored_event in rows:
             current = await self._require(run.public_id)
             if current.status is not MemoryRebuildRunStatus.COMMITTING:
+                break
+            if not await self._continue_run(current):
                 break
             affected_item_ids.add(item.id)
             event = await self.repository.get_event(stored_event.id)
@@ -795,6 +846,8 @@ class MemoryRebuildService:
                         or original.commit_status != MemoryRebuildCommitStatus.PENDING.value
                     ):
                         raise ValueError("rebuild_proposal_authority_changed")
+                    if not await self._run_authorized(run.public_id, session=owned):
+                        raise PermissionError("rebuild_initiator_permission_denied")
                     result = await self.processor.apply_resolution(resolution, session=owned)
                     # The existing proposal is the durable completion owner. Facts
                     # and this receipt commit together, before disposable usage.
@@ -833,6 +886,9 @@ class MemoryRebuildService:
                         raise
             except asyncio.CancelledError:
                 raise
+            except PermissionError:
+                await self._pause_unauthorized_run(run)
+                break
             except (OSError, RuntimeError, TypeError, ValueError, SQLAlchemyError) as exc:
                 await self.repository.fail_proposal(
                     proposal.id,

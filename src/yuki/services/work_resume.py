@@ -236,7 +236,6 @@ class WorkResumer:
                     item["conversation_id"],
                     source,
                     request_id=item["id"],
-                    settings=self.services.settings,
                 )
                 if fresh_source != recovered:
                     raise ValueError("work_source_changed")
@@ -258,7 +257,6 @@ class WorkResumer:
             item["conversation_id"],
             source,
             request_id=item["id"],
-            settings=self.services.settings,
         )
         async with self._scene(item, source, recovered) as scene:
             if scene is None:
@@ -403,7 +401,6 @@ class WorkResumer:
                     actor_is_superuser = await person_is_superuser(
                         authority_session,
                         recovered.actor_person_id,
-                        self.services.settings.superusers,
                     )
                 inbound = recovered.inbound(original, legacy_conversation_key=key)
                 result = await self.services.generate_wakeup(
