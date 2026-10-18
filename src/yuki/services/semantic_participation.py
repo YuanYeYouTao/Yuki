@@ -231,10 +231,16 @@ class SemanticParticipationService:
     ) -> None:
         self._promote = callback
 
-    async def binding_for_event(self, event_id: int) -> OrdinaryParticipationBinding | None:
+    async def binding_for_event(
+        self,
+        event_id: int,
+        *,
+        record: EventRecord | None = None,
+        runtime: RuntimeConfigSnapshot | None = None,
+    ) -> OrdinaryParticipationBinding | None:
         from yuki.services.participation_ordinary import binding_for_event
 
-        return await binding_for_event(self, event_id)
+        return await binding_for_event(self, event_id, record=record, runtime=runtime)
 
     async def continuation_for_event(
         self, event_id: int, *, check_budget: bool = True
@@ -334,26 +340,52 @@ class SemanticParticipationService:
 
     async def _scene(self, conversation_id: str) -> Scene | None:
         async with self.database.sessions() as session:
-            conversation = await session.get(CanonicalConversationModel, conversation_id)
-            if conversation is None or conversation.kind != "space" or not conversation.space_id:
+            row = (
+                await session.execute(
+                    select(
+                        CanonicalConversationModel,
+                        CanonicalSpaceModel,
+                        SpaceBindingModel,
+                        PresenceModel,
+                    )
+                    .outerjoin(
+                        CanonicalSpaceModel,
+                        CanonicalSpaceModel.id == CanonicalConversationModel.space_id,
+                    )
+                    .outerjoin(
+                        SpaceActiveRouteModel,
+                        SpaceActiveRouteModel.space_id == CanonicalConversationModel.space_id,
+                    )
+                    .outerjoin(
+                        SpaceBindingModel,
+                        SpaceBindingModel.id
+                        == func.coalesce(
+                            CanonicalConversationModel.space_binding_id,
+                            SpaceActiveRouteModel.space_binding_id,
+                        ),
+                    )
+                    .outerjoin(
+                        SpaceBindingIngestRouteModel,
+                        SpaceBindingIngestRouteModel.space_binding_id == SpaceBindingModel.id,
+                    )
+                    .outerjoin(
+                        PresenceModel,
+                        PresenceModel.id
+                        == func.coalesce(
+                            SpaceBindingIngestRouteModel.ingest_presence_id,
+                            SpaceActiveRouteModel.presence_id,
+                        ),
+                    )
+                    .where(CanonicalConversationModel.id == conversation_id)
+                )
+            ).one_or_none()
+            if row is None:
                 return None
-            space = await session.get(CanonicalSpaceModel, conversation.space_id)
-            route = await session.get(SpaceActiveRouteModel, conversation.space_id)
-            if space is None:
-                return None
-            binding_id = conversation.space_binding_id or (
-                route.space_binding_id if route else None
-            )
-            binding = await session.get(SpaceBindingModel, binding_id) if binding_id else None
-            ingest = (
-                await session.get(SpaceBindingIngestRouteModel, binding_id) if binding_id else None
-            )
-            presence_id = (
-                ingest.ingest_presence_id if ingest else (route.presence_id if route else None)
-            )
-            presence = await session.get(PresenceModel, presence_id) if presence_id else None
+            conversation, space, binding, presence = row
             if (
-                presence is None
+                conversation.kind != "space"
+                or space is None
+                or presence is None
                 or not presence.enabled
                 or binding is None
                 or binding.space_id != space.id

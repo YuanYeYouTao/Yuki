@@ -97,12 +97,6 @@ class SocialOperationRepository:
                     raise SocialError("idempotency_conflict")
                 if work_effect is None:
                     return self._receipt(existing)
-            target_row = await reader.get(
-                CanonicalPersonModel if target.kind == "person" else CanonicalSpaceModel,
-                str(target.id),
-            )
-            if target_row is None:
-                raise SocialError("target_not_found")
         now = datetime.now(UTC)
         async with self.database.sessions() as session, session.begin():
             target_row = await session.get(

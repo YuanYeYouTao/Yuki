@@ -13,9 +13,20 @@
 
 人物同一性查询从原checkpoint读取actor/target事实，再由Host按内部ID批量解析当前人物；`participation_actor_ids()`不评估参与资格、不重放belief，也不修改checkpoint。来源分页、水合及冷恢复不得为收集人物ID调用全局`participating_units()`；当前参与判定仍只在真实决策处计算。
 
-普通输入的 binding 准备与接纳反馈复用原 scope 控制器。反馈读取真实已提交 admission 和当前
-来源，局部应用原输入，不再重新扫描效果、读取配置和 hydrate 整页；进程重启缺少控制器时
-仍沿原恢复路径水合。参与的全局锁保留原语义，本轮没有竞争收益证据，不宣称已经收窄锁。
+普通输入的 binding 准备复用入口已有的原事件与配置；场景在一次关联读取中解析原
+Conversation、Space、Binding 与接收 Presence。事件、场景及配置的准备在 Controller 应用锁外，
+取得锁后读取当前场景，不用准备期间的旧 generation 或路由覆盖新值。控制器应用、历史水合、
+冷加载唯一性和共享快照保存仍沿原锁，不据此宣称跨会话全部无等待。
+
+接纳反馈与普通自报批读真实已提交 admission 和当前来源，局部幂等恢复原输入，不重新扫描
+效果、读取配置或 hydrate 整页；缺少控制器时仍沿原路径冷恢复。admission 提交成功而派生
+反馈失败，也可由这份原 admission 局部恢复，不丢后来的合法 hint。quiet 在主响应观察返回前
+应用，必要的 Jev 观察排队和快照保存同步完成；未保存的 hint 不能仅凭 admission 重建。
+锁外准备遇关闭时沿原 store 生命周期退出，取消保存仍确认实际提交的 revision 后传播。
+
+绑定仍读取真实近窗历史，供新焦点冻结引用、讨论与 SELF 锚点。新发送已入账而后台尚未
+tick 时，Social 回执只能证明表达，不能制造尚未读取的事件 SourceRef；不能只投影当前输入
+就省略这份历史。原来源最终按本次 basis 核验，不在其前重复单查同一焦点。
 
 `SemanticParticipationService` 读取已提交的 canonical 群事件，按
 Conversation/generation 保存控制器快照。新观察只以真实人类事件为焦点，context 可包含真实人类和 SELF 发言；
