@@ -301,7 +301,7 @@ class CanonicalGenerationResetModel(Base):
 
 
 class ConversationMediaItemModel(Base):
-    """One event-bound attachment; cached bytes never grant access by themselves."""
+    """An original attachment, or a reply original observed with this receive event."""
 
     __tablename__ = "conversation_media_items"
     __table_args__ = (
@@ -325,6 +325,7 @@ class ConversationMediaItemModel(Base):
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
     segment_index: Mapped[int] = mapped_column(Integer, nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_snapshot_json: Mapped[str | None] = mapped_column(Text)
     display_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
     declared_size: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

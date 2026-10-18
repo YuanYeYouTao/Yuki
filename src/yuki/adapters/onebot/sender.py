@@ -40,7 +40,7 @@ class OneBotRouteSender:
         return await call_api(action, **params)
 
     async def resolve_media_file(
-        self, file: str, kind: MediaKind, *, max_download_bytes: int
+        self, file: str, kind: MediaKind, *, max_download_bytes: int | None
     ) -> PlatformMediaFile:
         return await resolve_media_file(
             cast(OneBotMediaHandle, self._route_bot),
@@ -89,7 +89,7 @@ class OneBotSender:
         return self._bot
 
     async def resolve_media_file(
-        self, file: str, kind: MediaKind, *, max_download_bytes: int
+        self, file: str, kind: MediaKind, *, max_download_bytes: int | None
     ) -> PlatformMediaFile:
         return await resolve_media_file(
             self._bot, file, kind, max_download_bytes=max_download_bytes

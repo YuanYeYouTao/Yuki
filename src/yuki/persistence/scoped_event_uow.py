@@ -263,7 +263,11 @@ class ScopedEventLedgerUnitOfWork:
                 generation = conversation.generation
                 prepared_message = await resolve_message_mentions(
                     reader,
-                    replace(message, conversation_id=conversation_id),
+                    replace(
+                        message,
+                        conversation_id=conversation_id,
+                        reply_to_event_id=original.reply_to_event_id,
+                    ),
                     space_id=conversation.space_id,
                 )
                 prepared_segments = snapshot_mention_segments(
@@ -317,6 +321,9 @@ class ScopedEventLedgerUnitOfWork:
                 conversation_id=conversation_id,
                 generation=generation,
                 segments=prepared_segments,
+                reply_segments=prepared_message.reply_segments
+                if prepared_message.reply_to_event_id is None
+                else (),
             )
             async with self._database.immediate_session() as session:
                 event = await session.get(ChatEventModel, event_id)
@@ -345,13 +352,18 @@ class ScopedEventLedgerUnitOfWork:
                     if current is None:
                         session.add(prepared)
                         continue
-                    if decoded[current.segment_index] != prepared_segments[prepared.segment_index]:
+                    if current.source_snapshot_json != prepared.source_snapshot_json or (
+                        current.source_snapshot_json is None
+                        and decoded[current.segment_index]
+                        != prepared_segments[prepared.segment_index]
+                    ):
                         current.cache_status = "uncached"
                         current.content_sha256 = current.cache_name = None
                         current.cached_at = current.expires_at = None
                         current.created_at = prepared.created_at
                     current.segment_index = prepared.segment_index
                     current.kind = prepared.kind
+                    current.source_snapshot_json = prepared.source_snapshot_json
                     current.display_name = prepared.display_name
                     current.declared_size = prepared.declared_size
                 for removed in current_media.values():

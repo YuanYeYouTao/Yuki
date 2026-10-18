@@ -296,7 +296,6 @@ def build_harness(
         people=profiles,
         memories=memories,
         runtime_config=runtime_config,
-        vision_service=vision,
         command_service=command_service,
         direct_plugin_commands=direct_plugin_commands,
         turn_coordinator=turn_coordinator,

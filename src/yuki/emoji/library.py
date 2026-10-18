@@ -93,12 +93,8 @@ class EmojiLibrary:
             ):
                 continue
             try:
-                shared = await attachment.prepared_media.source()
-                content = (
-                    shared.content
-                    if isinstance(shared, DownloadedMedia)
-                    else await _media_io(shared[0].read_bytes)
-                )
+                path, _ = await attachment.prepared_media.source()
+                content = await _media_io(path.read_bytes)
                 facts = await _media_io(inspect_content, content)
                 if self.source_valid is None or not await self.source_valid(
                     source_event_id,
@@ -252,12 +248,8 @@ class EmojiLibrary:
         if is_preview:
             if preview is None or preview.prepared_media is None:
                 return asset
-            original = await preview.prepared_media.source()
-            content = (
-                original.content
-                if isinstance(original, DownloadedMedia)
-                else await _media_io(original[0].read_bytes)
-            )
+            preview_path, _ = await preview.prepared_media.source()
+            content = await _media_io(preview_path.read_bytes)
         runtime = await self.vision_runtime()
         if content is None:
             import base64

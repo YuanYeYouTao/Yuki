@@ -210,7 +210,7 @@ async def test_selected_media_batches_frames_and_rechecks_real_sources(
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     assert parses == 1
     assert not any("chat_events.content" in statement for statement in sql)
-    with pytest.raises(ConversationMediaError, match="attachment_scope_denied"):
+    with pytest.raises(ConversationMediaError, match="attachment_source_changed"):
         await service.validate_images((replace(images[0], conversation_id="other"),))
     async with database.immediate_session() as writer:
         if change == "generation":
@@ -237,7 +237,10 @@ async def test_selected_media_batches_frames_and_rechecks_real_sources(
                     )
                 )
             )
-    with pytest.raises(ConversationMediaError):
+    if change in {"hash", "keeper"}:
+        with pytest.raises(ConversationMediaError):
+            await service.validate_images(images)
+    else:
         await service.validate_images(images)
     service.resolver.resolve.assert_not_awaited()
     await service.close()

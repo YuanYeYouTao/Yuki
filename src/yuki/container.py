@@ -39,7 +39,6 @@ from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
 from yuki.identity.ingress import CanonicalIngressResolver
 from yuki.identity.routing import PresenceRouter, RouteMonitor
 from yuki.memory.embedding.runtime import MemoryEmbeddingRuntime
-from yuki.model_runtime.models import ModelCapability, ModelTask
 from yuki.persistence.database import Database
 from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
 from yuki.plugin_host.config import BoundConfigFacade
@@ -61,7 +60,6 @@ from yuki.plugin_host.notification_repository import PluginNotificationRepositor
 from yuki.plugin_host.secrets import BoundSecretsFacade
 from yuki.plugin_host.session_facade import BoundAgentSessionFacade
 from yuki.plugin_host.storage import BoundStorageFacade
-from yuki.services.attachment_inputs import AttachmentInputService
 from yuki.services.autonomous_groups import AutonomousGroupService
 from yuki.services.command_service import CommandService
 from yuki.services.concurrency import ConcurrencyManager
@@ -538,20 +536,6 @@ class ApplicationContainer:
         self.processor = MessageProcessor(
             conversation_media=self.conversation_media,
             asr_service=self.asr,
-            attachment_inputs=(
-                AttachmentInputService(
-                    self.media_resolver,
-                    self.image_preprocessor,
-                    concurrency=settings.vision_global_concurrency,
-                    pending_limit=settings.vision_queue_max_pending,
-                    timeout=settings.vision_queue_timeout_seconds,
-                    max_bytes=settings.vision_max_prepared_bytes,
-                    images_enabled=lambda: (
-                        ModelCapability.IMAGE_INPUT
-                        in self.models.capabilities(ModelTask.CHAT_AGENT)
-                    ),
-                )
-            ),
             settings=settings,
             ledger=self.ledger,
             conversation_scopes=self.conversation_scopes,
@@ -572,7 +556,6 @@ class ApplicationContainer:
             memory_worker=self.memory_worker,
             autonomous_groups=self.autonomous_groups,
             runtime_config=self.runtime_config,
-            vision_service=self.vision,
             automation_service=self.automation,
             automation_repository=self.automation_repository,
             automation_worker=self.automation_worker,

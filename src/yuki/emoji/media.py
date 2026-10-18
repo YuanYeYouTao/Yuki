@@ -9,6 +9,7 @@ import json
 import os
 import struct
 import warnings
+import zlib
 from typing import Any, BinaryIO
 
 from PIL import Image, UnidentifiedImageError
@@ -63,7 +64,7 @@ def media_facts(stream: BinaryIO, *, inspect_pixels: bool = True) -> dict[str, A
     if prefix.startswith(b"\x1f\x8b"):
         try:
             value = json.load(gzip.GzipFile(fileobj=stream))
-        except (OSError, ValueError):
+        except (EOFError, OSError, ValueError, zlib.error):
             return None
         if isinstance(value, dict) and "layers" in value and "v" in value:
             return {

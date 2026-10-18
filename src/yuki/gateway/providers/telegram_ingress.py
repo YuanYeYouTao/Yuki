@@ -254,7 +254,7 @@ class TelegramSender:
         self.bot = gateway.client
 
     async def resolve_media_file(
-        self, file: str, kind: MediaKind, *, max_download_bytes: int
+        self, file: str, kind: MediaKind, *, max_download_bytes: int | None
     ) -> PlatformMediaFile:
         return await self.bot.resolve_media_file(file, kind, max_download_bytes=max_download_bytes)
 

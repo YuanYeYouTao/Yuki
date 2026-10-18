@@ -127,8 +127,18 @@ class ASRService:
                     and attachment.file_size > self._settings.asr_max_download_bytes
                 ):
                     raise ASRError("audio_limit")
-                media = (
-                    await self._resolver.resolve_audio(
+                if attachment.prepared_media is not None:
+                    media = await attachment.prepared_media.resolve(
+                        self._settings.asr_max_download_bytes
+                    )
+                elif attachment.local_source is not None:
+                    media = await asyncio.to_thread(
+                        read_local_media,
+                        attachment.local_source,
+                        self._settings.asr_max_download_bytes,
+                    )
+                else:
+                    media = await self._resolver.resolve_audio(
                         MediaReference(
                             file=attachment.file,
                             url=attachment.url,
@@ -137,13 +147,6 @@ class ASRService:
                         ),
                         gateway=gateway,
                     )
-                    if attachment.local_source is None
-                    else await asyncio.to_thread(
-                        read_local_media,
-                        attachment.local_source,
-                        self._settings.asr_max_download_bytes,
-                    )
-                )
                 audio = await prepare_audio(
                     media.content,
                     max_duration_seconds=self._settings.asr_max_duration_seconds,

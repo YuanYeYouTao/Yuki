@@ -288,8 +288,7 @@ async def test_warm_image_validation_uses_membership_without_copying_admitted_id
     verified = guard._verified
     assert verified is not None
     visible = _NoTraversalIds(verified.visible_ids)
-    eligible = _NoTraversalIds(verified.eligible_images)
-    guard._verified = replace(verified, visible_ids=visible, eligible_images=eligible)
+    guard._verified = replace(verified, visible_ids=visible)
     images = (
         (
             ChatImage(
@@ -307,7 +306,6 @@ async def test_warm_image_validation_uses_membership_without_copying_admitted_id
     with validating_request(request):
         assert await guard.check(control)
     assert guard._verified.visible_ids is visible
-    assert guard._verified.eligible_images is eligible
 
 
 async def test_provisional_guard_reuses_proof_and_can_roll_back_selected_dependencies(database):
@@ -335,3 +333,74 @@ async def test_provisional_guard_reuses_proof_and_can_roll_back_selected_depende
     assert fresh.id in guard.additional_events
     guard.adopt(saved)
     assert fresh.id not in guard.additional_events
+
+
+@pytest.mark.parametrize("source_reset", [False, True])
+async def test_shared_attachment_pixels_do_not_import_other_conversation_history(
+    database, tmp_path, source_reset
+):
+    import base64
+    import io
+
+    from PIL import Image
+
+    from yuki.conversation.hydrate import bump_canonical_generation
+    from yuki.conversation.media_service import ConversationMediaError, ConversationMediaService
+    from yuki.domain.conversations import ScopeType
+    from yuki.services.image_preprocessor import ImagePreprocessor
+    from yuki.services.media_resolver import MediaResolver
+    from yuki.workspace.service import WorkspaceService
+    from yuki.workspace.store import WorkspaceStore
+
+    output = io.BytesIO()
+    Image.new("RGB", (8, 8), "green").save(output, "PNG")
+    ledger = EventLedgerRepository(database)
+    old_image, _ = await ledger.append(
+        bot_user_id="8000",
+        platform_message_id="shared-pixels",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="1001",
+        group_id="2002",
+        direction="inbound",
+        content="[图片附件0]",
+        segments=(
+            {
+                "type": "image",
+                "data": {"file": "base64://" + base64.b64encode(output.getvalue()).decode()},
+            },
+        ),
+    )
+    if source_reset:
+        async with database.immediate_session() as writer:
+            await bump_canonical_generation(
+                writer, old_image.canonical_conversation_id, event_id=old_image.id
+            )
+    current = await _event_and_route(database, ledger)
+    guard, control = await _guard(database, current)
+    resolver = MediaResolver()
+    media = ConversationMediaService(
+        database, tmp_path / "media-cache", resolver, ImagePreprocessor()
+    )
+    workspace = WorkspaceService(WorkspaceStore(tmp_path / "workspace"))
+    workspace.conversation_media = media
+    try:
+        item, path = await media.authorized_path(event_id=old_image.id, attachment_index=0)
+        result = await media.inspect(item, path, "看看这张图片")
+        assert result.images and result.images[0].source_event_id == old_image.id
+        request = TurnTranscript((ChatMessage("user", images=result.images),)).request()
+        with validating_request(request):
+            await workspace.validate_images(result.images)
+            assert await guard.check(control)
+            saved = guard.snapshot()
+            assert await guard.check(control)
+            assert await WorkSourceGuard.restore(saved).check(control)
+        assert old_image.id not in guard.additional_events
+        assert guard.version.visible_event_ids == (current.id,)
+        # The shared file still has a real lifetime. Removing it invalidates
+        # the selected pixels; it does not fabricate a history dependency.
+        path.unlink()
+        with pytest.raises(ConversationMediaError, match="attachment_expired"):
+            await media.validate_images(result.images)
+    finally:
+        await media.close()
+        await resolver.close()

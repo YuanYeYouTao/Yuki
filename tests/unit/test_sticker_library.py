@@ -29,7 +29,6 @@ from yuki.emoji.sticker_index import StickerIndex
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import _media_io
 from yuki.vision.fake import FakeVisionProvider
-from yuki.vision.models import DownloadedMedia
 from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceStore
 
@@ -393,14 +392,11 @@ async def test_tgs_real_preview_caption_never_replaces_original(library):
     value, bridge = library
     provider = attach_caption_provider(value)
     preview = picture()
+    preview_path = bridge.root / "admitted-preview"
+    preview_path.write_bytes(preview)
 
     async def source():
-        return DownloadedMedia(
-            content=preview,
-            content_type="image/png",
-            content_hash=hashlib.sha256(preview).hexdigest(),
-            byte_size=len(preview),
-        )
+        return preview_path, hashlib.sha256(preview).hexdigest()
 
     content = gzip.compress(json.dumps({"v": "5", "layers": [], "w": 64}).encode())
     asset = await value.store_content(

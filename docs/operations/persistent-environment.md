@@ -2,9 +2,11 @@
 
 [中文](persistent-environment.zh-CN.md)
 
-Yuki shares one Linux environment, `/home/yuki` and `/workspace` across people and groups. Files do not expire. `short_state` remains a separate expiring hint area. Directories, files and full logs are not automatically added to context. The Bot's `./workspace:/app/workspace` stores artifacts/short state; terminal files live under the host's `/var/lib/yuki-sandbox/home/workspace`, exposed as `/workspace` through the original home mount. Explicit publication and attachment import connect these stores.
+Yuki shares one Linux environment, `/home/yuki` and `/workspace` across people and groups. Ordinary persistent files do not expire. `short_state` remains a separate expiring hint area. Directories, files and full logs are not automatically added to context. The Bot's `./workspace:/app/workspace` stores artifacts/short state; terminal files live under the host's `/var/lib/yuki-sandbox/home/workspace`, exposed as `/workspace` through the original home mount. Explicit publication and attachment import connect these stores.
 
 ## Runtime and tools
+
+Temporary media from every conversation shares `/inputs/media-cache`, a read-only view of the same Bot-owned cache, not another copy in the 2 GiB home. Bot remains its sole writer and expiry/cleanup owner. Main may read it from the terminal or copy selected originals into `/workspace` or a sticker folder for unrestricted editing. Existing `workspace_inspect` and `workspace_publish` also accept `/inputs/media-cache/...` through the existing safe FD reader. The user explicitly authorized this shared view; terminal reads are global rather than limited to the current Conversation. Persistent files, collected stickers and immutable artifacts do not expire with temporary media.
 
 The trusted host Manager owns the persistent gVisor container `yuki-environment`, labeled `io.yuki.sandbox=persistent-v1`. OpenSandbox execd is pinned to `441042c288a3eacbe93b36236a9baf6f6254ad4d`; the image retains its Apache license. Terminals and services share execd PTY and the original Supervisor. There is no second package executor or sudo approval system.
 
@@ -68,7 +70,17 @@ Update the host's `src/yuki/sandbox/`, its `workspace/` dependencies and `deploy
 sudo /opt/yuki-sandbox/venv/bin/python -m pip install -r /opt/yuki-sandbox/deploy/sandbox/requirements-manager.txt
 ```
 
-The standalone sticker helper and its format-reading dependencies run inside the original persistent environment. Main and Manager invoke the same file; the Host never connects directly to the user-editable search cache. Updating only the Bot image or a future environment Dockerfile does not update an existing rootFS. Copy the current helper into the original container at `/opt/yuki-runtime/`, verify it from the existing terminal, and preserve installed packages, files, mounts and services. For an existing checkpoint deployment, stop Manager after active executions have finished, privately snapshot the original full rootFS with the installed helper, and update its existing `checkpoint_image` through the offline `set_setting` port. Otherwise a later rebuild from the old checkpoint loses the helper. Do not recreate the environment for this installation; retain the original home/runtime binds and protect both the live image and selected checkpoint during cleanup. Retain systemd and all overlays. Supervisor and `acp_peer.py` keep their original read-only source mounts; the ACP SDK remains in environment Python.
+Set the actual host directory corresponding to Bot's `CONVERSATION_MEDIA_CACHE_DIRECTORY` in the existing `/etc/yuki-sandbox/deployment.env`, preserving all other fields:
+
+```ini
+YUKI_MANAGER_MEDIA_CACHE=/absolute/deployment/path/data/conversation-media-cache
+```
+
+Alternatively supply Manager's explicit `--media-cache` argument. There is no inferred repository path or generic mount configuration. New environments mount this directory read-only at `/home/yuki/inputs/media-cache`, exposed through the existing `/inputs` link. Do not share the whole Bot data directory, databases or configuration. Manager status reports `media_cache.configured/shared`; a missing mount in an old environment does not disable other tools or trigger automatic recreation.
+
+Adding this view to an existing Docker container requires one explicit replacement through the complete private rootFS checkpoint procedure below. Retain the same home/runtime, installations and services. Verify an actual terminal can read cached originals, writes fail with EROFS, and copies in `/workspace` remain editable; status and future image declarations alone do not prove that the mount is live.
+
+The standalone sticker helper and its format-reading dependencies run inside the original persistent environment. Main and Manager invoke the same file; the Host never connects directly to the user-editable search cache. Updating only the Bot image or a future environment Dockerfile does not update an existing rootFS. Copy the current helper into the original container at `/opt/yuki-runtime/`, verify it from the existing terminal, and preserve installed packages, files, mounts and services. For an existing checkpoint deployment, stop Manager after active executions have finished, privately snapshot the original full rootFS with the installed helper, and update its existing `checkpoint_image` through the offline `set_setting` port. Otherwise a later rebuild from the old checkpoint loses the helper. Installing the helper alone does not require recreation; enabling the new read-only media mount requires one explicit replacement. Retain the original home/runtime binds and protect both the live image and selected checkpoint during cleanup. Retain systemd and all overlays. Supervisor and `acp_peer.py` keep their original read-only source mounts; the ACP SDK remains in environment Python.
 
 Sticker originals and per-asset JSON are the sole source; `search.sqlite3` is disposable. Main can run:
 

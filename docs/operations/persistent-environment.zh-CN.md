@@ -2,7 +2,9 @@
 
 [English](persistent-environment.md)
 
-Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人物或群划分，文件不自动过期。`short_state` 仍是独立、有期限的短提示；目录、文件和完整执行日志不自动载入上下文。Bot 的 `./workspace:/app/workspace` 是 artifact/short_state 库；终端文件在宿主 `/var/lib/yuki-sandbox/home/workspace`，经原家目录挂载显示为环境内 `/workspace`。两者通过显式发布和附件导入衔接。
+Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人物或群划分，普通持久文件不自动过期。`short_state` 仍是独立、有期限的短提示；目录、文件和完整执行日志不自动载入上下文。Bot 的 `./workspace:/app/workspace` 是 artifact/short_state 库；终端文件在宿主 `/var/lib/yuki-sandbox/home/workspace`，经原家目录挂载显示为环境内 `/workspace`。两者通过显式发布和附件导入衔接。
+
+所有会话的临时媒体共用 `/inputs/media-cache`，它是 Bot 原缓存目录的同一份只读挂载，不在 2 GiB HOME 中再复制一份。Bot 仍是唯一写入和到期清理 owner；媒体到期后由原清理器删除，普通工作文件、已收藏表情和不可变 artifact 不随它清理。Main 可直接用终端读取、复制到 `/workspace` 或表情目录自由编辑，也可用原 `workspace_inspect` / `workspace_publish` 的 `/inputs/media-cache/...` 路径选读或发布；Host 复用原安全 FD 桥，不跟随模型写的链接访问宿主文件。临时媒体的全局共享由用户明确授权，不再声称终端读取受当前 Conversation 限制。
 
 ## 运行时与工具
 
@@ -62,13 +64,23 @@ docker compose exec --user 10001:10001 bot yuki setup environment-check
 
 部署根是 Compose 挂载 `./workspace` 的目录。安装器只记录 `/etc/yuki-sandbox/deployment.env` 中的 `YUKI_MANAGER_WORKSPACE_STORE`，保留其它配置，拒绝覆盖已配置的 artifact 根；不带参数保留既有值或旧默认路径。它不迁移家目录、不改已有容器挂载。`environment-check` 在 Bot 真实 UID 10001 下验证 artifact 目录可写和原 socket/status/ready，不再调用退役 `workspace_list`；不建容器、执行代码、调用模型或发送消息。这只证明连接，不证明真实管理员终端/公网已验收。
 
+媒体缓存另外沿真实部署配置。在原 `/etc/yuki-sandbox/deployment.env` 保留其他字段，显式加入：
+
+```ini
+YUKI_MANAGER_MEDIA_CACHE=/absolute/deployment/path/data/conversation-media-cache
+```
+
+此值必须对应 Bot `CONVERSATION_MEDIA_CACHE_DIRECTORY` 挂载的真实宿主目录，不能把整个 data、数据库或配置目录挂进去。也可由 Manager CLI `--media-cache` 显式指定；程序不猜仓库路径，不修改自定义 ExecStart。新环境创建时把该目录只读挂到 `/home/yuki/inputs/media-cache`，原 `/inputs` 链接提供相同视图。Manager status 的 `media_cache.configured/shared` 报告实际配置与只读挂载事实；旧环境缺少该视图仍可用其他工具，不会自动删除或重建。
+
+已有环境不能靠更新配置增加 Docker 挂载。此次启用共享媒体需要沿下文完整 rootFS checkpoint 流程明确替换一次：保留同一 HOME、runtime、原安装与服务，只增加缓存的只读视图。切换后用实际终端验证能读现有媒体、写缓存返回只读文件系统，复制到 `/workspace` 后可编辑；不要只凭 status 或新镜像声明验收。
+
 本次需同步宿主 `src/yuki/sandbox/`、其 `workspace/` 依赖和 `deploy/sandbox/`，并在原 Manager venv 安装当前依赖：
 
 ```sh
 sudo /opt/yuki-sandbox/venv/bin/python -m pip install -r /opt/yuki-sandbox/deploy/sandbox/requirements-manager.txt
 ```
 
-表情 helper 与格式读取依赖实际安装在原持久环境内，Main 与 Manager 调同一文件，Host 不直接连接用户可改的图库 cache。仅更新 Bot 镜像或给未来环境 Dockerfile 增 COPY 都不会升级现有 rootFS；部署须把当前 helper 复制到原容器 `/opt/yuki-runtime/`，验证原终端能运行并保留已有安装、文件、挂载和服务。已有checkpoint部署还须在Manager停止、确认无活动执行时，对装好helper的原容器制作私有完整rootFS快照，并离线沿现有 `set_setting` 更新 `checkpoint_image`；否则未来按旧checkpoint重建会丢helper。原环境不因本次安装重建，home/runtime仍为原bind；清理同时保当前容器镜像和实际选中checkpoint。保留原 systemd 与全部覆盖，Supervisor 和 `acp_peer.py` 仍用原只读源文件挂载。ACP SDK 在环境 Python 运行，宿主 Manager venv 无需安装。不能只更新 Bot 后声称环境已获得新代码。
+表情 helper 与格式读取依赖实际安装在原持久环境内，Main 与 Manager 调同一文件，Host 不直接连接用户可改的图库 cache。仅更新 Bot 镜像或给未来环境 Dockerfile 增 COPY 都不会升级现有 rootFS；部署须把当前 helper 复制到原容器 `/opt/yuki-runtime/`，验证原终端能运行并保留已有安装、文件、挂载和服务。已有checkpoint部署还须在Manager停止、确认无活动执行时，对装好helper的原容器制作私有完整rootFS快照，并离线沿现有 `set_setting` 更新 `checkpoint_image`；否则未来按旧checkpoint重建会丢helper。仅安装helper不要求重建环境；启用新的媒体只读挂载则须明确替换一次，home/runtime仍为原bind；清理同时保当前容器镜像和实际选中checkpoint。保留原 systemd 与全部覆盖，Supervisor 和 `acp_peer.py` 仍用原只读源文件挂载。ACP SDK 在环境 Python 运行，宿主 Manager venv 无需安装。不能只更新 Bot 后声称环境已获得新代码。
 
 图库原图与 JSON 是唯一资料源，`search.sqlite3` 可删重建。Main 可直接执行：
 

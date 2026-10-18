@@ -23,9 +23,6 @@ from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import inputs
-from yuki.services.attachment_inputs import AttachmentInputService
-from yuki.services.image_preprocessor import ImagePreprocessor
-from yuki.services.media_resolver import MediaResolver
 
 
 def message(**changes):
@@ -140,21 +137,14 @@ async def test_absent_qq_input_does_not_enqueue_or_interrupt_original_work(
         await repository.release(lease)
 
 
-@pytest.mark.parametrize("carrier", ["image", "audio", "file", "reply_text", "reply_image"])
+@pytest.mark.parametrize(
+    "carrier", ["image", "audio", "file", "reply_file", "reply_text", "reply_image"]
+)
 async def test_empty_body_with_real_input_still_reaches_main(database, carrier):
     provider = FakeLLMProvider(lambda _: "NO_REPLY")
     harness = build_harness(database, make_settings(database.url), provider)
     processor = harness.processor
     incoming = message()
-    resolver = MediaResolver()
-    processor._native_images = AttachmentInputService(
-        resolver,
-        ImagePreprocessor(),
-        concurrency=1,
-        pending_limit=8,
-        timeout=30,
-        max_bytes=1024 * 1024,
-    )
     if carrier in {"image", "reply_image"}:
         image = io.BytesIO()
         Image.new("RGB", (8, 8), "blue").save(image, "PNG")
@@ -182,26 +172,35 @@ async def test_empty_body_with_real_input_still_reaches_main(database, carrier):
         incoming = replace(
             incoming, attachments=(MessageAttachment(AttachmentKind.AUDIO, "voice", file="voice"),)
         )
-    elif carrier == "file":
+    elif carrier in {"file", "reply_file"}:
         incoming = replace(
             incoming,
-            attachments=(
-                MessageAttachment(AttachmentKind.FILE, "notes.txt", filename="notes.txt"),
-            ),
+            **{
+                "reply_attachments" if carrier == "reply_file" else "attachments": (
+                    MessageAttachment(
+                        AttachmentKind.FILE,
+                        "notes.txt",
+                        filename="notes.txt",
+                        source="reply" if carrier == "reply_file" else "current",
+                    ),
+                )
+            },
         )
     else:
         incoming = replace(incoming, reply_text="引用的真实内容")
     sender = MemorySender()
-    try:
-        result = await processor.handle(incoming, sender)
-        assert result.reason == "chat" and len(provider.requests) == 1
-        assert sender.calls == 0
-        if carrier in {"image", "reply_image"}:
-            assert any(item.images for item in provider.requests[0].messages)
-        elif carrier == "audio":
-            assert "语音内容" in str(provider.requests[0].messages)
-    finally:
-        await resolver.close()
+    result = await processor.handle(incoming, sender)
+    assert result.reason == "chat" and len(provider.requests) == 1
+    assert sender.calls == 0
+    if carrier in {"image", "reply_image"}:
+        assert not any(item.images for item in provider.requests[0].messages)
+        assert "包含图片" in str(provider.requests[0].messages)
+    elif carrier == "audio":
+        assert "语音内容" in str(provider.requests[0].messages)
+    elif carrier in {"file", "reply_file"}:
+        material = str(provider.requests[0].messages)
+        assert ("引用消息包含文件" if carrier == "reply_file" else "当前消息包含文件") in material
+        assert "附件未读取，原因=" not in material
 
 
 async def test_mention_only_greeting_and_explicit_command_keep_their_routes(database):

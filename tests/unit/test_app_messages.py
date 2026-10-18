@@ -32,7 +32,6 @@ from yuki.identity.ingress import CanonicalIngressResolver
 from yuki.identity.routing import PresenceRouter
 from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel
-from yuki.services.attachment_inputs import AttachmentInputService
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.main_agent_contract import MainAgentContract
 from yuki.services.media_resolver import MediaResolver
@@ -87,9 +86,6 @@ async def app_env(database, admin, tmp_path):
     )
     media = ConversationMediaService(database, tmp_path / "media", resolver, preprocessor)
     harness.processor._conversation_media = media
-    harness.processor._native_images = AttachmentInputService(
-        resolver, preprocessor, concurrency=2, pending_limit=8, timeout=30, max_bytes=6_291_456
-    )
     social.workspace = store
     gateway = AppGateway(database, registry, harness.processor, social)
     await gateway.start()

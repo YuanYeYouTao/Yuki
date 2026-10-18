@@ -1,6 +1,5 @@
 """Old IMAGE sticker records use real WebM bytes without rewriting their source."""
 
-import asyncio
 import hashlib
 import shutil
 from dataclasses import replace
@@ -14,7 +13,6 @@ from tests.integration.test_telegram_sticker_inputs import make_webm
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.domain.messages import AttachmentKind, MessageAttachment
 from yuki.persistence.models import ChatEventModel
-from yuki.services.attachment_inputs import AttachmentInputService
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.workspace.inspect import WorkspaceInspector
 
@@ -61,15 +59,7 @@ async def prepare_old_message(case, database, tmp_path, *, reply):
             settings=make_settings(database.url), database=database
         ).snapshot()
     ).vision
-    reader = AttachmentInputService(
-        case.media.resolver,
-        ImagePreprocessor(),
-        concurrency=2,
-        pending_limit=4,
-        timeout=30,
-        max_bytes=6_291_456,
-    )
-    return inbound, runtime, reader, content
+    return inbound, runtime, content
 
 
 async def test_legacy_image_webm_current_cache_history_share_real_original(
@@ -78,22 +68,13 @@ async def test_legacy_image_webm_current_cache_history_share_real_original(
     case = attachment_tools
     async with database.sessions() as session:
         original_segments = (await session.get(ChatEventModel, case.source.id)).segments_json
-    inbound, runtime, reader, content = await prepare_old_message(
-        case, database, tmp_path, reply=False
-    )
+    inbound, runtime, content = await prepare_old_message(case, database, tmp_path, reply=False)
     analyze = AsyncMock(side_effect=AssertionError("ordinary media never buys auxiliary Vision"))
     monkeypatch.setattr("yuki.vision.qwen.QwenVisionProvider.analyze", analyze)
-    native, _ = await asyncio.gather(
-        reader.prepare(inbound, runtime, case.original_client),
-        case.media._cache_event(case.source.id, case.original_client, inbound),
-    )
-    assert native.images and native.images[0].video_timestamp_seconds == 0
-    assert not native.documents
+    await case.media._cache_event(case.source.id, case.original_client, inbound)
     item, path = await case.media.authorized_path(
         event_id=case.source.id,
         attachment_index=0,
-        conversation_id=case.source.canonical_conversation_id,
-        generation=None,
     )
     assert path.suffix == ".webm" and path.read_bytes() == content
     history = await case.workspace.execute(
@@ -130,15 +111,24 @@ async def test_legacy_image_webm_reply_uses_real_frames_and_one_original_downloa
     case = attachment_tools
     async with database.sessions() as session:
         original_segments = (await session.get(ChatEventModel, case.source.id)).segments_json
-    inbound, runtime, reader, _content = await prepare_old_message(
-        case, database, tmp_path, reply=True
-    )
+    inbound, _runtime, _content = await prepare_old_message(case, database, tmp_path, reply=True)
     analyze = AsyncMock(side_effect=AssertionError("reply media never buys auxiliary Vision"))
     monkeypatch.setattr("yuki.vision.qwen.QwenVisionProvider.analyze", analyze)
-    native = await reader.prepare(inbound, runtime, case.original_client)
-    assert native.images and native.images[0].video_timestamp_seconds == 0
-    assert all(frame.source == "reply" for frame in native.images)
-    assert not native.documents
+    assert not case.wire
+    await case.media._cache(
+        case.source.id,
+        0,
+        case.original_client,
+        prepared_media=inbound.reply_attachments[0].prepared_media,
+    )
+    result = await case.workspace.execute(
+        "inspect_conversation_attachment",
+        {"event_id": case.source.id, "attachment_index": 0, "question": "看引用原视频"},
+        runtime=case.runtime,
+        request_id="explicit-legacy-webm-reply",
+    )
+    assert result.images and result.images[0].video_timestamp_seconds == 0
+    assert all(frame.source_event_id == case.source.id for frame in result.images)
     assert case.wire.count(("GET", "/file/botfixture-a/photos/original.png")) == 1
     assert all("fixture-b" not in path for _, path in case.wire)
     async with database.sessions() as session:

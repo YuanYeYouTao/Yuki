@@ -299,11 +299,21 @@ class StickerIndex:
             self.update_cache(platform, asset_id)
         return {"asset": record, "created": created}
 
-    def update(self, path: str) -> dict[str, Any]:
+    def update(self, path: str, *, tags: list[str] | None = None) -> dict[str, Any]:
         selected = self.workspace / path.removeprefix("/workspace/")
         relative = selected.relative_to(self.root)
         platform = relative.parts[0]
+        if relative.parts[1] == "files":
+            result = self.catalog(platform, path, tags=tags, _index=False)
+            record = result["asset"]
+            if tags is not None and record["tags"] != tags:
+                record["tags"] = tags
+                self.write_json(self.metadata_path(platform, record["id"]), record)
+            self.update_cache(platform, record["id"])
+            return {"asset": record}
         old = self.read_json(selected)
+        if tags is not None:
+            old["tags"] = tags
         try:
             original = self.original_path(platform, old["relative_path"])
         except ValueError:
@@ -476,12 +486,20 @@ def main() -> None:
     rebuild.add_argument("--platform")
     update = sub.add_parser("update")
     update.add_argument("path")
+    update.add_argument(
+        "--tag", dest="tags", action="append", help="Replace short tags; repeat for each tag"
+    )
     search = sub.add_parser("search")
     search.add_argument("--platform", required=True)
     search.add_argument("query")
     args = vars(parser.parse_args())
     workspace, request = args.pop("workspace"), args.pop("request")
-    result = StickerIndex(workspace).execute(json.load(sys.stdin) if request else args)
+    engine = StickerIndex(workspace)
+    result = engine.execute(json.load(sys.stdin) if request else args)
+    if not request and args["command"] == "search":
+        while result.get("needs_build"):
+            engine.rebuild(args["platform"])
+            result = engine.execute(args)
     print(json.dumps(result, ensure_ascii=False))
 
 

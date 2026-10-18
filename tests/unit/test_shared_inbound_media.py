@@ -23,7 +23,7 @@ from yuki.domain.messages import AttachmentKind, InboundMessage, MessageAttachme
 from yuki.emoji.library import EmojiLibrary
 from yuki.emoji.sticker_index import StickerIndex
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
-from yuki.services.attachment_inputs import AttachmentInputService
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolutionError, MediaResolver, PreparedAttachment
 from yuki.vision.models import MediaReference
@@ -87,14 +87,6 @@ async def admitted_media(database, tmp_path):
             ),
         )
         message = media.prepare_message(message, None, source_segments=event.segments)
-        native = AttachmentInputService(
-            resolver,
-            preprocessor,
-            concurrency=2,
-            pending_limit=4,
-            timeout=10,
-            max_bytes=1_000_000,
-        )
         workspace = WorkspaceService(env.store)
         files = tmp_path / "manager-workspace"
 
@@ -117,7 +109,6 @@ async def admitted_media(database, tmp_path):
             yield SimpleNamespace(
                 media=media,
                 message=message,
-                native=native,
                 emoji=emoji,
                 files=files,
                 data=data,
@@ -147,23 +138,49 @@ async def test_plain_input_does_not_encode_media_source_or_clone_message(
     assert env.media.prepare_message(message, None, source_segments=message.segments) is message
 
 
-@pytest.mark.parametrize("cache_full", [False, True])
-async def test_cache_main_and_emoji_share_original_without_cache_admission_gate(
-    admitted_media, database, monkeypatch, cache_full
+async def test_prefetch_keeps_every_admitted_original_past_old_pending_limit(
+    admitted_media, database
 ):
     env = admitted_media
-    if cache_full:
-        monkeypatch.setattr("yuki.conversation.media_service._GLOBAL_BUDGET", 0)
+    events = ScopedEventLedgerUnitOfWork(database)
+    identities = []
+    for index in range(33):
+        appended = await events.append(
+            scope=env.event.scope,
+            platform_message_id=f"queued-media-{index}",
+            sender_user_id=env.event.sender_user_id,
+            direction="inbound",
+            content="original",
+            segments=env.event.segments,
+        )
+        identities.append(appended.event.id)
+        env.media.submit(appended.event.id, None)
+    await asyncio.wait_for(env.entered.wait(), 5)
+    env.release.set()
+    await asyncio.gather(*tuple(env.media._pending))
+    async with database.sessions() as reader:
+        items = tuple(
+            await reader.scalars(
+                select(ConversationMediaItemModel).where(
+                    ConversationMediaItemModel.source_event_id.in_(identities)
+                )
+            )
+        )
+    assert len(items) == 33 and all(item.cache_status == "cached" for item in items)
+    assert len(env.calls) == 33
+
+
+async def test_cache_emoji_and_explicit_inspection_share_original(admitted_media, database):
+    env = admitted_media
     tasks = [
         asyncio.create_task(env.media._cache_event(env.event.id, None, env.message)),
-        asyncio.create_task(env.native.prepare(env.message, env.runtime, None)),
         asyncio.create_task(env.emoji.collect_message(env.message, source_event_id=env.event.id)),
     ]
     await asyncio.wait_for(env.entered.wait(), 2)
     env.release.set()
-    _, native, (asset,) = await asyncio.gather(*tasks)
+    _, (asset,) = await asyncio.gather(*tasks)
     assert len(env.calls) == 1
-    assert native.images and asset.byte_size == len(env.data)
+    assert asset.byte_size == len(env.data)
     assert asset.relative_path.startswith("stickers/qq/files/")
     async with database.sessions() as reader:
         item = await reader.scalar(
@@ -171,7 +188,10 @@ async def test_cache_main_and_emoji_share_original_without_cache_admission_gate(
                 ConversationMediaItemModel.source_event_id == env.event.id,
             )
         )
-    assert item.cache_status == ("uncached" if cache_full else "cached")
+    assert item.cache_status == "cached"
+    live, path = await env.media.authorized_path(event_id=env.event.id, attachment_index=0)
+    result = await env.media.inspect(live, path, "查看选定的附件", runtime=env.runtime)
+    assert result.images and len(env.calls) == 1
     # Each consumer still applies its own byte budget; a rejection does not poison the original.
     with pytest.raises(MediaResolutionError, match="预算"):
         await env.message.attachments[0].prepared_media.resolve(1)
@@ -235,15 +255,15 @@ async def test_same_locator_in_new_message_does_not_share_original(admitted_medi
     assert first.content == second.content == env.data and len(env.calls) == 2
 
 
-async def test_main_does_not_wait_for_cache_publication(admitted_media):
+async def test_explicit_original_read_does_not_wait_for_cache_publication(admitted_media):
     env = admitted_media
     async with env.media._lock:
         cached = asyncio.create_task(env.media._cache_event(env.event.id, None, env.message))
-        native = asyncio.create_task(env.native.prepare(env.message, env.runtime, None))
+        selected = asyncio.create_task(env.message.attachments[0].prepared_media.resolve(100_000))
         await env.entered.wait()
         env.release.set()
         async with asyncio.timeout(2):
-            assert (await native).images
+            assert (await selected).content == env.data
         assert not cached.done()
     await cached
     assert len(env.calls) == 1

@@ -1,9 +1,6 @@
 """Forward references stay observed ledger material and never auto-expand remote content."""
 
 import json
-from dataclasses import replace
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 from sqlalchemy import select, update
 from tests.support.social_identity_cases import social_env
@@ -11,16 +8,13 @@ from tests.support.social_identity_cases import social_env
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import (
-    AttachmentKind,
     InboundMessage,
-    MessageAttachment,
     SenderIdentity,
 )
 from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.models import ChatEventModel
 from yuki.services.agent_tools import ToolRuntime
-from yuki.services.attachment_inputs import AttachmentInputService, NativeInput
 
 
 async def setup_forward(database, tmp_path, segments):
@@ -54,22 +48,10 @@ async def setup_forward(database, tmp_path, segments):
     return env, event_id, runtime
 
 
-async def test_pure_forward_skips_queue_rate_and_media(database, tmp_path):
-    _env, event_id, runtime = await setup_forward(
+async def test_pure_forward_remains_an_unexpanded_ledger_marker(database, tmp_path):
+    _env, event_id, _runtime = await setup_forward(
         database, tmp_path, [{"type": "forward", "data": {"id": "outer"}}]
     )
-    service = AttachmentInputService.__new__(AttachmentInputService)
-    service._pending = 100
-    service._pending_limit = 0
-    service._limiter = SimpleNamespace(
-        allow=AsyncMock(side_effect=AssertionError("no media admission"))
-    )
-    message = replace(
-        runtime.inbound,
-        attachments=(MessageAttachment(AttachmentKind.FORWARD, "forward", file="outer"),),
-    )
-    assert await service.prepare(message, None, None) == NativeInput()
-    service._limiter.allow.assert_not_called()
     event = await EventLedgerRepository(database).get_event(event_id)
     for current in [None, event_id]:
         text = ChatEventPromptRenderer.event_content(event, current, "current text")

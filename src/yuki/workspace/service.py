@@ -111,22 +111,23 @@ class WorkspaceService:
             )
         if name in {"inspect_conversation_attachment", "save_conversation_attachment_to_workspace"}:
             media = self.conversation_media
-            scope_id = runtime.effective_conversation_id if runtime is not None else None
-            if media is None or scope_id is None or runtime is None:
+            if media is None:
                 raise WorkspaceError("event_attachment_unavailable")
             try:
                 item, path = await media.authorized_path(
                     event_id=int(args["event_id"]),
                     attachment_index=int(args["attachment_index"]),
-                    conversation_id=scope_id,
-                    generation=runtime.turn_snapshot.generation if runtime.turn_snapshot else None,
                 )
                 if name == "inspect_conversation_attachment":
                     return await media.inspect(
                         item,
                         path,
                         str(args["question"]),
-                        runtime=runtime.runtime_config.vision if runtime.runtime_config else None,
+                        runtime=(
+                            runtime.runtime_config.vision
+                            if runtime is not None and runtime.runtime_config
+                            else None
+                        ),
                     )
                 if self.sandbox is None:
                     raise WorkspaceError("environment_unavailable")
@@ -138,7 +139,7 @@ class WorkspaceService:
                             stream.fileno(),
                             PurePosixPath(destination).name,
                             artifact_id=str(uuid5(NAMESPACE_URL, f"yuki:attachment:{request_id}")),
-                            source_key=f"attachment:{scope_id}:{int(args['event_id'])}:{int(args['attachment_index'])}",
+                            source_key=f"attachment:{item.conversation_id}:{int(args['event_id'])}:{int(args['attachment_index'])}",
                         )
 
                 metadata = await _media_io(snapshot_attachment)

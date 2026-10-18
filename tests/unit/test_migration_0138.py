@@ -4,6 +4,7 @@ import sqlite3
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from tests.unit.test_migration_0119 import _seed_0118
 
 
@@ -64,7 +65,9 @@ def test_sticker_upgrade_retires_pool_and_active_config_but_keeps_original_facts
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
     command.upgrade(config, "head")
     with sqlite3.connect(path) as connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0139",)
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            ScriptDirectory.from_config(config).get_current_head(),
+        )
         assert connection.execute(
             "SELECT name FROM sqlite_master WHERE name='social_emoji_intents'"
         ).fetchone()

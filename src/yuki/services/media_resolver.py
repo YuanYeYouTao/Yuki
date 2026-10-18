@@ -10,7 +10,7 @@ import inspect
 import ipaddress
 import socket
 from collections.abc import Awaitable, Callable, Sequence
-from contextlib import nullcontext
+from contextlib import aclosing, nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import SplitResult, urljoin, urlsplit, urlunsplit
@@ -61,7 +61,7 @@ class PreparedAttachment:
         gateway: PlatformMediaGateway | None,
         *,
         kind: MediaKind,
-        max_download_bytes: int,
+        max_download_bytes: int | None = None,
         local_source: tuple[Path, str] | None = None,
         source_segments: str = "",
     ) -> None:
@@ -73,12 +73,10 @@ class PreparedAttachment:
         self._local_source = local_source
         self.source_segments = source_segments
         self._directory: TemporaryDirectory[str] | None = None
-        self._task: asyncio.Task[DownloadedMedia | tuple[Path, str]] | None = None
+        self._task: asyncio.Task[tuple[Path, str]] | None = None
         self._readers = 0
 
-    async def _download(self) -> DownloadedMedia | tuple[Path, str]:
-        if self._kind == "image" and self._local_source is None:
-            return await self._resolver.resolve(self._reference, self._gateway)
+    async def _download(self) -> tuple[Path, str]:
         directory = TemporaryDirectory(prefix="yuki-admitted-media-")
         self._directory = directory
         path = Path(directory.name) / "original"
@@ -115,7 +113,7 @@ class PreparedAttachment:
             directory, self._directory = self._directory, None
             await _media_io(directory.cleanup)
 
-    async def source(self) -> DownloadedMedia | tuple[Path, str]:
+    async def source(self) -> tuple[Path, str]:
         if self._task is None:
             self._task = asyncio.create_task(self._download(), name="admitted-media-download")
         task = self._task
@@ -131,19 +129,10 @@ class PreparedAttachment:
 
     async def resolve(self, max_download_bytes: int) -> DownloadedMedia:
         source = await self.source()
-        if isinstance(source, DownloadedMedia):
-            if len(source.content) > max_download_bytes:
-                raise MediaResolutionError("too_large", "附件超过读取预算")
-            return source
         return await _media_io(read_local_media, source, max_download_bytes)
 
-    async def download(self, destination: Path, max_download_bytes: int) -> None:
+    async def download(self, destination: Path, max_download_bytes: int | None = None) -> None:
         source = await self.source()
-        if isinstance(source, DownloadedMedia):
-            if len(source.content) > max_download_bytes:
-                raise MediaResolutionError("too_large", "附件超过读取预算")
-            await _media_io(destination.write_bytes, source.content)
-            return
         await _media_io(read_local_media, source, max_download_bytes, destination)
 
 
@@ -154,14 +143,14 @@ class MediaResolver:
         self,
         *,
         gateway: PlatformMediaGateway | None = None,
-        max_download_bytes: int = 10 * 1024 * 1024,
+        max_download_bytes: int | None = 10 * 1024 * 1024,
         timeout_seconds: float = 10,
         max_redirects: int = 3,
         allow_private_urls: bool = False,
         client: httpx.AsyncClient | None = None,
         host_resolver: HostResolver | None = None,
     ) -> None:
-        if max_download_bytes <= 0:
+        if max_download_bytes is not None and max_download_bytes <= 0:
             raise ValueError("max_download_bytes must be positive")
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
@@ -203,7 +192,7 @@ class MediaResolver:
         return await self._read_platform_file(location)
 
     @property
-    def max_download_bytes(self) -> int:
+    def max_download_bytes(self) -> int | None:
         return self._max_download_bytes
 
     async def _platform_file(
@@ -225,9 +214,25 @@ class MediaResolver:
         if location.content is not None:
             if not location.content:
                 raise MediaResolutionError("empty_media", "平台媒体为空")
-            if len(location.content) > self._max_download_bytes:
+            if (
+                self._max_download_bytes is not None
+                and len(location.content) > self._max_download_bytes
+            ):
                 raise MediaResolutionError("too_large", "平台媒体超过下载预算")
             return _downloaded(location.content, location.content_type)
+        if location.chunks is not None:
+            content = bytearray()
+            async with aclosing(location.chunks()) as chunks:
+                async for chunk in chunks:
+                    content.extend(chunk)
+                    if (
+                        self._max_download_bytes is not None
+                        and len(content) > self._max_download_bytes
+                    ):
+                        raise MediaResolutionError("too_large", "平台媒体超过下载预算")
+            if not content:
+                raise MediaResolutionError("empty_media", "平台媒体为空")
+            return _downloaded(bytes(content), location.content_type)
         if location.url is not None:
             return await self._download(location.url)
         raise MediaResolutionError("resource_unavailable", "平台媒体当前不可读取")
@@ -238,23 +243,29 @@ class MediaResolver:
         gateway: PlatformMediaGateway | None = None,
     ) -> DownloadedMedia:
         """Use platform audio conversion without exposing its protocol or private URLs."""
+        source = await self._audio_source(reference, gateway)
+        if isinstance(source, PlatformMediaFile):
+            return await self._read_platform_file(source)
+        if _looks_like_http(source):
+            return await self._download(source)
+        return self._decode_inline(source, media_prefix="audio/")
+
+    async def _audio_source(
+        self, reference: MediaReference, gateway: PlatformMediaGateway | None
+    ) -> str | PlatformMediaFile:
         file_value = (reference.file or "").strip()
         if file_value.startswith(("base64://", "data:audio/")):
-            return self._decode_inline(file_value, media_prefix="audio/")
+            return file_value
         active_gateway = gateway or self._gateway
         gateway_error: MediaResolutionError | None = None
         if file_value and active_gateway is not None:
             try:
-                location = await self._platform_file(active_gateway, file_value, "audio")
+                return await self._platform_file(active_gateway, file_value, "audio")
             except MediaResolutionError as exc:
                 gateway_error = exc
-            else:
-                return await self._read_platform_file(location)
         for value in (reference.url, reference.file):
-            if value and _looks_like_http(value):
-                return await self._download(value)
-            if value and value.startswith("data:audio/"):
-                return self._decode_inline(value, media_prefix="audio/")
+            if value and (_looks_like_http(value) or value.startswith("data:audio/")):
+                return value
         raise gateway_error or MediaResolutionError("resource_unavailable", "语音缺少可读取资源")
 
     async def download_attachment(
@@ -262,14 +273,14 @@ class MediaResolver:
         reference: MediaReference,
         destination: Path,
         *,
-        max_download_bytes: int,
+        max_download_bytes: int | None = None,
         local_source: tuple[Path, str] | None = None,
         gateway: PlatformMediaGateway | None = None,
         kind: MediaKind = "file",
     ) -> None:
         """Stream event media to a caller-owned temporary path using the same URL policy."""
         if local_source is not None:
-            await asyncio.to_thread(read_local_media, local_source, max_download_bytes, destination)
+            await _media_io(read_local_media, local_source, max_download_bytes, destination)
             return
         bounded = MediaResolver(
             max_download_bytes=max_download_bytes,
@@ -279,26 +290,56 @@ class MediaResolver:
             client=self._client,
             host_resolver=self._host_resolver,
         )
-        location = reference.url or reference.file or ""
-        if _looks_like_http(location):
-            async with asyncio.timeout(self._timeout_seconds):
-                await bounded._download_with_redirects(location, destination=destination)
-        elif location.startswith("base64://"):
-            with destination.open("wb") as output:
-                output.write(bounded._decode_inline(location).content)
-        elif location and (gateway is not None or self._gateway is not None):
+        source = (
+            await bounded._audio_source(reference, gateway or self._gateway)
+            if kind == "audio"
+            else (
+                reference.url
+                if reference.url and _looks_like_http(reference.url)
+                else reference.file or ""
+            )
+        )
+        if isinstance(source, str):
+            if _looks_like_http(source):
+                async with (
+                    asyncio.timeout(self._timeout_seconds)
+                    if max_download_bytes is not None
+                    else nullcontext()
+                ):
+                    await bounded._download_with_redirects(source, destination=destination)
+                return
+            prefix = "audio/" if kind == "audio" else "image/"
+            if source.startswith(("base64://", f"data:{prefix}")):
+                await _media_io(
+                    destination.write_bytes,
+                    bounded._decode_inline(source, media_prefix=prefix).content,
+                )
+                return
             active = gateway or self._gateway
-            assert active is not None
-            item = await bounded._platform_file(active, location, kind)
-            if item.content is not None:
-                media = await bounded._read_platform_file(item)
-                await asyncio.to_thread(destination.write_bytes, media.content)
-            elif item.url is not None:
-                await bounded._download_with_redirects(item.url, destination=destination)
-            else:
-                raise MediaResolutionError("resource_unavailable", "附件缺少可下载资源")
+            if not source or active is None:
+                raise MediaResolutionError("resource_unavailable", "附件缺少可下载地址")
+            source = await bounded._platform_file(active, source, kind)
+        if source.content is not None:
+            media = await bounded._read_platform_file(source)
+            await _media_io(destination.write_bytes, media.content)
+        elif source.chunks is not None:
+            total = 0
+            output = await _media_io(destination.open, "wb")
+            try:
+                async with aclosing(source.chunks()) as chunks:
+                    async for chunk in chunks:
+                        total += len(chunk)
+                        if max_download_bytes is not None and total > max_download_bytes:
+                            raise MediaResolutionError("too_large", "媒体超过允许的下载大小")
+                        await _media_io(output.write, chunk)
+            finally:
+                await _media_io(output.close)
+            if not total:
+                raise MediaResolutionError("empty_media", "平台媒体为空")
+        elif source.url is not None:
+            await bounded._download_with_redirects(source.url, destination=destination)
         else:
-            raise MediaResolutionError("resource_unavailable", "附件缺少可下载地址")
+            raise MediaResolutionError("resource_unavailable", "附件缺少可下载资源")
 
     async def _download(self, raw_url: str) -> DownloadedMedia:
         try:
@@ -342,17 +383,24 @@ class MediaResolver:
                     if response.status_code >= 400:
                         raise MediaResolutionError("download_failed", "图片资源下载失败")
                     declared = _content_length(response.headers.get("Content-Length"))
-                    if declared is not None and declared > self._max_download_bytes:
+                    if (
+                        self._max_download_bytes is not None
+                        and declared is not None
+                        and declared > self._max_download_bytes
+                    ):
                         raise MediaResolutionError("too_large", "图片超过允许的下载大小")
                     content = bytearray()
                     byte_count = 0
                     with destination.open("wb") if destination else nullcontext() as output:
                         async for chunk in response.aiter_bytes(chunk_size=65536):
                             byte_count += len(chunk)
-                            if byte_count > self._max_download_bytes:
+                            if (
+                                self._max_download_bytes is not None
+                                and byte_count > self._max_download_bytes
+                            ):
                                 raise MediaResolutionError("too_large", "媒体超过允许的下载大小")
                             if output is not None:
-                                output.write(chunk)
+                                await _media_io(output.write, chunk)
                             else:
                                 content.extend(chunk)
             except MediaResolutionError:
@@ -405,13 +453,19 @@ class MediaResolver:
             if not media_type.startswith(media_prefix):
                 raise MediaResolutionError("invalid_media_type", "data URL 不是图片")
             content_type = media_type
-        max_encoded_length = ((self._max_download_bytes + 2) // 3) * 4 + 4
+        max_encoded_length = (
+            ((self._max_download_bytes + 2) // 3) * 4 + 4
+            if self._max_download_bytes is not None
+            else None
+        )
         # Reject before split/join so a whitespace-heavy attacker cannot force a
         # second unbounded allocation before the configured byte limit applies.
-        if not encoded or len(encoded) > max_encoded_length + 4096:
+        if not encoded or (
+            max_encoded_length is not None and len(encoded) > max_encoded_length + 4096
+        ):
             raise MediaResolutionError("too_large", "Base64 图片超过允许大小")
         encoded = "".join(encoded.split())
-        if not encoded or len(encoded) > max_encoded_length:
+        if not encoded or (max_encoded_length is not None and len(encoded) > max_encoded_length):
             raise MediaResolutionError("too_large", "Base64 图片超过允许大小")
         try:
             content = base64.b64decode(encoded, validate=True)
@@ -419,7 +473,7 @@ class MediaResolver:
             raise MediaResolutionError("invalid_base64", "图片 Base64 无效") from exc
         if not content:
             raise MediaResolutionError("empty_media", "Base64 图片为空")
-        if len(content) > self._max_download_bytes:
+        if self._max_download_bytes is not None and len(content) > self._max_download_bytes:
             raise MediaResolutionError("too_large", "Base64 图片超过允许大小")
         return _downloaded(content, content_type)
 
@@ -525,7 +579,7 @@ def _downloaded(content: bytes, content_type: str | None) -> DownloadedMedia:
 
 
 def read_local_media(
-    source: tuple[Path, str], maximum: int, destination: Path | None = None
+    source: tuple[Path, str], maximum: int | None, destination: Path | None = None
 ) -> DownloadedMedia:
     """Only a server-authorized transient attachment can carry this local source."""
     path, expected = source
@@ -537,7 +591,7 @@ def read_local_media(
         try:
             while chunk := stream.read(65536):
                 size += len(chunk)
-                if size > maximum:
+                if maximum is not None and size > maximum:
                     raise MediaResolutionError("too_large", "附件超过读取预算")
                 digest.update(chunk)
                 if output is None:

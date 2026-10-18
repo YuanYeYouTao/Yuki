@@ -1,4 +1,4 @@
-"""Native stickers keep their originals and pass only real pixels to Main."""
+"""Native originals cache without eager reads; explicit inspection returns real pixels."""
 
 import asyncio
 import gzip
@@ -22,7 +22,6 @@ from yuki.conversation.media_service import ConversationMediaError
 from yuki.domain.messages import AttachmentKind, MessageAttachment
 from yuki.gateway.providers.telegram_ingress import normalize_message
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
-from yuki.services.attachment_inputs import AttachmentInputService
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.video_frames import sample_video
 from yuki.vision.models import DownloadedMedia
@@ -66,6 +65,7 @@ def original(case, *, preview, reply=False):
             source_event_id=case.source.id,
             conversation_id=case.source.canonical_conversation_id,
             person_id=case.source.author_person_id,
+            **({"reply_segments": case.source.segments} if reply else {}),
         ),
         case.original_client,
         source_segments=case.source.segments,
@@ -88,35 +88,23 @@ async def test_tgs_current_uses_shared_real_preview_and_keeps_original_cache(
 ):
     case = attachment_tools
     inbound = original(case, preview=True)
-    runtime = (
-        await RuntimeConfigService(
-            settings=make_settings(database.url), database=database
-        ).snapshot()
-    ).vision
-    reader = AttachmentInputService(
-        case.media.resolver,
-        ImagePreprocessor(),
-        concurrency=2,
-        pending_limit=4,
-        timeout=10,
-        max_bytes=6_291_456,
-    )
     analyze = AsyncMock(side_effect=AssertionError("ordinary Main must not call auxiliary Vision"))
     monkeypatch.setattr("yuki.vision.qwen.QwenVisionProvider.analyze", analyze)
-    prepared, _ = await asyncio.gather(
-        reader.prepare(inbound, runtime, case.original_client),
-        case.media._cache_event(case.source.id, case.original_client, inbound),
+    await case.media._cache_event(case.source.id, case.original_client, inbound)
+    assert not any("preview.png" in path for _, path in case.wire)
+    prepared = await case.workspace.execute(
+        "inspect_conversation_attachment",
+        {"event_id": case.source.id, "attachment_index": 0, "question": "查看贴纸预览"},
+        runtime=case.runtime,
+        request_id="explicit-current-preview",
     )
-    assert len(prepared.images) == 1
-    assert "静态贴纸预览" in prepared.documents and "完整动画" in prepared.documents
-    assert "开心" in prepared.documents and "未读取" not in prepared.documents
+    assert len(prepared.images) == 1 and prepared["preview"] == "platform_static_thumbnail"
+    assert prepared["summary"] == "开心"
     assert inbound.attachments[0].kind is AttachmentKind.FILE
     assert inbound.attachments[0].preview.prepared_media is not None
     item, path = await case.media.authorized_path(
         event_id=case.source.id,
         attachment_index=0,
-        conversation_id=case.source.canonical_conversation_id,
-        generation=None,
     )
     assert path.read_bytes() == TGS and item.content_sha256 == hashlib.sha256(TGS).hexdigest()
     assert case.wire.count(("GET", "/file/botfixture-a/photos/original.png")) == 1
@@ -131,23 +119,8 @@ async def test_tgs_without_thumbnail_keeps_native_facts_without_document_failure
     attachment_tools, database
 ):
     case = attachment_tools
-    runtime = (
-        await RuntimeConfigService(
-            settings=make_settings(database.url), database=database
-        ).snapshot()
-    ).vision
-    reader = AttachmentInputService(
-        case.media.resolver,
-        ImagePreprocessor(),
-        concurrency=2,
-        pending_limit=4,
-        timeout=10,
-        max_bytes=6_291_456,
-    )
-    prepared = await reader.prepare(original(case, preview=False), runtime, case.original_client)
-    assert not prepared.images and "TGS动画贴纸" in prepared.documents
-    assert "开心" in prepared.documents and "平台未提供预览" in prepared.documents
-    assert case.wire == []
+    inbound = original(case, preview=False)
+    assert inbound.attachments[0].is_sticker and case.wire == []
     result = await case.workspace.execute(
         "inspect_conversation_attachment",
         {"event_id": case.source.id, "attachment_index": 0, "question": "看一下贴纸"},
@@ -195,6 +168,7 @@ async def test_tgs_history_preview_uses_original_presence_and_original_ttl(
             .where(ConversationMediaItemModel.source_event_id == case.source.id)
             .values(expires_at=datetime.now(UTC) - timedelta(seconds=1))
         )
+    await case.media.cleanup()
     case.wire.clear()
     with pytest.raises(WorkspaceError, match="attachment_expired"):
         await case.workspace.execute(
@@ -295,21 +269,9 @@ async def test_actual_webm_current_cache_history_and_workspace_share_decoding(
             settings=make_settings(database.url), database=database
         ).snapshot()
     ).vision
-    reader = AttachmentInputService(
-        case.media.resolver,
-        ImagePreprocessor(),
-        concurrency=2,
-        pending_limit=4,
-        timeout=30,
-        max_bytes=6_291_456,
-    )
     analyze = AsyncMock(side_effect=AssertionError("Main and explicit tools do not call Vision"))
     monkeypatch.setattr("yuki.vision.qwen.QwenVisionProvider.analyze", analyze)
-    current, _ = await asyncio.gather(
-        reader.prepare(inbound, runtime, case.original_client),
-        case.media._cache_event(case.source.id, case.original_client, inbound),
-    )
-    assert current.images and current.images[0].video_timestamp_seconds == 0
+    await case.media._cache_event(case.source.id, case.original_client, inbound)
     result = await case.workspace.execute(
         "inspect_conversation_attachment",
         {"event_id": case.source.id, "attachment_index": 0, "question": "查看原视频贴纸"},
@@ -334,7 +296,13 @@ async def test_actual_webm_current_cache_history_and_workspace_share_decoding(
 
 @pytest.mark.parametrize(
     "attachment_tools",
-    [{"content": TGS, "kind": "file", "data": TGS_DATA}],
+    [
+        {
+            "content": TGS,
+            "kind": "file",
+            "data": {**TGS_DATA, "preview": {"file": "actual-sticker-preview"}},
+        }
+    ],
     indirect=True,
 )
 async def test_reply_tgs_preview_retains_reply_source_and_media_owner(attachment_tools, database):
@@ -344,30 +312,31 @@ async def test_reply_tgs_preview_retains_reply_source_and_media_owner(attachment
     attachment = inbound.reply_attachments[0]
     assert attachment.source == attachment.preview.source == "reply"
     assert attachment.prepared_media is not None and attachment.preview.prepared_media is not None
-    runtime = (
-        await RuntimeConfigService(
-            settings=make_settings(database.url), database=database
-        ).snapshot()
-    ).vision
-    reader = AttachmentInputService(
-        case.media.resolver,
-        ImagePreprocessor(),
-        concurrency=2,
-        pending_limit=4,
-        timeout=10,
-        max_bytes=6_291_456,
+    assert not case.wire
+    await case.media._cache(
+        case.source.id, 0, case.original_client, prepared_media=attachment.prepared_media
     )
-    result = await reader.prepare(inbound, runtime, case.original_client)
-    assert result.images[0].source == "reply" and "source=reply" in result.documents
-    assert case.wire == [
-        ("POST", "/botfixture-a/getFile"),
-        ("GET", "/file/botfixture-a/photos/preview.png"),
-    ]
+    result = await case.workspace.execute(
+        "inspect_conversation_attachment",
+        {"event_id": case.source.id, "attachment_index": 0, "question": "查看引用贴纸"},
+        runtime=case.runtime,
+        request_id="explicit-reply-preview",
+    )
+    assert result.images[0].source_event_id == case.source.id
+    assert result["preview"] == "platform_static_thumbnail"
+    assert case.wire.count(("GET", "/file/botfixture-a/photos/preview.png")) == 1
+    assert case.wire.count(("GET", "/file/botfixture-a/photos/original.png")) == 1
 
 
 @pytest.mark.parametrize(
     "attachment_tools",
-    [{"content": TGS, "kind": "file", "data": TGS_DATA}],
+    [
+        {
+            "content": TGS,
+            "kind": "file",
+            "data": {**TGS_DATA, "preview": {"file": "actual-sticker-preview"}},
+        }
+    ],
     indirect=True,
 )
 async def test_preview_download_failure_does_not_misclassify_native_tgs(
@@ -377,28 +346,21 @@ async def test_preview_download_failure_does_not_misclassify_native_tgs(
 
     case = attachment_tools
     inbound = original(case, preview=True)
+    await case.media._cache_event(case.source.id, case.original_client, inbound)
+    item, path = await case.media.authorized_path(event_id=case.source.id, attachment_index=0)
     monkeypatch.setattr(
         case.original_client,
         "resolve_media_file",
-        AsyncMock(side_effect=MediaResolutionError("download_failed", "preview unavailable")),
+        AsyncMock(side_effect=MediaResolutionError("resource_unavailable", "preview unavailable")),
     )
-    runtime = (
-        await RuntimeConfigService(
-            settings=make_settings(database.url), database=database
-        ).snapshot()
-    ).vision
-    reader = AttachmentInputService(
-        case.media.resolver,
-        ImagePreprocessor(),
-        concurrency=2,
-        pending_limit=4,
-        timeout=10,
-        max_bytes=6_291_456,
-    )
-    result = await reader.prepare(inbound, runtime, case.original_client)
-    assert not result.images
-    assert "TGS动画贴纸" in result.documents and "开心" in result.documents
-    assert "download_failed" in result.documents and "corrupt_image" not in result.documents
+    with pytest.raises(WorkspaceError, match="resource_unavailable"):
+        await case.workspace.execute(
+            "inspect_conversation_attachment",
+            {"event_id": case.source.id, "attachment_index": 0, "question": "查看贴纸预览"},
+            runtime=case.runtime,
+            request_id="failed-explicit-preview",
+        )
+    assert path.read_bytes() == TGS and item.content_sha256 == hashlib.sha256(TGS).hexdigest()
 
 
 @pytest.mark.parametrize("metadata", [{}, {"mime_type": "video/mp4", "file_name": "wrong.mp4"}])
@@ -436,26 +398,12 @@ async def test_telegram_gif_animation_reuses_bytes_for_current_cache_history_and
             settings=make_settings(database.url), database=database
         ).snapshot()
     ).vision
-    reader = AttachmentInputService(
-        case.media.resolver,
-        ImagePreprocessor(),
-        concurrency=2,
-        pending_limit=4,
-        timeout=10,
-        max_bytes=6_291_456,
-    )
     analyze = AsyncMock(side_effect=AssertionError("ordinary input must not buy Vision"))
     monkeypatch.setattr("yuki.vision.qwen.QwenVisionProvider.analyze", analyze)
-    native, _ = await asyncio.gather(
-        reader.prepare(inbound, runtime, case.original_client),
-        case.media._cache_event(case.source.id, case.original_client, inbound),
-    )
-    assert native.images and not native.documents
+    await case.media._cache_event(case.source.id, case.original_client, inbound)
     item, path = await case.media.authorized_path(
         event_id=case.source.id,
         attachment_index=0,
-        conversation_id=case.source.canonical_conversation_id,
-        generation=None,
     )
     assert path.suffix == ".gif" and path.read_bytes() == content
     inspected = await case.media.inspect(item, path, "看这张动画", runtime=runtime)
@@ -516,8 +464,6 @@ async def test_cached_tgs_preview_cannot_switch_to_another_live_bot(attachment_t
     await case.media.authorized_path(
         event_id=case.source.id,
         attachment_index=0,
-        conversation_id=case.source.canonical_conversation_id,
-        generation=None,
     )
     case.registry.disconnect(case.original_client)
     case.wire.clear()
@@ -597,31 +543,16 @@ async def test_original_tgs_bytes_survive_image_label_without_platform_metadata(
             settings=make_settings(database.url), database=database
         ).snapshot()
     ).vision
-    reader = AttachmentInputService(
-        case.media.resolver,
-        ImagePreprocessor(),
-        concurrency=2,
-        pending_limit=4,
-        timeout=10,
-        max_bytes=6_291_456,
-    )
     analyze = AsyncMock(side_effect=AssertionError("native file input must not buy Vision"))
     monkeypatch.setattr("yuki.vision.qwen.QwenVisionProvider.analyze", analyze)
     decode = AsyncMock(side_effect=AssertionError("raw TGS cannot become image pixels"))
-    monkeypatch.setattr(reader._preparer, "prepare_image", decode)
-    native, _ = await asyncio.gather(
-        reader.prepare(inbound, runtime, case.original_client),
-        case.media._cache_event(case.source.id, case.original_client, inbound),
-    )
-    assert not native.images and "TGS动画贴纸" in native.documents
-    assert "未读取" not in native.documents and "原始动画文件" in native.documents
+    monkeypatch.setattr(case.media.preparer, "prepare_image", decode)
+    await case.media._cache_event(case.source.id, case.original_client, inbound)
     item, path = await case.media.authorized_path(
         event_id=case.source.id,
         attachment_index=0,
-        conversation_id=case.source.canonical_conversation_id,
-        generation=None,
     )
-    assert path.suffix == ".tgs" and path.read_bytes() == TGS
+    assert path.suffix == ".gz" and path.read_bytes() == TGS
     result = await case.media.inspect(item, path, "读取原件", runtime=runtime)
     assert result["mode"] == "sticker_metadata" and result["status"] == "preview_unavailable"
     assert result["format"] == "TGS" and result["sha256"] == hashlib.sha256(TGS).hexdigest()

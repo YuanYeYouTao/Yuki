@@ -67,6 +67,9 @@ def test_raw_and_verified_image_inputs_preserve_pixels_and_reject_wrong_hash(ani
 
 @pytest.mark.asyncio
 async def test_video_runtime_settings_and_actual_timestamps(tmp_path, monkeypatch):
+    path = tmp_path / "v.mp4"
+    # This test substitutes the sampler, but format detection still reads its source.
+    path.write_bytes(b"\x00\x00\x00\x18ftypmp42" + b"\x00" * 12)
     frame = NativeMediaPreparer(ImagePreprocessor()).prepare_image(_image(), source="history")[0]
     sample = AsyncMock(return_value=(replace(frame, video_timestamp_seconds=3.25),))
     monkeypatch.setattr("yuki.services.native_media.sample_video", sample)
@@ -77,7 +80,7 @@ async def test_video_runtime_settings_and_actual_timestamps(tmp_path, monkeypatc
         video_sample_interval_seconds=9,
     )
     result = await NativeMediaPreparer(ImagePreprocessor()).prepare_video(
-        tmp_path / "v.mp4", source="history", runtime=runtime
+        path, source="history", runtime=runtime
     )
     assert result[0].video_timestamp_seconds == 3.25
     assert sample.await_args.kwargs == {

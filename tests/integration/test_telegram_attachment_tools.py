@@ -8,6 +8,7 @@ import base64
 import hashlib
 import io
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -18,7 +19,7 @@ from PIL import Image
 
 from yuki.conversation.media_service import ConversationMediaService
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.domain.messages import AttachmentKind, InboundMessage, MessageAttachment, SenderIdentity
 from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.providers.telegram import TelegramClient
 from yuki.gateway.registry import GatewayConnectionRegistry
@@ -203,6 +204,7 @@ async def attachment_tools(database, tmp_path, request):
                 store=store,
                 registry=registry,
                 original_client=original_client,
+                current_client=current_client,
                 source=source,
                 runtime=runtime,
                 wire=wire,
@@ -229,8 +231,6 @@ async def test_attachment_tools_use_original_presence_and_cached_bytes(
         await case.media.authorized_path(
             event_id=case.source.id,
             attachment_index=0,
-            conversation_id=case.source.canonical_conversation_id,
-            generation=None,
         )
         case.wire.clear()
     if original_offline:
@@ -283,6 +283,43 @@ async def test_native_file_selection_uses_resolvers_actual_locator_priority(
         request_id="original-native-priority",
     )
     assert result.images and case.wire == [
+        ("POST", "/botfixture-a/getFile"),
+        ("GET", "/file/botfixture-a/photos/original.png"),
+    ]
+
+
+async def test_known_reply_prepared_from_another_bot_keeps_original_media_presence(
+    attachment_tools,
+):
+    case = attachment_tools
+    inbound = replace(
+        case.runtime.inbound,
+        reply_to_event_id=case.source.id,
+        reply_segments=case.source.segments,
+        reply_attachments=(
+            MessageAttachment(
+                AttachmentKind.IMAGE,
+                "original",
+                source="reply",
+                segment_index=0,
+                file="original-bot-a-file",
+            ),
+        ),
+    )
+    prepared = case.media.prepare_message(
+        inbound, case.current_client, source_segments=inbound.segments
+    )
+    # Preparing the observed reply performs no transport I/O. The actual reader
+    # may reuse this source, but its original file namespace still belongs to A.
+    assert prepared.reply_attachments[0].prepared_media is not None and not case.wire
+    result = await case.workspace.execute(
+        "inspect_conversation_attachment",
+        {"event_id": case.source.id, "attachment_index": 0, "question": "查看引用原图"},
+        runtime=case.runtime,
+        request_id="known-reply-original-presence",
+    )
+    assert result.images and result["sha256"] == hashlib.sha256(case.original_bytes).hexdigest()
+    assert case.wire == [
         ("POST", "/botfixture-a/getFile"),
         ("GET", "/file/botfixture-a/photos/original.png"),
     ]

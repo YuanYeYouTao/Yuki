@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import time
 from collections import OrderedDict
@@ -14,6 +15,7 @@ from typing import Literal, Protocol, cast
 from weakref import WeakValueDictionary
 
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +30,7 @@ from yuki.automation.service import AutomationService
 from yuki.automation.worker import AutomationWorker
 from yuki.config import Settings
 from yuki.conversation.initiative_sources import source_revision
+from yuki.conversation.media_index import indexed_media_segments, observed_reply_media_segments
 from yuki.conversation.media_service import ConversationMediaService
 from yuki.conversation.ordinary_admission import (
     OrdinaryAdmission,
@@ -41,7 +44,6 @@ from yuki.conversation.scope import ConversationTurnSnapshot, runtime_conversati
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import (
-    ChatImage,
     InboundMessage,
     LocalDeliveryReceipt,
     OutboundMessage,
@@ -60,6 +62,8 @@ from yuki.llm.base import LLMConfigurationError, LLMEmptyResponseError, LLMError
 from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
 from yuki.memory.service import MemoryFactService
 from yuki.memory.worker import MemoryWorker
+from yuki.persistence.database import Database
+from yuki.persistence.models import ConversationMediaItemModel
 from yuki.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
@@ -79,7 +83,6 @@ from yuki.runtime.observability import (
     new_runtime_turn_id,
 )
 from yuki.runtime.work_repository import WorkCapacityError, WorkConflict
-from yuki.services.attachment_inputs import AttachmentInputService
 from yuki.services.autonomous_groups import AutonomousGroupService
 from yuki.services.chat import ChatService, OutboundSender
 from yuki.services.client_link import ClientLinkCommands
@@ -112,7 +115,6 @@ from yuki.services.turn_coordinator import (
     TurnSupersededError,
     TurnToken,
 )
-from yuki.services.vision_service import VisionService
 from yuki_plugin_sdk.events import EventName
 from yuki_plugin_sdk.models import AdmissionSignal as SdkAdmissionSignal
 
@@ -144,27 +146,14 @@ class DirectPluginCommandResolver(Protocol):
 
 
 RATE_LIMIT_MESSAGE = "请求过于频繁，请稍后再试。"
-IMAGE_FAILURE_MESSAGE = "这张图片暂时没有识别成功，可以重新发送一张更清晰的版本。"
-IMAGE_RATE_LIMIT_MESSAGE = "图片理解请求过于频繁，请稍后再试。"
-IMAGE_QUEUE_BUSY_MESSAGE = "当前图片识别任务较多，请稍后再试。"
-IMAGE_DOWNLOAD_TIMEOUT_MESSAGE = "图片下载超时，请稍后重试；如果仍然失败，请重新发送原图。"
-IMAGE_DOWNLOAD_FAILED_MESSAGE = "图片资源下载失败或已经失效，请重新发送原图。"
-IMAGE_RESOURCE_QUERY_FAILED_MESSAGE = "QQ 网关未能取得图片资源，请重新发送原图。"
-IMAGE_FORMAT_FAILED_MESSAGE = "图片文件无法解析，请尝试重新保存或转换为 PNG、JPEG 后发送。"
-IMAGE_TOO_LARGE_MESSAGE = "图片尺寸、帧数或文件大小超过处理范围，请压缩后重新发送。"
-IMAGE_PROVIDER_TIMEOUT_MESSAGE = "图片已取得，但视觉模型响应超时，请稍后再试。"
-IMAGE_PROVIDER_FAILED_MESSAGE = "图片已取得，但视觉模型暂时不可用，请稍后再试。"
-REPLY_IMAGE_UNAVAILABLE_MESSAGE = "回复中的图片资源已过期或无法读取，请重新发送原图。"
 MENTION_ONLY_CONTEXT = "[用户在群聊中只 @ 了你，没有附带文字；请自然地回应这次招呼。]"
 
 
 def _attachment_only_context(message: InboundMessage) -> str:
     """Describe an unparsed non-visual attachment to the Agent instead of replying from a stub."""
 
-    labels = tuple(dict.fromkeys(attachment.kind.value for attachment in message.attachments))
-    if not labels:
-        return ""
     readable = {
+        "image": "图片",
         "audio": "语音",
         "video": "视频",
         "file": "文件",
@@ -172,11 +161,86 @@ def _attachment_only_context(message: InboundMessage) -> str:
         "card": "分享卡片",
         "unknown": "暂未识别的消息段",
     }
-    descriptions = "、".join(readable.get(label, label) for label in labels)
-    return (
-        f"[用户发送了{descriptions}，但该消息没有可解析的正文。"
-        "请结合当前对话自然回应；不要假装已经读取未提供的内容。]"
-    )
+    sources = []
+    for name, attachments in (
+        ("当前消息", message.attachments),
+        ("引用消息", message.reply_attachments),
+    ):
+        labels = tuple(dict.fromkeys(attachment.kind.value for attachment in attachments))
+        if labels:
+            descriptions = "、".join(readable.get(label, label) for label in labels)
+            sources.append(f"{name}包含{descriptions}")
+    return f"[{'；'.join(sources)}，没有文字正文。]" if sources else ""
+
+
+async def _attachment_metadata(
+    message: InboundMessage, record: EventRecord, database: Database
+) -> str:
+    references = []
+    for source, event_id, positions in (
+        ("current", record.id, indexed_media_segments(record.segments)),
+        (
+            "reply",
+            record.reply_to_event_id or record.id,
+            indexed_media_segments(message.reply_segments)
+            if record.reply_to_event_id is not None
+            else observed_reply_media_segments(record.segments, message.reply_segments),
+        ),
+    ):
+        for index, _position, kind, data in positions:
+            raw_name = str(data.get("name") or data.get("filename") or "")
+            references.append(
+                {
+                    "source": source,
+                    **(
+                        {"origin": "reply_observed"}
+                        if source == "reply" and record.reply_to_event_id is None
+                        else {}
+                    ),
+                    "event_id": event_id,
+                    "attachment_index": index,
+                    "kind": kind,
+                    "filename": raw_name.replace("\\", "/").split("/")[-1],
+                    **{
+                        key: data[key]
+                        for key in (
+                            "mime_type",
+                            "file_size",
+                            "is_sticker",
+                            "summary",
+                            "artifact_id",
+                        )
+                        if data.get(key) is not None
+                    },
+                }
+            )
+    if not references:
+        return ""
+    async with database.sessions() as reader:
+        items = {
+            (item.source_event_id, item.attachment_index): item
+            for item in await reader.scalars(
+                select(ConversationMediaItemModel).where(
+                    ConversationMediaItemModel.source_event_id.in_(
+                        {reference["event_id"] for reference in references}
+                    )
+                )
+            )
+        }
+    for reference in references:
+        item = items.get((reference["event_id"], reference["attachment_index"]))
+        if item is None:
+            continue
+        root = "/inputs/media-cache/v1"
+        reference["cache_status"] = item.cache_status
+        reference["cache_directory"] = f"{root}/{item.conversation_id}/{item.source_event_id}/"
+        if item.cache_status == "cached" and item.cache_name:
+            reference["cache_path"] = (
+                f"{root}/uploads/{item.cache_name.removeprefix('upload-')}"
+                if item.cache_name.startswith("upload-")
+                else reference["cache_directory"] + item.cache_name
+            )
+    return "[本轮附件索引]\n" + json.dumps(references, ensure_ascii=False, separators=(",", ":"))
 
 
 @dataclass(frozen=True, slots=True)
@@ -228,7 +292,7 @@ class _ObservedHumanTurn:
     snapshot: ConversationTurnSnapshot
     token: TurnToken
     created: bool
-    has_visual_input: bool
+    has_media_input: bool
     audio: AudioInput | None = None
     ordinary_reason: OrdinaryReason | None = None
     binding: OrdinaryParticipationBinding | None = None
@@ -236,20 +300,10 @@ class _ObservedHumanTurn:
 
 
 @dataclass(frozen=True, slots=True)
-class VisualTurnState:
-    """One optional vision attempt, including a model-safe failure category."""
-
-    error_code: str | None = None
-    images: tuple[ChatImage, ...] = ()
-    attachment_text: str = ""
-
-
-@dataclass(frozen=True, slots=True)
 class _PreparedHumanInput:
     record: EventRecord
     content: str
     audio: AudioInput
-    visual: VisualTurnState
 
 
 def _input_content(message: InboundMessage, text: str) -> str:
@@ -287,59 +341,6 @@ def _same_input_source(expected: EventRecord, current: EventRecord | None) -> bo
     )
 
 
-def _vision_failure_message(error_code: str | None, *, reply_only: bool) -> str:
-    """Return a useful pure-image failure without exposing provider internals."""
-
-    if error_code == "rate_limited":
-        return IMAGE_RATE_LIMIT_MESSAGE
-    if error_code in {"queue_full", "queue_timeout"}:
-        return IMAGE_QUEUE_BUSY_MESSAGE
-    if error_code == "media_download_timeout":
-        return IMAGE_DOWNLOAD_TIMEOUT_MESSAGE
-    if error_code == "get_image_failed":
-        return IMAGE_RESOURCE_QUERY_FAILED_MESSAGE
-    if error_code in {
-        "download_failed",
-        "dns_failed",
-        "private_url",
-        "redirect_rejected",
-        "empty_media",
-    }:
-        return REPLY_IMAGE_UNAVAILABLE_MESSAGE if reply_only else IMAGE_DOWNLOAD_FAILED_MESSAGE
-    if error_code == "resource_unavailable" and reply_only:
-        return REPLY_IMAGE_UNAVAILABLE_MESSAGE
-    if error_code in {
-        "too_large",
-        "prepared_too_large",
-        "decompression_bomb",
-        "extreme_aspect_ratio",
-        "too_many_frames",
-    }:
-        return IMAGE_TOO_LARGE_MESSAGE
-    if error_code in {
-        "invalid_base64",
-        "invalid_media_type",
-        "invalid_media",
-        "invalid_dimensions",
-        "unsupported_format",
-        "corrupt_image",
-        "frame_decode_failed",
-    }:
-        return IMAGE_FORMAT_FAILED_MESSAGE
-    if error_code == "timeout":
-        return IMAGE_PROVIDER_TIMEOUT_MESSAGE
-    if error_code in {
-        "connection_failed",
-        "provider_unavailable",
-        "authentication_failed",
-        "provider_rejected",
-        "invalid_response",
-        "empty_response",
-    }:
-        return IMAGE_PROVIDER_FAILED_MESSAGE
-    return IMAGE_FAILURE_MESSAGE
-
-
 class MessageProcessor:
     """Admission → dedup → identity → ledger → memory → reply."""
 
@@ -367,9 +368,7 @@ class MessageProcessor:
         memory_worker: MemoryWorker | None = None,
         autonomous_groups: AutonomousGroupService | None = None,
         runtime_config: RuntimeConfigService | None = None,
-        vision_service: VisionService | None = None,
         asr_service: ASRService | None = None,
-        attachment_inputs: AttachmentInputService | None = None,
         conversation_media: ConversationMediaService | None = None,
         automation_service: AutomationService | None = None,
         automation_repository: AutomationRepository | None = None,
@@ -417,7 +416,6 @@ class MessageProcessor:
         )
         self._turn_coordinator = turn_coordinator or chat._turn_coordinator
         self._admission_signals = admission_signals
-        self._native_images = attachment_inputs
         self._conversation_media = conversation_media
         self._automation = automation_service
         self._automation_repository = automation_repository
@@ -546,7 +544,7 @@ class MessageProcessor:
                 False,
                 True,
                 observed.created,
-                observed.has_visual_input,
+                observed.has_media_input,
                 binding,
                 time.perf_counter(),
                 input_only=input_only,
@@ -795,12 +793,9 @@ class MessageProcessor:
             and direct_match is None
         )
         turn_token = await notify() if direct_turn and not app_message else None
-        has_visual_input = VisionService.has_visual_input(message) or (
-            self._native_images is not None
-            and any(
-                a.kind.value in {"video", "file"}
-                for a in (*message.attachments, *message.reply_attachments)
-            )
+        has_media_input = any(
+            item.kind.value in {"image", "video", "file"}
+            for item in (*message.attachments, *message.reply_attachments)
         )
         if decision.should_respond or admin_candidate:
             await publish_notification(
@@ -815,7 +810,7 @@ class MessageProcessor:
                         if direct_match is not None
                         else (decision.command.value if decision.command is not None else None)
                     ),
-                    "visual_input_present": has_visual_input,
+                    "visual_input_present": has_media_input,
                     "mentions_bot": message.mentions_bot,
                 },
             )
@@ -884,7 +879,11 @@ class MessageProcessor:
         )
         if (
             created
-            and (message.attachments or message.reply_attachments)
+            and (
+                message.attachments
+                or message.reply_attachments
+                or any(indexed_media_segments(message.reply_segments))
+            )
             and self._conversation_media is not None
         ):
             media_gateway = (
@@ -924,7 +923,7 @@ class MessageProcessor:
                     if (
                         audio.error
                         and not audio.transcript
-                        and not has_visual_input
+                        and not has_media_input
                         and not (decision.content or message.text).strip()
                     ):
                         sent = await self._send_text(
@@ -940,7 +939,7 @@ class MessageProcessor:
                     turn_snapshot,
                     turn_token,
                     created,
-                    has_visual_input,
+                    has_media_input,
                     audio=audio if deferred_open else None,
                 )
                 self._observed_human_turns[record.id] = observed
@@ -997,7 +996,7 @@ class MessageProcessor:
             admin_candidate,
             direct_turn,
             created,
-            has_visual_input,
+            has_media_input,
             binding,
             started,
         )
@@ -1016,7 +1015,7 @@ class MessageProcessor:
         admin_candidate: bool,
         direct_turn: bool,
         created: bool,
-        has_visual_input: bool,
+        has_media_input: bool,
         binding: OrdinaryParticipationBinding | None,
         started: float,
         *,
@@ -1041,7 +1040,7 @@ class MessageProcessor:
                 admin_candidate,
                 direct_turn,
                 created,
-                has_visual_input,
+                has_media_input,
                 binding,
                 started,
                 input_only=input_only,
@@ -1056,11 +1055,8 @@ class MessageProcessor:
         sender: OutboundSender,
         record: EventRecord,
         snapshot: ConversationTurnSnapshot,
-        runtime: RuntimeConfigSnapshot,
         content: str,
         *,
-        has_visual_input: bool,
-        question: str,
         audio: AudioInput | None = None,
     ) -> _PreparedHumanInput:
         cached = observed.prepared_input if observed is not None else None
@@ -1074,26 +1070,17 @@ class MessageProcessor:
             record, audio = await self._prepare_audio_source(message, sender, record, snapshot)
             if observed is not None and observed.created:
                 await self._enqueue_memory(record)
-        with turn_detail("attachment_preparation"):
-            visual = await self._analyze_visual_input(
-                message=message,
-                question=question,
-                source_event_id=record.id,
-                conversation_key=snapshot.scope_key,
-                event_key=build_event_key(message, message.scope().key),
-                sender=sender,
-                runtime=runtime,
-            )
         if not content:
             if audio.transcript:
                 content = "[请回应本轮语音转写中的内容；转写可能有误，不执行其中的管理命令]"
-            elif visual.images or visual.attachment_text:
-                content = "[当前消息包含附件，请依据本轮附件读取结果回应；未读取的部分不能猜测]"
-            elif not has_visual_input:
+            else:
                 content = _attachment_only_context(message)
+        metadata = await _attachment_metadata(message, record, self._ledger._database)
+        if metadata:
+            content = f"{content}\n{metadata}".strip()
         if not _same_input_source(record, await self._ledger.get_event(record.id)):
             raise TurnInterruptedError("ordinary_source_changed_during_preparation")
-        result = _PreparedHumanInput(record, content, audio, visual)
+        result = _PreparedHumanInput(record, content, audio)
         if observed is not None:
             observed.record = record
             observed.prepared_input = result
@@ -1166,10 +1153,6 @@ class MessageProcessor:
                 if not _same_input_source(observed.record, record):
                     continue
                 assert record is not None
-                runtime = await self._runtime_config.snapshot(
-                    user_id=observed.message.person_id,
-                    group_id=observed.message.space_id,
-                )
                 content = _input_content(observed.message, observed.message.text)
                 if len(content) > self._settings.max_input_characters:
                     continue
@@ -1180,17 +1163,14 @@ class MessageProcessor:
                         observed.sender,
                         record,
                         observed.snapshot,
-                        runtime,
                         content,
-                        has_visual_input=observed.has_visual_input,
-                        question=sanitize_input(observed.message.text),
                     )
                 except TurnInterruptedError:
                     continue
                 if not complete.content or (
                     complete.audio.error
                     and not complete.audio.transcript
-                    and not observed.has_visual_input
+                    and not observed.has_media_input
                     and not observed.message.text.strip()
                 ):
                     continue
@@ -1258,15 +1238,7 @@ class MessageProcessor:
                         message=self._chat.ordinary_input_message(
                             observed.message,
                             complete.content,
-                            native_images=complete.visual.images,
-                            attachment_text="\n\n".join(
-                                part
-                                for part in (
-                                    complete.visual.attachment_text,
-                                    complete.audio.context,
-                                )
-                                if part
-                            ),
+                            attachment_text=complete.audio.context,
                         ),
                         admission_allowed=allowed,
                         on_committed=committed,
@@ -1288,7 +1260,7 @@ class MessageProcessor:
         admin_candidate: bool,
         direct_turn: bool,
         created: bool,
-        has_visual_input: bool,
+        has_media_input: bool,
         binding: OrdinaryParticipationBinding | None,
         started: float,
         *,
@@ -1387,7 +1359,7 @@ class MessageProcessor:
             if (
                 audio.error
                 and not audio.transcript
-                and not has_visual_input
+                and not has_media_input
                 and not (decision.content or message.text).strip()
             ):
                 return None
@@ -1432,7 +1404,7 @@ class MessageProcessor:
             audio is not None
             and audio.error
             and not audio.transcript
-            and not has_visual_input
+            and not has_media_input
             and not (decision.content or message.text).strip()
         ):
             sent = await self._send_text(
@@ -1474,18 +1446,10 @@ class MessageProcessor:
                 sender,
                 record,
                 turn_snapshot,
-                runtime_snapshot,
                 content,
-                has_visual_input=has_visual_input,
-                question=sanitize_input(decision.content or message.text),
                 audio=audio,
             )
-            record, content, audio, visual = (
-                complete.record,
-                complete.content,
-                complete.audio,
-                complete.visual,
-            )
+            record, content, audio = complete.record, complete.content, complete.audio
         except (TurnInterruptedError, TurnSupersededError, WorkConflict):
             await self._chat.discard_work_input(work_input_id)
             return ProcessResult(True, reason="turn_interrupted")
@@ -1493,19 +1457,6 @@ class MessageProcessor:
             await self._chat.discard_work_input(work_input_id)
             raise
         if not content:
-            if has_visual_input:
-                text = _vision_failure_message(
-                    visual.error_code,
-                    reply_only=bool(message.reply_attachments and not message.attachments),
-                )
-                sent = await self._send_text(
-                    message,
-                    sender,
-                    text,
-                    turn_snapshot=turn_snapshot,
-                )
-                await self._chat.discard_work_input(work_input_id)
-                return ProcessResult(True, int(sent), f"vision_{visual.error_code or 'failed'}")
             await self._chat.discard_work_input(work_input_id)
             return ProcessResult(True, reason="empty")
         if binding is not None and binding.source_revision != str(source_revision(record)):
@@ -1551,21 +1502,12 @@ class MessageProcessor:
             return ProcessResult(True, reason="turn_interrupted")
 
         if work_input_id is not None:
-            input_text = "\n\n".join(
-                part
-                for part in (
-                    content,
-                    visual.attachment_text,
-                    audio.context,
-                )
-                if part
-            )
+            input_text = "\n\n".join(part for part in (content, audio.context) if part)
             try:
                 ready = await self._chat.ready_work_input(
                     coordinator_key,
                     work_input_id,
                     input_text,
-                    visual.images,
                     admission=prepared,
                 )
             except OrdinaryAdmissionDuplicate:
@@ -1630,11 +1572,7 @@ class MessageProcessor:
                     content,
                     sender,
                     runtime_snapshot=runtime_snapshot,
-                    native_images=visual.images,
-                    attachment_text="\n\n".join(
-                        part for part in (visual.attachment_text, audio.context) if part
-                    ),
-                    visual_input_present=has_visual_input,
+                    attachment_text=audio.context,
                     turn_token=turn_token,
                     turn_snapshot=turn_snapshot,
                     ordinary_inputs=self._ordinary_context_inputs,
@@ -1766,77 +1704,6 @@ class MessageProcessor:
                 await self._participation.on_ordinary_admitted(binding, admission)
             except (SQLAlchemyError, OSError, RuntimeError, ValueError) as exc:
                 logger.warning("ordinary_participation_save_failed category=%s", type(exc).__name__)
-
-    async def _analyze_visual_input(
-        self,
-        *,
-        message: InboundMessage,
-        question: str,
-        source_event_id: int,
-        conversation_key: str,
-        event_key: str,
-        sender: OutboundSender,
-        runtime: RuntimeConfigSnapshot,
-    ) -> VisualTurnState:
-        has_video = any(
-            a.kind.value in {"video", "file"}
-            for a in (*message.attachments, *message.reply_attachments)
-        )
-        if not VisionService.has_visual_input(message) and not (
-            self._native_images is not None and has_video
-        ):
-            return VisualTurnState()
-        if self._native_images is not None:
-            gateway = (
-                cast(PlatformMediaGateway, sender)
-                if callable(getattr(sender, "resolve_media_file", None))
-                else None
-            )
-            try:
-                prepared = await self._native_images.prepare(message, runtime.vision, gateway)
-                return VisualTurnState(images=prepared.images, attachment_text=prepared.documents)
-            except Exception as exc:
-                logger.warning(
-                    "native_image_prepare_failed exception_category=%s code=%s",
-                    type(exc).__name__,
-                    getattr(exc, "code", "resource_unavailable"),
-                )
-                code = getattr(exc, "code", "resource_unavailable")
-                allowed = {
-                    "too_large",
-                    "video_limit",
-                    "unsupported_video",
-                    "invalid_video",
-                    "video_unavailable",
-                    "document_unreadable",
-                    "frame_budget",
-                    "rate_limited",
-                    "queue_full",
-                    "image_capability_unavailable",
-                    "encrypted_document",
-                    "archive_expansion_limit",
-                    "unsafe_archive",
-                    "unsupported_archive",
-                    "unsupported_document",
-                    "binary_document",
-                }
-                safe_code = code if code in allowed else "resource_unavailable"
-                return VisualTurnState(
-                    error_code=safe_code,
-                    attachment_text=(
-                        f"[附件读取失败，原因={safe_code}。未获得附件内容；说明此限制，不能声称已经查看或根据附件猜测。]"
-                    ),
-                )
-        # Reading an attachment belongs to the pinned primary model. Auxiliary
-        # vision remains available to its explicit SDK/background consumers,
-        # but cannot silently substitute a second model in an ordinary turn.
-        return VisualTurnState(
-            error_code="image_capability_unavailable",
-            attachment_text=(
-                "[图片未读取：image_capability_unavailable。当前主模型不支持图片输入；"
-                "不能声称已经查看或根据附件猜测。]"
-            ),
-        )
 
     async def _effective_group_policy(self, group_id: str | None) -> EffectiveGroupPolicy | None:
         if group_id is None:

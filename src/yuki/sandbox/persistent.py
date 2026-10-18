@@ -55,6 +55,7 @@ class PersistentManager:
         acp_config: Path | None = None,
         testing: bool = False,
         name: str = "yuki-environment",
+        media_cache: Path | None = None,
     ) -> None:
         self.root, self.store, self.image = root.resolve(), store, image
         self.network, self.proxy = network, proxy
@@ -79,6 +80,8 @@ class PersistentManager:
             raise ValueError("invalid_environment_name")
         self.name = name
         self.files = FileWorkspace(self.home / "workspace")
+        self.media_cache = FileWorkspace(media_cache.resolve()) if media_cache is not None else None
+        self.media_cache_shared = False
         self.runtime_root = self.root / "environment-jobs"
         self.runtime_root.mkdir(mode=0o755, exist_ok=True)
         self.runtime_root.chmod(0o755)
@@ -409,6 +412,14 @@ class PersistentManager:
             ]
             if self.resolv_conf is not None:
                 args.extend(("--mount", f"type=bind,src={self.resolv_conf},dst=/etc/resolv.conf"))
+            if self.media_cache is not None:
+                args.extend(
+                    (
+                        "--mount",
+                        f"type=bind,src={self.media_cache.root},"
+                        "dst=/home/yuki/inputs/media-cache,readonly",
+                    )
+                )
             # Rootfs snapshots retain their old container configuration. Override
             # its former user/proxy defaults without discarding installed files.
             for value in ("HOME=/home/yuki", "USER=root", "LOGNAME=root"):
@@ -421,6 +432,12 @@ class PersistentManager:
                 raise RuntimeError("environment_create_failed")
             current = await self.inspect_container()
         assert current is not None
+        self.media_cache_shared = self.media_cache is not None and any(
+            mount.get("Destination") == "/home/yuki/inputs/media-cache"
+            and mount.get("Source") == str(self.media_cache.root)
+            and mount.get("RW") is False
+            for mount in current.get("Mounts", ())
+        )
         # Docker must not auto-start this bind-mounted container before the home
         # filesystem is mounted at boot. The ordered Manager owns recovery.
         if current.get("HostConfig", {}).get("RestartPolicy", {}).get("Name") != "no":
@@ -677,6 +694,14 @@ class PersistentManager:
             raise ValueError("invalid_terminal_action")
         return {"run_id": identity, "status": "running", "input_accepted": True, "pending": True}
 
+    def _media_source(self, path: str) -> tuple[FileWorkspace, str, str]:
+        prefix = "/inputs/media-cache/"
+        if path.startswith(prefix):
+            if self.media_cache is None:
+                raise WorkspaceError("media_cache_unavailable")
+            return self.media_cache, path.removeprefix(prefix), prefix
+        return self.files, path, "/workspace/"
+
     def file_operation(self, method: str, args: dict[str, Any]) -> dict[str, Any]:
         path = args.get("path", "")
         version = args.get("expected_version")
@@ -684,15 +709,16 @@ class PersistentManager:
             # Private Host/Manager operations, never tool declarations. Read
             # from a safely opened workspace FD, outside any SQLite writer.
             limit = 20 * 1024 * 1024
-            with self.files.open_file(path) as fd:
+            files, path, prefix = self._media_source(path)
+            with files.open_file(path) as fd:
                 before = os.fstat(fd)
                 if method == "workspace_media_read" and before.st_size > limit:
                     raise WorkspaceError("workspace_media_too_large")
-                current, info = self.files.fingerprint(fd)
+                current, info = files.fingerprint(fd)
                 if version is not None and current != version:
                     raise WorkspaceError("version_conflict")
                 result = {
-                    "path": "/workspace/" + "/".join(self.files.parts(path)),
+                    "path": prefix + "/".join(files.parts(path)),
                     "version": current,
                     "size": info.st_size,
                 }
@@ -718,7 +744,8 @@ class PersistentManager:
                     result["base64"] = base64.b64encode(data).decode("ascii")
                 return result
         if method == "workspace_publish":
-            with self.files.open_file(path) as fd:
+            files, relative, _prefix = self._media_source(path)
+            with files.open_file(relative) as fd:
                 snapshot = self.store.snapshot(
                     fd,
                     args.get("name") or Path(path).name,
@@ -961,6 +988,11 @@ class PersistentManager:
             "ready": self.ready,
             "home": "/home/yuki",
             "workspace": "/workspace",
+            "media_cache": {
+                "path": "/inputs/media-cache",
+                "configured": self.media_cache is not None,
+                "shared": self.media_cache_shared,
+            },
             "storage": self.disk_status(),
             "checkpoint": self.setting("checkpoint_image", self.image),
             "host_available_bytes": self.available_memory(),
