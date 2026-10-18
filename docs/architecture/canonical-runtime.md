@@ -40,7 +40,9 @@
 已认证 `/ai link` 同人关联调用人物归并；operator `binding transfer` 明确把账号转给另一人，
 结束旧 Binding 时段、创建新 Binding，原历史仍归原人。已停用人物、设备、grant 或执行的
 撤权事实不会随归并复活；当前人物停用影响其全部入口，来源已停用也不误停目标正常入口。
-QQ 管理员授权仍来自真实配置的有效 QQ 绑定；设备凭据不成为 operator 凭据。
+超级管理员资格持久化于当前 root Person 的 `is_superuser`，不再从 QQ Binding 或环境名单推导。
+账号转移不携带资格，账号停用/解绑不删除原人资格；Person 停用保资格并暂停使用。
+同人合并对两个当前 root 的未撤销资格取 OR，不改变来源 enabled；实际使用同时核原人物与最终人物启用，历史成员的旧 true 不作 fallback。设备凭据不成为 operator 凭据。
 
 人物名称是可空、可修改、允许重名的 `Person.display_name`，不参与身份或授权。
 首次非空观察补齐空名，后续账号昵称变化只更新账号与别名；旧数据按最近全局 nickname 回填。
@@ -147,7 +149,7 @@ admission 再确认原连接与 pin。探测或 CAS 前取消不安装路由；�
 或反向删除可能已提交的路由。数值日志分别报告初读、探测准备、恢复和 fresh recheck，
 恢复包含 CAS，不能将其耗时称作纯数据库锁等待。
 
-群内超管的精确 `/ai on` 使用独立的确定性控制入口，不是绕过 ingest 的聊天事件：QQ adapter
+群内超管的精确 `/ai admin group current enable` 使用独立的确定性控制入口，不是绕过 ingest 的聊天事件：QQ adapter
 验证真实事件连接与管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
 探针的候选。群启用、必要的两张群路由变更、审计和幂等回执在同一个 `BEGIN IMMEDIATE` 中提交；
 重验身份、路由 revision 与连接快照，冲突整笔退出。命令及回执不进聊天账本、模型或Memory，不修改 ConversationGeneration。普通消息、插件和其他管理命令仍受原围栏限制。

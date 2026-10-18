@@ -11,6 +11,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult, Row
 from sqlalchemy.sql.elements import ColumnElement
 
+from yuki.identity.authority import person_is_superuser
 from yuki.memory.embedding.models import (
     MemoryEmbeddingJob,
     MemoryEmbeddingProfileRecord,
@@ -83,6 +84,7 @@ class MemoryEmbeddingJobRepository:
         after_id: int = 0,
         limit: int = 128,
         only_missing_or_changed: bool = False,
+        actor_person_id: str | None = None,
     ) -> tuple[Row[Any], ...]:
         fact, job, vector = MemoryFactModel, MemoryEmbeddingJobModel, MemoryEmbeddingModel
         query = (
@@ -116,6 +118,10 @@ class MemoryEmbeddingJobRepository:
         if only_missing_or_changed:
             query = query.where(or_(vector.id.is_(None), fact.updated_at > vector.updated_at))
         async with self._database.sessions() as reader:
+            if actor_person_id is not None and not await person_is_superuser(
+                reader, actor_person_id
+            ):
+                raise PermissionError("embedding_reconcile_requires_current_superuser")
             return tuple((await reader.execute(query)).all())
 
     async def _enqueue_prepared(
@@ -124,6 +130,7 @@ class MemoryEmbeddingJobRepository:
         *,
         force: bool = False,
         only_if_latest_profile: bool = False,
+        actor_person_id: str | None = None,
     ) -> int:
         candidates = []
         for row in rows:
@@ -142,6 +149,10 @@ class MemoryEmbeddingJobRepository:
             return 0
         created = 0
         async with self._database.immediate_session() as writer:
+            if actor_person_id is not None and not await person_is_superuser(
+                writer, actor_person_id
+            ):
+                raise PermissionError("embedding_reconcile_requires_current_superuser")
             for row, digest in candidates:
                 now = next_updated_at(row.job_updated_at)
                 values = dict(
@@ -218,15 +229,21 @@ class MemoryEmbeddingJobRepository:
             )
         return created
 
-    async def reconcile(self, *, force: bool = False) -> int:
+    async def reconcile(self, *, force: bool = False, actor_person_id: str | None = None) -> int:
         """Page derived candidates; preserve in-flight claims and retry budgets."""
         created, after_id = 0, 0
         while True:
-            rows = await self._prepare_page(after_id=after_id, only_missing_or_changed=not force)
+            rows = await self._prepare_page(
+                after_id=after_id,
+                only_missing_or_changed=not force,
+                actor_person_id=actor_person_id,
+            )
             if not rows:
                 return created
             after_id = rows[-1].id
-            created += await self._enqueue_prepared(rows, force=force)
+            created += await self._enqueue_prepared(
+                rows, force=force, actor_person_id=actor_person_id
+            )
 
     async def recover_interrupted(self) -> int:
         """Only the first Worker start, before any document request can be in flight."""
@@ -525,7 +542,7 @@ class MemoryEmbeddingJobRepository:
                         )
                     )
 
-    async def retry_failed(self) -> int:
+    async def retry_failed(self, *, actor_person_id: str | None = None) -> int:
         job = MemoryEmbeddingJobModel
         changed, after_id = 0, 0
         while True:
@@ -546,6 +563,10 @@ class MemoryEmbeddingJobRepository:
                 return changed
             after_id = rows[-1].id
             async with self._database.immediate_session() as writer:
+                if actor_person_id is not None and not await person_is_superuser(
+                    writer, actor_person_id
+                ):
+                    raise PermissionError("embedding_retry_requires_current_superuser")
                 for row in rows:
                     # Explicit retry resets its budget, but never reuses the
                     # previous claim identity when the wall clock stalls.

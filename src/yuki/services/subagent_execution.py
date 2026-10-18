@@ -144,7 +144,6 @@ class SubagentExecution:
                     assert row is not None
                     control.current = row
                     source = json.loads(row["source_json"])
-                    settings = self.services.runner.code_mode_settings
                     control.source_key = row["source_key"]
                     control.source = source
                     recovered = await recover_execution_source(
@@ -152,7 +151,6 @@ class SubagentExecution:
                         row["conversation_id"],
                         source,
                         request_id=identity,
-                        settings=settings,
                         lookup_plugin_host=self.services.lookup_plugin_host,
                     )
                     from yuki.runtime.observability import (
@@ -186,7 +184,6 @@ class SubagentExecution:
                                 row["conversation_id"],
                                 source,
                                 request_id=identity,
-                                settings=settings,
                                 lookup_plugin_host=self.services.lookup_plugin_host,
                             )
                             != recovered
@@ -238,12 +235,12 @@ class SubagentExecution:
                         else None
                     )
                     actor_is_superuser = getattr(recovered, "actor_is_superuser", False)
-                    if isinstance(recovered, MessageTaskSource) and settings is not None:
+                    if isinstance(recovered, MessageTaskSource):
                         from yuki.identity.authority import person_is_superuser
 
                         async with self.repository.database.sessions() as session:
                             actor_is_superuser = await person_is_superuser(
-                                session, recovered.actor_person_id, settings.superusers
+                                session, recovered.actor_person_id
                             )
                     delegated = source.get("owner") == "plugin_invocation"
                     host: Any = None

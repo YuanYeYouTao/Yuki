@@ -35,7 +35,7 @@ async def personal(admin):
     _, api, *_ = admin
     app = FastAPI()
     attach_admin_api(app, lambda: api)
-    attach_client_api(app, lambda: ClientApi(api.commands.identities))
+    attach_client_api(app, lambda: ClientApi(api.identities))
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:

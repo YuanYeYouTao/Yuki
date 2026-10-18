@@ -155,6 +155,13 @@ class _ManagedPlugin:
     background_tasks: dict[str, asyncio.Task[None]] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class _PluginDefinition:
+    loaded: LoadedPlugin
+    approved_permissions: frozenset[PluginPermission]
+    extensions: ExtensionRegistry
+
+
 class PluginManager:
     """Coordinate discovery, approval, loading, hooks, and managed tasks.
 
@@ -198,6 +205,7 @@ class PluginManager:
         self._background_task_limit = background_task_limit
         self._failure_disable_threshold = failure_disable_threshold
         self._available: dict[str, _AvailablePlugin] = {}
+        self._definitions: dict[str, _PluginDefinition] = {}
         self._running: dict[str, _ManagedPlugin] = {}
         self._maintenance_tasks: set[asyncio.Task[None]] = set()
         self._active = False
@@ -230,11 +238,15 @@ class PluginManager:
                 for record in await self._installations.list_all():
                     if record.enabled:
                         await self._start_one_unlocked(record.plugin_id)
+                    elif record.approved_at is not None:
+                        await self._prepare_definition_unlocked(record.plugin_id)
                 return self.running_plugin_ids
             except asyncio.CancelledError:
                 self._active = False
                 for plugin_id in tuple(sorted(self._running, reverse=True)):
                     await self._stop_one_unlocked(plugin_id, final_status="approved")
+                for plugin_id in tuple(self._definitions):
+                    self._discard_definition(plugin_id)
                 raise
 
     async def stop(self) -> None:
@@ -250,6 +262,8 @@ class PluginManager:
                 task.cancel()
             if maintenance:
                 await asyncio.gather(*maintenance, return_exceptions=True)
+            for plugin_id in tuple(self._definitions):
+                self._discard_definition(plugin_id)
 
     async def approve(
         self,
@@ -298,6 +312,7 @@ class PluginManager:
             approved = await self._installations.approve(plugin_id, permissions=selected)
             if approved is None:
                 raise PluginApprovalError("plugin is not installed")
+            await self._prepare_definition_unlocked(plugin_id)
             await self._record_audit(
                 plugin_id,
                 actor_user_id=actor_user_id,
@@ -305,7 +320,9 @@ class PluginManager:
                 success=True,
                 detail={"permission_count": len(approved.approved_permissions)},
             )
-            return approved
+            current = await self._installations.get(plugin_id)
+            assert current is not None
+            return current
 
     async def enable(
         self, plugin_id: str, *, actor_user_id: str, expected_revision: int | None = None
@@ -369,8 +386,11 @@ class PluginManager:
         return await self._installations.get(plugin_id)
 
     def configuration_schema(self, plugin_id: str) -> type[BaseModel] | None:
-        """Use the already-approved registration; never import/start code on a query."""
-        items = self._extensions.list(plugin_id=plugin_id, kind=ExtensionKind.CONFIG_SCHEMA)
+        """Read the approved definition; runtime stop/failure does not remove its schema."""
+        definition = self._definitions.get(plugin_id)
+        if definition is None:
+            return None
+        items = definition.extensions.list(kind=ExtensionKind.CONFIG_SCHEMA)
         if len(items) != 1:
             return None
         schema = items[0].registration
@@ -448,12 +468,9 @@ class PluginManager:
             if manifest is None:
                 continue
             old = old_records.get(manifest.id)
-            if (
-                old is not None
-                and old.manifest_hash != manifest.manifest_hash
-                and manifest.id in self._running
-            ):
+            if old is not None and old.manifest_hash != manifest.manifest_hash:
                 await self._stop_one_unlocked(manifest.id, final_status=None)
+                self._discard_definition(manifest.id)
             record = await self._installations.upsert_discovered(
                 plugin_id=manifest.id,
                 name=manifest.name,
@@ -469,6 +486,7 @@ class PluginManager:
         for plugin_id in old_records.keys() - available.keys():
             if plugin_id in self._running:
                 await self._stop_one_unlocked(plugin_id, final_status=None)
+            self._discard_definition(plugin_id)
             await self._installations.set_enabled(plugin_id, enabled=False)
             error_category = (
                 "manifest_invalid" if plugin_id in scanned_directories else "manifest_missing"
@@ -480,6 +498,63 @@ class PluginManager:
             )
         self._available = available
         return tuple(persisted)
+
+    def _discard_definition(self, plugin_id: str) -> None:
+        definition = self._definitions.pop(plugin_id, None)
+        if definition is not None:
+            self._loader.unload(definition.loaded)
+
+    async def _prepare_definition_unlocked(self, plugin_id: str) -> _PluginDefinition | None:
+        available = self._available.get(plugin_id)
+        record = await self._installations.get(plugin_id)
+        if (
+            available is None
+            or record is None
+            or record.approved_at is None
+            or record.manifest_hash != available.manifest.manifest_hash
+        ):
+            return None
+        try:
+            approved = frozenset(
+                PluginPermission(permission)
+                for permission in record.approved_permissions
+                if permission not in {"runtime.config.read", "runtime.config.write"}
+            )
+        except ValueError:
+            await self._record_start_failure(plugin_id, "invalid_approved_permission")
+            return None
+        if not approved <= set(available.manifest.permissions):
+            await self._record_start_failure(plugin_id, "approval_scope_invalid")
+            return None
+        previous = self._definitions.get(plugin_id)
+        if previous is not None and (
+            previous.loaded.manifest.manifest_hash == available.manifest.manifest_hash
+            and previous.loaded.root == available.root.resolve()
+            and previous.approved_permissions == approved
+        ):
+            return previous
+        self._discard_definition(plugin_id)
+        loaded = None
+        try:
+            loaded = self._loader.load(available.root, available.manifest)
+            extensions = ExtensionRegistry()
+            registrar = extensions.registrar(
+                plugin_id, approved, approval_revision=available.manifest.manifest_hash
+            )
+            async with asyncio.timeout(self._start_timeout):
+                await loaded.instance.register(registrar)
+            definition = _PluginDefinition(loaded, approved, extensions)
+            self._definitions[plugin_id] = definition
+            return definition
+        except asyncio.CancelledError:
+            if loaded is not None:
+                self._loader.unload(loaded)
+            raise
+        except Exception as exc:
+            if loaded is not None:
+                self._loader.unload(loaded)
+            await self._record_start_failure(plugin_id, type(exc).__name__)
+            return None
 
     async def _start_one_unlocked(self, plugin_id: str) -> bool:
         if plugin_id in self._running:
@@ -498,24 +573,16 @@ class PluginManager:
                 error_category="manifest_hash_changed",
             )
             return False
-        try:
-            approved = frozenset(
-                PluginPermission(permission)
-                for permission in record.approved_permissions
-                if permission not in {"runtime.config.read", "runtime.config.write"}
-            )
-        except ValueError:
-            await self._record_start_failure(plugin_id, "invalid_approved_permission")
+        definition = await self._prepare_definition_unlocked(plugin_id)
+        if definition is None:
             return False
-        if not approved <= set(available.manifest.permissions):
-            await self._record_start_failure(plugin_id, "approval_scope_invalid")
-            return False
+        approved = definition.approved_permissions
 
         loaded: LoadedPlugin | None = None
         context: PluginContext | None = None
         start_called = False
         try:
-            loaded = self._loader.load(available.root, available.manifest)
+            loaded = self._loader.instantiate(definition.loaded)
             registrar = self._extensions.registrar(
                 plugin_id, approved, approval_revision=available.manifest.manifest_hash
             )
@@ -600,8 +667,6 @@ class PluginManager:
         self._deactivate_extensions(plugin_id)
         self._event_bus.unsubscribe_plugin(plugin_id)
         self._extensions.remove_plugin(plugin_id)
-        if loaded is not None:
-            self._loader.unload(loaded)
 
     async def _stop_one_unlocked(
         self,
@@ -639,7 +704,6 @@ class PluginManager:
                 error_category = error_category or "background_stop_timeout"
         self._deactivate_extensions(plugin_id)
         self._extensions.remove_plugin(plugin_id)
-        self._loader.unload(managed.loaded)
         if error_category is not None and record_stop_failure:
             await self._installations.record_failure(
                 plugin_id,

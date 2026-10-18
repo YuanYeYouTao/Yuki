@@ -11,6 +11,7 @@ from typing import cast
 
 from pydantic import ValidationError
 
+from yuki.admin.control_resolution import ControlAccess
 from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.automation.models import TurnOrigin
 from yuki.conversation.scope import plugin_conversation_key
@@ -33,13 +34,13 @@ class PluginCommandAdapter:
         *,
         manager: PluginManager,
         registry: ExtensionRegistry,
-        superusers: frozenset[str],
+        control: ControlAccess,
         invocation_scope: Callable[..., object] | None = None,
         direct_commands: DirectCommandRouter | None = None,
     ) -> None:
         self._manager = manager
         self._registry = registry
-        self._superusers = superusers
+        self._control = control
         self._invocation_scope = invocation_scope
         self._direct_commands = direct_commands
 
@@ -56,59 +57,10 @@ class PluginCommandAdapter:
         remainder = parts[1].strip() if len(parts) == 2 else ""
         if operation == "run":
             return await self._run_command(message, identity, remainder, runtime)
-        if message.sender.user_id not in self._superusers:
-            return "权限不足：插件管理命令仅限超级管理员。"
-        if operation == "list":
-            rows = await self._manager.list()
-            if not rows:
-                return "尚未发现任何插件。"
-            return "插件列表：\n" + "\n".join(_installation_line(row) for row in rows)
-        target = remainder.split(maxsplit=1)[0] if remainder else ""
-        if not target:
-            return f"格式错误：/ai plugin {operation} <plugin_id>"
-        if operation in {"show", "permissions"}:
-            row = await self._manager.show(target)
-            return _installation_detail(row) if row is not None else "没有找到该插件。"
-        if operation == "approve":
-            row = await self._manager.approve(
-                target,
-                actor_user_id=message.sender.user_id,
-            )
-            return f"已批准插件：{getattr(row, 'plugin_id', target)}。"
-        if operation == "enable":
-            row = await self._manager.enable(
-                target,
-                actor_user_id=message.sender.user_id,
-            )
-            if target not in self._manager.running_plugin_ids:
-                error_category = getattr(row, "last_error_category", None) or "unknown"
-                return (
-                    "插件启用开关已写入，但启动失败："
-                    f"{error_category}。请使用 /ai plugin doctor {target} 查看诊断。"
-                )
-            return f"已启用插件：{getattr(row, 'plugin_id', target)}。"
-        if operation == "disable":
-            row = await self._manager.disable(
-                target,
-                actor_user_id=message.sender.user_id,
-            )
-            return f"已停用插件：{getattr(row, 'plugin_id', target)}。"
-        if operation == "doctor":
-            report = (await self._manager.doctor(target)).model_dump(mode="json")
-            text = "插件诊断：\n" + "\n".join(
-                f"- {key}: {value}" for key, value in sorted(report.items())
-            )
-            bindings = (
-                self._direct_commands.diagnostics(plugin_id=target)
-                if self._direct_commands is not None
-                else ()
-            )
-            if bindings:
-                text += "\n直达绑定：\n" + "\n".join(
-                    f"- {row.prefix} -> {row.command_name}: {row.reason}" for row in bindings
-                )
-            return text
-        return "未知插件命令，请使用 /ai plugin list。"
+        return (
+            "插件管理使用 /ai admin plugin；注册命令使用 "
+            "/ai plugin run <plugin_id> <command> [参数]。"
+        )
 
     async def execute_direct(
         self,
@@ -173,11 +125,13 @@ class PluginCommandAdapter:
         if item is None or item.kind is not ExtensionKind.COMMAND or item.plugin_id != plugin_id:
             return "没有找到该插件命令。"
         registration = cast(CommandRegistration, item.registration)
+        principal = await self._control.principal_for_person(message.person_id)
+        privileged = "superuser" in principal.roles
         if not _level_allowed(
             registration.metadata.permission,
-            message.sender.user_id in self._superusers,
+            privileged,
         ):
-            return "权限不足：当前 QQ 不能执行该插件命令。"
+            return "权限不足：当前人物不能执行该插件命令。"
         try:
             payload = _parse_arguments(registration, raw_arguments)
             arguments = registration.argument_model.model_validate(payload)
@@ -188,7 +142,7 @@ class PluginCommandAdapter:
             conversation_key=plugin_conversation_key(message, identity),
             trigger_message_id=message.message_id,
             trigger_event_id=message.source_event_id,
-            actor_is_superuser=message.sender.user_id in self._superusers,
+            actor_is_superuser=privileged,
             runtime_config=runtime,
             origin=TurnOrigin.USER_MESSAGE,
             tools_closed=True,
@@ -247,28 +201,6 @@ def _parse_arguments(registration: CommandRegistration, raw: str) -> object:
 
 def _level_allowed(level: PermissionLevel, superuser: bool) -> bool:
     return level is PermissionLevel.USER or (level is PermissionLevel.SUPERUSER and superuser)
-
-
-def _installation_line(row: object) -> str:
-    return (
-        f"- {getattr(row, 'plugin_id', '?')} "
-        f"v{getattr(row, 'version', '?')} "
-        f"[{getattr(row, 'status', '?')}] "
-        f"enabled={getattr(row, 'enabled', False)}"
-    )
-
-
-def _installation_detail(row: object) -> str:
-    requested = ", ".join(getattr(row, "requested_permissions", ())) or "无"
-    approved = ", ".join(getattr(row, "approved_permissions", ())) or "无"
-    return (
-        f"插件：{getattr(row, 'plugin_id', '?')}\n"
-        f"版本：{getattr(row, 'version', '?')}\n"
-        f"状态：{getattr(row, 'status', '?')}\n"
-        f"已启用：{getattr(row, 'enabled', False)}\n"
-        f"申请权限：{requested}\n"
-        f"已批准权限：{approved}"
-    )
 
 
 __all__ = ["PluginCommandAdapter"]

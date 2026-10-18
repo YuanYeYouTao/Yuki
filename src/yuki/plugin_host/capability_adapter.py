@@ -26,7 +26,7 @@ from yuki.plugin_host.facades import HostPluginContext
 from yuki.plugin_host.repository import PluginInstallationRepository
 from yuki.services.agent_tools import ToolRuntime
 from yuki_plugin_sdk.errors import PluginPermissionError
-from yuki_plugin_sdk.models import RetryPolicy, RiskClass
+from yuki_plugin_sdk.models import PermissionLevel, RetryPolicy, RiskClass
 from yuki_plugin_sdk.namespace import default_plugin_namespace
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import ToolRegistration
@@ -291,7 +291,18 @@ class PluginCapabilityAdapter:
         # same in-memory predicate; execution must not disagree with discovery.
         if installation is None or not installation.enabled or not self._is_running(item.plugin_id):
             return False
-        return self._allowed_for_turn(registration, runtime)
+        if registration.metadata.permission is not PermissionLevel.SUPERUSER:
+            return self._allowed_for_turn(registration, runtime)
+        from dataclasses import replace
+
+        from yuki.identity.authority import person_is_superuser
+
+        async with self._installations._database.sessions() as session:
+            current = replace(
+                runtime,
+                actor_is_superuser=await person_is_superuser(session, runtime.actor_person_id),
+            )
+        return self._allowed_for_turn(registration, current)
 
     @staticmethod
     def _allowed_for_turn(

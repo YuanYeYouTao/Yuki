@@ -10,13 +10,16 @@ from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 
 from yuki.admin.authority.command_types import ControlCommandError
 from yuki.admin.authority.commands import ControlCommand, ControlResult
+from yuki.admin.authority.json_types import thaw_json_value
 from yuki.admin.authority.operators import ControlOperatorAccess
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
 from yuki.admin.authority.problems import ControlQueryError, ProblemCode
 from yuki.admin.config_files import ConfigFileError
-from yuki.admin_api.commands import AdminCommands, authorize, fail
-from yuki.admin_api.queries import AdminQueries
+from yuki.admin.operations import AdminOperations
+from yuki.admin.operations.base import authorize, fail
+from yuki.admin.queries import AdminQueries
 from yuki.client_api.http_errors import install_identity_errors
+from yuki.client_api.identity import ClientIdentityService
 from yuki.domain.identity import RequestId
 from yuki.plugin_host.configuration_service import PluginConfigurationError
 from yuki.plugin_host.manager import PluginManagementRejected
@@ -26,7 +29,8 @@ from yuki_plugin_sdk.observation import PluginObservationRequest
 @dataclass(frozen=True, slots=True)
 class AdminApi:
     access: ControlOperatorAccess
-    commands: AdminCommands
+    commands: AdminOperations
+    identities: ClientIdentityService
     queries: AdminQueries
 
 
@@ -51,6 +55,11 @@ class BindingBody(CommandBody):
     platform: str
     external_account_id: str
     display_name: str = ""
+
+
+class PresenceBody(CommandBody):
+    enabled: bool | None = None
+    ingest_eligible: bool | None = None
 
 
 class PluginBody(CommandBody):
@@ -92,7 +101,7 @@ def result_view(result: ControlResult) -> dict[str, Any]:
         "resource_id": result.resource_id,
         "revision": result.revision,
         "audit_id": result.audit_id,
-        "effective_state": dict(result.effective_state),
+        "effective_state": thaw_json_value(result.effective_state),
         "operation": asdict(result.operation) if result.operation is not None else None,
     }
 
@@ -130,12 +139,110 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
             "data": await resolve().queries.traces(actor, kind, identity, after, limit, content)
         }
 
+    @router.get("/persons")
+    async def persons(
+        actor: Actor, after: str = "", limit: int = Query(default=100, ge=1, le=250)
+    ) -> Any:
+        return {"data": await resolve().queries.persons(actor, after, limit)}
+
+    @router.get("/bindings")
+    async def bindings(
+        actor: Actor,
+        after: str = "",
+        limit: int = Query(default=100, ge=1, le=250),
+        person_id: UUID4 | None = None,
+        platform: str | None = None,
+        external_account_id: str | None = None,
+    ) -> Any:
+        return {
+            "data": await resolve().queries.bindings(
+                actor,
+                after,
+                limit,
+                person_id=str(person_id) if person_id else None,
+                platform=platform,
+                external_account_id=external_account_id,
+            )
+        }
+
+    @router.get("/presences")
+    async def presences(
+        actor: Actor, after: str = "", limit: int = Query(default=100, ge=1, le=250)
+    ) -> Any:
+        return {"data": await resolve().queries.presences(actor, after, limit)}
+
+    @router.get("/presences/{identity}")
+    async def presence(identity: UUID4, actor: Actor) -> Any:
+        return {"data": await resolve().queries.presence(actor, str(identity))}
+
+    @router.post("/presences/{identity}")
+    async def presence_state(identity: UUID4, body: PresenceBody, actor: Actor) -> Any:
+        if body.enabled is None and body.ingest_eligible is None:
+            raise fail(ProblemCode.VALIDATION_ERROR)
+        payload = {"enabled": body.enabled, "ingest_eligible": body.ingest_eligible}
+        return {
+            "data": result_view(
+                await resolve().commands.identity.presence_state(
+                    actor, str(identity), body.command(payload), **payload
+                )
+            )
+        }
+
+    @router.get("/works")
+    async def works(
+        actor: Actor,
+        after: str = "",
+        limit: int = Query(default=100, ge=1, le=250),
+        state: str | None = None,
+    ) -> Any:
+        return {"data": await resolve().queries.works(actor, after, limit, state=state)}
+
+    @router.get("/works/{identity}")
+    async def work(identity: UUID4, actor: Actor) -> Any:
+        return {"data": await resolve().queries.work(actor, str(identity))}
+
+    @router.post("/persons/{identity}/enable")
+    async def enable_person(identity: UUID4, body: CommandBody, actor: Actor) -> Any:
+        return {
+            "data": result_view(
+                await resolve().commands.identity.person_state(
+                    actor, str(identity), body.command({"enabled": True}), enabled=True
+                )
+            )
+        }
+
+    @router.post("/persons/{identity}/superuser/{action}")
+    async def superuser(
+        identity: UUID4, action: Literal["grant", "revoke"], body: CommandBody, actor: Actor
+    ) -> Any:
+        granted = action == "grant"
+        return {
+            "data": result_view(
+                await resolve().commands.identity.person_state(
+                    actor,
+                    str(identity),
+                    body.command({"is_superuser": granted}),
+                    is_superuser=granted,
+                )
+            )
+        }
+
+    @router.post("/bindings/{identity}/enable")
+    async def enable_binding(identity: UUID4, body: CommandBody, actor: Actor) -> Any:
+        return {
+            "data": result_view(
+                await resolve().commands.identity.binding_state(
+                    actor, str(identity), body.command({"enabled": True}), enabled=True
+                )
+            )
+        }
+
     @router.post("/persons")
     async def create_person(body: PersonBody, actor: Actor) -> Any:
         payload = {"display_name": body.display_name} if body.display_name else {}
         return {
             "data": result_view(
-                await resolve().commands.create_person(actor, body.command(payload))
+                await resolve().commands.identity.create_person(actor, body.command(payload))
             )
         }
 
@@ -146,7 +253,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     @router.post("/persons/{identity}/merge")
     async def merge_person(identity: UUID4, body: TransferBody, actor: Actor) -> Any:
         return {
-            "data": await resolve().commands.change_person(
+            "data": await resolve().commands.identity.change_person(
                 actor,
                 str(identity),
                 str(body.request_id),
@@ -157,7 +264,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     @router.post("/persons/{identity}/rename")
     async def rename_person(identity: UUID4, body: RenameBody, actor: Actor) -> Any:
         return {
-            "data": await resolve().commands.change_person(
+            "data": await resolve().commands.identity.change_person(
                 actor,
                 str(identity),
                 str(body.request_id),
@@ -169,7 +276,9 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     async def disable_person(identity: UUID4, body: CommandBody, actor: Actor) -> Any:
         return {
             "data": result_view(
-                await resolve().commands.disable_person(actor, str(identity), body.command({}))
+                await resolve().commands.identity.disable_person(
+                    actor, str(identity), body.command({})
+                )
             )
         }
 
@@ -178,7 +287,9 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         payload = body.model_dump(exclude={"request_id", "expected_revision"})
         return {
             "data": result_view(
-                await resolve().commands.attach_binding(actor, str(identity), body.command(payload))
+                await resolve().commands.identity.attach_binding(
+                    actor, str(identity), body.command(payload)
+                )
             )
         }
 
@@ -190,7 +301,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     async def client_pair(identity: UUID4, body: IdentityRequest, actor: Actor) -> Any:
         authorize(actor, "identity.client.pair")
         return {
-            "data": await resolve().commands.identities.issue_for_operator(
+            "data": await resolve().identities.issue_for_operator(
                 str(identity), actor.principal_id.text, str(body.request_id)
             )
         }
@@ -198,7 +309,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     @router.post("/persons/{identity}/forget")
     async def forget_person(identity: UUID4, body: IdentityRequest, actor: Actor) -> Any:
         return {
-            "data": await resolve().commands.forget_person(
+            "data": await resolve().commands.identity.forget_person(
                 actor, str(identity), str(body.request_id)
             )
         }
@@ -207,17 +318,16 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     async def client_revoke(identity: UUID4, body: IdentityRequest, actor: Actor) -> Any:
         authorize(actor, "identity.client.revoke")
         return {
-            "data": await resolve().commands.identities.revoke_for_operator(
+            "data": await resolve().identities.revoke_for_operator(
                 str(identity), actor.principal_id.text, str(body.request_id)
             )
         }
 
     @router.post("/bindings/{identity}/transfer")
     async def transfer(identity: UUID4, body: TransferBody, actor: Actor) -> Any:
-        authorize(actor, "identity.binding.transfer")
         return {
-            "data": await resolve().commands.identities.transfer_for_operator(
-                str(identity), str(body.to_person), actor.principal_id.text, str(body.request_id)
+            "data": await resolve().commands.identity.transfer_binding(
+                actor, str(identity), str(body.to_person), str(body.request_id)
             )
         }
 
@@ -225,7 +335,9 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     async def disable_binding(identity: UUID4, body: CommandBody, actor: Actor) -> Any:
         return {
             "data": result_view(
-                await resolve().commands.disable_binding(actor, str(identity), body.command({}))
+                await resolve().commands.identity.disable_binding(
+                    actor, str(identity), body.command({})
+                )
             )
         }
 
@@ -250,7 +362,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
             payload["spec"] = {"permissions": body.permissions}
         return {
             "data": result_view(
-                await resolve().commands.plugin_action(
+                await resolve().commands.plugin.plugin_action(
                     actor, target, action, body.command(payload), body.permissions
                 )
             )
@@ -275,7 +387,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         command = body.command({"resource_id": identity, "action": "save", "spec": spec})
         return {
             "data": result_view(
-                await resolve().commands.configure_plugin(actor, identity, command, spec)
+                await resolve().commands.plugin.configure_plugin(actor, identity, command, spec)
             )
         }
 
@@ -288,7 +400,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     ) -> Any:
         authorize(actor, "control.plugin.config.content.read")
         return {
-            "data": await resolve().commands.plugins.observe(
+            "data": await resolve().commands.plugin.plugins.observe(
                 identity, PluginObservationRequest(cursor=cursor, limit=limit)
             )
         }
@@ -297,7 +409,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     async def retry_outbox(identity: int, body: CommandBody, actor: Actor) -> Any:
         return {
             "data": result_view(
-                await resolve().commands.retry_outbox(
+                await resolve().commands.plugin.retry_outbox(
                     actor, identity, body.command({"resource_id": str(identity), "action": "retry"})
                 )
             )
@@ -306,7 +418,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     @router.get("/models")
     async def models(actor: Actor) -> Any:
         authorize(actor, "control.config.file.content.read")
-        return {"data": await resolve().commands.files.read()}
+        return {"data": await resolve().commands.model.files.read()}
 
     @router.post("/models/apply")
     async def apply_models(body: ModelsBody, actor: Actor) -> Any:
@@ -316,7 +428,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         }
         return {
             "data": result_view(
-                await resolve().commands.apply_models(
+                await resolve().commands.model.apply_models(
                     actor,
                     body.command({"resource_id": "model_profiles", "action": "save", "spec": spec}),
                     spec,
@@ -331,7 +443,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         material = {"resource_id": "model_profiles", "action": "save", "spec": spec}
         return {
             "data": result_view(
-                await resolve().commands.apply_models(actor, body.command(material), spec)
+                await resolve().commands.model.apply_models(actor, body.command(material), spec)
             )
         }
 
@@ -341,7 +453,7 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     ) -> Any:
         return {
             "data": result_view(
-                await resolve().commands.work_action(
+                await resolve().commands.work.work_action(
                     actor,
                     str(identity),
                     action,

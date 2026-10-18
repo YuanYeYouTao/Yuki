@@ -19,6 +19,7 @@ class ControlCommand:
     request_id: RequestId
     expected_revision: int
     payload: JsonObject
+    source_event_id: int | None
 
     def __init__(
         self,
@@ -26,6 +27,7 @@ class ControlCommand:
         request_id: RequestId,
         expected_revision: int,
         payload: object,
+        source_event_id: int | None = None,
     ) -> None:
         if type(request_id) is not RequestId:
             raise TypeError("request_id must be RequestId")
@@ -36,6 +38,7 @@ class ControlCommand:
         object.__setattr__(self, "request_id", request_id)
         object.__setattr__(self, "expected_revision", expected_revision)
         object.__setattr__(self, "payload", freeze_json_object(payload))
+        object.__setattr__(self, "source_event_id", source_event_id)
 
 
 @final

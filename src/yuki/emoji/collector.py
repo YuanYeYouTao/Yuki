@@ -14,6 +14,7 @@ from yuki.emoji.models import EmojiAsset, EmojiCollectionMode
 from yuki.emoji.repository import EmojiRepository
 from yuki.emoji.storage import EmojiStorage
 from yuki.gateway.media import PlatformMediaGateway
+from yuki.identity.authority import person_is_superuser
 from yuki.services.media_resolver import MediaResolver
 from yuki.services.plugin_events import LifecycleEventPublisher, publish_notification
 from yuki.vision.models import MediaReference
@@ -141,6 +142,7 @@ class EmojiCollector:
         source_event_id: int | None,
         runtime: EmojiRuntimeConfig,
         gateway: PlatformMediaGateway | None,
+        actor_person_id: str | None = None,
     ) -> tuple[EmojiAsset, bool, bool]:
         reference = MediaReference(
             message_id=message.message_id,
@@ -159,6 +161,10 @@ class EmojiCollector:
             if attachment.prepared_media is not None
             else await self._resolver.resolve(reference, gateway)
         )
+        if actor_person_id is not None:
+            async with self._repository._database.sessions() as session:
+                if not await person_is_superuser(session, actor_person_id):
+                    raise PermissionError("表情管理资格已撤销。")
         media = self._storage.inspect(
             downloaded.content,
             near_duplicate_enabled=runtime.near_duplicate_enabled,
@@ -169,6 +175,7 @@ class EmojiCollector:
         asset, created = await self._repository.record_candidate(
             media,
             source_event_id=source_event_id,
+            actor_person_id=actor_person_id,
             user_id=message.sender.user_id,
             group_id=message.group_id,
             person_id=message.person_id,

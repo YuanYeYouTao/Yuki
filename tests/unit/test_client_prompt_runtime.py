@@ -11,7 +11,8 @@ from tests.unit.test_client_api import bearer, pair, person_and_code
 
 from yuki.client_api.errors import ClientError
 from yuki.client_api.prompts import ClientPrompts
-from yuki.client_api.requests import ClientRequests
+from yuki.client_api.requests import ClientRequests, personal_command
+from yuki.gateway.providers.app.ingress import AppGateway
 
 app_env = app_fixture
 admin = admin_fixture
@@ -37,14 +38,22 @@ async def submit(env, device, request_id):
 async def test_missing_terminal_receipt_remains_unknown_without_replaying_main(app_env):
     env = app_env
     device, principal, request_id = await client_prompt(env)
+    # Model a lost terminal write after the real Main/Social execution. The
+    # shared fixture now installs the real writer, so absence must be explicit.
+    env.gateway.on_finished = None
     original = await submit(env, device, request_id)
     await drain(env)
     assert len(env.calls) == 2
+    async with env.identity.database.sessions() as reader:
+        assert await personal_command(reader, principal.request_person_id, request_id) is None
 
     # A cold reader has no original in-process owner or durable terminal fact.
+    observer = AppGateway(
+        env.identity.database, env.gateway.registry, env.harness.processor, env.social
+    )
     prompts = ClientPrompts(
         env.identity,
-        {"app": env.gateway},
+        {"app": observer},
         env.harness.processor._chat.runtime.bindings,
         concurrency=env.harness.processor._concurrency,
     )

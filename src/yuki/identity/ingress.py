@@ -404,6 +404,7 @@ class CanonicalIngressResolver:
             session,
             conversation_id=hydrated.conversation_id,
             reply_to_message_id=overlay.reply_to_message_id,
+            reply_to_event_id=overlay.reply_to_event_id,
         )
         overlay = replace(
             overlay,
@@ -454,6 +455,7 @@ async def resolve_canonical_reply(
     *,
     conversation_id: str,
     reply_to_message_id: str | None,
+    reply_to_event_id: int | None = None,
 ) -> tuple[bool | None, str | None, int | None]:
     """Resolve reply-to-Yuki from the unique keeper in this conversation.
 
@@ -462,14 +464,18 @@ async def resolve_canonical_reply(
     must not be overridden by ``reply_sender_user_id``.
     """
 
-    reply_id = (reply_to_message_id or "").strip()
-    if not reply_id:
-        return None, None, None
+    if reply_to_event_id is not None:
+        target = ChatEventModel.id == reply_to_event_id
+    else:
+        reply_id = (reply_to_message_id or "").strip()
+        if not reply_id:
+            return None, None, None
+        target = ChatEventModel.platform_message_id == reply_id
     keepers = list(
         await session.scalars(
             select(ChatEventModel).where(
                 ChatEventModel.canonical_conversation_id == conversation_id,
-                ChatEventModel.platform_message_id == reply_id,
+                target,
                 ChatEventModel.suppression_status == _KEEPER_STATUS,
             )
         )

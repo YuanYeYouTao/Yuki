@@ -124,8 +124,10 @@ class AppGateway:
                     PresenceModel.external_account_id == self.handle.self_id,
                 )
             )
-        if presence is None or not presence.enabled:
+        if presence is None:
             raise RuntimeError(f"{self.platform} Presence unavailable; apply migrations")
+        if not presence.enabled:
+            return
         self.registry.connect(self.handle, provider_id=self.platform, presence_id=presence.id)
 
     async def close(self) -> None:
