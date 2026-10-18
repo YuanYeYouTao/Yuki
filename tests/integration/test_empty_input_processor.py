@@ -242,3 +242,32 @@ async def test_reference_without_body_reaches_canonical_resolution(database, int
     current = provider.requests[-1].messages[-1].content
     assert f"回复:#{original.id}" in current
     assert "原消息的真实内容" in current
+
+
+@pytest.mark.parametrize("known_empty_source", [False, True])
+async def test_reference_without_resolvable_content_stays_silent(database, known_empty_source):
+    provider = FakeLLMProvider(lambda _: "NO_REPLY")
+    harness = build_harness(database, make_settings(database.url), provider)
+    processor = harness.processor
+    original_id = None
+    reference_id = "not-observed"
+    if known_empty_source:
+        # An unresolved native reference is recorded even when it has no body.
+        original_result = await processor.handle(
+            message(message_id="empty-source", reply_to_message_id="not-observed"), MemorySender()
+        )
+        assert original_result.reason == "empty"
+        async with database.sessions() as reader:
+            original = (await reader.scalars(select(ChatEventModel))).one()
+        original_id = original.id
+        reference_id = original.platform_message_id
+    committed = Mock()
+    sender = MemorySender()
+    result = await processor.handle(
+        message(message_id="reference-only", reply_to_message_id=reference_id),
+        sender,
+        on_committed=committed,
+    )
+    assert result.reason == "empty" and not provider.requests and sender.calls == 0
+    committed.assert_called_once()
+    assert committed.call_args.args[0].event.reply_to_event_id == original_id

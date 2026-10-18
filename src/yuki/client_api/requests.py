@@ -102,6 +102,11 @@ class ClientRequests:
         return event
 
     async def get(self, principal: ClientPrincipal, request_id: str) -> dict[str, Any]:
+        # Observe the live owner before reading receipts: it may commit its
+        # final receipt and exit while this query still holds an earlier view.
+        running = (
+            self.prompts.is_running(principal, request_id) if self.prompts is not None else False
+        )
         async with self.identity.database.sessions() as session:
             principal = await self.identity.require_principal(session, principal)
             command = await personal_command(
@@ -156,7 +161,7 @@ class ClientRequests:
             from yuki.social.db_models import SocialOperationModel
 
             status = (
-                await self.prompts.projection(session, principal, request_id, event, command)
+                await self.prompts.projection(session, principal, event, command, running=running)
                 if self.prompts is not None
                 else {"turn": {"state": "unknown", "outcome": None}, "work": None}
             )

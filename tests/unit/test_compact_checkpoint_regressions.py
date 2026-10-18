@@ -387,16 +387,24 @@ def test_0119_keeps_valid_rollup_checkpoint_without_cached_projection(tmp_path, 
     assert after == before
 
 
-def test_public_plan_scaling_measurement():
+@pytest.mark.parametrize("budget_kind", ["fixed", "growing"])
+def test_public_plan_scaling_measurement(monkeypatch, budget_kind):
+    from dataclasses import replace
     from time import perf_counter
     from types import SimpleNamespace
 
     from yuki.conversation.frozen_fragments import FrozenFragments
     from yuki.domain.messages import ChatMessage, ChatRequest
-    from yuki.services.context_compaction import PublicCompactContext, public_compact_plan
+    from yuki.model_runtime import capacity
+    from yuki.services.context_compaction import (
+        PUBLIC_COMPACT_INSTRUCTION,
+        PublicCompactContext,
+        public_compact_plan,
+    )
     from yuki.services.turn_transcript import TurnTranscript
 
     static = ChatMessage("system", "original static instructions")
+    instruction = ChatMessage("user", PUBLIC_COMPACT_INSTRUCTION)
     metrics = []
     for count in (256, 512):
         fragments = FrozenFragments.load(
@@ -426,28 +434,59 @@ def test_public_plan_scaling_measurement():
             (static, *fragments.messages()), 1, fragments, version, "offline-scaling", None, adopt
         )
         initial = (*context.messages, ChatMessage("user", "current trigger"))
-        started = perf_counter()
-        plan = public_compact_plan(
-            context,
-            TurnTranscript(initial),
-            ChatRequest(messages=initial),
-            initial=initial,
-            input_budget=2048,
-            prepare=lambda request: request,
+        request = ChatRequest(messages=initial)
+        messages = fragments.messages()
+        budget = (
+            2048
+            if budget_kind == "fixed"
+            else capacity.estimate_request_tokens(
+                replace(request, messages=(static, *messages[: count // 2], instruction))
+            )
         )
+        observed = []
+        original_cost = capacity._input_token_cost
+
+        def input_cost(value, original_cost=original_cost, observed=observed):
+            cost = original_cost(value)
+            observed.append(cost.ascii + cost.non_ascii)
+            return cost
+
+        started = perf_counter()
+        with monkeypatch.context() as patch:
+            patch.setattr(capacity, "_input_token_cost", input_cost)
+            plan = public_compact_plan(
+                context,
+                TurnTranscript(initial),
+                request,
+                initial=initial,
+                input_budget=budget,
+                prepare=lambda request: request,
+            )
+        elapsed = perf_counter() - started
+        coverage = plan.public["coverage"]
+        assert 0 < coverage < count
+        assert plan.request.messages == (static, *messages[:coverage], instruction)
+        assert capacity.estimate_request_tokens(plan.request) <= budget
+        # The next whole event must exceed capacity; prompt wording can change
+        # the maximal legal prefix without changing the planning contract.
+        assert (
+            capacity.estimate_request_tokens(
+                replace(plan.request, messages=(static, *messages[: coverage + 1], instruction))
+            )
+            > budget
+        )
+        assert FrozenFragments.load(plan.public["items"]).messages() == messages[coverage:]
+        assert observed  # Record real preparation work without fixing its implementation count.
         metrics.append(
             {
                 "input_fragments": count,
-                "coverage": plan.public["coverage"],
-                "seconds": perf_counter() - started,
+                "input_budget": budget,
+                "serialized_characters": sum(observed),
+                "coverage": coverage,
+                "seconds": elapsed,
             }
         )
     print({"public_plan_scaling": metrics})
-    # A fixed input budget keeps the same finite prefix when history doubles;
-    # prompt text changes can legitimately change its exact event count.
-    coverage = {item["coverage"] for item in metrics}
-    assert len(coverage) == 1
-    assert 0 < next(iter(coverage)) < 256
 
 
 async def test_status_does_not_report_source_invalidated_checkpoint(database, tmp_path):
