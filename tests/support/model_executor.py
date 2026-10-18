@@ -7,9 +7,13 @@ from dataclasses import replace
 
 from yuki.domain.messages import ChatRequest, ChatResponse
 from yuki.execution_trace.recorder import TraceRecorder
-from yuki.model_runtime.capacity import ModelCapacity
-from yuki.model_runtime.dispatch_guard import check_model_dispatch
-from yuki.model_runtime.executor import ModelCompleter, ModelExecutor, request_shape_hash
+from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+from yuki.model_runtime.executor import (
+    ModelCompleter,
+    ModelExecutor,
+    PreparedModelInput,
+    request_shape_hash,
+)
 from yuki.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
@@ -34,6 +38,7 @@ class InjectedModelExecutor:
         *,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
+        prepared_capacity: PreparedModelInput | None = None,
     ) -> ChatResponse:
         del task, priority, canonical_conversation_id
         normalized = replace(
@@ -46,7 +51,6 @@ class InjectedModelExecutor:
                 protocol=ModelProtocol.CHAT_COMPLETIONS.value,
             ),
         )
-        await check_model_dispatch()
         return await self._provider.complete(normalized)
 
     def model_name(self, task: ModelTask) -> str:
@@ -56,6 +60,10 @@ class InjectedModelExecutor:
     def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest:
         del task
         return request
+
+    def prepare_capacity(self, task: ModelTask, request: ChatRequest) -> PreparedModelInput:
+        normalized = self.capacity_request(task, request)
+        return PreparedModelInput(normalized, estimate_request_tokens(normalized))
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
         del task

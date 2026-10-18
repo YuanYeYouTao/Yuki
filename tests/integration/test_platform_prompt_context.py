@@ -7,12 +7,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from tests.conftest import make_settings
 from tests.integration import test_telegram_runtime as native
-from tests.unit.test_external_event_prompt_isolation import _assembler, _external
+from tests.unit.test_external_event_prompt_isolation import _assembler, _external, _snapshot
 
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ConversationScope
 from yuki.runtime.trigger import ExternalEventTurnTrigger
-from yuki.services.context_assembler import _HistoryPromptWindow
 from yuki.services.prompt_composer import PromptComposer
 
 telegram_env = native.telegram_env
@@ -63,9 +62,22 @@ async def test_shared_entrypoints_put_platform_only_in_current_context(platform,
         initiative_run_id="current-initiative" if entry != "external" else None,
     )
     assembler = _assembler()
-    assembler._load_history_snapshot = AsyncMock(
-        return_value=_HistoryPromptWindow((), "", 0, 1, None)
+    if entry == "activation":
+        turn = replace(turn, scope_key="fixed-canonical-primary-alias")
+    event = replace(
+        _external(3, "original external turn"),
+        canonical_conversation_id="conv-platform",
+        platform="",
     )
+    snapshot = _snapshot(
+        event,
+        checkpoint_text="",
+        coverage_end=0,
+        revision=1,
+        checkpoint_kind=None,
+    )
+    snapshot = replace(snapshot, read_version=replace(snapshot.read_version, scope=identity))
+    assembler._load_history_snapshot = AsyncMock(return_value=snapshot)
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
     if entry == "plugin":
@@ -82,11 +94,6 @@ async def test_shared_entrypoints_put_platform_only_in_current_context(platform,
     else:
         kwargs = {}
         if entry == "external":
-            event = replace(
-                _external(3, "original external turn"),
-                canonical_conversation_id="conv-platform",
-                platform="",
-            )
             kwargs = {
                 "external_event": event,
                 "external_trigger": ExternalEventTurnTrigger(
@@ -108,3 +115,5 @@ async def test_shared_entrypoints_put_platform_only_in_current_context(platform,
         )
     assert context.metadata_payload["platform"] == platform
     assert context.history_messages == ()
+    if entry != "plugin":
+        assert context.prompt_scope_key == turn.scope_key

@@ -283,7 +283,19 @@ repair 在 reader 准备来源，只有原 prepare_owner 证明属于先前进�
 
 上下文准备与 compact 的模型请求在 effect gate 外执行。gate 内只复核 turn snapshot、
 read version 或原 Work source guard 并提交 projection；reset/privacy 不等待模型占用 writer。
-`ContextAssembler` 读取同一公共检查点与完整获准原文后缀，Main 对最终请求判断真实容量。
+`ContextAssembler` 在同一 reader 内选择公共检查点、有效投影、来源版本与高水位 H，
+热准备只加载新增原文和真实未接纳洞；显式 raw-history reader 仍返回完整获准后缀。
+Main 先选择实际投影与最终 context，再 compose 一次；同一公共投影 owner 贯穿读取与发布。
+恢复与无公共投影的入口仍使用各自实际 context，本轮 short_state、插件资料不进入公共段。
+当前公共表示由 `prompt_projections` 头与 `prompt_projection_chunks` 的当前 epoch 有序块持有，
+0133 迁移删除旧 head blob 列。原头 CAS 只追加新不可变块与首次 selection 来源，未派发候选
+不提升前缀；不以历次首次 selection 原件代替真实当前表示。失效、reset、事件删除、更换 epoch
+及容量回收沿原 canonical 来源清退当前块，摘要与原执行/付费/发送回执保留。
+轻量原分组、显示引用与精确洞索引归原 repository，同 view/LRU/字节预算回收，不保存正文副本。
+候选固定捕获头、H、引用序号和洞；其他读取或提交不能改写旧候选。旧 current 剔除造成的真实
+分组传播按受影响范围处理，不截断原事件；内存淘汰或真实失效时按数据库原件冷重建。
+热 ID 追加为持久 AVL 的 `O(Δ log E)`，冷索引为 `O(E log E)`；最终请求展开与编码仍须线性
+输出完整内容。准备继续位于原前台流程，不在入站时异步预装配。
 `prepare_context` 先核原 journal 是否需要保留未决私有协议；合法 exact 恢复使用原签名与配对，
 业务恢复使用当前公共历史和原任务材料，不再创建公共摘要等待或 extractive fallback。
 
@@ -394,6 +406,13 @@ Yuki 对 external_agent 的每次工具调用仍计入原 Work 工具预算；�
 `ConcurrencyManager` 只保留会话互斥和排队/执行中的取消登记。Runner 在实际请求
 接纳后复核来源、登记一次逻辑请求预算和 dispatched 检查点；HTTP 重试不重复预留
 这笔预算，额外真实请求沿原 transport accounting 计费。
+
+实际 Provider 在每次派发前执行共同 dispatch guard，覆盖名额等待与重试退避后的来源变化；
+Executor 不在同一物理 attempt 前重复调用它。原 Work source guard 首次完整证明依赖，
+之后只在同一实例的来源 revision、身份与隐私代次未变时复用原 fingerprint，新增事件仍准备原依赖。
+来源修订变化重新核原件，不因未观察的新语音转写直接拒绝；observation DAG 与跨会话输入继续单独核验。
+临时 projection 准备以同一 guard 的 fork/adopt 保持 stage/rollback，journal 冷恢复重新证明来源。
+这些读取准备不取代派发、journal/publication writer 和效果边界的真实授权与 CAS。
 
 普通私聊的新用户输入可抢占尚未接纳 Work、尚未开始本地效果且尚未派发原生工具的旧轮。
 入口在 Coordinator guard 内捕获原 token 登记的 task，推进输入版本后只取消该原 task，

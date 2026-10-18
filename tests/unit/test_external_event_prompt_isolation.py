@@ -11,6 +11,7 @@ import pytest
 from tests.conftest import build_harness, make_settings
 
 from yuki.automation.models import TurnOrigin
+from yuki.conversation.prompt_history import PromptHistorySource
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.conversation.scope_models import ConversationCoverageError
 from yuki.domain.conversations import ConversationScope, ScopeType
@@ -21,6 +22,7 @@ from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
 from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.executor import provider_cache_shape_diagnostics
 from yuki.persistence.database import Database
+from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.repository_records import EventRecord
 from yuki.runtime.trigger import ExternalEventTurnTrigger
 from yuki.services.agent_tools import ToolRuntime
@@ -94,8 +96,40 @@ def _assembler(**overrides: object) -> ContextAssembler:
     settings = make_settings("sqlite+aiosqlite:///:memory:", **overrides)
     return ContextAssembler(
         settings=settings,
-        ledger=MagicMock(),
+        ledger=MagicMock(read_version_matches=AsyncMock(return_value=True)),
         conversation_scopes=MagicMock(),
+    )
+
+
+def _snapshot(current, recent=(), **checkpoint):
+    """Capture the same metadata/body split supplied by the real scope reader."""
+    coverage = checkpoint.get("coverage_end", 0)
+    rows = tuple(row for row in recent if row.event_kind == "message")
+    through = max((coverage, current.id, *(row.id for row in rows)))
+    source = PromptHistorySource(
+        (),
+        projection=None,
+        bot_display_name="Yuki",
+        timezone="Asia/Shanghai",
+        after_event_id=coverage,
+    )
+    source.extend(rows, through_event_id=through)
+    references = source.capture(through)
+    return _HistoryPromptWindow(
+        recent=rows,
+        source=source,
+        references=references,
+        current_event=current,
+        read_version=ConversationReadVersion(
+            current.scope,
+            current.canonical_conversation_id,
+            1,
+            checkpoint.get("starts_after_event_id", 0),
+            0,
+            references.event_ids,
+        ),
+        raw_tail_end_event_id=source.raw_tail(through),
+        **checkpoint,
     )
 
 
@@ -225,7 +259,7 @@ def test_current_external_carrier_is_untrusted_user_once() -> None:
     assert history == ()
 
 
-def test_bounded_history_keeps_current_external_out_of_main_history() -> None:
+def test_incremental_history_keeps_current_external_out_of_main_history() -> None:
     history_rows = (_message(1, "hello"), _external(2, "earlier notice"))
     current = _external(3, "current trigger", payload={"token": "abc"})
     trigger = ExternalEventTurnTrigger(
@@ -235,13 +269,20 @@ def test_bounded_history_keeps_current_external_out_of_main_history() -> None:
         target_id="1001",
         agent_intent="comment briefly",
     )
-    bounded = ContextAssembler._bounded_history(
-        history_rows,
-        current_event_id=current.id,
+    bounded = _assembler()._prepared_context(
+        _snapshot(
+            current,
+            history_rows,
+            checkpoint_text="",
+            coverage_end=0,
+            revision=1,
+            checkpoint_kind=None,
+        ),
+        identity=current.scope,
+        metadata={},
         content=current.content,
         yuki_account_ids=frozenset({"8000"}),
-        current_message_override=ContextAssembler._external_wakeup_message(current, trigger),
-        current_event=current,
+        current_override=ContextAssembler._external_wakeup_message(current, trigger),
     )
     assert bounded.current_message.role == "user"
     assert "current trigger" in (bounded.current_message.content or "")
@@ -263,8 +304,9 @@ async def _assemble_wakeup(
     assembler = _assembler()
     assembler._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     assembler._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
-        return_value=_HistoryPromptWindow(
-            recent=recent,
+        return_value=_snapshot(
+            current,
+            recent,
             checkpoint_text="",
             coverage_end=0,
             revision=1,
@@ -385,8 +427,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         ),
         _external(8, "old external event must not be replayed"),
     )
-    snapshot = _HistoryPromptWindow(
-        recent=recent,
+    checkpoint = dict(
         checkpoint_text="stable checkpoint before both current turns",
         coverage_end=5,
         revision=9,
@@ -403,7 +444,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     ordinary = _assembler()
     ordinary._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     ordinary._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
-        return_value=snapshot
+        return_value=_snapshot(ordinary_event, recent, **checkpoint)
     )
     ordinary._ledger.get_event = AsyncMock(return_value=ordinary_event)
     ordinary_identity = ordinary_event.scope
@@ -442,7 +483,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     wakeup = _assembler()
     wakeup._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     wakeup._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
-        return_value=snapshot
+        return_value=_snapshot(external_event, recent, **checkpoint)
     )
     wakeup_context = await wakeup.assemble(
         inbound=None,
@@ -470,7 +511,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     assert (
         wakeup_context.checkpoint_text
         == ordinary_context.checkpoint_text
-        == snapshot.checkpoint_text
+        == checkpoint["checkpoint_text"]
     )
     assert (
         wakeup_context.prompt_conversation_id
@@ -922,8 +963,8 @@ def _covered_external_turn(
     assembler = _assembler()
     assembler._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     assembler._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
-        return_value=_HistoryPromptWindow(
-            recent=(),
+        return_value=_snapshot(
+            event,
             checkpoint_text=f"checkpoint already contains {marker}",
             coverage_end=coverage_end,
             revision=1,

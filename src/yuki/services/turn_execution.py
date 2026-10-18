@@ -50,6 +50,7 @@ from yuki.llm.base import (
 )
 from yuki.model_runtime.capacity import estimate_request_tokens
 from yuki.model_runtime.dispatch_guard import model_dispatch_guard
+from yuki.model_runtime.executor import PreparedModelInput
 from yuki.model_runtime.models import ModelCapability, ModelExecutionPriority
 from yuki.prompting.serializer import serialized_messages_hash
 from yuki.runtime.execution_receipts import current_receipts
@@ -107,6 +108,7 @@ class _PreparedRequest:
     sequence: TranscriptRequest
     request: ChatRequest
     priority: ModelExecutionPriority
+    capacity: PreparedModelInput
 
 
 @dataclass(slots=True)
@@ -646,6 +648,7 @@ class TurnExecution:
                     candidate.request,
                     priority=candidate.priority,
                     canonical_conversation_id=self.runtime.canonical_conversation_id,
+                    prepared_capacity=candidate.capacity,
                 )
                 if self.runtime.canonical_conversation_id is not None
                 else partial(
@@ -653,6 +656,7 @@ class TurnExecution:
                     self.runner._task,
                     candidate.request,
                     priority=candidate.priority,
+                    prepared_capacity=candidate.capacity,
                 )
             )
 
@@ -972,10 +976,12 @@ class TurnExecution:
         capacity = self.runner._models.capacity(self.runner._task)
         context = self.runtime.runtime_config.context
         input_budget = capacity.input_budget(output_tokens=request.max_output_tokens)
-        predicted_tokens = estimate_request_tokens(self.runner._capacity_request(request))
+        prepared_capacity = self.runner._models.prepare_capacity(self.runner._task, request)
+        request = prepared_capacity.request
+        predicted_tokens = prepared_capacity.input_tokens
         if self.runtime.compact_focus is not None:
             public = self.runtime.public_compaction
-            if public is None or not public.fragments.items:
+            if public is None or not public.fragments:
                 return End(
                     AgentRunResult(
                         text="当前会话没有可压缩的公共历史。",
@@ -1009,7 +1015,10 @@ class TurnExecution:
                 input_budget,
                 trigger_tokens=context.compact_trigger_tokens,
             )
-            predicted_tokens = estimate_request_tokens(self.runner._capacity_request(request))
+            if request is not prepared_capacity.request:
+                prepared_capacity = self.runner._models.prepare_capacity(self.runner._task, request)
+                request = prepared_capacity.request
+            predicted_tokens = prepared_capacity.input_tokens
             if self.state.transcript.chain_id != original.chain_id:
                 sequence = self.state.transcript.request()
                 self.state.continuation_tools = ()
@@ -1031,10 +1040,12 @@ class TurnExecution:
             ):
                 return STOP
             sequence = self.state.transcript.request()
-            predicted_tokens = estimate_request_tokens(self.runner._capacity_request(request))
+            prepared_capacity = self.runner._models.prepare_capacity(self.runner._task, request)
+            request = prepared_capacity.request
+            predicted_tokens = prepared_capacity.input_tokens
             self.state.continuation_tools = ()
             self.state.continuation_native_tools = ()
-        return _PreparedRequest(sequence, request, priority)
+        return _PreparedRequest(sequence, request, priority, prepared_capacity)
 
     async def compact_current(
         self,
@@ -1069,7 +1080,7 @@ class TurnExecution:
         )
         public_eligible = (
             public_context is not None
-            and bool(public_context.fragments.items)
+            and bool(public_context.fragments)
             and request.continuation is None
             and request.messages[: len(public_context.messages)] == public_context.messages
         )

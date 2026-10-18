@@ -11,6 +11,7 @@ from tests.conftest import MemorySender, make_settings
 from tests.integration.test_self_common_capabilities import runtime, self_actor
 from tests.support.automation_runtime_helpers import FakeClock
 from tests.support.model_profiles import write_fake_profiles
+from tests.support.projection import projection_record
 from tests.support.social_identity_cases import social_env
 
 from yuki.automation.models import RunStatus
@@ -216,7 +217,9 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
             assert joined.endswith(current.text) and texts[-1].endswith(current.text)
             assert texts[-3] + host + texts[-1] in joined
             async with database.sessions() as reader:
-                saved = (await reader.scalars(select(PromptProjectionModel))).one()
+                saved = await projection_record(
+                    reader, (await reader.scalars(select(PromptProjectionModel))).one()
+                )
                 assert "<runtime_context>" not in saved.payload_json
                 assert "CURRENT_MATERIAL_VALUE" not in saved.payload_json
         finally:
@@ -269,7 +272,9 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert (await app.processor.handle(message, sender)).reason == "chat"
             assert len(wire) == 1 and "CHAT_CURRENT_STATE" in _text(wire[0])
             async with database.sessions() as reader:
-                original_public = (await reader.scalars(select(PromptProjectionModel))).one()
+                original_public = await projection_record(
+                    reader, (await reader.scalars(select(PromptProjectionModel))).one()
+                )
                 original_epoch = original_public.epoch_id
                 original_items = json.loads(original_public.payload_json)
 
@@ -315,7 +320,9 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert "CHAT_CURRENT_STATE" not in _text(wire[1])
             assert actor.instruction in _text(wire[1])
             async with database.sessions() as reader:
-                self_public = (await reader.scalars(select(PromptProjectionModel))).one()
+                self_public = await projection_record(
+                    reader, (await reader.scalars(select(PromptProjectionModel))).one()
+                )
                 assert self_public.view_key == scope.id and self_public.epoch_id == original_epoch
                 assert json.loads(self_public.payload_json) == original_items
 
@@ -363,7 +370,9 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert len(wire) == 3 and "SCHEDULE_CURRENT_INSTRUCTION" in _text(wire[2])
             assert "SELF_CURRENT_STATE" not in _text(wire[2]) and "短记录" not in _text(wire[2])
             async with database.sessions() as reader:
-                schedule_public = (await reader.scalars(select(PromptProjectionModel))).one()
+                schedule_public = await projection_record(
+                    reader, (await reader.scalars(select(PromptProjectionModel))).one()
+                )
                 assert schedule_public.view_key == scope.id
                 assert schedule_public.epoch_id == original_epoch
                 assert json.loads(schedule_public.payload_json) == original_items
@@ -384,7 +393,10 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert "steps" not in json.dumps(schema) and "goal" in json.dumps(schema)
             async with database.sessions() as reader:
                 public = "\n".join(
-                    row.payload_json for row in await reader.scalars(select(PromptProjectionModel))
+                    [
+                        (await projection_record(reader, row)).payload_json
+                        for row in await reader.scalars(select(PromptProjectionModel))
+                    ]
                 )
                 events = list(await reader.scalars(select(ChatEventModel)))
             assert all(
@@ -618,7 +630,9 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
     monkeypatch.setattr(chat, "_run_agent", capture_runtime)
     await harness.processor.handle(message, MemorySender())
     async with database.sessions() as reader:
-        before = (await reader.scalars(select(PromptProjectionModel))).one()
+        before = await projection_record(
+            reader, (await reader.scalars(select(PromptProjectionModel))).one()
+        )
         original = (before.epoch_id, before.revision, before.payload_json)
     if source_kind == "person":
         source = original_runtime[0]
@@ -664,7 +678,10 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
     for item in public:
         assert (item["message"]["content"] in [m.content for m in actual]) is read_history
     async with database.sessions() as reader:
-        rows = (await reader.scalars(select(PromptProjectionModel))).all()
+        rows = [
+            await projection_record(reader, row)
+            for row in await reader.scalars(select(PromptProjectionModel))
+        ]
         assert len(rows) == 1 and rows[0].view_key == message.conversation_id
         if not read_history:
             assert (rows[0].epoch_id, rows[0].revision, rows[0].payload_json) == original
@@ -682,7 +699,9 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
         MemorySender(),
     )
     async with database.sessions() as reader:
-        final = (await reader.scalars(select(PromptProjectionModel))).one()
+        final = await projection_record(
+            reader, (await reader.scalars(select(PromptProjectionModel))).one()
+        )
         assert final.epoch_id == epoch
         assert json.loads(final.payload_json)[: len(adopted)] == adopted
         assert "当前插件实际要求" not in final.payload_json

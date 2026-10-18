@@ -52,9 +52,9 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
     def _path(self, request: ChatRequest) -> str:
         return "/responses"
 
-    def _parse(self, response: httpx.Response, request: ChatRequest) -> ChatResponse:
+    def _parse(self, response: httpx.Response, request: ChatRequest, payload: Any) -> ChatResponse:
         return self._parse_response(
-            response,
+            payload,
             self._request_continuation(request),
             function_outputs=(),
             allowed_tool_names=frozenset(tool.name for tool in request.tools),
@@ -64,7 +64,7 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
 
     @classmethod
     def _usage_diagnostics(cls, payload: dict[str, Any]) -> dict[str, object]:
-        return {"usage": cls._reported_usage(httpx.Response(200, json=payload))}
+        return {"usage": cls._reported_usage(payload)}
 
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
         if request.native_tools and request.tool_choice == "none" and not self.supports_tool_choice:
@@ -216,12 +216,8 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
         return [dict(item) for item in continuation.payload]
 
     @classmethod
-    def _reported_usage(cls, response: httpx.Response) -> dict[str, int]:
+    def _reported_usage(cls, payload: Any) -> dict[str, int]:
         """Only numeric usage crosses the diagnostic boundary, even on failure."""
-        try:
-            payload = response.json()
-        except ValueError:
-            return {}
         usage = payload.get("usage") if isinstance(payload, dict) else None
         if not isinstance(usage, dict):
             return {}
@@ -253,7 +249,7 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
 
     def _parse_response(
         self,
-        response: httpx.Response,
+        payload: Any,
         previous: ProviderContinuation | None,
         *,
         function_outputs: tuple[FunctionCallOutput, ...] = (),
@@ -261,10 +257,6 @@ class DeepSeekResponsesProvider(JSONHTTPProvider):
         native_tools_requested: bool = False,
         latency: float,
     ) -> ChatResponse:
-        try:
-            payload = response.json()
-        except ValueError as exc:
-            raise LLMInvalidResponseError("provider returned invalid JSON") from exc
         if not isinstance(payload, dict):
             raise LLMInvalidResponseError("provider returned a non-object response")
         status = payload.get("status", "completed")

@@ -31,6 +31,17 @@ _METRICS = frozenset(
         "projection_snapshot_read_seconds",
         "projection_snapshot_publish_seconds",
         "projection_sources_read_seconds",
+        "inbound_admission_seconds",
+        "participation_binding_seconds",
+        "wait_matching_seconds",
+        "attachment_preparation_seconds",
+        "participation_feedback_seconds",
+        "social_preparation_seconds",
+        "social_claim_seconds",
+        "social_transport_seconds",
+        "social_settlement_seconds",
+        "tool_admission_seconds",
+        "tool_result_persistence_seconds",
     }
 )
 
@@ -41,6 +52,28 @@ def collect_phase_metrics(**values: int | float) -> None:
         for name, value in values.items():
             if name in _METRICS:
                 metrics[name] = metrics.get(name, 0.0) + value
+
+
+@contextmanager
+def turn_detail(name: str) -> Iterator[None]:
+    """Keep early numeric preparation timings on the original turn correlation.
+
+    Main adopts them into its existing trace; observe-only input still creates
+    no diagnostic row. This never changes execution or persistence authority.
+    """
+    from yuki.runtime.observability import current_runtime_turn_correlation
+
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        key = f"{name}_seconds"
+        elapsed = time.perf_counter() - started
+        if current_metrics.get() is not None:
+            collect_phase_metrics(**{key: elapsed})
+        elif key in _METRICS and (correlation := current_runtime_turn_correlation()) is not None:
+            phases = correlation.phase_seconds
+            phases[key] = phases.get(key, 0.0) + elapsed
 
 
 @asynccontextmanager

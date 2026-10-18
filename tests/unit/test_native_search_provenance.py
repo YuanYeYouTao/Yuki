@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import httpx
 import pytest
+from tests.support.provider_parsing import parse_response
 from tests.unit.test_provider_protocols import provider, request
 
 from yuki.domain.messages import (
@@ -122,7 +123,8 @@ async def test_responses_sources_include_and_original_tail_survive_replay(kind):
 async def test_responses_sources_keep_failed_or_unknown_call_state(status):
     async with httpx.AsyncClient() as client:
         adapter = provider(OpenAIResponsesProvider, client)
-        answer = adapter._parse(
+        answer = parse_response(
+            adapter,
             httpx.Response(
                 200,
                 json={
@@ -191,7 +193,8 @@ async def test_messages_result_sources_need_real_call_and_preserve_opaque():
     blocks = [calls, result, text]
     async with httpx.AsyncClient() as client:
         adapter = provider(AnthropicMessagesProvider, client)
-        answer = adapter._parse(
+        answer = parse_response(
+            adapter,
             httpx.Response(
                 200,
                 json={
@@ -235,7 +238,8 @@ async def test_messages_result_sources_need_real_call_and_preserve_opaque():
             payload=({"role": "assistant", "content": [{**calls, "name": "code_execution"}]},),
         )
         with pytest.raises(LLMInvalidResponseError, match="matching call"):
-            adapter._parse(
+            parse_response(
+                adapter,
                 httpx.Response(200, json={"content": [result], "stop_reason": "end_turn"}),
                 replace(native_request(), continuation=previous),
             )
@@ -253,7 +257,8 @@ async def test_messages_result_sources_need_real_call_and_preserve_opaque():
 )
 async def test_messages_missing_or_failed_results_never_become_completed(content, status):
     async with httpx.AsyncClient() as client:
-        answer = provider(AnthropicMessagesProvider, client)._parse(
+        answer = parse_response(
+            provider(AnthropicMessagesProvider, client),
             httpx.Response(
                 200,
                 json={

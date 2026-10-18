@@ -150,7 +150,7 @@ async def test_empty_legacy_checkpoint_appends_without_rebuilding_frozen_history
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
         context_key="existing-public-window",
-        items=list(original.items),
+        fragments=FrozenFragments.load(list(original.items)),
         rebuild_reason="bootstrap",
         selected_summary_text="",
         selected_summary_coverage=version.starts_after_event_id,
@@ -217,7 +217,7 @@ async def test_full_prepare_equivalence_and_only_missing_body_reads(database, mo
         generation=version.generation,
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
-        items=list(frozen.items),
+        fragments=FrozenFragments.load(list(frozen.items)),
         rebuild_reason="bootstrap",
         # Current producer records the full representation. Legacy NULL metadata
         # is separately tested as an explicit epoch rebuild, never silent reuse.
@@ -416,7 +416,7 @@ async def test_history_preparation_version_change_is_source_error(database, monk
         generation=version.generation,
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
-        items=list(frozen.items),
+        fragments=FrozenFragments.load(list(frozen.items)),
         rebuild_reason="bootstrap",
         selected_summary_text="",
         selected_summary_coverage=0,
@@ -547,7 +547,7 @@ async def test_publication_still_rejects_change_after_missing_history_prepare(da
         generation=version.generation,
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
-        items=list(frozen.items),
+        fragments=FrozenFragments.load(list(frozen.items)),
         rebuild_reason="bootstrap",
         selected_summary_text="",
         selected_summary_coverage=0,
@@ -618,11 +618,13 @@ async def test_projection_uses_privacy_from_its_source_snapshot(database, monkey
         generation=version.generation,
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
-        items=list(frozen.items),
+        fragments=FrozenFragments.load(list(frozen.items)),
         rebuild_reason="bootstrap",
     )
     async with database.immediate_session() as writer:
         published = await publication(writer)
     assert changed
     assert published.items() == list(frozen.items)
-    assert await repository.read("a" * 64) == published
+    restored = await repository.read("a" * 64)
+    assert restored._prefix_stamp == published._prefix_stamp
+    assert restored.items() == published.items()

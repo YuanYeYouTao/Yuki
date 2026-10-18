@@ -37,6 +37,31 @@ async def enable_history_column_for_legacy_seed(database: Database) -> None:
     database.close = close_seed
 
 
+async def enable_projection_columns_for_legacy_seed(database: Database) -> None:
+    """Let today's raw reader seed paid facts without publishing a current view.
+
+    The seed disables Main publication; these two reader-only columns are removed
+    before the frozen upgrade runs. The historical payload and receipts remain
+    untouched, and no current chunk table is introduced into the old schema.
+    """
+    async with database.immediate_session() as writer:
+        for name in ("tail_ordinal", "item_count"):
+            await writer.execute(
+                text(f"ALTER TABLE prompt_projections ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
+            )
+    original_close = database.close
+
+    async def close_seed() -> None:
+        try:
+            async with database.immediate_session() as writer:
+                for name in ("tail_ordinal", "item_count"):
+                    await writer.execute(text(f"ALTER TABLE prompt_projections DROP COLUMN {name}"))
+        finally:
+            await original_close()
+
+    database.close = close_seed
+
+
 async def enable_binding_column_for_legacy_seed(database: Database) -> None:
     """Let current runtime build old test facts, then restore the frozen schema.
 

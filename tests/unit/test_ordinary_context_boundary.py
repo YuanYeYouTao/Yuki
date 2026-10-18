@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender
+from tests.support.projection import projection_record
 from tests.unit.test_history_dispatch_ownership import _scene
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -66,7 +67,16 @@ async def _boundary_scene(database, tmp_path):
         await preparation(event_ids)
         return tuple(candidates[key] for key in event_ids if key in candidates)
 
-    kwargs = {**captured[0], "ordinary_inputs": reader}
+    # Build a new test composition after the first real dispatch. The captured
+    # incremental snapshot belongs to that earlier boundary and must not be
+    # replayed as though its original head had never committed.
+    kwargs = {
+        **captured[0],
+        "context": replace(
+            captured[0]["context"], history_incremental=False, prepared_fragments=None
+        ),
+        "ordinary_inputs": reader,
+    }
     composition = await original_compose(**kwargs)
     with validating_request(TranscriptRequest(composition.messages, None, ())):
         await composition.commit_projection()
@@ -159,7 +169,9 @@ def _dispatch(scene, boundary, *, private=True, public=True, business=True):
 
 async def _projection(database):
     async with database.sessions() as reader:
-        row = (await reader.scalars(select(PromptProjectionModel))).one()
+        row = await projection_record(
+            reader, (await reader.scalars(select(PromptProjectionModel))).one()
+        )
         return row.revision, row.payload_json
 
 

@@ -1,5 +1,6 @@
 """Readonly source checks close over short lease/revision fences."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -13,12 +14,14 @@ from yuki.conversation.canonical_db_models import (
 )
 from yuki.conversation.projection_revision_schema import EVENT_METADATA_COLUMNS_0082
 from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatImage, ChatMessage
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
 from yuki.identity.canonical_repository import ensure_space
 from yuki.persistence.event_repository import ConversationReadVersion, EventLedgerRepository
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_repository import WorkConflict, WorkRepository
 from yuki.runtime.work_source_guard import WorkSourceGuard
+from yuki.services.turn_transcript import TurnTranscript, validating_request
 
 
 async def _guard(database, event):
@@ -205,3 +208,130 @@ async def test_metadata_trigger_closure_and_noop_preserve_revision(database):
             )
         )
     assert before == after
+
+
+async def test_unchanged_guard_reuses_sources_but_restoration_reproves_original_rows(database):
+    source = await _event_and_route(database, EventLedgerRepository(database))
+    guard, control = await _guard(database, source)
+    assert await guard.check(control)
+    original = guard.snapshot()
+    sql = []
+
+    def record(_connection, _cursor, statement, *_args):
+        sql.append(statement)
+
+    sql_event.listen(database.engine.sync_engine, "before_cursor_execute", record)
+    try:
+        assert await guard.check(control)
+        assert not any("chat_events" in statement for statement in sql)
+        assert any("canonical_conversations" in statement for statement in sql)
+        assert guard.snapshot() == original
+        sql.clear()
+        restored = WorkSourceGuard.restore(original)
+        assert await restored.check(control)
+        assert any("chat_events" in statement for statement in sql)
+    finally:
+        sql_event.remove(database.engine.sync_engine, "before_cursor_execute", record)
+
+
+async def test_new_unselected_enrichment_reuses_the_proved_original_after_revision_recheck(
+    database,
+):
+    ledger = EventLedgerRepository(database)
+    source = await _event_and_route(database, ledger)
+    guard, control = await _guard(database, source)
+    assert await guard.check(control)
+    original = guard.fingerprint
+    fresh = await _event_and_route(database, ledger, content="not in the original model input")
+    async with database.sessions() as session, session.begin():
+        await session.execute(
+            update(ChatEventModel)
+            .where(ChatEventModel.id == fresh.id)
+            .values(audio_transcript='{"text":"later unobserved transcript"}')
+        )
+    assert await guard.check(control)
+    assert guard.fingerprint == original
+    sql = []
+
+    def record(_connection, _cursor, statement, *_args):
+        sql.append(statement)
+
+    sql_event.listen(database.engine.sync_engine, "before_cursor_execute", record)
+    try:
+        assert await guard.check(control)
+    finally:
+        sql_event.remove(database.engine.sync_engine, "before_cursor_execute", record)
+    assert not any("chat_events" in statement for statement in sql)
+    assert guard.fingerprint == original
+
+
+class _NoTraversalIds(frozenset):
+    def __iter__(self):
+        raise AssertionError("warm image validation must not traverse the admitted prefix")
+
+    def __or__(self, other):
+        raise AssertionError("warm image validation must not copy the admitted prefix")
+
+
+@pytest.mark.parametrize("selected_image", ["none", "original", "additional"])
+async def test_warm_image_validation_uses_membership_without_copying_admitted_ids(
+    database, selected_image
+):
+    ledger = EventLedgerRepository(database)
+    source = await _event_and_route(database, ledger)
+    guard, control = await _guard(database, source)
+    assert await guard.check(control)
+    selected = source
+    if selected_image == "additional":
+        selected = await _event_and_route(database, ledger, content="admitted image source")
+        assert await guard.check(control, event_ids=frozenset({selected.id}))
+    verified = guard._verified
+    assert verified is not None
+    visible = _NoTraversalIds(verified.visible_ids)
+    eligible = _NoTraversalIds(verified.eligible_images)
+    guard._verified = replace(verified, visible_ids=visible, eligible_images=eligible)
+    images = (
+        (
+            ChatImage(
+                "data:image/png;base64,synthetic",
+                source="history",
+                source_event_id=selected.id,
+                conversation_id=source.canonical_conversation_id,
+                generation=guard.version.generation,
+            ),
+        )
+        if selected_image != "none"
+        else ()
+    )
+    request = TurnTranscript((ChatMessage("user", images=images),)).request()
+    with validating_request(request):
+        assert await guard.check(control)
+    assert guard._verified.visible_ids is visible
+    assert guard._verified.eligible_images is eligible
+
+
+async def test_provisional_guard_reuses_proof_and_can_roll_back_selected_dependencies(database):
+    ledger = EventLedgerRepository(database)
+    source = await _event_and_route(database, ledger)
+    guard, control = await _guard(database, source)
+    assert await guard.check(control)
+    saved = guard.fork()
+    candidate = guard.fork()
+    sql = []
+
+    def record(_connection, _cursor, statement, *_args):
+        sql.append(statement)
+
+    sql_event.listen(database.engine.sync_engine, "before_cursor_execute", record)
+    try:
+        assert await candidate.check(control)
+    finally:
+        sql_event.remove(database.engine.sync_engine, "before_cursor_execute", record)
+    assert not any("chat_events" in statement for statement in sql)
+    fresh = await _event_and_route(database, ledger, content="new selected dependency")
+    assert await candidate.check(control, event_ids=frozenset({fresh.id}))
+    assert fresh.id not in guard.additional_events
+    guard.adopt(candidate)
+    assert fresh.id in guard.additional_events
+    guard.adopt(saved)
+    assert fresh.id not in guard.additional_events

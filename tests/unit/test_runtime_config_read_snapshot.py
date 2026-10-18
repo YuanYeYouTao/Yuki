@@ -69,6 +69,40 @@ async def _override(
         )
 
 
+async def test_snapshot_indexes_override_rows_once_without_changing_scope_values(
+    database, monkeypatch
+):
+    runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    person, _, space, _ = await _owners(database)
+    await _override(database, person, 0.0, key="llm.temperature", value_type="number")
+    await _override(database, space, 0.8, "group", key="llm.temperature", value_type="number")
+    await _override(database, space, 80000, "group")
+    expected = await runtime.snapshot(user_id=person, group_id=space)
+    assert expected.llm.temperature == 0.0 and expected.context.compact_trigger_tokens == 80000
+
+    class TrackedRows(tuple):
+        visits = 0
+
+        def __iter__(self):
+            for row in super().__iter__():
+                self.visits += 1
+                yield row
+
+    read = runtime._repository.read_relevant_snapshot
+    observed = []
+
+    async def tracked(**kwargs):
+        rows, person_id, space_id = await read(**kwargs)
+        records = TrackedRows(rows)
+        observed.append(records)
+        return records, person_id, space_id
+
+    monkeypatch.setattr(runtime._repository, "read_relevant_snapshot", tracked)
+    actual = await runtime.snapshot(user_id=person, group_id=space)
+    assert actual == expected
+    assert observed[0].visits == len(observed[0])
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("group_override", [False, True])
 async def test_group_history_uses_space_config_while_private_history_keeps_person_config(

@@ -103,14 +103,13 @@ class WireRequestObserver:
 
     def observe(
         self,
-        payload: dict[str, Any],
+        current: WireFingerprint,
         protocol: str,
         *,
         chain_id: str = "",
         provider: str = "unspecified",
     ) -> dict[str, object]:
         correlation = current_runtime_turn_correlation()
-        current = WireFingerprint.of(payload, protocol, provider=provider)
         # A runtime turn can contain independent internal model tasks. Compare only
         # the explicit Agent transcript, not arbitrary requests sharing an actor.
         key = (chain_id, protocol, provider) if chain_id else None

@@ -72,7 +72,12 @@ class LLMProvider(ABC):
 
     @abstractmethod
     async def complete(self, request: ChatRequest) -> ChatResponse:
-        """Return one complete, non-streaming response."""
+        """Return one complete, non-streaming response.
+
+        Implementations call ``check_model_dispatch`` immediately before each
+        actual dispatch, after payload preparation and any admission wait.
+        Retries recheck the same logical request without reserving it twice.
+        """
 
     async def close(self) -> None:
         """Release provider resources."""

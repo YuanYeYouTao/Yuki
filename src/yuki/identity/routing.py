@@ -463,10 +463,6 @@ class PresenceRouter:
                 )
             except RegistryClosed as exc:
                 raise RouteSendError(exc.category) from exc
-            if conversation.kind == "space" and not await self._probe(
-                resolved.connection.bot, target, presence.external_account_id
-            ):
-                raise RouteSendError("group_unavailable")
         return replace(
             resolved,
             kind="conversation",
@@ -568,13 +564,6 @@ class PresenceRouter:
                 require_capability(resolution, "send_group")
             except RegistryClosed as exc:
                 raise RouteSendError(exc.category) from exc
-            member = await self._probe(
-                resolution.bot,
-                binding.external_space_id,
-                presence.external_account_id,
-            )
-            if not member:
-                raise RouteSendError("paused")
             return ResolvedSend(
                 presence_id=presence.id,
                 binding_id=binding.id,

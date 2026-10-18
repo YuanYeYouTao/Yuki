@@ -14,15 +14,16 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
+from weakref import WeakSet
 
 from sqlalchemy import and_, func, or_, select, text, tuple_, update
 
 from yuki.admin.models import VisionRuntimeConfig
 from yuki.capabilities.media import PreparedMediaData
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
-from yuki.domain.messages import ChatImage
+from yuki.domain.messages import AttachmentKind, ChatImage, InboundMessage
 from yuki.gateway.media import MediaKind, PlatformMediaFile, PlatformMediaGateway
 from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from yuki.persistence.database import Database
@@ -33,6 +34,7 @@ from yuki.services.media_process import run_media_process as run_parser
 from yuki.services.media_resolver import (
     MediaResolutionError,
     MediaResolver,
+    PreparedAttachment,
 )
 from yuki.services.native_media import MAX_IMAGE_BYTES, NativeMediaPreparer
 from yuki.services.vision_service import VisionProcessingError
@@ -225,6 +227,7 @@ class ConversationMediaService:
         self._prefetch_slots = asyncio.Semaphore(2)
         self._pending: set[asyncio.Task[None]] = set()
         self._cleaner: asyncio.Task[None] | None = None
+        self._prepared: WeakSet[PreparedAttachment] = WeakSet()
 
     async def start(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -241,6 +244,8 @@ class ConversationMediaService:
             return_exceptions=True,
         )
         self._cleaner = None
+        await asyncio.gather(*(original.close() for original in self._prepared))
+        self._prepared.clear()
         async with self._cleanup_lock:
             if self._gc_iterator is not None:
                 closer = getattr(self._gc_iterator, "close", None)
@@ -249,16 +254,77 @@ class ConversationMediaService:
                 self._gc_iterator = None
             self._gc_pending = ()
 
-    def submit(self, event_id: int, gateway: PlatformMediaGateway | None) -> None:
+    def prepare_message(
+        self,
+        message: InboundMessage,
+        gateway: PlatformMediaGateway | None,
+        *,
+        source_segments: tuple[dict[str, Any], ...],
+    ) -> InboundMessage:
+        """Distribute one original per admitted attachment, without waiting for cache I/O."""
+        kinds = {AttachmentKind.IMAGE, AttachmentKind.VIDEO, AttachmentKind.FILE}
+        if not any(attachment.kind in kinds for attachment in message.attachments):
+            return message
+        original_segments = json.dumps(source_segments, ensure_ascii=False, separators=(",", ":"))
+        attachments = tuple(
+            replace(
+                attachment,
+                prepared_media=PreparedAttachment(
+                    self.resolver,
+                    MediaReference(file=attachment.file, url=attachment.url, source="current"),
+                    gateway,
+                    kind=cast(MediaKind, attachment.kind.value),
+                    max_download_bytes=(
+                        MAX_IMAGE_BYTES
+                        if attachment.local_source
+                        else self.resolver.max_download_bytes
+                        if attachment.kind is AttachmentKind.IMAGE
+                        else _MAX_FILE
+                    ),
+                    local_source=attachment.local_source,
+                    source_segments=original_segments,
+                ),
+            )
+            if attachment.kind in kinds
+            else attachment
+            for attachment in message.attachments
+        )
+        self._prepared.update(
+            attachment.prepared_media
+            for attachment in attachments
+            if attachment.prepared_media is not None
+        )
+        return replace(message, attachments=attachments)
+
+    def submit(
+        self,
+        event_id: int,
+        gateway: PlatformMediaGateway | None,
+        *,
+        message: InboundMessage | None = None,
+    ) -> None:
         if len(self._pending) >= 32:
             return
         task = asyncio.create_task(
-            self._cache_event(event_id, gateway), name=f"conversation-media-{event_id}"
+            self._cache_event(event_id, gateway, message), name=f"conversation-media-{event_id}"
         )
         self._pending.add(task)
         task.add_done_callback(self._pending.discard)
 
-    async def _cache_event(self, event_id: int, gateway: PlatformMediaGateway | None) -> None:
+    async def _cache_event(
+        self,
+        event_id: int,
+        gateway: PlatformMediaGateway | None,
+        message: InboundMessage | None = None,
+    ) -> None:
+        originals = (
+            {
+                attachment.segment_index: attachment.prepared_media
+                for attachment in message.attachments
+            }
+            if message is not None
+            else {}
+        )
         async with self.database.sessions() as session:
             items = (
                 await session.scalars(
@@ -270,7 +336,12 @@ class ConversationMediaService:
         for item in items:
             try:
                 async with self._prefetch_slots:
-                    await self._cache(item.source_event_id, item.attachment_index, gateway)
+                    await self._cache(
+                        item.source_event_id,
+                        item.attachment_index,
+                        gateway,
+                        prepared_media=originals.get(item.segment_index),
+                    )
             except (ConversationMediaError, MediaResolutionError, OSError, ValueError):
                 # Failed prefetch remains uncached and can be retried on inspection.
                 continue
@@ -365,10 +436,13 @@ class ConversationMediaService:
         *,
         source: tuple[ConversationMediaItemModel, int | None, int | None, dict[str, Any], str]
         | None = None,
+        prepared_media: PreparedAttachment | None = None,
     ) -> Path:
         if source is None:
             source = (await self._sources(((event_id, index),)))[(event_id, index)]
         item, _, _, data, source_segments = source
+        if prepared_media is not None and prepared_media.source_segments != source_segments:
+            raise ConversationMediaError("attachment_source_changed")
         if item.cache_status == "expired":
             raise ConversationMediaError("attachment_expired")
         if item.expires_at is not None:
@@ -386,7 +460,9 @@ class ConversationMediaService:
         reference = MediaReference(file=data.get("file"), url=data.get("url"), source="current")
         gateway = gateway or _EventMediaGateway(self.database, self.gateway_registry, event_id)
         try:
-            if item.kind == "image":
+            if prepared_media is not None:
+                await prepared_media.download(temporary, _MAX_FILE)
+            elif item.kind == "image":
                 result = await self.resolver.resolve(reference, gateway)
                 if len(result.content) > _MAX_FILE:
                     raise ConversationMediaError("attachment_too_large")

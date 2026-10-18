@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
+import sys
+from bisect import bisect_right
+from collections.abc import Iterable, Iterator, Set
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from yuki.domain.messages import ChatMessage, sanitize_display_name
@@ -56,6 +59,223 @@ def prompt_origin_class(row: EventRecord) -> str:
     return "ordinary"
 
 
+class EventPromptIndex:
+    """One source epoch's append-only reference metadata, owned by its projection."""
+
+    def __init__(self, events: Iterable[EventRecord] = ()) -> None:
+        self._rows: dict[int, tuple[int, EventRecord]] = {}
+        self._ordered: list[EventRecord] = []
+        self._sorted_ids: list[int] = []
+        self._senders: dict[tuple[str, str | None, str], tuple[list[int], list[EventRecord]]] = {}
+        self._accounts: dict[str, list[tuple[int, int]]] = {}
+        self._maximum_id = 0
+        self._nested_bytes = 0
+        rows = tuple(events)
+        latest = {row.id: row for row in rows}
+        self.extend(latest.values())
+        # The original reference table infers accounts from every input row,
+        # while duplicate IDs keep their last metadata representation.
+        for row in rows:
+            if row is not latest[row.id]:
+                self._record_accounts(row, self._rows[row.id][0])
+
+    def _record_accounts(self, row: EventRecord, ordinal: int) -> None:
+        for account in {row.bot_user_id, row.sender_user_id if row.author_is_yuki() else ""}:
+            if account:
+                sources = self._accounts.get(account)
+                if sources is None:
+                    sources = []
+                    self._accounts[account] = sources
+                    self._nested_bytes += sys.getsizeof(sources)
+                before = sys.getsizeof(sources)
+                entry = ordinal, row.id
+                sources.append(entry)
+                self._nested_bytes += sys.getsizeof(sources) - before + sys.getsizeof(entry)
+
+    @property
+    def estimated_bytes(self) -> int:
+        """Owned reference-index containers; source metadata rows are counted once by its owner."""
+        return self._nested_bytes + sum(
+            sys.getsizeof(value)
+            for value in (
+                self,
+                self.__dict__,
+                self._rows,
+                self._ordered,
+                self._sorted_ids,
+                self._senders,
+                self._accounts,
+            )
+        )
+
+    def extend(self, events: Iterable[EventRecord]) -> None:
+        """Add new metadata. Normal warm callers append IDs above their captured H.
+
+        Older missing dependencies belong in capture(extra_events=...), so they
+        do not shift the shared predecessor sequence on the warm path.
+        """
+        for row in sorted(events, key=lambda event: event.id):
+            if row.id in self._rows:
+                continue
+            ordinal = len(self._ordered)
+            entry = ordinal, row
+            self._rows[row.id] = entry
+            self._nested_bytes += sys.getsizeof(entry)
+            self._ordered.append(row)
+            self._sorted_ids.insert(bisect_right(self._sorted_ids, row.id), row.id)
+            self._maximum_id = max(self._maximum_id, row.id)
+            key = row.platform, row.canonical_conversation_id, row.sender_user_id
+            sender = self._senders.get(key)
+            if sender is None:
+                sender = [], []
+                self._senders[key] = sender
+                self._nested_bytes += sum(sys.getsizeof(value) for value in (key, sender, *sender))
+            ids, rows = sender
+            before = sys.getsizeof(ids) + sys.getsizeof(rows)
+            position = bisect_right(ids, row.id)
+            ids.insert(position, row.id)
+            rows.insert(position, row)
+            self._nested_bytes += sys.getsizeof(ids) + sys.getsizeof(rows) - before
+            self._record_accounts(row, ordinal)
+
+    def capture(
+        self,
+        *,
+        through_event_id: int | None = None,
+        extra_events: Iterable[EventRecord] = (),
+    ) -> EventPromptReferences:
+        through = self._maximum_id if through_event_id is None else through_event_id
+        accounts = frozenset(
+            account
+            for account, sources in self._accounts.items()
+            if any(event_id <= through for _, event_id in sources)
+        )
+        base = EventPromptReferences(
+            self,
+            len(self._ordered),
+            through,
+            bisect_right(self._sorted_ids, through),
+            None,
+            accounts,
+        )
+        return base.with_events(extra_events)
+
+
+@dataclass(frozen=True, slots=True)
+class EventPromptReferences:
+    """A fixed H/ordinal view; later owner appends cannot change its answers."""
+
+    _index: EventPromptIndex
+    _cutoff: int
+    _through: int
+    _base_count: int
+    _extra: EventPromptIndex | None
+    yuki_account_ids: frozenset[str]
+
+    def get(self, event_id: int) -> EventRecord | None:
+        if event_id > self._through:
+            return None
+        if self._extra is not None:
+            extra = self._extra._rows.get(event_id)
+            if extra is not None:
+                return extra[1]
+        found = self._index._rows.get(event_id)
+        return found[1] if found is not None and found[0] < self._cutoff else None
+
+    @property
+    def event_ids(self) -> Set[int]:
+        return _ReferenceIds(self)
+
+    def with_events(self, events: Iterable[EventRecord]) -> EventPromptReferences:
+        additions = tuple(events)
+        if not additions:
+            return self
+        previous = self._extra._ordered if self._extra is not None else ()
+        overlay = EventPromptIndex((*previous, *additions))
+        extra_accounts = frozenset(
+            account
+            for account, sources in overlay._accounts.items()
+            if any(event_id <= self._through for _, event_id in sources)
+        )
+        return EventPromptReferences(
+            self._index,
+            self._cutoff,
+            self._through,
+            self._base_count,
+            overlay,
+            self.yuki_account_ids | extra_accounts,
+        )
+
+    def iter_events(self) -> Iterator[EventRecord]:
+        """Iterate only this capture's metadata; never iterate a live owner dict."""
+        for ordinal in range(self._cutoff):
+            original = self._index._ordered[ordinal]
+            row = self.get(original.id)
+            if row is not None:
+                yield row
+        if self._extra is not None:
+            for row in self._extra._ordered:
+                base = self._index._rows.get(row.id)
+                if row.id <= self._through and (base is None or base[0] >= self._cutoff):
+                    yield row
+
+    @staticmethod
+    def _previous(
+        index: EventPromptIndex,
+        cutoff: int,
+        limit: int,
+        user_id: str,
+        row: EventRecord,
+        replaced: EventPromptIndex | None = None,
+    ) -> EventRecord | None:
+        ids, rows = index._senders.get(
+            (row.platform, row.canonical_conversation_id, user_id), ([], [])
+        )
+        position = bisect_right(ids, limit) - 1
+        while position >= 0:
+            candidate = rows[position]
+            if index._rows[candidate.id][0] < cutoff and (
+                replaced is None or candidate.id not in replaced._rows
+            ):
+                return candidate
+            position -= 1
+        return None
+
+    def previous(self, user_id: str, row: EventRecord) -> EventRecord | None:
+        limit = min(row.id, self._through)
+        previous = self._previous(self._index, self._cutoff, limit, user_id, row, self._extra)
+        if self._extra is not None:
+            extra = self._previous(self._extra, len(self._extra._ordered), limit, user_id, row)
+            if extra is not None and (previous is None or extra.id >= previous.id):
+                previous = extra
+        return previous
+
+
+@dataclass(frozen=True, slots=True, eq=False)
+class _ReferenceIds(Set[int]):
+    references: EventPromptReferences
+
+    def __contains__(self, value: object) -> bool:
+        return isinstance(value, int) and self.references.get(value) is not None
+
+    def __iter__(self) -> Iterator[int]:
+        return (row.id for row in self.references.iter_events())
+
+    def __len__(self) -> int:
+        refs = self.references
+        extra = 0
+        if refs._extra is not None:
+            for row in refs._extra._ordered:
+                base = refs._index._rows.get(row.id)
+                if row.id <= refs._through and (base is None or base[0] >= refs._cutoff):
+                    extra += 1
+        return refs._base_count + extra
+
+    @classmethod
+    def _from_iterable[T](cls, values: Iterable[T]) -> Set[T]:
+        return frozenset(values)
+
+
 class ChatEventPromptRenderer:
     """Render one canonical prompt envelope for the main Agent."""
 
@@ -66,21 +286,16 @@ class ChatEventPromptRenderer:
         bot_display_name: str = "Yuki",
         timezone: str = "Asia/Shanghai",
         yuki_account_ids: frozenset[str] = frozenset(),
+        references: EventPromptReferences | None = None,
     ) -> None:
-        rows = tuple(events)
         self._bot_display_name = bot_display_name
         self._timezone = timezone
-        inferred_yuki_ids = {
-            value
-            for row in rows
-            for value in (
-                row.bot_user_id,
-                row.sender_user_id if row.author_is_yuki() else "",
-            )
-            if value
-        }
-        self._yuki_account_ids = frozenset({*yuki_account_ids, *inferred_yuki_ids})
-        self._events_by_id = {row.id: row for row in rows}
+        self._references = (
+            EventPromptIndex(events).capture()
+            if references is None
+            else references.with_events(events)
+        )
+        self._yuki_account_ids = yuki_account_ids | self._references.yuki_account_ids
 
     def message(
         self,
@@ -139,18 +354,28 @@ class ChatEventPromptRenderer:
     ]:
         """Render once, retaining individual views from the same reference table."""
 
-        grouped: list[
-            tuple[
-                int,
-                tuple[int, ...],
-                ChatMessage,
-                tuple[str, tuple[str, ...], str, str, int | None] | None,
-            ]
-        ] = []
+        grouped: list[tuple[int, tuple[int, ...], ChatMessage]] = []
         individual: list[tuple[int, tuple[int, ...], ChatMessage]] = []
+        group_ids: list[int] = []
+        group_lines: list[str] = []
+        first_message: ChatMessage | None = None
+        previous_key: tuple[str, tuple[str, ...], str, str, int | None] | None = None
         group_start_utc: datetime | None = None
         group_last_utc: datetime | None = None
         group_local_day: date | None = None
+
+        def finish_group() -> None:
+            if first_message is not None:
+                grouped.append(
+                    (
+                        group_ids[0],
+                        tuple(group_ids),
+                        first_message
+                        if len(group_ids) == 1
+                        else ChatMessage(first_message.role, "\n".join(group_lines)),
+                    )
+                )
+
         for row in rows:
             if row.event_kind == "external_event":
                 continue
@@ -159,13 +384,7 @@ class ChatEventPromptRenderer:
             if not rendered:
                 continue
             individual.append((row.id, (row.id,), message))
-            group_key = (
-                message.role,
-                self._sender_identity(row),
-                self._row_display_name(row),
-                prompt_origin_class(row),
-                row.caused_by_event_id,
-            )
+            group_key = self.group_identity(row)
             occurred_utc = stored_utc(row.occurred_at)
             local_day = local_datetime(row.occurred_at, self._timezone).date()
             within_group_span = (
@@ -175,33 +394,32 @@ class ChatEventPromptRenderer:
                 and group_start_utc <= occurred_utc <= group_start_utc + _MAIN_HISTORY_GROUP_SPAN
                 and group_local_day == local_day
             )
-            if (
-                grouped
-                and group_key is not None
-                and grouped[-1][3] == group_key
-                and within_group_span
-            ):
-                previous_id, event_ids, previous, _ = grouped[-1]
+            if group_ids and previous_key == group_key and within_group_span:
                 _, separator, event_line = rendered.partition("\n")
                 if separator:
-                    grouped[-1] = (
-                        previous_id,
-                        (*event_ids, row.id),
-                        ChatMessage(
-                            role=previous.role,
-                            content=f"{previous.content}\n{event_line}",
-                        ),
-                        group_key,
-                    )
+                    group_ids.append(row.id)
+                    group_lines.append(event_line)
                     group_last_utc = occurred_utc
                     continue
-            grouped.append((row.id, (row.id,), message, group_key))
+            finish_group()
+            group_ids = [row.id]
+            group_lines = [message.content or ""]
+            first_message = message
+            previous_key = group_key
             group_start_utc = occurred_utc
             group_last_utc = occurred_utc
             group_local_day = local_day
+        finish_group()
+        return tuple(grouped), tuple(individual)
+
+    def group_identity(self, row: EventRecord) -> tuple[str, tuple[str, ...], str, str, int | None]:
+        """The exact metadata key shared with the owner's raw grouping index."""
         return (
-            tuple((anchor, ids, message) for anchor, ids, message, _ in grouped),
-            tuple(individual),
+            "assistant" if row.direction == "outbound" else "user",
+            self._sender_identity(row),
+            self._row_display_name(row),
+            prompt_origin_class(row),
+            row.caused_by_event_id,
         )
 
     def render_event(
@@ -258,7 +476,7 @@ class ChatEventPromptRenderer:
         proactive_label = proactive_message_label(
             row,
             cause=(
-                self._events_by_id.get(row.caused_by_event_id)
+                self._references.get(row.caused_by_event_id)
                 if row.caused_by_event_id is not None
                 else None
             ),
@@ -286,8 +504,11 @@ class ChatEventPromptRenderer:
             (*row.mentioned_user_ids, *self._yuki_account_ids) if legacy else row.mentioned_user_ids
         )
         for target in targets:
+            marker = f"[提及{target}]"
+            if marker not in content:
+                continue
             label = self._legacy_identity_label(target, row) if legacy else "成员"
-            content = content.replace(f"[提及{target}]", f"[提及{label}]")
+            content = content.replace(marker, f"[提及{label}]")
         return content
 
     @staticmethod
@@ -369,7 +590,7 @@ class ChatEventPromptRenderer:
     def _reply_target(self, row: EventRecord) -> EventRecord | None:
         if row.reply_to_event_id is None:
             return None
-        target = self._events_by_id.get(row.reply_to_event_id)
+        target = self._references.get(row.reply_to_event_id)
         if (
             target is None
             or target.event_kind != "message"
@@ -418,18 +639,7 @@ class ChatEventPromptRenderer:
     def _legacy_identity_label(self, user_id: str, row: EventRecord) -> str:
         """Old raw mentions retain a display label, never canonical ownership."""
 
-        previous = max(
-            (
-                candidate
-                for candidate in self._events_by_id.values()
-                if candidate.id <= row.id
-                and candidate.platform == row.platform
-                and candidate.canonical_conversation_id == row.canonical_conversation_id
-                and candidate.sender_user_id == user_id
-            ),
-            key=lambda candidate: candidate.id,
-            default=None,
-        )
+        previous = self._references.previous(user_id, row)
         if previous is not None:
             return self._row_display_name(previous)
         if user_id == row.bot_user_id or user_id in self._yuki_account_ids:

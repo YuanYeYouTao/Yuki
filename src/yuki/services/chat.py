@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Set
 from contextlib import AbstractContextManager, AsyncExitStack, nullcontext
 from dataclasses import dataclass, replace
 from functools import partial
@@ -48,7 +48,7 @@ from yuki.domain.messages import (
     PromptRequestDiagnostics,
 )
 from yuki.domain.profiles import UserProfileSnapshot
-from yuki.execution_trace.phases import collect_phase_metrics, timed_lock
+from yuki.execution_trace.phases import collect_phase_metrics, timed_lock, turn_detail
 from yuki.execution_trace.recorder import trace_span
 from yuki.llm.base import LLMEmptyResponseError
 from yuki.memory.context import MemoryContextService
@@ -296,6 +296,7 @@ class ChatService:
                 self._prompt_composer,
                 runner,
                 self._ledger._database,
+                projections=self._conversation_scopes.projections,
                 executions=active_bindings.executions,
                 processing_status=processing_status,
             ),
@@ -579,10 +580,6 @@ class ChatService:
     ) -> int | None:
         from yuki.runtime.work_wait import WorkWaitRepository
 
-        explicit_reply = await WorkWaitRepository(self._work_repository).match_user_reply(event_id)
-        if explicit_reply is not None:
-            return explicit_reply
-
         async def prepare() -> bool:
             nonlocal admission
             assert prepare_source is not None
@@ -595,12 +592,15 @@ class ChatService:
                 session, input_id
             )
 
-        matched = await WorkWaitRepository(self._work_repository).match_event(
-            event_id=event_id,
-            kind="conversation",
-            on_delivery=publish if admission else None,
-            prepare_source=prepare if prepare_source is not None else None,
-        )
+        with turn_detail("wait_matching"):
+            match = await WorkWaitRepository(self._work_repository).match_input(
+                event_id,
+                on_delivery=publish if admission else None,
+                prepare_source=prepare if prepare_source is not None else None,
+            )
+        if match is not None and match.kind == "reply":
+            return match.input_id
+        matched = match.input_id if match is not None else None
         if prepare_source is not None and admission is None:
             return None
         if matched is not None and matched > 0:
@@ -733,6 +733,11 @@ class ChatService:
                     )
                 )
                 collect_phase_metrics(conversation_lock_wait_seconds=conversation_wait)
+                from yuki.runtime.observability import current_runtime_turn_correlation
+
+                correlation = current_runtime_turn_correlation()
+                if correlation is not None:
+                    collect_phase_metrics(**correlation.phase_seconds)
                 from yuki.execution_trace.recorder import record_trace
 
                 await record_trace(
@@ -1056,7 +1061,7 @@ class ChatService:
         ordinary_inputs: OrdinaryContextReader | None = None,
     ) -> tuple[
         tuple[ChatMessage, ...],
-        frozenset[int],
+        Set[int],
         PromptRequestDiagnostics,
         ConversationReadVersion | None,
         Callable[[], Awaitable[None]] | None,

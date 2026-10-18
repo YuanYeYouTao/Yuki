@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select, true, update
 from sqlalchemy.dialects.sqlite import insert
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.runtime.work_recovery_schema import deliveries
 from yuki.runtime.work_repository import TERMINAL, WorkConflict, encode_json
@@ -17,7 +19,13 @@ if TYPE_CHECKING:
 
 
 async def reserve(
-    control: WorkControl, key: str, kind: str, payload: dict[str, Any], *, count: int = 1
+    control: WorkControl,
+    key: str,
+    kind: str,
+    payload: dict[str, Any] | str,
+    *,
+    count: int = 1,
+    session: AsyncSession | None = None,
 ) -> bool:
     if control.current is None:
         return True
@@ -25,8 +33,10 @@ async def reserve(
     identity = control.current["id"]
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise WorkConflict("delivery_message_count_invalid")
-    encoded_payload = encode_json(payload)
-    async with control.repository.database.immediate_session() as session:
+    encoded_payload = payload if isinstance(payload, str) else encode_json(payload)
+    async with (
+        control.repository.database.immediate_session() if session is None else nullcontext(session)
+    ) as session:
         await control.repository._assert_lease(session, control.lease)
         active = await session.scalar(
             select(work.c.id).where(
@@ -91,8 +101,18 @@ async def reserve(
     return True
 
 
-async def record(control: WorkControl, key: str, state: str, receipt: dict[str, Any]) -> None:
-    async with control.repository.database.sessions() as session, session.begin():
+async def record(
+    control: WorkControl,
+    key: str,
+    state: str,
+    receipt: dict[str, Any],
+    *,
+    session: AsyncSession | None = None,
+) -> None:
+    from yuki.persistence.unit_of_work import optional_session
+
+    encoded_receipt = encode_json(receipt)
+    async with optional_session(control.repository.database, session, write=True) as session:
         await session.execute(
             update(deliveries)
             .where(
@@ -100,5 +120,5 @@ async def record(control: WorkControl, key: str, state: str, receipt: dict[str, 
                 deliveries.c.state != "accepted",
                 (deliveries.c.state != "unknown") if state != "accepted" else true(),
             )
-            .values(state=state, receipt_json=encode_json(receipt), updated=time.time())
+            .values(state=state, receipt_json=encoded_receipt, updated=time.time())
         )

@@ -15,6 +15,7 @@ from yuki.capabilities.invocation import (
     counts_toward_business_limit,
 )
 from yuki.domain.messages import ToolCall
+from yuki.execution_trace.phases import model_detail
 
 if TYPE_CHECKING:
     from yuki.runtime.work_control import WorkControl
@@ -185,9 +186,11 @@ class InvocationService:
             call.function.name
         )
         try:
-            if not await control.repository.admit_dispatch(
-                control.lease, control.current["id"], key, charge=charged
-            ):
+            with model_detail("tool_admission"):
+                admitted = await control.repository.admit_dispatch(
+                    control.lease, control.current["id"], key, charge=charged
+                )
+            if not admitted:
                 return await journal.effect_result(key)
             if charged:
                 control.current["tool_calls"] += 1
@@ -284,16 +287,17 @@ class InvocationService:
         if capture.outcome is None:
             raise TypeError("live tool execution did not publish a typed outcome")
         evidence = receipt_evidence(capture.outcome)
-        await journal.record_effect(
-            key,
-            "accepted",
-            {
-                "result": result,
-                "outcome": evidence,
-                "artifact_handle": capture.artifact_handle,
-            },
-            media_source=audit_source,
-        )
+        with model_detail("tool_result_persistence"):
+            await journal.record_effect(
+                key,
+                "accepted",
+                {
+                    "result": result,
+                    "outcome": evidence,
+                    "artifact_handle": capture.artifact_handle,
+                },
+                media_source=audit_source,
+            )
         control.observe_evidence(evidence)
         if (
             capture.outcome.provider_id == "core"

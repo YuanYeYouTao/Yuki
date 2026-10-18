@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from sqlalchemy import select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -377,7 +377,7 @@ class SocialOperationRepository:
         platform_reference: str | None = None,
         event_id: int | None = None,
         error_category: str | None = None,
-    ) -> None:
+    ) -> SocialReceipt:
         """Caller commits a confirmed outgoing ledger append in this same transaction."""
         if status not in {
             OperationStatus.SUCCEEDED,
@@ -410,9 +410,12 @@ class SocialOperationRepository:
                 error_category=error_category,
                 updated_at=datetime.now(UTC),
             )
+            .returning(SocialOperationModel)
         )
-        if cast(CursorResult[Any], result).rowcount != 1:
+        row = result.scalar_one_or_none()
+        if row is None:
             raise SocialError("invalid_transition")
+        return self._receipt(row)
 
     async def get(self, operation_id: str) -> SocialReceipt:
         async with self.database.sessions() as session:
@@ -457,6 +460,8 @@ class SocialOperationRepository:
         conversation_id: str,
         tool_call_id: str,
         planned_file_parts: int | None,
+        origin: str | None = None,
+        caused_by_event_id: int | None = None,
     ) -> dict[str, Any] | None:
         """Complete delivery facts of one original operation in the caller's snapshot.
 
@@ -471,9 +476,15 @@ class SocialOperationRepository:
         ):
             return None
 
-        def receipt(row: SocialOperationModel | None) -> dict[str, Any]:
+        def receipt(row: SocialOperationModel | None, *, detailed: bool = False) -> dict[str, Any]:
             if row is None:
                 return {"status": "not_sent"}
+            if detailed:
+                value = SocialOperationRepository._receipt(row).model_dump(mode="json")
+                value.pop("platform_reference", None)
+                if row.status == "succeeded":
+                    value["delivered_text_available"] = False
+                return value
             return {
                 "operation_id": row.id,
                 "status": row.status,
@@ -483,7 +494,8 @@ class SocialOperationRepository:
             }
 
         result = receipt(parent)
-        parts = [result.copy()]
+        operations = {parent.id: parent}
+        parts = [receipt(parent, detailed=origin is not None)]
         complete_plan = True
         if parent.action == "send_message_sequence":
             count = parent.planned_parts
@@ -504,7 +516,11 @@ class SocialOperationRepository:
                     )
                 )
             }
-            parts = [receipt(children.get(f"{prefix}{index}")) for index in range(count)]
+            operations.update((row.id, row) for row in children.values())
+            parts = [
+                receipt(children.get(f"{prefix}{index}"), detailed=origin is not None)
+                for index in range(count)
+            ]
             result.update(
                 planned_messages=count,
                 sent_messages=sum(part["status"] == "succeeded" for part in parts),
@@ -523,29 +539,48 @@ class SocialOperationRepository:
                         SocialOperationModel.action == "send_file_caption",
                     )
                 )
-                result["caption"] = receipt(caption)
+                result["caption"] = receipt(caption, detailed=origin is not None)
                 parts.append(result["caption"])
+                if caption is not None:
+                    operations[caption.id] = caption
         elif parent.action == "send_message":
             # An unplanned legacy file/caption cannot prove whole-call success.
             complete_plan = False
+        event_ids = [part["event_id"] for part in parts if part.get("event_id") is not None]
+        selected_events = func.json_each(json.dumps(event_ids)).table_valued("value")
+        anchors = (
+            {
+                event.id: (event, conversation)
+                for event, conversation in await session.execute(
+                    select(ChatEventModel, CanonicalConversationModel)
+                    .outerjoin(
+                        CanonicalConversationModel,
+                        CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
+                    )
+                    .where(ChatEventModel.id.in_(select(selected_events.c.value)))
+                )
+            }
+            if event_ids
+            else {}
+        )
         for part in parts:
             if part["status"] != "succeeded" or part.get("event_id") is None:
                 continue
-            event = await session.get(ChatEventModel, part["event_id"])
-            operation = await session.get(SocialOperationModel, part["operation_id"])
+            event, conversation = anchors.get(part["event_id"], (None, None))
+            operation = operations[part["operation_id"]]
             if (
                 event is None
-                or operation is None
                 or event.direction != "outbound"
                 or event.author_kind != "yuki"
                 or event.author_presence_id != operation.presence_id
                 or event.event_kind != "message"
                 or event.suppression_status != "keeper"
+                or (
+                    origin is not None
+                    and (event.origin != origin or event.caused_by_event_id != caused_by_event_id)
+                )
             ):
                 continue
-            conversation = await session.get(
-                CanonicalConversationModel, event.canonical_conversation_id
-            )
             if (
                 conversation is None
                 or (
@@ -565,10 +600,14 @@ class SocialOperationRepository:
             if not isinstance(segments, list):
                 continue
             part["delivered_text_available"] = True
-            part["delivered_text"] = "".join(
-                item.get("data", {}).get("text", "")
-                for item in segments
-                if isinstance(item, dict) and item.get("type") == "text"
+            part["delivered_text"] = (
+                event.content
+                if any(isinstance(item, dict) and item.get("type") == "record" for item in segments)
+                else "".join(
+                    item.get("data", {}).get("text", "")
+                    for item in segments
+                    if isinstance(item, dict) and item.get("type") == "text"
+                )
             )
             for item in segments:
                 if not isinstance(item, dict) or item.get("type") not in {"file", "image"}:

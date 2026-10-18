@@ -79,17 +79,16 @@ async def test_current_reply_rechecks_original_source_before_claim(database, tmp
     async with database.sessions() as session:
         event = await session.scalar(select(ChatEventModel))
     context = replace(env.context, trigger_event_id=event.id, presence_id=env.presence)
-    send_route = env.service.send_route
+    prepare = env.service.receipts.prepare
 
     async def delete_after_route(*args, **kwargs):
-        route = await send_route(*args, **kwargs)
-        if await env.service.receipts.find(context.turn_id, context.call_id) is not None:
-            async with database.immediate_session() as session:
-                original = await session.get(ChatEventModel, event.id)
-                await session.delete(original)
-        return route
+        receipt = await prepare(*args, **kwargs)
+        async with database.immediate_session() as session:
+            original = await session.get(ChatEventModel, event.id)
+            await session.delete(original)
+        return receipt
 
-    monkeypatch.setattr(env.service, "send_route", delete_after_route)
+    monkeypatch.setattr(env.service.receipts, "prepare", delete_after_route)
     env.bot.calls.clear()
     with pytest.raises(SocialError, match="invalid_reply_context"):
         await env.service.execute("send_message", {"text": "obsolete source"}, context)

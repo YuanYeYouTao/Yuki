@@ -10,8 +10,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from yuki.conversation.projection_compact_schema import (
-    PROJECTION_TRIGGERS_0119 as PROJECTION_TRIGGERS_CURRENT,
+from yuki.conversation.projection_chunks_schema import (
+    PROJECTION_TRIGGERS_0133 as PROJECTION_TRIGGERS_CURRENT,
 )
 
 
@@ -78,6 +78,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "privacy_generation",
         }
     ),
+    "prompt_projection_chunks": frozenset({"view_key", "epoch_id", "ordinal", "payload_json"}),
     "model_context_selections": frozenset(
         {
             "id",
@@ -86,6 +87,8 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "generation",
             "source_key",
             "event_ids_json",
+            "min_event_id",
+            "max_event_id",
             "payload_json",
         }
     ),
@@ -168,7 +171,8 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "revision",
             "rebuild_reason",
             "invalidated_reason",
-            "payload_json",
+            "tail_ordinal",
+            "item_count",
             "byte_size",
             "updated_at",
             "selected_summary_text",
@@ -387,6 +391,12 @@ async def require_canonical_schema(database_url: str) -> None:
                     "social_operation_receipts",
                     ("source_conversation_id", "updated_at"),
                     "reply maintenance",
+                ),
+                (
+                    "ix_context_selection_range",
+                    "model_context_selections",
+                    ("view_key", "generation", "max_event_id", "id"),
+                    "projection provenance",
                 ),
                 (
                     "ix_protocol_objects_gc_cursor",

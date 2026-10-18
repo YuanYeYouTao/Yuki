@@ -79,6 +79,7 @@ class RuntimeTurnCorrelation:
     turn_id: str
     origin: TurnOrigin
     touched: bool = field(default=False)
+    phase_seconds: dict[str, float] = field(default_factory=dict)
 
 
 _CURRENT_CORRELATION: ContextVar[RuntimeTurnCorrelation | None] = ContextVar(

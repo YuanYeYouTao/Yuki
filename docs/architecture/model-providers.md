@@ -241,6 +241,17 @@ LLM/LLM_FLASH 设置可作为 TOML 引用值，其他变量须先导出，不扫
 
 适配器先准备完整 httpx Request，包括路径、Header 和 JSON 编码，再沿原派发核验与预算登记进入 send。准备失败不登记实际请求，也不调用上一条请求的失败收尾；登记后 HTTP 段的异常仍按原请求收尾。
 
+同一次逻辑调用的协议 payload、编码字节与 wire fingerprint 只准备一次，原传输重试复用它们；
+每个物理 attempt 仍分别核当前来源、登记预算和 usage，保留各自 trace 与未知事实。
+Provider 的 `complete` 实现在真实派发边界调用共同 dispatch guard，非 HTTP/Fake 实现也遵循此合同；
+Executor 负责原名额和逻辑优先级，不再重复核同一个物理派发。
+成功 body 解码一次，以该 attempt 独有的只读 JSON 树交给 usage、finish hook 和协议 parser。
+保留原 response 字节与既有 opaque 隔离复制；parser 不修改共享树，解析失败仍保存实际已报告用量。
+
+Main 容量准备通过 `PreparedModelInput` 显式交给 Executor。只有同一归一化请求对象与原 Profile
+才能复用该完整估值；请求或 Profile 改变则按实际输入重新准备，其他 Executor 入口继续核已知容量。
+准备对象归本次调用所有，嵌套声明和 opaque 不在交接后原地修改；不使用全局缓存或 hash 代替输入。
+
 `model_invocations` 一行表示一次逻辑模型调用，`calls` 继续按该行计数。`physical_request_count`
 只统计实际进入 HTTP 客户端的请求尝试，包括传输重试和 Claude 原生搜索暂停后的续发；
 路由、配置或本地校验失败不计入。`unknown_usage_request_count` 统计其中未获得上游总 Token

@@ -9,6 +9,7 @@ from sqlalchemy import select
 from tests.conftest import MemorySender
 from tests.support.codemode_cases import FakeDomain, build_host, requires_worker
 from tests.support.correctness_wire import wire
+from tests.support.projection import projection_record
 from tests.support.runtime_execution import make_work_resumer
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
@@ -115,7 +116,7 @@ async def test_pending_code_interleave(database, tmp_path, monkeypatch, kind, pa
             snapshots.append(
                 dict(
                     label=label,
-                    projection=[p.payload_json for p in projs],
+                    projection=[(await projection_record(r, p)).payload_json for p in projs],
                     notes=[dict(id=n.id, payload=n.payload_json) for n in notes],
                     selections=[dict(id=s.id, event_ids=s.event_ids_json) for s in selections],
                     effects=[

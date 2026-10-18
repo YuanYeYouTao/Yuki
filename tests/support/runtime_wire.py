@@ -1,6 +1,7 @@
 """Exercise the real provider serializers around deterministic runtime fixtures."""
 
 import json
+from contextvars import ContextVar
 from dataclasses import asdict
 
 import httpx
@@ -22,8 +23,10 @@ from yuki.model_runtime.routes import ModelRouter
 
 def install_wire(chat, fake, protocol, *, native=False):
     captured = []
+    original_request = ContextVar("runtime_wire_original_request")
 
     def transport(request):
+        fake.requests.append(original_request.get())
         captured.append(json.loads(request.content))
         response = fake._responder(fake.requests[-1])
         if protocol == "responses":
@@ -82,8 +85,11 @@ def install_wire(chat, fake, protocol, *, native=False):
     )
 
     async def complete(request):
-        fake.requests.append(request)
-        return await provider.complete(request)
+        token = original_request.set(request)
+        try:
+            return await provider.complete(request)
+        finally:
+            original_request.reset(token)
 
     fake.complete = complete
     profile = ModelProfile(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Set
 from dataclasses import dataclass, replace
 from typing import Any
 
@@ -31,8 +32,6 @@ class PreparedHistory:
     previous: ProjectionSnapshot | None
     reason: str | None
     committed: ProjectionSnapshot | None = None
-    committed_input: list[dict[str, Any]] | None = None
-    previous_item_count: int | None = None
 
     async def prepare_commit(
         self,
@@ -49,7 +48,7 @@ class PreparedHistory:
             expected_source_revision=version.prompt_source_revision,
             starts_after_event_id=version.starts_after_event_id,
             context_key=self.context_key,
-            items=list(fragments.items),
+            fragments=fragments,
             expected_epoch=previous.epoch_id if previous else None,
             expected_revision=previous.revision if previous else 0,
             rebuild_reason=None if self.committed is not None else self.reason,
@@ -58,11 +57,6 @@ class PreparedHistory:
             selected_summary_kind=self.context.metrics.checkpoint_kind,
             selected_summary_renderer=SUMMARY_RENDERER_VERSION,
             previous_snapshot=previous,
-            previous_item_count=(
-                (len(self.committed_input) if self.committed_input is not None else None)
-                if self.committed is not None
-                else self.previous_item_count
-            ),
         )
 
 
@@ -74,19 +68,20 @@ async def prepare_history(
     context_key: str,
 ) -> PreparedHistory:
     """Append canonical public history in the Conversation's existing epoch."""
-    if context.read_version is None or context.read_version.conversation_id is None:
-        raise ValueError("projection requires a canonical read version")
-    previous = await repository.read(view_key)
-    previous_fragments = FrozenFragments.load(previous.items()) if previous is not None else None
     version = context.read_version
+    if version is None or version.conversation_id is None:
+        raise ValueError("projection requires a canonical read version")
     conversation_id = version.conversation_id
-    if conversation_id is None:
-        raise ValueError("projection requires a canonical conversation")
+    previous = (
+        context.projection_snapshot
+        if context.history_incremental
+        else await repository.read(view_key)
+    )
+    previous_fragments = previous.fragments if previous is not None else None
     reason = None
     invalidated_reason = None
-    previous_item_count = None
     frozen = FrozenFragments.load([])
-    frozen_event_ids: frozenset[int] = frozenset()
+    frozen_event_ids: Set[int] = frozenset()
     if previous is None:
         invalidated_reason = await repository.invalidation_reason(view_key)
         reason = invalidated_reason or "bootstrap"
@@ -100,16 +95,16 @@ async def prepare_history(
     else:
         assert previous_fragments is not None
         frozen = previous_fragments
-        previous_item_count = len(frozen.items)
         frozen_event_ids = frozen.event_ids
         if (
-            not frozen_event_ids <= context.visible_event_ids
+            not context.history_incremental
+            and not frozen_event_ids <= context.visible_event_ids
             and previous.selected_summary_text is None
         ):
             reason = "capacity"
             frozen = FrozenFragments.load([])
             frozen_event_ids = frozenset()
-    if not frozen.items:
+    if not len(frozen):
         # Representation provenance outlives the bounded projection cache. A
         # genuine source/reset change clears it; ordinary eviction does not.
         selected = await repository.selected(
@@ -118,11 +113,6 @@ async def prepare_history(
             generation=version.generation,
             visible_event_ids=context.visible_event_ids,
         )
-        selected = [
-            item
-            for item in selected
-            if (not item["event_ids"] or set(item["event_ids"]) <= context.visible_event_ids)
-        ]
         # Grouping can change across an explicit capacity epoch. Replay each
         # original event only once; use the current event fragment for the new
         # portion of an overlapping group rather than duplicating its envelope.
@@ -148,18 +138,23 @@ async def prepare_history(
             seen.update(ids)
         frozen = FrozenFragments.load(unique)
         frozen_event_ids = frozen.event_ids
-    collect_phase_metrics(F=len(frozen.items), E=len(frozen_event_ids))
+    collect_phase_metrics(F=len(frozen), E=len(frozen_event_ids))
     selected_context = context
     # Preserve a selected summary while it and all chat fit. New derived rows
     # must not silently replace the prefix or omit newly covered unseen chat.
-    if previous is not None and previous.selected_summary_text is not None and reason is None:
+    if (
+        not context.history_incremental
+        and previous is not None
+        and previous.selected_summary_text is not None
+        and reason is None
+    ):
         ledger = EventLedgerRepository(repository.database)
         through = max(context.prompt_raw_tail_end_event_id, context.prompt_effective_coverage)
         current_version, missing_rows = await ledger.read_scope_missing_history(
             version,
             after_event_id=previous.selected_summary_coverage,
             through_event_id=through,
-            frozen_event_ids=frozen_event_ids,
+            frozen_event_ids=frozenset(frozen_event_ids),
             current_event_id=context.current_event_id,
         )
         if current_version != version:
@@ -172,14 +167,9 @@ async def prepare_history(
             timezone=context.history_timezone,
             yuki_account_ids=context.history_yuki_account_ids,
         )
-        additions = tuple(
-            (ids, message) for _, ids, message in renderer.main_agent_history(missing_rows)
-        )
-        individual = tuple(
-            (ids, message)
-            for row in missing_rows
-            for _, ids, message in renderer.main_agent_history((row,))
-        )
+        grouped, individual_rows = renderer.main_agent_history_views(missing_rows)
+        additions = tuple((ids, message) for _, ids, message in grouped)
+        individual = tuple((ids, message) for _, ids, message in individual_rows)
         selected_context = replace(
             context,
             checkpoint_text=previous.selected_summary_text,
@@ -188,13 +178,18 @@ async def prepare_history(
             history_fragments=additions,
             history_event_fragments=individual,
         )
-    extended = frozen.extend_history(
-        selected_context.history_fragments, selected_context.history_event_fragments
+    extended = (
+        selected_context.prepared_fragments
+        if selected_context.prepared_fragments is not None
+        and previous is not None
+        and reason is None
+        else frozen.extend_history(
+            selected_context.history_fragments, selected_context.history_event_fragments
+        )
     )
 
-    selected_context = replace(selected_context, history_messages=extended.messages())
     collect_phase_metrics(candidate_count=1)
-    extended_messages = extended.messages()
+    extended_messages = extended.messages_view()
     # Capacity is decided once by Main against its complete request.
     selected_context = replace(
         selected_context,
@@ -218,5 +213,4 @@ async def prepare_history(
         fragments=extended,
         previous=previous,
         reason=reason,
-        previous_item_count=previous_item_count,
     )

@@ -154,7 +154,11 @@ class EmojiCollector:
             emoji_id=attachment.emoji_id,
             emoji_package_id=attachment.emoji_package_id,
         )
-        downloaded = await self._resolver.resolve(reference, gateway)
+        downloaded = (
+            await attachment.prepared_media.resolve(self._resolver.max_download_bytes)
+            if attachment.prepared_media is not None
+            else await self._resolver.resolve(reference, gateway)
+        )
         media = self._storage.inspect(
             downloaded.content,
             near_duplicate_enabled=runtime.near_duplicate_enabled,

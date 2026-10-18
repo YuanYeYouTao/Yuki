@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import defaultdict
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -1392,17 +1393,30 @@ class RuntimeConfigService:
             records, person_id, space_id = await self._repository.read_relevant_snapshot(
                 user_id=user_id, group_id=group_id
             )
+        by_key: dict[str, list[RuntimeConfigOverrideRecord]] = defaultdict(list)
+        for row in records:
+            by_key[row.config_key].append(row)
+        restart_by_key: dict[str, list[RuntimeConfigOverrideRecord]] = defaultdict(list)
+        for row in self._active_restart.values():
+            restart_by_key[row.config_key].append(row)
 
         def value(key: str) -> ConfigValue:
             spec = self.registry.get(key)
             shared_context = spec.category == "context" and space_id is not None
             return self._resolve(
                 spec,
-                records,
+                tuple(
+                    (
+                        restart_by_key
+                        if spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED
+                        else by_key
+                    ).get(key, ())
+                ),
                 user_id=None if shared_context else user_id,
                 group_id=group_id,
                 person_id=None if shared_context else person_id,
                 space_id=space_id,
+                honor_restart_activation=False,
             ).value
 
         delay_min = float(cast(float | int, value("reply.delay_min_seconds")))

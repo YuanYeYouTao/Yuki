@@ -1,0 +1,2168 @@
+{
+  "source_revision": "815897032b4e77e6e7f11ea2d63d74a7fd4e674d",
+  "status": "investigation_and_taskbook_only_no_product_changes",
+  "production": {
+    "collected_at_utc": "2026-10-18T05:03:21.788895+00:00",
+    "scope": "read-only bounded indexed metadata/timing selection, no prompts or chat bodies",
+    "method": "Live SQLite URI mode=ro, bounded indexed metadata/timing queries for five specified turn IDs and source-event primary keys; no production writes or new requests",
+    "limitations": [
+      "Selected natural turns, not a random latency distribution or proven all explicit mentions",
+      "No message, prompt, reasoning, credentials, tool arguments or tool results included",
+      "Observed-to-delivery-trace is not platform-emission-to-client-visibility",
+      "Source occurred_at can predate ingestion; it is not used as processing latency origin",
+      "Trace may be incomplete; missing delivery in retained trace is not proof of platform failure",
+      "Nested phase durations must not be added to parent logical durations; sums are not a proven exclusive critical path",
+      "Cache usage is per recorded upstream invocation, not inferred from local fingerprints"
+    ],
+    "samples": [
+      {
+        "turn_id": "3304a436b4dd43a9b706c0903cf1b42d",
+        "source_events": [
+          {
+            "id": 108192,
+            "occurred_at": "2026-10-18 03:25:14.716289",
+            "observed_at": "2026-10-18 03:25:15.117822"
+          }
+        ],
+        "first_delivery_trace_at_utc": "2026-10-18 03:26:58.912347",
+        "delivered_event_ids": [
+          108195
+        ],
+        "observed_to_first_delivery_trace_seconds": 103.794525,
+        "chat_preparation": {
+          "status": "ready",
+          "total_seconds": 0.6370782069861889,
+          "stage_seconds": {
+            "work_preparation": 0.02256609220057726,
+            "runtime_snapshot": 2.498738467693329e-06,
+            "memory_and_repair": 4.258938133716583e-05,
+            "build_messages": 0.2250814689323306,
+            "work_activation": 0.02049449924379587,
+            "context_validation": 0.36037486884742975,
+            "agent_setup": 0.008516189642250538
+          },
+          "build_detail_seconds": {
+            "context_assembly": 0.13875186163932085,
+            "main_turn_composition": 0.08628001995384693
+          }
+        },
+        "whole_turn_phase_metrics": [
+          {
+            "phase_version": 1,
+            "conversation_lock_wait_seconds": 2.0703300833702087e-05,
+            "F": 476.0,
+            "E": 706.0,
+            "candidate_count": 1.0,
+            "source_guard_read_seconds": 14.172752161510289,
+            "source_guard_final_read_seconds": 1.749443300999701,
+            "work_restore_source_read_seconds": 0.012210758402943611,
+            "item_count": 1439.0,
+            "payload_bytes": 425994.0,
+            "projection_sources_read_seconds": 2.1033705603331327
+          }
+        ],
+        "recorded_chat_model_calls_finished_before_first_delivery": 12,
+        "logical_model_seconds_finished_before_first_delivery": 68.37341674882919,
+        "nested_transport_seconds_finished_before_first_delivery": 55.65851981565356,
+        "model_invocations_metadata": [
+          {
+            "id": 69847,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 7.532774846069515,
+            "prompt_tokens": 62160,
+            "cached_prompt_tokens": 11494,
+            "created_at": "2026-10-18 03:25:30.251938"
+          },
+          {
+            "id": 69848,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.321613920852542,
+            "prompt_tokens": 62722,
+            "cached_prompt_tokens": 60115,
+            "created_at": "2026-10-18 03:25:36.113318"
+          },
+          {
+            "id": 69849,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.5263753943145275,
+            "prompt_tokens": 63051,
+            "cached_prompt_tokens": 60684,
+            "created_at": "2026-10-18 03:25:41.221412"
+          },
+          {
+            "id": 69850,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.8244738299399614,
+            "prompt_tokens": 63649,
+            "cached_prompt_tokens": 61016,
+            "created_at": "2026-10-18 03:25:49.838501"
+          },
+          {
+            "id": 69851,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.133310941979289,
+            "prompt_tokens": 64788,
+            "cached_prompt_tokens": 61619,
+            "created_at": "2026-10-18 03:25:53.601879"
+          },
+          {
+            "id": 69852,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.3747787848114967,
+            "prompt_tokens": 66678,
+            "cached_prompt_tokens": 62765,
+            "created_at": "2026-10-18 03:25:58.519807"
+          },
+          {
+            "id": 69853,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 7.049095751717687,
+            "prompt_tokens": 67135,
+            "cached_prompt_tokens": 64642,
+            "created_at": "2026-10-18 03:26:09.806925"
+          },
+          {
+            "id": 69854,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 4.664304946549237,
+            "prompt_tokens": 68189,
+            "cached_prompt_tokens": 65104,
+            "created_at": "2026-10-18 03:26:17.089831"
+          },
+          {
+            "id": 69855,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 4.129379475489259,
+            "prompt_tokens": 70674,
+            "cached_prompt_tokens": 68202,
+            "created_at": "2026-10-18 03:26:23.017074"
+          },
+          {
+            "id": 69856,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 5.159117882139981,
+            "prompt_tokens": 75414,
+            "cached_prompt_tokens": 70706,
+            "created_at": "2026-10-18 03:26:29.369225"
+          },
+          {
+            "id": 69857,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 13.536218595691025,
+            "prompt_tokens": 80319,
+            "cached_prompt_tokens": 75437,
+            "created_at": "2026-10-18 03:26:45.322493"
+          },
+          {
+            "id": 69858,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 8.752817701548338,
+            "prompt_tokens": 62925,
+            "cached_prompt_tokens": 60829,
+            "created_at": "2026-10-18 03:26:54.649175"
+          },
+          {
+            "id": 69859,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 5.866618175059557,
+            "prompt_tokens": 64182,
+            "cached_prompt_tokens": 60895,
+            "created_at": "2026-10-18 03:27:05.653181"
+          }
+        ],
+        "timing_trace": [
+          {
+            "id": 265801,
+            "operation_id": "72a8eb37182d451ba9c0f4f7650647d5",
+            "parent_operation_id": null,
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "chat_processing_start",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:25:21.797254"
+          },
+          {
+            "id": 265803,
+            "operation_id": "72a8eb37182d451ba9c0f4f7650647d5",
+            "parent_operation_id": null,
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "chat_preparation",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:25:22.434561",
+            "timing": {
+              "status": "ready",
+              "total_seconds": 0.6370782069861889,
+              "stage_seconds": {
+                "work_preparation": 0.02256609220057726,
+                "runtime_snapshot": 2.498738467693329e-06,
+                "memory_and_repair": 4.258938133716583e-05,
+                "build_messages": 0.2250814689323306,
+                "work_activation": 0.02049449924379587,
+                "context_validation": 0.36037486884742975,
+                "agent_setup": 0.008516189642250538
+              },
+              "build_detail_seconds": {
+                "context_assembly": 0.13875186163932085,
+                "main_turn_composition": 0.08628001995384693
+              }
+            }
+          },
+          {
+            "id": 265804,
+            "operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "parent_operation_id": "72a8eb37182d451ba9c0f4f7650647d5",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "turn_start",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:25:22.437517"
+          },
+          {
+            "id": 265811,
+            "operation_id": "5f4a50873a944442a8bfb1c9bdd64cc4",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:25:30.252156",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 7.555545462295413,
+              "exclusive_seconds": {
+                "preparation": 0.02254580147564411,
+                "slot_wait": 3.5126693546772e-05,
+                "slot_hold": 7.532698664814234,
+                "response_preparation": 0.00026517361402511597
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.022198691964149475,
+                "cache_shape_preparation": 0.011419248767197132,
+                "source_guard_read": 0.9123941697180271,
+                "source_guard_final_read": 0.07043103221803904,
+                "projection_sources_read": 1.2902979729697108,
+                "dispatch_preparation": 2.1466528298333287,
+                "payload_preparation": 0.013932967558503151,
+                "attempt_dispatch_preparation": 0.596090517938137,
+                "transport": 4.763149930164218,
+                "provider_response_preparation": 7.671583443880081e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265822,
+            "operation_id": "9466fa4d8a574f0b8f67e3a200b2476d",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:25:36.113618",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.3611700665205717,
+              "exclusive_seconds": {
+                "preparation": 0.039244525134563446,
+                "slot_wait": 4.752539098262787e-05,
+                "slot_hold": 3.321516807191074,
+                "response_preparation": 0.00036008190363645554
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.03244066145271063,
+                "cache_shape_preparation": 0.01302685122936964,
+                "source_guard_read": 0.8714910503476858,
+                "source_guard_final_read": 0.041412548162043095,
+                "projection_sources_read": 0.02318175882101059,
+                "dispatch_preparation": 0.8084600074216723,
+                "payload_preparation": 0.009868236258625984,
+                "attempt_dispatch_preparation": 0.23786821775138378,
+                "transport": 2.2574908658862114,
+                "provider_response_preparation": 0.00013783853501081467
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265832,
+            "operation_id": "e5677c3126e0407b8fb0dd92943ef7a9",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:25:41.221668",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.564152207225561,
+              "exclusive_seconds": {
+                "preparation": 0.03751140646636486,
+                "slot_wait": 3.662705421447754e-05,
+                "slot_hold": 3.5262987734749913,
+                "response_preparation": 0.0003049522638320923
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.01979182567447424,
+                "cache_shape_preparation": 0.01956646330654621,
+                "source_guard_read": 0.8481754204258323,
+                "source_guard_final_read": 0.0697158444672823,
+                "dispatch_preparation": 0.8735450161620975,
+                "payload_preparation": 0.008391392417252064,
+                "attempt_dispatch_preparation": 0.4061213256791234,
+                "transport": 2.2349025392904878,
+                "provider_response_preparation": 5.9437938034534454e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265842,
+            "operation_id": "f510d424545a4cb09243cc5d06ddefff",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:25:49.838781",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.859038759022951,
+              "exclusive_seconds": {
+                "preparation": 0.034274847246706486,
+                "slot_wait": 4.915706813335419e-05,
+                "slot_hold": 3.824376526288688,
+                "response_preparation": 0.00033750757575035095
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.023774071596562862,
+                "cache_shape_preparation": 0.01374074537307024,
+                "source_guard_read": 0.5825533978641033,
+                "source_guard_final_read": 0.029132958501577377,
+                "dispatch_preparation": 0.5873792376369238,
+                "payload_preparation": 0.013166967779397964,
+                "attempt_dispatch_preparation": 0.15918641723692417,
+                "transport": 3.0586550859734416,
+                "provider_response_preparation": 6.094295531511307e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265853,
+            "operation_id": "aaa53b4d25b84edc867094ba36070887",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:25:53.602073",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.1629647919908166,
+              "exclusive_seconds": {
+                "preparation": 0.02943314705044031,
+                "slot_wait": 3.963056951761246e-05,
+                "slot_hold": 3.133229493163526,
+                "response_preparation": 0.00026196427643299103
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.02658470906317234,
+                "cache_shape_preparation": 0.011187059804797173,
+                "source_guard_read": 0.735792238265276,
+                "source_guard_final_read": 0.0435686856508255,
+                "dispatch_preparation": 0.2060838434845209,
+                "payload_preparation": 0.02224941086024046,
+                "attempt_dispatch_preparation": 0.615771297365427,
+                "transport": 2.2786351377144456,
+                "provider_response_preparation": 5.5716373026371e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265865,
+            "operation_id": "b38cc5859e3c48a8b6d9ba7683018aad",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:25:58.520056",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.40379483345896,
+              "exclusive_seconds": {
+                "preparation": 0.028759113512933254,
+                "slot_wait": 5.1341019570827484e-05,
+                "slot_hold": 3.3746731895953417,
+                "response_preparation": 0.00031043868511915207
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.023800335824489594,
+                "cache_shape_preparation": 0.010754493996500969,
+                "source_guard_read": 0.4690221706405282,
+                "source_guard_final_read": 0.011649146676063538,
+                "dispatch_preparation": 0.37469227239489555,
+                "payload_preparation": 0.008035724982619286,
+                "attempt_dispatch_preparation": 0.11943054292351007,
+                "transport": 2.8651299523189664,
+                "provider_response_preparation": 5.9752725064754486e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265879,
+            "operation_id": "c31aa6bb31e3422fb46b256ad4ba9281",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:26:09.807142",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 7.080712947063148,
+              "exclusive_seconds": {
+                "preparation": 0.03138995636254549,
+                "slot_wait": 3.562774509191513e-05,
+                "slot_hold": 7.049017363227904,
+                "response_preparation": 0.00026910193264484406
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.0272904047742486,
+                "cache_shape_preparation": 0.011396190151572227,
+                "source_guard_read": 0.5739824185147882,
+                "source_guard_final_read": 0.029600172303617,
+                "dispatch_preparation": 0.49858113937079906,
+                "payload_preparation": 0.008177299052476883,
+                "attempt_dispatch_preparation": 0.13204312231391668,
+                "transport": 6.401549600996077,
+                "provider_response_preparation": 9.186938405036926e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265891,
+            "operation_id": "be1278918d9543f89f929dca54ad6186",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:26:17.090148",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 4.6902038641273975,
+              "exclusive_seconds": {
+                "preparation": 0.025570794939994812,
+                "slot_wait": 3.678072243928909e-05,
+                "slot_hold": 4.66420700866729,
+                "response_preparation": 0.0003885878250002861
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.028614073991775513,
+                "cache_shape_preparation": 0.01203816756606102,
+                "source_guard_read": 0.6089124707505107,
+                "source_guard_final_read": 0.07066790293902159,
+                "dispatch_preparation": 0.2718031741678715,
+                "payload_preparation": 0.016847582533955574,
+                "attempt_dispatch_preparation": 0.7555864518508315,
+                "transport": 3.6028562327846885,
+                "provider_response_preparation": 7.888488471508026e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265903,
+            "operation_id": "3efe77a39e5f47d0b0dd586e636203ce",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:26:23.017285",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 4.159044977277517,
+              "exclusive_seconds": {
+                "preparation": 0.029445059597492218,
+                "slot_wait": 5.141645669937134e-05,
+                "slot_hold": 4.129285987466574,
+                "response_preparation": 0.0002615302801132202
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.02359270118176937,
+                "cache_shape_preparation": 0.012302668765187263,
+                "source_guard_read": 0.4699736274778843,
+                "source_guard_final_read": 0.01755370944738388,
+                "dispatch_preparation": 0.14935080986469984,
+                "payload_preparation": 0.008316772058606148,
+                "attempt_dispatch_preparation": 0.35851321928203106,
+                "transport": 3.6053177332505584,
+                "provider_response_preparation": 6.125494837760925e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265916,
+            "operation_id": "887e6c1bd00640d99b44417e03fae390",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:26:29.369454",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 5.190564987249672,
+              "exclusive_seconds": {
+                "preparation": 0.031208250671625137,
+                "slot_wait": 3.688037395477295e-05,
+                "slot_hold": 5.159036855213344,
+                "response_preparation": 0.0002824859693646431
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.029172558337450027,
+                "cache_shape_preparation": 0.010384776629507542,
+                "source_guard_read": 1.3790229400619864,
+                "source_guard_final_read": 0.020284240134060383,
+                "dispatch_preparation": 0.74379728641361,
+                "payload_preparation": 0.00916916225105524,
+                "attempt_dispatch_preparation": 0.7037214394658804,
+                "transport": 3.692664625123143,
+                "provider_response_preparation": 5.543883889913559e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265927,
+            "operation_id": "890c1296acce493a968383559bcde652",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:26:45.322741",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 13.56518848054111,
+              "exclusive_seconds": {
+                "preparation": 0.02871292643249035,
+                "slot_wait": 3.469642251729965e-05,
+                "slot_hold": 13.536142867989838,
+                "response_preparation": 0.00029752403497695923
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.024197818711400032,
+                "cache_shape_preparation": 0.011691315099596977,
+                "source_guard_read": 0.5224157432094216,
+                "source_guard_final_read": 0.02617790549993515,
+                "dispatch_preparation": 0.4667342137545347,
+                "payload_preparation": 0.010565925389528275,
+                "attempt_dispatch_preparation": 0.3925814963877201,
+                "transport": 12.657798675820231,
+                "provider_response_preparation": 5.865562707185745e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265933,
+            "operation_id": "f3e1a420d05349f49c0d06a3c744b11a",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:26:54.649367",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 8.781035372056067,
+              "exclusive_seconds": {
+                "preparation": 0.02801685594022274,
+                "slot_wait": 3.4341588616371155e-05,
+                "slot_hold": 8.752746037207544,
+                "response_preparation": 0.00023744814097881317
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.0187978632748127,
+                "cache_shape_preparation": 0.010340958833694458,
+                "source_guard_read": 0.44867952913045883,
+                "source_guard_final_read": 0.03508740197867155,
+                "dispatch_preparation": 0.3589272294193506,
+                "payload_preparation": 0.007898170500993729,
+                "attempt_dispatch_preparation": 0.14313023537397385,
+                "transport": 8.240369436331093,
+                "provider_response_preparation": 6.369594484567642e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265937,
+            "operation_id": "0c9812ae43af4afab04b052ceb15b235",
+            "parent_operation_id": "c4a6c7099bc847bd9aa2851fa5657fa0",
+            "source_event_id": 108192,
+            "delivered_event_id": 108195,
+            "kind": "social_delivery",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:26:58.912347"
+          },
+          {
+            "id": 265945,
+            "operation_id": "b3a32bf2329f47eda5104444a59a98dd",
+            "parent_operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:27:05.653405",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 5.896889387629926,
+              "exclusive_seconds": {
+                "preparation": 0.03003746271133423,
+                "slot_wait": 6.280001252889633e-05,
+                "slot_hold": 5.8665125872939825,
+                "response_preparation": 0.0002760058268904686
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.03092160727828741,
+                "cache_shape_preparation": 0.010779224336147308,
+                "source_guard_read": 1.2417901959270239,
+                "source_guard_final_read": 1.0065309684723616,
+                "projection_sources_read": 0.7898908285424113,
+                "dispatch_preparation": 3.1851084381341934,
+                "payload_preparation": 0.015905193984508514,
+                "attempt_dispatch_preparation": 0.2681021550670266,
+                "transport": 2.384302475489676,
+                "provider_response_preparation": 4.376191645860672e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 265947,
+            "operation_id": "40e5f7e1177d41329723ac769cae66a8",
+            "parent_operation_id": "72a8eb37182d451ba9c0f4f7650647d5",
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "turn_end",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:27:09.834528"
+          },
+          {
+            "id": 265948,
+            "operation_id": "72a8eb37182d451ba9c0f4f7650647d5",
+            "parent_operation_id": null,
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "phase_metrics",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:27:09.920942",
+            "timing": {
+              "phase_version": 1,
+              "conversation_lock_wait_seconds": 2.0703300833702087e-05,
+              "F": 476.0,
+              "E": 706.0,
+              "candidate_count": 1.0,
+              "source_guard_read_seconds": 14.172752161510289,
+              "source_guard_final_read_seconds": 1.749443300999701,
+              "work_restore_source_read_seconds": 0.012210758402943611,
+              "item_count": 1439.0,
+              "payload_bytes": 425994.0,
+              "projection_sources_read_seconds": 2.1033705603331327
+            }
+          },
+          {
+            "id": 265949,
+            "operation_id": "72a8eb37182d451ba9c0f4f7650647d5",
+            "parent_operation_id": null,
+            "source_event_id": 108192,
+            "delivered_event_id": null,
+            "kind": "chat_processing_end",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:27:09.921046"
+          }
+        ]
+      },
+      {
+        "turn_id": "d8cb19e37b2945c7bde63da643a8184f",
+        "source_events": [
+          {
+            "id": 108202,
+            "occurred_at": "2026-10-18 03:30:24.537145",
+            "observed_at": "2026-10-18 03:30:34.369927"
+          }
+        ],
+        "first_delivery_trace_at_utc": "2026-10-18 03:31:26.113885",
+        "delivered_event_ids": [
+          108208,
+          108209
+        ],
+        "observed_to_first_delivery_trace_seconds": 51.743958,
+        "chat_preparation": {
+          "status": "ready",
+          "total_seconds": 0.085688017308712,
+          "stage_seconds": {
+            "work_preparation": 0.009177065454423428,
+            "runtime_snapshot": 2.6132911443710327e-06,
+            "memory_and_repair": 3.7904828786849976e-05,
+            "build_messages": 0.038948697969317436,
+            "work_activation": 0.018140326254069805,
+            "context_validation": 0.012980138882994652,
+            "agent_setup": 0.006401270627975464
+          },
+          "build_detail_seconds": {
+            "context_assembly": 0.017794563435018063,
+            "main_turn_composition": 0.021115291863679886
+          }
+        },
+        "whole_turn_phase_metrics": [
+          {
+            "phase_version": 1,
+            "conversation_lock_wait_seconds": 19.954048048704863,
+            "F": 1.0,
+            "E": 1.0,
+            "candidate_count": 1.0,
+            "source_guard_read_seconds": 0.9176031593233347,
+            "source_guard_final_read_seconds": 0.44946635235100985,
+            "work_restore_source_read_seconds": 0.005688493140041828,
+            "item_count": 11.0,
+            "payload_bytes": 2730.0,
+            "projection_sources_read_seconds": 0.0626274747774005
+          }
+        ],
+        "recorded_chat_model_calls_finished_before_first_delivery": 5,
+        "logical_model_seconds_finished_before_first_delivery": 24.805369303561747,
+        "nested_transport_seconds_finished_before_first_delivery": 22.892424071207643,
+        "model_invocations_metadata": [
+          {
+            "id": 69864,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 5.09813467413187,
+            "prompt_tokens": 13016,
+            "cached_prompt_tokens": null,
+            "created_at": "2026-10-18 03:31:02.488407"
+          },
+          {
+            "id": 69865,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 2.677817723713815,
+            "prompt_tokens": 15066,
+            "cached_prompt_tokens": null,
+            "created_at": "2026-10-18 03:31:05.552555"
+          },
+          {
+            "id": 69866,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.654025944881141,
+            "prompt_tokens": 17970,
+            "cached_prompt_tokens": null,
+            "created_at": "2026-10-18 03:31:09.633032"
+          },
+          {
+            "id": 69867,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.1041571460664272,
+            "prompt_tokens": 19448,
+            "cached_prompt_tokens": 15935,
+            "created_at": "2026-10-18 03:31:14.143380"
+          },
+          {
+            "id": 69868,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 10.230884996242821,
+            "prompt_tokens": 28191,
+            "cached_prompt_tokens": 19486,
+            "created_at": "2026-10-18 03:31:24.981530"
+          },
+          {
+            "id": 69869,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.473853439092636,
+            "prompt_tokens": 29241,
+            "cached_prompt_tokens": 26156,
+            "created_at": "2026-10-18 03:31:29.640125"
+          },
+          {
+            "id": 69870,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.808207022957504,
+            "prompt_tokens": 29538,
+            "cached_prompt_tokens": 27200,
+            "created_at": "2026-10-18 03:31:35.054624"
+          }
+        ],
+        "timing_trace": [
+          {
+            "id": 266010,
+            "operation_id": "5169cf0429244deb925a232d91131b9a",
+            "parent_operation_id": null,
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "chat_processing_start",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:30:57.139213"
+          },
+          {
+            "id": 266012,
+            "operation_id": "5169cf0429244deb925a232d91131b9a",
+            "parent_operation_id": null,
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "chat_preparation",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:30:57.225028",
+            "timing": {
+              "status": "ready",
+              "total_seconds": 0.085688017308712,
+              "stage_seconds": {
+                "work_preparation": 0.009177065454423428,
+                "runtime_snapshot": 2.6132911443710327e-06,
+                "memory_and_repair": 3.7904828786849976e-05,
+                "build_messages": 0.038948697969317436,
+                "work_activation": 0.018140326254069805,
+                "context_validation": 0.012980138882994652,
+                "agent_setup": 0.006401270627975464
+              },
+              "build_detail_seconds": {
+                "context_assembly": 0.017794563435018063,
+                "main_turn_composition": 0.021115291863679886
+              }
+            }
+          },
+          {
+            "id": 266013,
+            "operation_id": "be4d6a1f580e445bbcc3c18ff0b8ab99",
+            "parent_operation_id": "5169cf0429244deb925a232d91131b9a",
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "turn_start",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:30:57.225388"
+          },
+          {
+            "id": 266019,
+            "operation_id": "3706ac7b43e3479a841253134763bb38",
+            "parent_operation_id": "be4d6a1f580e445bbcc3c18ff0b8ab99",
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:02.488629",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 5.105071200989187,
+              "exclusive_seconds": {
+                "preparation": 0.006704769097268581,
+                "slot_wait": 3.067217767238617e-05,
+                "slot_hold": 5.098032150417566,
+                "response_preparation": 0.0003030886873602867
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.007582438178360462,
+                "cache_shape_preparation": 0.0019773710519075394,
+                "source_guard_read": 0.060077060014009476,
+                "source_guard_final_read": 0.043875134550035,
+                "projection_sources_read": 0.01605011150240898,
+                "dispatch_preparation": 0.11044895183295012,
+                "payload_preparation": 0.0024759089574217796,
+                "attempt_dispatch_preparation": 0.05309081356972456,
+                "transport": 4.928218111395836,
+                "provider_response_preparation": 5.6867487728595734e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266030,
+            "operation_id": "a649515a0c5046b995db76087138f685",
+            "parent_operation_id": "be4d6a1f580e445bbcc3c18ff0b8ab99",
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:05.552774",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 2.685668593272567,
+              "exclusive_seconds": {
+                "preparation": 0.007624534890055656,
+                "slot_wait": 4.230812191963196e-05,
+                "slot_hold": 2.677735040895641,
+                "response_preparation": 0.00026613473892211914
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.008079719729721546,
+                "cache_shape_preparation": 0.0022526727989315987,
+                "source_guard_read": 0.4044971000403166,
+                "source_guard_final_read": 0.06686747819185257,
+                "dispatch_preparation": 0.3797847209498286,
+                "payload_preparation": 0.0026424145326018333,
+                "attempt_dispatch_preparation": 0.165180129930377,
+                "transport": 2.126210231333971,
+                "provider_response_preparation": 5.346909165382385e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266042,
+            "operation_id": "ffc39fb1d4494c99a378cc8920b089e2",
+            "parent_operation_id": "be4d6a1f580e445bbcc3c18ff0b8ab99",
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:09.633236",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.6626757476478815,
+              "exclusive_seconds": {
+                "preparation": 0.008436999283730984,
+                "slot_wait": 3.2028183341026306e-05,
+                "slot_hold": 3.653953076340258,
+                "response_preparation": 0.0002526380121707916
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.009515947662293911,
+                "cache_shape_preparation": 0.0026617320254445076,
+                "source_guard_read": 0.06580554135143757,
+                "source_guard_final_read": 0.03185885865241289,
+                "projection_sources_read": 0.0392236290499568,
+                "dispatch_preparation": 0.17079959716647863,
+                "payload_preparation": 0.0034323446452617645,
+                "attempt_dispatch_preparation": 0.04738516919314861,
+                "transport": 3.427301806397736,
+                "provider_response_preparation": 5.8875419199466705e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266054,
+            "operation_id": "66ec082271ab419c91601ee5aa2a6fe4",
+            "parent_operation_id": "be4d6a1f580e445bbcc3c18ff0b8ab99",
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:14.143605",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.1125070229172707,
+              "exclusive_seconds": {
+                "preparation": 0.008118257857859135,
+                "slot_wait": 3.045611083507538e-05,
+                "slot_hold": 3.104089504107833,
+                "response_preparation": 0.00026849936693906784
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.009538458660244942,
+                "cache_shape_preparation": 0.002526532858610153,
+                "source_guard_read": 0.055040268227458,
+                "source_guard_final_read": 0.03237581066787243,
+                "dispatch_preparation": 0.10309373494237661,
+                "payload_preparation": 0.004039173014461994,
+                "attempt_dispatch_preparation": 0.07457469496876001,
+                "transport": 2.917420959100127,
+                "provider_response_preparation": 5.534756928682327e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266074,
+            "operation_id": "5e891ea526d040408c948972bd6645d3",
+            "parent_operation_id": "be4d6a1f580e445bbcc3c18ff0b8ab99",
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:24.981743",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 10.239446738734841,
+              "exclusive_seconds": {
+                "preparation": 0.008343548513948917,
+                "slot_wait": 3.222562372684479e-05,
+                "slot_hold": 10.230812831781805,
+                "response_preparation": 0.0002578403800725937
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.00609980896115303,
+                "cache_shape_preparation": 0.0028072139248251915,
+                "source_guard_read": 0.11711432877928019,
+                "source_guard_final_read": 0.16338558215647936,
+                "dispatch_preparation": 0.24098967108875513,
+                "payload_preparation": 0.004629849456250668,
+                "attempt_dispatch_preparation": 0.49001406226307154,
+                "transport": 9.493272962979972,
+                "provider_response_preparation": 6.270129233598709e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266078,
+            "operation_id": "4ba144c15c18486ca41085a39e5fbd65",
+            "parent_operation_id": "aefd647271364f87ab890531a8c7ef92",
+            "source_event_id": 108202,
+            "delivered_event_id": 108208,
+            "kind": "social_delivery",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:26.113885"
+          },
+          {
+            "id": 266086,
+            "operation_id": "95dd83e25080439caa542fccedd1d516",
+            "parent_operation_id": "be4d6a1f580e445bbcc3c18ff0b8ab99",
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:29.640318",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.4832345051690936,
+              "exclusive_seconds": {
+                "preparation": 0.009179442189633846,
+                "slot_wait": 3.2580457627773285e-05,
+                "slot_hold": 3.4737739311531186,
+                "response_preparation": 0.00024813413619995117
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.009543758817017078,
+                "cache_shape_preparation": 0.002799050882458687,
+                "source_guard_read": 0.029385698027908802,
+                "source_guard_final_read": 0.015094069764018059,
+                "projection_sources_read": 0.0034373337402939796,
+                "dispatch_preparation": 0.061781369149684906,
+                "payload_preparation": 0.004659537225961685,
+                "attempt_dispatch_preparation": 0.027792654931545258,
+                "transport": 3.375360617414117,
+                "provider_response_preparation": 5.76535239815712e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266091,
+            "operation_id": "9a1a51797a4f49cab5eb03c32566254e",
+            "parent_operation_id": "e5bbc2edb9c041ffbe3c15971d6cb550",
+            "source_event_id": 108202,
+            "delivered_event_id": 108209,
+            "kind": "social_delivery",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:31.185487"
+          },
+          {
+            "id": 266099,
+            "operation_id": "78902e2be1ca4e8eb9c8e912d7266ed9",
+            "parent_operation_id": "be4d6a1f580e445bbcc3c18ff0b8ab99",
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:35.054907",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.8216603491455317,
+              "exclusive_seconds": {
+                "preparation": 0.013161258772015572,
+                "slot_wait": 3.6411918699741364e-05,
+                "slot_hold": 3.8081163996830583,
+                "response_preparation": 0.0003459388390183449
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.01426657848060131,
+                "cache_shape_preparation": 0.0029335524886846542,
+                "source_guard_read": 0.027710692025721073,
+                "source_guard_final_read": 0.015136909671127796,
+                "projection_sources_read": 0.003916400484740734,
+                "dispatch_preparation": 0.06958179734647274,
+                "payload_preparation": 0.005338601768016815,
+                "attempt_dispatch_preparation": 0.02026847843080759,
+                "transport": 3.7072842037305236,
+                "provider_response_preparation": 5.649682134389877e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266103,
+            "operation_id": "be4d6a1f580e445bbcc3c18ff0b8ab99",
+            "parent_operation_id": "5169cf0429244deb925a232d91131b9a",
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "turn_end",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:36.915957"
+          },
+          {
+            "id": 266104,
+            "operation_id": "5169cf0429244deb925a232d91131b9a",
+            "parent_operation_id": null,
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "phase_metrics",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:36.944040",
+            "timing": {
+              "phase_version": 1,
+              "conversation_lock_wait_seconds": 19.954048048704863,
+              "F": 1.0,
+              "E": 1.0,
+              "candidate_count": 1.0,
+              "source_guard_read_seconds": 0.9176031593233347,
+              "source_guard_final_read_seconds": 0.44946635235100985,
+              "work_restore_source_read_seconds": 0.005688493140041828,
+              "item_count": 11.0,
+              "payload_bytes": 2730.0,
+              "projection_sources_read_seconds": 0.0626274747774005
+            }
+          },
+          {
+            "id": 266105,
+            "operation_id": "5169cf0429244deb925a232d91131b9a",
+            "parent_operation_id": null,
+            "source_event_id": 108202,
+            "delivered_event_id": null,
+            "kind": "chat_processing_end",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:31:36.944197"
+          }
+        ]
+      },
+      {
+        "turn_id": "e0705b8741d040b788e397d1fbf456bb",
+        "source_events": [
+          {
+            "id": 108200,
+            "occurred_at": "2026-10-18 03:30:07.573075",
+            "observed_at": "2026-10-18 03:30:07.608117"
+          }
+        ],
+        "first_delivery_trace_at_utc": null,
+        "delivered_event_ids": [],
+        "observed_to_first_delivery_trace_seconds": null,
+        "chat_preparation": {
+          "status": "ready",
+          "total_seconds": 0.42222062312066555,
+          "stage_seconds": {
+            "work_preparation": 0.012454977259039879,
+            "runtime_snapshot": 2.0563602447509766e-06,
+            "memory_and_repair": 4.003383219242096e-05,
+            "build_messages": 0.28999983612447977,
+            "work_activation": 0.015028971247375011,
+            "context_validation": 0.10007521230727434,
+            "agent_setup": 0.004619535990059376
+          },
+          "build_detail_seconds": {
+            "context_assembly": 0.15855724830180407,
+            "main_turn_composition": 0.13133436162024736
+          }
+        },
+        "whole_turn_phase_metrics": [],
+        "recorded_chat_model_calls_finished_before_first_delivery": null,
+        "logical_model_seconds_finished_before_first_delivery": null,
+        "nested_transport_seconds_finished_before_first_delivery": null,
+        "model_invocations_metadata": [
+          {
+            "id": 69862,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 30.37065038550645,
+            "prompt_tokens": 62976,
+            "cached_prompt_tokens": 11493,
+            "created_at": "2026-10-18 03:30:56.223970"
+          },
+          {
+            "id": 69863,
+            "task": "chat_agent",
+            "success": 0,
+            "latency_seconds": 0.4814772866666317,
+            "prompt_tokens": null,
+            "cached_prompt_tokens": null,
+            "created_at": "2026-10-18 03:30:57.122161"
+          }
+        ],
+        "timing_trace": [
+          {
+            "id": 265988,
+            "operation_id": "577ad04c19c5498b8de04273525e892a",
+            "parent_operation_id": null,
+            "source_event_id": 108200,
+            "delivered_event_id": null,
+            "kind": "chat_processing_start",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:30:25.058223"
+          },
+          {
+            "id": 265990,
+            "operation_id": "577ad04c19c5498b8de04273525e892a",
+            "parent_operation_id": null,
+            "source_event_id": 108200,
+            "delivered_event_id": null,
+            "kind": "chat_preparation",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:30:25.480575",
+            "timing": {
+              "status": "ready",
+              "total_seconds": 0.42222062312066555,
+              "stage_seconds": {
+                "work_preparation": 0.012454977259039879,
+                "runtime_snapshot": 2.0563602447509766e-06,
+                "memory_and_repair": 4.003383219242096e-05,
+                "build_messages": 0.28999983612447977,
+                "work_activation": 0.015028971247375011,
+                "context_validation": 0.10007521230727434,
+                "agent_setup": 0.004619535990059376
+              },
+              "build_detail_seconds": {
+                "context_assembly": 0.15855724830180407,
+                "main_turn_composition": 0.13133436162024736
+              }
+            }
+          },
+          {
+            "id": 265991,
+            "operation_id": "b02bdca00af645249eb0991c5941193f",
+            "parent_operation_id": "577ad04c19c5498b8de04273525e892a",
+            "source_event_id": 108200,
+            "delivered_event_id": null,
+            "kind": "turn_start",
+            "payload_status": "redacted",
+            "created_at": "2026-10-18 03:30:25.483964"
+          },
+          {
+            "id": 266002,
+            "operation_id": "1826cd0a64944e3488754be32e68243c",
+            "parent_operation_id": "b02bdca00af645249eb0991c5941193f",
+            "source_event_id": 108200,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:30:56.224227",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 30.398412154987454,
+              "exclusive_seconds": {
+                "preparation": 0.0274991812184453,
+                "slot_wait": 3.526359796524048e-05,
+                "slot_hold": 30.370573834516108,
+                "response_preparation": 0.0003033578395843506
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.02723147999495268,
+                "cache_shape_preparation": 0.011282348074018955,
+                "source_guard_read": 0.623705392703414,
+                "source_guard_final_read": 0.011151549406349659,
+                "dispatch_preparation": 1.0238616587594151,
+                "payload_preparation": 0.009322106838226318,
+                "attempt_dispatch_preparation": 0.1652722116559744,
+                "transport": 29.15967003442347,
+                "provider_response_preparation": 7.025618106126785e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266006,
+            "operation_id": "5f2d3641522348e3a014e82ecf7ce232",
+            "parent_operation_id": "b02bdca00af645249eb0991c5941193f",
+            "source_event_id": 108200,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 03:30:57.122362",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "error",
+              "logical_call_seconds": 0.4890411486849189,
+              "exclusive_seconds": {
+                "preparation": 0.0073536233976483345,
+                "slot_wait": 4.1525810956954956e-05,
+                "slot_hold": 0.4814186068251729,
+                "response_preparation": 0.00022689253091812134
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.004617724567651749,
+                "cache_shape_preparation": 0.0023378487676382065,
+                "source_guard_read": 0.4303127573803067,
+                "source_guard_final_read": 0.01635792851448059,
+                "projection_sources_read": 0.01250593364238739,
+                "dispatch_preparation": 0.4813972096890211
+              },
+              "physical_attempt_count": 0
+            }
+          }
+        ]
+      },
+      {
+        "turn_id": "ccc9623dbd8d4a3294f20231e1baafe6",
+        "source_events": [
+          {
+            "id": 108237,
+            "occurred_at": "2026-10-17 13:54:39.000000",
+            "observed_at": "2026-10-18 04:27:31.076973"
+          }
+        ],
+        "first_delivery_trace_at_utc": "2026-10-18 04:27:43.178522",
+        "delivered_event_ids": [
+          108239
+        ],
+        "observed_to_first_delivery_trace_seconds": 12.101549,
+        "chat_preparation": null,
+        "whole_turn_phase_metrics": [
+          {
+            "phase_version": 1,
+            "work_restore_source_read_seconds": 0.006010858342051506,
+            "source_guard_read_seconds": 0.10293083172291517,
+            "source_guard_final_read_seconds": 0.057517679408192635,
+            "item_count": 17.0,
+            "payload_bytes": 5057.0,
+            "projection_sources_read_seconds": 0.3715524869039655,
+            "protocol_lock_wait_seconds": 0.00012563634663820267,
+            "protocol_lock_held_seconds": 0.8935674941167235
+          }
+        ],
+        "recorded_chat_model_calls_finished_before_first_delivery": 1,
+        "logical_model_seconds_finished_before_first_delivery": 9.515979586169124,
+        "nested_transport_seconds_finished_before_first_delivery": 7.990358609706163,
+        "model_invocations_metadata": [
+          {
+            "id": 69922,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 9.505337811075151,
+            "prompt_tokens": 14863,
+            "cached_prompt_tokens": null,
+            "created_at": "2026-10-18 04:27:42.312551"
+          }
+        ],
+        "timing_trace": [
+          {
+            "id": 266716,
+            "operation_id": "60a2ec4eee344704b5009d34c53de92b",
+            "parent_operation_id": null,
+            "source_event_id": 108237,
+            "delivered_event_id": null,
+            "kind": "turn_start",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:27:32.387095"
+          },
+          {
+            "id": 266722,
+            "operation_id": "27ff93d1dba04e3e821ddc7aa17055b0",
+            "parent_operation_id": "60a2ec4eee344704b5009d34c53de92b",
+            "source_event_id": 108237,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:27:42.312995",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 9.515979586169124,
+              "exclusive_seconds": {
+                "preparation": 0.01018614787608385,
+                "slot_wait": 4.886649549007416e-05,
+                "slot_hold": 9.505225569941103,
+                "response_preparation": 0.0005180742591619492
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.010775262489914894,
+                "cache_shape_preparation": 0.0026939241215586662,
+                "source_guard_read": 0.08947382681071758,
+                "source_guard_final_read": 0.050136675126850605,
+                "projection_sources_read": 0.3715524869039655,
+                "dispatch_preparation": 1.348544909618795,
+                "payload_preparation": 0.0032288385555148125,
+                "attempt_dispatch_preparation": 0.1583376107737422,
+                "transport": 7.990358609706163,
+                "provider_response_preparation": 9.943824261426926e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266726,
+            "operation_id": "f3975b89c2ad4d93afd4617ffa4144b7",
+            "parent_operation_id": "47728b951eb6482aa90b959e41a8036a",
+            "source_event_id": 108237,
+            "delivered_event_id": 108239,
+            "kind": "social_delivery",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:27:43.178522"
+          },
+          {
+            "id": 266729,
+            "operation_id": "60a2ec4eee344704b5009d34c53de92b",
+            "parent_operation_id": null,
+            "source_event_id": 108237,
+            "delivered_event_id": null,
+            "kind": "phase_metrics",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:27:43.560237",
+            "timing": {
+              "phase_version": 1,
+              "work_restore_source_read_seconds": 0.006010858342051506,
+              "source_guard_read_seconds": 0.10293083172291517,
+              "source_guard_final_read_seconds": 0.057517679408192635,
+              "item_count": 17.0,
+              "payload_bytes": 5057.0,
+              "projection_sources_read_seconds": 0.3715524869039655,
+              "protocol_lock_wait_seconds": 0.00012563634663820267,
+              "protocol_lock_held_seconds": 0.8935674941167235
+            }
+          },
+          {
+            "id": 266730,
+            "operation_id": "60a2ec4eee344704b5009d34c53de92b",
+            "parent_operation_id": null,
+            "source_event_id": 108237,
+            "delivered_event_id": null,
+            "kind": "turn_end",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:27:43.560417"
+          }
+        ]
+      },
+      {
+        "turn_id": "0a03737a9b40494ca73fd808ff15ce3f",
+        "source_events": [
+          {
+            "id": 108231,
+            "occurred_at": "2026-10-18 04:20:01.739904",
+            "observed_at": "2026-10-18 04:20:01.983464"
+          }
+        ],
+        "first_delivery_trace_at_utc": "2026-10-18 04:21:02.104531",
+        "delivered_event_ids": [
+          108233,
+          108234,
+          108235
+        ],
+        "observed_to_first_delivery_trace_seconds": 60.121067,
+        "chat_preparation": {
+          "status": "ready",
+          "total_seconds": 0.16353287175297737,
+          "stage_seconds": {
+            "work_preparation": 0.014827380888164043,
+            "runtime_snapshot": 2.2882595658302307e-06,
+            "memory_and_repair": 4.8832967877388e-05,
+            "build_messages": 0.09983996581286192,
+            "work_activation": 0.018746480345726013,
+            "context_validation": 0.023770569823682308,
+            "agent_setup": 0.006297353655099869
+          },
+          "build_detail_seconds": {
+            "context_assembly": 0.06801594141870737,
+            "main_turn_composition": 0.03178706392645836
+          }
+        },
+        "whole_turn_phase_metrics": [
+          {
+            "phase_version": 1,
+            "conversation_lock_wait_seconds": 1.4574266970157623e-05,
+            "F": 14.0,
+            "E": 17.0,
+            "candidate_count": 1.0,
+            "source_guard_read_seconds": 0.973831171169877,
+            "source_guard_final_read_seconds": 0.2839699564501643,
+            "work_restore_source_read_seconds": 0.010834578424692154,
+            "item_count": 32.0,
+            "payload_bytes": 8834.0,
+            "projection_sources_read_seconds": 0.05590372812002897
+          }
+        ],
+        "recorded_chat_model_calls_finished_before_first_delivery": 7,
+        "logical_model_seconds_finished_before_first_delivery": 31.20954332128167,
+        "nested_transport_seconds_finished_before_first_delivery": 30.05459429975599,
+        "model_invocations_metadata": [
+          {
+            "id": 69913,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 5.161800805479288,
+            "prompt_tokens": 14299,
+            "cached_prompt_tokens": null,
+            "created_at": "2026-10-18 04:20:11.688805"
+          },
+          {
+            "id": 69914,
+            "task": "web_search",
+            "success": 1,
+            "latency_seconds": 19.113715427927673,
+            "prompt_tokens": 222,
+            "cached_prompt_tokens": null,
+            "created_at": "2026-10-18 04:20:33.893316"
+          },
+          {
+            "id": 69915,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.214560483582318,
+            "prompt_tokens": 14863,
+            "cached_prompt_tokens": null,
+            "created_at": "2026-10-18 04:20:37.214820"
+          },
+          {
+            "id": 69916,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.3468161933124065,
+            "prompt_tokens": 16151,
+            "cached_prompt_tokens": null,
+            "created_at": "2026-10-18 04:20:40.782005"
+          },
+          {
+            "id": 69917,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 3.436550799757242,
+            "prompt_tokens": 16475,
+            "cached_prompt_tokens": null,
+            "created_at": "2026-10-18 04:20:44.410472"
+          },
+          {
+            "id": 69918,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 5.115158637985587,
+            "prompt_tokens": 16852,
+            "cached_prompt_tokens": 14449,
+            "created_at": "2026-10-18 04:20:49.728573"
+          },
+          {
+            "id": 69919,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 2.8627055510878563,
+            "prompt_tokens": 17695,
+            "cached_prompt_tokens": 14832,
+            "created_at": "2026-10-18 04:20:52.682875"
+          },
+          {
+            "id": 69920,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 8.0054001044482,
+            "prompt_tokens": 17999,
+            "cached_prompt_tokens": 15668,
+            "created_at": "2026-10-18 04:21:00.806572"
+          },
+          {
+            "id": 69921,
+            "task": "chat_agent",
+            "success": 1,
+            "latency_seconds": 5.427381560206413,
+            "prompt_tokens": 19251,
+            "cached_prompt_tokens": 15985,
+            "created_at": "2026-10-18 04:21:13.234950"
+          }
+        ],
+        "timing_trace": [
+          {
+            "id": 266607,
+            "operation_id": "fcdf1d9af53e4432aa5a2923e2060e3f",
+            "parent_operation_id": null,
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "chat_processing_start",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:20:06.148962"
+          },
+          {
+            "id": 266609,
+            "operation_id": "fcdf1d9af53e4432aa5a2923e2060e3f",
+            "parent_operation_id": null,
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "chat_preparation",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:20:06.312685",
+            "timing": {
+              "status": "ready",
+              "total_seconds": 0.16353287175297737,
+              "stage_seconds": {
+                "work_preparation": 0.014827380888164043,
+                "runtime_snapshot": 2.2882595658302307e-06,
+                "memory_and_repair": 4.8832967877388e-05,
+                "build_messages": 0.09983996581286192,
+                "work_activation": 0.018746480345726013,
+                "context_validation": 0.023770569823682308,
+                "agent_setup": 0.006297353655099869
+              },
+              "build_detail_seconds": {
+                "context_assembly": 0.06801594141870737,
+                "main_turn_composition": 0.03178706392645836
+              }
+            }
+          },
+          {
+            "id": 266610,
+            "operation_id": "54007931fe9040f6b4c94c892281186e",
+            "parent_operation_id": "fcdf1d9af53e4432aa5a2923e2060e3f",
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "turn_start",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:20:06.313257"
+          },
+          {
+            "id": 266616,
+            "operation_id": "b9d02034b5574bdab1f313d67c0de4ef",
+            "parent_operation_id": "54007931fe9040f6b4c94c892281186e",
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:20:11.689184",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 5.176304059103131,
+              "exclusive_seconds": {
+                "preparation": 0.014119747094810009,
+                "slot_wait": 4.7089532017707825e-05,
+                "slot_hold": 5.16171455476433,
+                "response_preparation": 0.000421999953687191
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.01370641402900219,
+                "cache_shape_preparation": 0.0038540326058864594,
+                "source_guard_read": 0.3841443154960871,
+                "source_guard_final_read": 0.03281697351485491,
+                "projection_sources_read": 0.03557279706001282,
+                "dispatch_preparation": 0.25615868624299765,
+                "payload_preparation": 0.0032004183158278465,
+                "attempt_dispatch_preparation": 0.2939037987962365,
+                "transport": 4.603839695453644,
+                "provider_response_preparation": 7.907021790742874e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266637,
+            "operation_id": "0e1f4a4bd6a74a5e87bf9871c46d9033",
+            "parent_operation_id": "54007931fe9040f6b4c94c892281186e",
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:20:37.215091",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.223788045346737,
+              "exclusive_seconds": {
+                "preparation": 0.0089518828317523,
+                "slot_wait": 3.353506326675415e-05,
+                "slot_hold": 3.2144786352291703,
+                "response_preparation": 0.00032282713800668716
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.009896623902022839,
+                "cache_shape_preparation": 0.002641434781253338,
+                "source_guard_read": 0.033925412222743034,
+                "source_guard_final_read": 0.0175761878490448,
+                "dispatch_preparation": 0.02943344134837389,
+                "payload_preparation": 0.004182449541985989,
+                "attempt_dispatch_preparation": 0.040909177623689175,
+                "transport": 3.1352560529485345,
+                "provider_response_preparation": 8.945446461439133e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266650,
+            "operation_id": "61da3fedc2d64dbaae30ab2dfb17c88c",
+            "parent_operation_id": "54007931fe9040f6b4c94c892281186e",
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:20:40.782483",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.3560551311820745,
+              "exclusive_seconds": {
+                "preparation": 0.00875293929129839,
+                "slot_wait": 3.174785524606705e-05,
+                "slot_hold": 3.3467263532802463,
+                "response_preparation": 0.0005436139181256294
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.009190406650304794,
+                "cache_shape_preparation": 0.003114340826869011,
+                "source_guard_read": 0.026135997846722603,
+                "source_guard_final_read": 0.00793144479393959,
+                "dispatch_preparation": 0.023104824125766754,
+                "payload_preparation": 0.0030872011557221413,
+                "attempt_dispatch_preparation": 0.022776605561375618,
+                "transport": 3.293050855398178,
+                "provider_response_preparation": 7.746182382106781e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266661,
+            "operation_id": "b4ffcedae50e4af08451fb00b5b8c1a3",
+            "parent_operation_id": "54007931fe9040f6b4c94c892281186e",
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:20:44.410676",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 3.4447071589529514,
+              "exclusive_seconds": {
+                "preparation": 0.007943646982312202,
+                "slot_wait": 3.2096169888973236e-05,
+                "slot_hold": 3.436478572897613,
+                "response_preparation": 0.00025231391191482544
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.009472143836319447,
+                "cache_shape_preparation": 0.0023539848625659943,
+                "source_guard_read": 0.07219138741493225,
+                "source_guard_final_read": 0.018340859562158585,
+                "dispatch_preparation": 0.07561704702675343,
+                "payload_preparation": 0.0030548730865120888,
+                "attempt_dispatch_preparation": 0.03858874086290598,
+                "transport": 3.314331503584981,
+                "provider_response_preparation": 7.796753197908401e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266672,
+            "operation_id": "4e51146789c649f99388adf763d63574",
+            "parent_operation_id": "54007931fe9040f6b4c94c892281186e",
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:20:49.728848",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 5.123336713761091,
+              "exclusive_seconds": {
+                "preparation": 0.00789699424058199,
+                "slot_wait": 3.381352871656418e-05,
+                "slot_hold": 5.115084750577807,
+                "response_preparation": 0.00032067950814962387
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.00882615614682436,
+                "cache_shape_preparation": 0.002281077206134796,
+                "source_guard_read": 0.04626661539077759,
+                "source_guard_final_read": 0.02429767046123743,
+                "dispatch_preparation": 0.07202600967139006,
+                "payload_preparation": 0.0038273250684142113,
+                "attempt_dispatch_preparation": 0.03619536850601435,
+                "transport": 4.998756140470505,
+                "provider_response_preparation": 7.25695863366127e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266683,
+            "operation_id": "8586658eebb848fb9503efbf66446bb9",
+            "parent_operation_id": "54007931fe9040f6b4c94c892281186e",
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:20:52.683132",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 2.8706905590370297,
+              "exclusive_seconds": {
+                "preparation": 0.007716492749750614,
+                "slot_wait": 3.157462924718857e-05,
+                "slot_hold": 2.8626167997717857,
+                "response_preparation": 0.00032526906579732895
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.00957412738353014,
+                "cache_shape_preparation": 0.0022499235346913338,
+                "source_guard_read": 0.033564710058271885,
+                "source_guard_final_read": 0.024691118858754635,
+                "dispatch_preparation": 0.04810910578817129,
+                "payload_preparation": 0.005032328888773918,
+                "attempt_dispatch_preparation": 0.027864775620400906,
+                "transport": 2.7761980639770627,
+                "provider_response_preparation": 8.365046232938766e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266694,
+            "operation_id": "2816a33de09a4aca8c1698637d5f88d9",
+            "parent_operation_id": "54007931fe9040f6b4c94c892281186e",
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:21:00.806945",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 8.014661653898656,
+              "exclusive_seconds": {
+                "preparation": 0.008878979831933975,
+                "slot_wait": 3.1597912311553955e-05,
+                "slot_hold": 8.005314729176462,
+                "response_preparation": 0.0004357360303401947
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.00973824504762888,
+                "cache_shape_preparation": 0.002595820464193821,
+                "source_guard_read": 0.026356935501098633,
+                "source_guard_final_read": 0.01789828110486269,
+                "dispatch_preparation": 0.035229410976171494,
+                "payload_preparation": 0.0033125197514891624,
+                "attempt_dispatch_preparation": 0.0287187360227108,
+                "transport": 7.933161987923086,
+                "provider_response_preparation": 8.70460644364357e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266698,
+            "operation_id": "8b3362ab216f47f4b9c58c1de9897789",
+            "parent_operation_id": "cffa710f80434a3ea449c0d9ada98ea2",
+            "source_event_id": 108231,
+            "delivered_event_id": 108233,
+            "kind": "social_delivery",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:21:02.104531"
+          },
+          {
+            "id": 266699,
+            "operation_id": "8b3362ab216f47f4b9c58c1de9897789",
+            "parent_operation_id": "cffa710f80434a3ea449c0d9ada98ea2",
+            "source_event_id": 108231,
+            "delivered_event_id": 108234,
+            "kind": "social_delivery",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:21:05.622160"
+          },
+          {
+            "id": 266700,
+            "operation_id": "8b3362ab216f47f4b9c58c1de9897789",
+            "parent_operation_id": "cffa710f80434a3ea449c0d9ada98ea2",
+            "source_event_id": 108231,
+            "delivered_event_id": 108235,
+            "kind": "social_delivery",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:21:07.258665"
+          },
+          {
+            "id": 266708,
+            "operation_id": "8e4ea1f2c426413885f87e56591240b9",
+            "parent_operation_id": "54007931fe9040f6b4c94c892281186e",
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "model_phases",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:21:13.235187",
+            "timing": {
+              "phase_version": 1,
+              "outcome": "success",
+              "logical_call_seconds": 5.4359155017882586,
+              "exclusive_seconds": {
+                "preparation": 0.008287754841148853,
+                "slot_wait": 5.419272929430008e-05,
+                "slot_hold": 5.427286192774773,
+                "response_preparation": 0.00028708018362522125
+              },
+              "nested_seconds": {
+                "trace_snapshot": 0.008984923362731934,
+                "cache_shape_preparation": 0.0022723544389009476,
+                "source_guard_read": 0.04757310450077057,
+                "source_guard_final_read": 0.048966855742037296,
+                "projection_sources_read": 0.020330931060016155,
+                "dispatch_preparation": 0.12659363355487585,
+                "payload_preparation": 0.003577473573386669,
+                "attempt_dispatch_preparation": 0.02625493612140417,
+                "transport": 5.266675791703165,
+                "provider_response_preparation": 5.9898942708969116e-05
+              },
+              "physical_attempt_count": 1
+            }
+          },
+          {
+            "id": 266710,
+            "operation_id": "54007931fe9040f6b4c94c892281186e",
+            "parent_operation_id": "fcdf1d9af53e4432aa5a2923e2060e3f",
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "turn_end",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:21:14.244918"
+          },
+          {
+            "id": 266711,
+            "operation_id": "fcdf1d9af53e4432aa5a2923e2060e3f",
+            "parent_operation_id": null,
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "phase_metrics",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:21:14.568037",
+            "timing": {
+              "phase_version": 1,
+              "conversation_lock_wait_seconds": 1.4574266970157623e-05,
+              "F": 14.0,
+              "E": 17.0,
+              "candidate_count": 1.0,
+              "source_guard_read_seconds": 0.973831171169877,
+              "source_guard_final_read_seconds": 0.2839699564501643,
+              "work_restore_source_read_seconds": 0.010834578424692154,
+              "item_count": 32.0,
+              "payload_bytes": 8834.0,
+              "projection_sources_read_seconds": 0.05590372812002897
+            }
+          },
+          {
+            "id": 266712,
+            "operation_id": "fcdf1d9af53e4432aa5a2923e2060e3f",
+            "parent_operation_id": null,
+            "source_event_id": 108231,
+            "delivered_event_id": null,
+            "kind": "chat_processing_end",
+            "payload_status": "recorded",
+            "created_at": "2026-10-18 04:21:14.568139"
+          }
+        ]
+      }
+    ]
+  },
+  "offline_provider_probe": {
+    "source_revision": "815897032b4e77e6e7f11ea2d63d74a7fd4e674d",
+    "scope": "in-process real Executor and Chat adapter with HTTPX MockTransport; no socket, DB, production or paid model",
+    "cases": [
+      {
+        "finish_hook": false,
+        "guard_count": 2,
+        "physical_http_mock_calls": 1,
+        "json_decodes": [
+          {
+            "caller": "complete",
+            "file": "json_http.py",
+            "line": 216
+          },
+          {
+            "caller": "_parse",
+            "file": "openai_compatible.py",
+            "line": 180
+          }
+        ],
+        "finished": []
+      },
+      {
+        "finish_hook": true,
+        "guard_count": 2,
+        "physical_http_mock_calls": 1,
+        "json_decodes": [
+          {
+            "caller": "_post",
+            "file": "json_http.py",
+            "line": 168
+          },
+          {
+            "caller": "complete",
+            "file": "json_http.py",
+            "line": 216
+          },
+          {
+            "caller": "_parse",
+            "file": "openai_compatible.py",
+            "line": 180
+          }
+        ],
+        "finished": [
+          {
+            "status": "unknown",
+            "tokens": 2
+          }
+        ]
+      }
+    ]
+  },
+  "offline_social_probe": {
+    "kind": "local-real-Social-SQLite-testfixture-fake-OneBot-only",
+    "limitation": "No ToolKernel/Work activation or real HTTP/platform; one sample timing not benchmark; fixture account scope; original inbound/Presence explicitly bound",
+    "initial_send": {
+      "status": "succeeded",
+      "ms": 70.87,
+      "sql_count": 50,
+      "sql_by_leaf_phase": {
+        "find": 3,
+        "check_target": 4,
+        "send_route": 4,
+        "resolve_send_for_conversation": 6,
+        "prepare": 6,
+        "_effect": 2,
+        "validate_prepared_send": 3,
+        "claim": 1,
+        "_dispatch_claimed": 17,
+        "finish": 1,
+        "get": 1,
+        "_receipt_result": 2
+      },
+      "method_counts": {
+        "find": 3,
+        "replay_send": 2,
+        "check_target": 4,
+        "target": 1,
+        "resolve_send_for_conversation": 2,
+        "send_route": 2,
+        "prepare": 1,
+        "validate_prepared_send": 1,
+        "claim": 1,
+        "finish": 1,
+        "_dispatch_claimed": 1,
+        "get": 1,
+        "_receipt_result": 1,
+        "_effect": 1,
+        "_send_message_sequence": 1
+      },
+      "platform": [
+        {
+          "action": "get_group_member_info",
+          "phase": "resolve_send_for_conversation",
+          "writer_active": false
+        },
+        {
+          "action": "get_group_member_info",
+          "phase": "resolve_send_for_conversation",
+          "writer_active": false
+        },
+        {
+          "action": "send_group_msg",
+          "phase": "_dispatch_claimed",
+          "writer_active": false
+        }
+      ]
+    },
+    "same_call_replay": {
+      "status": "succeeded",
+      "ms": 3.836,
+      "sql_count": 5,
+      "sql_by_leaf_phase": {
+        "find": 1,
+        "prepare": 2,
+        "_receipt_result": 2
+      },
+      "method_counts": {
+        "find": 1,
+        "prepare": 1,
+        "_receipt_result": 1,
+        "replay_send": 1
+      },
+      "platform": []
+    }
+  },
+  "offline_media_probe": {
+    "source_revision": "815897032b4e77e6e7f11ea2d63d74a7fd4e674d",
+    "script": "Temp/yuki-media-three-paths-20261018.py",
+    "scope": "real ApplicationContainer/Processor/SQLite/MediaResolver/AttachmentInputService/ConversationMediaService/EmojiCollector; fake DNS and HTTPX MockTransport; fake model; no NoneBot socket, real gateway, network or delivery",
+    "configuration": {
+      "source_images": 1,
+      "image_width": 12,
+      "image_height": 12,
+      "source_kind": "current",
+      "explicit_mention": true,
+      "main_image_input": true,
+      "emoji_enabled": true,
+      "emoji_collection_mode": "all_images",
+      "cold_media_cache": true
+    },
+    "counts": {
+      "mock_http_downloads": 3,
+      "foreground_attachment_downloads": 1,
+      "conversation_media_downloads": 1,
+      "emoji_collector_downloads": 1,
+      "distinct_mock_http_paths": 1,
+      "fake_model_requests": 1,
+      "first_model_images": 1,
+      "cached_conversation_media_items": 1,
+      "sent_messages": 0
+    },
+    "result": {
+      "process_reason": "chat",
+      "conversation_cache_status": "cached",
+      "exit_code": 0
+    },
+    "limitations": [
+      "Proves three independent byte fetches on this configured successful cold-cache fixture only.",
+      "Does not prove all media repeat three times, production frequency, elapsed-time saving, image-decode counts, permission/cancellation equivalence, or a completed optimization."
+    ],
+    "elapsed_time_measured": false
+  }
+}

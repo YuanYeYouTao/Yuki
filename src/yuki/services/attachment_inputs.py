@@ -127,14 +127,17 @@ class AttachmentInputService:
                                 if suffix in {".mp4", ".mov"}
                                 else 20 * 1024 * 1024
                             )
-                            await self._resolver.download_attachment(
-                                reference,
-                                path,
-                                max_download_bytes=limit,
-                                local_source=attachment.local_source,
-                                gateway=gateway,
-                                kind="file",
-                            )
+                            if attachment.prepared_media is not None:
+                                await attachment.prepared_media.download(path, limit)
+                            else:
+                                await self._resolver.download_attachment(
+                                    reference,
+                                    path,
+                                    max_download_bytes=limit,
+                                    local_source=attachment.local_source,
+                                    gateway=gateway,
+                                    kind="file",
+                                )
                             with path.open("rb") as stream:
                                 header = stream.read(12)
                             if header[4:8] != b"ftyp" and path.stat().st_size > 20 * 1024 * 1024:
@@ -247,14 +250,19 @@ class AttachmentInputService:
                             )
                         with TemporaryDirectory(prefix="yuki-video-download-") as directory:
                             path = Path(directory) / "input.mp4"
-                            await self._resolver.download_attachment(
-                                reference,
-                                path,
-                                max_download_bytes=runtime.video_max_download_bytes,
-                                local_source=attachment.local_source,
-                                gateway=gateway,
-                                kind="video",
-                            )
+                            if attachment.prepared_media is not None:
+                                await attachment.prepared_media.download(
+                                    path, runtime.video_max_download_bytes
+                                )
+                            else:
+                                await self._resolver.download_attachment(
+                                    reference,
+                                    path,
+                                    max_download_bytes=runtime.video_max_download_bytes,
+                                    local_source=attachment.local_source,
+                                    gateway=gateway,
+                                    kind="video",
+                                )
                             video_frames = await self._preparer.prepare_video(
                                 path,
                                 source=reference.source,
@@ -269,13 +277,14 @@ class AttachmentInputService:
                     if not self.images_enabled:
                         documents.append("[图片未读取：当前主模型不支持图片输入]")
                         return
-                    downloaded = (
-                        await asyncio.to_thread(
+                    if attachment.prepared_media is not None:
+                        downloaded = await attachment.prepared_media.resolve(20 * 1024 * 1024)
+                    elif attachment.local_source is not None:
+                        downloaded = await asyncio.to_thread(
                             read_local_media, attachment.local_source, 20 * 1024 * 1024
                         )
-                        if attachment.local_source is not None
-                        else await self._resolver.resolve(reference, gateway)
-                    )
+                    else:
+                        downloaded = await self._resolver.resolve(reference, gateway)
                     prepared = await asyncio.to_thread(
                         self._preparer.prepare_image,
                         downloaded,

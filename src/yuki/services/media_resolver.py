@@ -12,6 +12,7 @@ import socket
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import nullcontext
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import SplitResult, urljoin, urlsplit, urlunsplit
 
 import httpx
@@ -27,6 +28,123 @@ from yuki.vision.models import DownloadedMedia, MediaReference
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 _BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home", ".docker")
 HostResolver = Callable[[str, int], Awaitable[Sequence[str]] | Sequence[str]]
+
+
+async def _media_io[T](function: Callable[..., T], *args: object) -> T:
+    """Finish a running file operation before its temporary original can be removed."""
+    task = asyncio.create_task(asyncio.to_thread(function, *args))
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+        except BaseException:
+            break
+    if cancelled is not None:
+        raise cancelled
+    return task.result()
+
+
+class PreparedAttachment:
+    """One admitted attachment's bytes, shared only by that message's consumers.
+
+    Consumers retain their own authorization and read budgets. Cache publication
+    and emoji classification are separate from this download. Temporary bytes
+    live with the admitted message, rather than a URL cache or a new TTL.
+    """
+
+    def __init__(
+        self,
+        resolver: MediaResolver,
+        reference: MediaReference,
+        gateway: PlatformMediaGateway | None,
+        *,
+        kind: MediaKind,
+        max_download_bytes: int,
+        local_source: tuple[Path, str] | None = None,
+        source_segments: str = "",
+    ) -> None:
+        self._resolver = resolver
+        self._reference = reference
+        self._gateway = gateway
+        self._kind = kind
+        self._max_download_bytes = max_download_bytes
+        self._local_source = local_source
+        self.source_segments = source_segments
+        self._directory: TemporaryDirectory[str] | None = None
+        self._task: asyncio.Task[DownloadedMedia | tuple[Path, str]] | None = None
+        self._readers = 0
+
+    async def _download(self) -> DownloadedMedia | tuple[Path, str]:
+        if self._kind == "image" and self._local_source is None:
+            return await self._resolver.resolve(self._reference, self._gateway)
+        directory = TemporaryDirectory(prefix="yuki-admitted-media-")
+        self._directory = directory
+        path = Path(directory.name) / "original"
+        try:
+            if self._local_source is not None:
+                await _media_io(
+                    read_local_media, self._local_source, self._max_download_bytes, path
+                )
+            else:
+                await self._resolver.download_attachment(
+                    self._reference,
+                    path,
+                    max_download_bytes=self._max_download_bytes,
+                    gateway=self._gateway,
+                    kind=self._kind,
+                )
+
+            def digest() -> str:
+                with path.open("rb") as stream:
+                    return hashlib.file_digest(stream, "sha256").hexdigest()
+
+            return path, await _media_io(digest)
+        except BaseException:
+            if self._directory is directory:
+                self._directory = None
+            await _media_io(directory.cleanup)
+            raise
+
+    async def close(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+        if self._directory is not None:
+            directory, self._directory = self._directory, None
+            await _media_io(directory.cleanup)
+
+    async def source(self) -> DownloadedMedia | tuple[Path, str]:
+        if self._task is None:
+            self._task = asyncio.create_task(self._download(), name="admitted-media-download")
+        task = self._task
+        self._readers += 1
+        try:
+            return await asyncio.shield(task)
+        finally:
+            self._readers -= 1
+            if not self._readers and not task.done():
+                self._task = None
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+    async def resolve(self, max_download_bytes: int) -> DownloadedMedia:
+        source = await self.source()
+        if isinstance(source, DownloadedMedia):
+            if len(source.content) > max_download_bytes:
+                raise MediaResolutionError("too_large", "附件超过读取预算")
+            return source
+        return await _media_io(read_local_media, source, max_download_bytes)
+
+    async def download(self, destination: Path, max_download_bytes: int) -> None:
+        source = await self.source()
+        if isinstance(source, DownloadedMedia):
+            if len(source.content) > max_download_bytes:
+                raise MediaResolutionError("too_large", "附件超过读取预算")
+            await _media_io(destination.write_bytes, source.content)
+            return
+        await _media_io(read_local_media, source, max_download_bytes, destination)
 
 
 class MediaResolver:
@@ -83,6 +201,10 @@ class MediaResolver:
             raise MediaResolutionError("resource_unavailable", "图片资源缺少可读取的引用")
         location = await self._platform_file(active_gateway, file_value, "image")
         return await self._read_platform_file(location)
+
+    @property
+    def max_download_bytes(self) -> int:
+        return self._max_download_bytes
 
     async def _platform_file(
         self, gateway: PlatformMediaGateway, file: str, kind: MediaKind

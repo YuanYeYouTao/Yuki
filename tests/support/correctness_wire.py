@@ -1,6 +1,7 @@
 """Hermetic four-protocol wire fixtures migrated from the supplied correctness audit."""
 
 import json
+from contextvars import ContextVar
 
 import httpx
 
@@ -119,8 +120,10 @@ def body(kind, reply, index=0):
 
 def wire(test_case, kind):
     captured = []
+    original_request = ContextVar("correctness_wire_original_request")
 
     def transport(req):
+        test_case.provider.requests.append(original_request.get())
         captured.append(json.loads(req.content))
         return httpx.Response(
             200,
@@ -143,8 +146,11 @@ def wire(test_case, kind):
     )
 
     async def complete(request):
-        test_case.provider.requests.append(request)
-        return await provider.complete(request)
+        token = original_request.set(request)
+        try:
+            return await provider.complete(request)
+        finally:
+            original_request.reset(token)
 
     test_case.provider.complete = complete
     profile = ModelProfile(

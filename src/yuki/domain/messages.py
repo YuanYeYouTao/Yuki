@@ -7,8 +7,12 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from yuki.domain.conversations import ConversationScope, ScopeType
+
+if TYPE_CHECKING:
+    from yuki.services.media_resolver import PreparedAttachment
 
 
 def sanitize_display_name(value: str) -> str:
@@ -105,6 +109,8 @@ class MessageAttachment:
     key: str | None = field(default=None, repr=False)
     filename: str | None = field(default=None, repr=False)
     local_source: tuple[Path, str] | None = field(default=None, repr=False)
+    # Host-owned bytes for this admitted message only; never persisted or supplied by adapters.
+    prepared_media: PreparedAttachment | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
