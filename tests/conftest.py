@@ -86,7 +86,6 @@ class Harness:
 def make_settings(database_url: str, **overrides: object) -> Settings:
     values: dict[str, object] = {
         "database_url": database_url,
-        "superusers_csv": "9000",
         "enabled_groups_csv": "2001,2002",
         "ignored_bot_users_csv": "7777",
         "llm_provider": "fake",
@@ -183,7 +182,45 @@ def build_harness(
         turn_coordinator=turn_coordinator,
     )
     from tests.support.canonical_ingress import fixture_ingress
+    from yuki.admin.audit import AdminAuditService
+    from yuki.admin.permission_catalog import PermissionCatalogService
+    from yuki.memory.claim_processor import MemoryClaimProcessor
+    from yuki.memory.mutation.service import MemoryMutationService
+    from yuki.services.admin.config_admin import ConfigAdminService
+    from yuki.services.admin.memory_admin import MemoryAdminService
+    from yuki.services.admin.preference_admin import PreferenceAdminService
 
+    audit = AdminAuditService(database)
+    mutations = MemoryMutationService(
+        settings=settings,
+        facts=memories,
+        processor=MemoryClaimProcessor(settings=settings, facts=memories),
+        ledger=ledger,
+    )
+    memory_admin = MemoryAdminService(
+        settings=settings,
+        memories=memories,
+        audit=audit,
+        mutations=mutations,
+        ledger=ledger,
+        runtime_config=runtime_config,
+    )
+    command_service = command_service or CommandService(
+        settings=settings,
+        people=profiles,
+        memories=memories,
+        concurrency=concurrency,
+        onebot_connected=lambda: True,
+        runtime_config=runtime_config,
+        memory_admin=memory_admin,
+        preference_admin=PreferenceAdminService(memory_mutations=memory_admin, audit=audit),
+        config_admin=ConfigAdminService(runtime_config),
+        permission_catalog=PermissionCatalogService(
+            settings=settings, config_registry=runtime_config.registry
+        ),
+        vision_service=vision,
+        turn_coordinator=turn_coordinator,
+    )
     ingress = fixture_ingress(database)
     processor = MessageProcessor(
         canonical_ingress=ingress,
@@ -200,7 +237,6 @@ def build_harness(
             per_group=settings.per_group_requests_per_minute,
         ),
         concurrency=concurrency,
-        onebot_connected=lambda: True,
         people=profiles,
         memories=memories,
         runtime_config=runtime_config,
@@ -278,7 +314,13 @@ async def database(tmp_path: Path) -> Database:
             "1808058482",
             "1808058483",
         ):
-            await ensure_person(session, user_id, display_name=f"test-{user_id}")
+            person_id = await ensure_person(session, user_id, display_name=f"test-{user_id}")
+            if user_id == "9000":
+                from yuki.identity.db_models import CanonicalPersonModel
+
+                person = await session.get(CanonicalPersonModel, person_id)
+                assert person is not None
+                person.is_superuser = True
         for bot_user_id in ("7777", "8000", "8001", "9999", "99999"):
             await ensure_presence(session, bot_user_id)
         from datetime import UTC, datetime

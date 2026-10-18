@@ -297,10 +297,13 @@ async def test_scheduled_main_does_not_redeclare_retired_raw_tool_for_admin(
 
     from yuki.automation.models import RunStatus
 
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent", superusers_csv="")
+    case = await setup_run(database, tmp_path, delivery="none", mode="silent", privileged=False)
     if promoted:
-        case.settings.superusers_csv = "10001"
-        del case.settings.__dict__["superusers"]
+        from yuki.identity.db_models import CanonicalPersonModel
+
+        async with database.immediate_session() as writer:
+            person = await writer.get(CanonicalPersonModel, case.env.person)
+            person.is_superuser = True
     args = {"action": "get_status", "params": {}}
     case.provider._responder = lambda _: (
         ChatResponse(

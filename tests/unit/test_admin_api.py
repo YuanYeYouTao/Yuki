@@ -19,16 +19,21 @@ from tests.unit.test_admin_operator_access import operator_file
 from yuki import __version__
 from yuki.admin.authority.operators import ControlOperatorAccess
 from yuki.admin.config_files import ConfigFileService
-from yuki.admin_api.commands import AdminCommands
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.admin.operations import AdminOperations
+from yuki.admin.queries import AdminQueries
 from yuki.admin_api.http import AdminApi, attach_admin_api
-from yuki.admin_api.queries import AdminQueries
+from yuki.client_api.identity import ClientIdentityService
 from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 from yuki.execution_trace.db_models import ExecutionTraceEntryModel
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
 from yuki.model_runtime.executor import TaskModelExecutor
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.model_runtime.profiles import load_model_profile_catalog, model_profile_environment
 from yuki.model_runtime.routes import ModelRouter
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.repositories import GroupSettingsRepository
 from yuki.plugin_host.discovery import PluginDiscovery
 from yuki.plugin_host.event_bus import PluginEventBus
 from yuki.plugin_host.extension_registry import ExtensionRegistry
@@ -44,6 +49,12 @@ GRANTS = (
     "identity.person.create",
     "identity.person.read",
     "identity.person.disable",
+    "identity.person.enable",
+    "identity.person.superuser",
+    "identity.binding.enable",
+    "identity.presence.read",
+    "identity.presence.set_ingest",
+    "control.work.read",
     "identity.binding.attach",
     "identity.binding.read",
     "identity.binding.disable",
@@ -103,9 +114,20 @@ capabilities = ["control.health.read", "control.execution.metadata.read"]
     async def health():
         return [{"name": "fixture", "enabled": True, "running": True, "healthy": None}]
 
+    identities = ClientIdentityService(database)
+    people = PeopleRepository(database, memory_rebuilds=MemoryRebuildRepository(database))
     api = AdminApi(
         ControlOperatorAccess(database, policy),
-        AdminCommands(database, manager, files),
+        AdminOperations(
+            database,
+            manager,
+            files,
+            identities=identities,
+            people=people,
+            config=RuntimeConfigService(settings=settings, database=database),
+            groups=GroupSettingsRepository(database),
+        ),
+        identities,
         AdminQueries(database, manager, files, health),
     )
     app = FastAPI()
@@ -300,7 +322,7 @@ async def test_model_apply_uses_original_atomic_hot_reload_and_secret_store(admi
     applied = await client.post("/admin/v1/models/apply", json=body)
     assert applied.status_code == 200, applied.text
     assert applied.json()["data"]["effective_state"]["status"] == "applied"
-    assert api.commands.files.loaded_catalog.profiles["main"].model == "changed-fake-model"
+    assert api.commands.model.files.loaded_catalog.profiles["main"].model == "changed-fake-model"
     assert (await client.post("/admin/v1/models/apply", json=body)).json() == applied.json()
     secret = "synthetic-model-key-private"
     saved = await client.post(
@@ -313,7 +335,9 @@ async def test_model_apply_uses_original_atomic_hot_reload_and_secret_store(admi
     assert secret not in saved.text
     assert secret not in (await client.get("/admin/v1/models")).text
     assert secret not in profiles.read_text()
-    assert models._pool.api_key_for(api.commands.files.loaded_catalog.profiles["main"]) == secret
+    assert (
+        models._pool.api_key_for(api.commands.model.files.loaded_catalog.profiles["main"]) == secret
+    )
 
 
 async def test_trace_metadata_and_content_have_separate_permissions(admin, database):

@@ -236,7 +236,9 @@ async def test_reference_without_body_reaches_canonical_resolution(database, int
     committed = Mock()
     sender = MemorySender()
     result = await processor.handle(incoming, sender, on_committed=committed)
-    assert result.reason == "empty" and len(provider.requests) == 1 and sender.calls == 0
+    assert result.reason == "chat" and len(provider.requests) == 2 and sender.calls == 0
     committed.assert_called_once()
-    if not internal:
-        assert committed.call_args.args[0].event.reply_to_event_id == original.id
+    assert committed.call_args.args[0].event.reply_to_event_id == original.id
+    current = provider.requests[-1].messages[-1].content
+    assert f"回复:#{original.id}" in current
+    assert "原消息的真实内容" in current

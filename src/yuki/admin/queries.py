@@ -8,19 +8,19 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, literal_column, select
 
-from yuki.admin.authority.operations import OperationKind
+from yuki.admin.authority.operations import OperationKind, OperationRef
 from yuki.admin.authority.principal import ControlPrincipal
 from yuki.admin.authority.problems import ProblemCode
 from yuki.admin.config_files import ConfigFileService
-from yuki.admin_api.commands import authorize, fail
+from yuki.admin.operations.base import authorize_current, fail
 from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 from yuki.domain.identity import PrincipalId, RequestId
 from yuki.execution_trace.db_models import ExecutionTraceEntryModel
 from yuki.execution_trace.payload import decode_payload
-from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
-from yuki.identity.person_identity import current_person_id
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
+from yuki.identity.person_identity import current_person_id, person_family_condition
 from yuki.memory.dream.db_models import MemoryDreamRunModel
 from yuki.persistence.command_receipts import control_operation, run_operation
 from yuki.persistence.database import Database
@@ -29,6 +29,7 @@ from yuki.persistence.unit_of_work import state_revision
 from yuki.plugin_host.configuration_service import PluginConfigurationService
 from yuki.plugin_host.manager import PluginManager
 from yuki.plugin_host.repository import PluginInstallationRecord
+from yuki.runtime.work_schema_v1 import work
 
 
 def plugin_view(record: PluginInstallationRecord) -> dict[str, Any]:
@@ -46,6 +47,14 @@ def plugin_view(record: PluginInstallationRecord) -> dict[str, Any]:
     }
 
 
+def operation_view(operation: OperationRef) -> dict[str, Any]:
+    return {
+        **asdict(operation),
+        "created_at": operation.created_at.isoformat(),
+        "updated_at": operation.updated_at.isoformat(),
+    }
+
+
 class AdminQueries:
     def __init__(
         self,
@@ -57,7 +66,7 @@ class AdminQueries:
         self.database, self.plugins, self.files, self.health = database, plugins, files, health
 
     async def person(self, principal: ControlPrincipal, identity: str) -> dict[str, Any]:
-        authorize(principal, "identity.person.read")
+        await authorize_current(self.database, principal, "identity.person.read")
         async with self.database.sessions() as session:
             row = await session.get(CanonicalPersonModel, identity)
             if row is None:
@@ -71,10 +80,19 @@ class AdminQueries:
                 "revision": current.revision,
                 "enabled": current.enabled,
                 "display_name": current.display_name,
+                "is_superuser": current.is_superuser,
+                "bindings": [
+                    self._binding_view(binding)
+                    for binding in await session.scalars(
+                        select(IdentityBindingModel)
+                        .where(person_family_condition(IdentityBindingModel.person_id, current.id))
+                        .order_by(IdentityBindingModel.id)
+                    )
+                ],
             }
 
     async def binding(self, principal: ControlPrincipal, identity: str) -> dict[str, Any]:
-        authorize(principal, "identity.binding.read")
+        await authorize_current(self.database, principal, "identity.binding.read")
         async with self.database.sessions() as session:
             row = await session.get(IdentityBindingModel, identity)
             if row is None:
@@ -82,37 +100,36 @@ class AdminQueries:
             return {
                 "id": row.id,
                 "person_id": row.person_id,
+                "current_person_id": await current_person_id(session, row.person_id),
+                "external_account_id": row.external_account_id,
+                "display_name": row.display_name,
                 "platform": row.platform,
                 "status": row.status,
                 "revision": row.revision,
             }
 
     async def plugins_list(self, principal: ControlPrincipal) -> list[dict[str, Any]]:
-        authorize(principal, "control.plugin.read")
+        await authorize_current(self.database, principal, "control.plugin.read")
         return [plugin_view(row) for row in await self.plugins.list()]
 
     async def plugin(self, principal: ControlPrincipal, identity: str) -> dict[str, Any]:
-        authorize(principal, "control.plugin.read")
+        await authorize_current(self.database, principal, "control.plugin.read")
         row = await self.plugins.show(identity)
         if row is None:
             raise fail(ProblemCode.NOT_FOUND)
         report = await self.plugins.doctor(identity)
-        return {
-            **plugin_view(row),
-            "manifest_hash_matches": report.manifest_hash_matches,
-            "manifest_available": report.manifest_available,
-        }
+        return {**plugin_view(row), **report.model_dump(mode="json")}
 
     async def plugin_config(
         self, principal: ControlPrincipal, identity: str, scope_type: str, owner_id: str | None
     ) -> dict[str, Any]:
-        authorize(principal, "control.plugin.config.content.read")
+        await authorize_current(self.database, principal, "control.plugin.config.content.read")
         return await PluginConfigurationService(
             self.database, self.plugins.configuration_schema
         ).read(identity, scope_type=scope_type, owner_id=owner_id)
 
     async def operation(self, principal: ControlPrincipal, identity: str) -> dict[str, Any]:
-        authorize(principal, "control.operation.read")
+        await authorize_current(self.database, principal, "control.operation.read")
         parts = identity.split(":")
         try:
             if len(parts) == 1:
@@ -129,7 +146,7 @@ class AdminQueries:
                     if row is not None:
                         # Legacy control requests keep their original result and status.
                         return {
-                            **asdict(control_operation(row)),
+                            **operation_view(control_operation(row)),
                             "result_resource_id": row.result_resource_id,
                             "result_revision": row.result_revision,
                         }
@@ -148,7 +165,7 @@ class AdminQueries:
                         )
                     ).one_or_none()
                     if run is not None:
-                        return asdict(
+                        return operation_view(
                             run_operation(
                                 OperationKind(parts[0]),
                                 run.public_id,
@@ -173,9 +190,9 @@ class AdminQueries:
         limit: int,
         content: bool,
     ) -> dict[str, Any]:
-        authorize(principal, "control.execution.metadata.read")
+        await authorize_current(self.database, principal, "control.execution.metadata.read")
         if content:
-            authorize(principal, "control.execution.content.read")
+            await authorize_current(self.database, principal, "control.execution.content.read")
         field = {
             "turn": ExecutionTraceEntryModel.turn_id,
             "work": ExecutionTraceEntryModel.work_id,
@@ -239,3 +256,179 @@ class AdminQueries:
                 "items": items,
                 "next_cursor": rows[limit - 1]["id"] if len(rows) > limit else None,
             }
+
+    @staticmethod
+    def _binding_view(row: IdentityBindingModel) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "person_id": row.person_id,
+            "platform": row.platform,
+            "external_account_id": row.external_account_id,
+            "display_name": row.display_name,
+            "status": row.status,
+            "revision": row.revision,
+        }
+
+    async def persons(
+        self, principal: ControlPrincipal, after: str = "", limit: int = 100
+    ) -> dict[str, Any]:
+        await authorize_current(self.database, principal, "identity.person.read")
+        async with self.database.sessions() as session:
+            rows = list(
+                await session.scalars(
+                    select(CanonicalPersonModel)
+                    .where(
+                        CanonicalPersonModel.merged_into_person_id.is_(None),
+                        CanonicalPersonModel.id > after,
+                    )
+                    .order_by(CanonicalPersonModel.id)
+                    .limit(limit + 1)
+                )
+            )
+            items = [
+                {
+                    "id": row.id,
+                    "display_name": row.display_name,
+                    "enabled": row.enabled,
+                    "is_superuser": row.is_superuser,
+                    "revision": row.revision,
+                }
+                for row in rows[:limit]
+            ]
+        return {"items": items, "next_cursor": items[-1]["id"] if len(rows) > limit else None}
+
+    async def bindings(
+        self,
+        principal: ControlPrincipal,
+        after: str = "",
+        limit: int = 100,
+        *,
+        person_id: str | None = None,
+        platform: str | None = None,
+        external_account_id: str | None = None,
+    ) -> dict[str, Any]:
+        await authorize_current(self.database, principal, "identity.binding.read")
+        stmt = select(IdentityBindingModel).where(IdentityBindingModel.id > after)
+        if person_id is not None:
+            stmt = stmt.where(person_family_condition(IdentityBindingModel.person_id, person_id))
+        if platform is not None:
+            stmt = stmt.where(IdentityBindingModel.platform == platform)
+        if external_account_id is not None:
+            stmt = stmt.where(IdentityBindingModel.external_account_id == external_account_id)
+        async with self.database.sessions() as session:
+            rows = list(
+                await session.scalars(stmt.order_by(IdentityBindingModel.id).limit(limit + 1))
+            )
+            items = [
+                {
+                    **self._binding_view(row),
+                    "current_person_id": await current_person_id(session, row.person_id),
+                }
+                for row in rows[:limit]
+            ]
+        return {"items": items, "next_cursor": items[-1]["id"] if len(rows) > limit else None}
+
+    @staticmethod
+    def _presence_view(row: PresenceModel) -> dict[str, Any]:
+        return {
+            "id": row.id,
+            "platform": row.platform,
+            "external_account_id": row.external_account_id,
+            "enabled": row.enabled,
+            "ingest_eligible": row.ingest_eligible,
+            "revision": row.revision,
+        }
+
+    async def presences(
+        self, principal: ControlPrincipal, after: str = "", limit: int = 100
+    ) -> dict[str, Any]:
+        await authorize_current(self.database, principal, "identity.presence.read")
+        async with self.database.sessions() as session:
+            rows = list(
+                await session.scalars(
+                    select(PresenceModel)
+                    .where(PresenceModel.id > after)
+                    .order_by(PresenceModel.id)
+                    .limit(limit + 1)
+                )
+            )
+            items = [self._presence_view(row) for row in rows[:limit]]
+        return {"items": items, "next_cursor": items[-1]["id"] if len(rows) > limit else None}
+
+    async def presence(self, principal: ControlPrincipal, identity: str) -> dict[str, Any]:
+        await authorize_current(self.database, principal, "identity.presence.read")
+        async with self.database.sessions() as session:
+            row = await session.get(PresenceModel, identity)
+            if row is None:
+                raise fail(ProblemCode.NOT_FOUND)
+            return self._presence_view(row)
+
+    @staticmethod
+    def _work_columns() -> tuple[Any, ...]:
+        from yuki.runtime.work_management import CLASSIFICATION_KEYS
+
+        return tuple(
+            work.c[name]
+            for name in (
+                "id",
+                "parent_work_id",
+                "conversation_id",
+                "generation",
+                "goal",
+                "revision",
+                "state",
+                "reason",
+                "model_requests",
+                "tool_calls",
+                "active_seconds",
+                "sent_messages",
+                "created",
+                "updated",
+            )
+        ) + tuple(
+            func.json_extract(work.c.source_json, literal_column(f"'$.{key}'")).label(key)
+            for key in CLASSIFICATION_KEYS
+        )
+
+    @staticmethod
+    def _work_view(row: Any) -> dict[str, Any]:
+        from yuki.runtime.work_management import CLASSIFICATION_KEYS
+
+        view = dict(row)
+        view["source"] = {key: view.pop(key) for key in CLASSIFICATION_KEYS}
+        return view
+
+    async def works(
+        self,
+        principal: ControlPrincipal,
+        after: str = "",
+        limit: int = 100,
+        *,
+        state: str | None = None,
+    ) -> dict[str, Any]:
+        await authorize_current(self.database, principal, "control.work.read")
+        stmt = select(*self._work_columns()).where(work.c.id > after)
+        if state is not None:
+            stmt = stmt.where(work.c.state == state)
+        async with self.database.sessions() as session:
+            rows = list(
+                (await session.execute(stmt.order_by(work.c.id).limit(limit + 1))).mappings()
+            )
+        items = [self._work_view(row) for row in rows[:limit]]
+        return {"items": items, "next_cursor": items[-1]["id"] if len(rows) > limit else None}
+
+    async def work(self, principal: ControlPrincipal, identity: str) -> dict[str, Any]:
+        from yuki.runtime.work_management import management_view
+
+        await authorize_current(self.database, principal, "control.work.read")
+        async with self.database.sessions() as session:
+            row = (
+                (await session.execute(select(*self._work_columns()).where(work.c.id == identity)))
+                .mappings()
+                .first()
+            )
+            if row is None:
+                raise fail(ProblemCode.NOT_FOUND)
+            lifecycle = await management_view(session, identity)
+        assert lifecycle is not None
+        return {**self._work_view(row), **lifecycle}

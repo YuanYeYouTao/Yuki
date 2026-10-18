@@ -66,8 +66,8 @@ from yuki.persistence.repositories import EventLedgerRepository
 class MemoryPreferenceTrigger:
     """Already-authorized memory mutation correlation. Not an AdminActor.
 
-    The host or adapter derives ``actor_is_superuser`` from immutable
-    SUPERUSERS. Callers must not accept plugin-supplied authority.
+    Role booleans are historical snapshots. Execution resolves the current
+    Person qualification; plugins cannot supply authority.
     """
 
     user_id: str
@@ -137,12 +137,24 @@ class MemoryAdminService:
         *,
         target_person_id: str | None = None,
     ) -> tuple[MemoryFact, ...]:
-        target_person_id = await self._require_authorized_person_target(
-            actor, target, person_id=target_person_id
-        )
-        return await self._memories.list_person(
-            person_id=target_person_id,
-        )
+        async with self._memories.repository.transaction(read_snapshot=True) as session:
+            target_person_id = await self._require_authorized_person_target(
+                actor, target, person_id=target_person_id, session=session
+            )
+            return await self._memories.list_person(person_id=target_person_id, session=session)
+
+    async def list_explicit_preferences(
+        self,
+        actor: AdminActor | MemoryPreferenceTrigger,
+        target: str,
+        *,
+        target_person_id: str,
+    ) -> tuple[MemoryFact, ...]:
+        async with self._memories.repository.transaction(read_snapshot=True) as session:
+            person_id = await self._require_authorized_person_target(
+                actor, target, person_id=target_person_id, session=session
+            )
+            return await self._memories.list_preferences(person_id=person_id, session=session)
 
     async def set_explicit_preference(
         self,
@@ -266,6 +278,9 @@ class MemoryAdminService:
             return row
 
         async def write(session: AsyncSession) -> MemoryFact:
+            await self._require_authorized_person_target(
+                actor, target, person_id=target_person_id, session=session
+            )
             row = await self._memories.add_explicit_person(
                 target,
                 normalized,
@@ -346,6 +361,9 @@ class MemoryAdminService:
             return updated
 
         async def write(session: AsyncSession) -> MemoryFact | None:
+            await self._require_authorized_person_target(
+                actor, target, person_id=target_person_id, session=session
+            )
             before = next(
                 (
                     row
@@ -430,6 +448,9 @@ class MemoryAdminService:
             return deleted
 
         async def write(session: AsyncSession) -> bool:
+            await self._require_authorized_person_target(
+                actor, target, person_id=target_person_id, session=session
+            )
             before = next(
                 (
                     row
@@ -472,22 +493,20 @@ class MemoryAdminService:
         *,
         target_person_id: str | None = None,
     ) -> tuple[MemoryEvidence, ...]:
-        target_person_id = await self._require_authorized_person_target(
-            actor, target, person_id=target_person_id
-        )
-        fact = next(
-            (
-                row
-                for row in await self._memories.list_person(
-                    person_id=target_person_id,
+        async with self._memories.repository.transaction(read_snapshot=True) as session:
+            target_person_id = await self._require_authorized_person_target(
+                actor, target, person_id=target_person_id, session=session
+            )
+            fact = await self._memories.get_fact(memory_id, session=session)
+            if (
+                fact is None
+                or fact.scope_type is not MemoryScopeType.PERSON
+                or not await self._memories.person_owns_fact(
+                    fact, actor_person_id=target_person_id, session=session
                 )
-                if row.id == memory_id
-            ),
-            None,
-        )
-        if fact is None:
-            return ()
-        return await self._memories.list_evidence(memory_id)
+            ):
+                return ()
+            return await self._memories.repository.list_evidence(memory_id, session=session)
 
     async def search_person(
         self,
@@ -508,7 +527,7 @@ class MemoryAdminService:
             canonical_subject_person_id=person_id,
             block_id="admin_person",
         )
-        return await MemoryQueryPlane(self._memory_context).read(
+        result = await MemoryQueryPlane(self._memory_context).read(
             MemoryReadConsumer.ADMIN,
             MemoryReadRequest(
                 text=query,
@@ -517,6 +536,8 @@ class MemoryAdminService:
             ),
             runtime=runtime,
         )
+        await self._require_authorized_person_target(actor, user_id, person_id=person_id)
+        return result
 
     async def search_group(
         self,
@@ -527,7 +548,7 @@ class MemoryAdminService:
         limit: int = 20,
         space_id: str | None = None,
     ) -> MemoryRetrievalResult:
-        if not actor.is_superuser:
+        if not await self._is_superuser(actor):
             raise PermissionError("只有超级管理员可以诊断群记忆")
         from yuki.services.canonical_owners import require_live_space
 
@@ -540,7 +561,7 @@ class MemoryAdminService:
             canonical_subject_space_id=space_id,
             block_id="admin_group",
         )
-        return await MemoryQueryPlane(self._memory_context).read(
+        result = await MemoryQueryPlane(self._memory_context).read(
             MemoryReadConsumer.ADMIN,
             MemoryReadRequest(
                 text=query,
@@ -549,13 +570,15 @@ class MemoryAdminService:
             ),
             runtime=runtime,
         )
+        await self._require_superuser(actor)
+        return result
 
     async def index_status(self, actor: AdminActor) -> MemoryIndexHealth:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         return await self._memory_index.health()
 
     async def rebuild_index(self, actor: AdminActor) -> MemoryIndexHealth:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         started = time.perf_counter()
         health = await self._memory_index.rebuild()
         await self._audit.record(
@@ -572,66 +595,75 @@ class MemoryAdminService:
         return health
 
     async def embedding_status(self, actor: AdminActor) -> MemoryEmbeddingHealth:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._memory_embeddings is None:
             raise RuntimeError("memory embedding runtime is unavailable")
         return await self._memory_embeddings.health()
 
     async def embedding_doctor(self, actor: AdminActor) -> int:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._memory_embeddings is None:
             raise RuntimeError("memory embedding runtime is unavailable")
         return await self._memory_embeddings.doctor()
 
     async def embedding_retry(self, actor: AdminActor) -> int:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._memory_embeddings is None:
             raise RuntimeError("memory embedding runtime is unavailable")
-        return await self._memory_embeddings.retry()
+        return await self._memory_embeddings.retry(
+            actor_person_id=await self._actor_person_id(actor)
+        )
 
     async def embedding_rebuild(self, actor: AdminActor) -> int:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._memory_embeddings is None:
             raise RuntimeError("memory embedding runtime is unavailable")
-        return await self._memory_embeddings.rebuild()
+        return await self._memory_embeddings.rebuild(
+            actor_person_id=await self._actor_person_id(actor)
+        )
 
     async def embedding_purge_old(self, actor: AdminActor) -> int:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._memory_embeddings is None:
             raise RuntimeError("memory embedding runtime is unavailable")
         return await self._memory_embeddings.purge_old()
 
     async def show_fact(self, actor: AdminActor, fact_id: int) -> MemoryFact | None:
-        fact = await self._fact_audit.get_fact(fact_id)
-        await self._require_fact_access(actor, fact)
-        return fact
+        async with self._memories.repository.transaction(read_snapshot=True) as session:
+            fact = await self._fact_audit.get_fact(fact_id, session=session)
+            await self._require_fact_access(actor, fact, session=session)
+            return fact
 
     async def explain_fact(self, actor: AdminActor, fact_id: int) -> dict[str, object] | None:
-        fact = await self._fact_audit.get_fact(fact_id)
-        await self._require_fact_access(actor, fact)
-        if fact is None:
-            return None
-        explanation = await self._fact_audit.explain(fact_id)
-        if explanation is not None and actor.is_superuser:
-            explanation["evidence_sources"] = [
-                {
-                    "event_id": row.event_id,
-                    "source_speaker_user_id": row.source_speaker_user_id,
-                    "relation": row.relation.value,
-                    "excerpt": row.excerpt,
-                }
-                for row in await self._fact_audit.get_evidence(fact_id)
-            ]
-        return explanation
+        async with self._memories.repository.transaction(read_snapshot=True) as session:
+            fact = await self._fact_audit.get_fact(fact_id, session=session)
+            await self._require_fact_access(actor, fact, session=session)
+            if fact is None:
+                return None
+            explanation = await self._fact_audit.explain(fact_id, session=session)
+            if explanation is not None and await self._is_superuser(actor, session=session):
+                explanation["evidence_sources"] = [
+                    {
+                        "event_id": row.event_id,
+                        "source_speaker_user_id": row.source_speaker_user_id,
+                        "relation": row.relation.value,
+                        "excerpt": row.excerpt,
+                    }
+                    for row in await self._fact_audit.get_evidence(fact_id, session=session)
+                ]
+            return explanation
 
     async def fact_history(
-        self,
-        actor: AdminActor,
-        fact_id: int,
+        self, actor: AdminActor, fact_id: int
     ) -> tuple[MemoryFactStateEvent, ...]:
-        fact = await self._fact_audit.get_fact(fact_id)
-        await self._require_fact_access(actor, fact)
-        return await self._fact_audit.get_state_history(fact_id) if fact is not None else ()
+        async with self._memories.repository.transaction(read_snapshot=True) as session:
+            fact = await self._fact_audit.get_fact(fact_id, session=session)
+            await self._require_fact_access(actor, fact, session=session)
+            return (
+                await self._fact_audit.get_state_history(fact_id, session=session)
+                if fact is not None
+                else ()
+            )
 
     async def list_conflicts(
         self,
@@ -704,7 +736,7 @@ class MemoryAdminService:
     ) -> bool:
         fact = await self._fact_audit.get_fact(fact_id)
         await self._require_authorized_fact_mutation(actor, fact)
-        privileged = _authorized_is_superuser(actor)
+        privileged = await self._is_superuser(actor)
         selected = (
             MemoryInvalidationReason.ADMINISTRATOR_INVALIDATED
             if privileged
@@ -737,7 +769,7 @@ class MemoryAdminService:
         await self._require_fact_mutation(actor, fact)
         if (
             fact is not None
-            and not actor.is_superuser
+            and not await self._is_superuser(actor)
             and fact.invalidated_reason
             not in {
                 MemoryInvalidationReason.USER_RETRACTED,
@@ -767,7 +799,7 @@ class MemoryAdminService:
         source_fact_id: int,
         target_fact_id: int,
     ) -> MemoryFact | None:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         source = await self._fact_audit.get_fact(source_fact_id)
         if source is not None:
             mutation = await self._apply_mutation(
@@ -796,7 +828,7 @@ class MemoryAdminService:
         preferred_fact_id: int,
         contested_fact_ids: tuple[int, ...],
     ) -> int:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         return await self._memories.resolve_conflicts(
             preferred_fact_id,
             contested_fact_ids,
@@ -804,14 +836,14 @@ class MemoryAdminService:
         )
 
     async def consistency_health(self, actor: AdminActor) -> MemoryConsistencyHealth:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         return await self._fact_audit.health()
 
     async def maintenance_status(
         self,
         actor: AdminActor,
     ) -> tuple[bool, MemoryConsistencyHealth]:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         health = await self._fact_audit.health()
         return bool(self._maintenance and self._maintenance.running), health
 
@@ -823,11 +855,11 @@ class MemoryAdminService:
         return await self._maintenance.process_once()
 
     async def maintenance_run(self, actor: AdminActor) -> int:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         return await self.run_maintenance_once()
 
     async def self_reflection_run(self, actor: AdminActor) -> dict[str, Any]:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._self_reflection is None:
             raise RuntimeError("Self Reflection Worker 当前不可用")
         if actor.trigger_event_id is None or actor.canonical_conversation_id is None:
@@ -839,43 +871,43 @@ class MemoryAdminService:
     async def self_reflection_status(
         self, actor: AdminActor, run_id: str | None
     ) -> dict[str, Any] | None:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._self_reflection is None:
             raise RuntimeError("Self Reflection Worker 当前不可用")
         return await self._self_reflection.control.get(run_id)
 
     async def self_reflection_health(self, actor: AdminActor) -> dict[str, Any] | None:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._self_reflection is None:
             return None
         return (await self._self_reflection.health()).model_dump(mode="json")
 
     async def self_reflection_retry(self, actor: AdminActor, run_id: int) -> bool:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._self_reflection is None:
             raise RuntimeError("Self Reflection Worker 当前不可用")
         return await self._self_reflection.control.resume_batch(run_id)
 
     async def dream_plan(self, actor: AdminActor) -> DreamRun:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._dream is None:
             raise RuntimeError("Memory Dream Worker 当前不可用")
         return await self._dream.plan_full(actor_user_id=actor.user_id)
 
     async def dream_start(self, actor: AdminActor, public_id: str) -> DreamRun:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._dream is None:
             raise RuntimeError("Memory Dream Worker 当前不可用")
         return await self._dream.start_run(public_id)
 
     async def dream_list(self, actor: AdminActor) -> tuple[DreamRun, ...]:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._dream is None:
             raise RuntimeError("Memory Dream Worker 当前不可用")
         return await self._dream.list_runs()
 
     async def dream_status(self, actor: AdminActor, public_id: str) -> DreamRun | None:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._dream is None:
             raise RuntimeError("Memory Dream Worker 当前不可用")
         return await self._dream.status(public_id)
@@ -887,7 +919,7 @@ class MemoryAdminService:
         *,
         page: int = 1,
     ) -> DreamRunPage:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._dream is None:
             raise RuntimeError("Memory Dream 未初始化")
         return await self._dream.show(public_id, page=page)
@@ -899,37 +931,37 @@ class MemoryAdminService:
         *,
         cluster_id: int,
     ) -> DreamClusterPreview:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._dream is None:
             raise RuntimeError("Memory Dream 未初始化")
         return await self._dream.preview(public_id, cluster_id=cluster_id)
 
     async def dream_cancel(self, actor: AdminActor, public_id: str) -> bool:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._dream is None:
             raise RuntimeError("Memory Dream Worker 当前不可用")
         return await self._dream.cancel(public_id)
 
     async def dream_resume(self, actor: AdminActor, public_id: str) -> DreamRun:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._dream is None:
             raise RuntimeError("Memory Dream Worker 当前不可用")
         return await self._dream.resume(public_id)
 
     async def dream_retry(self, actor: AdminActor, public_id: str) -> DreamRun:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._dream is None:
             raise RuntimeError("Memory Dream Worker 当前不可用")
         return await self._dream.retry(public_id)
 
     async def dream_rollback_operation(self, actor: AdminActor, public_id: str) -> bool:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._dream is None:
             raise RuntimeError("Memory Dream Worker 当前不可用")
         return await self._dream.rollback_operation(public_id)
 
     async def dream_rollback_run(self, actor: AdminActor, public_id: str) -> int:
-        self._require_superuser(actor)
+        await self._require_superuser(actor)
         if self._dream is None:
             raise RuntimeError("Memory Dream Worker 当前不可用")
         return await self._dream.rollback_run(public_id)
@@ -1033,9 +1065,9 @@ class MemoryAdminService:
                 decision_actor_type=decision_actor_type,
                 decision_actor_id=actor.decision_actor_id or actor.user_id,
                 executed_by_bot_user_id=event.bot_user_id,
-                actor_is_superuser=_mutation_is_superuser(actor, self._settings),
+                actor_is_superuser=await self._is_superuser(actor),
                 actor_person_id=event.author_person_id,
-                operation_id=getattr(actor, "operation_id", None),
+                operation_id=f"memory-admin:event:{event.id}",
             ),
             target=target,
         )
@@ -1076,19 +1108,27 @@ class MemoryAdminService:
         target: str,
         *,
         person_id: str | None = None,
+        session: AsyncSession | None = None,
     ) -> str:
         from yuki.identity.person_identity import same_person_id
+        from yuki.persistence.unit_of_work import optional_session
         from yuki.services.canonical_owners import require_live_person
 
         actor_person_id = await self._actor_person_id(actor)
-        async with self._database.sessions() as session:
+        async with optional_session(self._database, session, write=False) as reader:
+            active_actor = (
+                await require_live_person(reader, actor_person_id)
+                if actor_person_id is not None
+                else None
+            )
             target_person_id = await require_live_person(
-                session, person_id or (actor_person_id if target == actor.user_id else None)
+                reader, person_id or (active_actor if target == actor.user_id else None)
             )
-            own = actor_person_id is not None and await same_person_id(
-                session, actor_person_id, target_person_id
+            own = active_actor is not None and await same_person_id(
+                reader, active_actor, target_person_id
             )
-        if _mutation_is_superuser(actor, self._settings) or own:
+            privileged = await self._is_superuser(actor, session=reader)
+        if privileged or own:
             return target_person_id
         raise PermissionError("只有当前真实超级管理员可以执行该操作")
 
@@ -1099,7 +1139,7 @@ class MemoryAdminService:
     ) -> None:
         if fact is None:
             return
-        if _mutation_is_superuser(actor, self._settings):
+        if await self._is_superuser(actor):
             return
         if not await self._memories.person_owns_fact(
             fact,
@@ -1110,15 +1150,18 @@ class MemoryAdminService:
         if fact.scope_type is MemoryScopeType.GROUP:
             raise PermissionError("普通用户不能修改群共同事实")
 
-    async def _require_fact_access(self, actor: AdminActor, fact: MemoryFact | None) -> None:
+    async def _require_fact_access(
+        self, actor: AdminActor, fact: MemoryFact | None, *, session: AsyncSession | None = None
+    ) -> None:
         if fact is None:
             return
-        if actor.is_superuser:
+        if await self._is_superuser(actor, session=session):
             return
         if not await self._memories.person_owns_fact(
             fact,
             actor_user_id=actor.user_id,
             actor_person_id=await self._actor_person_id(actor),
+            session=session,
         ):
             raise PermissionError("只能查看与本人有关的人物记忆")
 
@@ -1128,12 +1171,26 @@ class MemoryAdminService:
         fact: MemoryFact | None,
     ) -> None:
         await self._require_fact_access(actor, fact)
-        if fact is not None and fact.scope_type is MemoryScopeType.GROUP and not actor.is_superuser:
+        if (
+            fact is not None
+            and fact.scope_type is MemoryScopeType.GROUP
+            and not await self._is_superuser(actor)
+        ):
             raise PermissionError("普通用户不能修改群共同事实")
 
-    def _require_superuser(self, actor: AdminActor) -> None:
-        if not actor.is_superuser:
+    async def _require_superuser(self, actor: AdminActor) -> None:
+        if not await self._is_superuser(actor):
             raise PermissionError("只有超级管理员可以执行此记忆管理操作")
+
+    async def _is_superuser(
+        self, actor: AdminActor | MemoryPreferenceTrigger, *, session: AsyncSession | None = None
+    ) -> bool:
+        from yuki.identity.authority import person_is_superuser
+        from yuki.persistence.unit_of_work import optional_session
+
+        person_id = await self._actor_person_id(actor)
+        async with optional_session(self._database, session, write=False) as reader:
+            return await person_is_superuser(reader, person_id)
 
     async def _actor_person_id(self, actor: AdminActor | MemoryPreferenceTrigger) -> str | None:
         if actor.person_id is not None:
@@ -1144,14 +1201,3 @@ class MemoryAdminService:
                 return event.author_person_id
             return None
         return None
-
-
-def _authorized_is_superuser(actor: AdminActor | MemoryPreferenceTrigger) -> bool:
-    if isinstance(actor, MemoryPreferenceTrigger):
-        return actor.actor_is_superuser
-    return actor.is_superuser
-
-
-def _mutation_is_superuser(actor: AdminActor | MemoryPreferenceTrigger, settings: Settings) -> bool:
-    del settings
-    return _authorized_is_superuser(actor)

@@ -1,0 +1,566 @@
+"""Memory chat parsing and presentation; the Memory services own operations."""
+
+from __future__ import annotations
+
+import json
+
+from yuki.admin.models import AdminActor
+from yuki.domain.identity import PersonId
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.service import MemoryRebuildService
+from yuki.services.admin.memory_admin import MemoryAdminService
+from yuki.services.commands.help import ADMIN_ACTIONS, ADMIN_SUBACTIONS
+
+
+class MemoryCommands:
+    def __init__(
+        self, memory_admin: MemoryAdminService, memory_rebuild: MemoryRebuildService | None
+    ) -> None:
+        self._memory_admin = memory_admin
+        self._memory_rebuild = memory_rebuild
+
+    async def memory(self, *, actor: AdminActor, argument: str, admin: bool = False) -> str:
+        operation = argument.strip().split(maxsplit=1)[0].casefold() if argument.strip() else ""
+        if operation and operation not in ADMIN_ACTIONS["memory"]:
+            return "未知记忆操作，请使用 /ai help。"
+        admin_operations = {
+            "rebuild",
+            "search",
+            "index",
+            "embedding",
+            "merge",
+            "resolve",
+            "maintenance",
+            "self-reflection",
+            "dream",
+            "doctor",
+        }
+        if not admin and operation in admin_operations:
+            return (
+                "该操作使用 /ai admin memory；本人记忆使用 /ai memory "
+                "list|add|update|delete|evidence|show|explain|history|conflicts|correct|invalidate|restore。"
+            )
+        if argument.strip().casefold().startswith("rebuild"):
+            return await self._memory_rebuild_command(actor, argument.strip()[7:].strip())
+        special = await self._memory_diagnostics(actor, argument)
+        if special is not None:
+            return special
+        parsed = self._parse_scoped_operation(
+            argument,
+            actor.person_id,
+            admin,
+        )
+        if isinstance(parsed, str):
+            return parsed
+        operation, target, rest = parsed
+        if operation == "list":
+            rows = await self._memory_admin.list_memories(actor, target, target_person_id=target)
+            if not rows:
+                return f"Person {target} 暂无人物记忆。"
+            return "\n".join(f"{row.id}. [{row.source_type}] {row.content}" for row in rows)
+        if operation == "add":
+            content = " ".join(rest).strip()
+            if not content:
+                return "格式：/ai memory add <内容>"
+            try:
+                row = await self._memory_admin.add_memory(
+                    actor, target, content, target_person_id=target
+                )
+            except ValueError as exc:
+                return str(exc)
+            return f"已添加人物记忆 {row.id}。"
+        if operation == "update":
+            if len(rest) < 2 or not rest[0].isdigit():
+                return "格式：/ai memory update <记忆ID> <内容>"
+            updated = await self._memory_admin.update_memory(
+                actor,
+                target,
+                int(rest[0]),
+                " ".join(rest[1:]),
+                target_person_id=target,
+            )
+            return "记忆已更新。" if updated else "没有找到可修改的记忆。"
+        if operation == "delete":
+            if len(rest) != 1 or not rest[0].isdigit():
+                return "格式：/ai memory delete <记忆ID>"
+            deleted = await self._memory_admin.delete_memory(
+                actor,
+                target,
+                int(rest[0]),
+                target_person_id=target,
+            )
+            return "记忆已删除。" if deleted else "没有找到该记忆。"
+        if operation == "evidence":
+            if len(rest) != 1 or not rest[0].isdigit():
+                return "格式：/ai memory evidence <记忆ID>"
+            evidence_rows = await self._memory_admin.list_evidence(
+                actor, target, int(rest[0]), target_person_id=target
+            )
+            if not evidence_rows:
+                return "没有找到该记忆的证据。"
+            return "\n".join(
+                f"事件 {row.event_id} [{row.relation}] {row.excerpt}" for row in evidence_rows
+            )
+        return (
+            "可用操作：list、add、update、delete、evidence、search、index、embedding、"
+            "self-reflection。"
+        )
+
+    async def _memory_rebuild_command(self, actor: AdminActor, argument: str) -> str:
+        if self._memory_rebuild is None:
+            return "历史记忆重建服务未装配。"
+        if actor.person_id is None:
+            raise PermissionError("没有找到当前 Person。")
+        operation, _, rest = argument.partition(" ")
+        operation = operation.casefold()
+        rest = rest.strip()
+        if operation and operation not in ADMIN_SUBACTIONS["memory.rebuild"]:
+            return "未知历史重建操作，请使用 /ai help。"
+        try:
+            if operation == "list":
+                rows = await self._memory_rebuild.list(actor_user_id=actor.person_id)
+                return (
+                    "\n".join(
+                        f"{row.public_id} [{row.status.value}] "
+                        f"{row.plan_statistics.eligible_events} events"
+                        for row in rows
+                    )
+                    or "暂无历史记忆重建任务。"
+                )
+            if operation == "plan":
+                selection = MemoryRebuildSelection.model_validate_json(rest)
+                run = await self._memory_rebuild.plan(selection, actor_user_id=actor.person_id)
+                return (
+                    f"已规划 {run.public_id}：匹配 {run.plan_statistics.matched_events}，"
+                    f"可提取 {run.plan_statistics.eligible_events}；plan 未调用模型。"
+                )
+            if operation in {
+                "start",
+                "status",
+                "pause",
+                "resume",
+                "cancel",
+                "commit",
+                "retry",
+                "purge",
+            }:
+                if not rest:
+                    return f"格式：/ai memory rebuild {operation} <run_id>"
+                if operation == "status":
+                    data = await self._memory_rebuild.status(rest, actor_user_id=actor.person_id)
+                    return json.dumps(data, ensure_ascii=False, indent=2)
+                method = getattr(self._memory_rebuild, operation)
+                result = await method(rest, actor_user_id=actor.person_id)
+                if isinstance(result, bool):
+                    return "重建暂存数据已清理。" if result else "没有找到该重建任务。"
+                return f"{result.public_id} -> {result.status.value}"
+            if operation == "review":
+                run_id, _, raw_page = rest.partition(" ")
+                review_entries = await self._memory_rebuild.review(
+                    run_id,
+                    actor_user_id=actor.person_id,
+                    page=int(raw_page or "1"),
+                )
+                return json.dumps(
+                    [row.model_dump(mode="json") for row in review_entries],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            if operation in {"approve", "reject"}:
+                run_id, _, selector = rest.partition(" ")
+                if not run_id or not selector:
+                    return f"格式：/ai memory rebuild {operation} <run_id> <all|ids|filter-json>"
+                count = await self._memory_rebuild.set_review(
+                    run_id,
+                    selector,
+                    approved=operation == "approve",
+                    actor_user_id=actor.person_id,
+                )
+                return f"已{('批准' if operation == 'approve' else '拒绝')} {count} 条 proposal。"
+        except (ValueError, RuntimeError, PermissionError, json.JSONDecodeError) as exc:
+            return f"操作未完成：{exc}"
+        return (
+            "可用操作：list、plan、start、status、pause、resume、cancel、review、"
+            "approve、reject、commit、retry、purge。"
+        )
+
+    async def _memory_diagnostics(self, actor: AdminActor, argument: str) -> str | None:
+        parts = argument.split()
+        diagnostic_operations = {
+            "search",
+            "index",
+            "embedding",
+            "show",
+            "explain",
+            "history",
+            "conflicts",
+            "correct",
+            "invalidate",
+            "restore",
+            "merge",
+            "resolve",
+            "maintenance",
+            "self-reflection",
+            "dream",
+            "doctor",
+        }
+        if not parts or parts[0].casefold() not in diagnostic_operations:
+            return None
+        operation = parts.pop(0).casefold()
+        try:
+            if operation == "dream":
+                return await self._memory_dream_command(actor, parts)
+            if operation == "self-reflection":
+                from yuki.memory.self_reflection.reporting import format_report
+
+                if parts == ["run"]:
+                    return format_report(await self._memory_admin.self_reflection_run(actor))
+                if len(parts) == 2 and parts[0] == "retry" and parts[1].isdigit():
+                    resumed = await self._memory_admin.self_reflection_retry(actor, int(parts[1]))
+                    return (
+                        "已登记原批次重试，保留预算和回执。"
+                        if resumed
+                        else "没有可重试的失败批次。"
+                    )
+                if parts and parts[0] == "status" and len(parts) <= 3:
+                    reflection_status = await self._memory_admin.self_reflection_status(
+                        actor, parts[1] if len(parts) > 1 else None
+                    )
+                    page = int(parts[2]) if len(parts) > 2 else 1
+                    if page < 1:
+                        raise ValueError("页码必须大于零")
+                    return (
+                        format_report(reflection_status, page=page)
+                        if reflection_status
+                        else "没有找到 Self Reflection 运行记录。"
+                    )
+                return "格式：/ai memory self-reflection run | status [run_id] [页码]"
+            if operation in {"show", "explain", "history"}:
+                if len(parts) != 1 or not parts[0].isdigit():
+                    return f"格式：/ai memory {operation} <fact_id>"
+                fact_id = int(parts[0])
+                if operation == "show":
+                    fact = await self._memory_admin.show_fact(actor, fact_id)
+                    if fact is None:
+                        return "没有找到该事实。"
+                    return (
+                        f"#{fact.id} [{fact.status.value}/{fact.conflict_state.value}] "
+                        f"{fact.content}\n作用域：{fact.scope_type.value}；"
+                        f"来源：{fact.authority.value}；证据：{fact.evidence_count} 条"
+                    )
+                if operation == "explain":
+                    explanation = await self._memory_admin.explain_fact(actor, fact_id)
+                    return (
+                        json.dumps(explanation, ensure_ascii=False, indent=2)
+                        if explanation is not None
+                        else "没有找到该事实。"
+                    )
+                history = await self._memory_admin.fact_history(actor, fact_id)
+                if not history:
+                    return "该事实暂无状态历史。"
+                return "\n".join(
+                    f"{row.created_at:%Y-%m-%d %H:%M} {row.action.value} [{row.reason_code}]"
+                    for row in history
+                )
+            if operation == "conflicts":
+                target: str | None = None
+                if parts:
+                    if len(parts) != 2 or parts[0].casefold() != "user":
+                        return "格式：/ai memory conflicts [user <Person ID>]"
+                    target = PersonId.parse(parts[1]).text
+                rows = await self._memory_admin.list_conflicts(
+                    actor,
+                    target_user_id=target,
+                    person_id=target or actor.person_id,
+                )
+                return (
+                    "\n".join(
+                        f"#{row.id} [{row.status.value}/{row.conflict_state.value}] {row.content}"
+                        for row in rows
+                    )
+                    if rows
+                    else "当前没有未解决的记忆冲突。"
+                )
+            if operation == "correct":
+                if len(parts) < 2 or not parts[0].isdigit():
+                    return "格式：/ai memory correct <fact_id> <new_content>"
+                row = await self._memory_admin.correct_fact(
+                    actor,
+                    int(parts[0]),
+                    " ".join(parts[1:]),
+                )
+                return (
+                    f"已创建修正事实 #{row.id}。" if row is not None else "没有找到可修正的事实。"
+                )
+            if operation == "invalidate":
+                if not 1 <= len(parts) <= 2 or not parts[0].isdigit():
+                    return "格式：/ai memory invalidate <fact_id> [reason]"
+                changed = await self._memory_admin.invalidate_fact(
+                    actor,
+                    int(parts[0]),
+                    parts[1] if len(parts) == 2 else None,
+                )
+                return "事实已失效，历史和证据仍保留。" if changed else "事实不存在或已失效。"
+            if operation == "restore":
+                if len(parts) != 1 or not parts[0].isdigit():
+                    return "格式：/ai memory restore <fact_id>"
+                row = await self._memory_admin.restore_fact(actor, int(parts[0]))
+                return "事实已恢复。" if row is not None else "该事实不能恢复。"
+            if operation == "merge":
+                if len(parts) != 2 or not all(item.isdigit() for item in parts):
+                    return "格式：/ai memory merge <source_fact_id> <target_fact_id>"
+                row = await self._memory_admin.merge_facts(actor, int(parts[0]), int(parts[1]))
+                return f"已合并到事实 #{row.id}。" if row is not None else "没有找到待合并事实。"
+            if operation == "resolve":
+                if len(parts) < 2 or not all(item.isdigit() for item in parts):
+                    return "格式：/ai memory resolve <preferred_fact_id> <contested_fact_id...>"
+                count = await self._memory_admin.resolve_conflicts(
+                    actor,
+                    int(parts[0]),
+                    tuple(int(item) for item in parts[1:]),
+                )
+                return f"已解决冲突并失效 {count} 条争议事实。"
+            if operation == "maintenance":
+                if len(parts) != 1 or parts[0].casefold() not in {"status", "run"}:
+                    return "格式：/ai memory maintenance status|run"
+                if parts[0].casefold() == "run":
+                    count = await self._memory_admin.maintenance_run(actor)
+                    return f"记忆生命周期维护完成，更新 {count} 条事实。"
+                running, health = await self._memory_admin.maintenance_status(actor)
+                return (
+                    f"维护 Worker：{'运行中' if running else '未运行'}；"
+                    f"过期待处理 {health.expired_active_count}；"
+                )
+            if operation == "doctor":
+                health = await self._memory_admin.consistency_health(actor)
+                reflection = await self._memory_admin.self_reflection_health(actor)
+                reflection_text = ""
+                if reflection:
+                    backlog = reflection["backlog"]
+                    groups = "; ".join(
+                        f"{name}={backlog[name]['events']}"
+                        for name in (
+                            "actionable",
+                            "waiting_retry",
+                            "isolated",
+                            "recent_not_due",
+                            "processing",
+                        )
+                    )
+                    reflection_text = (
+                        f"\nSelf Reflection：运行 {reflection['running']}；{groups}；"
+                        f"今日请求 {backlog['calls_today']}/{backlog['daily_limit']}；"
+                        f"最老可执行 {backlog['oldest_actionable_age_seconds']:.0f} 秒；"
+                        f"流入/排出每小时 {backlog['ingress_events_per_hour']}/"
+                        f"{backlog['drain_events_per_hour']}（None 表示观察不足）。"
+                    )
+                return (
+                    f"Memory V2 一致性：{'正常' if health.healthy else '异常'}；"
+                    f"争议 facts {health.contested_fact_count}；"
+                    f"孤立关系 {health.orphan_relation_count}；"
+                    f"跨目标关系 {health.cross_target_relation_count}；"
+                    f"过期 active {health.expired_active_count}。{reflection_text}"
+                )
+            if not actor.is_superuser:
+                return "权限不足：该记忆检索诊断仅限超级管理员。"
+            if operation == "search":
+                if len(parts) < 3 or parts[0].casefold() not in {"person", "group"}:
+                    return (
+                        "格式：/ai memory search person <Person ID> <query> "
+                        "或 group <Space ID> <query>"
+                    )
+                scope = parts.pop(0).casefold()
+                target = parts.pop(0)
+                target = PersonId.parse(target).text
+                query = " ".join(parts).strip()
+                if not query:
+                    return "检索 query 不能为空。"
+                result = (
+                    await self._memory_admin.search_person(actor, target, query, person_id=target)
+                    if scope == "person"
+                    else await self._memory_admin.search_group(
+                        actor, target, query, space_id=target
+                    )
+                )
+                if not result.hits:
+                    return "没有检索到相关记忆。"
+                return "\n".join(
+                    f"{hit.fact.id}. [{hit.selection_reason}] {hit.fact.content}"
+                    for hit in result.hits
+                )
+            if operation == "embedding":
+                if (
+                    len(parts) != 1
+                    or parts[0].casefold() not in ADMIN_SUBACTIONS["memory.embedding"]
+                ):
+                    return "格式：/ai memory embedding status|doctor|retry|rebuild|purge-old"
+                action = parts[0].casefold()
+                if action == "status":
+                    embedding_health = await self._memory_admin.embedding_status(actor)
+                    profile = (
+                        embedding_health.current_profile[:12]
+                        if embedding_health.current_profile
+                        else "无"
+                    )
+                    return (
+                        f"Embedding 状态：启用 {embedding_health.enabled}，"
+                        f"配置 {embedding_health.provider_configured}，"
+                        f"Profile {profile}，覆盖 {embedding_health.ready_embedding_count}/"
+                        f"{embedding_health.active_fact_count} "
+                        f"({embedding_health.coverage_ratio:.1%})，"
+                        f"等待 {embedding_health.pending_job_count}，"
+                        f"处理中 {embedding_health.processing_job_count}，"
+                        f"失败 {embedding_health.failed_job_count}，"
+                        f"旧 Profile {embedding_health.old_profile_count}。"
+                    )
+                if action == "doctor":
+                    dimensions = await self._memory_admin.embedding_doctor(actor)
+                    return f"Embedding Provider 检查通过：{dimensions} 维 dense vector。"
+                if action == "retry":
+                    count = await self._memory_admin.embedding_retry(actor)
+                    return f"已重新激活 {count} 个失败任务。"
+                if action == "rebuild":
+                    count = await self._memory_admin.embedding_rebuild(actor)
+                    return f"已为当前 Profile 重新排队 {count} 条 active facts。"
+                count = await self._memory_admin.embedding_purge_old(actor)
+                return f"已清理 {count} 个非当前 Embedding Profile。"
+            if len(parts) != 1 or parts[0].casefold() not in {"status", "rebuild"}:
+                return "格式：/ai memory index status|rebuild"
+            index_health = (
+                await self._memory_admin.index_status(actor)
+                if parts[0].casefold() == "status"
+                else await self._memory_admin.rebuild_index(actor)
+            )
+            prefix = "记忆索引已重建" if parts[0].casefold() == "rebuild" else "记忆索引状态"
+            return (
+                f"{prefix}：事实 {index_health.fact_count}，索引 {index_health.indexed_row_count}，"
+                f"缺失 {index_health.missing_row_count}，"
+                f"孤儿 {index_health.orphan_row_count}。"
+            )
+        except (PermissionError, RuntimeError, ValueError) as exc:
+            return str(exc)
+
+    async def _memory_dream_command(self, actor: AdminActor, parts: list[str]) -> str:
+        if not parts:
+            return (
+                "可用操作：plan、start、list、status、show、cancel、resume、retry、"
+                "preview、rollback run、rollback operation。"
+            )
+        operation = parts.pop(0).casefold()
+        if operation not in ADMIN_SUBACTIONS["memory.dream"]:
+            return "未知 Dream 操作，请使用 /ai help。"
+        if operation == "plan" and not parts:
+            run = await self._memory_admin.dream_plan(actor)
+            stats = run.statistics
+            return (
+                f"Dream 计划 {run.public_id}：正式记忆 {stats.eligible_facts}，"
+                f"候选簇 {stats.candidate_clusters}，预计最多调用 "
+                f"{stats.estimated_model_calls} 次；使用 start 启动。"
+            )
+        if operation == "list" and not parts:
+            rows = await self._memory_admin.dream_list(actor)
+            return (
+                "\n".join(
+                    f"{row.public_id} [{row.mode.value}/{row.status.value}] "
+                    f"clusters={row.statistics.candidate_clusters} calls={row.model_calls}"
+                    for row in rows
+                )
+                or "暂无 Dream 任务。"
+            )
+        if operation == "show" and len(parts) in {1, 2}:
+            page = int(parts[1]) if len(parts) == 2 else 1
+            page_result = await self._memory_admin.dream_show(actor, parts[0], page=page)
+            lines = [
+                f"cluster={row.id} [{row.status.value}] kind={row.kind} "
+                f"facts={','.join(map(str, row.fact_ids))} calls={row.model_calls} "
+                f"operations={row.operation_count} error={row.error_category or '-'}"
+                for row in page_result.clusters
+            ]
+            lines.extend(
+                f"operation={row.public_id} [{row.operation.value}/{row.status.value}] "
+                f"cluster={row.cluster_id} sources={','.join(map(str, row.source_fact_ids))} "
+                f"outputs={','.join(map(str, row.output_fact_ids)) or row.output_fact_id or '-'}"
+                for row in page_result.operations
+            )
+            return "\n".join(lines) or "该页没有 Dream 簇。"
+        if operation == "preview" and len(parts) == 2:
+            public_id, raw_cluster_id = parts
+            preview = await self._memory_admin.dream_preview(
+                actor,
+                public_id,
+                cluster_id=int(raw_cluster_id),
+            )
+            lines = [
+                f"Dream 只读预览 cluster={preview.cluster_id} "
+                f"facts={','.join(map(str, preview.fact_ids))}",
+                f"preview={preview.preview_public_id or '-'}; execution will reuse this proposal",
+                f"正文 {preview.source_characters} → {preview.output_characters} 字符 "
+                f"({preview.compression_ratio:.1%})；尚未写入数据库。",
+            ]
+            for index, action in enumerate(preview.actions, start=1):
+                lines.append(
+                    f"[{index}] {action.operation.value} sources={','.join(action.source_refs)}"
+                )
+                if action.content:
+                    lines.append(action.content)
+                for output_index, output in enumerate(action.outputs, start=1):
+                    lines.append(f"  focus={output.focus}")
+                    lines.append(
+                        f"  输出 {output_index} sources={','.join(output.source_refs)} "
+                        f"importance={output.importance}"
+                    )
+                    lines.append(output.content)
+            return "\n".join(lines)
+        if operation in {"start", "status", "cancel", "resume", "retry"}:
+            if len(parts) != 1:
+                return f"格式：/ai memory dream {operation} <run_id>"
+            public_id = parts[0]
+            if operation == "status":
+                row = await self._memory_admin.dream_status(actor, public_id)
+                return (
+                    json.dumps(row.model_dump(mode="json"), ensure_ascii=False, indent=2)
+                    if row is not None
+                    else "没有找到该 Dream 任务。"
+                )
+            if operation == "cancel":
+                return (
+                    "Dream 任务已取消。"
+                    if await self._memory_admin.dream_cancel(actor, public_id)
+                    else "Dream 任务不存在或当前不能取消。"
+                )
+            method = getattr(self._memory_admin, f"dream_{operation}")
+            row = await method(actor, public_id)
+            return f"Dream 任务 {row.public_id} 已进入 {row.status.value}。"
+        if operation == "rollback" and len(parts) == 2:
+            kind, public_id = parts
+            if kind == "operation":
+                changed = await self._memory_admin.dream_rollback_operation(actor, public_id)
+                return "Dream operation 已回滚。" if changed else "没有可回滚的 operation。"
+            if kind == "run":
+                count = await self._memory_admin.dream_rollback_run(actor, public_id)
+                return f"Dream run 已回滚 {count} 个 operation。"
+        return (
+            "格式：/ai memory dream "
+            "<plan|start|list|status|show|preview|cancel|resume|retry|rollback>"
+        )
+
+    @staticmethod
+    def _parse_scoped_operation(
+        argument: str, actor: str | None, allow_target: bool
+    ) -> tuple[str, str, list[str]] | str:
+        if actor is None:
+            return "没有找到当前 Person。"
+        parts = argument.split()
+        if not parts:
+            return "缺少操作名。"
+        operation = parts.pop(0).casefold()
+        target = actor
+        if len(parts) >= 2 and parts[0].casefold() == "user":
+            if not allow_target:
+                return "跨人物操作使用 /ai admin memory 或 /ai admin preference。"
+            try:
+                target = PersonId.parse(parts[1]).text
+            except (TypeError, ValueError):
+                return "目标 Person ID 格式错误。"
+            del parts[:2]
+        return operation, target, parts

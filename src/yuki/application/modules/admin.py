@@ -26,13 +26,11 @@ from yuki.persistence.database import Database
 from yuki.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
-    PrivateUserSettingsRepository,
 )
 from yuki.services.admin.config_admin import ConfigAdminService
 from yuki.services.admin.group_admin import GroupAdminService
 from yuki.services.admin.memory_admin import MemoryAdminService
 from yuki.services.admin.preference_admin import PreferenceAdminService
-from yuki.services.admin.private_access_admin import PrivateAccessAdminService
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +39,6 @@ class AdminBundle:
     memories: MemoryAdminService
     preferences: PreferenceAdminService
     groups: GroupAdminService
-    private_access: PrivateAccessAdminService
     config: ConfigAdminService
     emoji: EmojiAdminService
 
@@ -60,7 +57,6 @@ class AdminModule:
         memory_audit: MemoryAuditService,
         memory_maintenance: MemoryMaintenanceWorker,
         groups: GroupSettingsRepository,
-        private_users: PrivateUserSettingsRepository,
         emoji_repository: EmojiRepository,
         emoji_lifecycle: EmojiLifecycleService,
         emoji_storage: EmojiStorage,
@@ -81,7 +77,6 @@ class AdminModule:
         self._memory_audit = memory_audit
         self._memory_maintenance = memory_maintenance
         self._groups = groups
-        self._private_users = private_users
         self._emoji_repository = emoji_repository
         self._emoji_lifecycle = emoji_lifecycle
         self._emoji_storage = emoji_storage
@@ -110,16 +105,11 @@ class AdminModule:
             dream=self._memory_dream,
         )
         preferences = PreferenceAdminService(
-            memories=self._memories,
             audit=audit,
             memory_mutations=memories,
         )
         groups = GroupAdminService(
             groups=self._groups,
-            audit=audit,
-        )
-        private_access = PrivateAccessAdminService(
-            private_users=self._private_users,
             audit=audit,
         )
         config = ConfigAdminService(self._runtime_config)
@@ -136,7 +126,6 @@ class AdminModule:
             memories,
             preferences,
             groups,
-            private_access,
             config,
             emoji,
         )

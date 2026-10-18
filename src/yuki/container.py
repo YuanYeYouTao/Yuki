@@ -399,7 +399,6 @@ class ApplicationContainer:
             memory_audit=self.memory_audit,
             memory_maintenance=self.memory_maintenance_worker,
             groups=self.groups,
-            private_users=self.private_users,
             emoji_repository=self.emoji_repository,
             emoji_lifecycle=self.emoji_lifecycle,
             emoji_storage=self.emoji_storage,
@@ -415,7 +414,6 @@ class ApplicationContainer:
         self.memory_admin = admin.memories
         self.preference_admin = admin.preferences
         self.group_admin = admin.groups
-        self.private_access_admin = admin.private_access
         self.config_admin = admin.config
         self.emoji_admin = admin.emoji
         self.automation_module = AutomationModule(
@@ -461,7 +459,6 @@ class ApplicationContainer:
         )
         self.plugin_module = PluginModule(
             settings=settings.plugins,
-            superusers=settings.superusers,
             yuki_version=__version__,
             database=self.database,
             models=self.models,
@@ -501,11 +498,13 @@ class ApplicationContainer:
             web_module=self.web_module,
         )
         from yuki.application.modules.admin_api import build_admin_api
+        from yuki.client_api.identity import ClientIdentityService
 
+        self.client_identity = ClientIdentityService(self.database)
         self.admin_api = build_admin_api(self)
         from yuki.client_api.http import ClientApi
 
-        self.client_api = ClientApi(self.admin_api.commands.identities)
+        self.client_api = ClientApi(self.client_identity)
         from yuki.services.client_link import ClientLinkCommands
 
         self.client_links = ClientLinkCommands(self.client_api.identity, self.gateway_registry)
@@ -528,6 +527,8 @@ class ApplicationContainer:
             participation=self.semantic_participation,
         )
         self.command_service = CommandService(
+            admin_operations=self.admin_api.commands,
+            admin_queries=self.admin_api.queries,
             settings=settings,
             people=self.people,
             memories=self.memories,
@@ -536,8 +537,6 @@ class ApplicationContainer:
             runtime_config=self.runtime_config,
             memory_admin=self.memory_admin,
             preference_admin=self.preference_admin,
-            group_admin=self.group_admin,
-            private_access_admin=self.private_access_admin,
             config_admin=self.config_admin,
             permission_catalog=self.permission_catalog,
             vision_service=self.vision,
@@ -584,7 +583,6 @@ class ApplicationContainer:
             chat=self.chat,
             rate_limiter=self.rate_limiter,
             concurrency=self.concurrency,
-            onebot_connected=self.onebot_connected,
             canonical_ingress=self.canonical_ingress,
             client_links=self.client_links,
             group_recovery=QQGroupRecovery(
@@ -596,12 +594,6 @@ class ApplicationContainer:
             memory_worker=self.memory_worker,
             autonomous_groups=self.autonomous_groups,
             runtime_config=self.runtime_config,
-            memory_admin=self.memory_admin,
-            preference_admin=self.preference_admin,
-            group_admin=self.group_admin,
-            private_access_admin=self.private_access_admin,
-            config_admin=self.config_admin,
-            permission_catalog=self.permission_catalog,
             vision_service=self.vision,
             automation_service=self.automation,
             automation_repository=self.automation_repository,
@@ -721,7 +713,6 @@ class ApplicationContainer:
         context = HostPluginContext(
             plugin_id=manifest.id,
             approved_permissions=permissions,
-            superuser_ids=self.settings.superusers,
             scheduler_task_limit=min(
                 manifest.limits.background_tasks,
                 self.settings.plugin_background_task_limit,
@@ -858,7 +849,8 @@ class ApplicationContainer:
 
     def _register_lifecycle(self) -> None:
         self.lifecycle.register(
-            "control_recovery", start=self.admin_api.commands.receipts.recover_interrupted_controls
+            "control_recovery",
+            start=self.admin_api.commands.executor.receipts.recover_interrupted_controls,
         )
         self.lifecycle.register(
             "social_recovery", start=self.social_service.receipts.recover_interrupted

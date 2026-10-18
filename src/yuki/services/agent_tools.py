@@ -175,6 +175,10 @@ class ToolRuntime:
             object.__setattr__(self, "actor_context", incoming)
 
     @property
+    def actor_person_id(self) -> str | None:
+        return self.actor_context.person_id if self.actor_context is not None else None
+
+    @property
     def actor_user_id(self) -> str:
         return self.actor_context.user_id if self.actor_context is not None else ""
 
@@ -782,6 +786,13 @@ class AgentToolService:
     ) -> ToolExecutionResult:
         """Execute one tool and return JSON, including safe model-readable errors."""
 
+        from yuki.identity.authority import person_is_superuser
+
+        async with self._ledger._database.sessions() as session:
+            runtime = replace(
+                runtime,
+                actor_is_superuser=await person_is_superuser(session, runtime.actor_person_id),
+            )
         snapshot = runtime.runtime_config or await self._runtime_config.snapshot(
             user_id=runtime.person_id,
             group_id=runtime.space_id,
@@ -900,10 +911,10 @@ class AgentToolService:
 
                     try:
                         data = await read_entry(self._ledger._database, runtime, arguments)
-                        return self._result(data=data)
+                        return self._result(data=data, error=data.get("error"))
                     except SocialError as exc:
                         return self._result(
-                            error=str(exc), detail="仅 App 主会话可读取本人其他私聊入口"
+                            error=str(exc), detail="仅 App/ACP 个人会话可读取本人其他私聊入口"
                         )
 
                 if name in {tool.name for tool in social_tool_definitions()}:

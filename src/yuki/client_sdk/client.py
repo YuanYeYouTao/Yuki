@@ -198,7 +198,7 @@ class PersonalClient:
             raise ClientProblem(original["problem_code"], original.get("problem"))
         state = "accepted"
         if original["operation_kind"] == "message":
-            if original.get("result_event_ids"):
+            if original.get("turn", {}).get("state") == "ended":
                 state = "result"
         elif original["operation_kind"] == "client.work_input":
             item = await self.get(f"works/{original['target']}")

@@ -138,15 +138,15 @@ class MemoryEmbeddingRuntime:
             documents=self.documents,
         ).doctor()
 
-    async def retry(self) -> int:
+    async def retry(self, *, actor_person_id: str | None = None) -> int:
         if self.jobs is None:
             raise RuntimeError("memory embedding is not enabled")
-        return await self.jobs.retry_failed()
+        return await self.jobs.retry_failed(actor_person_id=actor_person_id)
 
-    async def rebuild(self) -> int:
+    async def rebuild(self, *, actor_person_id: str | None = None) -> int:
         if self.jobs is None:
             raise RuntimeError("memory embedding is not enabled")
-        return await self.jobs.reconcile(force=True)
+        return await self.jobs.reconcile(force=True, actor_person_id=actor_person_id)
 
     async def purge_old(self) -> int:
         if self.jobs is None or self._profile_id is None:

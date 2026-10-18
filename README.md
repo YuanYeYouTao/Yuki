@@ -47,7 +47,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 升级步骤、兼容性变化与各项验证范围见发布说明。模型响应、工具请求与宿主资源仍会影响实际体验；版本更新不保证固定的延迟、费用或缓存命中率。
 
-**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence＋子会话、群按 SpaceBinding＋topic 隔离；人物记忆仍沿内部 Person。`yuki acp` 让外部 ACP 客户端连接服务器，每个 session 有独立 Conversation，沿原 Main、固定工具和发送回执，见[个人 API](docs/architecture/client-api.md#acp-方向-a)。Plugin API **4.0**、Main 合同 **22**、迁移 **0135**；配置及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地验证、合并和上线分别记录，正式 3.9.0 的历史说明保留如上。
+**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence＋子会话、群按 SpaceBinding＋topic 隔离；人物记忆仍沿内部 Person。`yuki acp` 让外部 ACP 客户端连接服务器，每个 session 有独立 Conversation，沿原 Main、固定工具和发送回执，见[个人 API](docs/architecture/client-api.md#acp-方向-a)。Plugin API **4.0**、Main 合同 **23**、迁移 **0137**；配置及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地验证、合并和上线分别记录，正式 3.9.0 的历史说明保留如上。
 
 当前源码的 Python 模块和发行包统一为 `yuki`，管理、个人客户端与 ACP 共用 `yuki` 命令，服务进程使用 `yuki-bot`；旧命令别名已删除。源码开发使用 `uv sync --all-extras` 或本地 Docker 构建。新发行镜像使用 `ghcr.io/yuanyeyoutao/yuki`，尚未据此发布新版本；下方正式 3.9.0 的下载、镜像和安装步骤继续对应其原 Release 产物。
 
@@ -108,7 +108,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 - Linux amd64 或 arm64（包括 Apple Silicon 上的 Linux 虚拟机），或运行 Linux 容器的 Docker Desktop；
 - Docker Engine 和 Docker Compose v2；
 - 可用的模型服务配置，支持项目接入的 Chat Completions 或 Responses 协议；
-- SnowLuma QQ 网关及登录账号；NapCat 支持已退役，现有网关抽象仍可用于其他实现。
+- 使用 QQ 时准备 SnowLuma 网关及登录账号；仅 TG/App/ACP 部署无需 QQ 账号。NapCat 支持已退役，现有网关抽象仍可用于其他实现。
 
 从 [3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0) 下载部署包，解压后可以手动填写 `.env` 和模型配置，也可以使用配置向导。
 
@@ -181,7 +181,7 @@ docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
 一个数据库对应一个长期存在的 Yuki。人物、群空间、QQ 账号和网关连接分别建模，聊天历史与记忆不绑定在某一次登录连接上。工具由后端执行权限、预算、幂等和审计检查。
 
 当前开发分支提供 QQ、Telegram、个人客户端与管理 CLI；旧浏览器管理界面与旧控制面实现已从源码退役。
-管理入口调用原领域服务与回执，权限及当前方法见[管理 API](docs/architecture/admin-api.md)。
+管理入口调用原领域服务与回执，超级管理员资格属于 Person。当前开发版本的升级和 `/ai admin` 语法见[人物授权与命令迁移](docs/operations/person-admin-control-plane-upgrade.md)，权限及方法见[管理 API](docs/architecture/admin-api.md)。
 个人客户端 API 与参考 CLI 已按 #299 完成本地实现和验证，见[交付记录](docs/operations/issue-299-delivery-2026-10-15.md)；合并与上线状态分别记录。
 
 ```bash

@@ -1,37 +1,31 @@
 # 管理控制面合同
 
-按 [共同开发约束](development-contract.md) 开发。当前管理入口为
-[管理 API 与 CLI](admin-api.md)，旧浏览器管理界面与旧查询／命令适配层已从源码退役。
-本文描述源码，不表示生产已经升级。
+按[共同开发约束](development-contract.md)开发。当前管理入口为[管理 API 与 CLI](admin-api.md)与显式 `/ai admin`；旧浏览器控制面已退役。源码、PR、合并与生产分别记录。
 
-## 应用边界
+## 主体与入口
 
-`ApplicationContainer.admin_api` 使用当前 Bot 的数据库、PluginManager、模型文件服务、
-Work 与诊断事实。operator CLI 通过 Bearer HTTP 调用有限方法；QQ `/ai` 沿原领域服务。
-个人客户端使用独立的 Person 设备凭据，按 #299 的后续阶段接入，不借 operator 身份发言。
+超级管理员资格是 `Person.is_superuser` 的持久事实。平台账号只解析当前真实人物，解绑不丢资格，转给另一人不携带资格。有效授权保原 actor Person ID，核原人物与当前 root 启用及当前资格；合并保双方当前资格，撤销后不从旧成员恢复。operator 保独立 Bearer 与明确能力，不能冒充人物发言。
 
-`admin/authority/` 提供真实主体、授权判断、目标、问题和当前命令类型；角色不隐含能力。
-权限在执行处核验，读取正文单独授权。不提供通用 RPC、任意 SQL、任意网关动作、
-工作区管理终端或不存在的个人端接口。
+App/ACP 个人消息不解析管理员或插件直达命令。Person 是超管不改变设备凭据用途，也不动态改写模型固定工具声明。长期执行中的写入、特权读取和外部效果按当前授权处理，原已发生效果和 paid 事实保留。
+
+## 共同应用与领域
+
+`admin/operations/` 按身份、群、运行配置、插件、模型和 Work 组织共同应用操作；`admin/queries.py` 提供原事实的只读投影。HTTP/CLI 和 `services/commands/` 的聊天适配只解析、调用、呈现，不互相调用字符串 handler，不复制身份与领域规则。
+
+原人物领域、RuntimeConfigService、PluginManager、Memory mutation、Emoji 生命周期和 manage_work 继续拥有实际修改。公共身份 owner 由应用装配一次构造，分别注入个人 API、关联命令和管理操作，不依赖 Admin API 对象取得身份服务。
+
+管理语法为 `/ai admin <领域> <操作>`；普通会话控制、本人 Memory/Preference/Automation、`/ai link`、`forgetme` 与插件注册调用各保真实职责。停用/未登记群恢复保接纳前真实连接与路由证明，不依赖普通聊天先成功入账。Person enable/disable 是全局人物启停，旧 private/on/off 管理语法已删除。
 
 ## 原回执与事务
 
-`persistence/command_receipts.py` 使用原 `control_command_receipts` 与审计关联字段。
-数据库修改及其回执共用一个短事务，领域拒绝先回滚本次修改。
-外部命令先登记原意图，在事务外执行真实效果，再登记结果。
-同一主体和请求号核对完整操作指纹；重复查询或提交不产生新的效果资格。
+共同执行器复用 `control_command_receipts` 和原审计。数据库修改与控制回执在同一短事务，外部效果先登记原意图，事务外执行后结算；Memory 等既有领域回执不被第二套完成表替换。
 
-原 operation ID、历史状态与领域运行引用保留。中断或确认丢失沿原 ID 查证，
-启动将遗留 running 标为 unknown，不重跑；不提供清空 unknown 或强制成功入口。
-回执验证核对身份、审计关联、资源 ID、revision 和公开结果，不另造领域完成门槛。
+普通聊天管理请求使用已入账事件本身的 canonical UUID 关联原请求，业务来源仍沿原内部账本主键；保存原 revision 后重放不读取今日 revision 重算指纹。平台消息号不重建已有业务身份。重复请求只读原回执，不同主体或新请求不全局合并。
 
-插件批准、配置与启停由原服务决定；Work 管理调用原 `manage_work`，不改来源、预算或
-已接纳效果。模型连接使用同一个 `ConfigFileService`，原子保存并热应用。
-密钥保留在原私有 sidecar 中，不进入响应、审计正文或运行容器的工具环境。
+running/unknown、确认丢失沿原 ID 查证；未知不等于失败，不授予重发资格。新操作和旧操作均有真实 replay reader，不能因改命令语法删除升级证据。发送中文提示失败不重复执行已经完成的修改。
 
-## 退役与切换
+人物/Binding/Presence 恢复和对象发现有明确管理入口；Work 详情提供当前 revision。停用 Presence 保原 ID、作者和投递回执，不宣称真实连接已经断开或上线。模型密钥沿原私有 sidecar 原子保存，同别名可轮换；离线插件配置使用已批准定义，不隐式启动插件。
 
-旧前端、浏览器会话、CSRF、旧方法表、DTO 与读模型不进入新 API。
-原历史效果证据不随界面删除。源码与宿主 Manager 按同一版本交付；
-生产切换先更新 Bot，再更新 Manager，并核对原 control running 回执。
-实际切换与待核验项目记录在 [#299 交付记录](../operations/issue-299-delivery-2026-10-15.md)。
+个人 GET 鉴权只读，不更新辅助活跃时间。诊断投影分别展示各平台与现有环境证据，无证据为 unknown；诊断不制造业务完成事实。
+
+升级去除旧 SUPERUSERS 的顺序及一次候选清单见[人物授权升级](../operations/person-admin-control-plane-upgrade.md)。原 #299 历史交付见[当时记录](../operations/issue-299-delivery-2026-10-15.md)。

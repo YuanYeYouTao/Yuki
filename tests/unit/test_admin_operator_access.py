@@ -103,7 +103,9 @@ async def test_shipped_operator_template_loads_only_current_explicit_grants(data
         principal = await access.authenticate(credential, source=PrincipalSource.CLI)
         assert principal.principal_id.text == declaration["principal_id"]
         assert principal.granted_capabilities == frozenset(capabilities)
-        assert not principal.allows("control.plugin.mutate")
+        assert principal.allows("identity.person.superuser")
+        assert principal.allows("control.plugin.mutate")
+        assert not principal.allows("control.workspace.metadata.read")
 
 
 def _shipped_operator_template():

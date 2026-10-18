@@ -15,7 +15,7 @@ override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`�
 [`config/control-operators.example.toml`](../../config/control-operators.example.toml)。
 实际 token 放在声明所指的服务器环境变量中。CLI 从 `YUKI_CONTROL_CREDENTIAL`
 取得同一凭据，以 `Authorization: Bearer …` 逐次认证。未配置 operator 时拒绝认证；
-角色不授予能力，凭据轮换立即影响后续请求。operator 不能凭管理权限以某个 Person 发言。
+operator 角色只作描述，能力逐项声明；Person 超管映射到明确的有限管理能力，凭据轮换立即影响后续请求。operator 不能凭管理权限以某个 Person 发言。
 
 旧浏览器管理入口、前端与旧控制面查询层已从源码退役。管理 API 使用同一个模型文件服务
 与原领域服务，不创建浏览器登录会话，也不需要 Cookie 或 CSRF token。
@@ -30,6 +30,11 @@ override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`�
 | `GET /health` | `admin health` | `control.health.read` |
 | `GET /operations/{id}` | `admin operation <id>` | `control.operation.read` |
 | `GET /traces/{turn\|work\|event}/{id}` | `admin trace <kind> <id>` | `control.execution.metadata.read`；`content=true` 另需 `control.execution.content.read` |
+| `GET /persons`、`GET /bindings`、`GET /presences`、`GET /works` | 各领域 `list --after <cursor> --limit <n>` | 对应人物/绑定/Presence/Work 读取能力 |
+| `GET /presences/{id}`、`POST /presences/{id}` | `admin presence show\|enable\|disable\|ingest` | `identity.presence.read\|set_ingest` |
+| `GET /works/{id}` | `admin work show <id>`，含当前 revision | `control.work.read` |
+| `POST /persons/{id}/enable`、`POST /bindings/{id}/enable` | `admin person\|binding enable` | `identity.person.enable\|identity.binding.enable` |
+| `POST /persons/{id}/superuser/{grant\|revoke}` | `admin person superuser grant\|revoke <id>` | `identity.person.superuser` |
 | `POST /persons`；`GET /persons/{id}`；`POST /persons/{id}/disable` | `admin person create\|show\|disable` | 对应 `identity.person.create\|read\|disable` |
 | `POST /persons/{id}/bindings`；`GET /bindings/{id}`；`POST /bindings/{id}/disable` | `admin binding attach\|show\|disable` | 对应 `identity.binding.attach\|read\|disable` |
 | `POST /persons/{id}/client-pair`；`POST /devices/{id}/revoke` | `admin client pair --person <id>`；`admin client revoke <id>` | `identity.client.pair\|revoke` |
@@ -48,10 +53,10 @@ override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`�
 轨迹查询使用内部事件 ID 与原 turn/Work ID，按有效期过滤，使用 `after` 与 `limit`
 续读；正文单独授权。它不读取私有恢复 journal，也不制造恢复或重新发送资格。
 
-新建 Person 的 revision 为 1；挂接绑定使用该 Person 当前 revision，仅接受从未绑定过的
-平台账号，且不能把 Yuki 自己的 Presence 挂成 Person。`app` 绑定由设备配对生成，不能手动挂接。
+新建 Person 的 revision 为 1；挂接绑定使用该 Person 当前 revision，仅接受没有当前 Binding 记录的
+平台账号，且不能把 Yuki 当前启用的 Presence 挂成 Person。`app` 绑定由设备配对生成，不能手动挂接。
 转移为原绑定保留旧 Person 与会话，另建目标 Person 的绑定和会话；旧主动路由暂停。
-`app` 绑定不可转移。停用保持历史、Memory、Work 和回执归属。平台标识沿原通用字符串合同。
+服务器生成的 `app/acp` 绑定不可手工挂接或转移。disabled 外部账号可合法转移；已转移的历史 Binding 不恢复旧时段。停用保持历史、Memory、Work 和回执归属。平台标识沿原通用字符串合同。
 配对码、撤销、转移与遗忘使用 `{request_id}`，转移另需 `to_person`，不需要 revision。
 配对码明文只返回一次；相同请求重放返回原码 ID 与到期时间，不能取回明文。
 
@@ -71,13 +76,13 @@ override 中将同一目录挂载为可写（`./webui-config:/app/webui-config`�
 外部命令先提交原表中的意图，在事务外调用真实 Manager／文件服务，再登记结果。
 使用原 `control_command_receipts`，不保存请求正文或密钥。
 
-同一 operator、同一请求号、同一操作与内容返回原结果；换内容返回
+同一原主体、同一请求号、同一操作与内容返回原结果；换内容返回
 `idempotency_conflict`。HTTP 中断或超时保留原请求号，查原回执；CLI 不自动重发。
 `admin operation` 同时接受完整 operation ID，或当前 operator 的 request UUID。
 `running`／`unknown` 沿原 ID 查证，未知不重发；CLI 遇到未确认结果会停止当前流程，
 部署向导不会把它当成插件配置已完成。无“清空 unknown”入口。
 
-插件授权、版本检查、启动与停止由原 PluginManager 执行。配置使用已注册 schema，
+插件授权、版本检查、启动与停止由原 PluginManager 执行。配置使用已批准安装定义的 schema，首次启用前、停用或启动失败后均可修正，查询不启动插件；
 observe 只调用运行中插件的观察合同。通知只允许原领域规则证明可重试的发送前失败；
 已发送、未知、处理中或预算耗尽均不重发，已有尝试次数保持不变。
 
@@ -102,5 +107,29 @@ yuki admin binding attach --person <person-id> --platform qq --account <account>
 ```
 
 `--request-id` 可显式保留原请求；不要在未知结果后换 ID 重做。密钥从命令进程环境读取，
-不作为命令行参数传入。配置覆盖、群启停、私聊权限、表情与 Memory rebuild 继续使用原 `/ai`
+不作为命令行参数传入。配置覆盖、Space 启停、人物启停、表情与 Memory rebuild 使用 `/ai admin <领域>`
 命令，自主参与参数沿原 JSON 文件热更新；本阶段不新增这些能力的第二套管理接口。
+
+
+## 人物资格、恢复与查询
+
+超管资格持久化于 Person，换账号/平台不改变，账号转移不携带资格。Person 停用暂停使用而不撤销资格；显式 revoke 后旧 grant 请求重放只返回原结果，不再次授予。可无账号，不能以昵称作为授权键。
+
+列表返回 `items/next_cursor`，沿内部 ID 续读。Binding 可按 person_id、platform、external_account_id 明确检索；外部账号仅用于发现，后续操作使用内部 ID。人物详情列出实际绑定。Work 列表/详情含原来源分类（origin/owner/initiative_run_id），详情复用原暂停原因、信号和可执行操作投影；不含原始 source 正文、恢复 journal、checkpoint 或工具正文。
+
+Presence POST body 在原 request_id/expected_revision 外接受 enabled、ingest_eligible。启停与接入资格分开，保持历史作者/原投递事实；恢复不代表连接在线。所有管理 GET 没有 DML。
+
+```sh
+yuki admin person list
+yuki admin person show <PersonID>
+yuki admin person superuser grant <PersonID> --revision <当前revision>
+yuki admin person superuser revoke <PersonID> --revision <当前revision>
+yuki admin person enable <PersonID> --revision <当前revision>
+yuki admin binding list --person <PersonID>
+yuki admin binding enable <BindingID> --revision <当前revision>
+yuki admin presence disable <PresenceID> --revision <当前revision>
+yuki admin work list --state waiting_user
+yuki admin work show <WorkID>
+```
+
+CLI、HTTP 与聊天共用 `admin/operations`，秘密不通过聊天参数提交。聊天语法和一次升级准备见[人物授权升级与命令迁移](../operations/person-admin-control-plane-upgrade.md)。

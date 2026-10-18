@@ -14,6 +14,7 @@ from yuki.automation.tools import AutomationToolService
 from yuki.automation.worker import AutomationWorker
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.domain.tool_actor import ToolActor
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.llm.fake import FakeLLMProvider
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_repository import WorkRepository
@@ -31,7 +32,7 @@ async def setup_run(
     principal="person",
     trigger=None,
     max_runs=None,
-    superusers_csv=None,
+    privileged=False,
     goal="完成任务",
     constraints=(),
     work_enabled=True,
@@ -39,6 +40,10 @@ async def setup_run(
     provider=None,
 ):
     env = await social_env(database, tmp_path)
+    if privileged:
+        async with database.immediate_session() as writer:
+            person = await writer.get(CanonicalPersonModel, env.person)
+            person.is_superuser = True
     if delivery == "self_private":
         await env.router.cas_takeover_person(env.person)
     turns = 0
@@ -69,7 +74,6 @@ async def setup_run(
         enabled_groups_csv="20001",
         runtime_work_enabled=work_enabled,
         self_memory_enabled=self_memory_enabled,
-        **({"superusers_csv": superusers_csv} if superusers_csv is not None else {}),
     )
     harness = build_harness(database, settings, provider)
     chat = harness.processor._chat

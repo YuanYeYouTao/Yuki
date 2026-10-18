@@ -21,7 +21,7 @@ from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.domain.tool_actor import ToolActor
 from yuki.gateway.providers.telegram import TelegramAPIError
-from yuki.identity.db_models import IdentityBindingModel, PresenceModel
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.persistence.repositories import EventLedgerRepository
@@ -252,10 +252,11 @@ async def test_onebot_original_receipt_precedes_all_upstream_lifecycle_gates(
                 raise TimeoutError("lost original acknowledgement")
             return result
 
+    async with database.immediate_session() as session:
+        (await session.get(CanonicalPersonModel, event.author_person_id)).is_superuser = True
     plugin = "test.original-onebot"
     host = HostPluginContext(
         plugin_id=plugin,
-        superuser_ids=("10001",),
         approved_permissions=(PluginPermission.ONEBOT_SEND, PluginPermission.ONEBOT_MUTATE),
         services=PluginFacadeServices(
             ledger=EventLedgerRepository(database),

@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from uuid import UUID
 
 from pydantic import PrivateAttr
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.adapters.onebot.sender import parse_onebot_send_receipt
 from yuki.admin.config_service import RuntimeConfigService
@@ -63,6 +64,7 @@ from yuki.persistence.repositories import (
     GroupSettingsRepository,
     PeopleRepository,
 )
+from yuki.persistence.unit_of_work import optional_session
 from yuki.plugin_host.audit import PluginAuditService
 from yuki.plugin_host.canonical_projection import (
     projection_from_event,
@@ -484,7 +486,6 @@ class HostPluginContext:
         "_secrets",
         "_services",
         "_storage",
-        "_superuser_ids",
         "_vision",
         "_web",
     )
@@ -494,7 +495,6 @@ class HostPluginContext:
         *,
         plugin_id: str,
         approved_permissions: Iterable[PluginPermission],
-        superuser_ids: Iterable[str] = (),
         services: PluginFacadeServices | None = None,
         features: Iterable[str] = DEFAULT_FEATURES,
         scheduler_task_limit: int = 4,
@@ -506,7 +506,6 @@ class HostPluginContext:
         self._plugin_id = plugin_id
         self._closed = False
         self._approved_permissions = frozenset(approved_permissions)
-        self._superuser_ids = frozenset(str(item) for item in superuser_ids)
         self._services = services or PluginFacadeServices()
         self._logger = logging.getLogger(f"yuki.plugin.{plugin_id}")
         self._features = FeatureRegistry(features)
@@ -773,7 +772,7 @@ class HostPluginContext:
             direct_user_event or delegated_task
         ):
             raise PluginPermissionError(
-                "operation requires direct or delegated SUPERUSERS authority"
+                "operation requires direct or delegated Person administrator authority"
             )
 
     def _require_any(
@@ -798,27 +797,29 @@ class HostPluginContext:
             require_invocation=require_invocation,
         )
 
-    async def _is_real_superuser(self, invocation: PluginInvocation) -> bool:
+    async def _is_real_superuser(
+        self, invocation: PluginInvocation, *, session: AsyncSession | None = None
+    ) -> bool:
         from yuki.identity.authority import person_is_superuser
 
         ledger = self._services.ledger
         if ledger is None:
             return False
-        async with ledger._database.sessions() as session:
-            return await person_is_superuser(
-                session, invocation.actor_person_id, self._superuser_ids
-            )
+        async with optional_session(ledger._database, session, write=False) as reader:
+            return await person_is_superuser(reader, invocation.actor_person_id)
 
     def _control_access(self) -> ControlAccess:
         people = self._services.people
         if people is None:
             raise PluginPermissionError("control principal cannot be resolved")
-        return ControlAccess(people._database, superuser_ids=self._superuser_ids)
+        return ControlAccess(people._database)
 
     async def _require_user_scope(
         self,
         invocation: PluginInvocation,
         user_id: str,
+        *,
+        session: AsyncSession | None = None,
     ) -> str:
         normalized = str(UUID(user_id))
         mentioned = (
@@ -834,16 +835,20 @@ class HostPluginContext:
         if ledger is not None and not same_actor and not same_mentioned:
             from yuki.identity.person_identity import same_person_id
 
-            async with ledger._database.sessions() as session:
+            async with optional_session(ledger._database, session, write=False) as reader:
                 same_actor = bool(
                     invocation.actor_person_id
-                    and await same_person_id(session, normalized, invocation.actor_person_id)
+                    and await same_person_id(reader, normalized, invocation.actor_person_id)
                 )
                 for person_id in mentioned:
-                    if await same_person_id(session, normalized, person_id):
+                    if await same_person_id(reader, normalized, person_id):
                         same_mentioned = True
                         break
-        if not same_actor and not same_mentioned and not await self._is_real_superuser(invocation):
+        if (
+            not same_actor
+            and not same_mentioned
+            and not await self._is_real_superuser(invocation, session=session)
+        ):
             raise PluginPermissionError("target user is outside the current real turn")
         return normalized
 
@@ -851,9 +856,13 @@ class HostPluginContext:
         self,
         invocation: PluginInvocation,
         group_id: str,
+        *,
+        session: AsyncSession | None = None,
     ) -> str:
         normalized = str(UUID(group_id))
-        if normalized != invocation.space_id and not await self._is_real_superuser(invocation):
+        if normalized != invocation.space_id and not await self._is_real_superuser(
+            invocation, session=session
+        ):
             raise PluginPermissionError("target group is outside the current real turn")
         return normalized
 
@@ -1208,11 +1217,12 @@ class _MemoryFacade:
     ) -> tuple[Mapping[str, JsonValue], ...]:
         invocation = self._host._require(PluginPermission.MEMORY_PERSON_READ)
         assert invocation is not None
-        target = await self._host._require_user_scope(invocation, user_id)
         memories = _require_service(self._host._services.memories, "memory")
-        rows = await memories.list_person(
-            person_id=target, limit=_bounded_limit(limit, maximum=100)
-        )
+        async with memories.repository.transaction(read_snapshot=True) as session:
+            target = await self._host._require_user_scope(invocation, user_id, session=session)
+            rows = await memories.list_person(
+                person_id=target, limit=_bounded_limit(limit, maximum=100), session=session
+            )
         return tuple(_memory_record(row, "person") for row in rows)
 
     async def list_group(
@@ -1222,9 +1232,12 @@ class _MemoryFacade:
     ) -> tuple[Mapping[str, JsonValue], ...]:
         invocation = self._host._require(PluginPermission.MEMORY_GROUP_READ)
         assert invocation is not None
-        target = await self._host._require_group_scope(invocation, group_id)
         memories = _require_service(self._host._services.memories, "memory")
-        rows = await memories.list_group(space_id=target, limit=_bounded_limit(limit, maximum=100))
+        async with memories.repository.transaction(read_snapshot=True) as session:
+            target = await self._host._require_group_scope(invocation, group_id, session=session)
+            rows = await memories.list_group(
+                space_id=target, limit=_bounded_limit(limit, maximum=100), session=session
+            )
         return tuple(_memory_record(row, "group") for row in rows)
 
     async def search(
@@ -1273,6 +1286,11 @@ class _MemoryFacade:
             ),
             runtime=await _runtime_snapshot(self._host, invocation),
         )
+        self._host._require(PluginPermission.MEMORY_SEARCH)
+        if scope_type == "person":
+            await self._host._require_user_scope(invocation, subject_id)
+        else:
+            await self._host._require_group_scope(invocation, subject_id)
         return tuple(
             {
                 **_memory_record(hit.fact, scope_type),
@@ -3075,7 +3093,7 @@ def _memory_mutation_subject(
         conversation_key=invocation.conversation_key,
         decision_actor_type="plugin",
         decision_actor_id=invocation.plugin_id,
-        # HostPluginContext derives this from its immutable SUPERUSERS set;
+        # HostPluginContext resolves this from the current Person authority;
         # plugin code never supplies it.
         actor_is_superuser=is_superuser,
         person_id=invocation.actor_person_id,

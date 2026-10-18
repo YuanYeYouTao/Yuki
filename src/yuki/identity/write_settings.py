@@ -3,7 +3,7 @@
 Writers read this immutable process snapshot. Task-local storage is not
 used: worker tasks created before configure must see the same values as
 the parent. Missing configuration fail-closes instead of silently
-treating everyone as a non-superuser, non-ignored account.
+treating every account as a non-ignored account.
 """
 
 from __future__ import annotations
@@ -16,9 +16,8 @@ from yuki.identity.errors import CanonicalIdentityError
 
 @dataclass(frozen=True, slots=True)
 class IdentityWriteSettings:
-    """Frozen SUPERUSERS / IGNORED_BOT_USERS for live identity classification."""
+    """Frozen IGNORED_BOT_USERS for live identity classification."""
 
-    superusers: frozenset[str] = frozenset()
     ignored_bot_users: frozenset[str] = frozenset()
 
 
@@ -38,7 +37,6 @@ def configure_identity_write_settings(settings: IdentityWriteSettings | Settings
     global _SNAPSHOT
     if isinstance(settings, Settings):
         snapshot = IdentityWriteSettings(
-            superusers=settings.superusers,
             ignored_bot_users=settings.ignored_bot_users,
         )
     else:

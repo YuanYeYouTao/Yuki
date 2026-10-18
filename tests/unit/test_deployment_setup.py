@@ -25,6 +25,7 @@ from yuki.deployment_setup.service import (
     build_model_profiles,
     commit_configuration,
     compose_profiles_with_features,
+    prepare_operator_configuration,
     selected_gateway_providers,
     validate_configuration,
 )
@@ -64,7 +65,7 @@ def test_snowluma_selection_prepares_only_its_real_credentials(tmp_path: Path) -
     draft = _SetupDraft(environment, "chat_completions", False)
     ui = TerminalUI(no_color=True, input_fn=lambda _prompt: "", output=StringIO())
     _page_gateway(SetupPaths(tmp_path), ui, draft)
-    assert not environment["SUPERUSERS"]
+    assert "SUPERUSERS" not in environment
     assert environment["ONEBOT_ACCESS_TOKEN"] and environment["SNOWLUMA_VNC_PASSWORD"]
 
 
@@ -110,6 +111,13 @@ def test_new_setup_writes_selected_profiles_without_retired_gateway_artifacts(
     assert environment["COMPOSE_PROFILES"] == profiles
     assert environment["ONEBOT_ACCESS_TOKEN"] == template.values()["ONEBOT_ACCESS_TOKEN"]
     assert environment["SNOWLUMA_VNC_PASSWORD"] == template.values()["SNOWLUMA_VNC_PASSWORD"]
+    policy = tomllib.loads((tmp_path / environment["CONTROL_OPERATORS_FILE"]).read_text("utf-8"))
+    operator = policy["operators"][0]
+    assert operator["token_env"] == "YUKI_CONTROL_OPERATOR_TOKEN"
+    assert "identity.person.superuser" in operator["capabilities"]
+    assert "person_id" not in operator
+    assert len(environment["YUKI_CONTROL_OPERATOR_TOKEN"]) >= 32
+    assert environment["YUKI_CONTROL_OPERATOR_TOKEN"] not in ui._output.getvalue()
     assert not any(key.startswith("NAPCAT_") for key in environment)
     assert not (paths.root / "data/setup/gateway-action.json").exists()
     assert not paths.restart_required.exists()
@@ -117,6 +125,41 @@ def test_new_setup_writes_selected_profiles_without_retired_gateway_artifacts(
         (paths.root / directory).exists()
         for directory in ("napcat-data", "napcat-config", "napcat-plugins")
     )
+
+
+def test_operator_setup_preserves_policy_and_credential(tmp_path: Path) -> None:
+    paths = SetupPaths(tmp_path)
+    environment = {
+        "CONTROL_OPERATORS_FILE": "config/reviewed-operators.toml",
+        "YUKI_CONTROL_OPERATOR_TOKEN": "existing-credential-must-be-preserved",
+    }
+    original = dict(environment)
+    assert prepare_operator_configuration(paths, environment) is None
+    assert environment == original
+    assert not (tmp_path / "config/control-operators.toml").exists()
+
+
+async def test_generated_operator_uses_existing_authentication(database, tmp_path, monkeypatch):
+    from yuki.admin.authority.operators import ControlOperatorAccess
+    from yuki.admin.authority.principal import PrincipalSource
+
+    environment = {}
+    policy = prepare_operator_configuration(SetupPaths(tmp_path), environment)
+    path = tmp_path / environment["CONTROL_OPERATORS_FILE"]
+    path.parent.mkdir()
+    path.write_text(policy, encoding="utf-8")
+    credential = environment["YUKI_CONTROL_OPERATOR_TOKEN"]
+    monkeypatch.setenv("YUKI_CONTROL_OPERATOR_TOKEN", credential)
+    principal = await ControlOperatorAccess(database, path).authenticate(
+        credential, source=PrincipalSource.CLI
+    )
+    assert principal.person_id is None
+    assert principal.allows("identity.person.create")
+    assert principal.allows("identity.person.superuser")
+    assert principal.allows("identity.client.pair")
+    example = Path(__file__).parents[2] / "config/control-operators.example.toml"
+    documented = tomllib.loads(example.read_text("utf-8"))["operators"][0]["capabilities"]
+    assert set(principal.granted_capabilities) == set(documented)
 
 
 def test_config_change_preserves_unknown_environment_and_backs_up_originals(tmp_path: Path) -> None:
@@ -172,7 +215,6 @@ def _search_setup(tmp_path: Path, profiles: str, **updates: str):
     (tmp_path / "config").mkdir(exist_ok=True)
     (tmp_path / "config/persona.md").write_text("Test persona", encoding="utf-8")
     environment = {
-        "SUPERUSERS": "9000",
         "LLM_PROVIDER": "deepseek",
         "LLM_BASE_URL": "https://api.deepseek.com/v1",
         "LLM_API_KEY": "test-main-key",
@@ -193,7 +235,6 @@ def test_personal_or_telegram_configuration_does_not_require_qq_material(
 ) -> None:
     profiles = build_model_profiles(main_protocol="gemini", flash_enabled=False)
     paths, configuration = _search_setup(tmp_path, profiles, WEB_MODE="disabled")
-    configuration.environment.pop("SUPERUSERS")
     if telegram:
         configuration.environment["TELEGRAM_BOT_TOKEN"] = "fixture:not-a-real-token"
     validate_configuration(paths, configuration)

@@ -29,24 +29,19 @@ class PersonControlTarget:
 
     person_id: PersonId | None
     storage_user_id: str
-    lockout_protected: bool = False
 
     def __init__(
         self,
         *,
         person_id: PersonId | None,
         storage_user_id: str,
-        lockout_protected: bool = False,
     ) -> None:
         if person_id is not None and type(person_id) is not PersonId:
             raise TypeError("person_id must be PersonId or None")
-        if type(lockout_protected) is not bool:
-            raise TypeError("lockout_protected must be a bool")
         object.__setattr__(self, "person_id", person_id)
         object.__setattr__(
             self, "storage_user_id", _require_storage_id(storage_user_id, "storage_user_id")
         )
-        object.__setattr__(self, "lockout_protected", lockout_protected)
 
 
 @final

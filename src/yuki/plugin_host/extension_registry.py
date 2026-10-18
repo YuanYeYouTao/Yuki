@@ -25,18 +25,18 @@ from yuki_plugin_sdk.registrar import (
 
 DEFAULT_RESERVED_COMMAND_ALIASES: frozenset[str] = frozenset(
     {
+        "admin",
         "automation",
+        "capabilities",
+        "compact",
         "forgetme",
-        "group",
         "help",
+        "link",
         "memory",
         "new",
-        "off",
-        "on",
         "ping",
         "plugin",
         "preference",
-        "private",
         "status",
         "stop",
         "whoami",
