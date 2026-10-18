@@ -283,10 +283,17 @@ class StickerIndex:
                 existing = None
             # Keep a living canonical file, including a terminal rename adopted by rebuild.
             chosen = existing if existing and existing["sha256"] == facts["sha256"] else facts
-            record = self.normalize(platform, chosen, old)
+            # Keep completed edits, including a rename adopted while hashing.
+            # Those old facts no longer describe the current canonical path.
+            current = self.read_json(target)
+            record = (
+                self.normalize(platform, chosen, current)
+                if current.get("relative_path") == old.get("relative_path")
+                else dict(current)
+            )
             if is_sticker:
                 record["is_sticker"] = True
-            if record != old:
+            if record != current:
                 self.write_json(target, record)
         if _index:
             self.update_cache(platform, asset_id)
@@ -405,6 +412,11 @@ class StickerIndex:
         except sqlite3.DatabaseError as error:
             # Corrupted pages are rebuildable; SQL, lock and storage failures stay failures.
             if not self.corrupt(error):
+                if (
+                    getattr(error, "sqlite_errorcode", 0) & 255
+                ) == sqlite3.SQLITE_ERROR and not self.ready(platform):
+                    # A terminal can remove the cache between readiness and query.
+                    return {"needs_build": True}
                 raise
             self.discard_cache(platform)
             return {"needs_build": True}

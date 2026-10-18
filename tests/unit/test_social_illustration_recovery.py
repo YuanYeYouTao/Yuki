@@ -2,16 +2,19 @@
 
 import asyncio
 import sqlite3
+import threading
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
+from tempfile import TemporaryFile
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
 from PIL import Image
 from sqlalchemy import select, update
+from tests.support.memory_identity import transfer_account
 from tests.support.social_identity_cases import Bot, social_env
 from tests.support.sticker_delivery import make_delivery, settle
 
@@ -21,6 +24,7 @@ from yuki.conversation.canonical_db_models import (
     PersonActiveRouteModel,
 )
 from yuki.domain.tool_actor import ToolActor
+from yuki.emoji.library import snapshot_identity
 from yuki.gateway.providers.telegram import TelegramClient
 from yuki.identity.canonical_repository import (
     create_person_binding,
@@ -34,6 +38,7 @@ from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_activation import current_work_control
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkRepository
+from yuki.services.media_resolver import _media_io
 from yuki.social.db_models import SocialEmojiIntentModel
 from yuki.social.emoji_intents import EmojiIntentRepository, derived_call_id
 from yuki.social.models import OperationStatus, SocialError, SocialTarget
@@ -634,3 +639,125 @@ async def test_original_request_replay_wakes_its_persisted_pending_intent(
         assert library.select_calls == 1 and len(sends(env.bot)) == 2
     finally:
         await delivery.close()
+
+
+@pytest.mark.parametrize("private_target", [False, True])
+async def test_account_transfer_does_not_retarget_a_pending_illustration(
+    database, tmp_path, private_target
+):
+    env = await social_env(database, tmp_path)
+    delivery, _ = make_delivery(env)
+    arguments = {"emoji": {"goal": "开心"}}
+    if private_target:
+        assert await env.router.cas_takeover_person(env.person) == "taken"
+        arguments.update(text="原正文", target={"kind": "person", "target_id": env.person})
+    else:
+        arguments["mentions"] = [{"target_id": env.person}]
+    original = await env.service.execute("send_message", arguments, env.context)
+    intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+    original_source, original_target = intent.source, intent.target
+
+    transferred = await transfer_account(database, "10001", "10002")
+    await delivery._deliver(intent)
+
+    result = await delivery.project(env.context)
+    assert result["status"] in {"failed", "not_sent"}
+    assert len(sends(env.bot)) == int(private_target)
+    current = await delivery.intents.find(env.context.turn_id, env.context.call_id)
+    assert current.source == original_source and current.target == original_target
+    if private_target:
+        assert transferred["old_binding_id"] == original_source["binding_id"]
+        assert (await env.service.receipts.get(original["operation_id"])).status is (
+            OperationStatus.SUCCEEDED
+        )
+    else:
+        assert transferred["old_binding_id"] == original_source["mentions"][0]["binding_id"]
+
+
+async def test_two_illustration_owners_share_the_original_dispatch_claim(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    first, _ = make_delivery(env)
+    await env.service.execute("send_message", ARGS, env.context)
+    intent = await first.intents.find(env.context.turn_id, env.context.call_id)
+    second, _ = make_delivery(env)
+    network, entered, release = env.bot.call_api, asyncio.Event(), asyncio.Event()
+
+    async def blocked_image(action, **arguments):
+        if any(part["type"] == "image" for part in arguments.get("message", ())):
+            entered.set()
+            await release.wait()
+        return await network(action, **arguments)
+
+    env.bot.call_api = blocked_image
+    task_a = asyncio.create_task(first._deliver(intent))
+    task_b = None
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        task_b = asyncio.create_task(second._deliver(intent))
+        await asyncio.wait_for(task_b, 3)
+        assert (await first.project(env.context))["status"] == "uncertain"
+        release.set()
+        await asyncio.wait_for(task_a, 3)
+        assert (await first.project(env.context))["status"] == "succeeded"
+        assert len(sends(env.bot)) == 2
+    finally:
+        release.set()
+        await asyncio.gather(
+            task_a, *((task_b,) if task_b is not None else ()), return_exceptions=True
+        )
+
+
+async def test_repeated_close_cancellation_joins_the_actual_copy_and_keeps_pending_intent(
+    database, tmp_path
+):
+    env = await social_env(database, tmp_path)
+    delivery, library = make_delivery(env)
+    await env.service.execute("send_message", ARGS, env.context)
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    def copy_original(asset):
+        entered.set()
+        release.wait()
+        try:
+            with TemporaryFile() as stream:
+                stream.write(library.content)
+                stream.flush()
+                return env.store.snapshot(
+                    stream.fileno(),
+                    f"smile.{asset.image_format}",
+                    artifact_id=snapshot_identity(asset.platform, asset.sha256),
+                    source_key=f"sticker:{asset.platform}:{asset.sha256}",
+                )
+        finally:
+            finished.set()
+
+    async def publication(asset, *, request_id):
+        return await _media_io(copy_original, asset)
+
+    library.publish = publication
+    await delivery.start()
+    closing = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 3)
+        actual_owner = next(iter(delivery._deliveries.values()))
+        closing = asyncio.create_task(delivery.close())
+        async with asyncio.timeout(3):
+            # Observe Task.cancel itself; the blocked physical copy has no async signal.
+            while not actual_owner.cancelling():  # noqa: ASYNC110
+                await asyncio.sleep(0)
+        closing.cancel()
+        await asyncio.sleep(0)
+        closing.cancel()
+        await asyncio.sleep(0)
+        assert not closing.done() and not finished.is_set()
+    finally:
+        release.set()
+        if closing is not None:
+            await asyncio.gather(closing, return_exceptions=True)
+        else:
+            await delivery.close()
+    assert finished.is_set() and not delivery._deliveries
+    assert len(sends(env.bot)) == 1
+    assert (await delivery.project(env.context))["status"] == "accepted"
+    identity = snapshot_identity(library.asset.platform, library.asset.sha256)
+    assert env.store.read_bytes(identity)[1] == library.content
