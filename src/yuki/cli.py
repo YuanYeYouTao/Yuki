@@ -306,7 +306,6 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
         "model_profile": route.profile_id,
         "model": profile.model,
         "usage_available": True,
-        "stable_prefix_hash": metrics.stable_prefix_hash,
         "fixture": "sanitized_predefined_scenario",
     }
 

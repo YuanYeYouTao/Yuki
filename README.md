@@ -47,7 +47,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 升级步骤、兼容性变化与各项验证范围见发布说明。模型响应、工具请求与宿主资源仍会影响实际体验；版本更新不保证固定的延迟、费用或缓存命中率。
 
-**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence＋子会话、群按 SpaceBinding＋topic 隔离；人物记忆仍沿内部 Person。`yuki acp` 让外部 ACP 客户端连接服务器，每个 session 有独立 Conversation，沿原 Main、固定工具和发送回执，见[个人 API](docs/architecture/client-api.md#acp-方向-a)。Plugin API **4.0**、Main 合同 **21**、迁移 **0132**；配置及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地验证、合并和上线分别记录，正式 3.9.0 的历史说明保留如上。
+**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence＋子会话、群按 SpaceBinding＋topic 隔离；人物记忆仍沿内部 Person。`yuki acp` 让外部 ACP 客户端连接服务器，每个 session 有独立 Conversation，沿原 Main、固定工具和发送回执，见[个人 API](docs/architecture/client-api.md#acp-方向-a)。Plugin API **4.0**、Main 合同 **22**、迁移 **0134**；配置及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地验证、合并和上线分别记录，正式 3.9.0 的历史说明保留如上。
 
 当前源码的 Python 模块和发行包统一为 `yuki`，管理、个人客户端与 ACP 共用 `yuki` 命令，服务进程使用 `yuki-bot`；旧命令别名已删除。源码开发使用 `uv sync --all-extras` 或本地 Docker 构建。新发行镜像使用 `ghcr.io/yuanyeyoutao/yuki`，尚未据此发布新版本；下方正式 3.9.0 的下载、镜像和安装步骤继续对应其原 Release 产物。
 

@@ -185,48 +185,51 @@ class AdminQueries:
             value: str | int = int(identity) if kind == "event" else identity
         except ValueError:
             raise fail(ProblemCode.VALIDATION_ERROR) from None
+        metadata_fields = (
+            "id",
+            "conversation_id",
+            "turn_id",
+            "work_id",
+            "operation_id",
+            "source_event_id",
+            "delivered_event_id",
+            "kind",
+            "origin",
+            "generation",
+            "created_at",
+            "expires_at",
+            "payload_status",
+        )
+        fields = metadata_fields + (
+            ("payload_gzip", "payload_bytes", "payload_sha256") if content else ()
+        )
         async with self.database.sessions() as session:
             rows = list(
-                await session.scalars(
-                    select(ExecutionTraceEntryModel)
-                    .where(
-                        field == value,
-                        ExecutionTraceEntryModel.id > after,
-                        ExecutionTraceEntryModel.expires_at > datetime.now(UTC),
+                (
+                    await session.execute(
+                        select(*(getattr(ExecutionTraceEntryModel, name) for name in fields))
+                        .where(
+                            field == value,
+                            ExecutionTraceEntryModel.id > after,
+                            ExecutionTraceEntryModel.expires_at > datetime.now(UTC),
+                        )
+                        .order_by(ExecutionTraceEntryModel.id)
+                        .limit(limit + 1)
                     )
-                    .order_by(ExecutionTraceEntryModel.id)
-                    .limit(limit + 1)
-                )
+                ).mappings()
             )
             items = []
             for row in rows[:limit]:
-                item = {
-                    name: getattr(row, name)
-                    for name in (
-                        "id",
-                        "conversation_id",
-                        "turn_id",
-                        "work_id",
-                        "operation_id",
-                        "source_event_id",
-                        "delivered_event_id",
-                        "kind",
-                        "origin",
-                        "generation",
-                        "created_at",
-                        "expires_at",
-                        "payload_status",
-                    )
-                }
+                item = {name: row[name] for name in metadata_fields}
                 if content:
                     try:
                         item["payload"] = (
                             decode_payload(
-                                row.payload_gzip,
-                                size=row.payload_bytes,
-                                digest=row.payload_sha256 or "",
+                                row["payload_gzip"],
+                                size=row["payload_bytes"],
+                                digest=row["payload_sha256"] or "",
                             )
-                            if row.payload_gzip is not None
+                            if row["payload_gzip"] is not None
                             else None
                         )
                     except (ValueError, TypeError, zlib.error):
@@ -234,5 +237,5 @@ class AdminQueries:
                 items.append(item)
             return {
                 "items": items,
-                "next_cursor": rows[limit - 1].id if len(rows) > limit else None,
+                "next_cursor": rows[limit - 1]["id"] if len(rows) > limit else None,
             }

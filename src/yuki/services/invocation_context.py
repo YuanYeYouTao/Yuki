@@ -38,7 +38,6 @@ class InvocationContextFactory:
             allowed_capabilities=allowed_capabilities,
             max_tool_calls=max_tool_calls,
             max_model_requests=max_model_requests,
-            prompt_diagnostics=source.prompt_diagnostics,
             before_model_request=source.before_model_request,
             observation_boundary=source.observation_boundary,
             public_compaction=source.public_compaction,
@@ -51,7 +50,5 @@ class InvocationContextFactory:
             execution_id=source.effective_execution_id,
             source_event_id=source.effective_trigger_event_id,
             visible_event_ids=source.visible_event_ids,
-            preparation_model_requests=source.prompt_diagnostics.preparation_model_requests
-            if source.prompt_diagnostics is not None
-            else 0,
+            preparation_model_requests=source.preparation_model_requests,
         )

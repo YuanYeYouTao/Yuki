@@ -104,148 +104,6 @@ def _json_hash(value: object) -> str:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
-@dataclass(frozen=True, slots=True)
-class ProviderCacheShapeDiagnostics:
-    """Pre-provider projection hashes; final HTTP diagnostics are authoritative."""
-
-    provider_shape_hash: str
-    instructions_hash: str
-    tools_hash: str
-    input_prefix_hash: str
-    coverage: str = "normalized messages and tools; excludes native continuation body"
-
-
-def _diagnostic_message(message: object) -> dict[str, object]:
-    role = str(getattr(message, "role", ""))
-    content = getattr(message, "content", None)
-    tool_calls = getattr(message, "tool_calls", ())
-    return {
-        "role": role,
-        "content_hash": _json_hash(content),
-        "image_hashes": [_json_hash(image.data_url) for image in getattr(message, "images", ())],
-        "tool_calls": [
-            {
-                "id_hash": _json_hash(getattr(call, "id", "")),
-                "type": str(getattr(call, "type", "")),
-                "name": str(getattr(getattr(call, "function", None), "name", "")),
-                "arguments_hash": _json_hash(
-                    getattr(getattr(call, "function", None), "arguments", "")
-                ),
-            }
-            for call in tool_calls
-        ],
-        "tool_call_id_hash": _json_hash(getattr(message, "tool_call_id", None)),
-        "reasoning_hash": _json_hash(getattr(message, "reasoning_content", None)),
-    }
-
-
-def provider_cache_shape_diagnostics(
-    request: ChatRequest,
-    *,
-    provider: str,
-    model: str,
-    profile_id: str,
-    protocol: str,
-) -> ProviderCacheShapeDiagnostics:
-    """Hash the application projection, excluding the current user tail.
-
-    Native continuation body is outside this projection. WireRequestObserver on
-    each adapter's final body is authoritative for that shape and first difference.
-    """
-
-    boundary = 0
-    while boundary < len(request.messages) and request.messages[boundary].role in {
-        "system",
-        "developer",
-    }:
-        boundary += 1
-    instructions = [_diagnostic_message(message) for message in request.messages[:boundary]]
-    inputs = request.messages[boundary:]
-    current_tail_index = next(
-        (index for index in range(len(inputs) - 1, -1, -1) if inputs[index].role == "user"),
-        None,
-    )
-    prefix_inputs = [
-        _diagnostic_message(message)
-        for message in (inputs if current_tail_index is None else inputs[:current_tail_index])
-    ]
-    tools = [
-        {
-            "name": tool.name,
-            "description_hash": _json_hash(tool.description),
-            "parameters_hash": _json_hash(tool.parameters),
-        }
-        for tool in request.tools
-    ]
-    native_tools = [tool.type.value for tool in request.native_tools]
-    instructions_hash = _json_hash(instructions)
-    tools_hash = _json_hash({"function": tools, "native": native_tools})
-    input_prefix_hash = _json_hash(prefix_inputs)
-    provider_shape_hash = _json_hash(
-        {
-            "provider": provider,
-            "model": model,
-            "profile_id": profile_id,
-            "protocol": protocol,
-            "instructions_hash": instructions_hash,
-            "tools_hash": tools_hash,
-            "input_prefix_hash": input_prefix_hash,
-            "temperature": request.temperature,
-            "max_output_tokens": request.max_output_tokens,
-            "thinking_enabled": request.thinking_enabled,
-            "reasoning_effort": (
-                request.reasoning_effort.value if request.reasoning_effort is not None else None
-            ),
-            "tool_choice": request.tool_choice,
-            "response_format": request.response_format,
-            "structured_output": request.structured_output,
-        }
-    )
-    return ProviderCacheShapeDiagnostics(
-        provider_shape_hash=provider_shape_hash,
-        instructions_hash=instructions_hash,
-        tools_hash=tools_hash,
-        input_prefix_hash=input_prefix_hash,
-    )
-
-
-def request_shape_hash(
-    request: ChatRequest,
-    *,
-    provider: str,
-    model: str,
-    profile_id: str,
-    protocol: str,
-) -> str:
-    """Hash the actual cache-relevant request shape without message content."""
-
-    payload = {
-        "provider": provider,
-        "model": model,
-        "profile_id": profile_id,
-        "protocol": protocol,
-        "static_prompt_revision": request.static_prompt_revision,
-        "tools": [
-            {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
-            }
-            for tool in request.tools
-        ],
-        "native_tools": [tool.type.value for tool in request.native_tools],
-        "response_format": request.response_format,
-        "structured_output": request.structured_output,
-    }
-    serialized = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
-
-
 class BackgroundModelPreempted(RuntimeError):
     """A best-effort provider call yielded to newly arrived foreground work."""
 
@@ -436,17 +294,20 @@ class TaskModelExecutor:
         canonical_conversation_id: str | None = None,
         prepared_capacity: PreparedModelInput | None = None,
     ) -> ChatResponse:
-        phases = ModelPhases()
+        phases = ModelPhases(
+            metadata={"task": task.value, "request_chain_id": request.request_chain_id}
+        )
         phase_token = current_model_phases.set(phases)
         outcome = "terminated"
         try:
             with self.pin():
                 async with trace_span(
                     "model",
-                    {"task": task.value, "request": request},
+                    {},
                     recorder=self.traces,
                     conversation_id=canonical_conversation_id,
-                ) as span:
+                    record_start=False,
+                ):
                     try:
                         response = await self._execute(
                             task,
@@ -458,16 +319,42 @@ class TaskModelExecutor:
                     except asyncio.CancelledError:
                         outcome = "cancelled"
                         raise
-                    except Exception:
+                    except Exception as exc:
                         outcome = "error"
+                        phases.metadata["error_category"] = type(exc).__name__
                         raise
                     else:
                         outcome = "success"
-                        span.result = response
+                        phases.metadata.update(
+                            {
+                                "status": response.status.value,
+                                "provider_request_id": response.provider_request_id,
+                                "latency_seconds": response.latency_seconds,
+                                "prompt_tokens": response.prompt_tokens,
+                                "completion_tokens": response.completion_tokens,
+                                "total_tokens": response.total_tokens,
+                                "cached_prompt_tokens": response.cached_prompt_tokens,
+                                "cache_creation_input_tokens": response.cache_creation_input_tokens,
+                                "cache_creation_5m_input_tokens": (
+                                    response.cache_creation_5m_input_tokens
+                                ),
+                                "cache_creation_1h_input_tokens": (
+                                    response.cache_creation_1h_input_tokens
+                                ),
+                                "reasoning_tokens": response.reasoning_tokens,
+                                "incomplete_reason": response.incomplete_reason,
+                                "tool_calls": [
+                                    {"id": call.id, "name": call.function.name}
+                                    for call in response.tool_calls
+                                ],
+                                "native_tool_event_count": len(response.native_tool_events),
+                                "citation_count": len(response.citations),
+                            }
+                        )
                         return response
                     finally:
                         # The same scope/operation contains all outcomes. This
-                        # enqueues only numbers and does not wait for its consumer.
+                        # enqueues compact route/usage/timing facts, never the request body.
                         if outcome != "terminated":
                             await record_trace("model_phases", phases.snapshot(outcome))
         finally:
@@ -503,16 +390,14 @@ class TaskModelExecutor:
             required.add(ModelCapability.IMAGE_INPUT)
         router, pool = self._runtime()
         _route, profile = router.route(task, required_capabilities=frozenset(required))
-        await record_trace(
-            "model_route",
-            {
-                "task": task.value,
-                "profile_id": profile.id,
-                "provider": profile.provider,
-                "protocol": profile.protocol.value,
-                "model": profile.model,
-            },
-        )
+        phases = current_model_phases.get()
+        if phases is not None:
+            phases.metadata.update(
+                profile_id=profile.id,
+                provider=profile.provider,
+                protocol=profile.protocol.value,
+                model=profile.model,
+            )
         for continuation in (
             *((request.continuation,) if request.continuation is not None else ()),
             *(
@@ -560,41 +445,7 @@ class TaskModelExecutor:
             if task is ModelTask.MEMORY_SELF_REFLECTION
             else pool.get(profile)
         )
-        with model_detail("cache_shape_preparation"):
-            normalized = replace(
-                normalized_input,
-                request_shape_hash=request_shape_hash(
-                    request,
-                    provider=profile.provider,
-                    model=profile.model,
-                    profile_id=profile.id,
-                    protocol=profile.protocol.value,
-                ),
-            )
-            provider_cache_shape = provider_cache_shape_diagnostics(
-                normalized,
-                provider=profile.provider,
-                model=profile.model,
-                profile_id=profile.id,
-                protocol=profile.protocol.value,
-            )
-        if normalized.conversation_prefix_hash:
-            logger.info(
-                "prompt_request_diagnostics stage=normalized_projection task=%s "
-                "conversation_prefix_hash=%s "
-                "request_shape_hash=%s provider_cache_shape_hash=%s "
-                "provider_instructions_hash=%s provider_tools_hash=%s "
-                "provider_input_prefix_hash=%s prompt_snapshot_fingerprint=%s coverage=%s",
-                task.value,
-                normalized.conversation_prefix_hash,
-                normalized.request_shape_hash,
-                provider_cache_shape.provider_shape_hash,
-                provider_cache_shape.instructions_hash,
-                provider_cache_shape.tools_hash,
-                provider_cache_shape.input_prefix_hash,
-                normalized.prompt_snapshot_fingerprint,
-                provider_cache_shape.coverage,
-            )
+        normalized = normalized_input
         if profile.protocol is ModelProtocol.RESPONSES:
             logger.info(
                 "responses_request_routed task=%s profile_id=%s provider=%s protocol=%s "

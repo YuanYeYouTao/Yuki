@@ -30,7 +30,6 @@ from yuki.persistence.repositories import (
     PrivateUserSettingsRepository,
 )
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from yuki.persistence.turn_observations import RuntimeTurnObservationRepository
 from yuki.services.agent_tools import AgentToolService
 from yuki.services.chat import ChatService
 from yuki.services.command_service import CommandService
@@ -209,7 +208,6 @@ def build_harness(
         command_service=command_service,
         direct_plugin_commands=direct_plugin_commands,
         turn_coordinator=turn_coordinator,
-        turn_observations=RuntimeTurnObservationRepository(database),
     )
     return Harness(
         settings,

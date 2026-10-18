@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 
 import httpx
+import pytest
 from sqlalchemy import select, update
 from tests.conftest import MemorySender
 from tests.unit.test_history_dispatch_ownership import _scene
@@ -14,6 +15,49 @@ from yuki.conversation.projections import PromptProjectionRepository
 from yuki.conversation.prompt_history import PromptHistorySource
 from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.llm.openai_compatible import OpenAICompatibleProvider
+
+
+@pytest.mark.parametrize("request_limit, expected_main_calls", [(2, 0), (3, 1)])
+async def test_preparation_requests_reach_main_budget_without_prompt_hashes(
+    database, tmp_path, monkeypatch, request_limit, expected_main_calls
+):
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.runtime.work_activation import current_work_control
+    from yuki.runtime.work_budget import WorkBudgetExceeded
+
+    provider = FakeLLMProvider(lambda _: "内部结束")
+    _env, harness, chat, _state, message = await _scene(
+        database, tmp_path, provider, request_limit=request_limit
+    )
+    compose = chat.runtime.main_turns.compose
+    run = chat._run_agent
+    completed = []
+    exhausted = []
+
+    async def prepared(**kwargs):
+        # These calls have already happened in preparation. Preserve their cost
+        # even when no request slot remains for the ordinary Main response.
+        return replace(await compose(**kwargs), preparation_model_requests=2)
+
+    async def capture(key, messages, runtime, **kwargs):
+        assert runtime.preparation_model_requests == 2
+        try:
+            result = await run(key, messages, runtime, **kwargs)
+        except WorkBudgetExceeded:
+            exhausted.append(current_work_control.get().requests_started)
+            raise
+        completed.append(result.result)
+        return result
+
+    monkeypatch.setattr(chat.runtime.main_turns, "compose", prepared)
+    monkeypatch.setattr(chat, "_run_agent", capture)
+    await harness.processor.handle(message, MemorySender())
+    assert len(provider.requests) == expected_main_calls
+    if expected_main_calls:
+        assert len(completed) == 1 and not exhausted
+        assert completed[0].model_requests == 2 + expected_main_calls
+    else:
+        assert not completed and exhausted == [2]
 
 
 async def test_real_foreground_delta_preserves_full_render_bytes_and_dispatch(

@@ -367,7 +367,6 @@ class MainAgentBackend(AgentToolBackend):
         if not isinstance(parsed, dict):
             result = _refused_result(name, "invalid_json")
         else:
-            started = time.perf_counter()
             binding_started = False
             try:
 
@@ -526,15 +525,12 @@ class MainAgentBackend(AgentToolBackend):
                 else None,
             ).render(outcome)
             result = budgeted.text
-            if self._service._tool_invocations is not None:
-                await self._service._record_tool_invocation(
+            if self._service._tool_receipts is not None:
+                await self._service._record_tool_receipt(
                     runtime=execution_runtime,
                     provider_id=descriptor.provider_id,
                     tool_name=descriptor.provider_tool_name or descriptor.model_name,
                     success=outcome.ok,
-                    latency_seconds=time.perf_counter() - started,
-                    result_size=len(result.encode("utf-8")),
-                    artifact_created=budgeted.artifact_id is not None,
                     error_category=outcome.error_code,
                     result_excerpt=result,
                     # The same Host operation the effect row and audit fence use.

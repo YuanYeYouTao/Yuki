@@ -387,16 +387,6 @@ class FunctionCallOutput:
 
 
 @dataclass(frozen=True, slots=True)
-class PromptRequestDiagnostics:
-    """Content-free prompt identity that is never serialized to a provider."""
-
-    conversation_prefix_hash: str
-    prompt_snapshot_fingerprint: str
-    static_prompt_revision: str
-    preparation_model_requests: int = 0
-
-
-@dataclass(frozen=True, slots=True)
 class ChatRequest:
     """Provider-independent chat request."""
 
@@ -413,11 +403,7 @@ class ChatRequest:
     native_tools: tuple[NativeToolDefinition, ...] = ()
     continuation: ProviderContinuation | None = None
     continuation_items: tuple[ChatMessage | FunctionCallOutput, ...] = ()
-    conversation_prefix_hash: str = ""
-    request_shape_hash: str = ""
     request_chain_id: str = ""
-    prompt_snapshot_fingerprint: str = ""
-    static_prompt_revision: str = ""
 
     # Trusted conversation/execution identity, transported outside model content.
     provider_session_id: str | None = None

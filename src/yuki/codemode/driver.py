@@ -52,7 +52,7 @@ from yuki.codemode.engine_monty import CodeEngineUnavailable
 from yuki.codemode.limits import CodeModeLimits
 from yuki.codemode.snapshot_binding import load_boundary, load_output, persist_boundary
 from yuki.domain.messages import ToolCall, ToolFunction
-from yuki.execution_trace.recorder import record_trace, trace_span
+from yuki.execution_trace.recorder import trace_span
 from yuki.runtime.effect_outcomes import (
     ResultCapture,
     captured_evidence,
@@ -603,9 +603,6 @@ class CodeModeDriver:
                     "pending": view.pending if view else False,
                     "uncertain": view.uncertain if view else False,
                 }
-                # A closing Host stop exits the span through its error path;
-                # retain the observed status without duplicating the result body.
-                await record_trace("code_child_outcome", span.result)
 
     async def _dispatch_child(self, state: _State, child: _Child) -> None:
         control = self.control

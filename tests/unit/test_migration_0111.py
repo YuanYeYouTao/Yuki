@@ -26,7 +26,7 @@ from yuki.persistence.models import (
     MemoryMutationReceiptModel,
     MemoryToolReceiptModel,
 )
-from yuki.tool_results.recorder import ToolInvocationRepository
+from yuki.tool_results.recorder import ToolReceiptRepository
 
 
 def test_0111_preserves_original_receipts_and_writes_real_scheduled_self_source(
@@ -116,7 +116,7 @@ def test_0111_preserves_original_receipts_and_writes_real_scheduled_self_source(
                 assert "ck_memory_tool_receipts_source" not in sql
                 assert "ck_memory_mutation_trigger_source" not in sql
             case.chat._tools._memory_mutations = mutations
-            case.chat._tool_invocations = ToolInvocationRepository(database)
+            case.chat._tool_receipts = ToolReceiptRepository(database)
             responses = []
 
             def respond(request):

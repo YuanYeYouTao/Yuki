@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 from contextlib import AsyncExitStack
 from typing import Any, cast
 
@@ -28,11 +27,8 @@ from yuki.plugin_host.notification_repository import (
 from yuki.plugin_host.ownership import PluginOwnershipError
 from yuki.runtime.observability import (
     RuntimeTurnCorrelation,
-    TurnObservationRecorder,
     bind_runtime_turn,
-    build_turn_observation,
     new_runtime_turn_id,
-    record_observation_safely,
 )
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.trigger import ExternalEventTurnTrigger
@@ -48,19 +44,6 @@ from yuki.services.turn_coordinator import (
 logger = logging.getLogger(__name__)
 
 
-def _authoritative_plugin_observation_refs(
-    job: BackgroundTurnJobRecord,
-) -> tuple[str | None, str | None, str | None]:
-    """Project persisted job canonicals. Never derive from raw QQ/group keys."""
-
-    conversation_id = job.canonical_conversation_id or None
-    if job.target_type == "private":
-        return conversation_id, job.canonical_target_person_id or None, None
-    if job.target_type == "group":
-        return conversation_id, None, job.canonical_target_space_id or None
-    return conversation_id, None, None
-
-
 class PluginBackgroundTurnWorker:
     """Wake the normal Main Agent from a durable plugin event job."""
 
@@ -73,7 +56,6 @@ class PluginBackgroundTurnWorker:
         chat: ChatService,
         turns: ConversationTurnCoordinator,
         conversation_scopes: ConversationScopeRepository,
-        turn_observations: TurnObservationRecorder | None = None,
     ) -> None:
         self._repository = repository
         self._ledger = ledger
@@ -81,7 +63,6 @@ class PluginBackgroundTurnWorker:
         self._chat = chat
         self._turns = turns
         self._conversation_scopes = conversation_scopes
-        self._turn_observations = turn_observations
         self._stop = asyncio.Event()
         self._wake = asyncio.Event()
         self._task: asyncio.Task[None] | None = None
@@ -149,63 +130,32 @@ class PluginBackgroundTurnWorker:
     async def _execute(self, job: BackgroundTurnJobRecord) -> None:
         """Bind one fresh runtime turn correlation per background job attempt."""
 
-        started = time.perf_counter()
         correlation = RuntimeTurnCorrelation(
             turn_id=new_runtime_turn_id(),
             origin=TurnOrigin.PLUGIN_BACKGROUND,
         )
-        error_category: str | None = None
-        conversation_key = f"canonical-conversation:{job.canonical_conversation_id}"
-        resolved_key = [conversation_key]
-        canonical_conversation_id: str | None = None
-        canonical_person_id: str | None = None
-        canonical_space_id: str | None = None
         with bind_runtime_turn(correlation):
             try:
-                (
-                    canonical_conversation_id,
-                    canonical_person_id,
-                    canonical_space_id,
-                ) = _authoritative_plugin_observation_refs(job)
-                await self._execute_admitted(job, resolved_key)
-            except BaseException as exc:
-                error_category = type(exc).__name__
-                raise
+                await self._execute_admitted(job)
             finally:
-                if correlation.touched or error_category is not None:
-                    delivery_counts = await self._repository.turn_delivery_counts(job)
-                    logger.info(
-                        "plugin_turn_delivery job_id=%d event_id=%d outbox_states=%s",
-                        job.id,
-                        job.source_event_id,
-                        delivery_counts,
-                    )
-                    observation = build_turn_observation(
-                        correlation,
-                        scope_type=job.target_type,
-                        conversation_key=resolved_key[0],
-                        admission_outcome="plugin_background",
-                        handled=error_category is None,
-                        sent_messages=delivery_counts.get("sent", 0),
-                        error_category=error_category,
-                        total_latency_ms=int((time.perf_counter() - started) * 1000),
-                        canonical_conversation_id=canonical_conversation_id,
-                        canonical_person_id=canonical_person_id,
-                        canonical_space_id=canonical_space_id,
-                    )
-                    await record_observation_safely(self._turn_observations, observation)
+                delivery_counts = await self._repository.turn_delivery_counts(job)
+                logger.info(
+                    "plugin_turn_delivery job_id=%d event_id=%d outbox_states=%s",
+                    job.id,
+                    job.source_event_id,
+                    delivery_counts,
+                )
 
     async def _execute_admitted(
         self,
         job: BackgroundTurnJobRecord,
-        resolved_key: list[str] | None = None,
         *,
         work_item: dict[str, Any] | None = None,
     ) -> None:
         """Execute from persisted Conversation + current Presence. No raw QQ fallback."""
 
         async with AsyncExitStack() as attempt:
-            await self._execute_reserved(job, resolved_key, attempt, work_item=work_item)
+            await self._execute_reserved(job, attempt, work_item=work_item)
 
     async def resume_work(self, item: dict[str, Any], source: dict[str, Any]) -> None:
         """Continue a derived Work through its original external event and grant."""
@@ -226,7 +176,6 @@ class PluginBackgroundTurnWorker:
     async def _execute_reserved(
         self,
         job: BackgroundTurnJobRecord,
-        resolved_key: list[str] | None,
         attempt: AsyncExitStack,
         *,
         work_item: dict[str, Any] | None = None,
@@ -298,8 +247,6 @@ class PluginBackgroundTurnWorker:
             )
         )
         conversation_key = context.primary_alias
-        if resolved_key is not None:
-            resolved_key[0] = conversation_key
         token = await attempt.enter_async_context(self._turns.background_turn(conversation_key))
         if token is None:
             if work_item is not None:

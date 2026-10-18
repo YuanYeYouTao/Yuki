@@ -10,6 +10,7 @@ import pytest
 from sqlalchemy import func, select, text
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
+from tests.support.projection_sql_counts import capture_sql
 from tests.unit.test_memory_mutation import _service
 from tests.unit.test_memory_v2 import _append_event, _claim
 
@@ -40,6 +41,42 @@ class _ReclaimTime(datetime):
     @classmethod
     def now(cls, tz: tzinfo | None = None) -> datetime:
         return datetime.now(tz) + timedelta(minutes=6)
+
+
+async def test_duplicate_enqueue_returns_original_partition_without_waiting_for_writer(database):
+    event = await _append_event(EventLedgerRepository(database), message_id="enqueue-original")
+    jobs = MemoryJobRepository(database)
+    created, original_partition = await jobs.enqueue_resolved(event.id, "ignored-input-scope")
+    assert created
+    async with database.sessions() as reader:
+        before = (
+            (
+                await reader.execute(
+                    select(MemoryJobModel.__table__).where(MemoryJobModel.event_id == event.id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+    async with database.immediate_session():
+        with capture_sql(database) as statements:
+            assert await asyncio.wait_for(
+                jobs.enqueue_resolved(event.id, "another-input-scope"), 0.5
+            ) == (False, original_partition)
+        assert statements and all(
+            sql.lstrip().upper().startswith("SELECT") for sql, _ in statements
+        )
+    async with database.sessions() as reader:
+        after = (
+            (
+                await reader.execute(
+                    select(MemoryJobModel.__table__).where(MemoryJobModel.event_id == event.id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert after == before
 
 
 async def test_queue_health_preserves_owner_waiting_stale_and_failure_categories(

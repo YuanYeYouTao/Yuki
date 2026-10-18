@@ -75,7 +75,7 @@ from yuki.services.turn_coordinator import ConversationTurnCoordinator
 from yuki.services.vision_service import VisionService
 from yuki.time.service import TimeContextService
 from yuki.tool_results.artifacts import ToolArtifactRepository
-from yuki.tool_results.recorder import ToolInvocationRepository
+from yuki.tool_results.recorder import ToolReceiptRepository
 from yuki.vision.base import VisionProvider
 from yuki_plugin_sdk.events import EventName
 from yuki_plugin_sdk.permissions import PluginPermission
@@ -114,7 +114,7 @@ class ApplicationContainer:
         configure_process_registry(self.gateway_registry)
         self.presence_router = PresenceRouter(self.database, self.gateway_registry)
         self.route_monitor = RouteMonitor(self.presence_router)
-        self.tool_invocations = ToolInvocationRepository(
+        self.tool_receipts = ToolReceiptRepository(
             self.database,
             reflection_excerpt_characters=settings.memory_self_reflection_tool_receipt_characters,
             reflection_retention_days=settings.memory_self_reflection_tool_receipt_retention_days,
@@ -155,7 +155,6 @@ class ApplicationContainer:
         self.time_context = TimeContextService(
             default_timezone=settings.default_timezone,
         )
-        self.turn_observations = persistence.turn_observations
         model_runtime = ModelRuntimeModule(
             settings.model_runtime,
             self.database,
@@ -163,7 +162,6 @@ class ApplicationContainer:
             web_settings=settings.web,
         ).build()
         self.model_runtime = model_runtime
-        self.tool_invocations.writer = model_runtime.invocations.writer
         self.model_profiles = model_runtime.profiles
         self.model_clients = model_runtime.clients
         self.model_invocations = model_runtime.invocations
@@ -237,7 +235,7 @@ class ApplicationContainer:
             web_provider=self.web_provider,
             memory_embeddings=self.memory_embeddings,
             tool_artifacts=self.tool_artifacts,
-            tool_invocations=self.tool_invocations,
+            tool_receipts=self.tool_receipts,
             processing_status=self.processing_status,
         )
         conversation = self.conversation_module.build()
@@ -460,7 +458,6 @@ class ApplicationContainer:
             chat=self.chat,
             turns=self.turn_coordinator,
             conversation_scopes=self.conversation_scopes,
-            turn_observations=self.turn_observations,
         )
         self.plugin_module = PluginModule(
             settings=settings.plugins,
@@ -528,7 +525,6 @@ class ApplicationContainer:
             admission_features=self.admission_features,
             turn_coordinator=self.turn_coordinator,
             admission_signals=self.plugin_admission_signals,
-            turn_observations=self.turn_observations,
             participation=self.semantic_participation,
         )
         self.command_service = CommandService(
@@ -617,7 +613,6 @@ class ApplicationContainer:
             event_publisher=self.plugin_events,
             emoji_collector=self.emoji_collector,
             emoji_worker=self.emoji_worker,
-            turn_observations=self.turn_observations,
         )
         self.processor.set_participation(self.semantic_participation)
         from yuki.client_api.files import ClientFiles
@@ -1006,14 +1001,8 @@ class ApplicationContainer:
                         "plugin_sessions_expired count=%d",
                         plugin_sessions_expired,
                     )
-                turn_observations_deleted = await self.turn_observations.cleanup_expired()
                 if self.models.traces is not None:
                     await self.models.traces.cleanup_expired()
-                if turn_observations_deleted:
-                    logger.info(
-                        "runtime_turn_observations_cleaned count=%d",
-                        turn_observations_deleted,
-                    )
             except (SQLAlchemyError, OSError, RuntimeError) as exc:
                 logger.error("processed_event_cleanup_failed", exc_info=exc)
             try:

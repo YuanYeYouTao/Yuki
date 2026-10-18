@@ -32,7 +32,6 @@ from yuki.domain.messages import (
     ModelResponseStatus,
     NativeToolDefinition,
     NativeToolEvent,
-    PromptRequestDiagnostics,
     ResponseCitation,
     ToolCall,
     ToolFunction,
@@ -108,7 +107,6 @@ class AgentRuntime:
     allowed_capabilities: frozenset[str]
     max_tool_calls: int | None
     max_model_requests: int | None
-    prompt_diagnostics: PromptRequestDiagnostics | None = None
     before_model_request: Callable[[], Awaitable[None]] | None = None
     canonical_conversation_id: str | None = None
     presence_id: str | None = None
@@ -279,7 +277,7 @@ class AgentRunner:
         ):
             async with trace_span(
                 "turn",
-                {"messages": [asdict(message) for message in initial_messages]},
+                {"message_count": len(initial_messages)},
                 recorder=self._models.traces,
                 conversation_id=runtime.canonical_conversation_id,
                 execution_id=runtime.execution_id,
@@ -287,7 +285,18 @@ class AgentRunner:
                 origin=runtime.origin.value,
             ) as span:
                 result = await self._run_with_receipts(initial_messages, runtime, tools)
-                span.result = asdict(result)
+                span.result = {
+                    "tool_calls_used": result.tool_calls_used,
+                    "model_requests": result.model_requests,
+                    "messages_sent": result.messages_sent,
+                    "response_status": result.response_status.value,
+                    "suppress_delivery": result.suppress_delivery,
+                    "work_state": result.work_state,
+                    "work_id": result.work_id,
+                    "outcome": asdict(result.outcome) if result.outcome is not None else None,
+                    "native_tool_event_count": len(result.native_tool_events),
+                    "citation_count": len(result.citations),
+                }
                 return result
 
     async def _run_with_receipts(
@@ -456,32 +465,6 @@ class AgentRunner:
             output.append((call, result, executed))
         return tuple(output)
 
-    async def _execute_tool_batch(
-        self,
-        calls: tuple[ToolCall, ...],
-        tools: AgentToolBackend | None,
-        runtime: AgentRuntime,
-        *,
-        remaining_calls: int | None,
-        max_parallel_calls: int,
-        declared_names: frozenset[str],
-        chain_id: str = "",
-        request_sequence: int = 0,
-    ) -> CoordinatedToolResult:
-        async with trace_span("tool_batch", {"calls": [asdict(call) for call in calls]}) as span:
-            result = await self._execute_tool_batch_impl(
-                calls,
-                tools,
-                runtime,
-                remaining_calls=remaining_calls,
-                max_parallel_calls=max_parallel_calls,
-                declared_names=declared_names,
-                chain_id=chain_id,
-                request_sequence=request_sequence,
-            )
-            span.result = asdict(result)
-            return result
-
     async def _resume_tool_response(
         self,
         pending: list[Any],
@@ -556,7 +539,7 @@ class AgentRunner:
                     and await control.repository.undispatched_intent(control.current["id"], key)
                 )
             ):
-                coordinated = await self._execute_tool_batch_impl(
+                coordinated = await self._execute_tool_batch(
                     (call,),
                     tools,
                     runtime,
@@ -765,7 +748,7 @@ class AgentRunner:
             return await execute(), True
         return await InvocationService().invoke(invocation, execute, side_effecting=True), True
 
-    async def _execute_tool_batch_impl(
+    async def _execute_tool_batch(
         self,
         calls: tuple[ToolCall, ...],
         tools: AgentToolBackend | None,
@@ -831,7 +814,7 @@ class AgentRunner:
                         and calls[end].function.name != EXECUTE_CODE_NAME
                     ):
                         end += 1
-                part_result = await self._execute_tool_batch_impl(
+                part_result = await self._execute_tool_batch(
                     calls[index:end],
                     tools,
                     runtime,

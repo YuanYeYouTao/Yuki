@@ -23,7 +23,7 @@ from yuki.persistence.models import (
 )
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_schema_v1 import work
-from yuki.tool_results.recorder import ToolInvocationRepository
+from yuki.tool_results.recorder import ToolReceiptRepository
 
 
 async def self_actor(database, env):
@@ -104,7 +104,7 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
     )
     mutations, facts, _, _ = _service(database, self_memory_enabled=True)
     case.chat._tools._memory_mutations = mutations
-    case.chat._tool_invocations = ToolInvocationRepository(database)
+    case.chat._tool_receipts = ToolReceiptRepository(database)
     calls = []
     if accept_work:
         calls.append(("task_control", {"action": "accept", "goal": "记录真实工具经历"}))
@@ -231,8 +231,8 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
         mode="silent",
         work_enabled=work_enabled,
     )
-    recorder = ToolInvocationRepository(database)
-    case.chat._tool_invocations = recorder
+    recorder = ToolReceiptRepository(database)
+    case.chat._tool_receipts = recorder
     case.chat._tools.workspace_service = WorkspaceService(case.env.store)
     case.chat._tools.sandbox_client = SimpleNamespace(
         execute=AsyncMock(return_value={"ready": True, "workspace": "/workspace"})
@@ -358,14 +358,10 @@ async def test_self_schedule_sdk_read_records_its_actual_call_and_original_sourc
             assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
         # Repair/reentry keeps the SDK call key without another tool/model request.
         original_calls = len(case.provider.requests)
-        await recorder.record_invocation(
-            conversation_key=actual.conversation_key,
+        await recorder.record_receipt(
             provider_id=receipt.provider_id,
             tool_name=receipt.tool_name,
             success=True,
-            latency_seconds=0,
-            result_size=receipt.result_characters,
-            artifact_created=False,
             error_category=None,
             result_excerpt=receipt.result_excerpt,
             canonical_conversation_id=actual.effective_conversation_id,
@@ -404,7 +400,7 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
     )
     mutations, facts, _, _ = _service(database, self_memory_enabled=True)
     case.chat._tools._memory_mutations = mutations
-    case.chat._tool_invocations = ToolInvocationRepository(database)
+    case.chat._tool_receipts = ToolReceiptRepository(database)
 
     def parent_response(request):
         calls = (

@@ -30,7 +30,6 @@ from yuki.llm.base import (
 )
 from yuki.llm.http_errors import check_provider_response
 from yuki.llm.protocol_state import integer
-from yuki.llm.wire_diagnostics import WireFingerprint, WireRequestObserver
 from yuki.model_runtime.request_accounting import current_provider_attempts
 
 
@@ -38,8 +37,6 @@ from yuki.model_runtime.request_accounting import current_provider_attempts
 class _PreparedHTTP:
     request: httpx.Request
     payload: dict[str, Any]
-    fingerprint: WireFingerprint
-    chain_id: str
 
 
 class JSONHTTPProvider(LLMProvider):
@@ -66,7 +63,6 @@ class JSONHTTPProvider(LLMProvider):
         self._owns_client = client is None
         self._timeout = httpx.Timeout(timeout_seconds)
         self._client = client or httpx.AsyncClient(base_url=base_url.rstrip("/") + "/")
-        self._wire_observer = WireRequestObserver()
 
     @abstractmethod
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]: ...
@@ -125,22 +121,11 @@ class JSONHTTPProvider(LLMProvider):
                 json=payload,
                 timeout=self._timeout,
             )
-            return _PreparedHTTP(
-                prepared,
-                payload,
-                WireFingerprint.of(payload, self.protocol, provider=self.provider_name),
-                request.request_chain_id,
-            )
+            return _PreparedHTTP(prepared, payload)
 
     async def _post(self, prepared: _PreparedHTTP) -> tuple[httpx.Response, Any]:
         from yuki.model_runtime.dispatch_guard import check_model_dispatch
 
-        self._wire_observer.observe(
-            prepared.fingerprint,
-            self.protocol,
-            chain_id=prepared.chain_id,
-            provider=self.provider_name,
-        )
         async with trace_span(
             "provider",
             {"protocol": self.protocol, "body": prepared.payload, "dispatch": "prepared"},

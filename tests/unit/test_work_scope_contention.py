@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 
 import pytest
+from sqlalchemy import event as sql_event
 from sqlalchemy import select, update
 from tests.support.projection_sql_counts import capture_sql
 from tests.support.social_identity_cases import social_env
@@ -123,6 +124,39 @@ async def test_concurrent_read_candidates_still_have_one_lease_owner(
         stored = (await reader.execute(select(scope))).mappings().one()
     assert stored["fence"] == winners[0].fence == 1
     assert stored["owner"] == winners[0].owner
+
+
+async def test_acquire_uses_database_time_after_waiting_for_writer(database, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from sqlalchemy import func
+
+    env = await social_env(database, tmp_path)
+    repository = WorkRepository(database)
+    waiting = asyncio.Event()
+
+    def observe_begin(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement == "BEGIN IMMEDIATE":
+            waiting.set()
+
+    monkeypatch.setattr("yuki.runtime.work_repository.time", SimpleNamespace(time=lambda: 0))
+    async with database.immediate_session():
+        sql_event.listen(database.engine.sync_engine, "before_cursor_execute", observe_begin)
+        candidate = asyncio.create_task(repository.acquire(env.context.conversation_id, 1))
+        try:
+            await asyncio.wait_for(waiting.wait(), 2)
+            assert not candidate.done()
+        finally:
+            sql_event.remove(database.engine.sync_engine, "before_cursor_execute", observe_begin)
+    lease = await asyncio.wait_for(candidate, 2)
+    assert lease is not None and await repository.valid(lease)
+    async with database.sessions() as reader:
+        remaining = await reader.scalar(
+            select(scope.c.lease_until - (func.julianday("now") - 2440587.5) * 86400).where(
+                scope.c.conversation_id == lease.conversation_id
+            )
+        )
+    assert 55 < remaining <= 60
 
 
 @pytest.mark.parametrize("operation", ["release", "renew"])

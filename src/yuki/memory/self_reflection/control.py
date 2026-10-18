@@ -263,13 +263,16 @@ class ReflectionControlRepository:
         source_event_id: int | None = None,
         conversation_id: str | None = None,
     ) -> dict[str, Any]:
-        before = await self.snapshot()
-        now = datetime.now(UTC)
         async with self.database.sessions() as session:
             if trigger == "manual":
                 event = await session.get(ChatEventModel, source_event_id)
                 if event is None or event.canonical_conversation_id != conversation_id:
                     raise ValueError("manual reflection requires its original internal event")
+            existing = await session.scalar(select(Cycle).where(Cycle.source_key == key))
+            if existing is not None:
+                return self.record(existing)
+        before = await self.snapshot()
+        now = datetime.now(UTC)
         async with self.database.sessions() as session, session.begin():
             await session.execute(
                 insert(Cycle)

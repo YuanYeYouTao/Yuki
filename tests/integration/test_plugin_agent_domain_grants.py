@@ -350,7 +350,7 @@ async def test_self_main_memory_write_and_delete_keep_existing_sdk_approvals(
     from tests.integration.test_self_common_capabilities import runtime, self_actor
     from tests.unit.test_self_initiative_memory import _service
 
-    from yuki.tool_results.recorder import ToolInvocationRepository
+    from yuki.tool_results.recorder import ToolReceiptRepository
 
     provider = FakeLLMProvider()
     env, harness, chat, _, _ = await _scene(database, tmp_path, provider)
@@ -359,7 +359,7 @@ async def test_self_main_memory_write_and_delete_keep_existing_sdk_approvals(
     chat._tools._memory_mutations = mutations
     chat._tools._memories = facts
     chat._tools.social_service = env.service
-    chat._tool_invocations = ToolInvocationRepository(database)
+    chat._tool_receipts = ToolReceiptRepository(database)
     actor = await self_actor(database, env)
     source = replace(runtime(actor, env), runtime_config=await chat._runtime_config.snapshot())
     permissions = {PluginPermission.AGENT_RUN, PluginPermission.GROUP_MEMBERS_READ}

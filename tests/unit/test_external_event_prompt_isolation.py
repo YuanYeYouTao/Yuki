@@ -15,12 +15,11 @@ from yuki.conversation.prompt_history import PromptHistorySource
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.conversation.scope_models import ConversationCoverageError
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.domain.messages import ChatMessage, ChatRequest, InboundMessage, SenderIdentity
+from yuki.domain.messages import ChatMessage, InboundMessage, SenderIdentity
 from yuki.domain.profiles import UserProfileSnapshot
 from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
 from yuki.llm.fake import FakeLLMProvider
-from yuki.model_runtime.executor import provider_cache_shape_diagnostics
 from yuki.persistence.database import Database
 from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.repository_records import EventRecord
@@ -152,11 +151,7 @@ def _assembled(
             raw_history_window_shifted=False,
         ),
         checkpoint_text=checkpoint_text,
-        prompt_conversation_id="00000000-0000-4000-8000-000000000001",
-        prompt_scope_key="private:8000:1001",
-        prompt_generation=1,
         prompt_effective_coverage=0,
-        prompt_checkpoint_revision=0,
         prompt_raw_tail_end_event_id=3,
     )
 
@@ -513,20 +508,12 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         == ordinary_context.checkpoint_text
         == checkpoint["checkpoint_text"]
     )
-    assert (
-        wakeup_context.prompt_conversation_id
-        == ordinary_context.prompt_conversation_id
-        == turn.conversation_id
-    )
-    assert wakeup_context.prompt_scope_key == ordinary_context.prompt_scope_key == turn.scope_key
-    assert wakeup_context.prompt_generation == ordinary_context.prompt_generation == turn.generation
+    assert wakeup_context.read_version.conversation_id == turn.conversation_id
+    assert ordinary_context.read_version.conversation_id == turn.conversation_id
+    assert wakeup_context.read_version.generation == turn.generation
+    assert ordinary_context.read_version.generation == turn.generation
     assert (
         wakeup_context.prompt_effective_coverage == ordinary_context.prompt_effective_coverage == 5
-    )
-    assert (
-        wakeup_context.prompt_checkpoint_revision
-        == ordinary_context.prompt_checkpoint_revision
-        == 9
     )
     assert wakeup_context.prompt_raw_tail_end_event_id == (
         ordinary_context.prompt_raw_tail_end_event_id
@@ -582,8 +569,6 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
         item.content or "" for item in composed.messages if item.role != "system"
     )
     assert history_blob.count("current summary") == 1
-    assert composed.metrics.conversation_prefix_hash
-    assert "hello from a person" not in composed.metrics.conversation_prefix_hash
     repeat = composer.compose(
         inbound=None,
         context=context,
@@ -592,7 +577,6 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     assert tuple((item.role, item.content) for item in repeat.messages) == tuple(
         (item.role, item.content) for item in composed.messages
     )
-    assert repeat.metrics.conversation_prefix_hash == composed.metrics.conversation_prefix_hash
     instructions, inputs = DeepSeekResponsesProvider(
         base_url="https://provider.invalid",
         api_key="",
@@ -700,79 +684,6 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
     assert ordinary_request.reasoning_effort == wakeup_request.reasoning_effort
     assert ordinary_request.response_format == wakeup_request.response_format
     assert ordinary_request.structured_output == wakeup_request.structured_output
-    assert ordinary_request.request_shape_hash == wakeup_request.request_shape_hash
-    ordinary_shape = provider_cache_shape_diagnostics(
-        ordinary_request,
-        provider="fake",
-        model=ordinary_request.model,
-        profile_id="legacy",
-        protocol="chat_completions",
-    )
-    wakeup_shape = provider_cache_shape_diagnostics(
-        wakeup_request,
-        provider="fake",
-        model=wakeup_request.model,
-        profile_id="legacy",
-        protocol="chat_completions",
-    )
-    assert ordinary_shape == wakeup_shape
-    assert all(
-        len(value) == 64
-        for value in (
-            ordinary_shape.provider_shape_hash,
-            ordinary_shape.instructions_hash,
-            ordinary_shape.tools_hash,
-            ordinary_shape.input_prefix_hash,
-        )
-    )
-
-
-def test_provider_cache_shape_excludes_only_the_current_user_tail() -> None:
-    base = ChatRequest(
-        messages=(
-            ChatMessage(role="system", content="stable instructions"),
-            ChatMessage(role="user", content="stable history"),
-            ChatMessage(role="assistant", content="stable reply"),
-            ChatMessage(role="user", content="ordinary current tail"),
-        ),
-        model="deepseek-v4-flash",
-        temperature=None,
-        max_output_tokens=2_000,
-        thinking_enabled=True,
-    )
-
-    def diagnostics(request: ChatRequest):
-        return provider_cache_shape_diagnostics(
-            request,
-            provider="deepseek",
-            model=request.model,
-            profile_id="main",
-            protocol="responses",
-        )
-
-    baseline = diagnostics(base)
-    other_tail = diagnostics(
-        replace(
-            base,
-            messages=(*base.messages[:-1], ChatMessage(role="user", content="external wakeup")),
-        )
-    )
-    changed_history = diagnostics(
-        replace(
-            base,
-            messages=(
-                base.messages[0],
-                ChatMessage(role="user", content="different stable history"),
-                *base.messages[2:],
-            ),
-        )
-    )
-    changed_limits = diagnostics(replace(base, max_output_tokens=4_000))
-
-    assert baseline == other_tail
-    assert baseline.input_prefix_hash != changed_history.input_prefix_hash
-    assert baseline.provider_shape_hash != changed_history.provider_shape_hash
-    assert baseline.provider_shape_hash != changed_limits.provider_shape_hash
 
 
 @pytest.mark.asyncio

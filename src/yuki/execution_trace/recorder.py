@@ -14,13 +14,9 @@ from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import delete, exists, func, insert, literal, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql import Executable
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
-from yuki.conversation.correlation import (
-    CANONICAL_KIND_MISMATCH,
-    MISSING_CANONICAL_CONVERSATION,
-)
 from yuki.execution_trace.db_models import ExecutionTraceEntryModel, ExecutionTraceStateModel
 from yuki.execution_trace.payload import (
     EncodedPayload,
@@ -31,105 +27,38 @@ from yuki.execution_trace.payload import (
 )
 from yuki.execution_trace.phases import current_metrics, model_detail
 from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, PresenceModel
-from yuki.identity.errors import CanonicalIdentityError
 from yuki.persistence.database import Database
-from yuki.persistence.diagnostic_writer import DiagnosticWriter
+from yuki.persistence.diagnostic_writer import DiagnosticWrite, DiagnosticWriter
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.observability import current_runtime_turn_correlation
 
 logger = logging.getLogger(__name__)
 
 
-async def _require_trace_source(
-    session: AsyncSession, conversation_id: str | None, source_event_id: int | None
-) -> None:
-    if conversation_id is None and source_event_id is None:
-        return
-    token = str(conversation_id).strip() if conversation_id is not None else None
-    if token == "":
-        raise CanonicalIdentityError(MISSING_CANONICAL_CONVERSATION)
-    kind_checks = (
-        [
-            exists(select(model.id).where(model.id == token))
-            for model in (
-                PresenceModel,
-                CanonicalPersonModel,
-                CanonicalSpaceModel,
-                CanonicalConversationModel,
+def _trace_source_guards(conversation_id: str | None, source_event_id: int | None) -> list[Any]:
+    """The original source proof belongs to the conditional INSERT itself."""
+    guards: list[Any] = []
+    if conversation_id is not None:
+        token = str(conversation_id).strip()
+        guards.append(
+            exists(
+                select(CanonicalConversationModel.id).where(CanonicalConversationModel.id == token)
             )
-        ]
-        if token is not None
-        else [literal(False)] * 4
-    )
-    statement = select(*kind_checks)
-    if source_event_id is not None:
-        # An outer join retains the missing-event row. Its ID distinguishes a
-        # missing source from a legacy source whose canonical relation is NULL.
-        anchor = select(literal(1).label("trace_anchor")).subquery()
-        statement = statement.add_columns(
-            ChatEventModel.id, ChatEventModel.canonical_conversation_id
-        ).select_from(anchor.outerjoin(ChatEventModel, ChatEventModel.id == source_event_id))
-    else:
-        statement = statement.add_columns(literal(None), literal(None))
-    presence, person, space, conversation, event_id, event_conversation_id = (
-        await session.execute(statement)
-    ).one()
-    # Preserve the original kind/missing-conversation priority over source errors.
-    if token is not None:
-        if presence or person or space:
-            raise CanonicalIdentityError(CANONICAL_KIND_MISMATCH)
-        if not conversation:
-            raise CanonicalIdentityError(MISSING_CANONICAL_CONVERSATION)
-    if source_event_id is not None and (
-        event_id is None or event_conversation_id != conversation_id
-    ):
-        raise ValueError("invalid_trace_source_event")
-
-
-async def _require_trace_delivery(
-    session: AsyncSession, conversation_id: str | None, delivery: tuple[str, int]
-) -> None:
-    from yuki.social.db_models import SocialOperationModel
-
-    anchor = select(literal(1).label("delivery_anchor")).subquery()
-    statement = select(
-        SocialOperationModel.id,
-        SocialOperationModel.status,
-        SocialOperationModel.event_id,
-        SocialOperationModel.source_conversation_id,
-        ChatEventModel.id,
-        ChatEventModel.direction,
-        ChatEventModel.author_kind,
-        ChatEventModel.suppression_status,
-        ChatEventModel.canonical_conversation_id,
-    ).select_from(
-        anchor.outerjoin(SocialOperationModel, SocialOperationModel.id == delivery[0]).outerjoin(
-            ChatEventModel, ChatEventModel.id == delivery[1]
         )
-    )
-    (
-        receipt_id,
-        status,
-        receipt_event,
-        receipt_conversation,
-        event_id,
-        direction,
-        author,
-        keeper,
-        owner,
-    ) = (await session.execute(statement)).one()
-    if (
-        receipt_id is None
-        or status != "succeeded"
-        or receipt_event != delivery[1]
-        or receipt_conversation != conversation_id
-        or event_id is None
-        or direction != "outbound"
-        or author != "yuki"
-        or keeper != "keeper"
-        or owner is None
-    ):
-        raise ValueError("invalid_trace_delivery")
+        guards.extend(
+            ~exists(select(model.id).where(model.id == token))
+            for model in (PresenceModel, CanonicalPersonModel, CanonicalSpaceModel)
+        )
+    if source_event_id is not None:
+        guards.append(
+            exists(
+                select(ChatEventModel.id).where(
+                    ChatEventModel.id == source_event_id,
+                    ChatEventModel.canonical_conversation_id == conversation_id,
+                )
+            )
+        )
+    return guards
 
 
 def _encode_payload_timed(payload: object, limit: int) -> tuple[EncodedPayload, float]:
@@ -144,19 +73,16 @@ def _log_slow_preparation(
     total: float,
     encode_call: float,
     encode_execution: float,
-    source_validation: float,
 ) -> None:
     if total >= 1.0:
         logger.warning(
             "execution_trace_slow_prepare kind=%s turn_id=%s prepare_seconds=%.6f "
-            "encode_call_inclusive_seconds=%.6f encode_execution_seconds=%.6f "
-            "source_validation_seconds=%.6f",
+            "encode_call_inclusive_seconds=%.6f encode_execution_seconds=%.6f",
             kind,
             turn_id,
             total,
             encode_call,
             encode_execution,
-            source_validation,
         )
 
 
@@ -217,10 +143,7 @@ class TraceRecorder:
     def live_spans(self, conversation_id: str) -> tuple[LiveTraceSpan, ...]:
         """A read-only, restart-ephemeral view; never used for recovery or effects."""
         return tuple(
-            span
-            for span in self._live_spans.values()
-            if span.conversation_id == conversation_id
-            and span.family in {"chat_processing", "turn"}
+            span for span in self._live_spans.values() if span.conversation_id == conversation_id
         )
 
     async def coverage(self) -> TraceCoverage:
@@ -317,16 +240,26 @@ class TraceRecorder:
                 if not self.writer.submit(
                     kind,
                     reserved,
-                    lambda: self._prepare_and_commit(
+                    lambda: self._prepare_write(
                         coverage, original_privacy_generation, values, snapshot, delivery
                     ),
                 ):
                     coverage.failures += 1
                     self.record_failures += 1
                 return
-            await self._prepare_and_commit(
+            prepared = await self._prepare_write(
                 coverage, original_privacy_generation, values, snapshot, delivery
             )
+            if not await prepared.commit():
+                self._missing(coverage)
+                logger.warning(
+                    "diagnostic_discarded kind=%s coverage_incomplete=true "
+                    "reason=privacy_or_source_changed",
+                    kind,
+                )
+        except asyncio.CancelledError:
+            self._missing(scope.coverage)
+            raise
         except Exception as exc:
             scope.coverage.failures += 1
             self.record_failures += 1
@@ -336,31 +269,19 @@ class TraceRecorder:
                 type(exc).__name__,
             )
 
-    async def _prepare_and_commit(
+    async def _prepare_write(
         self,
         coverage: TraceCoverage,
         original_privacy_generation: int,
         frozen: tuple[tuple[str, Any], ...],
         payload: object,
         delivery: tuple[str, int] | None,
-    ) -> None:
+    ) -> DiagnosticWrite:
         values = dict(frozen)
         started = time.perf_counter()
-        source_validation = encode_call = encode_execution = 0.0
+        encode_call = encode_execution = 0.0
         prepared_seconds: float | None = None
         try:
-            source_started = time.perf_counter()
-            try:
-                async with self.database.sessions() as session:
-                    await _require_trace_source(
-                        session, values["conversation_id"], values["source_event_id"]
-                    )
-                    if delivery is not None:
-                        await _require_trace_delivery(session, values["conversation_id"], delivery)
-            finally:
-                source_validation = time.perf_counter() - source_started
-                if self.writer:
-                    self.writer.record_phase("source_validation", source_validation)
             encoding_started = time.perf_counter()
             # Shield the actual worker. On shutdown, join it before releasing
             # the item's reservation; cancellation alone cannot stop a thread.
@@ -390,19 +311,17 @@ class TraceRecorder:
                 payload_sha256=encoded.sha256,
                 payload_bytes=encoded.size,
             )
+            statement = self._statement(
+                original_privacy_generation, tuple(values.items()), delivery=delivery
+            )
             prepared_seconds = time.perf_counter() - started
-            write_started = time.perf_counter()
-            try:
-                await self._insert(
-                    coverage, original_privacy_generation, tuple(values.items()), delivery=delivery
-                )
-            finally:
-                if self.writer:
-                    self.writer.record_phase(
-                        "diagnostic_write", time.perf_counter() - write_started
-                    )
-        except (Exception, asyncio.CancelledError) as exc:
-            if self.writer is not None or isinstance(exc, asyncio.CancelledError):
+            return DiagnosticWrite(
+                self.database,
+                statement,
+                lambda: self._missing(coverage),
+            )
+        except (Exception, asyncio.CancelledError):
+            if self.writer is not None:
                 coverage.failures += 1
                 self.record_failures += 1
             raise
@@ -413,17 +332,15 @@ class TraceRecorder:
                 prepared_seconds if prepared_seconds is not None else time.perf_counter() - started,
                 encode_call,
                 encode_execution,
-                source_validation,
             )
 
-    async def _insert(
+    def _statement(
         self,
-        coverage: TraceCoverage,
         original_privacy_generation: int,
         frozen: tuple[tuple[str, Any], ...],
         *,
         delivery: tuple[str, int] | None = None,
-    ) -> None:
+    ) -> Executable:
         values = dict(frozen)
         table = ExecutionTraceEntryModel.__table__
         privacy_generation = (
@@ -434,25 +351,9 @@ class TraceRecorder:
         guarded_values = select(
             *(literal(value, type_=table.c[key].type) for key, value in values.items())
         ).where(func.coalesce(privacy_generation, 0) == original_privacy_generation)
-        # Re-check ownership in the conditional INSERT as well: deletion or
-        # re-ownership between the read session and this writer cannot refill it.
-        if values["conversation_id"] is not None:
-            guarded_values = guarded_values.where(
-                exists(
-                    select(CanonicalConversationModel.id).where(
-                        CanonicalConversationModel.id == str(values["conversation_id"]).strip()
-                    )
-                )
-            )
-        if values["source_event_id"] is not None:
-            guarded_values = guarded_values.where(
-                exists(
-                    select(ChatEventModel.id).where(
-                        ChatEventModel.id == values["source_event_id"],
-                        ChatEventModel.canonical_conversation_id == values["conversation_id"],
-                    )
-                )
-            )
+        guarded_values = guarded_values.where(
+            *_trace_source_guards(values["conversation_id"], values["source_event_id"])
+        )
         if delivery is not None:
             from yuki.social.db_models import SocialOperationModel
 
@@ -475,15 +376,11 @@ class TraceRecorder:
                     )
                 ),
             )
-        # The erasure fence and insert are one SQL statement; an in-flight
-        # response cannot recreate a deleted prompt after privacy erasure.
-        async with self.database.sessions() as session, session.begin():
-            result = await session.execute(
-                insert(ExecutionTraceEntryModel).from_select(list(values), guarded_values)
-            )
-            if getattr(result, "rowcount", 0) == 0:
-                coverage.failures += 1
-                self.record_failures += 1
+        return insert(ExecutionTraceEntryModel).from_select(list(values), guarded_values)
+
+    def _missing(self, coverage: TraceCoverage) -> None:
+        coverage.failures += 1
+        self.record_failures += 1
 
     async def cleanup_expired(self, *, now: datetime | None = None) -> int:
         cutoff = now or datetime.now(UTC)
@@ -543,6 +440,7 @@ async def trace_span(
     execution_id: str | None = None,
     origin: str | None = None,
     source_event_id: int | None = None,
+    record_start: bool = True,
 ) -> AsyncIterator[TraceSpan]:
     parent = current_trace.get()
     recorder = recorder or (parent.recorder if parent else None)
@@ -564,18 +462,21 @@ async def trace_span(
     )
     metric_token = current_metrics.set({}) if parent is None else None
     token = current_trace.set(scope)
-    recorder._live_spans[scope.operation_id] = LiveTraceSpan(
-        turn_id=scope.turn_id,
-        operation_id=scope.operation_id,
-        conversation_id=scope.conversation_id,
-        family=family,
-        origin=scope.origin,
-        started_at=datetime.now(UTC),
-    )
-    recorder.database.commit_hints.publish()
+    live = family in {"chat_processing", "turn"}
+    if live:
+        recorder._live_spans[scope.operation_id] = LiveTraceSpan(
+            turn_id=scope.turn_id,
+            operation_id=scope.operation_id,
+            conversation_id=scope.conversation_id,
+            family=family,
+            origin=scope.origin,
+            started_at=datetime.now(UTC),
+        )
+        recorder.database.commit_hints.publish()
     failures_before = scope.coverage.failures
     try:
-        await record_trace(f"{family}_start", payload)
+        if record_start:
+            await record_trace(f"{family}_start", payload)
         try:
             yield span
         except (Exception, asyncio.CancelledError) as exc:
@@ -587,6 +488,7 @@ async def trace_span(
                     "error_category": type(exc).__name__,
                     "failure": asdict(classify_failure(exc)),
                     "record_failures": scope.coverage.failures - failures_before,
+                    **({"result": span.result} if span.result is not None else {}),
                 },
             )
             raise
@@ -594,16 +496,18 @@ async def trace_span(
             metrics = current_metrics.get()
             if parent is None and metrics:
                 await record_trace("phase_metrics", {"phase_version": 1, **metrics})
-            await record_trace(
-                f"{family}_end",
-                {
-                    "result": span.result,
-                    "record_failures": scope.coverage.failures - failures_before,
-                },
-            )
+            if span.result is not None:
+                await record_trace(
+                    f"{family}_end",
+                    {
+                        "result": span.result,
+                        "record_failures": scope.coverage.failures - failures_before,
+                    },
+                )
     finally:
-        recorder._live_spans.pop(scope.operation_id, None)
-        recorder.database.commit_hints.publish()
+        if live:
+            recorder._live_spans.pop(scope.operation_id, None)
+            recorder.database.commit_hints.publish()
         current_trace.reset(token)
         if metric_token is not None:
             current_metrics.reset(metric_token)

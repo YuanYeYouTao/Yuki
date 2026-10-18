@@ -23,7 +23,7 @@ from yuki.capabilities.results import ToolExecutionResult
 from yuki.config import Settings
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.domain.messages import ChatTool, InboundMessage, PromptRequestDiagnostics
+from yuki.domain.messages import ChatTool, InboundMessage
 from yuki.domain.tool_actor import ToolActor
 from yuki.memory.authorized_scope import AuthorizedMemoryScope
 from yuki.memory.context import MemoryContextService
@@ -149,7 +149,7 @@ class ToolRuntime:
     initiative_run_id: str | None = None
     memory_session: object | None = None
     memory_allowed_scopes: tuple[MemoryScopeType, ...] | None = None
-    prompt_diagnostics: PromptRequestDiagnostics | None = None
+    preparation_model_requests: int = 0
     before_model_request: Callable[[], Awaitable[None]] | None = None
     observation_boundary: ContextBoundaryReader | None = None
     public_compaction: PublicCompactContext | None = None

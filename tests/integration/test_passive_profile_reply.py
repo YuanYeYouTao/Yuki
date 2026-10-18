@@ -150,7 +150,6 @@ async def test_missing_profile_fields_preserve_observation_and_do_not_change_fix
         for request in initial_requests[1:]:
             assert tuple(item for item in request.messages if item.role == "system") == system
             assert request.tools == first.tools
-            assert request.static_prompt_revision == first.static_prompt_revision
         assert sum(action == "send_group_msg" for action, _parameters in env.bot.calls) == 3
         assert env.native_api_attempts == env.bot.calls
     finally:

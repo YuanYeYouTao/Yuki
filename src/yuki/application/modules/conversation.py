@@ -26,7 +26,7 @@ from yuki.memory.self_reflection.service import SelfReflectionService
 from yuki.memory.self_reflection.worker import SelfReflectionWorker
 from yuki.memory.worker import MemoryWorker
 from yuki.services.agent_tools import AgentToolService
-from yuki.services.chat import ChatService, ToolInvocationRecorder
+from yuki.services.chat import ChatService, ToolReceiptRecorder
 from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.effect_gate import ConversationEffectGate
 from yuki.services.processing_status import ProcessingStatusService
@@ -68,7 +68,7 @@ class ConversationModule:
         web_provider: WebSearchProvider | None,
         memory_embeddings: MemoryEmbeddingRuntime,
         tool_artifacts: ToolArtifactWriter | None = None,
-        tool_invocations: ToolInvocationRecorder | None = None,
+        tool_receipts: ToolReceiptRecorder | None = None,
         processing_status: ProcessingStatusService | None = None,
     ) -> None:
         self._settings = settings
@@ -82,7 +82,7 @@ class ConversationModule:
         self._web_provider = web_provider
         self._memory_embeddings = memory_embeddings
         self._tool_artifacts = tool_artifacts
-        self._tool_invocations = tool_invocations
+        self._tool_receipts = tool_receipts
         self._processing_status = processing_status
 
     def build(self) -> ConversationBundle:
@@ -131,7 +131,7 @@ class ConversationModule:
             prompt_composer=PromptComposer(settings, prompt_registry),
             turn_coordinator=self._turns,
             tool_artifacts=self._tool_artifacts,
-            tool_invocations=self._tool_invocations,
+            tool_receipts=self._tool_receipts,
             conversation_scopes=persistence.conversation_scopes,
             effect_gate=self._effect_gate,
             processing_status=self._processing_status,
