@@ -24,7 +24,7 @@ from yuki.admin_api.http import AdminApi, attach_admin_api
 from yuki.admin_api.queries import AdminQueries
 from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 from yuki.execution_trace.db_models import ExecutionTraceEntryModel
-from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from yuki.model_runtime.executor import TaskModelExecutor
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.model_runtime.profiles import load_model_profile_catalog, model_profile_environment
@@ -204,6 +204,37 @@ async def test_identity_creation_binding_attach_disable_and_original_replay(admi
             await session.scalar(select(func.count(IdentityBindingModel.id)))
             == initial_bindings + 1
         )
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_binding_attach_only_conflicts_with_current_presence(admin, database, enabled):
+    client, *_ = admin
+    person = (await client.post("/admin/v1/persons", json=command())).json()["data"]["resource_id"]
+    async with database.immediate_session() as session:
+        presence = await session.scalar(
+            select(PresenceModel).where(
+                PresenceModel.platform == "qq", PresenceModel.external_account_id == "8001"
+            )
+        )
+        assert presence is not None
+        presence_id = presence.id
+        presence.enabled = enabled
+    response = await client.post(
+        f"/admin/v1/persons/{person}/bindings",
+        json=command(1, platform="qq", external_account_id="8001", display_name="Former account"),
+    )
+    if enabled:
+        assert response.status_code == 409, response.text
+        assert response.json()["problem"]["code"] == "precondition_failed"
+    else:
+        assert response.status_code == 200, response.text
+        binding_id = response.json()["data"]["resource_id"]
+        async with database.sessions() as session:
+            binding = await session.get(IdentityBindingModel, binding_id)
+            assert binding is not None and binding.person_id == person
+    async with database.sessions() as session:
+        retained = await session.get(PresenceModel, presence_id)
+        assert retained is not None and retained.external_account_id == "8001"
 
 
 async def plugin_action(client, action, **fields):

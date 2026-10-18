@@ -196,6 +196,38 @@ def test_at_all_is_not_exposed_as_a_user_target() -> None:
     assert "[提及全体成员]看看" in normalized.text
 
 
+def test_native_mention_spans_survive_whitespace_cleanup_without_replacing_literal_text() -> None:
+    from dataclasses import replace
+
+    from yuki.domain.messages import render_message_mentions
+
+    normalized = normalize_event(
+        group_event(
+            Message(
+                [
+                    MessageSegment.text(" \r\n[提及1002]\x00 \t"),
+                    MessageSegment.at(1002),
+                    MessageSegment.text("  \r\n "),
+                    MessageSegment.at(1003),
+                    MessageSegment.text(" \r\n"),
+                ]
+            )
+        )
+    )
+    assert [normalized.text[item.text_start : item.text_end] for item in normalized.mentions] == [
+        "[提及1002]",
+        "[提及1003]",
+    ]
+    text, _mentions = render_message_mentions(
+        normalized.text,
+        tuple(
+            replace(item, display_name=f"名字{index}")
+            for index, item in enumerate(normalized.mentions)
+        ),
+    )
+    assert text == "[提及1002] \t@名字0\n @名字1"
+
+
 def test_reply_text_and_face_placeholder_are_supported() -> None:
     message = Message([MessageSegment.at(9999), MessageSegment.face(14), MessageSegment.text("ok")])
     event = group_event(message)

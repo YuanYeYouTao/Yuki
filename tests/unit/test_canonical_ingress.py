@@ -228,6 +228,85 @@ async def test_fence_failpoint_is_same_immediate_and_receipt_dedupe(database: Da
 
 
 @pytest.mark.asyncio
+async def test_retired_presence_sender_becomes_person_without_rewriting_history(
+    database: Database,
+) -> None:
+    from yuki.identity.db_models import PresenceModel
+
+    registry, resolver, uow = await _stack(database)
+    bot = _Bot("8000")
+    async with database.immediate_session() as session:
+        ingress_presence = await ensure_v2_presence(session, "8000")
+        retired_presence = await ensure_v2_presence(session, "8001")
+    registry.connect(bot, provider_id="snowluma")
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=ingress_presence)
+    native = _message(message_id="before-retirement", user_id="8001", group_id="2001")
+    original = await resolver.pre_admit(bot, native)
+    assert original is not None and not original.dropped
+    assert original.author_kind == AuthorKind.YUKI.value
+    stored = await uow.append_inbound(original.message, original)
+    assert stored.event.author_presence_id == retired_presence
+    async with database.immediate_session() as session:
+        presence = await session.get(PresenceModel, retired_presence)
+        assert presence is not None
+        presence.enabled = False
+        presence.ingest_eligible = False
+        presence.revision += 1
+    replay = await resolver.pre_admit(bot, native)
+    assert replay is not None and replay.author_kind == AuthorKind.PERSON.value
+    recovered = await uow.append_inbound(replay.message, replay)
+    assert not recovered.created and recovered.event.id == stored.event.id
+    assert recovered.event.author_presence_id == retired_presence
+    assert recovered.event.author_person_id is None
+    current = await resolver.pre_admit(
+        bot, _message(message_id="after-retirement", user_id="8001", group_id="2001")
+    )
+    assert current is not None and not current.dropped
+    assert current.author_kind == AuthorKind.PERSON.value
+    assert current.author_person_id is not None
+    assert current.author_presence_id is None
+    appended = await uow.append_inbound(current.message, current)
+    assert appended.event.author_person_id == current.author_person_id
+    repeated = await resolver.pre_admit(
+        bot, _message(message_id="after-binding-created", user_id="8001", group_id="2001")
+    )
+    assert repeated is not None and repeated.author_person_id == current.author_person_id
+    async with database.sessions() as session:
+        historic = await session.get(ChatEventModel, stored.event.id)
+        assert historic is not None
+        assert historic.author_kind == AuthorKind.YUKI.value
+        assert historic.author_presence_id == retired_presence
+        assert historic.author_person_id is None
+        presence = await session.get(PresenceModel, retired_presence)
+        assert presence is not None and presence.external_account_id == "8001"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_ensure_person_only_conflicts_with_current_presence(
+    database: Database, enabled: bool
+) -> None:
+    from yuki.identity.db_models import PresenceModel
+    from yuki.identity.event_author import project_event_author
+
+    async with database.immediate_session() as session:
+        presence_id = await ensure_v2_presence(session, "8001")
+        presence = await session.get(PresenceModel, presence_id)
+        assert presence is not None
+        presence.enabled = enabled
+        if enabled:
+            with pytest.raises(CanonicalIdentityError) as error:
+                await ensure_person(session, "8001", now=_NOW)
+            assert error.value.category == "canonical_kind_mismatch"
+        else:
+            person_id = await ensure_person(session, "8001", now=_NOW)
+            assert await ensure_person(session, "8001", now=_NOW) == person_id
+            author = await project_event_author(session, sender_user_id="8001")
+            assert author.as_tuple() == (AuthorKind.PERSON.value, person_id, None)
+            assert presence.id == presence_id and presence.external_account_id == "8001"
+
+
+@pytest.mark.asyncio
 async def test_external_bot_does_not_create_person(database: Database) -> None:
     registry, resolver, _uow = await _stack(database)
     bot = _Bot("8000")

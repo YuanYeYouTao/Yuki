@@ -1,9 +1,11 @@
 """Host projection keeps real source choices without evaluating all participation beliefs."""
 
+import json
 import time
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import httpx
 import pytest
 from sqlalchemy import update
 from tests.support.semantic_participation_host_helpers import (
@@ -16,13 +18,72 @@ from tests.unit.test_participation_ordinary_feedback import ordinary_expression
 from tests.unit.test_participation_pipeline_retirement import _relationship
 from yuki_participation.controller import Controller
 from yuki_participation.models import Snapshot
+from yuki_participation.observer import JevObserver
 from yuki_participation.participation import ParticipationUnit, UnitBinding
 from yuki_participation.self_report import SelfDelta, SelfReport
 
 from yuki.domain.conversations import ScopeType
+from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.identity.canonical_repository import ensure_person
 from yuki.persistence.models import ChatEventModel
 from yuki.services.participation_feedback import admission_unit_binding, sync_scope_effects
+
+
+async def test_jev_and_main_keep_the_same_named_mentions_in_original_positions(database, tmp_path):
+    host, _ = await _host(database, tmp_path, observer=False)
+    try:
+        body = "@油桃 你先说这件事，@远野 等下接着说；@油桃 再确认。"
+        row = await _event_and_route(database, host.app.ledger, content=body)
+        item = await _item(host, row)
+        event = host._event(row, item)
+        snapshot = Snapshot(
+            scope=item.scene.scope,
+            focus=event,
+            context=(),
+            sequence=1,
+            issued_at=time.time(),
+        )
+
+        requests = []
+
+        def http(request):
+            body = json.loads(request.content)
+            requests.append(body)
+            return httpx.Response(
+                200,
+                json={
+                    "model": body["model"],
+                    "answers": {
+                        name: {
+                            "type": "choice",
+                            "choice": "unknown",
+                            "probabilities": {
+                                choice: float(choice == "unknown")
+                                for choice in question["criteria"]
+                            },
+                        }
+                        for name, question in body["questions"].items()
+                    },
+                    "usage": {},
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(http)) as transport:
+            observer = JevObserver("synthetic-key", client=transport)
+            await observer.evaluate(snapshot)
+        assert len(requests) == 1
+        payload = requests[0]["state"]
+        main = ChatEventPromptRenderer((row,)).reference_message(
+            row, current_event_id=row.id, current_content=body
+        )
+
+        assert payload["focus"]["text"] == body
+        assert main.content.endswith(body)
+        assert event.author == event.target == row.author_person_id
+        assert "Yuki" not in payload["focus"]["text"]
+        assert not host._observer
+    finally:
+        await host.close()
 
 
 async def _append(host, *, author="1001", reply_to=None, cause=None, age=20):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from typing import cast
@@ -25,11 +26,11 @@ from yuki.conversation.hydrate import (
 )
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.identity import AuthorKind
-from yuki.domain.messages import InboundMessage
+from yuki.domain.messages import InboundMessage, snapshot_mention_segments
 from yuki.domain.profiles import sanitize_profile_name
 from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.identity.canonical_repository import find_identity_binding, trip
-from yuki.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
+from yuki.identity.db_models import CanonicalSpaceModel, IdentityBindingModel, SpaceBindingModel
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.ingress import IngressPreAdmit
 from yuki.identity.person_state import (
@@ -39,6 +40,7 @@ from yuki.identity.person_state import (
 from yuki.identity.receipt_compat import (
     load_claimed_keeper,
     normalize_live_json,
+    normalize_live_text,
     require_claimed_event,
     require_compatible_v2_live,
     require_reply_source,
@@ -91,7 +93,7 @@ class CanonicalIngressUnitOfWork:
         presence_id = admitted.presence_id
         conversation_id = admitted.conversation_id
         scope = admitted.message.scope(bot_user_id=admitted.handle_external_account_id)
-        segments = list(message.segments)
+        segments = list(snapshot_mention_segments(message.segments, message.mentions))
         segments.append(
             {
                 "type": "yuki_context",
@@ -377,7 +379,7 @@ async def _reuse_claimed_inbound(
 ) -> ScopedAppendResult:
     if admitted.conversation_id is None or admitted.presence_id is None:
         raise CanonicalIdentityError("unclassified")
-    conversation = await session.get(CanonicalConversationModel, admitted.conversation_id)
+    conversation = await session.get(CanonicalConversationModel, existing.canonical_conversation_id)
     if conversation is None:
         raise CanonicalIdentityError("unclassified")
     receipt = await _load_receipt(
@@ -387,22 +389,64 @@ async def _reuse_claimed_inbound(
         platform_message_id=message.message_id[:128],
     )
     require_claimed_event(receipt, existing)
+    if conversation.kind == "private":
+        original_binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+        if (
+            original_binding is None
+            or original_binding.external_account_id != existing.private_peer_user_id
+            or original_binding.platform != message.platform
+        ):
+            raise CanonicalIdentityError("receipt_conflict")
+    content = message.text
+    original_segments = json.loads(existing.segments_json)
+
+    def native_payload(parts: list[dict[str, object]], text: str) -> tuple[str, str]:
+        native: list[object] = []
+        body: list[str] = []
+        cursor = 0
+        for part in parts:
+            if part.get("type") == "yuki_context":
+                continue
+            data = part.get("data")
+            if part.get("type") == "mention" and isinstance(data, dict) and "source" in data:
+                native.append(data["source"])
+                body.extend((text[cursor : data["text_start"]], "@"))
+                cursor = data["text_end"]
+            else:
+                native.append(part)
+        body.append(text[cursor:])
+        return normalize_live_json(native), normalize_live_text("".join(body))
+
+    if (
+        existing.reply_to_message_id != message.reply_to_message_id
+        or conversation.thread_id != message.thread_id
+    ):
+        raise CanonicalIdentityError("receipt_conflict")
+    if native_payload(original_segments, existing.content) == native_payload(segments, content):
+        # The original receipt owns the accepted author and display snapshot,
+        # even after account retirement, transfer or a profile observation.
+        segments = original_segments
+        normalized_segments = normalize_live_json(existing.segments_json)
+        content = existing.content
+    scope = replace(message, conversation_id=conversation.id).scope(
+        bot_user_id=admitted.handle_external_account_id
+    )
     require_compatible_v2_live(
         existing,
         scope=scope,
-        conversation_id=admitted.conversation_id,
+        conversation_id=conversation.id,
         presence_id=admitted.presence_id,
         platform_message_id=message.message_id,
         sender_user_id=message.sender.user_id,
         direction="inbound",
         event_kind="message",
-        content=message.text,
+        content=content,
         segments=segments,
         normalized_segments=normalized_segments,
         timestamp=message.received_at,
-        author_kind=admitted.author_kind,
-        author_person_id=admitted.author_person_id,
-        author_presence_id=admitted.author_presence_id,
+        author_kind=existing.author_kind,
+        author_person_id=existing.author_person_id,
+        author_presence_id=existing.author_presence_id,
         receipt=receipt,
         external_event_type=message.event_type,
     )

@@ -268,8 +268,8 @@ readonly alias 仍读自己的真实持久回执，不增加缓存失效总线�
 ## 主会话的跨入口读取与发送
 
 read_personal_entry 只从本人 App 主会话按 binding_id 或 conversation_id 显式读取本人
-其他私聊账本，使用内部事件游标且最多 50 条。结果携带入口、会话、事件 ID 与
-untrusted_data 标记；历史里的指令不构成新授权，读取不改历史、generation 或 Main session。
+其他私聊账本，使用内部事件游标且最多 50 条。结果携带入口、会话及事件 ID；
+读取不改历史、generation 或 Main session。
 平台合同不声明该工具；执行处仍核真实 actor、来源 App 绑定及目标私聊归属。
 
 send_message 的 person target 可带 binding_id。从 App 显式指定 person 目标必须明确绑定，缺失时返回 binding_required 与可选绑定；

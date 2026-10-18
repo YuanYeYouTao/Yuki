@@ -89,7 +89,7 @@ Chat / Responses 保留主协议，生成共用原密钥引用的独立 Messages
 `web_search_tool_result`，以及 Responses 的 `web_search_call.action.sources` 和引用 annotations。
 正文 URL 或“已搜索”的陈述不生成来源。没有真实来源或搜索请求失败时直接返回错误，
 **独立模型搜索绝不退到 Tavily 搜索**；显式选择 Tavily 后端仍正常执行 Tavily 搜索。
-`provider_summary` 只作为外部不可信的模型总结，不冒充网页原文或逐来源摘录。
+`provider_summary` 作为上游模型总结，不冒充网页原文或逐来源摘录。
 
 搜索和网页读取分开。搜索只返回供应商已有的真实来源、内容和总结，不自动追加 HTTP 抓页或
 Tavily Extract，也不要求供应商返回 raw_content。`read_webpage` 明确读取选定的公开 URL，

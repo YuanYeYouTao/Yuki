@@ -84,11 +84,7 @@ async def test_both_contracts_freeze_once_and_app_model_really_uses_own_other_en
         if message.role == "tool" and message.tool_call_id == "read-entry"
     )
     data = json.loads(reply.content)
-    assert (
-        data["ok"]
-        and data["data"]["untrusted_data"]
-        and data["data"]["items"][0]["event_id"] == original.event.id
-    )
+    assert data["ok"] and data["data"]["items"][0]["event_id"] == original.event.id
     assert (
         data["data"]["conversation_id"] == original.row["conversation_id"]
         and person == principal.person_id
@@ -353,11 +349,8 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
         require_actor=lambda: SimpleNamespace(person_id=person),
     )
     result = await read_entry(database, runtime, {"binding_id": binding.id})
-    assert result["platform"] == "telegram" and result["untrusted_data"]
-    assert (
-        result["items"][0]["event_id"] == event.id
-        and "not a new instruction" in result["authorization"]
-    )
+    assert result["platform"] == "telegram"
+    assert result["items"][0]["event_id"] == event.id
     assert not env.calls
 
 

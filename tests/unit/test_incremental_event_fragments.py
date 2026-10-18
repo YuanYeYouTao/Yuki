@@ -11,7 +11,7 @@ from tests.unit.test_history_time_projection import _event
 
 from yuki.conversation.frozen_fragments import FrozenFragments
 from yuki.conversation.projections import ProjectionConflict
-from yuki.domain.messages import ChatMessage
+from yuki.domain.messages import ChatMessage, MessageMention
 from yuki.event_prompt import ChatEventPromptRenderer, EventPromptIndex, prompt_origin_class
 from yuki.time.formatting import local_datetime, stored_utc
 
@@ -120,6 +120,10 @@ def test_reference_capture_keeps_historical_accounts_and_original_predecessors()
         reply_to_event_id=old.id,
         mentioned_user_ids=("1002",),
         projected_content="[提及1002] [提及old-bot]",
+        projected_mentions=(
+            MessageMention("member", 0, 0, 8, "1002"),
+            MessageMention("member", 2, 9, 20, "old-bot"),
+        ),
     )
     owner = EventPromptIndex((foreign, old, quoted))
     captured = owner.capture(through_event_id=5)
@@ -153,6 +157,10 @@ def test_duplicate_reference_ids_keep_last_metadata_and_all_inferred_bot_account
         sender_user_id="other",
         mentioned_user_ids=(first.sender_user_id,),
         projected_content="[提及old-bot] [提及new-bot]",
+        projected_mentions=(
+            MessageMention("member", 0, 0, 11, "old-bot"),
+            MessageMention("member", 2, 12, 23, "new-bot"),
+        ),
     )
     rendered = ChatEventPromptRenderer((first, last, focus)).render_reference_event(focus)
     assert "提及:新" in rendered

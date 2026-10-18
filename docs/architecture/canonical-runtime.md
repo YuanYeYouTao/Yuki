@@ -25,6 +25,10 @@
 `person`、`yuki`、`external_bot`、`system` 四类；命令、插件和自动化属于 event origin，
 不是作者类型。
 
+只有启用的 Presence 参与当前 Yuki 账号识别。退役时保留原 Presence ID、外部账号和已有
+作者、Conversation、接入与投递回执；它不再阻止该外部账号今后关联 Person。新的人物
+绑定从新的绑定时段开始，不能把先前的 Yuki 发言改归某个人，也不自动关联已有 Person。
+
 ## 人物归并、账号转移与名称
 
 `persons.merged_into_person_id` 只表示经认证证明属于同一人的归并，直接指向最终人物；
@@ -74,6 +78,12 @@ Plugin-global KV 不改键值、版本或原所属。目标已有主动路由优
 Presence 与 canonical Conversation。事件账本保留平台 message ID、sender/group 外部 ID、Provider
 和 Gateway provenance，以便幂等、审计和故障定位；这些字段不再承担业务所有权。
 
+原生 mention 在入账前用已有本地资料解析展示名，正文原位置写为 `@名字`，结构化 segment
+保存原位置、名字与已知的 Person/Presence；重复提及不丢失。Main 与 JEV 读取同一份命名
+正文，不在各自装配时补查平台或改写名称。引用优先使用原内部事件保存的正文和提及快照，
+没有原件时保留引用本身携带的资料，不用今日 Binding 推断过去的对象。新增快照不重渲染
+旧冻结历史，不清空公共检查点或更换 epoch。
+
 入账后沿运行时快照和工作来源传递内部 `trigger_event_id` / `source_event_id`，按
 `chat_events.id` 定位并核验会话。不得用平台 message ID 反查已有内部事件或猜测来源。
 `canonical_event_id` 是另一种关联标识，不能与整数账本主键混用。
@@ -89,7 +99,7 @@ Presence 的平台和对方账号所对应的有效绑定，旧 transport alias 
 Person 隐私遗忘覆盖其所有入口会话。
 
 公共历史由该 Conversation 的已选 compact 检查点和覆盖点后的原消息组成；原始
-`chat_events` 始终是证据源。检查点是不可信输入，不进入 Memory，也不授予权限。
+`chat_events` 始终是证据源。检查点不进入 Memory，也不授予权限。
 容量判断沿 Main 的真实完整请求，装配阶段不截短历史或等待独立后台摘要。
 
 插件外部事件保持 `external_event` 独立账本类型，不伪装为 Person 发言。插件的主动触发只是一个

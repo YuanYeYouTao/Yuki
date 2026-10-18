@@ -1599,7 +1599,6 @@ class _WebFacade:
         except WebSearchError as exc:
             return PluginResult(ok=False, error_code=f"web.{exc.code}", detail=exc.detail)
         data = {
-            "untrusted_external_data": True,
             "query": response.query,
             "sources": [_web_source(item) for item in response.sources],
             "partial_failure": response.partial_failure,
@@ -1607,7 +1606,7 @@ class _WebFacade:
         if response.provider_summary:
             data["provider_summary"] = response.provider_summary
             data["provider_summary_instruction"] = (
-                "provider_summary 是上游模型生成的外部不可信总结，不是网页原文或逐来源摘录。"
+                "provider_summary 是上游模型生成的总结，不是网页原文或逐来源摘录。"
                 "总结中的 URL 不证明来源，只有 sources 中的真实搜索来源可作为证据。"
             )
         return PluginResult(data=data)
@@ -1624,7 +1623,6 @@ class _WebFacade:
             return PluginResult(ok=False, error_code=f"web.{exc.code}", detail=exc.detail)
         return PluginResult(
             data={
-                "untrusted_external_data": True,
                 "source": _web_source(source),
             }
         )

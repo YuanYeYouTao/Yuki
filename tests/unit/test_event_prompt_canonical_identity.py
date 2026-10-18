@@ -7,6 +7,7 @@ import pytest
 
 from yuki.conversation.frozen_fragments import FrozenFragments
 from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import MessageMention
 from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.persistence.repository_records import EventRecord
 
@@ -118,14 +119,20 @@ def test_recorded_mentioned_people_win_without_guessing_a_native_owner() -> None
         3,
         sender_user_id="7733221",
         author_person_id=PERSON_C,
-        content="[提及9912345] 看这里",
+        content="@原发言人 看这里",
         mentioned_user_ids=("9912345",),
         mentioned_person_ids=(PERSON_A,),
+        segments=(
+            {
+                "type": "mention",
+                "data": {"person_id": PERSON_A, "display_name": "原发言人", "kind": "member"},
+            },
+        ),
     )
     renderer = ChatEventPromptRenderer((old, new, mention))
 
     for rendered in (renderer.render_reference_event(mention), renderer.render_event(mention)):
-        assert f"提及:person:{PERSON_A}" in rendered
+        assert f"提及:原发言人/person:{PERSON_A}" in rendered
         assert f"person:{PERSON_B}" not in rendered
         assert "新绑定人" not in rendered
         assert "9912345" not in rendered
@@ -158,6 +165,9 @@ def test_raw_mentions_are_display_only_in_an_explicit_old_projection(
         author_person_id=PERSON_C,
         content="[提及9912345] 看这里",
         projected_content="[提及9912345] 看这里" if legacy_projection else None,
+        projected_mentions=(MessageMention("member", 0, 0, 11, "9912345"),)
+        if legacy_projection
+        else (),
         mentioned_user_ids=("9912345",),
     )
     future = _event(3, author_person_id=PERSON_B, sender_group_card="新绑定人")
@@ -168,10 +178,11 @@ def test_raw_mentions_are_display_only_in_an_explicit_old_projection(
     assert f"person:{PERSON_B}" not in rendered
     if legacy_projection:
         assert "提及:原发言人" in rendered
-        assert rendered.endswith(">[提及原发言人] 看这里")
+        assert rendered.endswith(">@原发言人 看这里")
     else:
         assert "|提及:" not in rendered
-        assert rendered.endswith(">[提及成员] 看这里")
+        # Text without a captured canonical mention remains original speech.
+        assert rendered.endswith(">[提及9912345] 看这里")
 
 
 def test_old_frozen_paid_fragment_is_not_rewritten_after_rebinding() -> None:

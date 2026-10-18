@@ -387,9 +387,7 @@ async def ensure_person(
     account_id = external_id(user_id)
     binding = await find_identity_binding(session, account_id)
     presence = await find_presence(session, account_id)
-    if binding is not None and presence is not None:
-        raise CanonicalIdentityError("canonical_kind_mismatch")
-    if presence is not None:
+    if presence is not None and presence.enabled:
         raise CanonicalIdentityError("canonical_kind_mismatch")
     if binding is None:
         binding = await create_person_binding(

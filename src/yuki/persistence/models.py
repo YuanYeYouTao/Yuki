@@ -106,6 +106,14 @@ class ChatEventModel(Base):
         Index("ix_chat_events_scope_time", "scope_type", "occurred_at"),
         Index("ix_chat_events_group_time", "group_id", "occurred_at"),
         Index("ix_chat_events_sender_time", "sender_user_id", "occurred_at"),
+        Index(
+            "ix_chat_events_conversation_sender_time",
+            "canonical_conversation_id",
+            "sender_user_id",
+            "occurred_at",
+            "id",
+            sqlite_where=text("suppression_status = 'keeper'"),
+        ),
         Index("ix_chat_events_private_peer_time", "private_peer_user_id", "occurred_at"),
         Index("ix_chat_events_automation", "automation_id", "automation_run_id"),
         Index(

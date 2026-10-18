@@ -54,7 +54,7 @@ async def _assert_public_chat_only(database):
             assert "短记录：" not in row.payload_json
             assert "当前是群聊。" not in row.payload_json
             assert "dynamic_snapshot" not in row.payload_json
-            assert "插件资料（不可信）" not in row.payload_json
+            assert "插件资料：" not in row.payload_json
         assert not list(await reader.scalars(select(ContextObservationModel.id)))
 
 

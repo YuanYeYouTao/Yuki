@@ -1,4 +1,4 @@
-"""Read genuine pre-platform QQ ledger segments without rewriting their source."""
+"""Read old raw QQ AT segments without rewriting their source ledger event."""
 
 import logging
 from typing import Any

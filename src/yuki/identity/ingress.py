@@ -13,11 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuki.conversation.hydrate import (
     HydratedConversation,
     binding_for_scope,
+    conversation_for_owner,
     ensure_canonical_conversation,
 )
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.identity import AuthorKind
-from yuki.domain.messages import InboundMessage
+from yuki.domain.messages import InboundMessage, snapshot_mention_segments
 from yuki.gateway.models import ConnectionSnapshot
 from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from yuki.identity.canonical_repository import (
@@ -29,6 +30,7 @@ from yuki.identity.canonical_repository import (
 )
 from yuki.identity.db_models import IdentityBindingModel, PresenceModel
 from yuki.identity.errors import CanonicalIdentityError
+from yuki.identity.mentions import resolve_message_mentions
 from yuki.identity.routing import PresenceRouter
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
@@ -287,16 +289,42 @@ class CanonicalIngressResolver:
                 )
             if fence != "ok":
                 return _drop(fence, overlay)
-        else:
-            if author_kind == AuthorKind.PERSON.value and person_id is None:
-                person_id = await _ensure_person_id(
-                    session,
-                    overlay.sender.user_id,
-                    display_name=overlay.sender.nickname,
-                    platform=presence.platform,
+        if overlay.mentions or overlay.reply_mentions:
+            sender_binding = (
+                await find_identity_binding(
+                    session, overlay.sender.user_id, platform=presence.platform
                 )
-            if person_id is None and author_kind == AuthorKind.PERSON.value:
-                return _drop("no_person", overlay)
+                if overlay.scope_type is ScopeType.PRIVATE
+                else None
+            )
+            original_conversation = (
+                await conversation_for_owner(
+                    session,
+                    kind="private" if overlay.scope_type is ScopeType.PRIVATE else "space",
+                    identity_binding_id=sender_binding.id if sender_binding else None,
+                    presence_id=presence_id if overlay.scope_type is ScopeType.PRIVATE else None,
+                    space_id=space_id,
+                    space_binding_id=space_binding_id,
+                    thread_id=overlay.thread_id,
+                )
+                if overlay.scope_type is ScopeType.GROUP or sender_binding is not None
+                else None
+            )
+            overlay = await resolve_message_mentions(
+                session,
+                replace(
+                    overlay,
+                    conversation_id=original_conversation.id if original_conversation else None,
+                ),
+                space_id=space_id,
+            )
+            overlay = replace(
+                overlay,
+                segments=snapshot_mention_segments(overlay.segments, overlay.mentions),
+                reply_segments=snapshot_mention_segments(
+                    overlay.reply_segments, overlay.reply_mentions
+                ),
+            )
         if author_kind == AuthorKind.PERSON.value and person_id is None:
             person_id = await _ensure_person_id(
                 session,
@@ -305,8 +333,23 @@ class CanonicalIngressResolver:
                 platform=presence.platform,
             )
         author_person_id = person_id if author_kind == AuthorKind.PERSON.value else None
+        if author_person_id is not None and overlay.mentions:
+            mentions = tuple(
+                replace(mention, person_id=author_person_id)
+                if mention.kind == "member" and mention.target_user_id == overlay.sender.user_id
+                else mention
+                for mention in overlay.mentions
+            )
+            overlay = replace(
+                overlay,
+                mentions=mentions,
+                mentioned_person_ids=tuple(
+                    dict.fromkeys(mention.person_id for mention in mentions if mention.person_id)
+                ),
+                segments=snapshot_mention_segments(overlay.segments, mentions),
+            )
         mention_bindings: dict[str, str] = {}
-        if overlay.mentioned_user_ids:
+        if overlay.mentioned_user_ids and not overlay.mentions:
             for account, mentioned_person in (
                 await session.execute(
                     select(
@@ -326,7 +369,8 @@ class CanonicalIngressResolver:
                 if account in mention_bindings
             )
         )
-        overlay = replace(overlay, mentioned_person_ids=mentioned_people)
+        if not overlay.mentions:
+            overlay = replace(overlay, mentioned_person_ids=mentioned_people)
         if author_kind != AuthorKind.PERSON.value and overlay.scope_type is ScopeType.PRIVATE:
             return IngressPreAdmit(
                 dropped=False,
@@ -372,6 +416,18 @@ class CanonicalIngressResolver:
             canonical_reply_to_yuki=reply_to_yuki,
             canonical_reply_author_kind=reply_author_kind,
         )
+        if reply_event_id is not None:
+            from yuki.persistence.repository_helpers import _event_record
+
+            original_reply = await session.get(ChatEventModel, reply_event_id)
+            assert original_reply is not None
+            reply = _event_record(original_reply)
+            overlay = replace(
+                overlay,
+                reply_text=reply.perceived_content,
+                reply_segments=reply.segments,
+                reply_mentions=(),
+            )
         return IngressPreAdmit(
             dropped=False,
             reason="admitted",
@@ -436,7 +492,11 @@ async def resolve_canonical_reply(
 
 async def _same_platform_yuki_accounts(session: AsyncSession, platform: str) -> frozenset[str]:
     rows = list(
-        await session.scalars(select(PresenceModel).where(PresenceModel.platform == platform))
+        await session.scalars(
+            select(PresenceModel).where(
+                PresenceModel.platform == platform, PresenceModel.enabled.is_(True)
+            )
+        )
     )
     return frozenset(item.external_account_id for item in rows)
 

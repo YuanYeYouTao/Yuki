@@ -11,6 +11,7 @@ from sqlalchemy import or_
 from sqlalchemy.sql.elements import ColumnElement
 
 from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import MessageMention
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_records import EventRecord
 
@@ -65,14 +66,16 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
         {},
     )
     projected_content = None
+    projected_mentions: tuple[MessageMention, ...] = ()
     legacy_mentions: tuple[str, ...] = ()
-    if "platform" not in context:
-        # Only the original pre-platform QQ format is eligible for this reader.
+    if context.get("platform") in (None, "", "qq"):
+        # Genuine old QQ AT segments predate the stored mention snapshot.
         from yuki.adapters.onebot.legacy_event import project_legacy_segments
 
         projection = project_legacy_segments(segments, str(_row_value(row, "bot_user_id")))
         if projection is not None:
             projected_content = projection.text
+            projected_mentions = projection.ordered_mentions
             legacy_mentions = projection.mentioned_user_ids
     raw_mentions = context.get("mentioned_user_ids", legacy_mentions)
     mentioned_user_ids = (
@@ -103,6 +106,7 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
     return EventRecord(
         id=int(_row_value(row, "id")),
         projected_content=projected_content,
+        projected_mentions=projected_mentions,
         platform=str(context.get("platform") or ""),
         thread_id=str(context["thread_id"]) if context.get("thread_id") is not None else None,
         bot_user_id=str(_row_value(row, "bot_user_id")),

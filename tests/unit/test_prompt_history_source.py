@@ -9,6 +9,7 @@ from tests.unit.test_history_time_projection import _event
 from yuki.conversation.frozen_fragments import FrozenFragments
 from yuki.conversation.projections import ProjectionSnapshot
 from yuki.conversation.prompt_history import PromptHistorySource
+from yuki.domain.messages import MessageMention
 from yuki.event_prompt import ChatEventPromptRenderer
 
 
@@ -185,9 +186,19 @@ def test_unsubmitted_non_tail_current_does_not_replace_the_full_raw_group_index(
 def test_source_memory_accounting_tracks_metadata_without_retaining_body_payload():
     at = datetime(2026, 10, 18, tzinfo=UTC)
     frozen = FrozenFragments.load([])
-    source = _source((_event(1, at, "x" * 100000),), frozen)
+    source = _source(
+        (
+            replace(
+                _event(1, at, "x" * 100000),
+                projected_content="[提及1002]",
+                projected_mentions=(MessageMention("member", 0, 0, 8, "1002"),),
+            ),
+        ),
+        frozen,
+    )
     first = source.estimated_bytes
     metadata = source.capture(1).get(1)
     assert metadata.content == "" and metadata.segments == () and metadata.external_payload is None
+    assert metadata.projected_mentions == () and metadata.projected_content is None
     source.extend((_event(2, at, "y" * 100000),), through_event_id=2)
     assert first < source.estimated_bytes < first + 20000

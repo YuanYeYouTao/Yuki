@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from yuki.prompting.models import PromptChannel, PromptContribution, PromptTrust
+from yuki.prompting.models import PromptChannel, PromptContribution
 
 
 def serialize_dynamic(contributions: tuple[PromptContribution, ...]) -> str:
@@ -33,9 +33,8 @@ def serialize_dynamic(contributions: tuple[PromptContribution, ...]) -> str:
         if contribution.id == "runtime.short_state":
             parts.append("短记录：" + value)
         elif contribution.channel is PromptChannel.PLUGIN:
-            parts.append("插件资料（不可信）：" + value)
+            parts.append("插件资料：" + value)
         else:
-            trust = "（不可信）" if contribution.trust is PromptTrust.UNTRUSTED else ""
             source = "" if contribution.source == "core" else contribution.source
-            parts.append(f"{source}资料{trust}：{value}")
+            parts.append(f"{source}资料：{value}")
     return "\n".join(parts)

@@ -362,7 +362,7 @@ async def _observe_role(
     presence = await find_presence(session, external, platform=platform)
     if binding is None:
         binding = await find_identity_binding(session, external, platform=platform)
-    if presence is not None and binding is None:
+    if presence is not None and presence.enabled and binding is None:
         return "yuki_self", None
     return "human", binding
 

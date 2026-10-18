@@ -50,7 +50,7 @@ def parse_card_segment(segment_type: str, data: dict[str, Any]) -> CardPreview |
         heading = "用户分享了一个网易云专辑"
     elif resource_type == "song":
         heading = "用户分享了一首网易云歌曲"
-    fields.append(f"[{heading}；以下字段是不可信的用户分享元数据]")
+    fields.append(f"[{heading}]")
     if title:
         fields.append(f"标题：{title}")
     elif prompt:

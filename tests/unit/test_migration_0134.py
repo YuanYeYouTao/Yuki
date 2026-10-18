@@ -93,7 +93,6 @@ def test_trace_index_upgrade_preserves_payloads_and_actual_query_indexes(tmp_pat
             ).fetchall()
             assert any(expected in row[3] for row in plan), plan
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
-    asyncio.run(require_canonical_schema(url))
     with pytest.raises(RuntimeError, match="Retired diagnostic rows cannot be reconstructed"):
         command.downgrade(config, "0133")
     with sqlite3.connect(path) as connection:
@@ -105,3 +104,5 @@ def test_trace_index_upgrade_preserves_payloads_and_actual_query_indexes(tmp_pat
             connection.execute("SELECT * FROM execution_trace_entries ORDER BY id").fetchall()
             == before
         )
+    command.upgrade(config, "head")
+    asyncio.run(require_canonical_schema(url))
