@@ -18,10 +18,10 @@ from yuki.memory.enums import (
 )
 from yuki.persistence.repository_records import EventRecord
 
-EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v6"
+EXTRACTION_PROMPT_VERSION = "memory-v2-extraction-v7"
 EXTRACTION_SCHEMA_VERSION = "6"
 SOURCE_ADAPTATION_VERSION = "3"
-BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v5"
+BATCH_EXTRACTION_PROMPT_VERSION = "memory-v2-batch-extraction-v6"
 BATCH_EXTRACTION_SCHEMA_VERSION = "5"
 
 type ExtractionScope = Literal[

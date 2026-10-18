@@ -95,8 +95,7 @@ _MEMORY_INTENT_PROPERTIES = {
         "type": "string",
         "description": (
             "带时区 ISO-8601 起点（包含）。当地某一天从当地00:00开始；"
-            "例如+08:00的9月7日填2026-09-07T00:00:00+08:00，"
-            "不要先减8小时又保留+08:00。今天/昨天按当前时间上下文换算。"
+            "转换为 UTC 后不要保留原时区偏移。今天/昨天按当前时间上下文换算。"
         ),
     },
     "end_at": {"type": "string", "description": "带时区 ISO-8601 终点（不包含），例如次日零点"},
@@ -438,11 +437,11 @@ class AgentToolService:
             ChatTool(
                 name="get_my_capabilities",
                 description=(
-                    f"给 {bot_name} 当前模型轮内部查询真实发送者本人能够修改、管理和读取的权限。"
+                    f"给 {bot_name} 当前模型轮内部查询原执行主体能够修改、管理和读取的权限。"
                     "用于查询可修改的配置、管理操作及读取范围；"
                     "按问题整理返回内容；"
-                    "默认 summary，具体问题用 focused+category/query，只有明确要求完整清单"
-                    "才用 full。不能查询他人，也不能用权限目录代替工具执行回执。"
+                    "默认 summary，具体问题用 focused+category/query，需要完整目录用 full。"
+                    "不能查询他人，也不能用权限目录代替工具执行回执。"
                 ),
                 parameters=_object_schema(
                     {
@@ -539,18 +538,15 @@ class AgentToolService:
                 ChatTool(
                     name="memory_change",
                     description=(
-                        "依据真实入站证据或主动 SELF 本轮实际工具回执修改长期记忆。visibility 只对 "
-                        "target.scope_type=self 生效；其他目标误填 current_scope 或 global "
-                        "会被后端忽略。根据当前用户真实入站消息"
-                        "创建、纠正、撤销、恢复、争议、合并、改归属或更新记忆元数据；"
-                        f"SELF 使用原执行的本轮工具回执，只能写自己的记忆；"
+                        "依据真实入站证据或 SELF 原执行本轮工具回执，创建、纠正、撤销、恢复、"
+                        "争议、合并、改归属或更新长期记忆。SELF 只能写自己的记忆；"
                         f"不能把 {bot_name} 自己的输出当证据，也不能编造真人事件。"
                         "target.subject_ref 可使用 current_speaker、current_group、"
-                        "member_{user_id} 等本轮可验证成员引用，或"
+                        "member_{person_id} 等本轮可验证成员引用，或"
                         "replied_message_author；正文中的当前群姓名使用 named_member 并填写"
                         f" subject_name；{bot_name} 自我记忆使用 self + self。"
-                        f"自我记忆仅在功能开启且 {bot_name} 根据当前真实用户消息形成自己的"
-                        "判断时变更，SELF 的 visibility"
+                        "自我记忆仅在功能开启时，依据本轮真实用户消息或 SELF 工具回执，"
+                        f"记录 {bot_name} 自己的判断和经历。SELF 的 visibility"
                         "只能用 current_scope 或 global；global 只适合抽象偏好、反思和原则，"
                         "私聊原始经历只能保存为当前私聊可见，不能提升为 global。"
                         "工具回执中的 applied_operation 和 outcome"
@@ -562,7 +558,7 @@ class AgentToolService:
                         "fact_id 缺失时，除 reassign 外可提供 target 和 selector，由后端在当前合法"
                         "作用域内定位；只有唯一精确命中才执行，否则按候选或未找到结果处理。"
                         "但 SELF 不支持 reassign 或 update_metadata。reassign 仍必须提供新 target。"
-                        "reason 可省略。invalidate 成功表示事实保留审计记录但不再作为有效记忆；"
+                        "invalidate 成功表示事实保留审计记录但不再作为有效记忆；"
                         "只能称为已撤回、已失效或不再记住，不得声称数据库记录已物理删除。"
                     ),
                     parameters=_object_schema(
@@ -617,7 +613,7 @@ class AgentToolService:
                                         "type": "string",
                                         "description": (
                                             "本轮提供的主体引用，如 current_speaker、"
-                                            "member_{user_id}、replied_message_author、"
+                                            "member_{person_id}、replied_message_author、"
                                             "named_member、self 或 current_group"
                                         ),
                                     },

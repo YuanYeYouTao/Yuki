@@ -656,7 +656,10 @@ class SubagentRepository:
                                     "child_id": lease.work_id,
                                     "state": row["state"],
                                     "text": receipt["text"],
-                                    "detail": "用 subagent_control.result 核对完整产物和执行回执。",
+                                    "detail": (
+                                        "按需用 subagent_control(action=result, child_id=原ID) "
+                                        "查询原结果与执行回执。"
+                                    ),
                                 }
                             )
                         }

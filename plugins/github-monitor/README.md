@@ -163,7 +163,8 @@ Push 通知包含：
 
 Release 通知包含仓库、发布者、版本标签、正式版/预发布状态、目标分支、附件数量和最多三行发布
 说明。其他事件发送中文文本摘要。启用 `ask_agent` 后，Host 为该通知建立独立、有 generation 与
-授权 freshness 围栏的后台 turn；通知不会伪装成普通会话 system 消息。常规聊天不自动附加旧外部事件摘要。外部文本不能给 Agent 授权，也不能要求它修改记忆、
+授权 freshness 围栏的后台 turn。Agent 按原工作和订阅要求处理事件，默认可静默查证和更新资料；
+有重要补充、约定反馈或需要用户决定时再发言，避免重复通知卡片。通知不会伪装成普通会话 system 消息。常规聊天不自动附加旧外部事件摘要。外部文本不能给 Agent 授权，也不能要求它修改记忆、
 自动化、配置或调用其他工具。
 
 合批只发生在 pending FIFO 的相邻前缀：Create/Delete 还要求 actor、`ref_type` 和目标策略快照
@@ -225,8 +226,8 @@ doctor。
 /github outbox
 ```
 
-测试成功时，目标会收到中文 Push 摘要和 PNG 卡片；若 `ask_agent=true`，随后还会收到 Yuki 的
-自然点评。`test` 不访问 GitHub，因此 Token 和真实轮询需要结合 `status` 中的“上次成功”与
+测试成功时，目标会收到中文 Push 摘要和 PNG 卡片；`ask_agent=true` 会安排 Yuki 处理该事件，
+是否补充发言由实际任务和信息价值决定。`test` 不访问 GitHub，因此 Token 和真实轮询需要结合 `status` 中的“上次成功”与
 `rate-limit` 再确认。
 
 ## 常见问题
