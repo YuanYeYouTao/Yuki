@@ -25,7 +25,7 @@ Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人
 
 `environment_service` 保留登记、启动、停止、删除、状态、日志和真正的跨环境启动恢复，沿原 `restart` 策略执行。显式停止先禁用恢复；没有服务数量或连续失败次数封顶。修改登记保留正在运行的原执行，下次实际启动采用新内容。
 
-普通文件读写、搜索、目录、修改和删除使用终端。八项普通 `workspace_*` CRUD、公开 artifact 目录/文本分页/删除及普通覆盖 CAS 全链退出，不保留新调用别名。`workspace_inspect` 仍把指定媒体交给模型，`workspace_publish` 固化不可变 artifact 并通过统一发送工具交付。会话附件提升、私有工具 artifact 和真实媒体桥保留；终端不能直接读 Bot 临时缓存或私有索引。已发布版本不随后续文件修改变化。
+普通文件读写、搜索、目录、修改和删除使用终端。八项普通 `workspace_*` CRUD、公开 artifact 目录/文本分页/删除及普通覆盖 CAS 全链退出，不保留新调用别名。`workspace_inspect` 仍把指定媒体交给模型，`workspace_publish` 固化不可变 artifact 并通过统一发送工具交付。会话附件提升、私有工具 artifact 和真实媒体桥保留；终端可经共享只读挂载读取临时媒体原件，Bot 私有 artifact 索引不挂载。已发布版本不随后续文件修改变化。
 
 artifact manifest 使用独立 SQLite。文件准备、SHA256 和 fsync 在写事务外完成；短写事务核验真实 revision/不可变事实并提交 metadata。读取先安全打开原文件 FD，再释放读取事务并校验内容。发布异常只回收私有 pending 文件；结果未知时不删除已 rename 的 blob，留给按真实引用工作的原 GC。普通发布不设 200 MiB、512 MiB 或对象数量经验门槛；模型媒体与平台传输仍受其真实容量限制。
 
