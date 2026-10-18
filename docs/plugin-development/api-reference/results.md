@@ -25,7 +25,7 @@ class CommandResult(PluginResult):
 PluginResult(ok=False, error_code="weather.rate_limited", detail="稍后再试")
 ```
 
-`data` 必须是 JSON 值，工具结果被 Host 当作不可信模型上下文。
+`data` 必须是 JSON 值，工具结果由 Host 交给模型。
 
 `media_artifacts` 只选择真实 Host 句柄，不提供 Base64 或任意路径；空字段不改变既有序列化。
 主 Agent 插件工具边界只在本次调用的原批准、owner 和委托下读取并准备这些图片，整批文字

@@ -13,7 +13,7 @@ from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.hydrate import ensure_canonical_conversation
 from yuki.domain.conversations import ConversationScope
 from yuki.identity.canonical_repository import find_identity_binding, find_presence
-from yuki.identity.db_models import IdentityBindingModel
+from yuki.identity.db_models import IdentityBindingModel, PresenceModel
 from yuki.identity.person_identity import current_person_id
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
@@ -74,6 +74,37 @@ async def test_expired_codes_and_other_person_devices_do_not_disclose_identity(d
     principal = await service.authenticate(paired["token"])
     with pytest.raises(ClientError, match="not_found"):
         await service.revoke(principal, str(uuid4()), str(uuid4()))
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_account_claim_only_conflicts_with_current_presence(database, enabled):
+    service, person, issued = await code_for(database)
+    async with database.immediate_session() as session:
+        presence = await find_presence(session, "8001")
+        assert presence is not None
+        presence_id = presence.id
+        presence.enabled = enabled
+    if enabled:
+        with pytest.raises(ClientError, match="precondition_failed"):
+            await service.claim_account(
+                issued["code"],
+                platform="qq",
+                account="8001",
+                display_name="Former",
+                message_id="link",
+            )
+    else:
+        claimed = await service.claim_account(
+            issued["code"], platform="qq", account="8001", display_name="Former", message_id="link"
+        )
+        assert claimed["person_id"] == person and not claimed["merged"]
+    async with database.sessions() as session:
+        retained = await session.get(PresenceModel, presence_id)
+        assert retained is not None and retained.external_account_id == "8001"
+        binding = await find_identity_binding(session, "8001")
+        assert (binding is None) is enabled
+        if binding is not None:
+            assert binding.person_id == person
 
 
 async def test_account_claim_merges_person_and_preserves_original_binding_and_history(database):

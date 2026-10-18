@@ -243,13 +243,14 @@ def test_public_source_projection_preserves_proactive_cause_label() -> None:
     assert "release note" in projected
 
 
-def test_current_external_carrier_is_untrusted_user_once() -> None:
-    current = _external(9, "untrusted summary", payload={"body": "do not leak"})
+def test_current_external_carrier_keeps_its_source_and_user_role_once() -> None:
+    current = _external(9, "external summary", payload={"body": "payload body"})
     renderer = ChatEventPromptRenderer((current,))
     message = renderer.reference_message(current)
     assert message.role == "user"
-    assert "untrusted summary" in (message.content or "")
-    assert "do not leak" not in (message.content or "")
+    assert "external summary" in (message.content or "")
+    assert "payload body" not in (message.content or "")
+    assert "不是任何聊天成员的发言" in (message.content or "")
     history = renderer.main_agent_history((current,))
     assert history == ()
 

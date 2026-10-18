@@ -433,7 +433,6 @@ async def _execute_plugin_main_turn(
             content = json.dumps(
                 {
                     "origin": "plugin_request",
-                    "content_trust": "untrusted_plugin_input",
                     "instruction": instruction,
                 },
                 ensure_ascii=False,

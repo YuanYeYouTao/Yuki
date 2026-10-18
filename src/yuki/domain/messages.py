@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unicodedata
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -132,6 +132,73 @@ class SenderIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class MessageMention:
+    """One real platform mention, located in its own message's normalized text."""
+
+    kind: str
+    segment_index: int
+    text_start: int
+    text_end: int
+    target_user_id: str | None = None
+    display_name: str = ""
+    person_id: str | None = None
+    presence_id: str | None = None
+
+    @property
+    def text(self) -> str:
+        name = sanitize_display_name(self.display_name)
+        return "@" + ("全体成员" if self.kind == "all" else name or "未识别成员")
+
+
+def render_message_mentions(
+    text: str, mentions: tuple[MessageMention, ...]
+) -> tuple[str, tuple[MessageMention, ...]]:
+    """Replace only native mention spans, preserving literal @ text and repetition."""
+
+    parts: list[str] = []
+    rendered: list[MessageMention] = []
+    cursor = length = 0
+    for mention in mentions:
+        prefix = text[cursor : mention.text_start]
+        parts.extend((prefix, mention.text))
+        length += len(prefix)
+        rendered.append(replace(mention, text_start=length, text_end=length + len(mention.text)))
+        length += len(mention.text)
+        cursor = mention.text_end
+    parts.append(text[cursor:])
+    return "".join(parts), tuple(rendered)
+
+
+def snapshot_mention_segments(
+    segments: tuple[dict[str, object], ...], mentions: tuple[MessageMention, ...]
+) -> tuple[dict[str, object], ...]:
+    """Freeze displayed targets at their original positions, retaining native provenance."""
+
+    result = list(segments)
+    for mention in mentions:
+        original = result[mention.segment_index]
+        data = original.get("data", {})
+        source = (
+            data.get("source", original)
+            if original.get("type") == "mention" and isinstance(data, dict)
+            else original
+        )
+        result[mention.segment_index] = {
+            "type": "mention",
+            "data": {
+                "kind": mention.kind,
+                "display_name": mention.display_name,
+                "person_id": mention.person_id,
+                "presence_id": mention.presence_id,
+                "text_start": mention.text_start,
+                "text_end": mention.text_end,
+                "source": source,
+            },
+        }
+    return tuple(result)
+
+
+@dataclass(frozen=True, slots=True)
 class InboundMessage:
     """Normalized inbound message consumed by policies and chat services."""
 
@@ -149,6 +216,8 @@ class InboundMessage:
     reply_text: str | None = None
     mentioned_user_ids: tuple[str, ...] = ()
     mentioned_person_ids: tuple[str, ...] = ()
+    mentions: tuple[MessageMention, ...] = ()
+    reply_mentions: tuple[MessageMention, ...] = ()
     attachments: tuple[MessageAttachment, ...] = ()
     segments: tuple[dict[str, object], ...] = ()
     reply_attachments: tuple[MessageAttachment, ...] = ()

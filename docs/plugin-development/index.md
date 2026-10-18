@@ -4,7 +4,7 @@ Yuki 通过独立的 `yuki_plugin_sdk` 声明扩展，由 Host 负责发现、�
 
 Plugin API `4.0` 的通用目标参数使用内部 Person/Space/Conversation ID；Host 只加载精确声明 4.0 的插件。升级见 [API 4.0 迁移](api-4.0-migration.md)，更早接口变化见对应历史迁移。
 
-插件 Prompt Fragment 会先由现有 `PromptRegistry` 校验，再作为一个 `context.plugins` 不可信贡献进入统一 Runtime Envelope；不会为每个插件重复一层系统包装。插件 Agent 会话通过 `ModelTask.PLUGIN_AGENT_SESSION` 使用显式模型路由。插件工具会被适配为带 namespace 的 `CapabilityDescriptor`；主 Agent 声明在部署内冻结；批准权限、调用来源和 effect/risk 在执行时核验，目录检索不改变已声明工具。改名不是安全策略。
+插件 Prompt Fragment 会先由现有 `PromptRegistry` 校验，再作为一个 `context.plugins` 资料贡献进入统一 Runtime Envelope；不会为每个插件重复一层系统包装。插件 Agent 会话通过 `ModelTask.PLUGIN_AGENT_SESSION` 使用显式模型路由。插件工具会被适配为带 namespace 的 `CapabilityDescriptor`；主 Agent 声明在部署内冻结；批准权限、调用来源和 effect/risk 在执行时核验，目录检索不改变已声明工具。改名不是安全策略。
 
 > **真实安全边界：**插件是运行在 Yuki 进程内的本地可信 Python 代码。权限系统治理的是官方 API 的访问，不是操作系统沙盒；恶意插件理论上仍能绕过约束。只安装管理员完全信任、审阅过源码的插件。
 

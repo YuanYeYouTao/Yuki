@@ -116,7 +116,7 @@ notifications.status() -> Mapping[str, int]
 
 后台发布不需要伪造当前用户调用，但只能投向 Host 已授权目标。外部事件以 canonical
 `external_event` 进入 EventLedger，不作为普通 user/assistant/system history；文字、媒体和可选
-Agent turn 由持久 Outbox 独立发送。当前通知只在其后台 turn 的不可信 current input 出现一次，
+Agent turn 由持久 Outbox 独立发送。当前通知只在其后台 turn 的 current input 出现一次，
 常规会话不自动附加旧外部事件摘要；需要历史事实时由 Agent 显式检索。Grant 的增删仍要求真实 `SUPERUSERS` 调用上下文。
 
 `plugin_id + event_key + target` 只负责定位，Host 还会校验完整请求身份：`external_source`、

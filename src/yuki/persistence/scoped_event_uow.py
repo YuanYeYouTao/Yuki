@@ -25,7 +25,7 @@ from yuki.conversation.initiative_sources import source_revision
 from yuki.conversation.media_index import prepare_event_media
 from yuki.conversation.scope_models import ConversationScopeState
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.domain.messages import InboundMessage
+from yuki.domain.messages import InboundMessage, snapshot_mention_segments
 from yuki.identity.canonical_repository import (
     apply_event_identity,
     external_id,
@@ -39,6 +39,7 @@ from yuki.identity.db_models import (
     PresenceModel,
 )
 from yuki.identity.errors import CanonicalIdentityError
+from yuki.identity.mentions import resolve_message_mentions
 from yuki.identity.receipt_compat import (
     load_claimed_keeper,
     normalize_live_json,
@@ -260,6 +261,14 @@ class ScopedEventLedgerUnitOfWork:
                 ):
                     raise CanonicalIdentityError("no_conversation")
                 generation = conversation.generation
+                prepared_message = await resolve_message_mentions(
+                    reader,
+                    replace(message, conversation_id=conversation_id),
+                    space_id=conversation.space_id,
+                )
+                prepared_segments = snapshot_mention_segments(
+                    prepared_message.segments, prepared_message.mentions
+                )
                 mentions_query = (
                     select(
                         IdentityBindingModel.external_account_id,
@@ -301,13 +310,13 @@ class ScopedEventLedgerUnitOfWork:
             if not metadata:
                 metadata.append({"type": "yuki_context", "data": context})
             segments = json.dumps(
-                [*message.segments, *metadata], ensure_ascii=False, separators=(",", ":")
+                [*prepared_segments, *metadata], ensure_ascii=False, separators=(",", ":")
             )
             media = prepare_event_media(
                 event_id=event_id,
                 conversation_id=conversation_id,
                 generation=generation,
-                segments=message.segments,
+                segments=prepared_segments,
             )
             async with self._database.immediate_session() as session:
                 event = await session.get(ChatEventModel, event_id)
@@ -336,7 +345,7 @@ class ScopedEventLedgerUnitOfWork:
                     if current is None:
                         session.add(prepared)
                         continue
-                    if decoded[current.segment_index] != message.segments[prepared.segment_index]:
+                    if decoded[current.segment_index] != prepared_segments[prepared.segment_index]:
                         current.cache_status = "uncached"
                         current.content_sha256 = current.cache_name = None
                         current.cached_at = current.expires_at = None
@@ -347,7 +356,7 @@ class ScopedEventLedgerUnitOfWork:
                     current.declared_size = prepared.declared_size
                 for removed in current_media.values():
                     await session.delete(removed)
-                event.content, event.segments_json = message.text, segments
+                event.content, event.segments_json = prepared_message.text, segments
                 event.visual_summary, event.audio_transcript = "", ""
                 conversation.prompt_source_revision += 1
                 conversation.revision += 1

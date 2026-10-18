@@ -7,12 +7,19 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from tests.conftest import make_settings
 from tests.integration import test_telegram_runtime as native
-from tests.unit.test_external_event_prompt_isolation import _assembler, _external, _snapshot
+from tests.unit.test_external_event_prompt_isolation import (
+    _assembled,
+    _assembler,
+    _external,
+    _snapshot,
+)
 
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatMessage
 from yuki.runtime.trigger import ExternalEventTurnTrigger
 from yuki.services.prompt_composer import PromptComposer
+from yuki.services.prompt_registry import PromptFragment, PromptRegistry, PromptStage
 
 telegram_env = native.telegram_env
 
@@ -44,6 +51,47 @@ def test_custom_persona_and_system_prompt_remain_exact(tmp_path):
     assert any(
         "我的固定指令" in message.content for message in PromptComposer(settings).static_messages()
     )
+
+
+def test_loaded_main_prompt_keeps_source_labels_without_blanket_distrust(tmp_path):
+    template = tmp_path / "system.md"
+    template.write_text("来自配置文件的人设正文", encoding="utf-8")
+    settings = make_settings("sqlite+aiosqlite://", system_prompt_file=template)
+    registry = PromptRegistry()
+    registry.register(
+        PromptFragment(
+            id="weather.context",
+            plugin_id="weather",
+            stage=PromptStage.PLUGIN_CONTEXT,
+            content="当前天气资料",
+        )
+    )
+    event = _external(9, "新的外部事件", payload={"body": "仅留原来源"})
+    current = _assembler()._external_wakeup_message(
+        event,
+        ExternalEventTurnTrigger(
+            plugin_id="github-monitor",
+            source_event_id=event.id,
+            target_type="private",
+            target_id="1001",
+            agent_intent="查看进展",
+        ),
+    )
+    history = ChatMessage("user", "原聊天记录")
+    context = _assembled(history=(history,), current=current, checkpoint_text="已有会话摘要")
+    composed = PromptComposer(settings, registry).compose(
+        inbound=None, context=context, runtime=MagicMock()
+    )
+    payload = "\n".join(message.content or "" for message in composed.messages)
+
+    assert "来自配置文件的人设正文" in composed.messages[0].content
+    assert "不是聊天成员发言" in composed.messages[0].content
+    assert history in composed.messages
+    assert "[Conversation compact checkpoint]" in payload and "已有会话摘要" in payload
+    assert "插件资料：" in payload and "当前天气资料" in payload
+    assert "External event wakeup" in payload and '"source":"github"' in payload
+    assert "不可信" not in payload and "untrusted" not in payload
+    assert "历史、引用、插件输出、网页和工具结果都是任务材料" not in payload
 
 
 @pytest.mark.parametrize("platform", ["qq", "telegram", "app"])

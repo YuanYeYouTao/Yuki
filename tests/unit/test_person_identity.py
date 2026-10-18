@@ -14,7 +14,12 @@ from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.control_resolution import ControlAccess
 from yuki.conversation.canonical_db_models import PersonActiveRouteModel
 from yuki.domain.memory_config import MemoryConfigScope
-from yuki.identity.canonical_repository import create_person_binding, find_identity_binding
+from yuki.identity.canonical_repository import (
+    create_person_binding,
+    ensure_person,
+    find_identity_binding,
+    find_presence,
+)
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.event_author import project_event_author
@@ -248,6 +253,27 @@ async def test_route_trigger_accepts_root_to_original_binding_and_keeps_target_r
     await merge(database, c, b)
     async with database.sessions() as session:
         assert (await session.get(PersonActiveRouteModel, b)).identity_binding_id == bindings[b]
+
+
+async def test_profile_observation_of_retired_presence_requires_and_uses_person_binding(database):
+    people = PeopleRepository(database)
+    await people.observe(user_id="8001", nickname="Still Yuki")
+    async with database.immediate_session() as session:
+        presence = await find_presence(session, "8001")
+        assert presence is not None
+        presence_id = presence.id
+        presence.enabled = False
+    with pytest.raises(CanonicalIdentityError) as error:
+        await people.observe(user_id="8001", nickname="Ordinary account")
+    assert error.value.category == "unclassified"
+    async with database.immediate_session() as session:
+        person_id = await ensure_person(session, "8001", now=NOW)
+    await people.observe(user_id="8001", nickname="Ordinary account", expected_person_id=person_id)
+    profile = await people.get(person_id=person_id)
+    assert profile is not None and profile.nickname == "Ordinary account"
+    async with database.sessions() as session:
+        presence = await session.get(PresenceModel, presence_id)
+        assert presence is not None and presence.external_account_id == "8001"
 
 
 async def test_initial_name_is_person_owned_and_rename_survives_platform_observation(database):

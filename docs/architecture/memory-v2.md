@@ -32,7 +32,7 @@ SELF 主入口、Work 和保留的子任务沿实际发起来源解析分区：�
 
 History 是不可变事件账本；公共 compact 检查点压缩当前上下文，不等于长期事实。
 事实的版本、证据、来源、可信度、争议和 canonical 所有权保留在长期 Memory。
-external_event 保持 external_untrusted，不伪装成人类聊天，不自动进入人物记忆。
+external_event 保持原事件类型，不伪装成人类聊天，不自动进入人物记忆。
 插件的受控读取也不产生普通用户社会关系授权。
 
 ## 提取与事实写入

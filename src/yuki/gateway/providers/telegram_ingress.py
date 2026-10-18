@@ -14,6 +14,7 @@ from yuki.domain.messages import (
     AttachmentKind,
     InboundMessage,
     MessageAttachment,
+    MessageMention,
     OutboundMessage,
     OutboundSendReceipt,
     SenderIdentity,
@@ -37,6 +38,57 @@ from yuki.services.processor import MessageProcessor
 logger = logging.getLogger(__name__)
 
 
+def _text_mentions(
+    raw: dict[str, Any], client: TelegramClient
+) -> tuple[str, tuple[MessageMention, ...], list[dict[str, Any]]]:
+    text = str(raw.get("text") or raw.get("caption") or "")
+    encoded = text.encode("utf-16-le")
+    entities = raw.get("entities") or raw.get("caption_entities") or []
+    mentions: list[MessageMention] = []
+    segments: list[dict[str, Any]] = []
+    cursor = 0
+    for entity in sorted(entities, key=lambda item: item["offset"]):
+        kind = entity.get("type")
+        if kind not in {"mention", "text_mention"}:
+            continue
+        start_units, end_units = entity["offset"], entity["offset"] + entity["length"]
+        start = len(encoded[: start_units * 2].decode("utf-16-le"))
+        end = len(encoded[: end_units * 2].decode("utf-16-le"))
+        if start > cursor:
+            segments.append({"type": "text", "data": {"text": text[cursor:start]}})
+        token = text[start:end]
+        user = entity.get("user", {})
+        target = str(user["id"]) if kind == "text_mention" else None
+        is_yuki = target == client.self_id or (
+            kind == "mention" and token.casefold() == ("@" + client.username).casefold()
+        )
+        if is_yuki:
+            target = client.self_id
+        name = " ".join(
+            part for part in (user.get("first_name"), user.get("last_name")) if part
+        ) or token.removeprefix("@")
+        mentions.append(
+            MessageMention(
+                kind="yuki" if is_yuki else "member",
+                segment_index=len(segments),
+                text_start=start,
+                text_end=end,
+                target_user_id=target,
+                display_name=name,
+            )
+        )
+        segments.append(
+            {
+                "type": "telegram_mention",
+                "data": {"text": token, "target_user_id": target, "entity_type": kind},
+            }
+        )
+        cursor = end
+    if cursor < len(text):
+        segments.append({"type": "text", "data": {"text": text[cursor:]}})
+    return text, tuple(mentions), segments
+
+
 def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMessage | None:
     chat = raw["chat"]
     if chat["type"] not in {"private", "group", "supergroup"} or not isinstance(
@@ -44,24 +96,9 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
     ):
         return None
     author = raw["from"]
-    text = str(raw.get("text") or raw.get("caption") or "")
-    entities = raw.get("entities") or raw.get("caption_entities") or []
-    mentions = []
-    mentions_bot = False
-    for entity in entities:
-        if entity.get("type") == "text_mention":
-            mentions.append(str(entity["user"]["id"]))
-        elif entity.get("type") == "mention":
-            # Telegram offsets count UTF-16 code units, including astral emoji.
-            encoded = text.encode("utf-16-le")
-            start, length = entity["offset"] * 2, entity["length"] * 2
-            token = encoded[start : start + length].decode("utf-16-le")
-            mentions_bot |= token.casefold() == ("@" + client.username).casefold()
-    mentions_bot |= client.self_id in mentions
+    text, mentions, segments = _text_mentions(raw, client)
+    mentions_bot = any(mention.kind == "yuki" for mention in mentions)
     attachments = []
-    segments: list[dict[str, Any]] = []
-    if text:
-        segments.append({"type": "text", "data": {"text": text}})
     media_types = (
         ("photo", AttachmentKind.IMAGE),
         ("animation", AttachmentKind.VIDEO),
@@ -105,6 +142,9 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
         return None
     reply = raw.get("reply_to_message")
     reply_author = reply.get("from") if isinstance(reply, dict) else None
+    reply_text, reply_mentions, reply_segments = (
+        _text_mentions(reply, client) if isinstance(reply, dict) else (None, (), [])
+    )
     chat_id = str(chat["id"])
     return InboundMessage(
         message_id=f"{chat_id}:{raw['message_id']}",
@@ -128,14 +168,21 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
         text=text,
         raw_text=text,
         mentions_bot=mentions_bot,
-        mentioned_user_ids=tuple(mentions),
+        mentioned_user_ids=tuple(
+            dict.fromkeys(
+                mention.target_user_id
+                for mention in mentions
+                if mention.kind == "member" and mention.target_user_id is not None
+            )
+        ),
+        mentions=mentions,
+        reply_mentions=reply_mentions,
         attachments=tuple(attachments),
         segments=tuple(segments),
+        reply_segments=tuple(reply_segments),
         reply_to_message_id=f"{chat_id}:{reply['message_id']}" if isinstance(reply, dict) else None,
         reply_sender_user_id=str(reply_author["id"]) if isinstance(reply_author, dict) else None,
-        reply_text=str(reply.get("text") or reply.get("caption") or "")
-        if isinstance(reply, dict)
-        else None,
+        reply_text=reply_text,
         received_at=datetime.fromtimestamp(raw["date"], UTC),
     )
 

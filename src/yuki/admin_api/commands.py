@@ -479,6 +479,7 @@ class AdminCommands:
                 select(PresenceModel.id).where(
                     PresenceModel.platform == parsed.platform,
                     PresenceModel.external_account_id == parsed.external_account_id,
+                    PresenceModel.enabled.is_(True),
                 )
             )
             if existing is not None:

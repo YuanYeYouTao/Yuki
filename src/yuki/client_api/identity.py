@@ -667,9 +667,8 @@ class ClientIdentityService:
             return await self.database.apply_snapshot_write(operation)
         now = datetime.now(UTC)
         code = await self._code(session, raw_code, now)
-        if platform in {APP_PLATFORM, ACP_PLATFORM} or await find_presence(
-            session, account, platform=platform
-        ):
+        presence = await find_presence(session, account, platform=platform)
+        if platform in {APP_PLATFORM, ACP_PLATFORM} or (presence is not None and presence.enabled):
             raise ClientError("precondition_failed")
         old = await find_identity_binding(session, account, platform=platform)
         merged = old is not None and not await same_person_id(

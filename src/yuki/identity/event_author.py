@@ -42,7 +42,7 @@ async def project_event_author(
 ) -> EventAuthorProjection:
     """Classify a sender from existing same-platform Presence/Binding rows.
 
-    Presence wins over current-handle equality and over ignored/explicit bot.
+    Enabled Presence wins over current-handle equality and over ignored/explicit bot.
     Unknown Presence is never auto-registered. Missing human Binding stays
     ``person`` with a null person id so callers can create or fail closed.
     """
@@ -78,6 +78,7 @@ async def project_event_authors(
                 select(PresenceModel.external_account_id, PresenceModel.id).where(
                     PresenceModel.platform == platform,
                     PresenceModel.external_account_id.in_(selected),
+                    PresenceModel.enabled.is_(True),
                 )
             )
         ).all()
