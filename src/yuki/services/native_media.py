@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from pathlib import Path
 
 from yuki.admin.models import VisionRuntimeConfig
@@ -39,7 +38,7 @@ class NativeMediaPreparer:
             else DownloadedMedia(
                 content=data,
                 content_type=None,
-                content_hash=hashlib.sha256(data).hexdigest(),
+                content_hash="",
                 byte_size=len(data),
             )
         )

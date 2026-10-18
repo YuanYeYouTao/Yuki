@@ -118,8 +118,8 @@ async def _scene(
                 .values(require_mention=True)
             )
 
-        async def binding_for_event(event_id):
-            event = await harness.ledger.get_event(event_id)
+        async def binding_for_event(event_id, *, record=None, runtime=None):
+            event = record or await harness.ledger.get_event(event_id)
             return OrdinaryParticipationBinding(
                 env.context.conversation_id,
                 1,

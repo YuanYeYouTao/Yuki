@@ -220,10 +220,10 @@ class SocialService:
         return {key: value for key, value in args.items() if key in SocialMessage.model_fields}
 
     @staticmethod
-    def _canonical_send_arguments(args: dict[str, Any]) -> dict[str, Any]:
-        """Normalize model-owned text once before receipts or transport planning."""
+    def _canonical_send_arguments(args: dict[str, Any]) -> tuple[dict[str, Any], SocialMessage]:
+        """Keep the normalized payload and its validated message for this send."""
 
-        SocialService._message_arguments(args)
+        message_arguments = SocialService._message_arguments(args)
         canonical = dict(args)
         raw_text = canonical.get("text", "")
         if isinstance(raw_text, str):
@@ -237,8 +237,8 @@ class SocialService:
             canonical.get(key) for key in ("artifact_id", "emoji", "mentions")
         ):
             raise SocialError("empty_message_after_sanitization")
-        SocialMessage.model_validate(SocialService._message_arguments(canonical))
-        return canonical
+        message_arguments["text"] = canonical.get("text", "")
+        return canonical, SocialMessage.model_validate(message_arguments)
 
     async def _binding_choice(
         self, args: dict[str, Any], context: SocialContext
@@ -612,8 +612,10 @@ class SocialService:
         snapshot = context.runtime_snapshot
         if snapshot is None and self.runtime_config is not None:
             snapshot = await self.runtime_config.snapshot()
+        chunks: tuple[str, ...] = (message.text,) if snapshot is None else ()
         layout: tuple[TransportMessage, ...] = (message,)
         if message.media is None and message.text and snapshot is not None:
+            chunks = OutboundMessageSplitter.render(message.text, runtime=snapshot)
             layout = tuple(
                 replace(
                     message,
@@ -621,9 +623,7 @@ class SocialService:
                     mentions=message.mentions if index == 0 else (),
                     reply_reference=message.reply_reference if index == 0 else None,
                 )
-                for index, chunk in enumerate(
-                    OutboundMessageSplitter.render(message.text, runtime=snapshot)
-                )
+                for index, chunk in enumerate(chunks)
             )
         operations = self.router.operations(route)
         planned = tuple(part for item in layout for part in operations.plan_send(item))
@@ -685,14 +685,17 @@ class SocialService:
         capture = current_result_capture.get()
         if capture is not None and not (capture.work_id and capture.effect_key):
             capture = None
+        part_arguments = tuple(arguments(part, index) for index, part in enumerate(planned))
         parent, dispatch = await self.receipts.prepare_sequence(
             source_turn_id=context.turn_id,
             tool_call_id=context.call_id,
             source_conversation_id=context.conversation_id,
             target=target,
             payload=args,
-            parts=tuple(arguments(part, index) for index, part in enumerate(planned)),
-            legacy_payload=await self._legacy_sequence_payload(args, context),
+            parts=part_arguments,
+            legacy_payload=None
+            if args.get("artifact_id") or args.get("emoji")
+            else {"original": args, "chunks": chunks},
             work_effect=capture if context.parent_operation_id is None else None,
         )
         if dispatch:
@@ -711,7 +714,7 @@ class SocialService:
                     parent_operation_id=parent.operation_id,
                 )
                 try:
-                    result = await send(part, part_context, arguments(part, index))
+                    result = await send(part, part_context, part_arguments[index])
                 except Exception as exc:
                     if not index:
                         raise
@@ -783,7 +786,7 @@ class SocialService:
             raise SocialError("invalid_message_arguments")
         if name == "send_message":
             with model_detail("social_preparation"):
-                args = self._canonical_send_arguments(args)
+                args, message = self._canonical_send_arguments(args)
                 prior = await self.receipts.find(context.turn_id, context.call_id)
                 replay = await self._replay_receipt(args, context, prior)
                 if replay is not None:
@@ -917,7 +920,6 @@ class SocialService:
                 "next_cursor": str(offset + limit) if offset + limit < len(rows) else None,
             }
         with model_detail("social_preparation"):
-            message = SocialMessage.model_validate(self._message_arguments(args))
             known_event_id = await self.check_target(target)
             route = await self.send_route(
                 target,
