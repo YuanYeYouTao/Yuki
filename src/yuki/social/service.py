@@ -7,10 +7,11 @@ import json
 import logging
 import random
 from dataclasses import dataclass, field, replace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 from sqlalchemy import or_, select, text, true
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.config_service import RuntimeConfigService
@@ -64,6 +65,9 @@ from yuki.social.repository import (
 )
 from yuki.workspace.store import WorkspaceStore
 
+if TYPE_CHECKING:
+    from yuki.emoji.delivery import EmojiDeliveryService
+
 
 @dataclass(frozen=True)
 class SocialContext:
@@ -94,6 +98,9 @@ class SocialContext:
     # Host-owned Social parent; split parts and captions cannot replace the
     # Work effect's original domain reference with one of their own receipts.
     parent_operation_id: str | None = None
+    deferred_emoji_id: str | None = None
+    media_metadata: dict[str, Any] | None = None
+    target_presence_id: str | None = None
 
 
 def _self_scene(context: SocialContext) -> bool:
@@ -110,7 +117,7 @@ class SocialService:
         self.receipts = SocialOperationRepository(database)
         self.runtime_config: RuntimeConfigService | None = None
         self.workspace: WorkspaceStore | None = None
-        self.emoji_delivery: Any = None
+        self.emoji_delivery: EmojiDeliveryService | None = None
 
     async def _validate_person_context(
         self, context: SocialContext, *, session: AsyncSession | None = None
@@ -469,14 +476,17 @@ class SocialService:
             return await self.router.resolve_send_for_conversation(
                 source.id,
                 source_event_id=context.trigger_event_id or context.caused_by_event_id,
-                presence_id=context.reply_presence_id
+                presence_id=context.target_presence_id
+                or context.reply_presence_id
                 or context.presence_id
                 or (event.ingress_presence_id if event is not None else None),
             )
         if binding_id is not None:
             if target.kind != "person":
                 raise SocialError("binding_requires_person")
-            return await self.router.resolve_send_for_binding(str(target.id), binding_id)
+            return await self.router.resolve_send_for_binding(
+                str(target.id), binding_id, preferred_presence_id=context.target_presence_id
+            )
         return await self.route(target)
 
     async def _validate_reply_route(
@@ -658,6 +668,20 @@ class SocialService:
             content = part.text
             if not content and part.media is not None and part.media.kind == "file":
                 content = f"[文件: {part.media.filename}]"
+            elif (
+                not content
+                and part.media is not None
+                and part_context.deferred_emoji_id is not None
+            ):
+                summary = next(
+                    (
+                        item["data"].get("summary", "表情")
+                        for item in ledger
+                        if item["type"] == "image"
+                    ),
+                    "表情",
+                )
+                content = f"[表情: {summary}]" if summary != "表情" else "[表情]"
             return await self._effect(
                 "send_message",
                 payload,
@@ -790,7 +814,20 @@ class SocialService:
                 prior = await self.receipts.find(context.turn_id, context.call_id)
                 replay = await self._replay_receipt(args, context, prior)
                 if replay is not None:
+                    if message.emoji is not None and self.emoji_delivery is not None:
+                        illustration = await self._replay_emoji(args, context)
+                        if illustration is not None:
+                            replay["emoji"] = illustration
                     return replay
+                if message.emoji is not None and self.emoji_delivery is not None:
+                    illustration = await self._replay_emoji(args, context)
+                    if illustration is not None and not message.text.strip():
+                        return {
+                            "status": "unknown"
+                            if illustration["status"] == "unknown"
+                            else "accepted",
+                            "emoji": illustration,
+                        }
                 await self._validate_person_context(context)
                 choice = await self._binding_choice(args, context)
                 if choice is not None:
@@ -929,6 +966,8 @@ class SocialService:
             if message.mentions and target.kind != "space":
                 raise SocialError("mentions_require_group")
             mentions = []
+            frozen_mentions = []
+            deferred_only = message.emoji is not None and not message.text.strip()
             ledger: list[dict[str, Any]] = []
             for mention in message.mentions:
                 selectors = mention.model_dump(mode="json", exclude_none=True)
@@ -936,7 +975,9 @@ class SocialService:
                 member = await self.person_binding(
                     person, selectors, context, platform=route.platform
                 )
-                await self.require_member(route, member.external_account_id)
+                frozen_mentions.append({"target_id": str(person.id), "binding_id": member.id})
+                if not deferred_only:
+                    await self.require_member(route, member.external_account_id)
                 mentions.append(
                     TransportMention(member.external_account_id, member.display_name or "成员")
                 )
@@ -950,7 +991,31 @@ class SocialService:
                 ledger.append({"type": "text", "data": {"text": message.text}})
             media = None
             content = message.text
-            prepared_emoji = None
+            emoji_source = None
+            emoji_error = None
+            if message.emoji is not None:
+                if self.emoji_delivery is None:
+                    emoji_error = "emoji_delivery_unavailable"
+                else:
+                    try:
+                        emoji_source = await self.emoji_delivery.source(context, route)
+                    except Exception as exc:
+                        emoji_error = (
+                            str(exc) if isinstance(exc, SocialError) else type(exc).__name__
+                        )
+                if deferred_only:
+                    if emoji_source is not None:
+                        emoji_source["mentions"] = frozen_mentions
+                        emoji_source["reply_to_event_id"] = args.get("reply_to_event_id")
+                    illustration = await self._admit_emoji(
+                        args, context, target, emoji_source, emoji_error
+                    )
+                    return {
+                        "status": illustration["status"]
+                        if illustration["status"] in {"accepted", "unknown"}
+                        else "failed",
+                        "emoji": illustration,
+                    }
             if message.artifact_id is not None:
                 if self.workspace is None:
                     raise SocialError("artifact_transport_unavailable")
@@ -963,7 +1028,10 @@ class SocialService:
                     message.attachment_kind or "file",
                     data,
                     metadata["name"],
-                    metadata.get("mime_type") or "application/octet-stream",
+                    (context.media_metadata or {}).get("mime_type")
+                    or metadata.get("mime_type")
+                    or "application/octet-stream",
+                    context.deferred_emoji_id is not None,
                 )
                 ledger.append(
                     {
@@ -977,50 +1045,20 @@ class SocialService:
                         },
                     }
                 )
-                content = content or f"[文件: {metadata['name']}]"
-            elif message.emoji is not None:
-                if context.runtime_snapshot is None or self.emoji_delivery is None:
-                    raise SocialError("emoji_delivery_unavailable")
-                from yuki.emoji.models import (
-                    EmojiDeliveryRequest,
-                    EmojiPlacement,
-                    EmojiPreparationStatus,
-                    EmojiReplyMode,
-                )
-
-                prepared_emoji = await self.emoji_delivery.prepare(
-                    EmojiDeliveryRequest(
-                        mode=EmojiReplyMode.PREFERRED,
-                        placement=EmojiPlacement.AFTER_TEXT,
-                        goal=message.emoji.goal,
-                        emotion=message.emoji.emotion,
-                        explicit_request=True,
-                    ),
-                    person_id=str(target.id) if target.kind == "person" else None,
-                    space_id=str(target.id) if target.kind == "space" else None,
-                    response_text=message.text,
-                    runtime=context.runtime_snapshot,
-                )
-                if (
-                    prepared_emoji.status is not EmojiPreparationStatus.READY
-                    or prepared_emoji.message is None
-                ):
-                    raise SocialError("emoji_" + prepared_emoji.reason_code)
-                selected_media = prepared_emoji.message.media[0]
-                media = TransportMedia(
-                    "image", selected_media.content, "emoji", selected_media.mime_type, True
-                )
-                ledger.append(
-                    {
-                        "type": "image",
-                        "data": {
-                            "emoji_id": selected_media.emoji_id or "",
-                            "summary": selected_media.summary[:2000],
-                            "mime_type": selected_media.mime_type,
-                            "animated": selected_media.animated,
-                        },
-                    }
-                )
+                if context.deferred_emoji_id is not None:
+                    selected = context.media_metadata or {}
+                    tags = "、".join(selected.get("tags", ()))
+                    ledger[-1]["data"].update(
+                        emoji_id=selected.get("id", ""),
+                        summary=tags or "表情",
+                        tags=list(selected.get("tags", ())),
+                        is_sticker=True,
+                        mime_type=media.mime_type,
+                        animated=selected.get("animated", False),
+                    )
+                    content = f"[表情: {tags}]" if tags else "[表情]"
+                else:
+                    content = content or f"[文件: {metadata['name']}]"
             transport = TransportMessage(message.text, tuple(mentions), reference, media)
             separate = (
                 media is not None
@@ -1032,24 +1070,44 @@ class SocialService:
         receipt = await self._send_message_sequence(
             args, context, target, route, transport, tuple(ledger), prior, known_event_id
         )
-        if prepared_emoji is not None and receipt.get("status") == OperationStatus.SUCCEEDED:
-            try:
-                await self.emoji_delivery.record_send_accepted(
-                    prepared_emoji.message, source="agent_delivery"
-                )
-                await self.emoji_delivery.record_success(
-                    prepared_emoji.message,
-                    actor_person_id=str(target.id) if target.kind == "person" else None,
-                    space_id=str(target.id) if target.kind == "space" else None,
-                    trigger_message_id=context.inbound.message_id
-                    if context.inbound is not None
-                    else "",
-                    source="agent",
-                    ledger_recorded=True,
-                )
-            except Exception:
-                logging.getLogger(__name__).exception("social_media_post_send_record_failed")
+        if message.emoji is not None:
+            receipt["emoji"] = (
+                await self._admit_emoji(args, context, target, emoji_source, emoji_error)
+                if receipt.get("status") != OperationStatus.EXECUTING.value
+                else {"status": "not_accepted", "error": "text_delivery_in_progress"}
+            )
         return receipt
+
+    async def _admit_emoji(
+        self,
+        args: dict[str, Any],
+        context: SocialContext,
+        target: SocialTarget,
+        source: dict[str, Any] | None,
+        error: str | None,
+    ) -> dict[str, Any]:
+        if source is not None and self.emoji_delivery is not None:
+            try:
+                return await self.emoji_delivery.admit(args, context, target, source)
+            except SQLAlchemyError:
+                return {"status": "unknown", "error": "emoji_admission_unconfirmed"}
+            except Exception as exc:
+                error = str(exc) if isinstance(exc, SocialError) else type(exc).__name__
+                logging.getLogger(__name__).warning(
+                    "social_emoji_admission_failed category=%s", error
+                )
+            finally:
+                self.emoji_delivery.wake()
+        return {"status": "not_accepted", "error": error or "emoji_delivery_unavailable"}
+
+    async def _replay_emoji(
+        self, args: dict[str, Any], context: SocialContext
+    ) -> dict[str, Any] | None:
+        assert self.emoji_delivery is not None
+        try:
+            return await self.emoji_delivery.replay(args, context)
+        except SQLAlchemyError:
+            return {"status": "unknown", "error": "emoji_projection_unavailable"}
 
     async def _effect(
         self,
@@ -1100,6 +1158,11 @@ class SocialService:
         with model_detail("social_claim"):
             async with self.database.immediate_session() as session:
                 await self._validate_person_context(context, session=session)
+                if context.deferred_emoji_id is not None:
+                    assert self.emoji_delivery is not None
+                    await self.emoji_delivery.validate_claim(
+                        session, context.deferred_emoji_id, target, route
+                    )
                 if context.origin == "plugin_background" and context.caused_by_event_id is not None:
                     from yuki.plugin_host.notification_repository import background_authority_live
 

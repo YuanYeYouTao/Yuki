@@ -65,7 +65,6 @@ class ConversationUploads:
     ) -> dict[str, Any]:
         if (
             not filename
-            or len(filename) > 80
             or any(char in filename for char in "\\/:\x00\r\n")
             or kind not in {"image", "video", "file", "record"}
             or not 0 < size <= _MAX_FILE

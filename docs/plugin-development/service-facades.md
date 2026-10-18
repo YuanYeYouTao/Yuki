@@ -18,7 +18,7 @@
 | `onebot` | 按读/发送/修改分类的 OneBot 接口 |
 | `events` | 发布类型化通知事件 |
 
-API 4.0 的普通 user_id/group_id/target_id 参数分别表示内部 Person/Space，不接受平台裸号；`CurrentMessage` 的 sender_user_id/group_id/message_id 仍只是原传输出处。需要选择 topic 或多 Bot 私聊入口时使用原 Conversation ID。
+API 5.0 的普通 user_id/group_id/target_id 参数分别表示内部 Person/Space，不接受平台裸号；`CurrentMessage` 的 sender_user_id/group_id/message_id 仍只是原传输出处。需要选择 topic 或多 Bot 私聊入口时使用原 Conversation ID。
 
 完整签名见 [Facade API Reference](api-reference/facades.md)。每次调用仍会检查当前批准权限；持有一个 Python 属性不等于拥有调用权限。
 
@@ -57,7 +57,7 @@ USER配置只读取当前根人物的有效行，原来源冲突行不作为unse
 
 Memory V2 的写入仍统一经过 Host `MemoryFactService`。插件 update 创建修正版本，delete 只做显式
 失效；插件不能直接访问 Repository、指定事实状态/authority、物理删除审计记录或绕过当前真实
-调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 4.0。
+调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 5.0。
 Memory 记录中的 `user_id` / `subject_user_id` 和 `group_id` 同样是内部 Person / Space，
 可在原授权范围继续作为查询参数；它们不是平台账号或群号。
 

@@ -1,4 +1,4 @@
-"""Bounded local MP4 sampling; URLs and audio never reach the decoder/model."""
+"""Local MP4/MOV and WebM sampling; URLs and audio never reach the decoder/model."""
 
 from __future__ import annotations
 
@@ -11,8 +11,13 @@ from tempfile import TemporaryDirectory
 
 from yuki.domain.messages import ChatImage
 from yuki.services.media_process import MediaProcessError, run_media_process
+from yuki.services.media_resolver import _media_io
 from yuki.services.vision_service import VisionProcessingError
 from yuki.vision.models import DownloadedMedia
+
+
+def is_video_header(header: bytes) -> bool:
+    return header[4:8] == b"ftyp" or header.startswith(b"\x1aE\xdf\xa3")
 
 
 async def _run(*args: str, env: dict[str, str] | None = None) -> bytes:
@@ -40,11 +45,7 @@ async def sample_video(
             path = media  # Caller owns this temporary download, never a model-supplied path.
         else:
             path = Path(directory) / "input.mp4"
-            path.write_bytes(media.content)
-        with path.open("rb") as stream:
-            header = stream.read(12)
-        if len(header) < 12 or header[4:8] != b"ftyp":
-            raise VisionProcessingError("unsupported_video", "目前仅支持 MP4/MOV 视频画面")
+            await _media_io(path.write_bytes, media.content)
         metadata = json.loads(
             await _run(
                 "ffprobe",
@@ -55,7 +56,7 @@ async def sample_video(
                 "-protocol_whitelist",
                 "file",
                 "-format_whitelist",
-                "mov",
+                "mov,matroska,webm",
                 "-select_streams",
                 "v:0",
                 "-show_entries",
@@ -104,7 +105,7 @@ async def sample_video(
                 "-protocol_whitelist",
                 "file",
                 "-format_whitelist",
-                "mov",
+                "mov,matroska,webm",
                 "-ss",
                 str(position),
                 "-i",

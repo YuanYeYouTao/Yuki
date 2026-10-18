@@ -17,7 +17,7 @@ from yuki.identity.db_models import CanonicalPersonModel
 from yuki.services.policies import CommandName, parse_command
 
 
-def test_emoji_capabilities_distinguish_diagnosis_and_repair():
+def test_retired_emoji_pool_is_not_offered_as_management_capability():
     from tests.conftest import make_settings
 
     from yuki.admin.permission_catalog import PermissionCatalogService
@@ -31,8 +31,7 @@ def test_emoji_capabilities_distinguish_diagnosis_and_repair():
         actor_is_superuser=True,
     )
     capabilities = {item.id: item for item in report.capabilities}
-    assert not capabilities["command:emoji.doctor:admin"].mutating
-    assert capabilities["command:emoji.repair:admin"].mutating
+    assert not capabilities
 
 
 def test_chat_renders_nested_original_receipt_as_json():

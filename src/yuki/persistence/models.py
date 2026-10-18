@@ -325,7 +325,7 @@ class ConversationMediaItemModel(Base):
     generation: Mapped[int] = mapped_column(Integer, nullable=False)
     segment_index: Mapped[int] = mapped_column(Integer, nullable=False)
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
-    display_name: Mapped[str] = mapped_column(String(80), nullable=False, default="")
+    display_name: Mapped[str] = mapped_column(Text, nullable=False, default="")
     declared_size: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     cache_status: Mapped[str] = mapped_column(String(16), nullable=False, default="uncached")
@@ -379,43 +379,6 @@ class MediaAnalysisModel(Base):
     observation_json: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class EmojiDescriptionModel(Base):
-    """A durable description indexed by a stable QQ emoji identity."""
-
-    __tablename__ = "emoji_descriptions"
-    __table_args__ = (
-        CheckConstraint(
-            "analysis_mode IN ('general', 'meme', 'ocr', 'question')",
-            name="ck_emoji_descriptions_analysis_mode",
-        ),
-        CheckConstraint("hit_count >= 0", name="ck_emoji_descriptions_hit_count"),
-        UniqueConstraint(
-            "emoji_key",
-            "analysis_mode",
-            "question_hash",
-            "model",
-            "prompt_version",
-            name="uq_emoji_descriptions_lookup",
-        ),
-        Index("ix_emoji_descriptions_key", "emoji_key"),
-        Index("ix_emoji_descriptions_last_used", "last_used_at"),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    emoji_key: Mapped[str] = mapped_column(String(255), nullable=False)
-    analysis_mode: Mapped[str] = mapped_column(String(16), nullable=False)
-    question_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
-    provider: Mapped[str] = mapped_column(String(32), nullable=False)
-    model: Mapped[str] = mapped_column(String(128), nullable=False)
-    prompt_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    description: Mapped[str] = mapped_column(Text, nullable=False)
-    observation_json: Mapped[str] = mapped_column(Text, nullable=False)
-    hit_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class MemoryFactModel(Base):

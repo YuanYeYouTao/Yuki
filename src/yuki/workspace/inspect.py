@@ -14,7 +14,8 @@ from yuki.admin.models import VisionRuntimeConfig
 from yuki.capabilities.media import PreparedMediaData
 from yuki.domain.messages import ChatImage
 from yuki.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
-from yuki.services.native_media import MAX_IMAGE_BYTES, NativeMediaPreparer
+from yuki.services.native_media import MAX_IMAGE_BYTES, NativeMediaPreparer, native_sticker_facts
+from yuki.services.video_frames import is_video_header
 from yuki.services.vision_service import VisionProcessingError
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
@@ -59,8 +60,28 @@ class WorkspaceInspector:
                 "sha256", metadata.get("version")
             ):
                 raise WorkspaceError("workspace_media_invalid")
+            if data.startswith(b"\x1f\x8b"):
+                facts = await asyncio.to_thread(native_sticker_facts, data)
+                if facts is not None:
+                    return PreparedMediaData(
+                        {
+                            **{
+                                k: metadata[k]
+                                for k in ("artifact_id", "path", "version")
+                                if k in metadata
+                            },
+                            "sha256": digest,
+                            "question": question,
+                            "mode": "sticker_metadata",
+                            "format": "TGS",
+                            "width": facts.get("width"),
+                            "height": facts.get("height"),
+                            "status": "preview_unavailable",
+                        },
+                        (),
+                    )
             try:
-                if data[4:8] == b"ftyp":
+                if is_video_header(data):
                     with TemporaryDirectory(prefix="yuki-workspace-video-") as directory:
                         path = Path(directory) / "input.mp4"
                         await asyncio.to_thread(path.write_bytes, data)

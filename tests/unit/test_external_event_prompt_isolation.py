@@ -20,6 +20,7 @@ from yuki.domain.profiles import UserProfileSnapshot
 from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
 from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.context import MEMORY_GROUNDING_RULE
 from yuki.persistence.database import Database
 from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.repository_records import EventRecord
@@ -558,7 +559,7 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     assert "github-monitor" not in system_text
     assert "PushEvent" not in system_text
     assert "【资料与查证】" in system_text
-    assert "当前请求不自动附带旧记忆" in system_text
+    assert MEMORY_GROUNDING_RULE in system_text
     assert "短记录是与人和群无关的全局短期资料" in system_text
     assert tuple(item.content for item in composed.messages if item.role == "system") == tuple(
         item.content for item in ordinary.messages if item.role == "system"

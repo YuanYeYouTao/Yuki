@@ -48,8 +48,7 @@ from yuki.domain.messages import (
     OutboundSendReceipt,
 )
 from yuki.domain.profiles import UserProfileSnapshot, sanitize_profile_name
-from yuki.emoji.collector import EmojiCollector
-from yuki.emoji.worker import EmojiWorker
+from yuki.emoji.library import EmojiLibrary
 from yuki.execution_trace.phases import turn_detail
 from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.gateway.media import PlatformMediaGateway
@@ -379,8 +378,7 @@ class MessageProcessor:
         turn_coordinator: ConversationTurnCoordinator | None = None,
         admission_signals: AdmissionSignalProvider | None = None,
         event_publisher: LifecycleEventPublisher | None = None,
-        emoji_collector: EmojiCollector | None = None,
-        emoji_worker: EmojiWorker | None = None,
+        emoji_library: EmojiLibrary | None = None,
         canonical_ingress: CanonicalIngressResolver,
         group_recovery: GroupRecoveryHandler | None = None,
         client_links: ClientLinkCommands | None = None,
@@ -427,8 +425,7 @@ class MessageProcessor:
         self._commands = command_service
         self._direct_plugin_commands = direct_plugin_commands
         self._event_publisher: LifecycleEventPublisher | None = None
-        self._emoji_collector = emoji_collector
-        self._emoji_worker = emoji_worker
+        self._emoji_library = emoji_library
         self._canonical_ingress = canonical_ingress
         self._group_recovery = group_recovery
         self._canonical_uow = canonical_uow
@@ -885,7 +882,11 @@ class MessageProcessor:
             source_event_id=record.id,
             conversation_id=record.canonical_conversation_id,
         )
-        if created and message.attachments and self._conversation_media is not None:
+        if (
+            created
+            and (message.attachments or message.reply_attachments)
+            and self._conversation_media is not None
+        ):
             media_gateway = (
                 cast(PlatformMediaGateway, sender)
                 if callable(getattr(sender, "resolve_media_file", None))
@@ -908,28 +909,8 @@ class MessageProcessor:
             coordinator_version=turn_token.version,
             transport_scope_key=(identity.key if identity.key != coordinator_key else None),
         )
-        is_explicit_emoji_import = bool(
-            decision.command is CommandName.ADMIN
-            and decision.content.strip().casefold() == "emoji import"
-        )
-        if (
-            self._emoji_collector is not None
-            and message.attachments
-            and not is_explicit_emoji_import
-        ):
-            media_gateway = (
-                cast(PlatformMediaGateway, sender)
-                if callable(getattr(sender, "resolve_media_file", None))
-                else None
-            )
-            self._emoji_collector.submit(
-                message,
-                source_event_id=record.id,
-                runtime=runtime_snapshot.emoji,
-                gateway=media_gateway,
-            )
-            if self._emoji_worker is not None:
-                self._emoji_worker.wake()
+        if self._emoji_library is not None and created:
+            self._emoji_library.submit(message, source_event_id=record.id)
 
         if not direct_turn:
             if record.author_is_human():

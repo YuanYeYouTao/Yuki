@@ -101,7 +101,7 @@ async def test_sdk_image_replay_does_not_read_expired_original_bytes(
         plugin_id=plugin,
         name=plugin,
         version="1",
-        plugin_api="4.0",
+        plugin_api="5.0",
         yuki_requires="*",
         manifest_hash="original-media-manifest",
         entrypoint="plugin:register",

@@ -67,25 +67,6 @@ ADMIN_ACTIONS = {
         "rebuild",
     ),
     "preference": ("list", "set", "delete"),
-    "emoji": (
-        "list",
-        "show",
-        "adopt",
-        "unadopt",
-        "reject",
-        "ban",
-        "unban",
-        "pin",
-        "enable",
-        "disable",
-        "reanalyze",
-        "group",
-        "stats",
-        "cleanup",
-        "doctor",
-        "repair",
-        "import",
-    ),
 }
 
 # Presentation only. Domain authorization and writes do not consult this catalog.
@@ -101,7 +82,6 @@ ADMIN_READ_ACTIONS = {
         {"list", "evidence", "search", "show", "explain", "history", "conflicts", "doctor"}
     ),
     "preference": frozenset({"list"}),
-    "emoji": frozenset({"list", "show", "stats", "doctor"}),
 }
 
 # Memory's long-running domains have concrete subcommands with different effects.

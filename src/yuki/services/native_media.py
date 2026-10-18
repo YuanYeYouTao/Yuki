@@ -2,15 +2,44 @@
 
 from __future__ import annotations
 
+import io
+from functools import partial
 from pathlib import Path
+from typing import Any
 
 from yuki.admin.models import VisionRuntimeConfig
 from yuki.domain.messages import ChatImage
+from yuki.emoji.media import media_facts
 from yuki.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
+from yuki.services.media_resolver import _media_io
 from yuki.services.video_frames import sample_video
 from yuki.vision.models import DownloadedMedia
 
 MAX_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def native_sticker_facts(source: bytes | Path) -> dict[str, Any] | None:
+    """Read actual native animation metadata without requiring image pixels or a filename."""
+    stream = io.BytesIO(source) if isinstance(source, bytes) else source.open("rb")
+    with stream:
+        if stream.read(2) != b"\x1f\x8b":
+            return None
+        stream.seek(0)
+        facts = media_facts(stream, inspect_pixels=False)
+    return facts if facts is not None and facts["image_format"] == "TGS" else None
+
+
+def image_extension(header: bytes) -> str | None:
+    """Classify real image bytes independently of a platform's media label."""
+    if header.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if header.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if header.startswith(b"RIFF") and header[8:12] == b"WEBP":
+        return ".webp"
+    return None
 
 
 class NativeMediaPreparer:
@@ -58,12 +87,26 @@ class NativeMediaPreparer:
 
     async def prepare_video(
         self,
-        path: Path,
+        path: Path | DownloadedMedia,
         *,
         source: str,
         runtime: VisionRuntimeConfig | None = None,
         max_frames: int | None = None,
     ) -> tuple[ChatImage, ...]:
+        def image_bytes() -> bytes | None:
+            if isinstance(path, DownloadedMedia):
+                return path.content if image_extension(path.content[:12]) is not None else None
+            with path.open("rb") as stream:
+                header = stream.read(12)
+                if image_extension(header) is None:
+                    return None
+                return header + stream.read(MAX_IMAGE_BYTES + 1 - len(header))
+
+        image = await _media_io(image_bytes)
+        if image is not None:
+            return await _media_io(
+                partial(self.prepare_image, image, source=source, max_frames=max_frames)
+            )
         maximum = (
             min(runtime.max_frames_per_turn, runtime.video_max_frames)
             if runtime

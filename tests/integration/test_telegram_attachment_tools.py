@@ -38,25 +38,40 @@ from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
 @pytest.fixture
-async def attachment_tools(database, tmp_path):
+async def attachment_tools(database, tmp_path, request):
     image = io.BytesIO()
     Image.new("RGB", (2, 2), "red").save(image, "PNG")
-    original_bytes = image.getvalue()
+    picture = image.getvalue()
+    options = getattr(request, "param", {})
+    original_bytes = options.get("content", picture)
+    media_content = {"original": original_bytes}
     wire = []
 
     def respond(request):
         wire.append((request.method, request.url.path))
         if request.url.path.endswith("/getFile"):
-            assert json.loads(request.content) == {"file_id": "original-bot-a-file"}
+            file_id = json.loads(request.content)["file_id"]
+            assert file_id in {"original-bot-a-file", "actual-sticker-preview"}
             # Official file_id namespace is per bot. A different bot must not be tried.
             if request.url.path != "/botfixture-a/getFile":
                 return httpx.Response(400, json={"ok": False, "error_code": 400})
             return httpx.Response(
                 200,
-                json={"ok": True, "result": {"file_path": "photos/original.png"}},
+                json={
+                    "ok": True,
+                    "result": {
+                        "file_path": "photos/preview.png"
+                        if file_id == "actual-sticker-preview"
+                        else "photos/original.png"
+                    },
+                },
             )
+        if request.url.path == "/file/botfixture-a/photos/preview.png":
+            return httpx.Response(200, content=picture, headers={"content-type": "image/png"})
         assert request.url.path == "/file/botfixture-a/photos/original.png"
-        return httpx.Response(200, content=original_bytes, headers={"content-type": "image/png"})
+        return httpx.Response(
+            200, content=media_content["original"], headers={"content-type": "image/png"}
+        )
 
     registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
     async with (
@@ -114,7 +129,12 @@ async def attachment_tools(database, tmp_path):
                 platform_message_id="-10042:1",
                 direction="inbound",
                 content="原接收账号的图片",
-                segments=({"type": "image", "data": {"file": "original-bot-a-file"}},),
+                segments=(
+                    {
+                        "type": options.get("kind", "image"),
+                        "data": {"file": "original-bot-a-file", **options.get("data", {})},
+                    },
+                ),
             )
         ).event
         current = (
@@ -187,6 +207,7 @@ async def attachment_tools(database, tmp_path):
                 runtime=runtime,
                 wire=wire,
                 original_bytes=original_bytes,
+                media_content=media_content,
                 checkouts=checkouts,
             )
         finally:

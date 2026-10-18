@@ -64,6 +64,7 @@ class NotificationTransport(Protocol):
         *,
         target_type: str,
         local_path: Path,
+        content_type: str,
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
         canonical_conversation_id: str | None = None,
@@ -108,6 +109,7 @@ class PlatformNotificationTransport:
         *,
         target_type: str,
         local_path: Path,
+        content_type: str,
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
         canonical_conversation_id: str | None = None,
@@ -122,7 +124,7 @@ class PlatformNotificationTransport:
                     kind="image",
                     content=content,
                     filename=local_path.name,
-                    mime_type="image/png",
+                    mime_type=content_type,
                 )
             ),
             canonical_target_person_id=canonical_target_person_id,
@@ -324,6 +326,7 @@ class PluginNotificationOutboxWorker:
                 receipt = await self._transport.send_media(
                     target_type=item.target_type,
                     local_path=artifact.local_path,
+                    content_type=artifact.content_type,
                     canonical_target_person_id=person_id,
                     canonical_target_space_id=space_id,
                     canonical_conversation_id=item.canonical_conversation_id,

@@ -12,8 +12,6 @@ from yuki_plugin_sdk.events import EventName, NotificationHandler
 from yuki_plugin_sdk.models import (
     AdmissionSignal,
     AdmissionSignalContext,
-    EmojiSelectionSignal,
-    EmojiSelectionSignalContext,
     PermissionLevel,
     PromptFragment,
     RestartPolicy,
@@ -33,9 +31,6 @@ AdmissionSignalProvider = (
     Callable[[AdmissionSignalContext], Awaitable[AdmissionSignal | None]]
     | Callable[[], Awaitable[AdmissionSignal | None]]
 )
-EmojiSelectionSignalProvider = Callable[
-    [EmojiSelectionSignalContext], Awaitable[EmojiSelectionSignal | None]
-]
 BackgroundRunner = Callable[[], Awaitable[None]]
 
 _MAX_TOOL_LABELS = 8
@@ -136,12 +131,6 @@ class AdmissionSignalRegistration:
 
 
 @dataclass(frozen=True, slots=True)
-class EmojiSelectionSignalRegistration:
-    name: str
-    provider: EmojiSelectionSignalProvider
-
-
-@dataclass(frozen=True, slots=True)
 class BackgroundServiceRegistration:
     metadata: BackgroundServiceMetadata
     runner: BackgroundRunner
@@ -159,10 +148,6 @@ class PluginRegistrar(Protocol):
     def register_prompt_fragment(self, fragment: PromptFragment) -> None: ...
 
     def register_admission_signal(self, registration: AdmissionSignalRegistration) -> None: ...
-
-    def register_emoji_selection_signal(
-        self, registration: EmojiSelectionSignalRegistration
-    ) -> None: ...
 
     def register_config_schema(self, schema: type[BaseModel]) -> None: ...
 

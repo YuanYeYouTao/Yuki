@@ -328,7 +328,7 @@ async def test_queued_privileged_plugin_rechecks_person_after_scope_wait(databas
         plugin_id="authority.plugin",
         name="Authority",
         version="1.0",
-        plugin_api="4.0",
+        plugin_api="5.0",
         yuki_requires=">=3.8",
         manifest_hash="a" * 64,
         entrypoint="plugin:Plugin",

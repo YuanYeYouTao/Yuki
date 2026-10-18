@@ -2,6 +2,8 @@
 
 import asyncio
 import io
+import json
+import threading
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,22 +11,23 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from PIL import Image
-from sqlalchemy import select
+from sqlalchemy import delete, select, text
+from sqlalchemy import event as sql_event
 from tests.support.social_identity_cases import social_env
 
 from yuki.admin.models import VisionRuntimeConfig
+from yuki.conversation.hydrate import bump_canonical_generation
 from yuki.conversation.media_service import ConversationMediaService
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import AttachmentKind, InboundMessage, MessageAttachment, SenderIdentity
-from yuki.emoji.collector import EmojiCollector
-from yuki.emoji.detector import EmojiCandidateDetector
-from yuki.emoji.repository import EmojiRepository
-from yuki.emoji.storage import EmojiStorage
+from yuki.emoji.library import EmojiLibrary
+from yuki.emoji.sticker_index import StickerIndex
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
 from yuki.services.attachment_inputs import AttachmentInputService
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolutionError, MediaResolver, PreparedAttachment
 from yuki.vision.models import MediaReference
+from yuki.workspace.service import WorkspaceService
 
 
 @pytest.fixture
@@ -79,6 +82,7 @@ async def admitted_media(database, tmp_path):
                     "emoji",
                     segment_index=0,
                     url="https://example.test/original.png",
+                    is_sticker=True,
                 ),
             ),
         )
@@ -91,18 +95,31 @@ async def admitted_media(database, tmp_path):
             timeout=10,
             max_bytes=1_000_000,
         )
-        emoji = EmojiCollector(
-            detector=EmojiCandidateDetector(),
-            resolver=resolver,
-            storage=EmojiStorage(tmp_path / "emoji"),
-            repository=EmojiRepository(database),
-        )
+        workspace = WorkspaceService(env.store)
+        files = tmp_path / "manager-workspace"
+
+        async def manager_execute(name, arguments, *, request_id):
+            if name == "workspace_checkout":
+                metadata, content = env.store.read_bytes(arguments["artifact_id"])
+                path = files / arguments["destination"]
+                await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(path.write_bytes, content)
+                return {
+                    "path": "/workspace/" + arguments["destination"],
+                    "version": metadata["sha256"],
+                }
+            assert name == "sticker_index"
+            return await asyncio.to_thread(StickerIndex(files).execute, arguments)
+
+        workspace.sandbox = SimpleNamespace(execute=manager_execute)
+        emoji = EmojiLibrary(workspace, source_valid=media.source_current)
         try:
             yield SimpleNamespace(
                 media=media,
                 message=message,
                 native=native,
                 emoji=emoji,
+                files=files,
                 data=data,
                 event=event,
                 calls=calls,
@@ -113,8 +130,8 @@ async def admitted_media(database, tmp_path):
             )
         finally:
             release.set()
-            await media.close()
             await emoji.close()
+            await media.close()
 
 
 async def test_plain_input_does_not_encode_media_source_or_clone_message(
@@ -140,21 +157,14 @@ async def test_cache_main_and_emoji_share_original_without_cache_admission_gate(
     tasks = [
         asyncio.create_task(env.media._cache_event(env.event.id, None, env.message)),
         asyncio.create_task(env.native.prepare(env.message, env.runtime, None)),
-        asyncio.create_task(
-            env.emoji.collect_attachment(
-                env.message.attachments[0],
-                message=env.message,
-                source_event_id=env.event.id,
-                runtime=SimpleNamespace(near_duplicate_enabled=False),
-                gateway=None,
-            )
-        ),
+        asyncio.create_task(env.emoji.collect_message(env.message, source_event_id=env.event.id)),
     ]
     await asyncio.wait_for(env.entered.wait(), 2)
     env.release.set()
-    _, native, (asset, created, _) = await asyncio.gather(*tasks)
+    _, native, (asset,) = await asyncio.gather(*tasks)
     assert len(env.calls) == 1
-    assert native.images and asset.byte_size == len(env.data) and created
+    assert native.images and asset.byte_size == len(env.data)
+    assert asset.relative_path.startswith("stickers/qq/files/")
     async with database.sessions() as reader:
         item = await reader.scalar(
             select(ConversationMediaItemModel).where(
@@ -277,3 +287,137 @@ async def test_file_original_has_bounded_copies_and_cleans_own_directory(
         assert (tmp_path / "copy").read_bytes() == env.data and len(env.calls) == 1
     await original.close()
     assert directories and all(not path.exists() for path in directories)
+
+
+@pytest.mark.parametrize("change", ["delete", "edit", "unindex", "reset"])
+async def test_collection_rechecks_original_source_after_download_wait(
+    admitted_media, database, change
+):
+    env = admitted_media
+    collecting = asyncio.create_task(
+        env.emoji.collect_message(env.message, source_event_id=env.event.id)
+    )
+    await asyncio.wait_for(env.entered.wait(), 2)
+    try:
+        async with database.immediate_session() as writer:
+            event = await writer.get(ChatEventModel, env.event.id)
+            if change == "delete":
+                await writer.delete(event)
+            elif change == "unindex":
+                await writer.execute(
+                    delete(ConversationMediaItemModel).where(
+                        ConversationMediaItemModel.source_event_id == env.event.id
+                    )
+                )
+            elif change == "reset":
+                await bump_canonical_generation(
+                    writer, env.event.canonical_conversation_id, event_id=env.event.id
+                )
+            else:
+                event.segments_json = json.dumps(
+                    [{"type": "image", "data": {"url": "https://example.test/replacement.png"}}]
+                )
+    finally:
+        env.release.set()
+    assert await asyncio.wait_for(collecting, 5) == ()
+    assert not env.files.exists()
+
+
+async def test_shared_collection_only_reads_main_database(admitted_media, database):
+    env = admitted_media
+    statements = []
+
+    def observe(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    sql_event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
+    env.release.set()
+    try:
+        (saved,) = await env.emoji.collect_message(env.message, source_event_id=env.event.id)
+    finally:
+        sql_event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+    assert (env.files / saved.relative_path).read_bytes() == env.data
+    assert len(statements) == 1 and statements[0].lstrip().upper().startswith("SELECT")
+
+
+async def test_repeated_cancel_waits_for_actual_snapshot_thread(admitted_media, monkeypatch):
+    env = admitted_media
+    workspace = env.emoji.workspace
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    original_snapshot = workspace.store.snapshot
+
+    def snapshot(*args, **kwargs):
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(5)
+        return original_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(workspace.store, "snapshot", snapshot)
+    task = asyncio.create_task(
+        workspace.import_content(
+            env.data,
+            "selected.png",
+            request_id="cancelled-import",
+            artifact_id="f5faf70f-7b2b-41ce-9580-80c4c0f7bd09",
+            source_key="selected-original",
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, 5)
+    assert workspace.store.read_bytes("f5faf70f-7b2b-41ce-9580-80c4c0f7bd09")[1] == env.data
+
+
+@pytest.mark.parametrize("change", ["forget", "reset"])
+async def test_admitted_shared_copy_survives_source_erasure_without_restoring_attribution(
+    admitted_media, database, monkeypatch, change
+):
+    env = admitted_media
+    entered, release = asyncio.Event(), asyncio.Event()
+    original_import = env.emoji.workspace.import_content
+
+    async def paused_import(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await original_import(*args, **kwargs)
+
+    monkeypatch.setattr(env.emoji.workspace, "import_content", paused_import)
+    env.release.set()
+    collecting = asyncio.create_task(
+        env.emoji.collect_message(env.message, source_event_id=env.event.id)
+    )
+    await asyncio.wait_for(entered.wait(), 5)
+    try:
+        # Read-only acceptance has finished; no table or pending-copy state was written.
+        assert not list(env.files.rglob("*.json"))
+        async with database.immediate_session() as writer:
+            if change == "forget":
+                await writer.execute(
+                    delete(ChatEventModel).where(ChatEventModel.id == env.event.id)
+                )
+            else:
+                await bump_canonical_generation(
+                    writer, env.event.canonical_conversation_id, event_id=env.event.id
+                )
+    finally:
+        release.set()
+    (saved,) = await asyncio.wait_for(collecting, 5)
+    assert (env.files / saved.relative_path).read_bytes() == env.data
+    metadata = env.files / "stickers" / "qq" / "index" / f"{saved.id}.json"
+    assert json.loads(metadata.read_text(encoding="utf-8"))["relative_path"] == saved.relative_path
+    async with database.sessions() as reader:
+        assert (await reader.get(ChatEventModel, env.event.id) is None) == (change == "forget")
+        assert not any(
+            name.startswith("sticker_")
+            for name in await reader.scalars(
+                text("SELECT name FROM sqlite_master WHERE type='table'")
+            )
+        )

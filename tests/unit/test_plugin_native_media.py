@@ -16,20 +16,84 @@ from sqlalchemy import delete, update
 from yuki.automation.models import TurnOrigin
 from yuki.capabilities.results import ToolExecutionResult
 from yuki.domain.conversations import ScopeType
-from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.domain.messages import AttachmentKind, InboundMessage, MessageAttachment, SenderIdentity
 from yuki.plugin_host.capability_adapter import PluginCapabilityAdapter
 from yuki.plugin_host.db_models import PluginInstallationModel, PluginMediaArtifactModel
 from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
-from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
 from yuki.plugin_host.media_artifacts import PluginMediaArtifactStore
 from yuki.services.agent_tools import ToolRuntime
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.native_media import NativeMediaPreparer
+from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import StrictModel
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import ToolMetadata, ToolRegistration
 from yuki_plugin_sdk.results import PluginResult, ToolResult
+from yuki_plugin_sdk.testing.fake_services import FakeMediaFacade
+
+
+async def test_current_media_shares_native_platform_facts_without_byte_locators():
+    preview = MessageAttachment(AttachmentKind.IMAGE, "preview", file="private-preview-id")
+    sticker = MessageAttachment(
+        AttachmentKind.FILE,
+        "sticker",
+        file="private-file-id",
+        url="https://private.invalid",
+        filename="sticker.tgs",
+        is_sticker=True,
+        sticker_format="animated",
+        mime_type="application/x-tgsticker",
+        width=64,
+        height=64,
+        preview=preview,
+    )
+    reply = MessageAttachment(
+        AttachmentKind.IMAGE,
+        "image",
+        source="reply",
+        sub_type="1",
+        is_sticker=True,
+        file="private-qq-id",
+        emoji_id="native-qq-id",
+        width=32,
+        height=32,
+    )
+    inbound = InboundMessage(
+        "1",
+        "message",
+        ScopeType.PRIVATE,
+        SenderIdentity("1001"),
+        "look",
+        attachments=(sticker,),
+        reply_attachments=(reply,),
+    )
+    context = HostPluginContext(
+        plugin_id="media-view",
+        approved_permissions=(PluginPermission.MEDIA_CURRENT_READ,),
+        services=PluginFacadeServices(),
+    )
+    with context.bind(
+        PluginInvocation(
+            plugin_id="media-view",
+            origin=TurnOrigin.USER_MESSAGE,
+            actor_user_id="1001",
+            bot_user_id="8000",
+            inbound=inbound,
+        )
+    ):
+        current = await context.media.get_current()
+    assert current[0]["is_sticker"] and current[0]["preview_available"]
+    assert current[0]["sticker_format"] == "animated"
+    assert current[0]["mime_type"] == "application/x-tgsticker"
+    assert current[0]["filename"] == "sticker.tgs" and current[0]["width"] == 64
+    assert current[1]["source"] == "reply" and current[1]["sub_type"] == "1"
+    assert current[1]["is_sticker"] and not current[1]["preview_available"]
+    assert "private-" not in json.dumps(current)
+    fake = FakeMediaFacade()
+    fake.current = [dict(item) for item in current]
+    assert await fake.get_current() == current
 
 
 class Arguments(StrictModel):
@@ -56,7 +120,7 @@ async def environment(database, tmp_path, *, permissions=None, handler=None):
                         plugin_id=plugin_id,
                         name=plugin_id,
                         version="1.0",
-                        plugin_api="3.2",
+                        plugin_api=PLUGIN_API_VERSION,
                         yuki_requires="*",
                         manifest_hash="original-manifest",
                         entrypoint="test:plugin",

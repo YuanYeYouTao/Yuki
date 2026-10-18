@@ -4,7 +4,6 @@ from yuki.persistence.event_repository import (
     EventLedgerRepository,
 )
 from yuki.persistence.media_repository import (
-    EmojiDescriptionRepository,
     MediaAnalysisRepository,
 )
 from yuki.persistence.people_repository import (
@@ -13,7 +12,6 @@ from yuki.persistence.people_repository import (
     PrivateUserSettingsRepository,
 )
 from yuki.persistence.repository_records import (
-    EmojiDescriptionRecord,
     EventRecord,
     GroupSetting,
     MediaAnalysisRecord,
@@ -22,8 +20,6 @@ from yuki.persistence.repository_records import (
 from yuki.persistence.web_repository import WebSearchSourceRepository
 
 __all__ = [
-    "EmojiDescriptionRecord",
-    "EmojiDescriptionRepository",
     "EventLedgerRepository",
     "EventRecord",
     "GroupSetting",

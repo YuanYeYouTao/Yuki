@@ -156,7 +156,6 @@ _PROMPT_SCENARIOS = (
     "autonomous-group",
     "web",
     "vision",
-    "emoji",
     "plugin",
 )
 
@@ -317,7 +316,6 @@ def _scenario_tools(scenario: str) -> tuple[tuple[ChatTool, ...], dict[str, str]
         "autonomous-group": (),
         "web": ("web_search", "read_webpage"),
         "vision": ("search_memory",),
-        "emoji": (),
         "plugin": ("plugin_example",),
     }[scenario]
     group_by_name = {
@@ -359,7 +357,6 @@ def _prompt_comparison(settings: Settings) -> dict[str, object]:
         "autonomous-group": {"total_characters": 4509, "estimated_tokens": 1128},
         "web": {"total_characters": 22413, "estimated_tokens": 5604},
         "vision": {"total_characters": 22886, "estimated_tokens": 5722},
-        "emoji": {"total_characters": 22413, "estimated_tokens": 5604},
         "plugin": {"total_characters": 22413, "estimated_tokens": 5604},
     }
     comparisons: dict[str, object] = {}

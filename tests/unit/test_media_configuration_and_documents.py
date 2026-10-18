@@ -23,16 +23,12 @@ from yuki.domain.messages import (
     MessageAttachment,
     SenderIdentity,
 )
-from yuki.emoji.grid import EmojiGrid
-from yuki.emoji.models import EmojiSelectionRequest
-from yuki.emoji.selector import EmojiSelector
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
 from yuki.services.attachment_inputs import AttachmentInputService
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_process import MediaProcessError, run_media_process
 from yuki.services.video_frames import _run as run_video_process
 from yuki.services.vision_service import VisionProcessingError
-from yuki.vision.models import VisualItemObservation, VisualObservation
 
 
 def message(*files):
@@ -125,37 +121,6 @@ async def test_visual_rate_rejection_still_preserves_readable_document(database)
     result = await reader.prepare(message("a.png", "a.txt"), runtime, None)
     assert not result.images and "available document" in result.documents
     assert "rate_limited" in result.documents
-
-
-async def test_emoji_selector_uses_actual_vision_thinking_setting(database, monkeypatch):
-    config = await RuntimeConfigService(
-        settings=make_settings(database.url), database=database
-    ).snapshot()
-    selected = SimpleNamespace(asset=SimpleNamespace(id="original-emoji"), score=1.0)
-    provider = SimpleNamespace(
-        analyze=AsyncMock(
-            return_value=VisualObservation(
-                items=(VisualItemObservation(index=1, description="seen", ocr_text="1"),),
-                overall_description="1",
-            )
-        )
-    )
-    selector = EmojiSelector(
-        retriever=SimpleNamespace(retrieve=AsyncMock(return_value=(selected,))),
-        grid_builder=SimpleNamespace(
-            build=lambda candidates: EmojiGrid(_image(), (selected.asset.id,), 1, 1)
-        ),
-        preprocessor=ImagePreprocessor(),
-        provider=provider,
-    )
-    monkeypatch.setattr(selector, "_should_use_visual_selector", lambda *args, **kwargs: True)
-    result = await selector.select(
-        EmojiSelectionRequest(goal="reply naturally"),
-        runtime=replace(config.emoji, enabled=True),
-        vision_runtime=replace(config.vision, thinking_enabled=False),
-    )
-    assert result.selected_by == "vision"
-    assert provider.analyze.await_args.kwargs["options"].thinking_enabled is False
 
 
 async def test_current_document_process_failure_is_not_invalid_video(database, monkeypatch):

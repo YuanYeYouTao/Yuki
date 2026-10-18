@@ -89,16 +89,11 @@ def _text_mentions(
     return text, tuple(mentions), segments
 
 
-def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMessage | None:
-    chat = raw["chat"]
-    if chat["type"] not in {"private", "group", "supergroup"} or not isinstance(
-        raw.get("from"), dict
-    ):
-        return None
-    author = raw["from"]
+def _message_content(
+    raw: dict[str, Any], client: TelegramClient, *, source: str = "current"
+) -> tuple[str, tuple[MessageMention, ...], list[dict[str, Any]], tuple[MessageAttachment, ...]]:
     text, mentions, segments = _text_mentions(raw, client)
-    mentions_bot = any(mention.kind == "yuki" for mention in mentions)
-    attachments = []
+    attachments: list[MessageAttachment] = []
     media_types = (
         ("photo", AttachmentKind.IMAGE),
         ("animation", AttachmentKind.VIDEO),
@@ -114,36 +109,101 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
             continue
         if field == "photo":
             media = media[-1]
-        file = str(media["file_id"])
-        filename = str(media.get("file_name") or field)
-        attachments.append(
+        sticker_format = None
+        mime_type = media.get("mime_type")
+        if field == "sticker":
+            if media.get("is_video"):
+                kind, sticker_format, mime_type = AttachmentKind.VIDEO, "video", "video/webm"
+            elif media.get("is_animated"):
+                kind, sticker_format, mime_type = (
+                    AttachmentKind.FILE,
+                    "animated",
+                    "application/x-tgsticker",
+                )
+            else:
+                sticker_format, mime_type = "static", "image/webp"
+        extension = {"static": "webp", "animated": "tgs", "video": "webm"}.get(sticker_format or "")
+        filename = str(media.get("file_name") or (f"sticker.{extension}" if extension else field))
+        thumbnail = media.get("thumbnail") if sticker_format == "animated" else None
+        preview = (
             MessageAttachment(
-                kind,
-                filename,
-                segment_index=len(segments),
-                file=file,
-                file_size=media.get("file_size"),
-                filename=filename,
+                AttachmentKind.IMAGE,
+                "sticker_preview",
+                source=source,
+                file=str(thumbnail["file_id"]),
+                file_size=thumbnail.get("file_size"),
+                width=thumbnail.get("width"),
+                height=thumbnail.get("height"),
             )
+            if isinstance(thumbnail, dict) and thumbnail.get("file_id")
+            else None
         )
+        attachment = MessageAttachment(
+            kind,
+            field,
+            segment_index=len(segments),
+            source=source,
+            file=str(media["file_id"]),
+            file_size=media.get("file_size"),
+            filename=filename,
+            summary=media.get("emoji"),
+            is_sticker=field == "sticker",
+            sticker_format=sticker_format,
+            mime_type=mime_type,
+            width=media.get("width"),
+            height=media.get("height"),
+            preview=preview,
+        )
+        attachments.append(attachment)
         segments.append(
             {
                 "type": kind.value,
                 "data": {
-                    "file": file,
+                    "file": attachment.file,
                     "name": filename,
-                    "file_size": media.get("file_size"),
-                    "mime_type": media.get("mime_type"),
+                    "file_size": attachment.file_size,
+                    "mime_type": mime_type,
+                    "is_sticker": attachment.is_sticker,
+                    "sticker_format": sticker_format,
+                    "summary": attachment.summary,
+                    "width": attachment.width,
+                    "height": attachment.height,
+                    **(
+                        {
+                            "preview": {
+                                "file": preview.file,
+                                "file_size": preview.file_size,
+                                "width": preview.width,
+                                "height": preview.height,
+                            }
+                        }
+                        if preview is not None
+                        else {}
+                    ),
                 },
             }
         )
+    return text, mentions, segments, tuple(attachments)
+
+
+def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMessage | None:
+    chat = raw["chat"]
+    if chat["type"] not in {"private", "group", "supergroup"} or not isinstance(
+        raw.get("from"), dict
+    ):
+        return None
+    author = raw["from"]
+    text, mentions, segments, attachments = _message_content(raw, client)
+    mentions_bot = any(mention.kind == "yuki" for mention in mentions)
     # A reply relation alone is not a new chat body; native service updates have none.
     if not (text.strip() or attachments):
         return None
     reply = raw.get("reply_to_message")
     reply_author = reply.get("from") if isinstance(reply, dict) else None
-    reply_text, reply_mentions, reply_segments = (
-        _text_mentions(reply, client) if isinstance(reply, dict) else (None, (), [])
+    reply_text, reply_mentions, reply_segments, reply_attachments = (
+        _message_content(reply, client, source="reply")
+        if isinstance(reply, dict)
+        else (None, (), [], ())
     )
     chat_id = str(chat["id"])
     return InboundMessage(
@@ -180,6 +240,7 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
         attachments=tuple(attachments),
         segments=tuple(segments),
         reply_segments=tuple(reply_segments),
+        reply_attachments=reply_attachments,
         reply_to_message_id=f"{chat_id}:{reply['message_id']}" if isinstance(reply, dict) else None,
         reply_sender_user_id=str(reply_author["id"]) if isinstance(reply_author, dict) else None,
         reply_text=reply_text,
@@ -213,7 +274,13 @@ class TelegramSender:
             TransportMessage(
                 message.text,
                 reply_reference=message.reply_to_message_id,
-                media=TransportMedia(media.kind.value, media.content, "attachment", media.mime_type)
+                media=TransportMedia(
+                    media.kind.value,
+                    media.content,
+                    "attachment",
+                    media.mime_type,
+                    bool(media.emoji_id),
+                )
                 if media is not None
                 else None,
             ),

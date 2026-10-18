@@ -543,9 +543,6 @@ def test_setup_auxiliary_or_unrouted_search_modes_do_not_block_main_bridge(
         profiles = profiles.replace(
             'memory_extraction = "primary_agent"', 'memory_extraction = "aux"'
         )
-        profiles = profiles.replace(
-            'emoji_replacement = "primary_agent"', 'emoji_replacement = "aux"'
-        )
     profiles += _auxiliary_profile(aux_mode)
     paths, configuration = _search_setup(tmp_path, profiles, WEB_MODE="tavily")
     validate_configuration(paths, configuration)

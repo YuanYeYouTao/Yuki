@@ -62,7 +62,23 @@ docker compose exec --user 10001:10001 bot yuki setup environment-check
 
 The deployment root is the Compose directory mounting `./workspace`. The installer records only `YUKI_MANAGER_WORKSPACE_STORE` in `/etc/yuki-sandbox/deployment.env`, preserves other settings and refuses to replace an already configured artifact root. Without an argument it retains the existing value or legacy default. It does not move home or alter existing mounts. `environment-check` uses actual Bot UID 10001 to check artifact-directory write access and the existing socket/status/readiness. It no longer calls retired `workspace_list`, creates no container, executes no code, calls no model and sends no messages. This proves connectivity, not live administrator/public-network acceptance.
 
-Update the host's `src/yuki/sandbox/`, its `workspace/` dependencies, `deploy/sandbox/` and original Manager venv. Retain the original systemd configuration and every deployment override. Both Supervisor and `acp_peer.py` are mounted as read-only source files. The host Manager venv does not need the ACP SDK: the SDK runs in the environment Python. A Bot-image update alone does not give an existing environment root identity, current code or a different network.
+Update the host's `src/yuki/sandbox/`, its `workspace/` dependencies and `deploy/sandbox/`. Install the current requirements into the original Manager venv:
+
+```sh
+sudo /opt/yuki-sandbox/venv/bin/python -m pip install -r /opt/yuki-sandbox/deploy/sandbox/requirements-manager.txt
+```
+
+The standalone sticker helper and its format-reading dependencies run inside the original persistent environment. Main and Manager invoke the same file; the Host never connects directly to the user-editable search cache. Updating only the Bot image or a future environment Dockerfile does not update an existing rootFS. Copy the current helper into the original container at `/opt/yuki-runtime/`, verify it from the existing terminal, and preserve installed packages, files, mounts and services. For an existing checkpoint deployment, stop Manager after active executions have finished, privately snapshot the original full rootFS with the installed helper, and update its existing `checkpoint_image` through the offline `set_setting` port. Otherwise a later rebuild from the old checkpoint loses the helper. Do not recreate the environment for this installation; retain the original home/runtime binds and protect both the live image and selected checkpoint during cleanup. Retain systemd and all overlays. Supervisor and `acp_peer.py` keep their original read-only source mounts; the ACP SDK remains in environment Python.
+
+Sticker originals and per-asset JSON are the sole source; `search.sqlite3` is disposable. Main can run:
+
+```sh
+python /opt/yuki-runtime/sticker_index.py --workspace /workspace rebuild --platform qq
+python /opt/yuki-runtime/sticker_index.py --workspace /workspace update stickers/qq/index/<asset-id>.json
+python /opt/yuki-runtime/sticker_index.py --workspace /workspace search --platform qq 'laughing'
+```
+
+Replace the example asset ID with the real filename. Omit `--platform` on rebuild to process existing platform folders. Ordinary file operations need no helper. Newly edited tags become searchable after update/rebuild finishes; parent directory mtime is not a synchronization signal. The helper needs no Bot database or operator credentials and calls no model or social transport. An unfinished cold cache is not an empty library.
 
 New environment images install ACP SDK 0.12.1. Existing rootFS snapshots retain their installed packages and need an explicit in-place SDK installation:
 

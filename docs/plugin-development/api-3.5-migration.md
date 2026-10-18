@@ -1,5 +1,7 @@
 # Plugin API 3.5 迁移
 
+本文记录历史迁移；当前已退役的表情 API 见 [5.0 迁移](api-5.0-migration.md)。
+
 3.5 删除从未由 Host 发布的通知事件，以及未实现的 `runtime.config.read/write` 权限。保留真实发布点与现行 Facade，不为旧声明增加空实现或别名。
 
 1. 删除以下事件订阅与事件名引用：

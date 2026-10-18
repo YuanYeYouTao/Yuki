@@ -103,8 +103,8 @@ class MainAgentContract:
                     {
                         # 14: retired MCP and fixed direct view, discovery and full execution API.
                         # 19: lifecycle decisions settle after the original tool round.
-                        # 23: first-party App/ACP share the fixed personal entry view.
-                        "version": 23,
+                        # 24: optional illustrations are accepted separately from text delivery.
+                        "version": 24,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

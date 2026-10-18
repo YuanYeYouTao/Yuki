@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+from pathlib import PurePosixPath
+from tempfile import TemporaryFile
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from yuki.conversation.media_service import ConversationMediaError, ConversationMediaService
 from yuki.domain.messages import ChatImage
 from yuki.sandbox.client import SandboxClient
+from yuki.services.media_resolver import _media_io
 from yuki.workspace.inspect import WorkspaceInspector
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 from yuki.workspace.tools import workspace_tools as workspace_tools
@@ -133,13 +136,14 @@ class WorkspaceService:
                     with path.open("rb") as stream:
                         return self.store.snapshot(
                             stream.fileno(),
-                            destination,
+                            PurePosixPath(destination).name,
                             artifact_id=str(uuid5(NAMESPACE_URL, f"yuki:attachment:{request_id}")),
                             source_key=f"attachment:{scope_id}:{int(args['event_id'])}:{int(args['attachment_index'])}",
                         )
 
-                metadata = await asyncio.to_thread(snapshot_attachment)
-                return await self._checkout(metadata, request_id)
+                metadata = await _media_io(snapshot_attachment)
+                result = await self._checkout(metadata, request_id, destination=destination)
+                return result
             except ConversationMediaError as exc:
                 raise WorkspaceError(str(exc)) from exc
         if name == "workspace_publish":
@@ -186,7 +190,12 @@ class WorkspaceService:
                 raise WorkspaceError("workspace_source_missing")
 
     async def _checkout(
-        self, metadata: dict[str, Any], request_id: str, previous_version: str | None = None
+        self,
+        metadata: dict[str, Any],
+        request_id: str,
+        previous_version: str | None = None,
+        *,
+        destination: str | None = None,
     ) -> dict[str, Any]:
         if self.sandbox is None:
             return metadata
@@ -196,9 +205,36 @@ class WorkspaceService:
                 "artifact_id": metadata["artifact_id"],
                 "name": metadata["name"],
                 "expected_version": previous_version,
+                **({"destination": destination} if destination is not None else {}),
             },
             request_id=request_id,
         )
         if result.get("error"):
             return {**metadata, "file_error": result["error"], "file_imported": False}
         return {**metadata, **result, "file_imported": True}
+
+    async def import_content(
+        self,
+        content: bytes,
+        destination: str,
+        *,
+        request_id: str,
+        artifact_id: str,
+        source_key: str,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        """Use the existing shared snapshot/checkout bridge for a selected byte version."""
+
+        def prepare() -> dict[str, Any]:
+            with TemporaryFile() as stream:
+                stream.write(content)
+                stream.flush()
+                return self.store.snapshot(
+                    stream.fileno(),
+                    name or PurePosixPath(destination).name,
+                    artifact_id=artifact_id,
+                    source_key=source_key,
+                )
+
+        metadata = await _media_io(prepare)
+        return await self._checkout(metadata, request_id, destination=destination)

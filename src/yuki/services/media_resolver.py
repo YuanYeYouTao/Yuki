@@ -50,7 +50,7 @@ class PreparedAttachment:
     """One admitted attachment's bytes, shared only by that message's consumers.
 
     Consumers retain their own authorization and read budgets. Cache publication
-    and emoji classification are separate from this download. Temporary bytes
+    and optional sticker descriptions are separate from this download. Temporary bytes
     live with the admitted message, rather than a URL cache or a new TTL.
     """
 

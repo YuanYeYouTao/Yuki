@@ -133,10 +133,13 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                 **message,
                 "emoji": {
                     "type": "object",
-                    "description": "选择一张已采用表情并立即发送；可与 text 同一条发送。",
+                    "description": (
+                        "可选的后台配图意图，goal写明想表达的完整含义。正文先发送，"
+                        "后台从图库选图并单独发送；accepted只表示已接纳，无须等待或重发。"
+                    ),
                     "properties": {
-                        "goal": {"type": "string", "maxLength": 300},
-                        "emotion": {"type": "string", "maxLength": 100},
+                        "goal": {"type": "string"},
+                        "emotion": {"type": "string"},
                     },
                     "required": ["goal"],
                     "additionalProperties": False,

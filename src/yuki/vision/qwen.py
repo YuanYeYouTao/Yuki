@@ -6,9 +6,6 @@ import asyncio
 import json
 import math
 import time
-from collections.abc import Awaitable, Callable
-from datetime import UTC, datetime
-from email.utils import parsedate_to_datetime
 from typing import Any
 
 import httpx
@@ -45,9 +42,6 @@ _VISION_TASK_PROMPT = """分析模式：{analysis_mode}
 "confidence":0.0}}],"overall_description":"整体观察"}}
 
 角色无法确认时，recognized_character 保持空字符串；无角色或无依据时，候选项留空。"""
-
-
-Sleep = Callable[[float], Awaitable[None]]
 
 
 class _CharacterCandidatePayload(BaseModel):
@@ -165,11 +159,9 @@ class QwenVisionProvider:
         api_key: str,
         model: str = "qwen3.7-plus",
         timeout_seconds: float = 120,
-        max_retries: int = 1,
         global_concurrency: int = 2,
         max_output_tokens: int = 8192,
         client: httpx.AsyncClient | None = None,
-        sleep: Sleep = asyncio.sleep,
     ) -> None:
         if not base_url or not api_key or not model:
             raise VisionConfigurationError("not_configured", "视觉服务配置不完整")
@@ -179,10 +171,8 @@ class QwenVisionProvider:
         self._api_key = api_key
         self._model = model
         self._timeout_seconds = timeout_seconds
-        self._max_retries = max_retries
         self._max_output_tokens = max_output_tokens
         self._semaphore = asyncio.Semaphore(global_concurrency)
-        self._sleep = sleep
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=self._base_url,
@@ -233,7 +223,7 @@ class QwenVisionProvider:
             question,
             options=options,
         )
-        response = await self._post_with_retry(payload)
+        response = await self._post(payload)
         raw_text = _response_text(response)
         return self._parse_observation(raw_text, inputs, time.perf_counter() - started)
 
@@ -284,41 +274,28 @@ class QwenVisionProvider:
         }
         return payload
 
-    async def _post_with_retry(self, payload: dict[str, Any]) -> httpx.Response:
-        for attempt in range(self._max_retries + 1):
-            try:
-                async with self._semaphore:
-                    response = await self._client.post(
-                        f"{self._base_url}chat/completions",
-                        headers={"Authorization": f"Bearer {self._api_key}"},
-                        json=payload,
-                        timeout=self._timeout_seconds,
-                    )
-            except httpx.TimeoutException as exc:
-                if attempt < self._max_retries:
-                    await self._sleep(0.25)
-                    continue
-                raise VisionError("timeout", "视觉服务请求超时") from exc
-            except httpx.RequestError as exc:
-                if attempt < self._max_retries:
-                    await self._sleep(0.25)
-                    continue
-                raise VisionError("connection_failed", "无法连接视觉服务") from exc
-
-            status = response.status_code
-            if status == 429 or 500 <= status <= 599:
-                if attempt < self._max_retries:
-                    await self._sleep(_retry_delay(response, attempt))
-                    continue
-                code = "rate_limited" if status == 429 else "provider_unavailable"
-                detail = "视觉服务请求过于频繁" if status == 429 else "视觉服务暂不可用"
-                raise VisionError(code, detail)
-            if status in {401, 403}:
-                raise VisionError("authentication_failed", "视觉服务鉴权失败")
-            if status >= 400:
-                raise VisionError("provider_rejected", "视觉服务拒绝了请求")
-            return response
-        raise VisionError("provider_unavailable", "视觉服务暂不可用")
+    async def _post(self, payload: dict[str, Any]) -> httpx.Response:
+        try:
+            async with self._semaphore:
+                response = await self._client.post(
+                    f"{self._base_url}chat/completions",
+                    headers={"Authorization": f"Bearer {self._api_key}"},
+                    json=payload,
+                    timeout=self._timeout_seconds,
+                )
+        except httpx.TimeoutException as exc:
+            raise VisionError("timeout", "视觉服务请求超时") from exc
+        except httpx.RequestError as exc:
+            raise VisionError("connection_failed", "无法连接视觉服务") from exc
+        status = response.status_code
+        if status == 429 or 500 <= status <= 599:
+            code = "rate_limited" if status == 429 else "provider_unavailable"
+            raise VisionError(code, "视觉服务暂不可用")
+        if status in {401, 403}:
+            raise VisionError("authentication_failed", "视觉服务鉴权失败")
+        if status >= 400:
+            raise VisionError("provider_rejected", "视觉服务拒绝了请求")
+        return response
 
     def _parse_observation(
         self,
@@ -462,19 +439,3 @@ def _validated_data_url(value: str) -> str:
     ):
         raise VisionError("invalid_frame", "视觉输入帧不是安全的图片 data URL")
     return value
-
-
-def _retry_delay(response: httpx.Response, attempt: int) -> float:
-    header = response.headers.get("Retry-After", "").strip()
-    if header:
-        try:
-            return min(max(float(header), 0.0), 2.0)
-        except ValueError:
-            try:
-                target = parsedate_to_datetime(header)
-                if target.tzinfo is None:
-                    target = target.replace(tzinfo=UTC)
-                return min(max((target - datetime.now(UTC)).total_seconds(), 0.0), 2.0)
-            except (TypeError, ValueError):
-                pass
-    return min(0.25 * float(2**attempt), 2.0)

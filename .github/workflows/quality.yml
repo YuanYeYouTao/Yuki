@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  python:
+  checks:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,7 +17,23 @@ jobs:
         with:
           version: "0.11.31"
           enable-cache: true
-      - run: uv sync --frozen --all-extras
+      - run: uv sync --frozen --all-extras --python 3.12
       - run: uv run ruff check .
       - run: uv run mypy src
-      - run: uv run pytest -q
+
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [unit, integration]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.31"
+          enable-cache: true
+      - run: uv sync --frozen --all-extras --python 3.12
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: ffmpeg -version && ffprobe -version
+      - run: uv run pytest tests/${{ matrix.suite }} -q

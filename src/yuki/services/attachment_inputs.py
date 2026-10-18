@@ -21,9 +21,11 @@ from yuki.services.media_process import run_media_process as run_parser
 from yuki.services.media_resolver import (
     MediaResolutionError,
     MediaResolver,
+    _media_io,
     read_local_media,
 )
-from yuki.services.native_media import NativeMediaPreparer
+from yuki.services.native_media import NativeMediaPreparer, image_extension, native_sticker_facts
+from yuki.services.video_frames import is_video_header
 from yuki.services.vision_rate_limit import VisionRateLimiter
 from yuki.services.vision_service import VisionProcessingError
 from yuki.vision.models import MediaReference
@@ -110,6 +112,29 @@ class AttachmentInputService:
 
                 async def consume(attachment: MessageAttachment, index: int) -> None:
                     nonlocal text_remaining, size
+
+                    async def native_sticker(source: bytes | Path) -> bool:
+                        if await _media_io(native_sticker_facts, source) is None:
+                            return False
+                        documents.append(
+                            f"[附件{index} source={attachment.source}：TGS动画贴纸；"
+                            "没有可读取的静态预览，原始动画文件仍可保存。]"
+                        )
+                        return True
+
+                    if attachment.mime_type == "application/x-tgsticker":
+                        label = f"，表情提示={attachment.summary}" if attachment.summary else ""
+                        documents.append(
+                            f"[附件{index} source={attachment.source}：TGS动画贴纸{label}；"
+                            + (
+                                "本轮图片为平台提供的静态贴纸预览，不包含完整动画。]"
+                                if attachment.preview is not None
+                                else "平台未提供预览，原始动画文件仍可保存。]"
+                            )
+                        )
+                        if attachment.preview is None:
+                            return
+                        attachment = attachment.preview
                     reference = MediaReference(
                         file=attachment.file,
                         url=attachment.url,
@@ -124,7 +149,7 @@ class AttachmentInputService:
                             path = Path(directory) / "input.bin"
                             limit = (
                                 runtime.video_max_download_bytes
-                                if suffix in {".mp4", ".mov"}
+                                if suffix in {".mp4", ".mov", ".webm", ".mkv"}
                                 else 20 * 1024 * 1024
                             )
                             if attachment.prepared_media is not None:
@@ -140,9 +165,14 @@ class AttachmentInputService:
                                 )
                             with path.open("rb") as stream:
                                 header = stream.read(12)
-                            if header[4:8] != b"ftyp" and path.stat().st_size > 20 * 1024 * 1024:
+                            if header.startswith(b"\x1f\x8b") and await native_sticker(path):
+                                return
+                            if (
+                                not is_video_header(header)
+                                and path.stat().st_size > 20 * 1024 * 1024
+                            ):
                                 raise VisionProcessingError("too_large", "非视频文件超过下载预算")
-                            if header[4:8] == b"ftyp":
+                            if is_video_header(header):
                                 if not await admit_visual(index):
                                     return
                                 if not self.images_enabled:
@@ -161,9 +191,7 @@ class AttachmentInputService:
                                         max_frames=remaining,
                                     )
                                 )
-                            elif header.startswith((b"\xff\xd8\xff", b"\x89PNG", b"GIF8")) or (
-                                header.startswith(b"RIFF") and header[8:12] == b"WEBP"
-                            ):
+                            elif image_extension(header) is not None:
                                 if not await admit_visual(index):
                                     return
                                 if not self.images_enabled:
@@ -263,6 +291,8 @@ class AttachmentInputService:
                                     gateway=gateway,
                                     kind="video",
                                 )
+                            if await native_sticker(path):
+                                return
                             video_frames = await self._preparer.prepare_video(
                                 path,
                                 source=reference.source,
@@ -285,6 +315,23 @@ class AttachmentInputService:
                         )
                     else:
                         downloaded = await self._resolver.resolve(reference, gateway)
+                    if downloaded.content.startswith(b"\x1f\x8b") and await native_sticker(
+                        downloaded.content
+                    ):
+                        return
+                    if is_video_header(downloaded.content):
+                        images.extend(
+                            await self._preparer.prepare_video(
+                                downloaded,
+                                source=reference.source,
+                                runtime=runtime,
+                                max_frames=remaining,
+                            )
+                        )
+                        size = sum(len(frame.data_url) for frame in images)
+                        if size > self._max_bytes:
+                            raise VisionProcessingError("too_large", "附件帧超过本轮预算")
+                        return
                     prepared = await asyncio.to_thread(
                         self._preparer.prepare_image,
                         downloaded,
@@ -322,6 +369,9 @@ class AttachmentInputService:
                     ) as exc:
                         if exc.code in fatal_codes:
                             raise
+                        had_readable_output |= (
+                            len(images) > prior_images or len(documents) > prior_documents
+                        )
                         if first_failure is None:
                             first_failure = exc
                         source = "reply" if attachment.source == "reply" else "current"

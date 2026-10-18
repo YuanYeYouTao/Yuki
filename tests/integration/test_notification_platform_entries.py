@@ -1,8 +1,11 @@
 """Plugin notifications retain real platform Conversation entries and original effects."""
 
+import io
 from datetime import UTC, datetime
 
+import httpx
 import pytest
+from PIL import Image
 from sqlalchemy import select
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 
@@ -34,7 +37,7 @@ async def install(database):
         plugin_id="native-notification",
         name="Fixture",
         version="1.0",
-        plugin_api="4.0",
+        plugin_api="5.0",
         yuki_requires=">=3",
         entrypoint="fixture:Plugin",
         requested_permissions=(),
@@ -176,3 +179,95 @@ async def test_private_conversation_keeps_original_bot_even_when_other_bot_is_li
     with pytest.raises(RouteSendError, match="conversation_entry_unavailable"):
         await router.resolve_send_for_conversation(entries[0].conversation_id, presence_id=other.id)
     assert entries[0].conversation_id != entries[1].conversation_id
+
+
+@pytest.mark.parametrize(
+    "format,mime,method",
+    [
+        ("PNG", "image/png", "sendPhoto"),
+        ("JPEG", "image/jpeg", "sendPhoto"),
+        ("WEBP", "image/webp", "sendPhoto"),
+        ("GIF", "image/gif", "sendAnimation"),
+    ],
+)
+async def test_notification_media_keeps_handle_mime_and_original_delivery_fact(
+    telegram_env, database, tmp_path, monkeypatch, format, mime, method
+):
+    env = telegram_env
+    now = datetime.now(UTC)
+    async with database.immediate_session() as session:
+        creator = await find_identity_binding(session, "1001")
+        person = await create_person_binding(
+            session, external_account_id="57", display_name="P", now=now, platform="telegram"
+        )
+        conversation = await ensure_canonical_conversation(
+            session,
+            kind="private",
+            person_id=person.person_id,
+            identity_binding_id=person.id,
+            presence_id=env.gateway.presence_id,
+            primary_scope_key="telegram:bot:80001:private:57",
+        )
+    repository = await install(database)
+    target = NotificationTarget(
+        target_type="private",
+        target_id=person.person_id,
+        conversation_id=conversation.conversation_id,
+    )
+    await repository.grant_target(
+        plugin_id="native-notification",
+        target=target,
+        bot_user_id="80001",
+        created_by_user_id=creator.person_id,
+        presence_id=env.gateway.presence_id,
+    )
+    store = PluginMediaArtifactStore(database, tmp_path / "artifacts")
+    pixels = io.BytesIO()
+    Image.new("RGB", (4, 4), "red").save(pixels, format=format)
+    handle = await store.create(
+        plugin_id="native-notification",
+        data=pixels.getvalue(),
+        content_type=mime,
+        filename="notification",
+        ttl_seconds=3600,
+        storage_mb=5,
+    )
+    request = PublishNotificationRequest(
+        event_key="media",
+        event_type="fixture",
+        external_source="fixture",
+        target=target,
+        occurred_at=now,
+        summary="media",
+        media_handles=(handle.handle_id,),
+    )
+    accepted = await repository.publish(plugin_id="native-notification", request=request)
+    wire = []
+
+    def respond(http_request):
+        assert http_request.url.path.rsplit("/", 1)[-1] == method
+        assert ("Content-Type: " + mime).encode() in http_request.content
+        wire.append(http_request)
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 99}})
+
+    monkeypatch.setattr(env.gateway.client._client, "_transport", httpx.MockTransport(respond))
+    worker = PluginNotificationOutboxWorker(
+        repository=repository,
+        artifacts=store,
+        ledger=env.harness.ledger,
+        transport=PlatformNotificationTransport(router=env.social.router),
+        effect_gate=ConversationEffectGate(),
+    )
+    item = await repository.claim_outbox()
+    await worker._deliver(item)
+    duplicate = await repository.publish(plugin_id="native-notification", request=request)
+    assert duplicate.deduplicated and duplicate.notification_id == accepted.notification_id
+    assert await repository.claim_outbox() is None and len(wire) == 1
+    async with database.sessions() as session:
+        outbox = await session.get(PluginNotificationOutboxModel, item.id)
+        assert outbox.status == "sent"
+        sent = await session.scalar(
+            select(ChatEventModel).where(ChatEventModel.direction == "outbound")
+        )
+        assert sent.caused_by_event_id == accepted.source_event_id
+        assert sent.canonical_conversation_id == conversation.conversation_id

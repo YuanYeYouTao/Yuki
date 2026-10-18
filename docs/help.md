@@ -104,9 +104,9 @@ QQ 管理仍使用 `/ai`。当前范围见[管理 API](architecture/admin-api.md
 在 QQ 中使用 `/ai help` 与 `/ai capabilities` 查看当前可用命令和能力；实际结果以当前
 Principal、会话和运行配置为准。
 
-## Plugin API 3.5
+## Plugin API 5.0
 
-当前 Host 只接受精确声明 Plugin API `3.5` 的插件。未发布的事件、未实现的 `runtime.config.read/write` 权限、Genie 专属接口与直接模型 LLMFacade 已移除；插件自己的配置仍使用 `plugin.config.read/write`，模型任务使用 `agent.run`。插件可以使用固定 primary `conversation_key`，也可读取可选的
+当前 Host 只接受精确声明 Plugin API `5.0` 的插件。未发布的事件、未实现的 `runtime.config.read/write` 权限、Genie 专属接口与直接模型 LLMFacade 已移除；插件自己的配置仍使用 `plugin.config.read/write`，模型任务使用 `agent.run`。插件可以使用固定 primary `conversation_key`，也可读取可选的
 person、space、conversation 和 presence ID。插件不能自报超级管理员，也不能绕过
 Control Plane、Capability 或 Gateway Registry。
 
@@ -122,11 +122,11 @@ compact 检查点、raw history、本轮资料、Prompt compiler、工具合同�
 - [Plugin 开发索引](plugin-development/index.md)
 - [架构](plugin-development/architecture.md)
 - [权限与安全](plugin-development/security.md)
-- [从旧 Plugin API 迁移](plugin-development/api-3.5-migration.md)
+- [从旧 Plugin API 迁移](plugin-development/api-5.0-migration.md)
 
 ## Emoji 与 Vision
 
-- Emoji 资产有独立生命周期、审核和作用域；见 [Emoji 文档](emoji-system/architecture.md)。
+- 共享表情原件与可重建索引位于持久工作区，文字与后台配图共用 Social 及原回执；见[表情文档](emoji-system/architecture.md)。
 - Vision 是可选 Provider，失败时不会把任意外部 URL 当作可信媒体。
 
 这些扩展都服从同一 Principal、Capability、审计、路由和 canonical owner 规则。

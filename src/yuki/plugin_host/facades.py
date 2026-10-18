@@ -35,17 +35,6 @@ from yuki.conversation.scope import runtime_conversation_key
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import ChatImage, InboundMessage
 from yuki.domain.tool_actor import ToolActor
-from yuki.emoji.collector import EmojiCollector
-from yuki.emoji.lifecycle import EmojiLifecycleService
-from yuki.emoji.models import (
-    EmojiAsset,
-    EmojiLifecycleStatus,
-    EmojiPlacement,
-    EmojiReplyMode,
-    EmojiSelectionRequest,
-)
-from yuki.emoji.repository import EmojiRepository
-from yuki.emoji.selector import EmojiSelector
 from yuki.gateway.media import PlatformMediaGateway
 from yuki.llm.base import LLMEmptyResponseError
 from yuki.memory.context import MemoryContextService
@@ -105,7 +94,6 @@ from yuki_plugin_sdk.context import (
     AgentFacade,
     AutomationFacade,
     ConfigFacade,
-    EmojiFacade,
     GroupFacade,
     HttpFacade,
     MediaFacade,
@@ -383,10 +371,6 @@ class PluginFacadeServices:
     agent_runner: AgentRunner | None = None
     web_provider: WebSearchProvider | None = None
     vision: VisionService | None = None
-    emoji_repository: EmojiRepository | None = None
-    emoji_collector: EmojiCollector | None = None
-    emoji_selector: EmojiSelector | None = None
-    emoji_lifecycle: EmojiLifecycleService | None = None
     automation: AutomationService | None = None
     storage: BoundStorageFacade | None = None
     config_factory: ConfigFacadeFactory | None = None
@@ -469,7 +453,6 @@ class HostPluginContext:
         "_automation",
         "_closed",
         "_config",
-        "_emoji",
         "_events",
         "_features",
         "_groups",
@@ -520,7 +503,6 @@ class HostPluginContext:
         self._vision = _VisionFacade(self)
         self._media = _MediaFacade(self)
         self._notifications = _NotificationFacade(self)
-        self._emoji = _EmojiFacade(self)
         self._automation = _AutomationFacade(self)
         self._config = _ConfigFacade(self)
         self._secrets = _SecretsFacade(self)
@@ -591,10 +573,6 @@ class HostPluginContext:
     @property
     def notifications(self) -> NotificationFacade:
         return self._notifications
-
-    @property
-    def emoji(self) -> EmojiFacade:
-        return self._emoji
 
     @property
     def automation(self) -> AutomationFacade:
@@ -1730,6 +1708,13 @@ class _MediaFacade:
                 "file_size": attachment.file_size,
                 "emoji_id": attachment.emoji_id,
                 "emoji_package_id": attachment.emoji_package_id,
+                "is_sticker": attachment.is_sticker,
+                "sticker_format": attachment.sticker_format,
+                "mime_type": attachment.mime_type,
+                "filename": attachment.filename,
+                "width": attachment.width,
+                "height": attachment.height,
+                "preview_available": attachment.preview is not None,
             }
             for attachment in (*inbound.attachments, *inbound.reply_attachments)
         )
@@ -1855,168 +1840,6 @@ class _NotificationFacade:
             "plugin notifications",
         )
         return await repository.counts(self._host.plugin_id)
-
-
-class _EmojiFacade:
-    """Controlled emoji handles; local paths and media bytes never cross the SDK boundary."""
-
-    def __init__(self, host: HostPluginContext) -> None:
-        self._host = host
-
-    async def list(
-        self,
-        status: str | None = None,
-        limit: int = 30,
-    ) -> tuple[Mapping[str, JsonValue], ...]:
-        self._host._require(PluginPermission.EMOJI_READ)
-        repository = _require_service(self._host._services.emoji_repository, "emoji")
-        parsed_status = EmojiLifecycleStatus(status) if status else None
-        rows = await repository.list_assets(
-            status=parsed_status,
-            limit=_bounded_limit(limit, maximum=100),
-        )
-        return tuple(_emoji_view(row) for row in rows)
-
-    async def get(self, emoji_id: str) -> Mapping[str, JsonValue] | None:
-        self._host._require(PluginPermission.EMOJI_READ)
-        repository = _require_service(self._host._services.emoji_repository, "emoji")
-        row = await repository.resolve_id(
-            _bounded_text(emoji_id, maximum=36, field_name="emoji_id")
-        )
-        return _emoji_view(row) if row is not None else None
-
-    async def search(
-        self,
-        query: str,
-        limit: int = 20,
-    ) -> tuple[Mapping[str, JsonValue], ...]:
-        self._host._require(PluginPermission.EMOJI_READ)
-        normalized = _bounded_text(query, maximum=200, field_name="query").casefold()
-        repository = _require_service(self._host._services.emoji_repository, "emoji")
-        rows = await repository.list_assets(limit=1000)
-        matches = tuple(
-            row
-            for row in rows
-            if normalized
-            in " ".join(
-                (row.description, row.ocr_text, *row.emotion_tags, *row.usage_scenarios)
-            ).casefold()
-        )
-        return tuple(_emoji_view(row) for row in matches[: _bounded_limit(limit, maximum=100)])
-
-    async def collect_current(self) -> PluginResult:
-        invocation = self._host._require(PluginPermission.EMOJI_COLLECT)
-        assert invocation is not None
-        inbound = invocation.inbound
-        if inbound is None or not inbound.attachments:
-            return PluginResult(
-                ok=False, error_code="emoji.no_current_media", detail="no current image"
-            )
-        collector = _require_service(self._host._services.emoji_collector, "emoji collector")
-        runtime = await _runtime_snapshot(self._host, invocation)
-        result = await collector.collect_message(
-            inbound,
-            source_event_id=invocation.source_event_id,
-            runtime=runtime.emoji,
-            gateway=invocation.gateway,
-        )
-        return PluginResult(
-            data={
-                "collected": result.collected,
-                "created": result.created,
-                "restored": result.restored,
-                "failed": result.failed,
-            }
-        )
-
-    async def select(
-        self,
-        *,
-        goal: str,
-        emotion: str = "",
-        mode: str = "optional",
-        placement: str = "after_text",
-    ) -> PluginResult:
-        invocation = self._host._require(PluginPermission.EMOJI_SELECT)
-        assert invocation is not None
-        selector = _require_service(self._host._services.emoji_selector, "emoji selector")
-        runtime = await _runtime_snapshot(self._host, invocation)
-        result = await selector.select(
-            EmojiSelectionRequest(
-                person_id=invocation.actor_person_id,
-                space_id=invocation.space_id,
-                reply_text=(invocation.inbound.text if invocation.inbound else ""),
-                goal=_bounded_text(goal, maximum=300, field_name="goal"),
-                emotion=_bounded_optional_text(emotion, maximum=100),
-                explicit_request=mode in {"preferred", "emoji_only"},
-                mode=EmojiReplyMode(mode),
-                placement=EmojiPlacement(placement),
-            ),
-            runtime=runtime.emoji,
-            vision_runtime=runtime.vision,
-        )
-        return PluginResult(
-            data={
-                "emoji_id": result.emoji_id,
-                "selected_by": result.selected_by,
-                "reason": result.reason,
-            }
-        )
-
-    async def adopt(
-        self,
-        emoji_id: str,
-        *,
-        scope_type: str = "global",
-        scope_id: str = "",
-    ) -> PluginResult:
-        invocation = self._host._require(PluginPermission.EMOJI_MANAGE, mutation=True)
-        assert invocation is not None
-        repository = _require_service(self._host._services.emoji_repository, "emoji")
-        lifecycle = _require_service(self._host._services.emoji_lifecycle, "emoji lifecycle")
-        asset = await repository.resolve_id(
-            _bounded_text(emoji_id, maximum=36, field_name="emoji_id")
-        )
-        if asset is None:
-            return PluginResult(ok=False, error_code="emoji.not_found", detail="emoji not found")
-        normalized_scope = scope_type.casefold()
-        if normalized_scope == "group":
-            target = scope_id or invocation.space_id or ""
-            target = await self._host._require_group_scope(invocation, target)
-        elif normalized_scope == "global":
-            target = ""
-        else:
-            raise ValueError("scope_type must be global or group")
-        runtime = await _runtime_snapshot(self._host, invocation)
-        await lifecycle.adopt(
-            asset.id,
-            scope_type=normalized_scope,  # type: ignore[arg-type]
-            scope_id=target,
-            runtime=runtime.emoji,
-        )
-        return PluginResult(data={"emoji_id": asset.id, "adopted": True})
-
-    async def reject(self, emoji_id: str) -> PluginResult:
-        return await self._set_status(emoji_id, EmojiLifecycleStatus.REJECTED)
-
-    async def ban(self, emoji_id: str) -> PluginResult:
-        return await self._set_status(emoji_id, EmojiLifecycleStatus.BANNED)
-
-    async def _set_status(
-        self,
-        emoji_id: str,
-        status: EmojiLifecycleStatus,
-    ) -> PluginResult:
-        self._host._require(PluginPermission.EMOJI_MANAGE, mutation=True)
-        repository = _require_service(self._host._services.emoji_repository, "emoji")
-        lifecycle = _require_service(self._host._services.emoji_lifecycle, "emoji lifecycle")
-        asset = await repository.resolve_id(
-            _bounded_text(emoji_id, maximum=36, field_name="emoji_id")
-        )
-        if asset is None:
-            return PluginResult(ok=False, error_code="emoji.not_found", detail="emoji not found")
-        updated = await lifecycle.transition(asset.id, status)
-        return PluginResult(data=_emoji_view(updated))
 
 
 class _AutomationFacade:
@@ -3316,23 +3139,6 @@ def _bounded_optional_text(value: str, *, maximum: int) -> str:
     if len(normalized) > maximum:
         raise ValueError(f"text cannot exceed {maximum} characters")
     return normalized
-
-
-def _emoji_view(asset: EmojiAsset) -> dict[str, JsonValue]:
-    """Return a stable plugin-safe handle without file paths or image bytes."""
-
-    return {
-        "emoji_id": asset.id,
-        "status": asset.status.value,
-        "description": asset.description,
-        "emotion_tags": list(asset.emotion_tags),
-        "usage_scenarios": list(asset.usage_scenarios),
-        "confidence": asset.confidence,
-        "animated": asset.animated,
-        "pinned": asset.pinned,
-        "seen_count": asset.seen_count,
-        "use_count": asset.use_count,
-    }
 
 
 def _outbound_text(value: str) -> str:

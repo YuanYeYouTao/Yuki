@@ -22,7 +22,6 @@ from yuki.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
 from yuki.memory.service import MemoryFactService
 from yuki.persistence.database import Database
 from yuki.persistence.repositories import (
-    EmojiDescriptionRepository,
     EventLedgerRepository,
     GroupSettingsRepository,
     MediaAnalysisRepository,
@@ -141,7 +140,6 @@ def build_harness(
             ),
             analyses=MediaAnalysisRepository(database),
             rate_limiter=VisionRateLimiter(),
-            emoji_descriptions=EmojiDescriptionRepository(database),
             max_prepared_bytes=settings.vision_max_prepared_bytes,
             global_concurrency=settings.vision_global_concurrency,
             queue_max_pending=settings.vision_queue_max_pending,

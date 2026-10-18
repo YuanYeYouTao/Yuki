@@ -21,7 +21,7 @@ GitHub Monitor 是 Yuki 的只读 GitHub 仓库管家。它定时读取一个或
 ## 运行要求
 
 - Yuki `>=3.9.0,<4.0`
-- Plugin API `3.4`
+- Plugin API `5.0`
 - Bot 可以访问 `https://api.github.com`
 - 私有仓库必须提供可读取目标仓库的 GitHub Token
 
@@ -64,9 +64,9 @@ docker compose up -d --no-deps --force-recreate bot
 在 QQ 中由超级管理员执行：
 
 ```text
-/ai plugin inspect github-monitor
-/ai plugin approve github-monitor
-/ai plugin enable github-monitor
+/ai admin plugin show github-monitor
+/ai admin plugin approve github-monitor
+/ai admin plugin enable github-monitor
 ```
 
 也可以在仓库根目录执行：
@@ -237,10 +237,10 @@ doctor。
 依次执行：
 
 ```text
-/ai plugin inspect github-monitor
-/ai plugin doctor github-monitor
-/ai plugin approve github-monitor
-/ai plugin enable github-monitor
+/ai admin plugin show github-monitor
+/ai admin plugin doctor github-monitor
+/ai admin plugin approve github-monitor
+/ai admin plugin enable github-monitor
 ```
 
 确认 `.env` 中 `PLUGIN_SYSTEM_ENABLED=true`，再只重建 Bot。
@@ -285,6 +285,6 @@ uv run yuki plugin test plugins/github-monitor
 
 插件契约测试使用 Fake Host，不需要真实 GitHub Token，也不会访问网络。
 
-## Plugin API 4.0 的通知目标
+## Plugin API 5.0 的通知目标
 
 `target_id` 是内部 Person/Space，不是 QQ/TG 外部账号或群号。目标可带 `conversation_id` 指定原私聊 Bot 或群 topic；短命令也接受 `group:<Space-ID>:conversation:<Conversation-ID>` / `private:<Person-ID>:conversation:<Conversation-ID>`。未指定时仅接受当前或唯一真实入口，保存 Host 返回的 Conversation；有多个入口时显式选择。已有排队事件保留原来源、游标和回执，迁移不会重发已接纳通知。

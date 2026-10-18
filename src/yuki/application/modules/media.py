@@ -5,13 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from yuki.application.lifecycle import LifecycleRegistry
-from yuki.emoji.repository import EmojiRepository
-from yuki.persistence.repositories import EmojiDescriptionRepository, MediaAnalysisRepository
+from yuki.persistence.repositories import MediaAnalysisRepository
 from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolver
 from yuki.services.vision_rate_limit import VisionRateLimiter
 from yuki.services.vision_service import VISION_PROMPT_VERSION, VisionService
-from yuki.settings_domains import EmojiSettings, VisionSettings
+from yuki.settings_domains import VisionSettings
 from yuki.vision.base import VisionProvider
 from yuki.vision.fake import FakeVisionProvider
 from yuki.vision.qwen import QwenVisionProvider
@@ -32,18 +31,12 @@ class MediaModule:
         self,
         *,
         settings: VisionSettings,
-        emoji_settings: EmojiSettings,
         analyses: MediaAnalysisRepository,
-        emoji_descriptions: EmojiDescriptionRepository,
-        emoji_assets: EmojiRepository,
         lifecycle: LifecycleRegistry,
         provider: VisionProvider | None = None,
     ) -> None:
         self._settings = settings
-        self._emoji_settings = emoji_settings
         self._analyses = analyses
-        self._emoji_descriptions = emoji_descriptions
-        self._emoji_assets = emoji_assets
         self._lifecycle = lifecycle
         self._provider = provider
 
@@ -69,18 +62,14 @@ class MediaModule:
                 preprocessor=preprocessor,
                 analyses=self._analyses,
                 rate_limiter=VisionRateLimiter(),
-                emoji_descriptions=self._emoji_descriptions,
                 max_prepared_bytes=settings.vision_max_prepared_bytes,
                 global_concurrency=settings.vision_global_concurrency,
                 queue_max_pending=settings.vision_queue_max_pending,
                 queue_timeout_seconds=settings.vision_queue_timeout_seconds,
                 prompt_version=(
                     f"{VISION_PROMPT_VERSION}-{settings.vision_max_dimension:x}-"
-                    f"{settings.vision_max_pixels:x}-{settings.vision_max_prepared_bytes:x}-"
-                    f"{self._emoji_settings.emoji_analysis_version}"
+                    f"{settings.vision_max_pixels:x}-{settings.vision_max_prepared_bytes:x}"
                 ),
-                emoji_assets=self._emoji_assets,
-                emoji_analysis_version=self._emoji_settings.emoji_analysis_version,
             )
             self._lifecycle.register("vision", close=vision.close)
         else:
@@ -100,7 +89,6 @@ class MediaModule:
             api_key=settings.vision_api_key,
             model=settings.vision_model,
             timeout_seconds=settings.vision_timeout_seconds,
-            max_retries=settings.vision_max_retries,
             global_concurrency=settings.vision_global_concurrency,
             max_output_tokens=settings.vision_max_output_tokens,
         )

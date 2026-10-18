@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from yuki.domain.messages import ChatTool
+if TYPE_CHECKING:
+    from yuki.domain.messages import ChatTool
 
 EXECUTION_TOOLS = frozenset({"terminal_exec"})
 READ_TOOLS = frozenset({"terminal_read", "environment_status"})
@@ -33,6 +34,8 @@ def tool(
     *,
     read: bool = False,
 ) -> ChatTool:
+    from yuki.domain.messages import ChatTool
+
     return ChatTool(
         name=name,
         description=description,

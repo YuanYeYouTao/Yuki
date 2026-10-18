@@ -23,7 +23,7 @@ from sqlalchemy import and_, func, or_, select, text, tuple_, update
 from yuki.admin.models import VisionRuntimeConfig
 from yuki.capabilities.media import PreparedMediaData
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
-from yuki.domain.messages import AttachmentKind, ChatImage, InboundMessage
+from yuki.domain.messages import AttachmentKind, ChatImage, InboundMessage, MessageAttachment
 from yuki.gateway.media import MediaKind, PlatformMediaFile, PlatformMediaGateway
 from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from yuki.persistence.database import Database
@@ -35,8 +35,15 @@ from yuki.services.media_resolver import (
     MediaResolutionError,
     MediaResolver,
     PreparedAttachment,
+    _media_io,
 )
-from yuki.services.native_media import MAX_IMAGE_BYTES, NativeMediaPreparer
+from yuki.services.native_media import (
+    MAX_IMAGE_BYTES,
+    NativeMediaPreparer,
+    image_extension,
+    native_sticker_facts,
+)
+from yuki.services.video_frames import is_video_header
 from yuki.services.vision_service import VisionProcessingError
 from yuki.vision.models import MediaReference
 
@@ -263,38 +270,54 @@ class ConversationMediaService:
     ) -> InboundMessage:
         """Distribute one original per admitted attachment, without waiting for cache I/O."""
         kinds = {AttachmentKind.IMAGE, AttachmentKind.VIDEO, AttachmentKind.FILE}
-        if not any(attachment.kind in kinds for attachment in message.attachments):
+        if not any(
+            attachment.kind in kinds
+            for attachment in (*message.attachments, *message.reply_attachments)
+        ):
             return message
         original_segments = json.dumps(source_segments, ensure_ascii=False, separators=(",", ":"))
-        attachments = tuple(
-            replace(
-                attachment,
-                prepared_media=PreparedAttachment(
-                    self.resolver,
-                    MediaReference(file=attachment.file, url=attachment.url, source="current"),
-                    gateway,
-                    kind=cast(MediaKind, attachment.kind.value),
-                    max_download_bytes=(
-                        MAX_IMAGE_BYTES
-                        if attachment.local_source
-                        else self.resolver.max_download_bytes
-                        if attachment.kind is AttachmentKind.IMAGE
-                        else _MAX_FILE
-                    ),
-                    local_source=attachment.local_source,
-                    source_segments=original_segments,
+
+        def prepare(attachment: MessageAttachment, segments: str) -> MessageAttachment:
+            if attachment.kind not in kinds:
+                return attachment
+            shared = PreparedAttachment(
+                self.resolver,
+                MediaReference(
+                    file=attachment.file,
+                    url=attachment.url,
+                    source="reply" if attachment.source == "reply" else "current",
                 ),
+                gateway,
+                kind=cast(MediaKind, attachment.kind.value),
+                max_download_bytes=(
+                    MAX_IMAGE_BYTES
+                    if attachment.local_source
+                    else self.resolver.max_download_bytes
+                    if attachment.kind is AttachmentKind.IMAGE
+                    else _MAX_FILE
+                ),
+                local_source=attachment.local_source,
+                source_segments=segments,
             )
-            if attachment.kind in kinds
-            else attachment
-            for attachment in message.attachments
+            self._prepared.add(shared)
+            return replace(
+                attachment,
+                preview=prepare(attachment.preview, segments)
+                if attachment.preview is not None
+                else None,
+                prepared_media=shared,
+            )
+
+        attachments = tuple(
+            prepare(attachment, original_segments) for attachment in message.attachments
         )
-        self._prepared.update(
-            attachment.prepared_media
-            for attachment in attachments
-            if attachment.prepared_media is not None
-        )
-        return replace(message, attachments=attachments)
+        replies = message.reply_attachments
+        if replies:
+            reply_segments = json.dumps(
+                message.reply_segments, ensure_ascii=False, separators=(",", ":")
+            )
+            replies = tuple(prepare(attachment, reply_segments) for attachment in replies)
+        return replace(message, attachments=attachments, reply_attachments=replies)
 
     def submit(
         self,
@@ -310,6 +333,32 @@ class ConversationMediaService:
         )
         self._pending.add(task)
         task.add_done_callback(self._pending.discard)
+
+    async def source_current(self, event_id: int, segment_index: int, source_segments: str) -> bool:
+        """Accept promotion from one original event/index snapshot, without writing provenance."""
+        async with self.database.sessions() as session:
+            segments = await session.scalar(
+                select(ChatEventModel.segments_json)
+                .join(
+                    ConversationMediaItemModel,
+                    ConversationMediaItemModel.source_event_id == ChatEventModel.id,
+                )
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == ConversationMediaItemModel.conversation_id,
+                )
+                .where(
+                    ChatEventModel.id == event_id,
+                    ConversationMediaItemModel.segment_index == segment_index,
+                    ChatEventModel.canonical_conversation_id
+                    == ConversationMediaItemModel.conversation_id,
+                    ChatEventModel.direction == "inbound",
+                    ChatEventModel.suppression_status == "keeper",
+                    ConversationMediaItemModel.generation == CanonicalConversationModel.generation,
+                    ChatEventModel.id > CanonicalConversationModel.starts_after_event_id,
+                )
+            )
+        return segments is not None and json.loads(segments) == json.loads(source_segments)
 
     async def _cache_event(
         self,
@@ -466,7 +515,7 @@ class ConversationMediaService:
                 result = await self.resolver.resolve(reference, gateway)
                 if len(result.content) > _MAX_FILE:
                     raise ConversationMediaError("attachment_too_large")
-                await asyncio.to_thread(temporary.write_bytes, result.content)
+                await _media_io(temporary.write_bytes, result.content)
             else:
                 await self.resolver.download_attachment(
                     reference,
@@ -476,21 +525,20 @@ class ConversationMediaService:
                     kind="video" if item.kind == "video" else "file",
                 )
             facts = await asyncio.to_thread(_cache_file_facts, temporary, _MAX_FILE)
-            if item.kind == "image":
-                if facts.head.startswith(b"\xff\xd8\xff"):
-                    extension = ".jpg"
-                elif facts.head.startswith(b"\x89PNG"):
-                    extension = ".png"
-                elif facts.head.startswith(b"GIF8"):
-                    extension = ".gif"
-                elif facts.head.startswith(b"RIFF") and facts.head[8:12] == b"WEBP":
-                    extension = ".webp"
-                else:
+            sticker = (
+                await _media_io(native_sticker_facts, temporary)
+                if facts.head.startswith(b"\x1f\x8b")
+                else None
+            )
+            extension: str | None
+            if sticker is not None:
+                extension = ".tgs"
+            elif item.kind in {"image", "video"}:
+                extension = image_extension(facts.head)
+                if extension is None and is_video_header(facts.head):
+                    extension = ".webm" if facts.head.startswith(b"\x1aE\xdf\xa3") else ".mp4"
+                if extension is None:
                     raise ConversationMediaError("attachment_type_invalid")
-            elif item.kind == "video":
-                if facts.head[4:8] != b"ftyp":
-                    raise ConversationMediaError("attachment_type_invalid")
-                extension = ".mp4"
             else:
                 extension = ".bin"
             digest = facts.digest
@@ -526,7 +574,7 @@ class ConversationMediaService:
                     or local + facts.byte_size > _CONVERSATION_BUDGET
                 ):
                     raise ConversationMediaError("cache_budget_exhausted")
-                await asyncio.to_thread(_publish_cache_file, temporary, final, facts)
+                await _media_io(_publish_cache_file, temporary, final, facts)
                 now = datetime.now(UTC)
                 async with self.database.immediate_session() as session:
                     live = await session.get(ConversationMediaItemModel, (event_id, index))
@@ -592,7 +640,7 @@ class ConversationMediaService:
     ) -> dict[str, Any]:
         try:
             return await self._inspect(item, path, question, runtime=runtime)
-        except (VisionProcessingError, ImagePreprocessingError) as exc:
+        except (VisionProcessingError, ImagePreprocessingError, MediaResolutionError) as exc:
             raise ConversationMediaError(exc.code) from exc
 
     async def _validated_cached_path(
@@ -629,23 +677,37 @@ class ConversationMediaService:
         # the published version again, without resolving its URL a second time.
         item = await self._validated_cached_path(item, path)
         digest = item.content_sha256
+        source_key = (item.source_event_id, item.attachment_index)
+        _, _, _, source_data, source_segments = (await self._sources((source_key,)))[source_key]
+        sticker = await _media_io(native_sticker_facts, path)
+        is_tgs = sticker is not None
+        preview = source_data.get("preview") if is_tgs else None
+        if is_tgs and not isinstance(preview, dict):
+            return {
+                "event_id": item.source_event_id,
+                "attachment_index": item.attachment_index,
+                "sha256": digest,
+                "mode": "sticker_metadata",
+                "format": "TGS",
+                "width": sticker.get("width") if sticker else None,
+                "height": sticker.get("height") if sticker else None,
+                "summary": source_data.get("summary"),
+                "status": "preview_unavailable",
+            }
 
         def content_kind() -> str:
-            if item.kind != "file":
-                return item.kind
             with path.open("rb") as stream:
                 header = stream.read(12)
-            if header[4:8] == b"ftyp":
+            if is_video_header(header):
                 return "video"
-            if header.startswith((b"\xff\xd8\xff", b"\x89PNG", b"GIF8")) or (
-                header.startswith(b"RIFF") and header[8:12] == b"WEBP"
-            ):
+            if image_extension(header) is not None:
                 return "image"
             return "file"
 
-        media_kind = await asyncio.to_thread(content_kind)
+        media_kind = "sticker_preview" if is_tgs else await asyncio.to_thread(content_kind)
         if media_kind == "file":
-            suffix = Path(item.display_name).suffix.lower()
+            original_name = source_data.get("name") or source_data.get("filename")
+            suffix = Path(str(original_name or item.display_name)).suffix.lower()
             try:
                 raw = await run_parser(
                     sys.executable,
@@ -676,7 +738,19 @@ class ConversationMediaService:
                 "reader_version": "document-reader-v1",
                 "result": result,
             }
-        if media_kind == "video":
+        if media_kind == "sticker_preview":
+            assert isinstance(preview, dict)
+            downloaded = await self.resolver.resolve(
+                MediaReference(file=preview["file"], source="current"),
+                _EventMediaGateway(self.database, self.gateway_registry, item.source_event_id),
+            )
+            images = await asyncio.to_thread(
+                self.preparer.prepare_image,
+                downloaded,
+                source="history",
+                max_frames=runtime.max_frames_per_turn if runtime else None,
+            )
+        elif media_kind == "video":
             limit = runtime.video_max_download_bytes if runtime else _MAX_FILE
             if (await asyncio.to_thread(path.stat)).st_size > limit:
                 raise ConversationMediaError("attachment_too_large")
@@ -706,6 +780,7 @@ class ConversationMediaService:
                 attachment_index=item.attachment_index,
                 content_hash=digest,
                 expires_at=_aware(item.expires_at).isoformat() if item.expires_at else None,
+                version=hashlib.sha256(source_segments.encode()).hexdigest() if is_tgs else None,
             )
             for image in images
         )
@@ -715,19 +790,30 @@ class ConversationMediaService:
                 "event_id": item.source_event_id,
                 "attachment_index": item.attachment_index,
                 "sha256": digest,
-                "mode": "video_frames" if media_kind == "video" else "image",
+                "mode": "video_frames" if media_kind == "video" else media_kind,
                 "preparation_version": "native-media-v1",
                 "question": question,
                 "sampled_frames": len(images),
                 "audio_analyzed": False if media_kind == "video" else None,
                 "status": "prepared_for_main_agent",
+                **(
+                    {
+                        "format": "TGS",
+                        "preview": "platform_static_thumbnail",
+                        "summary": source_data.get("summary"),
+                    }
+                    if is_tgs
+                    else {}
+                ),
             },
             images,
         )
 
     async def validate_images(self, images: tuple[ChatImage, ...]) -> None:
         """Recheck selected sources; never reread pixels or re-fetch a URL."""
-        seen: dict[tuple[int, int], tuple[str | None, int | None, str | None, str | None]] = {}
+        seen: dict[
+            tuple[int, int], tuple[str | None, int | None, str | None, str | None, str | None]
+        ] = {}
         for image in images:
             if image.source != "history":
                 continue
@@ -739,6 +825,7 @@ class ConversationMediaService:
                 image.generation,
                 image.content_hash,
                 image.expires_at,
+                image.version,
             )
             if key in seen:
                 if seen[key] != dependency:
@@ -747,7 +834,7 @@ class ConversationMediaService:
             seen[key] = dependency
         sources = await self._sources(tuple(seen))
         for key, dependency in seen.items():
-            conversation_id, generation, content_hash, expires_at = dependency
+            conversation_id, generation, content_hash, expires_at, source_version = dependency
             item, current_generation, floor, _, _segments = sources[key]
             if (
                 current_generation is None
@@ -758,6 +845,11 @@ class ConversationMediaService:
                 or key[0] <= floor
             ):
                 raise ConversationMediaError("attachment_scope_denied")
+            if (
+                source_version is not None
+                and source_version != hashlib.sha256(_segments.encode()).hexdigest()
+            ):
+                raise ConversationMediaError("attachment_source_changed")
             if (
                 item.cache_status != "cached"
                 or item.content_sha256 != content_hash

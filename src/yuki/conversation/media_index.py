@@ -38,7 +38,7 @@ def prepare_event_media(
             if not isinstance(data, dict):
                 data = {}
             raw_name = str(data.get("name") or data.get("filename") or "")
-            name = raw_name.replace("\\", "/").split("/")[-1][:80]
+            name = raw_name.replace("\\", "/").split("/")[-1]
             size = data.get("file_size")
             item = ConversationMediaItemModel(
                 source_event_id=event_id,

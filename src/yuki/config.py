@@ -17,7 +17,6 @@ from yuki.settings_domains import (
     ASRSettings,
     AutomationSettings,
     ConversationSettings,
-    EmojiSettings,
     MemorySettings,
     ModelRuntimeSettings,
     OneBotSettings,
@@ -300,7 +299,6 @@ class Settings(BaseSettings):
     vision_api_key: str = Field(default="", repr=False)
     vision_model: str = "qwen3.7-plus"
     vision_timeout_seconds: float = 120.0
-    vision_max_retries: int = 1
     vision_global_concurrency: int = 4
     vision_queue_max_pending: int = 32
     vision_queue_timeout_seconds: float = 120.0
@@ -324,35 +322,6 @@ class Settings(BaseSettings):
     vision_per_group_requests_per_minute: int = 60
     vision_analysis_retention_days: int = 7
 
-    # Persistent emoji collection and explicit media delivery. Recognition reuses the
-    # configured VisionProvider; no second visual client or review pipeline exists.
-    emoji_enabled: bool = True
-    emoji_collection_enabled: bool = True
-    emoji_collection_mode: str = "likely"
-    emoji_collect_private: bool = True
-    emoji_collect_group: bool = True
-    emoji_auto_adopt_enabled: bool = True
-    emoji_auto_adopt_min_confidence: float = 0.78
-    emoji_pool_capacity: int | None = None
-    emoji_replacement_mode: str = "score"
-    emoji_selector_enabled: bool = True
-    emoji_selector_candidate_count: int = 3
-    emoji_selector_score_gap: float = 0.75
-    emoji_selector_timeout_seconds: float = 2.0
-    emoji_near_duplicate_enabled: bool = True
-    emoji_near_duplicate_distance: int = 6
-    emoji_same_emoji_cooldown_seconds: int = 300
-    emoji_scope_repeat_cooldown_seconds: int = 60
-    emoji_cache_retention_days: int = 30
-    emoji_worker_batch_size: int = 10
-    emoji_worker_poll_seconds: float = 2.0
-    emoji_worker_lease_seconds: int = 120
-    emoji_worker_max_attempts: int = 3
-    emoji_worker_retry_delay_seconds: float = 30.0
-    emoji_analysis_version: str = "emoji-v1"
-    emoji_storage_root: Path = Path("data/emoji")
-    emoji_preview_max_dimension: int = 512
-
     # Incoming speech recognition remains independent of outgoing media delivery.
     asr_enabled: bool = True
     asr_base_url: str = ""
@@ -375,22 +344,6 @@ class Settings(BaseSettings):
         normalized = value.casefold()
         if normalized not in {"basic", "advanced"}:
             raise ValueError("WEB_SEARCH_DEPTH must be basic or advanced")
-        return normalized
-
-    @field_validator("emoji_collection_mode")
-    @classmethod
-    def _emoji_collection_mode(cls, value: str) -> str:
-        normalized = value.strip().casefold()
-        if normalized not in {"metadata_only", "likely", "all_images"}:
-            raise ValueError("EMOJI_COLLECTION_MODE must be metadata_only, likely, or all_images")
-        return normalized
-
-    @field_validator("emoji_replacement_mode")
-    @classmethod
-    def _emoji_replacement_mode(cls, value: str) -> str:
-        normalized = value.strip().casefold()
-        if normalized not in {"off", "score", "llm", "hybrid"}:
-            raise ValueError("EMOJI_REPLACEMENT_MODE must be off, score, llm, or hybrid")
         return normalized
 
     @field_validator("bot_display_name")
@@ -531,7 +484,6 @@ class Settings(BaseSettings):
             self.memory,
             self.web,
             self.vision,
-            self.emoji,
             self.asr,
             self.automation,
             self.tooling,
@@ -596,10 +548,6 @@ class Settings(BaseSettings):
     @cached_property
     def vision(self) -> VisionSettings:
         return VisionSettings.model_validate(self)
-
-    @cached_property
-    def emoji(self) -> EmojiSettings:
-        return EmojiSettings.model_validate(self)
 
     @cached_property
     def asr(self) -> ASRSettings:

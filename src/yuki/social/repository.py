@@ -6,7 +6,7 @@ import hashlib
 import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.sqlite import insert
@@ -63,6 +63,40 @@ class SocialOperationRepository:
     def __init__(self, database: Database) -> None:
         self.database = database
 
+    @staticmethod
+    async def _same_target(
+        session: AsyncSession, row: SocialOperationModel, target: SocialTarget
+    ) -> bool:
+        if row.target_kind != target.kind:
+            return False
+        if row.target_id == str(target.id):
+            return True
+        if target.kind != "person":
+            return False
+        from yuki.identity.person_identity import same_person_id
+
+        return await same_person_id(session, row.target_id, str(target.id))
+
+    @staticmethod
+    async def _matches_payload(
+        session: AsyncSession,
+        row: SocialOperationModel,
+        *,
+        action: str,
+        target: SocialTarget,
+        payload: dict[str, Any],
+        conversation_id: str,
+    ) -> bool:
+        return await SocialOperationRepository._same_target(session, row, target) and (
+            row.payload_hash
+            == payload_hash(
+                action,
+                SocialTarget(kind=row.target_kind, id=UUID(row.target_id)),
+                payload,
+                conversation_id,
+            )
+        )
+
     async def prepare(
         self,
         *,
@@ -93,7 +127,14 @@ class SocialOperationRepository:
                 )
             )
             if existing is not None:
-                if existing.payload_hash != digest or existing.planned_parts != planned_parts:
+                if existing.planned_parts != planned_parts or not await self._matches_payload(
+                    reader,
+                    existing,
+                    action=action,
+                    target=target,
+                    payload=payload,
+                    conversation_id=source_conversation_id,
+                ):
                     raise SocialError("idempotency_conflict")
                 if work_effect is None:
                     return self._receipt(existing)
@@ -130,7 +171,14 @@ class SocialOperationRepository:
                 )
             )
             assert row is not None
-            if row.payload_hash != digest or row.planned_parts != planned_parts:
+            if row.planned_parts != planned_parts or not await self._matches_payload(
+                session,
+                row,
+                action=action,
+                target=target,
+                payload=payload,
+                conversation_id=source_conversation_id,
+            ):
                 raise SocialError("idempotency_conflict")
             if work_effect is not None:
                 from yuki.runtime.work_repository import WorkRepository
@@ -173,6 +221,20 @@ class SocialOperationRepository:
                     SocialOperationModel.tool_call_id == tool_call_id,
                 )
             )
+            if row is not None and await self._same_target(session, row, target):
+                # A Person merge changes current authority, never the original
+                # operation target, payload digest or child identities.
+                target = SocialTarget(kind=row.target_kind, id=UUID(row.target_id))
+                digest = payload_hash(
+                    "send_message_sequence", target, payload, source_conversation_id
+                )
+                legacy = (
+                    payload_hash(
+                        "send_message_sequence", target, legacy_payload, source_conversation_id
+                    )
+                    if legacy_payload is not None
+                    else None
+                )
             children = list(
                 await session.scalars(
                     select(SocialOperationModel).where(

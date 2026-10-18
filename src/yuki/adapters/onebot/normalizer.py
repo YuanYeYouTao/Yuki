@@ -107,8 +107,22 @@ def _attachment_from_segment(
         file_size=_optional_integer(data.get("file_size")),
         emoji_id=_optional_string(data.get("emoji_id")),
         emoji_package_id=_optional_string(data.get("emoji_package_id")),
+        is_sticker=segment.type == "image" and _sticker_metadata(data),
+        sticker_format=_optional_string(data.get("sticker_format")),
+        mime_type=_optional_string(data.get("mime_type")),
+        width=_optional_integer(data.get("width")),
+        height=_optional_integer(data.get("height")),
         key=_optional_string(data.get("key")),
         filename=_optional_string(data.get("name") or data.get("filename")),
+    )
+
+
+def _sticker_metadata(data: dict[str, Any]) -> bool:
+    return (
+        data.get("is_sticker") is True
+        or bool(data.get("emoji_id") or data.get("emoji_package_id"))
+        or str(data.get("sub_type", "")).casefold()
+        in {"1", "2", "emoji", "market_face", "marketface", "sticker", "meme"}
     )
 
 
@@ -311,6 +325,8 @@ def _serialize_segments(message: Message) -> tuple[dict[str, object], ...]:
     serialized: list[dict[str, object]] = []
     for segment in message:
         data = dict(segment.data)
+        if segment.type == "image":
+            data["is_sticker"] = _sticker_metadata(data)
         if segment.type in {"image", "record"}:
             for key in ("file", "url", "base64"):
                 value = data.get(key)

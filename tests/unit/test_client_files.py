@@ -41,8 +41,9 @@ async def upload(
     )
 
 
+@pytest.mark.parametrize("name", ["input.txt", "a" * 120 + ".txt"])
 async def test_upload_registers_receipt_without_sending_and_replays_across_devices(
-    app_env, database
+    app_env, database, name
 ):
     env = app_env
     device, _ = await owner(env, database)
@@ -51,10 +52,11 @@ async def test_upload_registers_receipt_without_sending_and_replays_across_devic
     )
     second = await pair(env.client, code["code"])
     request_id = str(uuid4())
-    first = await upload(env, device, b"test bytes", request_id=request_id)
-    replay = await upload(env, second, b"test bytes", request_id=request_id)
+    first = await upload(env, device, b"test bytes", request_id=request_id, name=name)
+    replay = await upload(env, second, b"test bytes", request_id=request_id, name=name)
     assert first.status_code == replay.status_code == 200, first.text
     assert replay.json()["data"] == {**first.json()["data"], "replay": True}
+    assert first.json()["data"]["filename"] == name
     assert not env.calls
     async with database.sessions() as session:
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 0
