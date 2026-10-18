@@ -35,6 +35,8 @@ def test_mention_name_index_preserves_events_and_receipts(tmp_path, monkeypatch)
             plan
         )
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
+    # Runtime validation targets today's head, after the frozen 0135 assertions.
+    command.upgrade(config, "head")
     asyncio.run(require_canonical_schema(url))
     command.downgrade(config, "0134")
     with sqlite3.connect(path) as connection:

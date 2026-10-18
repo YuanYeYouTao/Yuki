@@ -37,6 +37,8 @@
 - 管理生命周期、0137升级/降级保设备撤销和业务原件、平台健康分列均有实际领域回归；插件离线schema、Emoji长await撤权/unknown/旧请求、人物生命周期与Memory重建各有专门回归。
 - 新增测试使用假模型/假平台，不以桩权限恒真替代真实Person与SQLite事实；Monty可选原生组件及真实供应商usage、缓存命中、线上延迟不在本次本地验收范围。
 
-全仓 Ruff 通过；Linux 目标 mypy 648 个源码文件通过；`git diff --check` 通过。上下文装配/压缩/发送观察/缓存usage与原command receipt组合77项通过，历史媒体/私有原件升级30项通过。人物/Memory/Automation等大定向组172项通过，重建真实排队撤权与原paid恢复42项通过，setup/export（含真实0119/0128只读导出）43项通过；这些组有重叠，不累加为总数。整库回归与最终PR/CI结果在交付时另记，当前不宣称整库或CI已绿。本地实现不表示已经合并或上线；生产候选导出、实际赋权和部署均未执行。升级操作见[具体步骤](person-admin-control-plane-upgrade.md)。
+全仓 Ruff 通过；Linux 目标 mypy 648 个源码文件通过；`git diff --check` 通过。上下文装配/压缩/发送观察/缓存usage与原command receipt组合77项通过，历史媒体/私有原件升级30项通过。人物/Memory/Automation等大定向组172项通过，重建真实排队撤权与原paid恢复42项通过，setup/export（含真实0119/0128只读导出）43项通过；这些组有重叠，不累加为总数。整库回归与最终PR/CI结果在交付时另记，当前不宣称整库或CI已绿。最终管理组合48项通过。整库首轮在实现收尾前启动，捕获的旧断言、旧schema测试种子和当前head校验已修正并定向复跑；历史材料30项与另六个旧迁移文件12项通过，0135冻结迁移断言后再升当前head进行运行时校验，未改冻结迁移。
+
+已提交并推送PR [#476](https://github.com/YuanYeYouTao/Yuki/pull/476)，创建时无main冲突；CI最终结果以该PR检查页为准。未合并或上线；生产候选导出、实际赋权和部署均未执行。升级操作见[具体步骤](person-admin-control-plane-upgrade.md)。
 
 贡献归属：人物/账号/历史边界、删除优先和命令重构方向由维护者 YuanYeYouTao 确定；本次实现、回归与交叉复审由 Codex 按该任务书完成。
