@@ -548,15 +548,19 @@ class ChatEventPromptRenderer:
             str(segment.get("type", "")) for segment in row.segments if isinstance(segment, dict)
         }
         if row.direction == "outbound" and "image" in segment_types:
-            text = next(
-                (
-                    str(segment.get("data", {}).get("text", ""))
-                    for segment in row.segments
-                    if segment.get("type") == "text" and isinstance(segment.get("data"), dict)
-                ),
-                "",
-            )
-            return marked(text.strip())
+            parts = []
+            for segment in row.segments:
+                data = segment.get("data")
+                if not isinstance(data, dict):
+                    continue
+                if segment.get("type") == "text":
+                    parts.append(str(data.get("text", "")))
+                elif segment.get("type") == "image" and data.get("is_sticker"):
+                    tags = data.get("tags")
+                    if isinstance(tags, list):
+                        label = "、".join(tag for tag in tags if isinstance(tag, str))
+                        parts.append(f"[表情: {label}]" if label else "[表情]")
+            return marked("\n".join(parts).strip())
         if (
             row.direction == "outbound"
             and row.content.startswith("[语音：")

@@ -708,22 +708,14 @@ class PermissionCatalogService:
                 category=family.partition(".")[0],
                 display_name=f"管理 {family}：{action}",
                 description=(
-                    "只读检查原文件和预览缺失情况。"
-                    if (family, action) == ("emoji", "doctor")
+                    f"通过 /ai admin group <current|Space ID> {action} 设置群入口。"
+                    if family == "group"
                     else (
-                        "标记缺失原文件，并排队重建已有原图的预览。"
-                        if (family, action) == ("emoji", "repair")
+                        "通过 /ai admin operation <operation ID> 查询原操作回执。"
+                        if family == "operation"
                         else (
-                            f"通过 /ai admin group <current|Space ID> {action} 设置群入口。"
-                            if family == "group"
-                            else (
-                                "通过 /ai admin operation <operation ID> 查询原操作回执。"
-                                if family == "operation"
-                                else (
-                                    f"通过 /ai admin {family.replace('.', ' ')} {action} 操作。"
-                                    "目标使用内部 ID。"
-                                )
-                            )
+                            f"通过 /ai admin {family.replace('.', ' ')} {action} 操作。"
+                            "目标使用内部 ID。"
                         )
                     )
                 ),

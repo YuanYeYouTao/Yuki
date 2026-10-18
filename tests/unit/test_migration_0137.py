@@ -32,7 +32,7 @@ def test_device_heartbeat_removal_preserves_device_and_original_facts(tmp_path, 
             table: connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
             for table in ("persons", "identity_bindings", "chat_events", "canonical_event_receipts")
         }
-    command.upgrade(config, "head")
+    command.upgrade(config, "0137")
     with sqlite3.connect(path) as connection:
         assert "last_used_at" not in {
             row[1] for row in connection.execute("PRAGMA table_info(client_devices)")

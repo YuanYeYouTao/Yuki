@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
 from typing import Any, cast
 from urllib.parse import quote
 
@@ -108,7 +108,7 @@ class TelegramClient:
         return result
 
     async def resolve_media_file(
-        self, file: str, kind: MediaKind, *, max_download_bytes: int
+        self, file: str, kind: MediaKind, *, max_download_bytes: int | None
     ) -> PlatformMediaFile:
         del kind  # getFile resolves the original platform file for every supported media kind.
         try:
@@ -118,26 +118,24 @@ class TelegramClient:
         if not isinstance(metadata, dict) or not isinstance(metadata.get("file_path"), str):
             raise MediaResolutionError("resource_unavailable", "Telegram 媒体缺少下载定位")
         size = metadata.get("file_size")
-        if isinstance(size, int) and size > max_download_bytes:
+        if max_download_bytes is not None and isinstance(size, int) and size > max_download_bytes:
             raise MediaResolutionError("too_large", "Telegram 媒体超过下载预算")
+
+        return PlatformMediaFile(chunks=lambda: self._media_chunks(metadata["file_path"]))
+
+    async def _media_chunks(self, path: str) -> AsyncGenerator[bytes, None]:
+        """Keep the credential-bearing URL and HTTP client inside this adapter."""
         try:
             with redact_httpx_url("[telegram-url-redacted]"):
-                file_path = quote(metadata["file_path"], safe="/")
+                file_path = quote(path, safe="/")
                 async with self._client.stream(
                     "GET",
                     f"{self._base_url}/file/bot{self._token}/{file_path}",
                 ) as response:
                     if response.is_error or response.is_redirect:
                         raise MediaResolutionError("download_failed", "Telegram 媒体下载失败")
-                    chunks, total = [], 0
-                    async for chunk in response.aiter_bytes():
-                        total += len(chunk)
-                        if total > max_download_bytes:
-                            raise MediaResolutionError("too_large", "Telegram 媒体超过下载预算")
-                        chunks.append(chunk)
-                    return PlatformMediaFile(
-                        content=b"".join(chunks), content_type=response.headers.get("content-type")
-                    )
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
+                        yield chunk
         except httpx.RequestError:
             raise MediaResolutionError("download_failed", "Telegram 媒体下载失败") from None
 

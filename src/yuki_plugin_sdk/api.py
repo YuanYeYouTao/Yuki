@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-PLUGIN_API_VERSION = "4.0"
+PLUGIN_API_VERSION = "5.0"
 _API_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 DEFAULT_FEATURES: frozenset[str] = frozenset(
@@ -14,8 +14,6 @@ DEFAULT_FEATURES: frozenset[str] = frozenset(
         "prompt.fragment.v1",
         "admission.signal.v1",
         "plugin.agent_session.v1",
-        "emoji.facade.v1",
-        "emoji.selection_signals.v1",
         "notification.facade.v1",
         "media.artifact.v1",
         "http.credential.v1",

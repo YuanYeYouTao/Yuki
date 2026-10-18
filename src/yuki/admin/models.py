@@ -275,36 +275,6 @@ class VisionRuntimeConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class EmojiRuntimeConfig:
-    """Effective collection, pool, selection, and worker policy for one turn."""
-
-    enabled: bool
-    collection_enabled: bool
-    collection_mode: str
-    collect_private: bool
-    collect_group: bool
-    auto_adopt_enabled: bool
-    auto_adopt_min_confidence: float
-    pool_capacity: int | None
-    replacement_mode: str
-    selector_enabled: bool
-    selector_candidate_count: int
-    selector_score_gap: float
-    selector_timeout_seconds: float
-    near_duplicate_enabled: bool
-    near_duplicate_distance: int
-    same_emoji_cooldown_seconds: int
-    scope_repeat_cooldown_seconds: int
-    cache_retention_days: int
-    worker_batch_size: int
-    worker_poll_seconds: float
-    worker_lease_seconds: int
-    worker_max_attempts: int
-    worker_retry_delay_seconds: float
-    analysis_version: str
-
-
-@dataclass(frozen=True, slots=True)
 class RuntimeConfigSnapshot:
     """One internally consistent runtime view for an incoming message."""
 
@@ -316,7 +286,6 @@ class RuntimeConfigSnapshot:
     agent: AgentRuntimeConfig
     web: WebRuntimeConfig
     vision: VisionRuntimeConfig
-    emoji: EmojiRuntimeConfig
     conversation: ConversationRuntimeConfig
     tooling: ToolingRuntimeConfig | None = None
     work_storage: WorkStorageRuntimeConfig = WorkStorageRuntimeConfig()

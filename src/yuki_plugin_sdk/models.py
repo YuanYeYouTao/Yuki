@@ -132,29 +132,6 @@ class AdmissionSignalContext(CanonicalIdentityProjection):
     text_is_untrusted: bool = True
 
 
-class EmojiSelectionCandidate(StrictModel):
-    emoji_id: str = Field(min_length=8, max_length=64)
-    description: str = Field(default="", max_length=500)
-    emotion_tags: tuple[str, ...] = Field(default=(), max_length=30)
-    usage_scenarios: tuple[str, ...] = Field(default=(), max_length=30)
-    base_score: float
-
-
-class EmojiSelectionSignalContext(StrictModel):
-    goal: str = Field(default="", max_length=300)
-    emotion: str = Field(default="", max_length=100)
-    space_id: str | None = None
-    candidates: tuple[EmojiSelectionCandidate, ...] = Field(min_length=1, max_length=100)
-    text_is_untrusted: bool = True
-
-
-class EmojiSelectionSignal(StrictModel):
-    candidate_id: str = Field(min_length=8, max_length=64)
-    score_delta: float = Field(ge=-10, le=10)
-    reason: str = Field(min_length=1, max_length=300)
-    confidence: float = Field(ge=0, le=1)
-
-
 class PluginResourceLimits(StrictModel):
     background_tasks: int = Field(default=0, ge=0, le=64)
     http_concurrency: int = Field(default=1, ge=1, le=64)

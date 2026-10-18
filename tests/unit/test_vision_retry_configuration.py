@@ -1,11 +1,9 @@
-"""Explicit vision retry settings control actual HTTP attempts."""
+"""Optional vision calls make one actual HTTP request and retain thinking options."""
 
 import json
-from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from pydantic import ValidationError
 from tests.conftest import make_settings
 
 from yuki.vision.base import VisionError
@@ -34,68 +32,31 @@ def visual():
     )
 
 
-@pytest.mark.parametrize("retries", [0, 3])
-async def test_zero_disables_retry_and_larger_config_is_honored(retries):
-    settings = make_settings("sqlite+aiosqlite:///:memory:", vision_max_retries=retries).vision
+@pytest.mark.parametrize("failure", [401, 429, 503, "timeout", "connect"])
+async def test_vision_failure_makes_one_http_request(failure):
     calls = []
 
     def respond(request):
         calls.append(request)
-        if len(calls) <= 3:
-            return httpx.Response(503)
-        return httpx.Response(
-            200,
-            json={
-                "choices": [
-                    {
-                        "message": {
-                            "content": json.dumps(
-                                {"items": [{"index": 1, "description": "observed"}]}
-                            )
-                        }
-                    }
-                ]
-            },
-        )
+        if failure == "timeout":
+            raise httpx.ReadTimeout("fixture", request=request)
+        if failure == "connect":
+            raise httpx.ConnectError("fixture", request=request)
+        return httpx.Response(failure)
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         provider = QwenVisionProvider(
-            base_url="https://vision.test/v1",
-            api_key="fixture",
-            max_retries=settings.vision_max_retries,
-            client=client,
-            sleep=AsyncMock(),
+            base_url="https://vision.test/v1", api_key="fixture", client=client
         )
-        if retries == 0:
-            with pytest.raises(VisionError) as error:
-                await provider.analyze(visual(), "describe")
-            assert error.value.code == "provider_unavailable"
-        else:
-            result = await provider.analyze(visual(), "describe")
-            assert result.items[0].description == "observed"
-    assert len(calls) == retries + 1
-
-
-async def test_authentication_rejection_does_not_buy_retries():
-    calls = []
-
-    def respond(request):
-        calls.append(request)
-        return httpx.Response(401)
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
-        provider = QwenVisionProvider(
-            base_url="https://vision.test/v1", api_key="fixture", max_retries=3, client=client
-        )
-        with pytest.raises(VisionError) as error:
+        with pytest.raises(VisionError):
             await provider.analyze(visual(), "describe")
-        assert error.value.code == "authentication_failed"
     assert len(calls) == 1
 
 
-def test_negative_retry_setting_is_rejected():
-    with pytest.raises(ValidationError):
-        _ = make_settings("sqlite+aiosqlite:///:memory:", vision_max_retries=-1).vision
+def test_vision_retry_configuration_is_retired():
+    settings = make_settings("sqlite+aiosqlite:///:memory:")
+    assert "vision_max_retries" not in type(settings).model_fields
+    assert "vision_max_retries" not in type(settings.vision).model_fields
 
 
 @pytest.mark.parametrize("thinking", [False, True])

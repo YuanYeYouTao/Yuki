@@ -34,4 +34,6 @@ jobs:
           version: "0.11.31"
           enable-cache: true
       - run: uv sync --frozen --all-extras --python 3.12
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: ffmpeg -version && ffprobe -version
       - run: uv run pytest tests/${{ matrix.suite }} -q

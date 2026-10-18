@@ -106,6 +106,12 @@ class MessageAttachment:
     file_size: int | None = None
     emoji_id: str | None = None
     emoji_package_id: str | None = None
+    is_sticker: bool = False
+    sticker_format: str | None = None
+    mime_type: str | None = None
+    width: int | None = None
+    height: int | None = None
+    preview: MessageAttachment | None = field(default=None, repr=False)
     key: str | None = field(default=None, repr=False)
     filename: str | None = field(default=None, repr=False)
     local_source: tuple[Path, str] | None = field(default=None, repr=False)

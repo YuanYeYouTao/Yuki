@@ -1,8 +1,10 @@
 """Platform file IDs resolve at their own adapter; common media never calls OneBot."""
 
+import asyncio
 import base64
 import json
 import logging
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -159,7 +161,7 @@ async def test_telegram_upload_uses_native_multipart_and_original_caption():
     assert b"original bytes" in requests[0].content and b"original caption" in requests[0].content
 
 
-async def test_telegram_file_download_enforces_actual_byte_budget():
+async def test_telegram_file_download_enforces_selected_reader_byte_budget():
     def respond(request):
         if request.url.path.endswith("/getFile"):
             return httpx.Response(200, json={"ok": True, "result": {"file_path": "original"}})
@@ -167,6 +169,70 @@ async def test_telegram_file_download_enforces_actual_byte_budget():
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
         gateway = TelegramClient("fixture:token", client=http)
-        with pytest.raises(MediaResolutionError) as caught:
-            await gateway.resolve_media_file("original", "file", max_download_bytes=3)
+        resolver = MediaResolver(max_download_bytes=3)
+        try:
+            with pytest.raises(MediaResolutionError) as caught:
+                await resolver.resolve(MediaReference(file="original"), gateway)
+        finally:
+            await resolver.close()
     assert caught.value.code == "too_large"
+
+
+@pytest.mark.parametrize("failure", ["budget", "disk", "cancel"])
+async def test_telegram_stream_closes_in_its_consumer_before_failure_returns(tmp_path, failure):
+    if failure == "disk" and not await asyncio.to_thread(Path("/dev/full").exists):
+        pytest.skip("The real failing file device is Linux-only")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    class Body(httpx.AsyncByteStream):
+        closed = False
+
+        async def __aiter__(self):
+            yield b"x" * 65536
+            entered.set()
+            if failure == "cancel":
+                await release.wait()
+            yield b"y" * 65536
+
+        async def aclose(self):
+            self.closed = True
+
+    body = Body()
+
+    def respond(request):
+        if request.url.path.endswith("/getFile"):
+            return httpx.Response(200, json={"ok": True, "result": {"file_path": "original"}})
+        return httpx.Response(200, stream=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
+        gateway = TelegramClient("fixture:private-token", client=http)
+        resolver = MediaResolver(max_download_bytes=1)
+        try:
+            if failure == "budget":
+                with pytest.raises(MediaResolutionError, match="预算"):
+                    await resolver.resolve_audio(MediaReference(file="original"), gateway)
+            elif failure == "disk":
+                with pytest.raises(OSError):
+                    await resolver.download_attachment(
+                        MediaReference(file="original"),
+                        Path("/dev/full"),
+                        gateway=gateway,
+                        max_download_bytes=None,
+                    )
+            else:
+                task = asyncio.create_task(
+                    resolver.download_attachment(
+                        MediaReference(file="original"),
+                        tmp_path / "original",
+                        gateway=gateway,
+                        max_download_bytes=None,
+                    )
+                )
+                await asyncio.wait_for(entered.wait(), 5)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            assert body.closed
+        finally:
+            release.set()
+            await resolver.close()

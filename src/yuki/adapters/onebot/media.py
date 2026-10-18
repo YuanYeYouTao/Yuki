@@ -16,7 +16,7 @@ async def resolve_media_file(
     file: str,
     kind: MediaKind,
     *,
-    max_download_bytes: int,
+    max_download_bytes: int | None,
 ) -> PlatformMediaFile:
     if kind not in {"image", "audio"}:
         raise MediaResolutionError("resource_unavailable", "该附件缺少平台可下载地址")
@@ -50,7 +50,7 @@ async def resolve_media_file(
             content_type = header.removeprefix("data:").partition(";")[0]
         else:
             encoded = value.removeprefix("base64://")
-        if len(encoded) > (max_download_bytes + 2) // 3 * 4:
+        if max_download_bytes is not None and len(encoded) > (max_download_bytes + 2) // 3 * 4:
             raise MediaResolutionError("too_large", "平台媒体超过下载预算")
         try:
             content = base64.b64decode(encoded, validate=True)
@@ -58,7 +58,7 @@ async def resolve_media_file(
             raise MediaResolutionError("invalid_base64", "平台媒体编码无效") from exc
         if not content:
             raise MediaResolutionError("empty_media", "平台媒体为空")
-        if len(content) > max_download_bytes:
+        if max_download_bytes is not None and len(content) > max_download_bytes:
             raise MediaResolutionError("too_large", "平台媒体超过下载预算")
         return PlatformMediaFile(content=content, content_type=content_type)
     # A gateway-container path is not a Bot filesystem source.
@@ -70,7 +70,7 @@ class OneBotMediaAdapter:
         self._handle = handle
 
     async def resolve_media_file(
-        self, file: str, kind: MediaKind, *, max_download_bytes: int
+        self, file: str, kind: MediaKind, *, max_download_bytes: int | None
     ) -> PlatformMediaFile:
         return await resolve_media_file(
             self._handle, file, kind, max_download_bytes=max_download_bytes

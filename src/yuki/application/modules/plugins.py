@@ -1,4 +1,4 @@
-"""Plugin API v3 host application module."""
+"""Plugin API v5 host application module."""
 
 from __future__ import annotations
 
@@ -17,7 +17,6 @@ from yuki.plugin_host.capability_adapter import PluginCapabilityAdapter
 from yuki.plugin_host.command_adapter import PluginCommandAdapter
 from yuki.plugin_host.direct_command_router import DirectCommandRouter
 from yuki.plugin_host.discovery import PluginDiscovery
-from yuki.plugin_host.emoji_adapter import PluginEmojiSelectionSignalAdapter
 from yuki.plugin_host.event_bus import PluginEventBus
 from yuki.plugin_host.extension_registry import ExtensionRegistry
 from yuki.plugin_host.http_client import SafeHttpClient
@@ -52,7 +51,6 @@ class PluginBundle:
     http: SafeHttpClient
     events: PluginEventBus
     extensions: ExtensionRegistry
-    emoji_signals: PluginEmojiSelectionSignalAdapter
     prompts: PluginPromptAdapter
     manager: PluginManager
     tools: PluginCapabilityAdapter
@@ -115,10 +113,6 @@ class PluginModule:
         )
         events = PluginEventBus(default_timeout_seconds=settings.plugin_hook_timeout_seconds)
         extensions = ExtensionRegistry()
-        emoji_signals = PluginEmojiSelectionSignalAdapter(
-            extensions,
-            timeout_seconds=settings.plugin_hook_timeout_seconds,
-        )
         prompts = PluginPromptAdapter(extensions, self._prompt_registry)
         manager = PluginManager(
             enabled=settings.plugin_system_enabled,
@@ -175,7 +169,6 @@ class PluginModule:
             http=http,
             events=events,
             extensions=extensions,
-            emoji_signals=emoji_signals,
             prompts=prompts,
             manager=manager,
             tools=tools,

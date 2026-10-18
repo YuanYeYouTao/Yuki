@@ -15,7 +15,6 @@ from yuki.conversation.projection_models import PromptProjectionModel
 from yuki.conversation.projections import current_checkpoint_query
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
-from yuki.emoji.admin import EmojiAdminService
 from yuki.persistence.repositories import PeopleRepository
 from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.vision_service import VisionService
@@ -32,7 +31,6 @@ class ConversationCommands:
         onebot_connected: Callable[[], bool],
         runtime_config: RuntimeConfigService,
         vision: VisionService | None,
-        emoji: EmojiAdminService | None,
         automation_repository: AutomationRepository | None,
         automation_worker: AutomationWorker | None,
     ) -> None:
@@ -43,7 +41,6 @@ class ConversationCommands:
         self._onebot_connected = onebot_connected
         self._runtime_config = runtime_config
         self._vision = vision
-        self._emoji_admin = emoji
         self._automation_repository = automation_repository
         self._automation_worker = automation_worker
 
@@ -72,8 +69,6 @@ class ConversationCommands:
         vision_busy = self._vision is not None and self._vision.busy
         vision_queue_depth = self._vision.queue_depth if self._vision is not None else 0
         vision_running = self._vision.running_count if self._vision is not None else 0
-        emoji_status = await self._emoji_admin.status() if self._emoji_admin is not None else {}
-        emoji_counts = emoji_status.get("counts", {})
         automation_count = (
             await self._automation_repository.active_count()
             if self._automation_repository is not None
@@ -103,12 +98,7 @@ class ConversationCommands:
             f"视觉模型：{self._settings.vision_model or '未配置'}\n"
             f"视觉请求繁忙：{'是' if vision_busy else '否'}\n"
             f"视觉排队/运行：{vision_queue_depth}/{vision_running}\n"
-            f"表情系统：{'已启用' if self._settings.emoji_enabled else '未启用'}\n"
-            f"表情 Worker：{'运行中' if emoji_status.get('worker_running') else '未运行'}\n"
-            f"表情候选/已采用/待处理："
-            f"{emoji_counts.get('candidate', 0)}/"
-            f"{emoji_counts.get('adopted', 0)}/"
-            f"{emoji_counts.get('jobs_pending', 0)}\n" + compact_line + "\n"
+            f"{compact_line}\n"
             f"请求处理中："
             f"{'是' if self._concurrency.is_processing(conversation_key) else '否'}\n"
             f"待重启配置数：{pending_restart}\n"

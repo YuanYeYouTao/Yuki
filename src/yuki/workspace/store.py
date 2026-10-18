@@ -213,9 +213,10 @@ class WorkspaceStore:
         *,
         artifact_id: str | None = None,
         source_key: str | None = None,
+        expected_version: str | None = None,
     ) -> dict[str, Any]:
         """Stream an already safely opened workspace file into an immutable artifact."""
-        if not name or len(name) > 128 or any(c in name for c in "\\/:\x00"):
+        if not name or any(c in name for c in "\\/:\x00"):
             raise WorkspaceError("invalid_artifact_name")
         before = os.fstat(descriptor)
         if not stat.S_ISREG(before.st_mode):
@@ -243,6 +244,8 @@ class WorkspaceStore:
                 after.st_ctime_ns,
             ):
                 raise WorkspaceError("file_changed_during_publish")
+            if expected_version is not None and digest.hexdigest() != expected_version:
+                raise WorkspaceError("version_conflict")
             with self._transaction() as db:
                 self._prune_metadata(db)
                 if db.execute("SELECT 1 FROM artifacts WHERE id=?", (identity,)).fetchone():

@@ -9,7 +9,6 @@ from yuki.admin.models import WorkStorageRuntimeConfig
 from yuki.application.lifecycle import LifecycleRegistry
 from yuki.config import Settings
 from yuki.conversation.scope_repository import ConversationScopeRepository
-from yuki.emoji.repository import EmojiRepository
 from yuki.identity.write_settings import configure_identity_write_settings
 from yuki.memory.audit import MemoryAuditService
 from yuki.memory.context import MemoryContextService
@@ -23,7 +22,6 @@ from yuki.memory.service import MemoryFactService
 from yuki.memory.targets import MemoryTargetResolver
 from yuki.persistence.database import Database
 from yuki.persistence.repositories import (
-    EmojiDescriptionRepository,
     EventLedgerRepository,
     GroupSettingsRepository,
     MediaAnalysisRepository,
@@ -53,8 +51,6 @@ class PersistenceBundle:
     memory_rebuilds: MemoryRebuildRepository
     web_sources: WebSearchSourceRepository
     media_analyses: MediaAnalysisRepository
-    emoji_descriptions: EmojiDescriptionRepository
-    emoji_repository: EmojiRepository
 
 
 class PersistenceModule:
@@ -121,6 +117,4 @@ class PersistenceModule:
             memory_rebuilds=memory_rebuilds,
             web_sources=WebSearchSourceRepository(database),
             media_analyses=MediaAnalysisRepository(database),
-            emoji_descriptions=EmojiDescriptionRepository(database),
-            emoji_repository=EmojiRepository(database),
         )

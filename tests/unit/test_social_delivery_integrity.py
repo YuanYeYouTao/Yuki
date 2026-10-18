@@ -8,13 +8,12 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import delete, select
 from tests.support.social_identity_cases import social_env
+from tests.support.sticker_delivery import make_delivery
 from tests.support.workspace_snapshots import snapshot_bytes
 
 from yuki.admin.models import ReplyRuntimeConfig
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
 from yuki.domain.conversations import ConversationScope
-from yuki.emoji.delivery import EmojiDeliveryService
-from yuki.emoji.models import EmojiSelectionResult
 from yuki.identity.canonical_repository import ensure_presence, ensure_space
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.origin import TurnOrigin
@@ -220,27 +219,9 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
         created_by_user_id=env.person,
         presence_id=env.presence,
     )
-    selector = SimpleNamespace(
-        select=AsyncMock(return_value=EmojiSelectionResult(emoji_id="emoji"))
-    )
-    repository = SimpleNamespace(
-        mark_used=AsyncMock(),
-        get=AsyncMock(
-            return_value=SimpleNamespace(
-                id="emoji",
-                relative_path="emoji.png",
-                description="笑脸",
-                mime_type="image/png",
-                animated=False,
-            )
-        ),
-    )
-    env.service.emoji_delivery = EmojiDeliveryService(
-        selector=selector,
-        repository=repository,
-        storage=SimpleNamespace(read=lambda _: b"offline-image"),
-    )
+    delivery, library = make_delivery(env)
     snapshot = SimpleNamespace(
+        reply=ReplyRuntimeConfig(0, 0, 1800, 20),
         emoji=SimpleNamespace(enabled=True),
         vision=SimpleNamespace(),
     )
@@ -306,14 +287,16 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
                     )
             finally:
                 current_invocation.reset(token)
-        usage = repository.mark_used.await_args.kwargs
-        assert usage["space_id"] == (env.space if scope.group_id else None)
-        assert usage["actor_person_id"] == (env.person if scope.private_peer_user_id else None)
-        assert usage["trigger_message_id"] == ""
-        assert repository.mark_used.await_count == (1 if target_kind == "group" else 2)
-        request = selector.select.await_args.args[0]
-        assert request.space_id == (env.space if scope.group_id else None)
-        assert request.person_id == (env.person if scope.private_peer_user_id else None)
+        pending = await delivery.intents.pending()
+        intent = next(
+            item
+            for item in pending
+            if item.source["context"]["caused_by_event_id"] == event.event.id
+        )
+        assert intent.target.kind == ("space" if scope.group_id else "person")
+        await delivery._deliver(intent)
+        assert (await delivery._project(intent))["status"] == "succeeded"
+        assert library.select_calls == (1 if target_kind == "group" else 2)
 
 
 @pytest.mark.asyncio
@@ -396,134 +379,22 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
 
 
 @pytest.mark.parametrize("target_kind", ["space", "person"])
-async def test_emoji_usage_follows_route_instead_of_inbound_scope(database, tmp_path, target_kind):
-    from yuki.domain.conversations import ScopeType
-    from yuki.domain.messages import (
-        AttachmentKind,
-        InboundMessage,
-        OutboundMedia,
-        OutboundMessage,
-        SenderIdentity,
-    )
-    from yuki.emoji.models import EmojiPreparationStatus
-
+async def test_deferred_illustration_keeps_selected_target(database, tmp_path, target_kind):
     env = await social_env(database, tmp_path)
     await env.router.cas_takeover_person(env.person)
-    delivered = OutboundMessage(
-        media=(
-            OutboundMedia(
-                AttachmentKind.IMAGE,
-                b"image",
-                "image/png",
-                emoji_id="selected",
-            ),
-        )
-    )
-    delivery = SimpleNamespace(
-        prepare=AsyncMock(
-            return_value=SimpleNamespace(
-                status=EmojiPreparationStatus.READY,
-                message=delivered,
-            )
-        ),
-        record_send_accepted=AsyncMock(),
-        record_success=AsyncMock(),
-    )
-    env.service.emoji_delivery = delivery
-    inbound = InboundMessage(
-        message_id="different-source",
-        event_type="message",
-        scope_type=ScopeType.GROUP,
-        sender=SenderIdentity("1002"),
-        text="send elsewhere",
-        bot_user_id="80001",
-        group_id="3001",
-    )
-    context = replace(
-        env.context,
-        inbound=inbound,
-        runtime_snapshot=SimpleNamespace(emoji=SimpleNamespace(enabled=True)),
-    )
-    result = await env.service.execute(
-        "send_message",
-        {
-            "target": {
-                "kind": target_kind,
-                "target_id": env.space if target_kind == "space" else env.person,
-            },
-            "text": "sent",
-            "emoji": {"goal": "开心"},
-        },
-        context,
-    )
-    assert result["status"] == "succeeded"
-    usage = delivery.record_success.await_args.kwargs
-    assert usage["space_id"] == (env.space if target_kind == "space" else None)
-    assert usage["actor_person_id"] == (env.person if target_kind == "person" else None)
-    assert usage["trigger_message_id"] == "different-source"
-
-
-async def test_emoji_usage_resolves_canonical_owners_before_writer(database, tmp_path):
-    from sqlalchemy import event
-
-    from yuki.emoji.db_models import EmojiAssetModel, EmojiUsageEventModel
-    from yuki.emoji.repository import EmojiRepository
-
-    env = await social_env(database, tmp_path)
-    now = datetime.now(UTC)
-    async with database.immediate_session() as writer:
-        writer.add(
-            EmojiAssetModel(
-                id="used",
-                sha256="a" * 64,
-                relative_path="emoji.png",
-                image_format="png",
-                mime_type="image/png",
-                byte_size=1,
-                width=1,
-                height=1,
-                frame_count=1,
-                first_seen_at=now,
-                last_seen_at=now,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-    in_writer = False
-
-    def observe(_connection, _cursor, statement, *_args):
-        nonlocal in_writer
-        sql = statement.lower()
-        if sql.startswith("begin immediate"):
-            in_writer = True
-        if sql.startswith("select") and any(
-            table in sql for table in ("persons", "spaces", "bindings")
-        ):
-            assert not in_writer, "identity resolution acquired the emoji writer"
-
-    def ended(_connection):
-        nonlocal in_writer
-        in_writer = False
-
-    engine = database.engine.sync_engine
-    event.listen(engine, "before_cursor_execute", observe)
-    event.listen(engine, "commit", ended)
-    event.listen(engine, "rollback", ended)
-    try:
-        repository = EmojiRepository(database)
-        for actor, group in ((env.person, None), (None, env.space)):
-            await repository.mark_used(
-                "used", actor_person_id=actor, space_id=group, trigger_message_id="", source="agent"
-            )
-    finally:
-        event.remove(engine, "before_cursor_execute", observe)
-        event.remove(engine, "commit", ended)
-        event.remove(engine, "rollback", ended)
-    async with database.sessions() as reader:
-        usages = list(
-            await reader.scalars(select(EmojiUsageEventModel).order_by(EmojiUsageEventModel.id))
-        )
-        assert [(row.canonical_actor_person_id, row.canonical_space_id) for row in usages] == [
-            (env.person, None),
-            (None, env.space),
-        ]
+    delivery, _ = make_delivery(env)
+    selected_id = env.space if target_kind == "space" else env.person
+    arguments = {
+        "target": {"kind": target_kind, "target_id": selected_id},
+        "text": "sent",
+        "emoji": {"goal": "开心"},
+    }
+    result = await env.service.execute("send_message", arguments, env.context)
+    assert result["status"] == "succeeded" and result["emoji"]["status"] == "accepted"
+    intent = (await delivery.intents.pending())[0]
+    assert str(intent.target.id) == selected_id and intent.target.kind == target_kind
+    await delivery._deliver(intent)
+    projected = await delivery._project(intent)
+    assert projected["status"] == "succeeded"
+    receipt = await env.service.receipts.get(projected["operation_id"])
+    assert str(receipt.target.id) == selected_id and receipt.target.kind == target_kind

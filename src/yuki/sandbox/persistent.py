@@ -18,6 +18,7 @@ import re
 import secrets
 import shutil
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -54,6 +55,7 @@ class PersistentManager:
         acp_config: Path | None = None,
         testing: bool = False,
         name: str = "yuki-environment",
+        media_cache: Path | None = None,
     ) -> None:
         self.root, self.store, self.image = root.resolve(), store, image
         self.network, self.proxy = network, proxy
@@ -78,6 +80,8 @@ class PersistentManager:
             raise ValueError("invalid_environment_name")
         self.name = name
         self.files = FileWorkspace(self.home / "workspace")
+        self.media_cache = FileWorkspace(media_cache.resolve()) if media_cache is not None else None
+        self.media_cache_shared = False
         self.runtime_root = self.root / "environment-jobs"
         self.runtime_root.mkdir(mode=0o755, exist_ok=True)
         self.runtime_root.chmod(0o755)
@@ -101,6 +105,9 @@ class PersistentManager:
         self.connections: dict[str, Any] = {}
         self.pumps: dict[str, asyncio.Task[None]] = {}
         self.file_lock = asyncio.Lock()
+        self._file_tasks: set[asyncio.Task[Any]] = set()
+        self._index_builds: dict[str, asyncio.Task[dict[str, Any]]] = {}
+        self._file_requests: dict[str, tuple[str, asyncio.Task[dict[str, Any]]]] = {}
         self.last_prune = 0.0
         self.last_layer_check = 0.0
         self.acp = ACPResources(self, acp_config)
@@ -405,6 +412,14 @@ class PersistentManager:
             ]
             if self.resolv_conf is not None:
                 args.extend(("--mount", f"type=bind,src={self.resolv_conf},dst=/etc/resolv.conf"))
+            if self.media_cache is not None:
+                args.extend(
+                    (
+                        "--mount",
+                        f"type=bind,src={self.media_cache.root},"
+                        "dst=/home/yuki/inputs/media-cache,readonly",
+                    )
+                )
             # Rootfs snapshots retain their old container configuration. Override
             # its former user/proxy defaults without discarding installed files.
             for value in ("HOME=/home/yuki", "USER=root", "LOGNAME=root"):
@@ -417,6 +432,12 @@ class PersistentManager:
                 raise RuntimeError("environment_create_failed")
             current = await self.inspect_container()
         assert current is not None
+        self.media_cache_shared = self.media_cache is not None and any(
+            mount.get("Destination") == "/home/yuki/inputs/media-cache"
+            and mount.get("Source") == str(self.media_cache.root)
+            and mount.get("RW") is False
+            for mount in current.get("Mounts", ())
+        )
         # Docker must not auto-start this bind-mounted container before the home
         # filesystem is mounted at boot. The ordered Manager owns recovery.
         if current.get("HostConfig", {}).get("RestartPolicy", {}).get("Name") != "no":
@@ -673,6 +694,14 @@ class PersistentManager:
             raise ValueError("invalid_terminal_action")
         return {"run_id": identity, "status": "running", "input_accepted": True, "pending": True}
 
+    def _media_source(self, path: str) -> tuple[FileWorkspace, str, str]:
+        prefix = "/inputs/media-cache/"
+        if path.startswith(prefix):
+            if self.media_cache is None:
+                raise WorkspaceError("media_cache_unavailable")
+            return self.media_cache, path.removeprefix(prefix), prefix
+        return self.files, path, "/workspace/"
+
     def file_operation(self, method: str, args: dict[str, Any]) -> dict[str, Any]:
         path = args.get("path", "")
         version = args.get("expected_version")
@@ -680,15 +709,16 @@ class PersistentManager:
             # Private Host/Manager operations, never tool declarations. Read
             # from a safely opened workspace FD, outside any SQLite writer.
             limit = 20 * 1024 * 1024
-            with self.files.open_file(path) as fd:
+            files, path, prefix = self._media_source(path)
+            with files.open_file(path) as fd:
                 before = os.fstat(fd)
-                if before.st_size > limit:
+                if method == "workspace_media_read" and before.st_size > limit:
                     raise WorkspaceError("workspace_media_too_large")
-                current, info = self.files.fingerprint(fd)
+                current, info = files.fingerprint(fd)
                 if version is not None and current != version:
                     raise WorkspaceError("version_conflict")
                 result = {
-                    "path": "/workspace/" + "/".join(self.files.parts(path)),
+                    "path": prefix + "/".join(files.parts(path)),
                     "version": current,
                     "size": info.st_size,
                 }
@@ -714,23 +744,134 @@ class PersistentManager:
                     result["base64"] = base64.b64encode(data).decode("ascii")
                 return result
         if method == "workspace_publish":
-            with self.files.open_file(path) as fd:
-                current, _ = self.files.fingerprint(fd)
-                if version is not None and version != current:
-                    raise WorkspaceError("version_conflict")
+            files, relative, _prefix = self._media_source(path)
+            with files.open_file(relative) as fd:
+                snapshot = self.store.snapshot(
+                    fd,
+                    args.get("name") or Path(path).name,
+                    artifact_id=args.get("artifact_id"),
+                    source_key=args.get("source_key"),
+                    expected_version=version,
+                )
                 return {
-                    **self.store.snapshot(fd, args.get("name") or Path(path).name),
+                    **snapshot,
                     "path": path,
-                    "version": current,
+                    "version": snapshot["sha256"],
                 }
         if method == "workspace_checkout":
             metadata, content = self.store.read_bytes(args["artifact_id"])
+            if args.get("destination"):
+                try:
+                    with self.files.open_file(path) as fd:
+                        actual, _ = self.files.fingerprint(fd)
+                    if actual == metadata["sha256"]:
+                        return {
+                            "path": "/workspace/" + "/".join(self.files.parts(path)),
+                            "version": actual,
+                            "size": metadata["size"],
+                            "artifact_id": metadata["artifact_id"],
+                        }
+                except FileNotFoundError:
+                    pass
             return self.files.write(path, content, expected_version=version) | {
                 "artifact_id": metadata["artifact_id"]
             }
         raise ValueError("unknown_workspace_method")
 
+    def _start_file(self, operation: Any) -> asyncio.Task[dict[str, Any]]:
+        task = asyncio.create_task(operation)
+        self._file_tasks.add(task)
+        task.add_done_callback(self._file_tasks.discard)
+        return task
+
+    async def _wait_file(self, task: asyncio.Task[dict[str, Any]]) -> dict[str, Any]:
+        cancelled = False
+        while True:
+            try:
+                result = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                if task.cancelled():
+                    raise
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def _owned_file(self, operation: Any) -> dict[str, Any]:
+        return await self._wait_file(self._start_file(operation))
+
+    async def sticker_index(self, args: dict[str, Any]) -> dict[str, Any]:
+        if args.get("command") == "rebuild":
+            platform = str(args.get("platform") or "*")
+            existing = self._index_builds.get(platform)
+            if existing is None or existing.done():
+                existing = self._start_file(self._sticker_helper(args))
+                self._index_builds[platform] = existing
+            try:
+                return await self._wait_file(existing)
+            finally:
+                if existing.done() and self._index_builds.get(platform) is existing:
+                    self._index_builds.pop(platform, None)
+        return await self._owned_file(self._sticker_helper(args))
+
+    async def _sticker_helper(self, args: dict[str, Any]) -> dict[str, Any]:
+        if self.testing:
+            command = [
+                sys.executable,
+                str(Path(__file__).parents[1] / "emoji" / "sticker_index.py"),
+                "--workspace",
+                str(self.files.root),
+                "--request",
+            ]
+        else:
+            command = [
+                "docker",
+                "exec",
+                "-i",
+                self.name,
+                "python",
+                "/opt/yuki-runtime/sticker_index.py",
+                "--workspace",
+                "/workspace",
+                "--request",
+            ]
+        # No command()/socket observation deadline and no 32 KiB stdout truncation.
+        # Closing drains this actual helper; killing docker exec's client is not cancellation.
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        output, error = await process.communicate(json.dumps(args, ensure_ascii=False).encode())
+        if process.returncode:
+            LOGGER.warning("sticker_helper_failed detail=%s", error.decode(errors="replace"))
+            return {"error": "sticker_helper_failed"}
+        result = json.loads(output)
+        if not isinstance(result, dict):
+            raise ValueError("invalid_sticker_result")
+        return result
+
     async def file_request(
+        self, method: str, args: dict[str, Any], request_id: str
+    ) -> dict[str, Any]:
+        if method not in {"workspace_publish", "workspace_checkout"} or not isinstance(
+            request_id, str
+        ):
+            return await self._owned_file(self._file_request(method, args, request_id))
+        digest = hashlib.sha256(json.dumps([method, args], sort_keys=True).encode()).hexdigest()
+        existing = self._file_requests.get(request_id)
+        if existing is not None:
+            if existing[0] != digest:
+                return {"error": "idempotency_conflict"}
+            return await self._wait_file(existing[1])
+        task = self._start_file(self._file_request(method, args, request_id))
+        self._file_requests[request_id] = digest, task
+        task.add_done_callback(lambda _: self._file_requests.pop(request_id, None))
+        return await self._wait_file(task)
+
+    async def _file_request(
         self, method: str, args: dict[str, Any], request_id: str
     ) -> dict[str, Any]:
         if method not in {
@@ -740,7 +881,10 @@ class PersistentManager:
             "workspace_checkout",
         }:
             return {"error": "unknown_method"}
-        read = method in {"workspace_media_read", "workspace_media_validate"}
+        read = method in {
+            "workspace_media_read",
+            "workspace_media_validate",
+        }
         async with self.file_lock:
             args = dict(args)
             digest = hashlib.sha256(json.dumps([method, args], sort_keys=True).encode()).hexdigest()
@@ -777,21 +921,25 @@ class PersistentManager:
                     )
             if method == "workspace_checkout":
                 artifact_id = identifier(args.get("artifact_id"))
-                mapped = self.db.execute(
-                    "SELECT path FROM workspace_migrations WHERE artifact_id=?", (artifact_id,)
-                ).fetchone()
-                if mapped:
-                    args["path"] = mapped[0]
+                if args.get("destination") is not None:
+                    self.files.parts(args["destination"])
+                    args["path"] = args["destination"]
                 else:
-                    name = args.get("name", artifact_id)
-                    self.files.parts(name)
-                    try:
-                        with self.files.open_file(name):
-                            pass
-                    except FileNotFoundError:
-                        args["path"] = name
+                    mapped = self.db.execute(
+                        "SELECT path FROM workspace_migrations WHERE artifact_id=?", (artifact_id,)
+                    ).fetchone()
+                    if mapped:
+                        args["path"] = mapped[0]
                     else:
-                        args["path"] = f"imported/{artifact_id}/{name}"
+                        name = args.get("name", artifact_id)
+                        self.files.parts(name)
+                        try:
+                            with self.files.open_file(name):
+                                pass
+                        except FileNotFoundError:
+                            args["path"] = name
+                        else:
+                            args["path"] = f"imported/{artifact_id}/{name}"
             if not read:
                 with self.db:
                     self.db.execute(
@@ -807,15 +955,14 @@ class PersistentManager:
                             ),
                         ),
                     )
-            try:
-                result = await asyncio.to_thread(self.file_operation, method, args)
-            except (WorkspaceError, OSError, ValueError, KeyError) as exc:
-                result = {
-                    "error": str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__
-                }
-                if isinstance(exc, OSError) and exc.errno in {28, 122}:
-                    result = {"error": "workspace_full", **self.disk_status()}
-            if not read:
+        try:
+            result = await asyncio.to_thread(self.file_operation, method, args)
+        except (WorkspaceError, OSError, ValueError, KeyError) as exc:
+            result = {"error": str(exc) if isinstance(exc, WorkspaceError) else type(exc).__name__}
+            if isinstance(exc, OSError) and exc.errno in {28, 122}:
+                result = {"error": "workspace_full", **self.disk_status()}
+        if not read:
+            async with self.file_lock:
                 with self.db:
                     self.db.execute(
                         "UPDATE environment_mutations SET result=? WHERE request_id=?",
@@ -826,7 +973,7 @@ class PersistentManager:
                             "INSERT OR REPLACE INTO workspace_migrations VALUES (?,?,?)",
                             (args["artifact_id"], args["path"], result["version"]),
                         )
-            return {**result, "external_untrusted": True}
+        return {**result, "external_untrusted": True}
 
     def disk_status(self) -> dict[str, Any]:
         usage = shutil.disk_usage(self.home)
@@ -841,6 +988,11 @@ class PersistentManager:
             "ready": self.ready,
             "home": "/home/yuki",
             "workspace": "/workspace",
+            "media_cache": {
+                "path": "/inputs/media-cache",
+                "configured": self.media_cache is not None,
+                "shared": self.media_cache_shared,
+            },
             "storage": self.disk_status(),
             "checkpoint": self.setting("checkpoint_image", self.image),
             "host_available_bytes": self.available_memory(),
@@ -955,6 +1107,8 @@ class PersistentManager:
         if not isinstance(method, str) or not isinstance(args, dict):
             return {"error": "invalid_arguments"}
         try:
+            if method == "sticker_index":
+                return await self.sticker_index(args)
             if method.startswith("acp_"):
                 return await self.acp.handle(method, args, request.get("request_id", ""))
             if method in EXECUTION_TOOLS:
@@ -1121,12 +1275,26 @@ class PersistentManager:
 
     async def close(self) -> None:
         self.ready = False
-        for connection in tuple(self.connections.values()):
-            await connection.close()
-        for task in self.pumps.values():
-            task.cancel()
-        await asyncio.gather(*self.pumps.values(), return_exceptions=True)
-        self.db.close()
+        cancelled = False
+        try:
+            for connection in tuple(self.connections.values()):
+                await connection.close()
+            for task in self.pumps.values():
+                task.cancel()
+            await asyncio.gather(*self.pumps.values(), return_exceptions=True)
+        except asyncio.CancelledError:
+            cancelled = True
+        finally:
+            while self._file_tasks:
+                actual = asyncio.gather(*tuple(self._file_tasks), return_exceptions=True)
+                while not actual.done():
+                    try:
+                        await asyncio.shield(actual)
+                    except asyncio.CancelledError:
+                        cancelled = True
+            self.db.close()
+        if cancelled:
+            raise asyncio.CancelledError
 
     def migrate_files(self) -> dict[str, Any]:
         """Idempotent offline migration; never overwrites a terminal's existing content."""

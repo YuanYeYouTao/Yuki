@@ -1,8 +1,11 @@
 """Uploads, normal media preparation, and receipt-authorized original files."""
 
+import asyncio
 import hashlib
 import io
 import json
+import os
+import threading
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
@@ -41,8 +44,9 @@ async def upload(
     )
 
 
+@pytest.mark.parametrize("name", ["input.txt", "a" * 120 + ".txt"])
 async def test_upload_registers_receipt_without_sending_and_replays_across_devices(
-    app_env, database
+    app_env, database, name
 ):
     env = app_env
     device, _ = await owner(env, database)
@@ -51,10 +55,11 @@ async def test_upload_registers_receipt_without_sending_and_replays_across_devic
     )
     second = await pair(env.client, code["code"])
     request_id = str(uuid4())
-    first = await upload(env, device, b"test bytes", request_id=request_id)
-    replay = await upload(env, second, b"test bytes", request_id=request_id)
+    first = await upload(env, device, b"test bytes", request_id=request_id, name=name)
+    replay = await upload(env, second, b"test bytes", request_id=request_id, name=name)
     assert first.status_code == replay.status_code == 200, first.text
     assert replay.json()["data"] == {**first.json()["data"], "replay": True}
+    assert first.json()["data"]["filename"] == name
     assert not env.calls
     async with database.sessions() as session:
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 0
@@ -143,10 +148,8 @@ async def test_personal_attachment_enters_original_main_and_media_index(app_env,
     await drain(env)
     assert env.calls
     messages = env.calls[0].messages
-    if kind == "image":
-        assert any(item.images for item in messages)
-    else:
-        assert any("THE ORIGINAL DOCUMENT CONTENT" in (item.content or "") for item in messages)
+    assert not any(item.images for item in messages)
+    assert not any("THE ORIGINAL DOCUMENT CONTENT" in (item.content or "") for item in messages)
     async with database.sessions() as session:
         row = await session.get(ConversationMediaItemModel, (sent.json()["data"]["event_id"], 0))
         assert row.cache_status == "cached" and row.content_sha256 == media["sha256"]
@@ -155,6 +158,14 @@ async def test_personal_attachment_enters_original_main_and_media_index(app_env,
             "base64" not in event.segments_json
             and str(env.files.uploads.root) not in event.segments_json
         )
+    item, path = await env.media.authorized_path(
+        event_id=sent.json()["data"]["event_id"], attachment_index=0
+    )
+    inspected = await env.media.inspect(item, path, "查看我选定的附件")
+    if kind == "image":
+        assert inspected.images
+    else:
+        assert "THE ORIGINAL DOCUMENT CONTENT" in inspected["result"]["text"]
     await env.media.cleanup()
     assert env.files.uploads.path(media["sha256"]).exists()
     replay = await env.client.post(
@@ -342,3 +353,132 @@ async def test_group_result_file_is_readable_only_through_owned_work(app_env, da
     own = await env.client.get(path, headers=bearer(device["token"]))
     assert own.status_code == 200 and own.content == b"only this work result"
     assert (await env.client.get(path, headers=bearer(second["token"]))).status_code == 404
+
+
+async def test_cancelled_upload_retains_its_actual_write_until_thread_finishes(
+    app_env, database, monkeypatch
+):
+    from yuki.conversation import uploads
+
+    env = app_env
+    device, _ = await owner(env, database)
+    principal = await env.identity.authenticate(device["token"])
+    entered, release, written = threading.Event(), threading.Event(), threading.Event()
+    original_io = uploads._media_io
+
+    async def actual_io(call, *args):
+        if getattr(call, "__name__", "") != "write":
+            return await original_io(call, *args)
+
+        def slow_write():
+            entered.set()
+            release.wait()
+            result = call(*args)
+            written.set()
+            return result
+
+        return await original_io(slow_write)
+
+    monkeypatch.setattr(uploads, "_media_io", actual_io)
+
+    async def chunks():
+        yield b"original upload bytes"
+
+    pending = asyncio.create_task(
+        env.files.uploads.upload(
+            principal,
+            str(uuid4()),
+            hashlib.sha256(b"original upload bytes").hexdigest(),
+            len(b"original upload bytes"),
+            "original.txt",
+            "file",
+            chunks(),
+        )
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 5)
+        temporary = next(env.files.uploads.root.glob("*.part"))
+        os.utime(temporary, (0, 0))
+        pending.cancel()
+        await asyncio.sleep(0)
+        pending.cancel()
+        await env.media.cleanup()
+        assert not pending.done() and temporary.exists() and not written.is_set()
+    finally:
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+    assert written.is_set()
+    assert not list(env.files.uploads.root.iterdir())
+    assert not env.media._staging_paths
+    async with database.sessions() as session:
+        assert not await session.scalar(
+            select(func.count(ControlCommandReceiptModel.principal_id)).where(
+                ControlCommandReceiptModel.operation_kind == "client.upload"
+            )
+        )
+
+
+@pytest.mark.parametrize("same_request", [False, True])
+async def test_slow_upload_does_not_hold_other_uploads_and_original_receipt_wins(
+    app_env, database, same_request
+):
+    env = app_env
+    device, _ = await owner(env, database)
+    principal = await env.identity.authenticate(device["token"])
+    started, release = asyncio.Event(), asyncio.Event()
+    first_content = b"first original bytes"
+    second_content = first_content if same_request else b"second independent bytes"
+    first_request = str(uuid4())
+    second_request = first_request if same_request else str(uuid4())
+
+    async def slow_chunks():
+        yield first_content[:3]
+        started.set()
+        await release.wait()
+        yield first_content[3:]
+
+    async def chunks():
+        yield second_content
+
+    first = asyncio.create_task(
+        env.files.uploads.upload(
+            principal,
+            first_request,
+            hashlib.sha256(first_content).hexdigest(),
+            len(first_content),
+            "original.txt",
+            "file",
+            slow_chunks(),
+        )
+    )
+    try:
+        await asyncio.wait_for(started.wait(), 5)
+        original_part = next(env.files.uploads.root.glob("*.part"))
+        second = await asyncio.wait_for(
+            env.files.uploads.upload(
+                principal,
+                second_request,
+                hashlib.sha256(second_content).hexdigest(),
+                len(second_content),
+                "original.txt",
+                "file",
+                chunks(),
+            ),
+            5,
+        )
+        assert original_part.exists() and not first.done()
+        assert not second["replay"]
+    finally:
+        release.set()
+        first_result = await first
+    assert first_result["replay"] == same_request
+    if same_request:
+        assert first_result == {**second, "replay": True}
+    assert not list(env.files.uploads.root.glob("*.part"))
+    async with database.sessions() as session:
+        assert await session.scalar(
+            select(func.count(ControlCommandReceiptModel.principal_id)).where(
+                ControlCommandReceiptModel.operation_kind == "client.upload"
+            )
+        ) == (1 if same_request else 2)

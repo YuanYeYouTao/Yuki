@@ -8,6 +8,7 @@ import base64
 import hashlib
 import io
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -18,7 +19,7 @@ from PIL import Image
 
 from yuki.conversation.media_service import ConversationMediaService
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.domain.messages import AttachmentKind, InboundMessage, MessageAttachment, SenderIdentity
 from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.providers.telegram import TelegramClient
 from yuki.gateway.registry import GatewayConnectionRegistry
@@ -38,25 +39,40 @@ from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
 @pytest.fixture
-async def attachment_tools(database, tmp_path):
+async def attachment_tools(database, tmp_path, request):
     image = io.BytesIO()
     Image.new("RGB", (2, 2), "red").save(image, "PNG")
-    original_bytes = image.getvalue()
+    picture = image.getvalue()
+    options = getattr(request, "param", {})
+    original_bytes = options.get("content", picture)
+    media_content = {"original": original_bytes}
     wire = []
 
     def respond(request):
         wire.append((request.method, request.url.path))
         if request.url.path.endswith("/getFile"):
-            assert json.loads(request.content) == {"file_id": "original-bot-a-file"}
+            file_id = json.loads(request.content)["file_id"]
+            assert file_id in {"original-bot-a-file", "actual-sticker-preview"}
             # Official file_id namespace is per bot. A different bot must not be tried.
             if request.url.path != "/botfixture-a/getFile":
                 return httpx.Response(400, json={"ok": False, "error_code": 400})
             return httpx.Response(
                 200,
-                json={"ok": True, "result": {"file_path": "photos/original.png"}},
+                json={
+                    "ok": True,
+                    "result": {
+                        "file_path": "photos/preview.png"
+                        if file_id == "actual-sticker-preview"
+                        else "photos/original.png"
+                    },
+                },
             )
+        if request.url.path == "/file/botfixture-a/photos/preview.png":
+            return httpx.Response(200, content=picture, headers={"content-type": "image/png"})
         assert request.url.path == "/file/botfixture-a/photos/original.png"
-        return httpx.Response(200, content=original_bytes, headers={"content-type": "image/png"})
+        return httpx.Response(
+            200, content=media_content["original"], headers={"content-type": "image/png"}
+        )
 
     registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
     async with (
@@ -114,7 +130,12 @@ async def attachment_tools(database, tmp_path):
                 platform_message_id="-10042:1",
                 direction="inbound",
                 content="原接收账号的图片",
-                segments=({"type": "image", "data": {"file": "original-bot-a-file"}},),
+                segments=(
+                    {
+                        "type": options.get("kind", "image"),
+                        "data": {"file": "original-bot-a-file", **options.get("data", {})},
+                    },
+                ),
             )
         ).event
         current = (
@@ -183,10 +204,12 @@ async def attachment_tools(database, tmp_path):
                 store=store,
                 registry=registry,
                 original_client=original_client,
+                current_client=current_client,
                 source=source,
                 runtime=runtime,
                 wire=wire,
                 original_bytes=original_bytes,
+                media_content=media_content,
                 checkouts=checkouts,
             )
         finally:
@@ -208,8 +231,6 @@ async def test_attachment_tools_use_original_presence_and_cached_bytes(
         await case.media.authorized_path(
             event_id=case.source.id,
             attachment_index=0,
-            conversation_id=case.source.canonical_conversation_id,
-            generation=None,
         )
         case.wire.clear()
     if original_offline:
@@ -262,6 +283,43 @@ async def test_native_file_selection_uses_resolvers_actual_locator_priority(
         request_id="original-native-priority",
     )
     assert result.images and case.wire == [
+        ("POST", "/botfixture-a/getFile"),
+        ("GET", "/file/botfixture-a/photos/original.png"),
+    ]
+
+
+async def test_known_reply_prepared_from_another_bot_keeps_original_media_presence(
+    attachment_tools,
+):
+    case = attachment_tools
+    inbound = replace(
+        case.runtime.inbound,
+        reply_to_event_id=case.source.id,
+        reply_segments=case.source.segments,
+        reply_attachments=(
+            MessageAttachment(
+                AttachmentKind.IMAGE,
+                "original",
+                source="reply",
+                segment_index=0,
+                file="original-bot-a-file",
+            ),
+        ),
+    )
+    prepared = case.media.prepare_message(
+        inbound, case.current_client, source_segments=inbound.segments
+    )
+    # Preparing the observed reply performs no transport I/O. The actual reader
+    # may reuse this source, but its original file namespace still belongs to A.
+    assert prepared.reply_attachments[0].prepared_media is not None and not case.wire
+    result = await case.workspace.execute(
+        "inspect_conversation_attachment",
+        {"event_id": case.source.id, "attachment_index": 0, "question": "查看引用原图"},
+        runtime=case.runtime,
+        request_id="known-reply-original-presence",
+    )
+    assert result.images and result["sha256"] == hashlib.sha256(case.original_bytes).hexdigest()
+    assert case.wire == [
         ("POST", "/botfixture-a/getFile"),
         ("GET", "/file/botfixture-a/photos/original.png"),
     ]

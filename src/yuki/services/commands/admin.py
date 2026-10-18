@@ -18,7 +18,6 @@ from yuki.client_api.errors import ClientError
 from yuki.domain.messages import InboundMessage
 from yuki.gateway.media import PlatformMediaGateway
 from yuki.identity.db_models import CanonicalSpaceModel
-from yuki.services.commands.emoji import EmojiCommands
 from yuki.services.commands.group import GROUP_USAGE, parse_group_command
 from yuki.services.commands.help import ADMIN_HELP
 from yuki.services.commands.identity import IdentityAdminCommands
@@ -61,7 +60,6 @@ class AdminChatCommands:
         config: ConfigCommandHandler,
         profiles: ProfileCommandHandler,
         memory: MemoryCommands,
-        emoji: EmojiCommands | None,
         models: ModelCommands,
     ) -> None:
         self.operations, self.queries = operations, queries
@@ -69,7 +67,7 @@ class AdminChatCommands:
         self.plugins = PluginAdminCommands(operations, queries)
         self.works = WorkAdminCommands(operations, queries)
         self.control, self.config = control, config
-        self.profiles, self.memory, self.emoji, self.models = profiles, memory, emoji, models
+        self.profiles, self.memory, self.models = profiles, memory, models
 
     async def execute(
         self,
@@ -126,12 +124,6 @@ class AdminChatCommands:
                 return (
                     await self.profiles.preference(actor=actor, argument=rest, admin=True)
                 ).replace("/ai preference", "/ai admin preference")
-            if family == "emoji":
-                if self.emoji is None:
-                    return "表情系统当前未启用。"
-                return await self.emoji.execute(
-                    actor=actor, message=message, argument=rest, gateway=gateway
-                )
             if family == "person":
                 return render_result(await self.identity.person(principal, message, rest))
             if family == "binding":

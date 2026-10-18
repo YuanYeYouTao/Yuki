@@ -628,7 +628,7 @@ class WorkJournal:
                 return recorded_result(
                     json.dumps(
                         {
-                            "ok": original["status"] == "succeeded",
+                            "ok": original["status"] in {"succeeded", "accepted"},
                             "data": original,
                             "original_domain_ref": reference,
                             "uncertain": original["status"] == "uncertain",

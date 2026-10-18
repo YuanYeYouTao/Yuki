@@ -65,7 +65,16 @@ class SandboxClient:
         try:
             observation_wait = args.get("wait_seconds", 0) if name == "terminal_read" else 0
             async with asyncio.timeout(
-                (25 if name == "workspace_media_read" else 7) + observation_wait
+                None
+                if name
+                in {
+                    "sticker_index",
+                    "workspace_publish",
+                    "workspace_checkout",
+                    "workspace_media_read",
+                    "workspace_media_validate",
+                }
+                else 7 + observation_wait
             ):
                 connect = getattr(asyncio, "open_unix_connection", None)
                 if connect is None:

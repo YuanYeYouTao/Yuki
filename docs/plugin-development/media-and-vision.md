@@ -9,6 +9,8 @@ result = await ctx.vision.analyze_current_media("这张图的主要内容是什�
 
 分别需要 `media.current.read` 或 `vision.analyze`。图片发送需要 `message.media.send`，并且 `media_reference` 必须是 Host 接受的受控引用，不是任意本机路径。
 
+`media.get_current()` 按原顺序返回当前／回复附件的通用事实：kind、label、segment_index、source、file_size、filename、mime_type、width、height、is_sticker、sticker_format 和 preview_available；QQ 的原 sub_type、emoji_id、emoji_package_id 仍可读取。`preview_available` 只说明平台提供了预览，不代表已经读取像素。返回值不包含原 file_id、下载 URL、预览定位符、字节或 Host 路径。原生贴纸标记不依靠文件名猜测。
+
 ## 明确选择工具图片给主 Agent
 
 插件工具在获准 `media.artifact.create` 后创建自己拥有的 `MediaArtifactHandle`，

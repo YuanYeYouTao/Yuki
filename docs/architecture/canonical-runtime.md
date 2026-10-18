@@ -119,7 +119,7 @@ ACP 使用共享 Presence 与每个原 Person 的稳定 Binding；每次 `sessio
 
 GatewayProvider 提供连接事实、接入投影和实际原生社交操作。公共 Social 准备内部目标、核授权、claim 原操作并记录回执；各适配器编码文本、提及、引用、文件及协议实际限制。Provider 的纯发送计划不发送消息，每个实际平台步骤各有原回执。公共层不调用任意 OneBot action，也不按 Telegram/QQ 分叉一套领域服务。
 
-Telegram token 配置后使用 long polling，原生 getMe 确认 Bot，实际 getChatMember 用于新群接纳与发送探针。消息引用在适配器中用 chat＋message 定位，进入业务后传内部事件 ID；topic、编辑和群迁移沿原绑定。媒体 file/token URL 留在 Telegram 适配器，公共媒体只接收有界字节。
+Telegram token 配置后使用 long polling，原生 getMe 确认 Bot，实际 getChatMember 用于新群接纳与发送探针。消息引用在适配器中用 chat＋message 定位，进入业务后传内部事件 ID；topic、编辑和群迁移沿原绑定。媒体 file/token URL 留在 Telegram 适配器，公共媒体接收真实字节或适配器提供的流，不获得凭据 URL。原件缓存不设经验容量门槛，显式模型读取仍受实际输入预算限制。
 
 polling 偏移确认表示原事件已入账或已明确不接纳，不表示 Main 已完成。普通无 Work 对话在进程中止后不自动重买模型或补发；已接纳的 Work、原工具和未知效果按各自持久执行/回执恢复。不能把 native ACK、事件入账、Work 接纳和平台送达混称完成。
 
@@ -201,7 +201,7 @@ PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真�
 Person 按原永久身份与当前同人关系核权限，纯内部工作无需当前账号或发送路由。发送由共同 Social 按明确目标和当前路由处理，
 触发群与 Presence 不构成额外的发送目标菜单。路由暂停只控制实际发送，不阻止内部 Main 工作。
 
-Plugin API 当前为 `4.0`，Host 只加载 API 与已批准 manifest 精确匹配的插件。兼容键仍使用 primary
+Plugin API 当前为 `5.0`，Host 只加载 API 与已批准 manifest 精确匹配的插件。兼容键仍使用 primary
 `conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
 插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。
 

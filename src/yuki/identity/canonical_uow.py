@@ -24,6 +24,7 @@ from yuki.conversation.hydrate import (
     hydrate_scope_state_from_canonical,
     touch_canonical_watermarks,
 )
+from yuki.conversation.media_index import reply_media_snapshots
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.identity import AuthorKind
 from yuki.domain.messages import InboundMessage, snapshot_mention_segments
@@ -110,6 +111,8 @@ class CanonicalIngressUnitOfWork:
         now = _utcnow()
         segments_json = json.dumps(segments, ensure_ascii=False, separators=(",", ":"))
         normalized_segments = normalize_live_json(segments_json)
+        observed_reply = message.reply_segments if message.reply_to_event_id is None else ()
+        reply_snapshots = reply_media_snapshots(observed_reply)
         utterance_fingerprint = _fingerprint(message.text)
         if message.scope_type is ScopeType.GROUP:
             if admitted.space_binding_id is None:
@@ -272,6 +275,8 @@ class CanonicalIngressUnitOfWork:
                     conversation_id=conversation_id,
                     generation=int(conversation.generation),
                     segments=segments,
+                    reply_segments=observed_reply,
+                    reply_snapshots=reply_snapshots,
                 )
             trip("after_canonical_append")
             state = await hydrate_scope_state_from_canonical(session, scope, conversation)

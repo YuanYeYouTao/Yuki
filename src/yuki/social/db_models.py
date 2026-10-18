@@ -3,13 +3,16 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -51,3 +54,32 @@ class SocialOperationModel(Base):
     )
     # Only new split-send parents record a plan. Historical NULL is unknowable.
     planned_parts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class SocialEmojiIntentModel(Base):
+    """Recoverable selection input; delivery facts remain Social operation receipts."""
+
+    __tablename__ = "social_emoji_intents"
+    __table_args__ = (
+        UniqueConstraint("source_turn_id", "tool_call_id", name="uq_social_emoji_call"),
+        Index("ix_social_emoji_pending", "closed", "created_at", "id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    source_turn_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    tool_call_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("canonical_conversations.id", ondelete="CASCADE"), nullable=False
+    )
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_json: Mapped[str] = mapped_column(Text, nullable=False)
+    intent_json: Mapped[str] = mapped_column(Text, nullable=False)
+    selected_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Closed means selection has ended or the effect was handed to Social.
+    # It never proves that a network send succeeded.
+    closed: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("0"))
+    error_category: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

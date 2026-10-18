@@ -43,7 +43,7 @@ function_call_output.output[]，也不在上游拒绝图片后切换 Qwen。没�
 Gemini/DeepSeek API 图片验收与生产速度验收尚未完成。插件自有 handle 与 插件显式选图
 桥接已按其 owner/委托合同做本地验证，不从通用编码推定真实上游已验收。
 
-独立视觉连接仍服务后台表情分类、表情发送候选选择和 SDK 显式 `VISION_ANALYZE`；它不再
+独立视觉连接服务首次收藏表情的可选后台描述和 SDK 显式 `VISION_ANALYZE`；选图读取本地文件索引，不调用视觉模型。Qwen 的一次分析只发一次 HTTP 请求，超时、连接失败、429 和 5xx 均不隐式重发。它不再
 作为普通主 Agent 当前/引用图片缺少原生能力时的隐式回退。ASR 仍可能借用 Qwen URL/key，
 且借用不依赖 `vision_enabled`。保留这些消费者期间不能删除共享密钥或声称可整体关闭
 独立视觉配置。详见[聊天媒体](chat-media-workspace.md)。

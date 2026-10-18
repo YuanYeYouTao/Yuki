@@ -25,7 +25,6 @@ from yuki.conversation.ordinary_admission import OrdinaryParticipationBinding
 from yuki.conversation.projection_models import PromptProjectionChunkModel
 from yuki.domain.messages import (
     AttachmentKind,
-    ChatImage,
     ChatResponse,
     MessageAttachment,
     OutboundMessage,
@@ -41,7 +40,6 @@ from yuki.persistence.models import ChatEventModel
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_activation import current_work_control
 from yuki.runtime.work_schema_v1 import work
-from yuki.services.attachment_inputs import NativeInput
 from yuki.services.main_agent_contract import MainAgentContract
 from yuki.social.db_models import SocialOperationModel
 from yuki.workspace.short_state import ShortState
@@ -163,7 +161,17 @@ async def _start_and_observe(
     assert (await harness.processor.handle(incoming or message(3, C), sender)).reason == (
         "ordinary_deferred"
     )
-    a, c = await _event(database, A), await _event(database, C)
+    a = await _event(database, A)
+    if incoming is None:
+        c = await _event(database, C)
+    else:
+        async with database.sessions() as reader:
+            c = await reader.scalar(
+                select(ChatEventModel).where(
+                    ChatEventModel.platform_message_id == incoming.message_id,
+                    ChatEventModel.direction == "inbound",
+                )
+            )
     assert [row.event_id for row in await _admissions(database)] == [a.id]
     assert worker._states[key].message.source_event_id == c.id
     provider.release[1].set()
@@ -434,22 +442,19 @@ async def test_steered_voice_reuses_prepared_transcript_and_partial_failure(
         await worker.close()
 
 
-async def test_steered_image_and_quoted_attachment_remain_private_and_prepare_once(
-    database, tmp_path
-):
+async def test_steered_attachments_add_private_indices_without_automatic_reads(database, tmp_path):
     provider = _PausedProvider(
         [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
     )
     _env, harness, worker, message = await _scene(database, tmp_path, provider)
-    image = ChatImage("data:image/png;base64,c3ludGhldGlj", source="current")
-    document = "原引用附件的私有提取内容"
-    media = SimpleNamespace(
-        prepare=AsyncMock(return_value=NativeInput(images=(image,), documents=document))
-    )
-    harness.processor._native_images = media
     incoming = replace(
         message(3, C),
         attachments=(MessageAttachment(AttachmentKind.IMAGE, "image", file="fake.png"),),
+        segments=(
+            {"type": "text", "data": {"text": C}},
+            {"type": "image", "data": {"file": "fake.png", "name": "unread.png"}},
+        ),
+        reply_segments=({"type": "file", "data": {"file": "fake.txt", "name": "quoted.txt"}},),
         reply_text="看一下引用的文件",
         reply_attachments=(
             MessageAttachment(AttachmentKind.FILE, "file", source="reply", file="fake.txt"),
@@ -461,17 +466,15 @@ async def test_steered_image_and_quoted_attachment_remain_private_and_prepare_on
         )
         admissions = {row.event_id: row for row in await _admissions(database)}
         assert admissions[c.id].activation_id == admissions[a.id].activation_id
-        assert [item for message in provider.requests[1].messages for item in message.images] == [
-            image
-        ]
-        assert document in _plain(provider.requests[1])
-        assert "看一下引用的文件" in _plain(provider.requests[1])
-        assert media.prepare.await_count == 1 and len(provider.requests) == 2
+        assert not any(message.images for message in provider.requests[1].messages)
+        material = _plain(provider.requests[1])
+        assert C in material
+        assert "unread.png" in material and "quoted.txt" in material
+        assert '"origin":"reply_observed"' in material
+        assert len(provider.requests) == 2
         async with database.sessions() as reader:
             public = list(await reader.scalars(select(PromptProjectionChunkModel.payload_json)))
-        assert public and all(
-            document not in value and image.data_url not in value for value in public
-        )
+        assert public and all("本轮附件索引" not in value for value in public)
         assert await _work_count(database) == 0
     finally:
         await worker.close()
@@ -956,24 +959,30 @@ async def test_background_invitation_waits_for_original_turn_without_losing_its_
         await worker.close()
 
 
-async def test_source_changed_during_attachment_preparation_is_not_accepted_with_old_material(
-    database, tmp_path
+async def test_source_changed_during_attachment_metadata_read_is_not_accepted(
+    database, tmp_path, monkeypatch
 ):
     provider = _PausedProvider(
         [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
     )
     _env, harness, worker, message = await _scene(database, tmp_path, provider)
     sender = MemorySender()
-    image = ChatImage("data:image/png;base64,b2xkLWltYWdl")
-    old_document = "仅属于编辑前附件的提取结果"
+    from yuki.services import processor as processor_module
 
-    async def prepare(incoming, *_args):
-        # A source edit while external preparation is running is not our own ASR
-        # publication. It cannot authorize the old prepared body under a new hash.
+    original_metadata = processor_module._attachment_metadata
+    old_metadata = []
+
+    async def prepare(incoming, record, selected_database):
+        metadata = await original_metadata(incoming, record, selected_database)
+        if not incoming.attachments:
+            return metadata
+        old_metadata.append(metadata)
+        # A true source edit during the current indexed metadata read cannot
+        # authorize its stale body under the replacement source revision.
         async with database.immediate_session() as writer:
             await writer.execute(
                 update(ChatEventModel)
-                .where(ChatEventModel.id == incoming.source_event_id)
+                .where(ChatEventModel.id == record.id)
                 .values(
                     content="C：编辑后的新要求，附件也已替换",
                     segments_json=json.dumps(
@@ -984,9 +993,9 @@ async def test_source_changed_during_attachment_preparation_is_not_accepted_with
                     ),
                 )
             )
-        return NativeInput(images=(image,), documents=old_document)
+        return metadata
 
-    harness.processor._native_images = SimpleNamespace(prepare=AsyncMock(side_effect=prepare))
+    monkeypatch.setattr(processor_module, "_attachment_metadata", prepare)
     incoming = replace(
         message(3, C),
         attachments=(MessageAttachment(AttachmentKind.IMAGE, "image", file="old.png"),),
@@ -1008,17 +1017,12 @@ async def test_source_changed_during_attachment_preparation_is_not_accepted_with
         admitted = await harness.processor.ordinary_admissions.get(c_id)
         original = await harness.processor.ordinary_admissions.get(a_id)
         assert admitted is None or admitted.activation_id != original.activation_id
-        assert old_document not in _plain(provider.entered[1])
-        assert image not in [
-            item for message in provider.entered[1].messages for item in message.images
-        ]
+        assert old_metadata and old_metadata[0]
+        assert old_metadata[0] not in _plain(provider.entered[1])
         provider.release[2].set()
         await asyncio.wait_for(_wait_for_worker(worker, key), 10)
-        assert all(old_document not in _plain(request) for request in provider.requests)
-        assert all(
-            image not in [item for message in request.messages for item in message.images]
-            for request in provider.requests
-        )
+        assert all(old_metadata[0] not in _plain(request) for request in provider.requests)
+        assert not any(item.images for request in provider.requests for item in request.messages)
         assert await _work_count(database) == sender.calls == 0
     finally:
         await worker.close()

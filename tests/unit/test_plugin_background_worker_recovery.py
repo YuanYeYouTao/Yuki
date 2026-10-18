@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.exc import OperationalError
 
-from yuki.emoji.worker import EmojiWorker
 from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
 from yuki.plugin_host.notification_delivery import PluginNotificationOutboxWorker
 
@@ -57,7 +56,7 @@ async def _check_worker_recovers_claim_and_admission_failures(fail_claim):
 
 @pytest.mark.asyncio
 async def test_durable_workers_resume_after_database_lock() -> None:
-    for worker_type in [PluginNotificationOutboxWorker, EmojiWorker]:
+    for worker_type in [PluginNotificationOutboxWorker]:
         await _check_durable_workers_resume_after_database_lock(worker_type)
 
 

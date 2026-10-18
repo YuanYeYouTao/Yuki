@@ -7,13 +7,33 @@ from dataclasses import replace
 from typing import cast
 
 from yuki.gateway.providers.telegram import TelegramAPIError, TelegramClient
-from yuki.gateway.social import TransportMessage, TransportReceipt, TransportTarget
+from yuki.gateway.social import TransportMedia, TransportMessage, TransportReceipt, TransportTarget
+
+
+def _media_method(media: TransportMedia) -> tuple[str, str]:
+    if media.kind == "file" and not media.emoji:
+        return "sendDocument", "document"
+    if media.emoji and media.mime_type in {"image/webp", "application/x-tgsticker", "video/webm"}:
+        return "sendSticker", "sticker"
+    if media.mime_type == "image/gif":
+        return "sendAnimation", "animation"
+    return ("sendPhoto", "photo") if media.kind == "image" else ("sendDocument", "document")
 
 
 class TelegramSocialOperations:
     file_caption_separate = False
 
     def plan_send(self, message: TransportMessage) -> tuple[TransportMessage, ...]:
+        if (
+            message.media is not None
+            and _media_method(message.media)[0] == "sendSticker"
+            and (message.text or message.mentions)
+        ):
+            # Stickers have no caption. Keep text and sticker as separate receipted effects.
+            return (
+                *self.plan_send(replace(message, media=None)),
+                replace(message, text="", mentions=(), reply_reference=None),
+            )
         # Bot API counts visible characters after entity parsing, not HTML bytes.
         # https://core.telegram.org/bots/api#sendmessage and #senddocument
         limit = 1024 if message.media is not None else 4096
@@ -51,19 +71,21 @@ class TelegramSocialOperations:
             f"{html.escape(item.display_name or '成员')}</a> "
             for item in message.mentions
         ) + html.escape(message.text)
-        params["parse_mode"] = "HTML"
         media = message.media
         if media is None:
+            params["parse_mode"] = "HTML"
             params["text"] = text
             result = await client.call("sendMessage", params)
         else:
-            photo = media.kind == "image"
-            field = "photo" if photo else "document"
+            method, field = _media_method(media)
             params[field] = "attach://" + field
             if text:
+                if method == "sendSticker":
+                    raise ValueError("use_separate_delivery_operations")
+                params["parse_mode"] = "HTML"
                 params["caption"] = text
             result = await client.call(
-                "sendPhoto" if photo else "sendDocument",
+                method,
                 params,
                 files={field: (media.filename, media.content, media.mime_type)},
             )

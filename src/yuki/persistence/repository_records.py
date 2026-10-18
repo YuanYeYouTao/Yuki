@@ -170,22 +170,3 @@ class MediaAnalysisRecord:
     observation_json: str
     created_at: datetime
     expires_at: datetime
-
-
-@dataclass(frozen=True, slots=True)
-class EmojiDescriptionRecord:
-    """A persistent, reusable description of one stable QQ emoji identity."""
-
-    id: int
-    emoji_key: str
-    analysis_mode: str
-    question_hash: str
-    provider: str
-    model: str
-    prompt_version: str
-    description: str
-    observation_json: str
-    hit_count: int
-    created_at: datetime
-    updated_at: datetime
-    last_used_at: datetime

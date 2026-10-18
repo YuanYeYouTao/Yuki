@@ -63,7 +63,6 @@ class _VerifiedSources:
     fingerprint: str
     additional_events: dict[int, str]
     visible_ids: frozenset[int]
-    eligible_images: frozenset[int]
     cross_ids: frozenset[int]
 
 
@@ -137,23 +136,6 @@ class WorkSourceGuard:
         assert source_database is not None
         work_session = control.session if control is not None else None
         version = self.version
-        from yuki.services.turn_transcript import dispatch_request
-
-        dispatch = dispatch_request()
-        selected_images = tuple(
-            image
-            for message in ((*dispatch.messages, *dispatch.items) if dispatch else ())
-            for image in getattr(message, "images", ())
-            if image.source_event_id is not None
-        )
-        if any(
-            image.conversation_id != version.conversation_id
-            or image.generation != version.generation
-            for image in selected_images
-        ):
-            return False
-        image_event_ids = {image.source_event_id for image in selected_images}
-        event_ids = event_ids | frozenset(image_event_ids)
         cross_ids: set[int] = set()
         # aiosqlite's legacy transaction mode does not BEGIN for SELECT. Establish
         # one real read snapshot, without reserving the writer during scans/hashing.
@@ -223,33 +205,6 @@ class WorkSourceGuard:
                 )
                 if not reused and {row.id for row in rows} != visible_ids:
                     return False
-                eligible_images = (
-                    verified.eligible_images
-                    if reused and verified is not None
-                    else frozenset(
-                        row.id
-                        for row in rows
-                        if row.suppression_status == "keeper"
-                        and row.direction == "inbound"
-                        and row.id > version.starts_after_event_id
-                    )
-                )
-                if reused and any(
-                    event_id not in eligible_images
-                    for event_id in image_event_ids
-                    if event_id in visible_ids or event_id in self.additional_events
-                ):
-                    return False
-                if any(
-                    row.id in image_event_ids
-                    and (
-                        row.suppression_status != "keeper"
-                        or row.direction != "inbound"
-                        or row.id <= version.starts_after_event_id
-                    )
-                    for row in rows
-                ):
-                    return False
                 additional = dict(self.additional_events)
                 added_ids = set(additional)
                 added_ids.update(event_ids - visible_ids)
@@ -260,7 +215,6 @@ class WorkSourceGuard:
                     if reused and verified is not None
                     else added_ids
                 )
-                new_eligible: set[int] = set()
                 if query_ids:
                     extra = (
                         await session.execute(
@@ -314,12 +268,6 @@ class WorkSourceGuard:
                         if accepted != cross_ids:
                             return False
                     for row in extra:
-                        if row.id in image_event_ids and (
-                            row.suppression_status != "keeper"
-                            or row.direction != "inbound"
-                            or row.id <= version.starts_after_event_id
-                        ):
-                            return False
                         digest = _source_digest(row)
                         if (
                             row.id in self.additional_events
@@ -327,12 +275,6 @@ class WorkSourceGuard:
                         ):
                             return False
                         additional[row.id] = digest
-                        if (
-                            row.suppression_status == "keeper"
-                            and row.direction == "inbound"
-                            and row.id > version.starts_after_event_id
-                        ):
-                            new_eligible.add(row.id)
                 selected_summary = version.selected_summary_text
                 summary: object = selected_summary
                 from yuki.conversation.observations import validate_observations
@@ -442,7 +384,6 @@ class WorkSourceGuard:
             fingerprint,
             dict(additional),
             visible_ids,
-            eligible_images | new_eligible if new_eligible else eligible_images,
             frozenset(cross_ids),
         )
         if work_session is not None:

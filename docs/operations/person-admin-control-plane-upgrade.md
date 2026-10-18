@@ -56,7 +56,6 @@ docker compose exec bot sh -c 'YUKI_CONTROL_CREDENTIAL="$YUKI_CONTROL_OPERATOR_T
 | `group current enable` | 恢复当前停用/未登记群，沿真实连接和当前群，不要求普通入账先成功 |
 | `config` | 沿原配置覆盖和变更记录；返回 change ID、需重启或仅未来生效等真实应用方式 |
 | `memory/preference` | 本人普通操作仍在 `/ai memory/preference`；跨人物与维护操作使用显式 admin 入口 |
-| `emoji doctor/repair` | doctor 只读诊断；repair 明确修复，不把诊断暗中当修改 |
 | `plugin/work/model/operation` | 原插件管理、任务取消/恢复、模型查看和原回执查询；文件与秘密管理走 operator CLI |
 
 旧裸 `/ai config`、插件管理别名和误称私聊的全局人物开关删除。`/ai link`、`/ai forgetme`、会话控制和普通插件注册调用保留各自职责。合法带图命令不再被“有图不可写”吞掉。App/ACP 输入这些文字按普通正文处理，不执行平台管理员命令。

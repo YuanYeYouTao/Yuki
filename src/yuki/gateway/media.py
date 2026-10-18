@@ -1,6 +1,7 @@
 """Private media locations returned by the actual platform connection."""
 
-from dataclasses import dataclass
+from collections.abc import AsyncGenerator, Callable
+from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 MediaKind = Literal["image", "audio", "video", "file"]
@@ -11,6 +12,7 @@ class PlatformMediaFile:
     content: bytes | None = None
     content_type: str | None = None
     url: str | None = None
+    chunks: Callable[[], AsyncGenerator[bytes, None]] | None = field(default=None, repr=False)
 
 
 class MediaResolutionError(RuntimeError):
@@ -23,6 +25,6 @@ class MediaResolutionError(RuntimeError):
 
 class PlatformMediaGateway(Protocol):
     async def resolve_media_file(
-        self, file: str, kind: MediaKind, *, max_download_bytes: int
+        self, file: str, kind: MediaKind, *, max_download_bytes: int | None
     ) -> PlatformMediaFile:
         """Resolve on this connection; credential-bearing URLs remain inside the adapter."""

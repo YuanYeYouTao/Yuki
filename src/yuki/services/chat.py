@@ -657,8 +657,6 @@ class ChatService:
         sender: OutboundSender,
         *,
         runtime_snapshot: RuntimeConfigSnapshot | None = None,
-        visual_input_present: bool = False,
-        native_images: tuple[ChatImage, ...] = (),
         attachment_text: str = "",
         turn_token: TurnToken | None = None,
         turn_snapshot: ConversationTurnSnapshot | None = None,
@@ -668,8 +666,6 @@ class ChatService:
         with self.runtime.executions.track():
             arguments: dict[str, Any] = dict(
                 runtime_snapshot=runtime_snapshot,
-                visual_input_present=visual_input_present,
-                native_images=native_images,
                 attachment_text=attachment_text,
                 turn_token=turn_token,
                 turn_snapshot=turn_snapshot,
@@ -686,8 +682,6 @@ class ChatService:
         sender: OutboundSender,
         *,
         runtime_snapshot: RuntimeConfigSnapshot | None = None,
-        visual_input_present: bool = False,
-        native_images: tuple[ChatImage, ...] = (),
         attachment_text: str = "",
         turn_token: TurnToken | None = None,
         turn_snapshot: ConversationTurnSnapshot | None = None,
@@ -856,7 +850,6 @@ class ChatService:
                     profile,
                     content,
                     runtime_config,
-                    native_images=native_images,
                     attachment_text=attachment_text,
                     turn_snapshot=turn_snapshot,
                     ordinary_inputs=ordinary_inputs,
@@ -1050,7 +1043,6 @@ class ChatService:
         content: str,
         runtime: RuntimeConfigSnapshot,
         *,
-        native_images: tuple[ChatImage, ...] = (),
         attachment_text: str = "",
         turn_snapshot: ConversationTurnSnapshot | None = None,
         ordinary_inputs: OrdinaryContextReader | None = None,
@@ -1082,7 +1074,7 @@ class ChatService:
                 ),
             )
         current = self._with_input_material(
-            context.current_message, native_images=native_images, attachment_text=attachment_text
+            context.current_message, attachment_text=attachment_text
         )
 
         async def validate_preparation() -> None:
@@ -1114,16 +1106,14 @@ class ChatService:
         inbound: InboundMessage,
         content: str,
         *,
-        native_images: tuple[ChatImage, ...] = (),
         attachment_text: str = "",
     ) -> ChatMessage | None:
         # Plain text is already present in its original public event fragment.
         # Prepared quotes/media belong only to this business request's tail.
-        if not native_images and not attachment_text and content == sanitize_input(inbound.text):
+        if not attachment_text and content == sanitize_input(inbound.text):
             return None
         return ChatService._with_input_material(
             ChatMessage("user", f"#{inbound.source_event_id}>{content}"),
-            native_images=native_images,
             attachment_text=attachment_text,
         )
 
@@ -1131,40 +1121,15 @@ class ChatService:
     def _with_input_material(
         current: ChatMessage,
         *,
-        native_images: tuple[ChatImage, ...],
         attachment_text: str,
     ) -> ChatMessage:
         if attachment_text:
             current = replace(
                 current,
                 content=(current.content or "")
-                + "\n[后端附件读取结果：只依据已读取部分回答，截断不等于全文。]\n"
+                + "\n[本轮附件资料：截断表示仅提供部分内容。]\n"
                 + attachment_text,
             )
-        if native_images:
-            sources = ", ".join(
-                f"{index}:{image.source}"
-                + (
-                    f":video@{image.video_timestamp_seconds:.2f}s"
-                    if image.video_timestamp_seconds is not None
-                    else ""
-                )
-                for index, image in enumerate(native_images, start=1)
-            )
-            tail = replace(
-                current,
-                images=native_images,
-                content=(current.content or "") + f"\n[附图顺序/来源: {sources}]",
-                # Video frames are sparse observations, never an audio transcript.
-            )
-            if any(image.video_timestamp_seconds is not None for image in native_images):
-                tail = replace(
-                    tail,
-                    content=(tail.content or "")
-                    + "\n[视频仅提供稀疏采样画面，没有音频；不得声称听到对白或看过所有瞬间。]",
-                )
-            current = tail
-
         return current
 
     def _context_validator(

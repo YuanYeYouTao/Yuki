@@ -1,4 +1,4 @@
-"""Repositories for visual-analysis and QQ emoji description caches."""
+"""Persist reusable visual-analysis observations."""
 
 from __future__ import annotations
 
@@ -12,11 +12,9 @@ from sqlalchemy.engine import CursorResult
 
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
-    EmojiDescriptionModel,
     MediaAnalysisModel,
 )
 from yuki.persistence.repository_records import (
-    EmojiDescriptionRecord,
     MediaAnalysisRecord,
 )
 
@@ -54,31 +52,6 @@ class MediaAnalysisRepository:
                     MediaAnalysisModel.prompt_version == prompt_version,
                     MediaAnalysisModel.expires_at > timestamp,
                 )
-            )
-        return self._record(row) if row is not None else None
-
-    async def find_latest_for_content(
-        self,
-        *,
-        content_hash: str,
-        analysis_mode: str,
-        prompt_version_suffix: str,
-        now: datetime | None = None,
-    ) -> MediaAnalysisRecord | None:
-        """Reuse a current structured observation across compatible media consumers."""
-
-        timestamp = now or datetime.now(UTC)
-        async with self._database.sessions() as session:
-            row = await session.scalar(
-                select(MediaAnalysisModel)
-                .where(
-                    MediaAnalysisModel.content_hash == content_hash,
-                    MediaAnalysisModel.analysis_mode == analysis_mode,
-                    MediaAnalysisModel.prompt_version.endswith(prompt_version_suffix),
-                    MediaAnalysisModel.expires_at > timestamp,
-                )
-                .order_by(MediaAnalysisModel.created_at.desc())
-                .limit(1)
             )
         return self._record(row) if row is not None else None
 
@@ -279,179 +252,6 @@ class MediaAnalysisRepository:
             observation_json=row.observation_json,
             created_at=row.created_at,
             expires_at=row.expires_at,
-        )
-
-
-class EmojiDescriptionRepository:
-    """Persist visual observations behind durable, exact emoji lookup keys."""
-
-    _MODES = frozenset({"general", "meme", "ocr", "question"})
-
-    def __init__(self, database: Database) -> None:
-        self._database = database
-
-    async def find_first(
-        self,
-        emoji_keys: tuple[str, ...],
-        *,
-        analysis_mode: str,
-        question_hash: str | None,
-        provider: str,
-        model: str,
-        prompt_version: str,
-        now: datetime | None = None,
-    ) -> EmojiDescriptionRecord | None:
-        """Return the first exact key match and atomically record its reuse."""
-
-        keys = self._validated_keys(emoji_keys)
-        self._validate_lookup(
-            analysis_mode=analysis_mode,
-            question_hash=question_hash,
-            provider=provider,
-            model=model,
-            prompt_version=prompt_version,
-        )
-        if not keys:
-            return None
-        timestamp = now or datetime.now(UTC)
-        normalized_question_hash = question_hash or ""
-        async with self._database.sessions() as session, session.begin():
-            for key in keys:
-                row = await session.scalar(
-                    select(EmojiDescriptionModel).where(
-                        EmojiDescriptionModel.emoji_key == key,
-                        EmojiDescriptionModel.analysis_mode == analysis_mode,
-                        EmojiDescriptionModel.question_hash == normalized_question_hash,
-                        EmojiDescriptionModel.provider == provider,
-                        EmojiDescriptionModel.model == model,
-                        EmojiDescriptionModel.prompt_version == prompt_version,
-                    )
-                )
-                if row is None:
-                    continue
-                row.hit_count += 1
-                row.last_used_at = timestamp
-                await session.flush()
-                return self._record(row)
-        return None
-
-    async def save_many(
-        self,
-        emoji_keys: tuple[str, ...],
-        *,
-        analysis_mode: str,
-        question_hash: str | None,
-        provider: str,
-        model: str,
-        prompt_version: str,
-        observation_json: str | dict[str, Any],
-        now: datetime | None = None,
-    ) -> tuple[EmojiDescriptionRecord, ...]:
-        """Upsert one safe observation for every equivalent emoji identity key."""
-
-        keys = self._validated_keys(emoji_keys)
-        self._validate_lookup(
-            analysis_mode=analysis_mode,
-            question_hash=question_hash,
-            provider=provider,
-            model=model,
-            prompt_version=prompt_version,
-        )
-        if not keys:
-            return ()
-        serialized = _serialize_visual_observation(observation_json)
-        parsed = json.loads(serialized)
-        description_value = parsed.get("overall_description", "")
-        description = description_value if isinstance(description_value, str) else ""
-        description = " ".join(description.split())[:2000]
-        timestamp = now or datetime.now(UTC)
-        normalized_question_hash = question_hash or ""
-        records: list[EmojiDescriptionRecord] = []
-        async with self._database.sessions() as session, session.begin():
-            for key in keys:
-                values = {
-                    "emoji_key": key,
-                    "analysis_mode": analysis_mode,
-                    "question_hash": normalized_question_hash,
-                    "provider": provider,
-                    "model": model,
-                    "prompt_version": prompt_version,
-                    "description": description,
-                    "observation_json": serialized,
-                    "hit_count": 0,
-                    "created_at": timestamp,
-                    "updated_at": timestamp,
-                    "last_used_at": timestamp,
-                }
-                statement = insert(EmojiDescriptionModel).values(**values)
-                statement = statement.on_conflict_do_update(
-                    index_elements=[
-                        EmojiDescriptionModel.emoji_key,
-                        EmojiDescriptionModel.analysis_mode,
-                        EmojiDescriptionModel.question_hash,
-                        EmojiDescriptionModel.model,
-                        EmojiDescriptionModel.prompt_version,
-                    ],
-                    set_={
-                        "provider": provider,
-                        "description": description,
-                        "observation_json": serialized,
-                        "updated_at": timestamp,
-                        "last_used_at": timestamp,
-                    },
-                )
-                row = (await session.scalars(statement.returning(EmojiDescriptionModel))).one()
-                records.append(self._record(row))
-        return tuple(records)
-
-    @classmethod
-    def _validated_keys(cls, values: tuple[str, ...]) -> tuple[str, ...]:
-        keys = tuple(dict.fromkeys(value.strip() for value in values if value.strip()))
-        if any(len(value) > 255 for value in keys):
-            raise ValueError("emoji_key must not exceed 255 characters")
-        if any(not value.startswith(("package:", "emoji:", "file:", "content:")) for value in keys):
-            raise ValueError("unsupported emoji_key namespace")
-        return keys
-
-    @classmethod
-    def _validate_lookup(
-        cls,
-        *,
-        analysis_mode: str,
-        question_hash: str | None,
-        provider: str,
-        model: str,
-        prompt_version: str,
-    ) -> None:
-        if analysis_mode not in cls._MODES:
-            raise ValueError(f"unsupported analysis_mode: {analysis_mode}")
-        if analysis_mode == "question" and not question_hash:
-            raise ValueError("question analysis requires question_hash")
-        if question_hash and len(question_hash) > 64:
-            raise ValueError("question_hash must not exceed 64 characters")
-        if not provider or len(provider) > 32:
-            raise ValueError("provider must contain at most 32 characters")
-        if not model or len(model) > 128:
-            raise ValueError("model must contain at most 128 characters")
-        if not prompt_version or len(prompt_version) > 64:
-            raise ValueError("prompt_version must contain at most 64 characters")
-
-    @staticmethod
-    def _record(row: EmojiDescriptionModel) -> EmojiDescriptionRecord:
-        return EmojiDescriptionRecord(
-            id=row.id,
-            emoji_key=row.emoji_key,
-            analysis_mode=row.analysis_mode,
-            question_hash=row.question_hash,
-            provider=row.provider,
-            model=row.model,
-            prompt_version=row.prompt_version,
-            description=row.description,
-            observation_json=row.observation_json,
-            hit_count=row.hit_count,
-            created_at=row.created_at,
-            updated_at=row.updated_at,
-            last_used_at=row.last_used_at,
         )
 
 

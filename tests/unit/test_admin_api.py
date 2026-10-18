@@ -390,7 +390,7 @@ name = "Configuration fixture"
 description = "Synthetic configuration and observation fixture"
 version = "1.0.0"
 entrypoint = "configuration:Fixture"
-plugin_api = "4.0"
+plugin_api = "5.0"
 yuki_requires = ">=3.8"
 permissions = ["plugin.config.read"]
 """)

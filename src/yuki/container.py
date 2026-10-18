@@ -23,7 +23,6 @@ from yuki.application.modules import (
     AdminModule,
     AutomationModule,
     ConversationModule,
-    EmojiModule,
     MediaModule,
     ModelRuntimeModule,
     PersistenceModule,
@@ -40,7 +39,6 @@ from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
 from yuki.identity.ingress import CanonicalIngressResolver
 from yuki.identity.routing import PresenceRouter, RouteMonitor
 from yuki.memory.embedding.runtime import MemoryEmbeddingRuntime
-from yuki.model_runtime.models import ModelCapability, ModelTask
 from yuki.persistence.database import Database
 from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
 from yuki.plugin_host.config import BoundConfigFacade
@@ -62,7 +60,6 @@ from yuki.plugin_host.notification_repository import PluginNotificationRepositor
 from yuki.plugin_host.secrets import BoundSecretsFacade
 from yuki.plugin_host.session_facade import BoundAgentSessionFacade
 from yuki.plugin_host.storage import BoundStorageFacade
-from yuki.services.attachment_inputs import AttachmentInputService
 from yuki.services.autonomous_groups import AutonomousGroupService
 from yuki.services.command_service import CommandService
 from yuki.services.concurrency import ConcurrencyManager
@@ -150,8 +147,6 @@ class ApplicationContainer:
         )
         self.web_sources = persistence.web_sources
         self.media_analyses = persistence.media_analyses
-        self.emoji_descriptions = persistence.emoji_descriptions
-        self.emoji_repository = persistence.emoji_repository
         self.time_context = TimeContextService(
             default_timezone=settings.default_timezone,
         )
@@ -178,10 +173,7 @@ class ApplicationContainer:
         self.web_provider = self.web_bundle.provider
         media = MediaModule(
             settings=settings.vision,
-            emoji_settings=settings.emoji,
             analyses=self.media_analyses,
-            emoji_descriptions=self.emoji_descriptions,
-            emoji_assets=self.emoji_repository,
             lifecycle=self.lifecycle,
             provider=vision_provider,
         ).build()
@@ -193,26 +185,6 @@ class ApplicationContainer:
         self.media_resolver = media.resolver
         self.image_preprocessor = media.image_preprocessor
         self.vision: VisionService | None = media.vision
-        self.emoji_module = EmojiModule(
-            settings=settings.emoji,
-            repository=self.emoji_repository,
-            analyses=self.media_analyses,
-            resolver=self.media_resolver,
-            preprocessor=self.image_preprocessor,
-            vision_provider=self.vision_provider,
-            models=self.models,
-            runtime_config=self.runtime_config,
-            lifecycle=self.lifecycle,
-            bot_display_name=settings.bot_display_name,
-        )
-        emoji = self.emoji_module.build()
-        self.emoji_bundle = emoji
-        self.emoji_storage = emoji.storage
-        self.emoji_lifecycle = emoji.lifecycle
-        self.emoji_collector = emoji.collector
-        self.emoji_selector = emoji.selector
-        self.emoji_delivery = emoji.delivery
-        self.emoji_worker = emoji.worker
         self.concurrency = ConcurrencyManager()
         self.turn_coordinator = ConversationTurnCoordinator(
             interrupt_autonomous_on_new_message=(
@@ -251,7 +223,6 @@ class ApplicationContainer:
         )
         self.agent_tools.social_service = self.social_service
         self.social_service.runtime_config = self.runtime_config
-        self.social_service.emoji_delivery = self.emoji_delivery
         from yuki.workspace.service import WorkspaceService
         from yuki.workspace.store import WorkspaceStore
 
@@ -290,6 +261,22 @@ class ApplicationContainer:
         self.workspace_service.sandbox = self.sandbox_client
         self.agent_tools.sandbox_client = self.sandbox_client
         self.social_service.workspace = self.workspace_service.store
+        from yuki.admin.models import VisionRuntimeConfig
+        from yuki.emoji.delivery import EmojiDeliveryService
+        from yuki.emoji.library import EmojiLibrary
+
+        async def sticker_vision_runtime() -> VisionRuntimeConfig:
+            return (await self.runtime_config.snapshot()).vision
+
+        self.emoji_library = EmojiLibrary(
+            workspace=self.workspace_service,
+            source_valid=self.conversation_media.source_current,
+            preprocessor=self.image_preprocessor,
+            provider=self.vision_provider,
+            vision_runtime=sticker_vision_runtime,
+        )
+        self.emoji_delivery = EmojiDeliveryService(self.social_service, self.emoji_library)
+        self.social_service.emoji_delivery = self.emoji_delivery
         self.chat = conversation.chat
         self.runtime = self.chat.runtime
         from yuki.services.main_agent_contract import MainAgentContract
@@ -399,11 +386,6 @@ class ApplicationContainer:
             memory_audit=self.memory_audit,
             memory_maintenance=self.memory_maintenance_worker,
             groups=self.groups,
-            emoji_repository=self.emoji_repository,
-            emoji_lifecycle=self.emoji_lifecycle,
-            emoji_storage=self.emoji_storage,
-            emoji_collector=self.emoji_collector,
-            emoji_worker=self.emoji_worker,
             memory_mutations=self.memory_mutations,
             ledger=self.ledger,
             memory_self_reflection=self.memory_self_reflection_worker,
@@ -415,7 +397,6 @@ class ApplicationContainer:
         self.preference_admin = admin.preferences
         self.group_admin = admin.groups
         self.config_admin = admin.config
-        self.emoji_admin = admin.emoji
         self.automation_module = AutomationModule(
             settings=settings,
             database=self.database,
@@ -482,7 +463,6 @@ class ApplicationContainer:
         self.plugin_http = plugins.http
         self.plugin_events = plugins.events
         self.plugin_extensions = plugins.extensions
-        self.plugin_emoji_signals = plugins.emoji_signals
         self.plugin_prompts = plugins.prompts
         self.plugin_manager = plugins.manager
         self.plugin_tools = plugins.tools
@@ -508,11 +488,6 @@ class ApplicationContainer:
         from yuki.services.client_link import ClientLinkCommands
 
         self.client_links = ClientLinkCommands(self.client_api.identity, self.gateway_registry)
-        self.emoji_collector.set_event_publisher(self.plugin_events)
-        self.emoji_lifecycle.set_event_publisher(self.plugin_events)
-        self.emoji_selector.set_event_publisher(self.plugin_events)
-        self.emoji_delivery.set_event_publisher(self.plugin_events)
-        self.emoji_selector.set_plugin_signals(self.plugin_emoji_signals)
         self.chat.set_plugin_tools(self.plugin_tools)
         from yuki.services.semantic_participation import SemanticParticipationService
 
@@ -547,7 +522,6 @@ class ApplicationContainer:
             automation_worker=self.automation_worker,
             turn_coordinator=self.turn_coordinator,
             plugin_commands=self.plugin_commands,
-            emoji_admin=self.emoji_admin,
             model_invocations=self.model_invocations,
         )
         self.canonical_ingress = CanonicalIngressResolver(
@@ -562,20 +536,6 @@ class ApplicationContainer:
         self.processor = MessageProcessor(
             conversation_media=self.conversation_media,
             asr_service=self.asr,
-            attachment_inputs=(
-                AttachmentInputService(
-                    self.media_resolver,
-                    self.image_preprocessor,
-                    concurrency=settings.vision_global_concurrency,
-                    pending_limit=settings.vision_queue_max_pending,
-                    timeout=settings.vision_queue_timeout_seconds,
-                    max_bytes=settings.vision_max_prepared_bytes,
-                    images_enabled=lambda: (
-                        ModelCapability.IMAGE_INPUT
-                        in self.models.capabilities(ModelTask.CHAT_AGENT)
-                    ),
-                )
-            ),
             settings=settings,
             ledger=self.ledger,
             conversation_scopes=self.conversation_scopes,
@@ -596,7 +556,6 @@ class ApplicationContainer:
             memory_worker=self.memory_worker,
             autonomous_groups=self.autonomous_groups,
             runtime_config=self.runtime_config,
-            vision_service=self.vision,
             automation_service=self.automation,
             automation_repository=self.automation_repository,
             automation_worker=self.automation_worker,
@@ -605,8 +564,7 @@ class ApplicationContainer:
             admission_signals=self.plugin_admission_signals,
             turn_coordinator=self.turn_coordinator,
             event_publisher=self.plugin_events,
-            emoji_collector=self.emoji_collector,
-            emoji_worker=self.emoji_worker,
+            emoji_library=self.emoji_library,
         )
         self.processor.set_participation(self.semantic_participation)
         from yuki.client_api.files import ClientFiles
@@ -733,10 +691,6 @@ class ApplicationContainer:
                 agent_runner=self.runtime.runner,
                 web_provider=self.web_provider,
                 vision=self.vision,
-                emoji_repository=self.emoji_repository,
-                emoji_collector=self.emoji_collector,
-                emoji_selector=self.emoji_selector,
-                emoji_lifecycle=self.emoji_lifecycle,
                 automation=self.automation,
                 storage=BoundStorageFacade(
                     repository=self.plugin_state,
@@ -865,6 +819,7 @@ class ApplicationContainer:
             start=self.conversation_media.start,
             close=self.conversation_media.close,
         )
+        self.lifecycle.register("sticker_library", close=self.emoji_library.close)
         self.lifecycle.register(
             "memory_embeddings",
             start=self.memory_embeddings.start,
@@ -879,6 +834,9 @@ class ApplicationContainer:
         )
         self.plugin_module.register_lifecycle(self.plugins, self.lifecycle)
         self.lifecycle.register("main_agent_manifest", start=self._freeze_main_manifest)
+        self.lifecycle.register(
+            "emoji_delivery", start=self.emoji_delivery.start, close=self.emoji_delivery.close
+        )
         self.lifecycle.register(
             "semantic_participation",
             start=self.semantic_participation.start,
@@ -930,7 +888,6 @@ class ApplicationContainer:
             close=self._close_cleanup,
         )
         self.conversation_module.register_workers(self.conversation, self.lifecycle)
-        self.emoji_module.register_worker(self.emoji_bundle, self.lifecycle)
         self.automation_module.register_lifecycle(self.automation_bundle, self.lifecycle)
 
     async def _freeze_main_manifest(self) -> None:
@@ -973,9 +930,6 @@ class ApplicationContainer:
                 vision_deleted = await self.media_analyses.cleanup_expired()
                 if vision_deleted:
                     logger.info("media_analyses_cleaned count=%d", vision_deleted)
-                emoji_deleted = await self.emoji_admin.cleanup_expired()
-                if emoji_deleted:
-                    logger.info("emoji_assets_cleaned count=%d", emoji_deleted)
                 plugin_state_deleted = await self.plugin_state.cleanup_expired()
                 await self.client_api.identity.cleanup_expired()
                 media_artifacts_deleted = await self.plugin_media_artifacts.cleanup()

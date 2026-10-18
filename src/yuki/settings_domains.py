@@ -261,7 +261,6 @@ class VisionSettings(DomainSettings):
     vision_api_key: str
     vision_model: str
     vision_timeout_seconds: float = Field(gt=0)
-    vision_max_retries: int = Field(ge=0)
     vision_global_concurrency: int = Field(gt=0)
     vision_queue_max_pending: int = Field(gt=0)
     vision_queue_timeout_seconds: float = Field(gt=0)
@@ -292,35 +291,6 @@ class VisionSettings(DomainSettings):
         ):
             raise ValueError("VISION_BASE_URL, VISION_API_KEY and VISION_MODEL are required")
         return self
-
-
-class EmojiSettings(DomainSettings):
-    emoji_enabled: bool
-    emoji_collection_enabled: bool
-    emoji_collection_mode: str
-    emoji_collect_private: bool
-    emoji_collect_group: bool
-    emoji_auto_adopt_enabled: bool
-    emoji_auto_adopt_min_confidence: float = Field(ge=0, le=1)
-    emoji_pool_capacity: int | None = Field(default=None, gt=0)
-    emoji_replacement_mode: str
-    emoji_selector_enabled: bool
-    emoji_selector_candidate_count: int = Field(gt=0)
-    emoji_selector_score_gap: float = Field(ge=0)
-    emoji_selector_timeout_seconds: float = Field(gt=0)
-    emoji_near_duplicate_enabled: bool
-    emoji_near_duplicate_distance: int = Field(ge=0, le=64)
-    emoji_same_emoji_cooldown_seconds: int = Field(ge=0)
-    emoji_scope_repeat_cooldown_seconds: int = Field(ge=0)
-    emoji_cache_retention_days: int = Field(gt=0)
-    emoji_worker_batch_size: int = Field(gt=0)
-    emoji_worker_poll_seconds: float = Field(gt=0)
-    emoji_worker_lease_seconds: int = Field(gt=0)
-    emoji_worker_max_attempts: int = Field(gt=0)
-    emoji_worker_retry_delay_seconds: float = Field(ge=0)
-    emoji_analysis_version: str
-    emoji_storage_root: Path
-    emoji_preview_max_dimension: int = Field(gt=0)
 
 
 class ASRSettings(DomainSettings):

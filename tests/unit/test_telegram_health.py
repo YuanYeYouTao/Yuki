@@ -29,7 +29,6 @@ def health_container(database, gateway):
         settings=make_settings(database.url),
         telegram_gateway=gateway,
         plugin_background_turns=SimpleNamespace(health=AsyncMock(return_value={"running": True})),
-        emoji_repository=SimpleNamespace(counts=AsyncMock(return_value={})),
         memory_embeddings=SimpleNamespace(
             health=AsyncMock(
                 return_value=SimpleNamespace(
@@ -67,7 +66,6 @@ def health_container(database, gateway):
         work_scheduler=worker(),
         subagent_scheduler=worker(),
         main_agent_contract=SimpleNamespace(health=lambda: {}),
-        emoji_worker=None,
         memory_maintenance_worker=SimpleNamespace(running=False),
         conversation_effect_gate=SimpleNamespace(superseded_rejections=0),
         started_at=time.monotonic(),

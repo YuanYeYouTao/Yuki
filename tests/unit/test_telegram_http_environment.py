@@ -147,7 +147,8 @@ async def _identity_and_media(network):
         await client.get_me()
         assert (client.self_id, client.username) == ("8000", "fixture_bot")
         media = await client.resolve_media_file("original-file", "file", max_download_bytes=1024)
-        assert media.content == b"document"
+        assert media.chunks is not None
+        assert b"".join([chunk async for chunk in media.chunks()]) == b"document"
     finally:
         await client.close()
     assert [(method, path) for method, path, _, _ in network.requests] == [
@@ -219,7 +220,11 @@ async def test_proxy_failure_is_not_retried_as_direct(
             assert caught.value.uncertain
         else:
             with pytest.raises(MediaResolutionError) as caught:
-                await client.resolve_media_file("original-file", "file", max_download_bytes=1024)
+                media = await client.resolve_media_file(
+                    "original-file", "file", max_download_bytes=1024
+                )
+                assert media.chunks is not None
+                [chunk async for chunk in media.chunks()]
             assert caught.value.code == "download_failed"
     finally:
         await client.close()

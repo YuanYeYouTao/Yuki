@@ -35,7 +35,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 - **按群控制接话与主动唤醒**：自动接话、主动唤醒和自主参与的源码默认值为开启，可按实际配置分别控制。连续普通群消息按可配置窗口合并接话机会，明确呼叫和原 Work 输入不经过该等待；关闭新机会不取消已接纳任务或定时安排。Jev 语义控制器仍是默认关闭的可选接入。
 - **可恢复的长任务与子 Agent**：Work 保留目标、父子关系、累计预算、原检查点和真实回执。完成、等待或请求输入后，原工具批次和 Code 程序仍会收拢，再由统一出口结算；当前任务被取消、标记失败或真实授权失效时，仍会停止新效果。子 Agent 共用 Main 的完整工具能力，真实提问可以唤醒可接续的父任务，前台也能直接管理已获授权的旧子任务，无需另开父任务。重启不重复已确认效果，也不重开已结束祖先。
 - **简化记忆策略**：同 key 的独立事实可以共存，修改与删除按 fact ID；删除归因/强化评分、自动升格、容量腾位及旧人物好感度/信任评分。提取、SELF 与 Dream 可分别选择模型，允许部分整理与未决结果；自动提取只采纳新的事实断言。
-- **Agent 按需取资料**：长期事实由 `search_memory` 按需检索，不再每轮自动注入。当前、引用、历史附件、工作区和获准工具图片统一交给原主模型的原生多模态输入。
+- **Agent 按需取资料**：长期事实由 `search_memory` 按需检索，不再每轮自动注入。图片、视频、原生贴纸和普通文件统一保存在共享沙箱的 24 小时缓存中，首次输入只提供附件索引和文件资料，由 Agent 按需读取或收藏，不自动展开内容。
 - **Main compact 与共同历史**：一个 Conversation 共用一份原事件历史，当前 Main 默认在本地输入估值达到 96000 的整理条件时提前压缩公共历史或私有执行尾部；触发值与 Profile 模型容量分开，工具配对、来源和已付请求保留。`/ai compact [重点]` 可手动整理公共历史，旧独立 Rollup 与 Work/ordinary 摘要链退出。程序提供的本轮资料使用尖括号标签标明系统资料边界，放在当前正文之前，只用于当前激活；任务笔记继续归原 Work 私有入口。
 - **合并转发按需读取**：Agent 可沿原会话事件读取第一层转发节点，保留原顺序与部分失败结果。入账时不自动展开，内层转发也不递归读取。
 - **多协议与联网**：支持 Chat Completions、Responses、Claude Messages 和 Gemini GenerateContent，按任务显式选择连接。新安装默认开启模型搜索，保留显式禁用和实际连接能力；新 Profile 的默认思考档位为 medium，旧显式设置不被覆盖。
@@ -47,11 +47,11 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 升级步骤、兼容性变化与各项验证范围见发布说明。模型响应、工具请求与宿主资源仍会影响实际体验；版本更新不保证固定的延迟、费用或缓存命中率。
 
-**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence＋子会话、群按 SpaceBinding＋topic 隔离；人物记忆仍沿内部 Person。`yuki acp` 让外部 ACP 客户端连接服务器，每个 session 有独立 Conversation，沿原 Main、固定工具和发送回执，见[个人 API](docs/architecture/client-api.md#acp-方向-a)。Plugin API **4.0**、Main 合同 **23**、迁移 **0137**；配置及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地验证、合并和上线分别记录，正式 3.9.0 的历史说明保留如上。
+**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence＋子会话、群按 SpaceBinding＋topic 隔离；人物记忆仍沿内部 Person。`yuki acp` 让外部 ACP 客户端连接服务器，每个 session 有独立 Conversation，沿原 Main、固定工具和发送回执，见[个人 API](docs/architecture/client-api.md#acp-方向-a)。Plugin API **5.0**、Main 合同 **24**、迁移 **0140**；配置及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地验证、合并和上线分别记录，正式 3.9.0 的历史说明保留如上。
 
 当前源码的 Python 模块和发行包统一为 `yuki`，管理、个人客户端与 ACP 共用 `yuki` 命令，服务进程使用 `yuki-bot`；旧命令别名已删除。源码开发使用 `uv sync --all-extras` 或本地 Docker 构建。新发行镜像使用 `ghcr.io/yuanyeyoutao/yuki`，尚未据此发布新版本；下方正式 3.9.0 的下载、镜像和安装步骤继续对应其原 Release 产物。
 
-养鲲已移至独立仓库 [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game)，本仓库不再附带游戏源码或专用迁移。独立版需要 Plugin API 4.0 Host；安装与旧存档离线升级见插件仓库。
+养鲲已移至独立仓库 [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game)，本仓库不再附带游戏源码或专用迁移。独立插件须适配当前 Plugin API 5.0；安装与旧存档离线升级见插件仓库。
 
 会话 [Compact](docs/architecture/conversation-compact.md)（[#417](https://github.com/YuanYeYouTao/Yuki/issues/417)、[#418](https://github.com/YuanYeYouTao/Yuki/issues/418)）由当前 Main 模型统一整理公共历史或私有执行尾部。`CONTEXT_COMPACT_TRIGGER_TOKENS` 默认 `96000`，用于提前整理，不要求结果必须降到该值以下；模型硬容量沿 Profile 的明确设置，未声明时保持未知。子 Agent 共用 Main 的完整工具合同，执行按自己的真实来源与授权核验；旧独立 Rollup 和 Work/ordinary 摘要链已退役。
 
@@ -65,7 +65,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 | 搜索与插件 | 使用配置好的联网工具和获准插件处理外部信息 |
 | 持久工作环境 | 保存项目与文件，运行 Python、Node.js 或 Shell，安装依赖并交付结果 |
 | 后台任务与自动化 | 启动作业后继续聊天，随后查询进度；按已授予的权限执行定时任务和续跑 |
-| 表情与语音识别 | 表情包检索、分类和发送；入站语音识别保留 |
+| 表情与语音识别 | 共享表情文件库、后台检索配图和发送；入站语音识别保留 |
 
 这些能力取决于部署配置、模型能力和授权范围。任务被接纳、执行完成和消息发送分别有状态记录；调用工具不等于结果已经交付。
 
@@ -92,9 +92,9 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 ## 图片、语音、文件与联网
 
-- **图片与视频**：当前、引用和历史附件，以及 Agent 选取的工作区或获准工具图片，共用原主模型的原生图片输入。历史附件按内部事件索引、会话和缓存有效期核验；缺少图片能力时明确报告未读，不隐式换模型或调用独立 Qwen 视觉摘要。MP4/MOV 视频通过 FFmpeg 抽帧进入同一个主 Agent，不分析音轨，也不保证覆盖所有瞬间。后台表情分类和插件显式视觉能力仍可使用独立视觉连接。
+- **图片与视频**：入站图片、视频和原生贴纸首次只提供附件索引，不自动送像素；原件统一保存在共享沙箱 `/inputs/media-cache` 的 24 小时缓存，各会话的 Agent 可按需读或复制。明确选读的附件、工作区和获准工具图片共用原主模型的原生图片输入，核实际内部来源、内容与文件，不把跨会话共享原文件变成聊天历史合并；缺少图片能力时明确报告未读，不隐式换模型或调用独立 Qwen 视觉摘要。MP4/MOV/WebM 视频通过 FFmpeg 抽帧进入同一个主 Agent，不分析音轨，也不保证覆盖所有瞬间。后台表情描述和插件显式视觉能力仍可使用独立视觉连接。
 - **接收语音**：私聊、符合回复策略的群聊及引用语音经 Qwen ASR 转写，进入聊天历史、搜索和公共 compact。按附件顺序保留已识别全文与来源，部分失败保留已完成转写。可复用千问连接，不依赖本地合成服务；语音合成与发送已退役。见[语音识别说明](docs/speech/recognition.md)。
-- **文件阅读**：支持文本、代码、CSV/JSON、PDF 文字、DOCX 和 XLSX 的有界提取。扫描 PDF 不做 OCR，表格公式不重算，宏和附件中的代码不会因阅读而执行。在同一会话中，后续提问可不引用原附件；Yuki 按需读取 24 小时临时缓存。
+- **文件阅读**：入站默认只提供文件资料，不自动展开内容；Agent 按需读取或直接保存原件，普通图片以文件上传同样按需。显式阅读支持文本、代码、CSV/JSON、PDF 文字、DOCX 和 XLSX 的有界提取。扫描 PDF 不做 OCR，表格公式不重算，宏和附件中的代码不会因阅读而执行。Agent 可按内部索引或沙箱路径读取共享的 24 小时原件，也可复制到持久工作区或表情库；访问不续期，清理后不重下载过期原件。
 - **联网**：安装向导与 Admin/CLI 共用模型搜索默认配置，无需 Tavily 密钥。DeepSeek Chat/Responses 保留主协议并生成共用密钥的独立 Messages 搜索连接，Gemini 默认使用独立搜索桥，Anthropic Messages 默认使用原生搜索。未设置联网开关及旧 `WEB_ENABLED=true` 均使用 `native`，显式关闭、外部后端和手选连接保持原选择。模型搜索失败如实返回，配套网页读取使用直接 HTTP；仅显式选择 Tavily 服务需要其密钥。自定义网关沿真实地址和凭据配置，旧 `deepseek_anthropic` 保留原搜索来源。配置及真实能力边界见[独立原生搜索](docs/deepseek-search-bridge.md)与[模型供应商说明](docs/architecture/model-providers.md)。
 
 聊天、插件唤醒、自动化和任务续跑使用统一主 Agent 与固定完整工具合同。工具结构在部署内保持固定，执行时再检查权限与预算；这减少请求前缀变化，但不保证 Provider 的缓存命中率。
@@ -203,7 +203,7 @@ uv run pytest
 | [开发约束](docs/architecture/development-contract.md) | 事件 ID、解耦边界、固定工具、续跑和事务原则 |
 | [会话 Compact](docs/architecture/conversation-compact.md) | 长会话的历史压缩 |
 | [Memory](docs/architecture/memory-v2.md) | 记忆提取、检索和权限 |
-| [Plugin API 4.0](docs/plugin-development/index.md) | 插件开发与能力边界 |
+| [Plugin API 5.0](docs/plugin-development/index.md) | 插件开发与能力边界 |
 | [持久子 Agent](docs/architecture/persistent-subagents.md) | 任务树、父子问答、完整工具能力与恢复 |
 | [工具结果](docs/architecture/tool-results.md) | 结果预算、媒体与持久回执 |
 | [版本化发布](docs/operations/versioned-docker-release.md) | 镜像、下载包与发布流程 |

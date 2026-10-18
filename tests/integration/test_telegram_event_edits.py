@@ -158,8 +158,6 @@ async def _path(reader, source):
     return await reader.service.authorized_path(
         event_id=source.id,
         attachment_index=0,
-        conversation_id=source.canonical_conversation_id,
-        generation=1,
     )
 
 

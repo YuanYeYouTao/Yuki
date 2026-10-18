@@ -157,7 +157,9 @@ class VisionFacade(Protocol):
 
 
 class MediaFacade(Protocol):
-    async def get_current(self) -> tuple[Mapping[str, JsonValue], ...]: ...
+    async def get_current(self) -> tuple[Mapping[str, JsonValue], ...]:
+        """Read current/reply media facts and preview availability, without transport locators."""
+        ...
 
     async def create_artifact(
         self,
@@ -187,35 +189,6 @@ class NotificationFacade(Protocol):
     async def list_grants(self) -> tuple[BackgroundTargetGrantView, ...]: ...
 
     async def status(self) -> Mapping[str, int]: ...
-
-
-class EmojiFacade(Protocol):
-    async def list(
-        self, status: str | None = None, limit: int = 30
-    ) -> tuple[Mapping[str, JsonValue], ...]: ...
-
-    async def get(self, emoji_id: str) -> Mapping[str, JsonValue] | None: ...
-
-    async def search(self, query: str, limit: int = 20) -> tuple[Mapping[str, JsonValue], ...]: ...
-
-    async def collect_current(self) -> PluginResult: ...
-
-    async def select(
-        self,
-        *,
-        goal: str,
-        emotion: str = "",
-        mode: str = "optional",
-        placement: str = "after_text",
-    ) -> PluginResult: ...
-
-    async def adopt(
-        self, emoji_id: str, *, scope_type: str = "global", scope_id: str = ""
-    ) -> PluginResult: ...
-
-    async def reject(self, emoji_id: str) -> PluginResult: ...
-
-    async def ban(self, emoji_id: str) -> PluginResult: ...
 
 
 class AutomationFacade(Protocol):
@@ -361,9 +334,6 @@ class PluginContext(Protocol):
 
     @property
     def notifications(self) -> NotificationFacade: ...
-
-    @property
-    def emoji(self) -> EmojiFacade: ...
 
     @property
     def automation(self) -> AutomationFacade: ...

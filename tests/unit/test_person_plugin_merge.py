@@ -25,7 +25,7 @@ async def setup(database):
         plugin_id=plugin,
         name=plugin,
         version="1",
-        plugin_api="4.0",
+        plugin_api="5.0",
         yuki_requires="*",
         manifest_hash="original-plugin-manifest",
         entrypoint="plugin:register",

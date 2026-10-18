@@ -33,10 +33,6 @@ class HealthPayload(TypedDict):
     runtime_work: dict[str, object]
     subagents: dict[str, object]
     main_agent_manifest: dict[str, object]
-    emoji_enabled: bool
-    emoji_worker_running: bool
-    emoji_asset_count: int
-    emoji_pending_jobs: int
     memory_embedding_enabled: bool
     memory_embedding_configured: bool
     memory_embedding_coverage: float
@@ -62,7 +58,6 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
     plugin_manager = getattr(container, "plugin_manager", None)
     plugin_running_count = int(getattr(plugin_manager, "running_count", 0))
     background_health = await container.plugin_background_turns.health()
-    emoji_counts = await container.emoji_repository.counts()
     embedding_health = await container.memory_embeddings.health()
     memory_health = await container.memory_audit.health()
     rebuild_health = await container.persistence.memory_rebuilds.health(
@@ -106,14 +101,6 @@ async def build_health_payload(container: ApplicationContainer) -> HealthPayload
         runtime_work=await container.work_scheduler.health(),
         subagents=await container.subagent_scheduler.health(),
         main_agent_manifest=container.main_agent_contract.health(),
-        emoji_enabled=container.settings.emoji_enabled,
-        emoji_worker_running=(
-            container.emoji_worker is not None and container.emoji_worker.running
-        ),
-        emoji_asset_count=sum(
-            value for key, value in emoji_counts.items() if key != "jobs_pending"
-        ),
-        emoji_pending_jobs=emoji_counts.get("jobs_pending", 0),
         memory_embedding_enabled=embedding_health.enabled,
         memory_embedding_configured=embedding_health.provider_configured,
         memory_embedding_coverage=embedding_health.coverage_ratio,

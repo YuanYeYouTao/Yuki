@@ -280,7 +280,7 @@ async def test_receipt_writer_publishes_only_prepared_metadata(database, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_dispatch_selected_history_image_adds_source_dependency(database):
+async def test_selected_tool_pixels_do_not_expand_the_context_history_read_set(database):
     ledger = EventLedgerRepository(database)
     initial = await _event_and_route(database, ledger)
     selected = await _event_and_route(database, ledger, content="selected attachment source")
@@ -292,17 +292,23 @@ async def test_dispatch_selected_history_image_adds_source_dependency(database):
         generation=control.lease.generation,
         source_event_id=selected.id,
         attachment_index=0,
+        content_hash=sha256(b"pixels").hexdigest(),
     )
     transcript = TurnTranscript((ChatMessage("user", images=(image,)),))
-    with validating_request(transcript.request()):
+    request = transcript.request()
+    with validating_request(request):
         assert await guard.check(control)
-    assert selected.id in guard.additional_events
+    assert request.messages[0].images == (image,)
+    assert request.messages[0].images[0].content_hash == sha256(b"pixels").hexdigest()
+    assert selected.id not in guard.additional_events
+    assert guard.version.visible_event_ids == (initial.id,)
     saved = guard.snapshot()
     async with database.sessions() as writer, writer.begin():
         await writer.execute(
             update(ChatEventModel).where(ChatEventModel.id == selected.id).values(content="erased")
         )
-    assert not await type(guard).restore(saved).check(control)
+    assert await type(guard).restore(saved).check(control)
     foreign = replace(image, conversation_id="other-conversation")
     with validating_request(TurnTranscript((ChatMessage("user", images=(foreign,)),)).request()):
-        assert not await guard.check(control)
+        assert await guard.check(control)
+    assert guard.snapshot() == saved

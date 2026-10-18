@@ -18,7 +18,7 @@ RuntimeDirectoryPreserve=yes
 UMask=0007
 Restart=on-failure
 RestartSec=5
-TimeoutStopSec=30
+TimeoutStopSec=infinity
 # This trusted host service needs Docker and mount. Neither socket is given to code containers.
 
 [Install]

@@ -17,7 +17,6 @@ from yuki_plugin_sdk.registrar import (
     AdmissionSignalRegistration,
     BackgroundServiceRegistration,
     CommandRegistration,
-    EmojiSelectionSignalRegistration,
     EventHookRegistration,
     PluginRegistrar,
     ToolRegistration,
@@ -50,7 +49,6 @@ class ExtensionKind(StrEnum):
     EVENT_HOOK = "event_hook"
     PROMPT_FRAGMENT = "prompt_fragment"
     ADMISSION_SIGNAL = "admission_signal"
-    EMOJI_SELECTION_SIGNAL = "emoji_selection_signal"
     CONFIG_SCHEMA = "config_schema"
     BACKGROUND_SERVICE = "background_service"
 
@@ -237,19 +235,6 @@ class BoundPluginRegistrar(PluginRegistrar):
         self._registry._add(
             plugin_id=self._plugin_id,
             kind=ExtensionKind.ADMISSION_SIGNAL,
-            local_name=registration.name,
-            registration=registration,
-        )
-
-    def register_emoji_selection_signal(
-        self, registration: EmojiSelectionSignalRegistration
-    ) -> None:
-        self._require(PluginPermission.EMOJI_HOOK)
-        if re.fullmatch(r"[a-z][a-z0-9_]{0,63}", registration.name) is None:
-            raise RegistrationError("invalid emoji selection signal name")
-        self._registry._add(
-            plugin_id=self._plugin_id,
-            kind=ExtensionKind.EMOJI_SELECTION_SIGNAL,
             local_name=registration.name,
             registration=registration,
         )

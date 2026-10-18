@@ -44,7 +44,6 @@ from yuki.conversation.canonical_db_models import (
 from yuki.domain.audio import parse_transcripts, serialize_transcripts
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.profiles import UserProfileSnapshot
-from yuki.emoji.db_models import EmojiAssetModel, EmojiUsageEventModel
 from yuki.identity.canonical_repository import (
     AccountRole,
     bindings_for_person,
@@ -110,6 +109,7 @@ from yuki.plugin_host.db_models import (
 )
 from yuki.sandbox.db_models import SandboxTaskContinuationModel, SandboxTaskRunModel
 from yuki.sandbox.resource_cleanup import ResourceCleanupPreparation
+from yuki.social.db_models import SocialEmojiIntentModel
 
 
 @dataclass(frozen=True, slots=True)
@@ -1266,22 +1266,14 @@ class PeopleRepository:
                 .values(**values)
             )
         await session.execute(
-            delete(EmojiUsageEventModel).where(
+            delete(SocialEmojiIntentModel).where(
                 or_(
-                    EmojiUsageEventModel.canonical_actor_person_id.in_(person_ids),
-                    EmojiUsageEventModel.actor_user_id.in_(legacy),
+                    SocialEmojiIntentModel.source_conversation_id.in_(prepared.private_ids),
+                    func.json_extract(
+                        SocialEmojiIntentModel.source_json, "$.context.actor.person_id"
+                    ).in_(person_ids),
                 )
             )
-        )
-        await session.execute(
-            update(EmojiAssetModel)
-            .where(
-                or_(
-                    EmojiAssetModel.canonical_first_seen_person_id.in_(person_ids),
-                    EmojiAssetModel.first_seen_user_id.in_(legacy),
-                )
-            )
-            .values(canonical_first_seen_person_id=None, first_seen_user_id=None)
         )
         device_ids = select(ClientDeviceModel.id).where(ClientDeviceModel.person_id.in_(person_ids))
         audit_ids = select(AdminOperationEventModel.id).where(

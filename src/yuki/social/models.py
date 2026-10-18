@@ -38,8 +38,8 @@ class SocialMention(BaseModel):
 class SocialEmoji(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    goal: str = Field(max_length=300)
-    emotion: str = Field(default="", max_length=100)
+    goal: str
+    emotion: str = ""
 
 
 class SocialMessage(BaseModel):

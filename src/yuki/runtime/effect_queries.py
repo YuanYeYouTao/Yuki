@@ -29,7 +29,7 @@ class RuntimeEffectQueries:
         This is observation only: no dispatch, receipt rewrite or lease renewal.
         Missing planned children remain unconfirmed, including a missing caption.
         """
-        if not reference.startswith("social:"):
+        if not reference.startswith(("social:", "social-emoji:")):
             return None
         from yuki.social.repository import SocialOperationRepository
 
@@ -41,6 +41,16 @@ class RuntimeEffectQueries:
             )
             if conversation is None:
                 return None
+            if reference.startswith("social-emoji:"):
+                from yuki.social.emoji_intents import EmojiIntentRepository
+
+                return await EmojiIntentRepository.effect_facts(
+                    reader,
+                    reference.removeprefix("social-emoji:"),
+                    conversation_id=conversation,
+                    work_id=work_id,
+                    call_id=operation_key,
+                )
             # The Work-owned reservation is the file+caption plan; Social reads
             # its own rows in this same snapshot.
             intent = (

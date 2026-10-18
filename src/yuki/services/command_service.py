@@ -20,7 +20,6 @@ from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import InboundMessage, OutboundMessage
 from yuki.domain.profiles import UserProfileSnapshot
-from yuki.emoji.admin import EmojiAdminService
 from yuki.gateway.media import PlatformMediaGateway
 from yuki.memory.rebuild.service import MemoryRebuildService
 from yuki.memory.service import MemoryFactService
@@ -34,7 +33,6 @@ from yuki.services.admin.preference_admin import PreferenceAdminService
 from yuki.services.automation_commands import AutomationCommandHandler
 from yuki.services.commands.admin import AdminChatCommands
 from yuki.services.commands.conversation import ConversationCommands
-from yuki.services.commands.emoji import EmojiCommands
 from yuki.services.commands.help import ADMIN_HELP, SELF_HELP
 from yuki.services.commands.memory import MemoryCommands
 from yuki.services.commands.models import ModelCommands
@@ -82,7 +80,6 @@ class CommandService:
         automation_worker: AutomationWorker | None = None,
         turn_coordinator: ConversationTurnCoordinator | None = None,
         plugin_commands: PluginCommandAdapter | None = None,
-        emoji_admin: EmojiAdminService | None = None,
         model_invocations: ModelInvocationRepository | None = None,
     ) -> None:
         self._people, self._runtime_config = people, runtime_config
@@ -113,7 +110,6 @@ class CommandService:
             onebot_connected=onebot_connected,
             runtime_config=runtime_config,
             vision=vision_service,
-            emoji=emoji_admin,
             automation_repository=automation_repository,
             automation_worker=automation_worker,
         )
@@ -124,7 +120,6 @@ class CommandService:
             config=self._config,
             profiles=self._profiles,
             memory=memory_commands,
-            emoji=EmojiCommands(emoji_admin) if emoji_admin is not None else None,
             models=ModelCommands(settings, model_invocations),
         )
 

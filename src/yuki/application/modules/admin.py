@@ -7,12 +7,6 @@ from dataclasses import dataclass
 from yuki.admin.audit import AdminAuditService
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.config import Settings
-from yuki.emoji.admin import EmojiAdminService
-from yuki.emoji.collector import EmojiCollector
-from yuki.emoji.lifecycle import EmojiLifecycleService
-from yuki.emoji.repository import EmojiRepository
-from yuki.emoji.storage import EmojiStorage
-from yuki.emoji.worker import EmojiWorker
 from yuki.memory.audit import MemoryAuditService
 from yuki.memory.context import MemoryContextService
 from yuki.memory.dream.worker import DreamWorker
@@ -40,7 +34,6 @@ class AdminBundle:
     preferences: PreferenceAdminService
     groups: GroupAdminService
     config: ConfigAdminService
-    emoji: EmojiAdminService
 
 
 class AdminModule:
@@ -57,11 +50,6 @@ class AdminModule:
         memory_audit: MemoryAuditService,
         memory_maintenance: MemoryMaintenanceWorker,
         groups: GroupSettingsRepository,
-        emoji_repository: EmojiRepository,
-        emoji_lifecycle: EmojiLifecycleService,
-        emoji_storage: EmojiStorage,
-        emoji_collector: EmojiCollector,
-        emoji_worker: EmojiWorker | None,
         memory_mutations: MemoryMutationService,
         ledger: EventLedgerRepository,
         memory_self_reflection: SelfReflectionWorker,
@@ -77,11 +65,6 @@ class AdminModule:
         self._memory_audit = memory_audit
         self._memory_maintenance = memory_maintenance
         self._groups = groups
-        self._emoji_repository = emoji_repository
-        self._emoji_lifecycle = emoji_lifecycle
-        self._emoji_storage = emoji_storage
-        self._emoji_collector = emoji_collector
-        self._emoji_worker = emoji_worker
         self._memory_mutations = memory_mutations
         self._ledger = ledger
         self._memory_self_reflection = memory_self_reflection
@@ -113,19 +96,10 @@ class AdminModule:
             audit=audit,
         )
         config = ConfigAdminService(self._runtime_config)
-        emoji = EmojiAdminService(
-            repository=self._emoji_repository,
-            lifecycle=self._emoji_lifecycle,
-            storage=self._emoji_storage,
-            collector=self._emoji_collector,
-            config=config,
-            worker=self._emoji_worker,
-        )
         return AdminBundle(
             audit,
             memories,
             preferences,
             groups,
             config,
-            emoji,
         )
