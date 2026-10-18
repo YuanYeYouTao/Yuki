@@ -101,6 +101,10 @@ class ClientPrompts:
         for gateway in self.gateways.values():
             gateway.on_finished = self.finish
 
+    def is_running(self, principal: ClientPrincipal, request_id: str) -> bool:
+        task = self.gateways[principal.platform].request_task(principal.conversation_id, request_id)
+        return task is not None and not task.done()
+
     def _work_completions(self, tree: Iterable[str]) -> tuple[asyncio.Future[None], ...]:
         return tuple(
             completed
@@ -175,12 +179,12 @@ class ClientPrompts:
         self,
         session: AsyncSession,
         principal: ClientPrincipal,
-        request_id: str,
         event: ChatEventModel,
         receipt: ControlCommandReceiptModel | None,
+        *,
+        running: bool,
     ) -> dict[str, Any]:
-        task = self.gateways[principal.platform].request_task(principal.conversation_id, request_id)
-        if task is not None and not task.done():
+        if running:
             turn: dict[str, Any] = {"state": "running", "outcome": None}
         elif receipt is not None and receipt.operation_kind == "client.message":
             if receipt.effective_state_json is not None:
