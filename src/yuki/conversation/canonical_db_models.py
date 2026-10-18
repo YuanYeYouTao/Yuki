@@ -526,6 +526,12 @@ class ControlCommandReceiptModel(Base):
     __tablename__ = "control_command_receipts"
     __table_args__ = (
         Index(
+            "uq_control_command_receipts_source_event",
+            "source_event_id",
+            unique=True,
+            sqlite_where=text("source_event_id IS NOT NULL"),
+        ),
+        Index(
             "uq_control_command_receipts_principal_request",
             "principal_id",
             "request_id",
@@ -631,6 +637,8 @@ class ControlCommandReceiptModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     principal_id: Mapped[str] = mapped_column(String(36), nullable=False)
     request_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    source_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    expected_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # Original App namespace, independent of current human and actual device actor.
     request_person_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     request_conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)

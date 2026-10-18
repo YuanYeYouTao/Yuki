@@ -322,10 +322,12 @@ async def test_disable_source_does_not_revoke_target_but_disable_root_blocks_eve
         assert error.value.category == "canonical_owner_disabled"
 
 
-async def test_root_disable_rejects_new_original_actor_ingress_and_qq_grant_stays_real(database):
+async def test_root_disable_rejects_original_actor_but_keeps_person_qualification(database):
     a, b, _, _ = await _owners(database)
+    async with database.immediate_session() as session:
+        (await session.get(CanonicalPersonModel, a)).is_superuser = True
     await merge(database, a, b)
-    access = ControlAccess(database, superuser_ids={"10001"})
+    access = ControlAccess(database)
     assert "superuser" in (await access.principal_for_person(b)).roles
     async with database.sessions() as session:
         author = await project_event_author(

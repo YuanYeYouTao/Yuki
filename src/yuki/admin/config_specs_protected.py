@@ -47,16 +47,6 @@ def protected_config_specs() -> tuple[ConfigSpec, ...]:
             sensitive=True,
         ),
         _spec(
-            "superusers",
-            "超级管理员列表",
-            "唯一权限来源，只能通过启动环境维护。",
-            value_type="string",
-            mode=ConfigApplyMode.IMMUTABLE,
-            getter=lambda settings: bool(settings.superusers),
-            category="security",
-            sensitive=True,
-        ),
-        _spec(
             "groups.startup_enabled",
             "启动默认群列表",
             "只作为尚未落库群的启动默认值。",

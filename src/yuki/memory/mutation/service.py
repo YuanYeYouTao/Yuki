@@ -18,6 +18,7 @@ from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ScopeType
 from yuki.domain.memory_config import MemoryConfigScope
 from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.identity.authority import person_is_superuser
 from yuki.identity.person_identity import same_person_condition, same_person_id
 from yuki.memory.claim_processor import (
     MemoryClaimProcessor,
@@ -1298,6 +1299,30 @@ class MemoryMutationService:
                 != source_snapshot
             ):
                 raise MemoryMutationRejected("memory_resolution_snapshot_changed")
+            current_context = replace(
+                context,
+                actor_is_superuser=await person_is_superuser(
+                    session,
+                    context.actor_person_id
+                    or (context.event.author_person_id if context.event is not None else None),
+                ),
+            )
+            self._authorize(
+                request.operation,
+                prepared.target,
+                current_context,
+                actor_owns_target=prepared.actor_owns_target,
+            )
+            await self._validate_fact_requirements(
+                request,
+                prepared.target,
+                current_owners,
+                prepared.fact,
+                prepared.merge_fact,
+                current_context,
+                actor_person_id=current_actor,
+            )
+            current_prepared = replace(prepared, context=current_context)
             facts = tuple(fact for fact in (prepared.fact, prepared.merge_fact) if fact is not None)
             targets: tuple[MemoryFact | MemoryFactCreate, ...] = facts
             if prepared.claim is not None:
@@ -1399,7 +1424,7 @@ class MemoryMutationService:
                     f"memory:{reserved.mutation_id}",
                 )
             applied = await self._apply(
-                prepared,
+                current_prepared,
                 session=session,
                 claim_resolution=claim_resolution,
             )
@@ -1832,6 +1857,12 @@ class MemoryMutationService:
                     and await same_person_id(
                         identity_session, actor_person_id, target_owners.subject_person_id
                     )
+                )
+                context = replace(
+                    context,
+                    actor_is_superuser=await person_is_superuser(
+                        identity_session, context.actor_person_id or event.author_person_id
+                    ),
                 )
         except MemoryPartitionResolutionError as exc:
             raise MemoryMutationRejected("canonical_identity_unavailable") from exc

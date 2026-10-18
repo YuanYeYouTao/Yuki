@@ -39,7 +39,7 @@ plugin.toml
 - 不写入 `chat_events`；
 - 不向插件返回隐藏推理；
 - 能力始终取“插件声明 ∩ 管理员批准 ∩ 本轮请求”；
-- 插件会话永远不能伪造 `SUPERUSERS`。
+- 插件会话永远不能伪造 Person 的超管资格。
 
 这不是第二套 Yuki 人格或管理员路由，而是插件拥有的隔离任务会话。完整用法见 [服务 Facade](service-facades.md)。
 

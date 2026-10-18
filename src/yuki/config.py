@@ -86,7 +86,6 @@ class Settings(BaseSettings):
     telegram_poll_interval_seconds: float = Field(default=1.0, gt=0)
 
     onebot_access_token: str = ""
-    superusers_csv: str = Field(default="", validation_alias="SUPERUSERS")
     enabled_groups_csv: str = Field(default="", validation_alias="ENABLED_GROUPS")
     ignored_bot_users_csv: str = Field(default="", validation_alias="IGNORED_BOT_USERS")
     ai_prefix: str = "!ai"
@@ -625,10 +624,6 @@ class Settings(BaseSettings):
     @cached_property
     def tooling(self) -> ToolingSettings:
         return ToolingSettings.model_validate(self)
-
-    @cached_property
-    def superusers(self) -> frozenset[str]:
-        return _csv_set(self.superusers_csv)
 
     @cached_property
     def enabled_groups(self) -> frozenset[str]:

@@ -29,6 +29,7 @@ from yuki.domain.identity import AuthorKind
 from yuki.domain.messages import InboundMessage, snapshot_mention_segments
 from yuki.domain.profiles import sanitize_profile_name
 from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
+from yuki.identity.authority import person_is_superuser
 from yuki.identity.canonical_repository import find_identity_binding, trip
 from yuki.identity.db_models import CanonicalSpaceModel, IdentityBindingModel, SpaceBindingModel
 from yuki.identity.errors import CanonicalIdentityError
@@ -181,6 +182,12 @@ class CanonicalIngressUnitOfWork:
                     segments=segments,
                     normalized_segments=normalized_segments,
                 )
+            if (
+                new_generation
+                and message.scope_type is ScopeType.GROUP
+                and not await person_is_superuser(session, admitted.author_person_id)
+            ):
+                raise CanonicalIdentityError("capability_denied")
             if message.platform in LOCAL_CLIENT_PLATFORMS and admitted.author_person_id is not None:
                 from yuki.client_api.requests import personal_command
 

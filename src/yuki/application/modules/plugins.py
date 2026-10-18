@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from yuki.admin.config_service import RuntimeConfigService
+from yuki.admin.control_resolution import ControlAccess
 from yuki.application.lifecycle import LifecycleRegistry
 from yuki.model_runtime.executor import ModelExecutor
 from yuki.persistence.database import Database
@@ -65,7 +66,6 @@ class PluginModule:
         self,
         *,
         settings: PluginSettings,
-        superusers: frozenset[str],
         yuki_version: str,
         database: Database,
         models: ModelExecutor,
@@ -80,7 +80,6 @@ class PluginModule:
         bot_display_name: str = "Yuki",
     ) -> None:
         self._settings = settings
-        self._superusers = superusers
         self._yuki_version = yuki_version
         self._database = database
         self._models = models
@@ -156,7 +155,7 @@ class PluginModule:
         commands = PluginCommandAdapter(
             manager=manager,
             registry=extensions,
-            superusers=self._superusers,
+            control=ControlAccess(self._database),
             invocation_scope=self._plugin_invocation_scope,
             direct_commands=direct_commands,
         )

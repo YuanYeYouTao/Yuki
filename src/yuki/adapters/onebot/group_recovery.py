@@ -1,4 +1,4 @@
-"""Event-proven `/ai on` rescue lane, outside the ordinary group ingest fence."""
+"""Event-proven group recovery outside ordinary group admission."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from yuki.gateway.registry import (
 from yuki.identity.routing import PresenceRouter, RouteSendError
 from yuki.persistence.database import Database
 from yuki.services.admin.group_recovery import GroupRecoveryService
+from yuki.services.commands.group import parse_group_command
 from yuki.services.policies import CommandName, parse_command
 
 
@@ -28,7 +29,7 @@ class QQGroupRecovery:
     ) -> None:
         self._settings = settings
         self._registry = registry
-        self._access = ControlAccess(database, superuser_ids=settings.superusers)
+        self._access = ControlAccess(database)
         self._service = GroupRecoveryService(database, registry, router)
 
     def _command(self, message: InboundMessage) -> tuple[CommandName | None, str]:
@@ -36,7 +37,6 @@ class QQGroupRecovery:
             message.platform != "qq"
             or message.scope_type is not ScopeType.GROUP
             or not message.group_id
-            or message.sender.user_id not in self._settings.superusers
             or message.is_self_message
             or message.sender.is_bot
         ):
@@ -45,7 +45,11 @@ class QQGroupRecovery:
         return command, argument
 
     def is_enable_request(self, message: InboundMessage) -> bool:
-        return self._command(message) == (CommandName.ON, "")
+        command, argument = self._command(message)
+        return command is CommandName.ADMIN and parse_group_command(argument) == (
+            "current",
+            "enable",
+        )
 
     def _connection(self, bot: object, message: InboundMessage) -> ConnectionResolution:
         connection = self._registry.resolve_by_handle(bot)
@@ -65,8 +69,6 @@ class QQGroupRecovery:
             return None
         try:
             connection = self._connection(bot, message)
-            if message.attachments or message.reply_attachments:
-                return "恢复群路由不接受图片或附件，请单独发送 /ai on。"
             principal = await self._access.qq_recovery_principal(message.sender.user_id)
             target = await self._access.qq_recovery_space_target(message.group_id or "")
             changed = await self._service.enable(
@@ -93,10 +95,12 @@ class QQGroupRecovery:
             if exc.category == "ambiguous":
                 return "无法恢复：有多个可用账号且没有有效的接入账号，请先停用其他连接后重试。"
             if exc.category == "conflict":
-                return "恢复未执行：路由或连接刚发生变化，请重新发送 /ai on。"
+                return (
+                    "恢复未执行：路由或连接刚发生变化，请重新发送 /ai admin group current enable。"
+                )
             return "无法恢复：当前群未配置、账号不可用或群成员验证失败。"
         if not changed:
-            return "该启用请求已处理；如需再次恢复，请发送一条新的 /ai on。"
+            return "该启用请求已处理；如需再次恢复，请发送一条新的 /ai admin group current enable。"
         return "已启用当前群并恢复可用路由；会话和记忆保持不变。"
 
     async def hint(self, bot: object, message: InboundMessage, reason: str) -> str | None:
@@ -108,4 +112,7 @@ class QQGroupRecovery:
             await self._access.qq_recovery_principal(message.sender.user_id)
         except (RegistryClosed, PermissionError):
             return None
-        return "当前群接入路由已暂停，命令未执行。请超级管理员在本群单独发送 /ai on 恢复。"
+        return (
+            "当前群接入路由已暂停，命令未执行。请超级管理员在本群发送 "
+            "/ai admin group current enable 恢复。"
+        )

@@ -34,7 +34,7 @@ from yuki.conversation.scope import (
 )
 from yuki.conversation.scope_models import ConversationCoverageError
 from yuki.conversation.scope_repository import ConversationScopeRepository
-from yuki.domain.conversations import ConversationScope
+from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import (
     AttachmentKind,
     ChatImage,
@@ -217,7 +217,7 @@ class ChatService:
         from yuki.identity.authority import person_is_superuser
 
         async with self._ledger._database.sessions() as session:
-            return await person_is_superuser(session, person_id, self._settings.superusers)
+            return await person_is_superuser(session, person_id)
 
     def __init__(
         self,
@@ -1003,7 +1003,16 @@ class ChatService:
                 config,
                 turn_snapshot=turn_snapshot,
             )
-            validate = self._context_validator(version, commit_projection=commit)
+
+            async def authorize_manual_compact() -> None:
+                if inbound.scope_type is ScopeType.GROUP and not await self._person_is_superuser(
+                    inbound.person_id
+                ):
+                    raise PermissionError("manual_public_compaction_requires_current_superuser")
+
+            validate = self._context_validator(
+                version, authorize_manual_compact, commit_projection=commit
+            )
             runtime = ToolRuntime(
                 inbound=inbound,
                 conversation_key=key,

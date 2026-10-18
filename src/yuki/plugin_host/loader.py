@@ -6,7 +6,7 @@ import hashlib
 import importlib.util
 import inspect
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import ModuleType
 
@@ -25,6 +25,16 @@ class LoadedPlugin:
 
 
 class PluginLoader:
+    @staticmethod
+    def instantiate(plugin: LoadedPlugin) -> LoadedPlugin:
+        """Create a runtime instance from the already approved module definition."""
+        _, symbol = plugin.manifest.entrypoint_parts
+        try:
+            instance = getattr(plugin.module, symbol)()
+        except Exception as exc:
+            raise PluginLifecycleError("plugin entrypoint initialization failed") from exc
+        return replace(plugin, instance=instance)
+
     def load(self, root: Path, manifest: PluginManifest) -> LoadedPlugin:
         resolved_root = root.resolve()
         module_path, symbol = manifest.entrypoint_parts
@@ -49,7 +59,9 @@ class PluginLoader:
         module = importlib.util.module_from_spec(spec)
         sys.modules[isolated_name] = module
         try:
-            spec.loader.exec_module(module)
+            # Approved manifest changes must read the current source, even when
+            # filesystem timestamp/size still match a previous bytecode entry.
+            exec(compile(file_path.read_bytes(), str(file_path), "exec"), module.__dict__)
             target = getattr(module, symbol)
             instance = target()
         except Exception as exc:

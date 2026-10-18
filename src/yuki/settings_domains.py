@@ -65,7 +65,6 @@ class AppSettings(DomainSettings):
 
 class OneBotSettings(DomainSettings):
     onebot_access_token: str
-    superusers_csv: str
     enabled_groups_csv: str
     ignored_bot_users_csv: str
     ai_prefix: str

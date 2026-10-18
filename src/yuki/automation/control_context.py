@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.automation.authority import PermissionLevel
-from yuki.config import Settings
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     PersonActiveRouteModel,
@@ -46,7 +45,6 @@ class ControlAutomationContext:
 
 async def resolve_control_context(
     session: AsyncSession,
-    settings: Settings,
     *,
     owner_id: str,
     conversation_id: str | None,
@@ -109,7 +107,6 @@ async def resolve_control_context(
     account, permission = (
         await resolve_execution_identity(
             session,
-            settings,
             owner_id=owner_id,
             conversation_id=conversation.id,
             presence_id=presence.id,
@@ -129,7 +126,6 @@ async def resolve_control_context(
 
 async def resolve_execution_identity(
     session: AsyncSession,
-    settings: Settings,
     *,
     owner_id: str,
     conversation_id: str | None = None,
@@ -153,7 +149,7 @@ async def resolve_execution_identity(
             account = binding.external_account_id
     permission = (
         PermissionLevel.SUPERUSER
-        if await person_is_superuser(session, owner_id, settings.superusers)
+        if await person_is_superuser(session, owner_id)
         else PermissionLevel.USER
     )
     return account, permission

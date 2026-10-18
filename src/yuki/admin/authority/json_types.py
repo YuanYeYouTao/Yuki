@@ -39,3 +39,12 @@ def freeze_json_object(value: object) -> JsonObject:
     if not isinstance(frozen, Mapping):
         raise TypeError("json object is required")
     return frozen
+
+
+def thaw_json_value(value: JsonValue) -> object:
+    """Turn frozen JSON into ordinary containers for transport serialization."""
+    if isinstance(value, Mapping):
+        return {key: thaw_json_value(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [thaw_json_value(item) for item in value]
+    return value

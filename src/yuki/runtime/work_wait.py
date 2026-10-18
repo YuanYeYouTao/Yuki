@@ -21,6 +21,7 @@ from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.identity.db_models import PresenceModel
 from yuki.identity.person_identity import same_person_id
 from yuki.persistence.models import ChatEventModel
@@ -631,7 +632,7 @@ class WorkWaitRepository:
         on_delivery: Callable[[AsyncSession, int], Awaitable[None]] | None = None,
         prepare_source: Callable[[], Awaitable[bool]] | None = None,
     ) -> WorkInputMatch | None:
-        """Prepare quoted/App replies and conversation waits in one read view."""
+        """Prepare quoted/personal replies and conversation waits in one read view."""
         async with self.repository.database.sessions() as observer:
             await observer.execute(text("BEGIN"))
             source = (
@@ -666,7 +667,7 @@ class WorkWaitRepository:
                     )
                     .limit(1)
                 )
-                if source.reply_to_event_id is not None or source.platform == "app"
+                if source.reply_to_event_id is not None or source.platform in LOCAL_CLIENT_PLATFORMS
                 else None
             )
         if reply_candidate is not None:
@@ -692,7 +693,7 @@ class WorkWaitRepository:
     async def match_user_reply(
         self, event_id: int, *, session: AsyncSession | None = None
     ) -> int | None:
-        """Resume a quoted question, or the same Person's current App waiting Work."""
+        """Resume a quoted question, or the same Person's current personal waiting Work."""
         from yuki.runtime.execution_receipts import PROCESS_ID
         from yuki.social.db_models import SocialOperationModel
 
@@ -708,7 +709,7 @@ class WorkWaitRepository:
                             PresenceModel.id == event.ingress_presence_id
                         )
                     )
-                    != "app"
+                    not in LOCAL_CLIENT_PLATFORMS
                 ):
                     return None
         async with (
@@ -737,7 +738,7 @@ class WorkWaitRepository:
                         PresenceModel.id == event.ingress_presence_id
                     )
                 )
-                != "app"
+                not in LOCAL_CLIENT_PLATFORMS
             ):
                 return None
             candidates = (

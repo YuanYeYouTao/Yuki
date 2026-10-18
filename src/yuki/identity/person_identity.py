@@ -250,6 +250,7 @@ async def merge_persons(
         )
     if not target.display_name:
         target.display_name = source.display_name
+    target.is_superuser = target.is_superuser or source.is_superuser
     for member in members:
         member.merged_into_person_id = target_id
         member.revision += 1

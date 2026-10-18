@@ -219,7 +219,7 @@ async def test_two_sessions_share_original_person_and_fixed_tools_without_sharin
     requests = env.provider.requests
     assert len(requests) == 4
     assert requests[0].tools == requests[2].tools
-    assert "read_personal_entry" not in {tool.name for tool in requests[0].tools}
+    assert "read_personal_entry" in {tool.name for tool in requests[0].tools}
     assert "FIRST_SESSION_ONLY" not in str(requests[2].messages)
     assert "SECOND_SESSION_ONLY" not in str(requests[0].messages)
     app_me = await env.http.get("/client/v1/me", headers=bearer(env.device["token"]))

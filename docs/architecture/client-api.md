@@ -167,8 +167,7 @@ outbox 绑定服务器和原 App 来源 Person，并保存实际 Binding／Conve
 不能证明原入口或凭据属于无关人物／服务器时保留原草稿，不派发或迁移队列。
 显式切换入口时使用对应入口的独立 outbox，已有文件不会改绑到另一原 scope。
 四态为 draft（本地草稿）、submitted（已提交待确认）、accepted（服务器已接纳）、
-result（已有可核结果）。普通消息的 result 要有原 Social 成功回执对应的结果事件；
-Work 是否完成仍读取自己的 state。传输异常保留 submitted，先按原 UUID 查询及核对
+result（请求已有真实结束或失败事实）。普通消息按原 turn.ended 收敛；静默结束不要求额外发送，Social 事件独立表示已交付，Work 是否完成仍读取自己的 state。running/unknown 保持 accepted 并保留已确认输出，不因静默或断线推断成功。传输异常保留 submitted，先按原 UUID 查询及核对
 操作、目标、payload_hash，再决定同号重试；已接纳的操作不会产生第二次派发资格。
 
 GET /requests 在授权后附 payload_hash：SHA-256(canonical JSON [operation, target,
@@ -185,7 +184,7 @@ watch 每次连接先消费 sync，再用公开 GET／事件 keyset 重建本人
 本地验收使用假模型、假 QQ 与临时服务；生产迁移、真实 QQ／模型和部署另行执行。
 个人 UI、设备执行器与真机阶段按原任务书的后续边界保留。ACP 方向 A 的接入见下节；方向 B 仍由 #456 跟踪。
 
-App 主会话直接回复时，沿原 mailbox 匹配本会话、本人最近的 waiting_user Work；
+App/ACP 主会话直接回复时，沿原 mailbox 匹配本会话、本人最近的 waiting_user Work；
 其他入口的等待不会因此被匹配，跨入口接续仍使用明确的 Work inputs 接口。
 
 ## ACP 方向 A
@@ -244,3 +243,12 @@ Yuki 已退役 MCP，本轮只接受空 `mcpServers`，非空显式返回不支�
 因此这是已知互操作限制，不宣称覆盖所有 ACP MUST；不为对接恢复动态工具或新的审批框架。
 
 实施范围与两轮审查直接记录在[原控制面任务书 §10](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。
+
+
+## 控制面重构后的个人入口
+
+App/ACP 共用个人工具视图（Main 合同23）、原 Work 普通回答匹配与显式 Binding 路由；每个 ACP Conversation 独立。按 Binding 读取个人入口遇到多个 Conversation 时返回真实候选，调用者使用已有 conversation_id 明确选择，不任意读取首条。
+
+Person 的管理员资格直接保存于人物，但个人设备正文仍不解析 `/ai admin` 或插件直达命令。真正管理走既有 operator/平台命令入口。鉴权不再写设备 last_used_at；GET/事件读取与初始 SSE sync 的调用链为只读，仍即时核当前撤销、人物启停与入口归属。
+
+ACP 用户回答等待问题时，经原 ordinary admission 进入同一 Work；第二请求投影、live 输出与取消均关联该原 Work 及其子树。原请求结束与 Work 是否完成独立。已知失败重放仍能展示先前已确认输出，沿原 UUID 查证，不重新购买模型请求。

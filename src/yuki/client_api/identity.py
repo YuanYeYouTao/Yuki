@@ -99,7 +99,7 @@ class ClientIdentityService:
         binding_id: str | None = None,
         conversation_id: str | None = None,
     ) -> ClientPrincipal:
-        async with self.database.sessions() as session, session.begin():
+        async with self.database.sessions() as session:
             device = await session.scalar(
                 select(ClientDeviceModel).where(
                     ClientDeviceModel.token_hash == secret_hash(token),
@@ -108,11 +108,9 @@ class ClientIdentityService:
             )
             if device is None:
                 raise ClientError("unauthenticated")
-            principal = await self.require_device(
+            return await self.require_device(
                 session, device.id, binding_id=binding_id, conversation_id=conversation_id
             )
-            device.last_used_at = datetime.now(UTC)
-            return principal
 
     async def require_device(
         self,
@@ -427,7 +425,7 @@ class ClientIdentityService:
         self, session: AsyncSession, binding: IdentityBindingModel, to_person: str, *, now: datetime
     ) -> IdentityBindingModel:
         await self._person(session, to_person)
-        if binding.platform in {APP_PLATFORM, ACP_PLATFORM} or binding.status != "active":
+        if binding.platform in {APP_PLATFORM, ACP_PLATFORM} or binding.status == "transferred":
             raise ClientError("precondition_failed")
         to_person = await current_person_id(session, to_person)
         if await same_person_id(session, binding.person_id, to_person):
@@ -512,7 +510,6 @@ class ClientIdentityService:
                         "device_id": row.id,
                         "label": row.label,
                         "created_at": row.created_at,
-                        "last_used_at": row.last_used_at,
                         "revoked_at": row.revoked_at,
                     }
                     for row in devices
@@ -590,36 +587,46 @@ class ClientIdentityService:
             )
 
     async def transfer_for_operator(
-        self, binding_id: str, to_person: str, principal_id: str, request_id: str
+        self,
+        binding_id: str,
+        to_person: str,
+        principal_id: str,
+        request_id: str,
+        *,
+        session: AsyncSession | None = None,
     ) -> dict[str, Any]:
+        if session is None:
+            async with self.database.immediate_session() as writer:
+                return await self.transfer_for_operator(
+                    binding_id, to_person, principal_id, request_id, session=writer
+                )
         operation = "identity.binding.transfer"
         bound = fingerprint(operation, binding_id, {"to_person": to_person})
-        async with self.database.immediate_session() as session:
-            previous = await self.replay(session, principal_id, request_id, bound)
-            if previous is not None:
-                return previous
-            old = await session.get(IdentityBindingModel, binding_id)
-            if old is None:
-                raise ClientError("not_found")
-            binding = await self.transfer_binding(session, old, to_person, now=datetime.now(UTC))
-            result: dict[str, JsonValue] = {
-                "old_binding_id": old.id,
-                "binding_id": binding.id,
-                "person_id": binding.person_id,
-            }
-            await self.receipts.record_personal_command(
-                session,
-                principal_id=principal_id,
-                principal_kind="control",
-                person_id=to_person,
-                request_id=request_id,
-                operation=operation,
-                operation_ref=binding.id,
-                payload_hash=bound,
-                resource_id=binding.id,
-                result=result,
-            )
-            return {**result, "replay": False}
+        previous = await self.replay(session, principal_id, request_id, bound)
+        if previous is not None:
+            return previous
+        old = await session.get(IdentityBindingModel, binding_id)
+        if old is None:
+            raise ClientError("not_found")
+        binding = await self.transfer_binding(session, old, to_person, now=datetime.now(UTC))
+        result: dict[str, JsonValue] = {
+            "old_binding_id": old.id,
+            "binding_id": binding.id,
+            "person_id": binding.person_id,
+        }
+        await self.receipts.record_personal_command(
+            session,
+            principal_id=principal_id,
+            principal_kind="control",
+            person_id=to_person,
+            request_id=request_id,
+            operation=operation,
+            operation_ref=binding.id,
+            payload_hash=bound,
+            resource_id=binding.id,
+            result=result,
+        )
+        return {**result, "replay": False}
 
     async def issue_for_account(
         self, *, platform: str, account: str, message_id: str, session: AsyncSession | None = None

@@ -632,7 +632,7 @@ def test_legacy_publication_keeps_hash_receipts_and_resumes_original_main_work(
             assert (await repo.get(records[2].id)).status is AutomationStatus.BLOCKED
             assert await repo.run_history(records[2].id) == ()
             recovered = await recover_automation_source(
-                database, source["conversation_id"], source, request_id=work_id, settings=settings
+                database, source["conversation_id"], source, request_id=work_id
             )
             assert (
                 recovered.content == instruction

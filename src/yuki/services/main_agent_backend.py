@@ -372,7 +372,12 @@ class MainAgentBackend(AgentToolBackend):
 
                 async def invoke_binding() -> ToolExecutionResult:
                     nonlocal binding_started
-                    binding_runtime = execution_runtime
+                    binding_runtime = replace(
+                        execution_runtime,
+                        actor_is_superuser=await self._service._person_is_superuser(
+                            execution_runtime.actor_person_id
+                        ),
+                    )
                     host = self._plugin_host
                     try:
                         await self._require_plugin_domain(effective_descriptor, parsed)
@@ -397,7 +402,7 @@ class MainAgentBackend(AgentToolBackend):
                                 else ()
                             )
                             binding_runtime = replace(
-                                execution_runtime, memory_allowed_scopes=scopes
+                                binding_runtime, memory_allowed_scopes=scopes
                             )
                     except PluginPermissionError as exc:
                         return ToolExecutionResult(

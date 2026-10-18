@@ -11,6 +11,7 @@ from yuki.admin.models import ConfigSpec
 from yuki.config import Settings
 from yuki.domain.messages import InboundMessage
 from yuki.domain.tool_actor import ToolActor
+from yuki.services.commands.help import ADMIN_ACTIONS, ADMIN_READ_ACTIONS, ADMIN_SUBACTIONS
 
 
 class PermissionLevel(IntEnum):
@@ -167,7 +168,7 @@ class CapabilityReport:
                     "name": PermissionLevel.SUPERUSER.name.casefold(),
                     "rank": int(PermissionLevel.SUPERUSER),
                     "active": True,
-                    "assignment": "SUPERUSERS",
+                    "assignment": "person",
                 },
             ],
         }
@@ -283,7 +284,7 @@ class CapabilityReport:
             f"当前权限：{role_name}（来源：{self.permission_source}）",
             f"可修改运行时配置参数：{self.mutable_config_count} 项",
             (
-                "本人确定性自助接口："
+                "确定性命令接口："
                 f"{self.self_service_operation_count} 项，其中修改型 "
                 f"{self.self_service_mutation_count} 项"
             ),
@@ -305,7 +306,7 @@ class CapabilityReport:
         if configurations:
             lines.extend(self._group_lines("可修改配置", configurations, id_prefix="config:"))
         if self_service:
-            lines.extend(self._group_lines("本人自助接口", self_service, id_prefix="command:"))
+            lines.extend(self._group_lines("可用命令", self_service, id_prefix="command:"))
         if protected:
             lines.extend(
                 self._group_lines(
@@ -567,7 +568,7 @@ _MEMORY_LIFECYCLE_CAPABILITIES = (
                 "立即运行一次有界的 {bot_name} Self Reflection。",
                 True,
             ),
-            ("dream.plan", "规划 Memory Dream", "只读规划一次全库 Dream 快照。", False),
+            ("dream.plan", "规划 Memory Dream", "保存一次全库 Dream 快照计划。", True),
             ("dream.start", "启动 Memory Dream", "后台启动一个已规划的 Dream。", True),
             ("dream.list", "查看 Memory Dream", "查看 Dream 运行与簇状态。", False),
             ("dream.cancel", "取消 Memory Dream", "取消尚未完成的 Dream。", True),
@@ -648,9 +649,7 @@ class PermissionCatalogService:
         return CapabilityReport(
             actor_user_id="SELF" if actor.principal_kind == "self" else actor.person_id or "",
             permission_level=level,
-            permission_source="SUPERUSERS"
-            if level is PermissionLevel.SUPERUSER
-            else "default_user",
+            permission_source="person" if level is PermissionLevel.SUPERUSER else "default_user",
             capabilities=capabilities,
         )
 
@@ -667,6 +666,12 @@ class PermissionCatalogService:
             )
         ]
         descriptors.extend(self._self_service_descriptors())
+        existing = {descriptor.id for descriptor in descriptors}
+        descriptors.extend(
+            descriptor
+            for descriptor in self._admin_command_descriptors()
+            if descriptor.id not in existing
+        )
         descriptors.extend(
             self._configuration_descriptor(spec) for spec in self._config_registry.list()
         )
@@ -679,6 +684,54 @@ class PermissionCatalogService:
                     descriptor.id,
                 ),
             )
+        )
+
+    @staticmethod
+    def _admin_command_descriptors() -> tuple[CapabilityDescriptor, ...]:
+        leaves = [
+            (family, action, action not in ADMIN_READ_ACTIONS[family])
+            for family, actions in ADMIN_ACTIONS.items()
+            for action in actions
+            if f"{family}.{action}" not in ADMIN_SUBACTIONS
+        ]
+        leaves.extend(
+            (family, action, mutating)
+            for family, actions in ADMIN_SUBACTIONS.items()
+            for action, mutating in actions.items()
+        )
+        leaves.extend(("group", action, True) for action in ("enable", "disable"))
+        leaves.append(("operation", "read", False))
+        return tuple(
+            CapabilityDescriptor(
+                id=f"command:{family}.{action}:admin",
+                kind=CapabilityKind.COMMAND,
+                category=family.partition(".")[0],
+                display_name=f"管理 {family}：{action}",
+                description=(
+                    "只读检查原文件和预览缺失情况。"
+                    if (family, action) == ("emoji", "doctor")
+                    else (
+                        "标记缺失原文件，并排队重建已有原图的预览。"
+                        if (family, action) == ("emoji", "repair")
+                        else (
+                            f"通过 /ai admin group <current|Space ID> {action} 设置群入口。"
+                            if family == "group"
+                            else (
+                                "通过 /ai admin operation <operation ID> 查询原操作回执。"
+                                if family == "operation"
+                                else (
+                                    f"通过 /ai admin {family.replace('.', ' ')} {action} 操作。"
+                                    "目标使用内部 ID。"
+                                )
+                            )
+                        )
+                    )
+                ),
+                minimum_level=PermissionLevel.SUPERUSER,
+                mutating=mutating,
+                target_scopes=("explicit_internal_id",),
+            )
+            for family, action, mutating in leaves
         )
 
     @staticmethod

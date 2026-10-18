@@ -10,15 +10,15 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 `UnifiedToolCatalog` 负责目录，`MainAgentContract.definitions()` 在部署初始化时收集
 主工具注册表与已批准插件，加入工作控制、子任务和 short_state；启用 Code 时再加入编排与只读目录工具，
 按名称排序并冻结完整名称、说明和参数 schema。重名声明直接报错。
-平台合同保持原能力，App 主会话另含只读 read_personal_entry；两者各有 revision。
-选择依据是 canonical Conversation 的 Binding.platform（app 或其他），不按设备、消息正文
-或配置切换。启动一次冻结两套，Work 收到 App 补充仍沿原会话合同。
+平台合同保持原能力，App/ACP 主会话另含只读 read_personal_entry；两者各有 revision。
+选择依据是 canonical Conversation 的 Binding.platform（app/acp 为个人入口，其余为平台入口），不按设备、消息正文
+或配置切换。启动一次冻结两套，Work 收到 App/ACP 补充仍沿原会话合同。
 
 `definitions()` 保留完整执行清单。默认 direct 模式的 `model_definitions()` 返回
 部署内冻结的完整工具清单，不加载 Code 引擎。显式启用 Code 时才使用固定直调集合：聊天、
 生命周期、记忆与历史、基础工作区、时间、终端与环境状态、联网、`execute_code` 和
 `lookup_tools`；服务管理、自动化和管理等其余能力经脚本调用。包安装直接在同一终端执行。两个模式分别
-冻结声明；每个模式同时冻结平台入口与 App 主会话两套合同。普通聊天、主动触发、自动化、插件主调用和持久续跑按原会话绑定的平台选择合同。
+冻结声明；每个模式同时冻结平台入口与 App/ACP 主会话两套合同。普通聊天、主动触发、自动化、插件主调用和持久续跑按原会话绑定的平台选择合同。
 它不是按每条消息或每个用户生成的白名单。工具合同变更需重启并开启明确的新链。
 `query_chat_history(view=around)` 只以内部 `event_id` 定位当前会话账本；缺少编号或传入
 平台消息号会收到错误回执。声明变更随部署生成新的合同 revision，不沿用旧请求链。
@@ -267,19 +267,19 @@ readonly alias 仍读自己的真实持久回执，不增加缓存失效总线�
 
 ## 主会话的跨入口读取与发送
 
-read_personal_entry 只从本人 App 主会话按 binding_id 或 conversation_id 显式读取本人
+read_personal_entry 只从本人 App/ACP 主会话按 binding_id 或 conversation_id 显式读取本人
 其他私聊账本，使用内部事件游标且最多 50 条。结果携带入口、会话及事件 ID；
 读取不改历史、generation 或 Main session。
-平台合同不声明该工具；执行处仍核真实 actor、来源 App 绑定及目标私聊归属。
+平台合同不声明该工具；执行处仍核真实 actor、来源个人 Binding 及目标私聊归属。
 
-send_message 的 person target 可带 binding_id。从 App 显式指定 person 目标必须明确绑定，缺失时返回 binding_required 与可选绑定；
-省略目标时仍回复当前 App 会话。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
+send_message 的 person target 可带 binding_id。从 App/ACP 显式指定 person 目标必须明确绑定，缺失时返回 binding_required 与可选绑定；
+省略目标时仍回复当前个人 Conversation。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
 在派发事务复核绑定、Presence 和连接。结果 uncertain 不重发；出站记到真实目标入口，
 SocialOperation 的 source_conversation_id 仍是原主会话。文件说明沿同一绑定投递。
 
 ## 精简后的领域入口
 
-Main 合同22保持每项固定名称、schema和顺序；direct为平台30/App31项，Code完整32/33项、直调27/28项，批准插件另计。数量是本次实际装配结果，不是运行准入条件。
+Main 合同23保持每项固定名称、schema和顺序；direct为平台30/个人入口31项，Code完整32/33项、直调27/28项，批准插件另计。数量是本次实际装配结果，不是运行准入条件。
 
 - `terminal_exec/read/control` 共用原Manager/run/回执。control的input发送原样text；read的wait_seconds只观察，默认不等待，原终态completion与游标同时保留。环境默认无强制期限，显式期限按事实执行。
 - `external_agent(action=list/prompt/get/respond/cancel/close)` 通过 ACP 使用运维配置的 Agent。只有 prompt 在已接纳的原 Work 中登记新执行；peer 是可续用的原会话资源，run 是单次 prompt。查询、权限回答、取消和关闭可管理当前来源有权访问的原资源，不要求另接纳 Work。模型只见 agent_id 目录与原资源 ID，不接收启动命令或凭据。权限请求沿原 Work 私有输入提交后才确认协议游标，回答仍核原来源当前授权；外部输出是待核对材料，最终聊天交付继续走 Social。

@@ -26,6 +26,8 @@ class Plugin:
 
 注册项会验证权限、Pydantic `extra='forbid'`、名称冲突和 Prompt 阶段。核心命令别名不可覆盖。
 
+安装定义和运行实例分开：批准后可注册定义并管理配置，`start` 才创建实际运行实例和可调用扩展。停用/启动失败保留已批准配置声明，不保留活动工具、命令或后台任务。定义查询不执行 `start`；更新 Manifest 或版本继续沿原发现与批准事实重新加载。
+
 ## `start`
 
 批准后 Host 才提供 `PluginContext`。可以读取配置、初始化私有 KV，并让 Host 调度已声明后台服务。应保持快速；超过 `PLUGIN_START_TIMEOUT_SECONDS` 会导致该插件启动失败。

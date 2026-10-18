@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import literal_column, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.identity.person_identity import person_root_id
 from yuki.memory.metrics import MemoryLifecycleMetrics
@@ -29,29 +30,37 @@ class MemoryAuditService:
         self._repository = repository
         self._metrics = metrics or MemoryLifecycleMetrics()
 
-    async def get_fact(self, fact_id: int) -> MemoryFact | None:
-        return await self._repository.get_fact(fact_id)
+    async def get_fact(
+        self, fact_id: int, *, session: AsyncSession | None = None
+    ) -> MemoryFact | None:
+        return await self._repository.get_fact(fact_id, session=session)
 
-    async def get_evidence(self, fact_id: int, *, limit: int = 100) -> tuple[MemoryEvidence, ...]:
-        return await self._repository.list_evidence(fact_id, limit=limit)
+    async def get_evidence(
+        self, fact_id: int, *, limit: int = 100, session: AsyncSession | None = None
+    ) -> tuple[MemoryEvidence, ...]:
+        return await self._repository.list_evidence(fact_id, limit=limit, session=session)
 
-    async def get_relations(self, fact_id: int) -> tuple[MemoryFactRelation, ...]:
-        return await self._repository.list_relations(fact_id)
+    async def get_relations(
+        self, fact_id: int, *, session: AsyncSession | None = None
+    ) -> tuple[MemoryFactRelation, ...]:
+        return await self._repository.list_relations(fact_id, session=session)
 
-    async def get_state_history(self, fact_id: int) -> tuple[MemoryFactStateEvent, ...]:
-        return await self._repository.list_state_events(fact_id)
+    async def get_state_history(
+        self, fact_id: int, *, session: AsyncSession | None = None
+    ) -> tuple[MemoryFactStateEvent, ...]:
+        return await self._repository.list_state_events(fact_id, session=session)
 
     async def get_supersession_chain(
-        self, fact_id: int, *, limit: int = 20
+        self, fact_id: int, *, limit: int = 20, session: AsyncSession | None = None
     ) -> tuple[MemoryFact, ...]:
         result: list[MemoryFact] = []
         seen: set[int] = set()
-        current = await self._repository.get_fact(fact_id)
+        current = await self._repository.get_fact(fact_id, session=session)
         while current is not None and current.id not in seen and len(result) < max(1, limit):
             result.append(current)
             seen.add(current.id)
             current = (
-                await self._repository.get_fact(current.supersedes_id)
+                await self._repository.get_fact(current.supersedes_id, session=session)
                 if current.supersedes_id is not None
                 else None
             )
@@ -74,14 +83,16 @@ class MemoryAuditService:
             limit=limit,
         )
 
-    async def explain(self, fact_id: int) -> dict[str, Any] | None:
-        fact = await self.get_fact(fact_id)
+    async def explain(
+        self, fact_id: int, *, session: AsyncSession | None = None
+    ) -> dict[str, Any] | None:
+        fact = await self.get_fact(fact_id, session=session)
         if fact is None:
             return None
-        evidence = await self.get_evidence(fact_id)
-        relations = await self.get_relations(fact_id)
-        state_events = await self.get_state_history(fact_id)
-        chain = await self.get_supersession_chain(fact_id)
+        evidence = await self.get_evidence(fact_id, session=session)
+        relations = await self.get_relations(fact_id, session=session)
+        state_events = await self.get_state_history(fact_id, session=session)
+        chain = await self.get_supersession_chain(fact_id, session=session)
         return {
             "fact_id": fact.id,
             "status": fact.status.value,

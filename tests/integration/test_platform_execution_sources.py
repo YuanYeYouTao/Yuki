@@ -18,7 +18,7 @@ from yuki.automation.repository import AutomationRepository
 from yuki.automation.service import AutomationService
 from yuki.automation.tools import AutomationToolService
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.identity.db_models import PresenceModel
+from yuki.identity.db_models import CanonicalPersonModel, PresenceModel
 from yuki.persistence.models import AutomationModel
 from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
 from yuki.runtime.subagent_repository import SubagentRepository
@@ -626,7 +626,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
         await works.release(lease)
     before = await works.get(child_id)
     accepted_source = await recover_execution_source(
-        database, conversation_id, source, request_id=child_id, settings=chat._settings
+        database, conversation_id, source, request_id=child_id
     )
     await env.gateway.receive(
         {
@@ -635,7 +635,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
         }
     )
     after_source = await recover_execution_source(
-        database, conversation_id, source, request_id=child_id, settings=chat._settings
+        database, conversation_id, source, request_id=child_id
     )
     assert after_source == accepted_source
     env.model._responder = lambda _: ChatResponse(
@@ -733,10 +733,13 @@ async def test_app_sdk_admin_grants_an_explicit_telegram_topic(
             select(CanonicalConversationModel).where(CanonicalConversationModel.kind == "space")
         )
     chat, source = await app_source(app_env, database, monkeypatch)
+    async with database.immediate_session() as session:
+        (
+            await session.get(CanonicalPersonModel, source.require_actor().person_id)
+        ).is_superuser = True
     repository = await install(database)
     host = HostPluginContext(
         plugin_id="native-notification",
-        superuser_ids=("1001",),
         approved_permissions=(PluginPermission.NOTIFICATION_PUBLISH,),
         services=PluginFacadeServices(ledger=chat._ledger, notifications=repository),
     )
