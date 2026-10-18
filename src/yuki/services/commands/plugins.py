@@ -16,13 +16,12 @@ import json
 
 
 class PluginAdminCommands:
-    def __init__(self, operations: AdminOperations | None, queries: AdminQueries | None) -> None:
+    def __init__(self, operations: AdminOperations, queries: AdminQueries) -> None:
         self.operations, self.queries = operations, queries
 
     async def execute(
         self, principal: ControlPrincipal, message: InboundMessage, argument: str
     ) -> Any:
-        assert self.operations is not None and self.queries is not None
         queries = self.queries
         action, _, rest = argument.strip().partition(" ")
         action = action.casefold()

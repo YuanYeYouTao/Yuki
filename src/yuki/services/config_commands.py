@@ -31,7 +31,7 @@ class ConfigCommandHandler:
         *,
         config_admin: ConfigAdminService,
         permission_catalog: PermissionCatalogService,
-        operations: AdminOperations | None = None,
+        operations: AdminOperations,
     ) -> None:
         self._operations = operations
         self._config_admin = config_admin
@@ -90,12 +90,11 @@ class ConfigCommandHandler:
             if isinstance(parsed_scope, str):
                 return parsed_scope
             scope_type, scope_id = parsed_scope
-            if self._operations is None or actor.trigger_event_id is None:
-                return "管理修改缺少原应用服务或内部事件。"
+            if actor.trigger_event_id is None:
+                raise ValueError("管理修改缺少原内部事件。")
             key = self._config_admin._runtime_config.registry.get(key).key
 
             async def revision() -> int:
-                assert self._operations is not None
                 return await self._operations.config.revision(
                     principal, key, scope_type=scope_type, scope_id=scope_id
                 )
@@ -131,12 +130,11 @@ class ConfigCommandHandler:
             if isinstance(parsed_scope, str):
                 return parsed_scope
             scope_type, scope_id = parsed_scope
-            if self._operations is None or actor.trigger_event_id is None:
-                return "管理修改缺少原应用服务或内部事件。"
+            if actor.trigger_event_id is None:
+                raise ValueError("管理修改缺少原内部事件。")
             key = self._config_admin._runtime_config.registry.get(key).key
 
             async def unset_revision() -> int:
-                assert self._operations is not None
                 return await self._operations.config.revision(
                     principal, key, scope_type=scope_type, scope_id=scope_id
                 )
@@ -186,12 +184,11 @@ class ConfigCommandHandler:
         if operation == "rollback":
             if len(parts) != 1 or not parts[0].isdigit():
                 return "格式：/ai admin config rollback <change_id>"
-            if self._operations is None or actor.trigger_event_id is None:
-                return "管理修改缺少原应用服务或内部事件。"
+            if actor.trigger_event_id is None:
+                raise ValueError("管理修改缺少原内部事件。")
             change_id = int(parts[0])
 
             async def rollback_revision() -> int:
-                assert self._operations is not None
                 return await self._operations.config.rollback_revision(principal, change_id)
 
             command = await self._operations.executor.prepare_chat_command(

@@ -529,6 +529,7 @@ class ApplicationContainer:
         self.command_service = CommandService(
             admin_operations=self.admin_api.commands,
             admin_queries=self.admin_api.queries,
+            conversation_scopes=self.conversation_scopes,
             settings=settings,
             people=self.people,
             memories=self.memories,
@@ -536,6 +537,7 @@ class ApplicationContainer:
             onebot_connected=self.onebot_connected,
             runtime_config=self.runtime_config,
             memory_admin=self.memory_admin,
+            memory_rebuild=self.memory_rebuild_service,
             preference_admin=self.preference_admin,
             config_admin=self.config_admin,
             permission_catalog=self.permission_catalog,

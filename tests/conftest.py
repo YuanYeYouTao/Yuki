@@ -183,18 +183,33 @@ def build_harness(
     )
     from tests.support.canonical_ingress import fixture_ingress
     from yuki.admin.audit import AdminAuditService
+    from yuki.admin.config_files import ConfigFileService
+    from yuki.admin.operations import AdminOperations
     from yuki.admin.permission_catalog import PermissionCatalogService
+    from yuki.admin.queries import AdminQueries
+    from yuki.client_api.identity import ClientIdentityService
     from yuki.memory.claim_processor import MemoryClaimProcessor
+    from yuki.memory.event_extractor import MemoryEventExtractor
     from yuki.memory.mutation.service import MemoryMutationService
+    from yuki.memory.rebuild.repository import MemoryRebuildRepository
+    from yuki.memory.rebuild.service import MemoryRebuildService
+    from yuki.plugin_host.discovery import PluginDiscovery
+    from yuki.plugin_host.event_bus import PluginEventBus
+    from yuki.plugin_host.extension_registry import ExtensionRegistry
+    from yuki.plugin_host.loader import PluginLoader
+    from yuki.plugin_host.manager import PluginManager
+    from yuki.plugin_host.repository import PluginInstallationRepository
     from yuki.services.admin.config_admin import ConfigAdminService
     from yuki.services.admin.memory_admin import MemoryAdminService
     from yuki.services.admin.preference_admin import PreferenceAdminService
+    from yuki_plugin_sdk.testing import FakePluginContext
 
     audit = AdminAuditService(database)
+    claim_processor = MemoryClaimProcessor(settings=settings, facts=memories)
     mutations = MemoryMutationService(
         settings=settings,
         facts=memories,
-        processor=MemoryClaimProcessor(settings=settings, facts=memories),
+        processor=claim_processor,
         ledger=ledger,
     )
     memory_admin = MemoryAdminService(
@@ -205,7 +220,50 @@ def build_harness(
         ledger=ledger,
         runtime_config=runtime_config,
     )
+    plugins = PluginManager(
+        enabled=False,
+        discovery=PluginDiscovery(
+            Path("__test_plugin_directory_not_present__"), yuki_version="0.0.0", enabled=False
+        ),
+        installations=PluginInstallationRepository(database),
+        loader=PluginLoader(),
+        extensions=ExtensionRegistry(),
+        event_bus=PluginEventBus(),
+        context_factory=lambda manifest, _permissions: FakePluginContext(manifest.id),
+    )
+    files = ConfigFileService(settings)
+    operations = AdminOperations(
+        database,
+        plugins,
+        files,
+        identities=ClientIdentityService(database),
+        people=profiles,
+        config=runtime_config,
+        groups=groups,
+    )
+
+    async def health():
+        return []
+
+    queries = AdminQueries(database, plugins, files, health)
+    rebuild = MemoryRebuildService(
+        settings=settings,
+        repository=MemoryRebuildRepository(database),
+        ledger=ledger,
+        extractor=MemoryEventExtractor(
+            models,
+            concurrency,
+            people=profiles,
+            bot_display_name=settings.bot_display_name,
+            timezone=settings.default_timezone,
+        ),
+        processor=claim_processor,
+    )
     command_service = command_service or CommandService(
+        admin_operations=operations,
+        admin_queries=queries,
+        conversation_scopes=conversation_scopes,
+        memory_rebuild=rebuild,
         settings=settings,
         people=profiles,
         memories=memories,

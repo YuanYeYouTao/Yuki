@@ -14,7 +14,7 @@ from yuki.services.commands.help import ADMIN_ACTIONS, ADMIN_SUBACTIONS
 
 class MemoryCommands:
     def __init__(
-        self, memory_admin: MemoryAdminService, memory_rebuild: MemoryRebuildService | None
+        self, memory_admin: MemoryAdminService, memory_rebuild: MemoryRebuildService
     ) -> None:
         self._memory_admin = memory_admin
         self._memory_rebuild = memory_rebuild
@@ -107,8 +107,6 @@ class MemoryCommands:
         )
 
     async def _memory_rebuild_command(self, actor: AdminActor, argument: str) -> str:
-        if self._memory_rebuild is None:
-            return "历史记忆重建服务未装配。"
         if actor.person_id is None:
             raise PermissionError("没有找到当前 Person。")
         operation, _, rest = argument.partition(" ")

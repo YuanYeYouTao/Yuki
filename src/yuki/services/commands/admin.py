@@ -55,8 +55,8 @@ class AdminChatCommands:
     def __init__(
         self,
         *,
-        operations: AdminOperations | None,
-        queries: AdminQueries | None,
+        operations: AdminOperations,
+        queries: AdminQueries,
         control: ControlAccess,
         config: ConfigCommandHandler,
         profiles: ProfileCommandHandler,
@@ -93,8 +93,8 @@ class AdminChatCommands:
                 identity = message.space_id if target.casefold() == "current" else target
                 if identity is None:
                     return "当前消息不在群聊中，请指定 Space ID。"
-                if self.operations is None or message.source_event_id is None:
-                    return "管理修改缺少原应用服务或内部事件。"
+                if message.source_event_id is None:
+                    raise ValueError("管理修改缺少原内部事件。")
 
                 async def group_revision() -> int:
                     async with self.control._database.sessions() as session:
@@ -132,8 +132,6 @@ class AdminChatCommands:
                 return await self.emoji.execute(
                     actor=actor, message=message, argument=rest, gateway=gateway
                 )
-            if self.operations is None or self.queries is None:
-                return "管理应用服务尚未装配。"
             if family == "person":
                 return render_result(await self.identity.person(principal, message, rest))
             if family == "binding":

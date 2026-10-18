@@ -9,10 +9,8 @@ from yuki.domain.conversations import ScopeType
 from yuki.domain.identity import PersonId
 from yuki.domain.messages import InboundMessage
 from yuki.domain.profiles import UserProfileSnapshot
-from yuki.memory.rebuild.service import MemoryRebuildService
 from yuki.memory.service import MemoryFactService
 from yuki.persistence.repositories import PeopleRepository
-from yuki.services.admin.memory_admin import MemoryAdminService
 from yuki.services.admin.preference_admin import PreferenceAdminService
 from yuki.services.commands.memory import MemoryCommands
 
@@ -25,20 +23,15 @@ class ProfileCommandHandler:
         *,
         people: PeopleRepository,
         memories: MemoryFactService,
-        memory_admin: MemoryAdminService,
+        memory: MemoryCommands,
         preference_admin: PreferenceAdminService,
         control: ControlAccess,
-        memory_rebuild: MemoryRebuildService | None = None,
-        bot_display_name: str = "Yuki",
     ) -> None:
         self._people = people
         self._memories = memories
-        self._memory_admin = memory_admin
         self._preference_admin = preference_admin
         self._control = control
-        self._memory_rebuild = memory_rebuild
-        self._bot_display_name = bot_display_name
-        self._memory_commands = MemoryCommands(memory_admin, memory_rebuild)
+        self._memory_commands = memory
 
     async def memory(self, *, actor: AdminActor, argument: str) -> str:
         return await self._memory_commands.memory(actor=actor, argument=argument)

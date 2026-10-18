@@ -72,7 +72,10 @@ class CommandService:
         preference_admin: PreferenceAdminService,
         config_admin: ConfigAdminService,
         permission_catalog: PermissionCatalogService,
-        conversation_scopes: ConversationScopeRepository | None = None,
+        conversation_scopes: ConversationScopeRepository,
+        admin_operations: AdminOperations,
+        admin_queries: AdminQueries,
+        memory_rebuild: MemoryRebuildService,
         vision_service: VisionService | None = None,
         automation_service: AutomationService | None = None,
         automation_repository: AutomationRepository | None = None,
@@ -81,22 +84,18 @@ class CommandService:
         plugin_commands: PluginCommandAdapter | None = None,
         emoji_admin: EmojiAdminService | None = None,
         model_invocations: ModelInvocationRepository | None = None,
-        memory_rebuild: MemoryRebuildService | None = None,
-        admin_operations: AdminOperations | None = None,
-        admin_queries: AdminQueries | None = None,
     ) -> None:
         self._people, self._runtime_config = people, runtime_config
         self._concurrency, self._turn_coordinator = concurrency, turn_coordinator
         self._plugin_commands = plugin_commands
         self._control = ControlAccess(people._database)
+        memory_commands = MemoryCommands(memory_admin, memory_rebuild)
         self._profiles = ProfileCommandHandler(
             people=people,
             memories=memories,
-            memory_admin=memory_admin,
+            memory=memory_commands,
             preference_admin=preference_admin,
             control=self._control,
-            memory_rebuild=memory_rebuild,
-            bot_display_name=settings.bot_display_name,
         )
         self._config = ConfigCommandHandler(
             config_admin=config_admin,
@@ -108,8 +107,7 @@ class CommandService:
         )
         self._conversation = ConversationCommands(
             settings=settings,
-            conversation_scopes=conversation_scopes
-            or ConversationScopeRepository(people._database),
+            conversation_scopes=conversation_scopes,
             people=people,
             concurrency=concurrency,
             onebot_connected=onebot_connected,
@@ -125,7 +123,7 @@ class CommandService:
             control=self._control,
             config=self._config,
             profiles=self._profiles,
-            memory=MemoryCommands(memory_admin, memory_rebuild),
+            memory=memory_commands,
             emoji=EmojiCommands(emoji_admin) if emoji_admin is not None else None,
             models=ModelCommands(settings, model_invocations),
         )

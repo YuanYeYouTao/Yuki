@@ -15,13 +15,12 @@ if TYPE_CHECKING:
 
 
 class IdentityAdminCommands:
-    def __init__(self, operations: AdminOperations | None, queries: AdminQueries | None) -> None:
+    def __init__(self, operations: AdminOperations, queries: AdminQueries) -> None:
         self.operations, self.queries = operations, queries
 
     async def person(
         self, principal: ControlPrincipal, message: InboundMessage, argument: str
     ) -> Any:
-        assert self.operations is not None and self.queries is not None
         queries = self.queries
         action, _, rest = argument.strip().partition(" ")
         action, rest = action.casefold(), rest.strip()
@@ -85,7 +84,6 @@ class IdentityAdminCommands:
     async def binding(
         self, principal: ControlPrincipal, message: InboundMessage, argument: str
     ) -> Any:
-        assert self.operations is not None and self.queries is not None
         queries = self.queries
         action, _, rest = argument.strip().partition(" ")
         action, rest = action.casefold(), rest.strip()
@@ -144,7 +142,6 @@ class IdentityAdminCommands:
     async def presence(
         self, principal: ControlPrincipal, message: InboundMessage, argument: str
     ) -> Any:
-        assert self.operations is not None and self.queries is not None
         queries = self.queries
         action, _, identity = argument.strip().partition(" ")
         action, identity = action.casefold(), identity.strip()

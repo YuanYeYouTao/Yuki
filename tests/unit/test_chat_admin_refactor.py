@@ -285,3 +285,28 @@ async def test_chat_person_creation_replays_original_internal_event(database):
             assert rows[0].status == "succeeded"
     finally:
         await app.close()
+
+
+async def test_real_container_rebuild_command_uses_original_service_and_current_role(database):
+    from yuki.identity.canonical_repository import find_identity_binding
+
+    app, bot, *_ = await stack(database)
+    try:
+        sender = Sender(bot)
+        first = await app.processor.handle(
+            message("/ai admin memory rebuild list", message_id="rebuild-list"), sender
+        )
+        assert first.reason == "command_admin"
+        assert sender.messages[-1].text == "暂无历史记忆重建任务。"
+        async with database.immediate_session() as session:
+            binding = await find_identity_binding(session, "9000")
+            person = await session.get(CanonicalPersonModel, binding.person_id)
+            person.is_superuser = False
+        second = await app.processor.handle(
+            message("/ai admin memory rebuild list", message_id="rebuild-list-after-revoke"), sender
+        )
+        assert second.reason == "command_admin"
+        assert "current real superuser" in sender.messages[-1].text
+        assert "暂无历史记忆重建任务" not in sender.messages[-1].text
+    finally:
+        await app.close()
