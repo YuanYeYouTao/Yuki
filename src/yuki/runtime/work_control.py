@@ -49,9 +49,10 @@ def work_control_tools() -> tuple[ChatTool, ...]:
             description=(
                 "管理持久工作。get 用原 work_id 查看状态、完整 goal 和等待条件；"
                 "list 默认 active，终态用 status=terminal，全部用 all。"
-                "持续目标可用 accept(goal) 登记；"
+                "持续目标（含定期复查、持续跟进）用 accept(goal) 登记，写清目标与反馈约定；"
                 "普通聊天无需登记，发言用 send_message。"
-                "原工作用 resume(work_id) 续接，不重复 accept；"
+                "当前工作直接继续或 update；恢复已有工作用原 work_id 调用 resume，不重复 accept。"
+                "恢复另一项工作是将它交回原执行链，不会替换当前工作；以回执为准。"
                 "独立新工作用 accept 排队，update 只修正当前目标。"
                 "derive(goal) 为当前或指定 parent_work_id 登记实际子目标，继承原来源。"
                 "update 也可仅保存 context_note：facts/unresolved/next_steps "
@@ -59,9 +60,11 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "artifact:handle、child:ID）；线索不改变执行状态，研究原文按 artifact 回读。"
                 "按需要保存累积发现、必要中间值与下一步；业务续跑使用当前聊天和 note，"
                 "不会自动恢复此前整段工具往返。"
+                "持续目标本轮暂无变化时，保存必要进展后用 wait 等待，不要 complete。"
                 "wait conditions 每项用 kind：time_due(after_seconds 或含时区 at)、conversation、"
                 "plugin_event(plugin_id,event_type)、owned_run(run_id)，"
                 "wait_mode=any/all，deadline_at 可选；信号到达续原 work_id。"
+                "conversation 等当前会话下一条输入，没有人物、主题筛选；定期查证用 time_due。"
                 "wait_status 查询，cancel_wait 撤销。need_input 说明缺失信息；"
                 "complete 提交结束；可在 result 中给出真实内部结果（调用方或父工作读取它，"
                 "不会自动外发）；fail/cancel 终止指定工作及其所属执行。"
@@ -96,9 +99,8 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                         "type": "string",
                         "enum": ["interactive", "quiet"],
                         "description": (
-                            "较长交互式任务在 accept 时用 interactive："
-                            "按需要说明进展，明确 complete/wait/need_input/fail/cancel 收尾。"
-                            "quiet 仅用于用户要求安静执行；新真人追问仍需处理。"
+                            "交互式任务用 interactive，按需说明有意义的进展或阻塞。"
+                            "用户要求安静、SELF 自主工作或后台维护用 quiet；新真人追问仍需处理。"
                             "update 可只修改此字段，不改变目标或等待。"
                         ),
                     },

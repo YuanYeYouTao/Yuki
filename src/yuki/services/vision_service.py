@@ -46,7 +46,7 @@ DEFAULT_VISUAL_QUESTION = (
     "请描述图片主要内容并尝试辨认其中的动漫、游戏、虚拟人物、吉祥物或网络表情角色；"
     "若是表情包，说明角色、情绪和常见使用语境；若包含文字，提取清晰可见的文字。"
 )
-VISION_PROMPT_VERSION = "vision-observation-v3"
+VISION_PROMPT_VERSION = "vision-observation-v4"
 _FILE_HASH_PATTERN = re.compile(r"(?i)(?<![0-9a-f])([0-9a-f]{32,64})(?![0-9a-f])")
 _EMOJI_HINTS = ("表情", "贴纸", "emoji", "sticker")
 

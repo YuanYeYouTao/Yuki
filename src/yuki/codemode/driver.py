@@ -1169,7 +1169,7 @@ _STOP_DETAIL = {
     STOP_ADMISSION_CLOSED: "宿主已关闭本脚本的后续调用；已发生的子调用回执保留，需由模型重新规划。",
     STOP_UNKNOWN_EFFECT: "有子调用结果未知；脚本已停止，先按原 operation_id 核对，禁止重发。",
     STOP_HOST_CONTROL: "原程序已按保存的控制回执关闭；保留原回执，不恢复其后语句。",
-    STOP_NEW_INPUT: "新输入到达；脚本已停止，按新要求继续。",
+    STOP_NEW_INPUT: "新输入到达；脚本已停止，结合原目标处理新增输入。",
     STOP_BUDGET: "工作总预算已用尽；脚本已停止。",
     STOP_SNAPSHOT: "可信恢复点不可用；脚本以部分结果结束，不从头重跑。",
 }

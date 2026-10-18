@@ -62,7 +62,11 @@ from .state import (
     record_queue_diagnostic,
 )
 
-AGENT_INTENT = "根据当前主会话和真实仓库事件，自然说一句真实反应；不要复述完整卡片。"
+AGENT_INTENT = (
+    "结合原工作和订阅要求处理本次真实仓库事件，按需静默查证或更新工作材料。"
+    "需要补充重要信息、履行约定反馈或请用户决定时，再用 send_message 简短说明，"
+    "避免重复通知卡片；没有需要处理或告知的事项就安静结束，不为事件另开话题。"
+)
 MAX_EVENT_PAGES = 10
 MEDIA_TTL_SECONDS = 7 * 24 * 60 * 60
 BACKLOG_DRAIN_INTERVAL_SECONDS = 1.0

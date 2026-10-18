@@ -17,6 +17,7 @@ def subagent_tools() -> tuple[ChatTool, ...]:
         tool(
             "subagent_start",
             "将复杂工作交给后台工作者，立即返回 ID；可以继续聊天。"
+            "需要当前 Work；尚未登记时先用 task_control accept 父任务。"
             "已有子任务用 subagent_control，勿重复派生。",
             {
                 "goal": {"type": "string"},
@@ -131,8 +132,7 @@ async def execute_subagent(
         "ok": True,
         "next_cursor": next_cursor,
         "evidence_note": (
-            "state 是调度状态，tool_calls 是调用次数，不代表已完成修改。"
-            "未取得具体命令输出、变更清单或产物验证前，不得声称已删除或清理了一部分。"
+            "状态和调用次数不证明任务成果；具体结果以原工具回执、产物和投递结果为准。"
         ),
         "children": [
             {
