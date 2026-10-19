@@ -20,8 +20,9 @@ from yuki.identity.db_models import (
     AccountSpaceProfileModel,
 )
 
-_ACCOUNT = re.compile(r"@\{account:([^}]+)\}")
-_ADDRESS = re.compile(r"https?://\S+|[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
+_ACCOUNT = re.compile(r"@\{account:([^{}]+)\}")
+# Try a mail local part only at its beginning, not every suffix of a long token.
+_ADDRESS = re.compile(r"https?://\S+|(?<![\w.+-])[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
 
 
 @dataclass(frozen=True, slots=True)

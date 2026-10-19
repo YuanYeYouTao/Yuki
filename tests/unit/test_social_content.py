@@ -6,7 +6,12 @@ import pytest
 from yuki.adapters.onebot.social import OneBotSocialOperations
 from yuki.gateway.providers.telegram_social import TelegramSocialOperations
 from yuki.gateway.social import TransportTarget, split_transport_message
-from yuki.social.content import NameTarget, prepare_content
+from yuki.social.content import (
+    NameTarget,
+    account_references,
+    has_natural_mentions,
+    prepare_content,
+)
 
 
 def target(name="Ice", *, account=None, assignment=None, ended=False):
@@ -74,6 +79,60 @@ def test_email_url_and_host_escape_do_not_become_group_names():
     assert content.message.text == "x@Ice.com https://x/@Ice @Ice @Ice"
     assert len(content.message.mentions) == 1
     assert content.message.mentions[0].text_end == len(content.message.text)
+
+
+@pytest.mark.parametrize(
+    "address",
+    (
+        "user@Ice.com",
+        "(first.last+tag-name@Ice.example)",
+        "中文地址@Ice.com",
+        "https://example.test/@Ice?redirect=@Ice",
+        "http://user@Ice.example/path/@Ice",
+    ),
+)
+def test_address_tokens_preserve_literal_at_and_the_next_natural_mention(address):
+    person = target()
+    assert not has_natural_mentions(address)
+    literal = prepare_content(address, names=(("Ice", person),))
+    assert literal.message.text == address and not literal.message.mentions
+    body = address + r" \@Ice，再@Ice"
+    content = prepare_content(body, names=(("Ice", person),))
+    assert content.message.text == address + " @Ice，再@Ice"
+    assert len(content.message.mentions) == 1
+    mention = content.message.mentions[0]
+    assert content.message.text[mention.text_start : mention.text_end] == "@Ice"
+    assert mention.text_end == len(content.message.text)
+
+
+@pytest.mark.parametrize("prefix", ("a" * 10000, "中文" * 5000, ".+-" * 3000))
+def test_long_nonaddress_token_keeps_a_following_native_mention(prefix):
+    person = target()
+    body = prefix + " @Ice"
+    assert has_natural_mentions(body)
+    content = prepare_content(body, names=(("Ice", person),))
+    assert content.message.text == body
+    assert len(content.message.mentions) == 1
+    assert content.message.mentions[0].text_start == len(prefix) + 1
+    assert content.message.mentions[0].account_id == person.account_id
+
+
+def test_unclosed_account_prefixes_do_not_hide_a_later_real_reference_or_name():
+    person = target()
+    malformed = "@{account:" * 1000
+    reference = f"@{{account:{person.account_id}}}"
+    body = malformed + " " + reference + " @Ice"
+    assert account_references(body) == (person.account_id,)
+    content = prepare_content(body, names=(("Ice", person),), accounts={person.account_id: person})
+    assert content.message.text == malformed + " @Ice @Ice"
+    assert [mention.account_id for mention in content.message.mentions] == [
+        person.account_id,
+        person.account_id,
+    ]
+    assert all(
+        content.message.text[mention.text_start : mention.text_end] == "@Ice"
+        for mention in content.message.mentions
+    )
 
 
 def test_slicing_keeps_atomic_native_spans_and_shifts_offsets():
