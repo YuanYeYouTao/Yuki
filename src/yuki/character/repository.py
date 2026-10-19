@@ -58,6 +58,7 @@ def profile_view(row: CharacterProfileModel, *, owner: bool) -> dict[str, Any]:
         "accent": {"light": row.accent_light, "dark": row.accent_dark},
         "revision": row.revision,
         "avatar": avatar,
+        "avatar_revision": row.avatar_revision,
         "default_avatar": avatar_view(row.default_avatar_sha256),
         "viewer": {"is_owner": owner},
     }

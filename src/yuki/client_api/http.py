@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 from starlette.background import BackgroundTask
 
+from yuki.character.avatar import CharacterAvatars
 from yuki.client_api.automations import ClientAutomations
 from yuki.client_api.capabilities import ClientCapabilities
 from yuki.client_api.computer import ClientComputer
@@ -80,6 +81,7 @@ class ClientApi:
     memory: ClientMemory | None = None
     automations: ClientAutomations | None = None
     capabilities: ClientCapabilities | None = None
+    avatars: CharacterAvatars | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -97,6 +99,11 @@ class MemoryCorrectionBody(PersonalRequest):
 class AutomationActionBody(PersonalRequest):
     request_id: UUID4 = Field(...)
     expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class AvatarResetBody(PersonalRequest):
+    request_id: UUID4 = Field(...)
+    expected_revision: int = Field(strict=True, ge=0)
 
 
 class PairBody(BaseModel):
@@ -458,6 +465,78 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
                 actor, str(identity), str(body.request_id) if body else str(uuid4())
             )
         }
+
+    def avatars() -> CharacterAvatars:
+        service = resolve().avatars
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
+    @router.put(
+        "/character/avatar",
+        response_model=Envelope[CharacterProfile],
+        response_model_exclude_unset=True,
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {"image/png": {"schema": {"type": "string", "format": "binary"}}},
+            }
+        },
+    )
+    async def set_avatar(
+        request: Request,
+        actor: Actor,
+        request_id: UUID4,
+        sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+        size: Annotated[int, Query(ge=0)],
+        expected_revision: Annotated[int, Query(ge=0)],
+    ) -> Any:
+        return {
+            "data": await avatars().change(
+                str(request_id),
+                expected_revision,
+                action="set",
+                sha256=sha256,
+                size=size,
+                chunks=request.stream(),
+                principal=actor,
+            )
+        }
+
+    @router.delete(
+        "/character/avatar",
+        response_model=Envelope[CharacterProfile],
+        response_model_exclude_unset=True,
+    )
+    async def reset_avatar(body: AvatarResetBody, actor: Actor) -> Any:
+        return {
+            "data": await avatars().change(
+                str(body.request_id), body.expected_revision, action="reset", principal=actor
+            )
+        }
+
+    @router.get(
+        "/character/avatar/{sha256}/{size}.png",
+        response_class=FileResponse,
+        responses={
+            200: {"content": {"image/png": {"schema": {"type": "string", "format": "binary"}}}}
+        },
+    )
+    async def avatar_file(
+        sha256: str,
+        size: int,
+        authorization: Annotated[str | None, Header()] = None,
+    ) -> Any:
+        actor = await principal(authorization) if authorization is not None else None
+        path = await avatars().file(sha256, size, actor)
+        return FileResponse(
+            path,
+            media_type="image/png",
+            headers={
+                "Cache-Control": "private, max-age=31536000, immutable",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     @router.get(
         "/automations", response_model=Envelope[AutomationPage], response_model_exclude_unset=True

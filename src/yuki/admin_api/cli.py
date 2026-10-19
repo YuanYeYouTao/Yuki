@@ -9,7 +9,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from yuki.admin_api.client import admin_client, identity_mutation, mutate, read
+from yuki.admin_api.client import admin_client, avatar_mutation, identity_mutation, mutate, read
 from yuki.config import Settings
 
 
@@ -39,6 +39,13 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     update.add_argument("--bio")
     update.add_argument("--accent-light")
     update.add_argument("--accent-dark")
+    avatars = character.add_parser("avatar").add_subparsers(dest="avatar_action", required=True)
+    for action in ("set", "set-default", "reset"):
+        avatar = avatars.add_parser(action)
+        if action != "reset":
+            avatar.add_argument("png", type=Path)
+        _mutation(avatar, revision=False)
+        avatar.add_argument("--revision", type=int)
     owners = character.add_parser("owner").add_subparsers(dest="owner_action", required=True)
     owners.add_parser("list")
     for action in ("grant", "revoke"):
@@ -150,6 +157,17 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
         elif kind == "character":
             if args.character_action == "show":
                 data = await read(client, "character")
+            elif args.character_action == "avatar":
+                from yuki.character.avatar_cli import normalized_png
+
+                png = normalized_png(args.png) if args.avatar_action != "reset" else None
+                data = await avatar_mutation(
+                    client,
+                    args.avatar_action,
+                    png,
+                    revision=args.revision,
+                    request_id=args.request_id,
+                )
             elif args.character_action == "owner":
                 if args.owner_action == "list":
                     data = await read(client, "character/owners")

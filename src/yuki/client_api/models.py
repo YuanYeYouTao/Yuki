@@ -24,6 +24,8 @@ class PublicProblemCode(StrEnum):
     CONTROL_HELD = "control_held"
     MEDIA_UNAVAILABLE = "media_unavailable"
     EXECUTOR_OFFLINE = "executor_offline"
+    UNSUPPORTED_IMAGE = "unsupported_image"
+    IMAGE_DIMENSIONS = "image_dimensions"
 
 
 class PublicProblem(BaseModel):
@@ -80,6 +82,7 @@ class CharacterProfile(BaseModel):
     bio: str
     accent: Accent
     revision: int
+    avatar_revision: int
     avatar: CurrentAvatar | None
     default_avatar: Avatar | None
     viewer: Viewer

@@ -95,3 +95,41 @@ async def plugin_mutation(
     )
     fields: dict[str, Any] = {"permissions": permissions or []} if action == "approve" else {}
     return await mutate(client, f"plugins/{identity}/actions/{action}", revision, **fields)
+
+
+async def avatar_mutation(
+    client: httpx.AsyncClient,
+    action: str,
+    png: bytes | None,
+    *,
+    revision: int | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    """Send normalized pixels once; uncertain responses retain the original UUID."""
+    import hashlib
+
+    request_id = request_id or str(uuid4())
+    if revision is None:
+        revision = (await read(client, "character"))["avatar_revision"]
+    parameters: dict[str, Any] = {"request_id": request_id, "expected_revision": revision}
+    try:
+        if action == "reset":
+            response = await client.request("DELETE", "/admin/v1/character/avatar", json=parameters)
+        else:
+            assert png is not None
+            response = await client.post(
+                "/admin/v1/character/avatar" + ("/default" if action == "set-default" else ""),
+                params={**parameters, "sha256": hashlib.sha256(png).hexdigest(), "size": len(png)},
+                content=png,
+                headers={"Content-Type": "image/png"},
+            )
+        if response.status_code >= 500:
+            raise RuntimeError(
+                f"request {request_id} unconfirmed; query `admin operation {request_id}`"
+            )
+        response.raise_for_status()
+    except httpx.TransportError as exc:
+        raise RuntimeError(
+            f"request {request_id} unconfirmed; query `admin operation {request_id}`"
+        ) from exc
+    return dict(response.json()["data"])

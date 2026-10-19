@@ -377,3 +377,30 @@ SELF 安排的修改继续经 Main。同号原回执可以由另一台本人设�
 id/name/description，不包含配置、权限、路径或密钥。环境 tools/version/desktop 由 Manager
 实际读到的 `/opt/yuki-runtime/manifest.json` 提供；无 manifest 时 tools 为空、desktop 为
 false，不把部署计划或宿主安装情况当成环境已经具备的能力。
+
+## 角色头像
+
+C2 始终返回 `avatar_revision`，即使 `avatar=null`；有图时 `avatar.revision` 与它相同。
+头像版本与名称/简介/角色色的 profile revision 分开。还原字母头像之后仍可用真实版本作 CAS。
+
+`PUT /character/avatar?request_id=&expected_revision=&sha256=&size=` 接收 1024×1024 PNG
+原始字节，拥有者权限在收流前及提交前核验。流式验证声明的内容哈希与实际长度，先核 IHDR，
+再完整解码、去元数据、规范为 sRGB PNG 并发布 1024/512/256/128/64 文件。
+不另加文件大小上限。文件全部 fsync 后原子发布内容目录，数据库短事务才更新头像及原命令
+回执；失败或崩溃不留下半份已引用资源。并发输送相同内容复用目录，不回收旧目录。
+
+`DELETE /character/avatar {request_id,expected_revision}` 还原当前 default_avatar；没有默认图
+则回字母头像。两者返回完整 C2；同号重放保原结果。冲突附当前 C2。PNG/解码错误为
+unsupported_image，非 1024-square 为 image_dimensions，长度/哈希不符为 validation_error，
+文件存储失败为 unavailable。文件 I/O 和解码都在数据库写事务之外。
+
+`GET /character/avatar/{sha256}/{size}.png` 使用 immutable 缓存。当前头像的 128 图是配对前
+公开呈现；其他尺寸、默认/旧图需要有效设备凭据。旧目录保留不会扩大读取权限。
+
+operator 的 `POST|DELETE /admin/v1/character/avatar`、
+`POST /admin/v1/character/avatar/default` 使用同一服务及 control.character.mutate 权限。
+默认图修改推进 avatar_revision，保当前自选头像。CLI 为
+`yuki admin character avatar set <png>|reset|set-default <png>`；CLI 依 EXIF 方向居中裁切、
+转换 sRGB 并规范输出。可显式给 `--revision`、`--request-id`；未给 revision 只先读一次
+当前 C2，再以该版本提交，冲突不会自动覆盖。未知响应使用原请求 ID 查 operation。
+部署只准备命令，不因代码落地自动更改运行实例的头像或默认图。

@@ -481,6 +481,16 @@ class ApplicationContainer:
         from yuki.client_api.identity import ClientIdentityService
 
         self.client_identity = ClientIdentityService(self.database)
+        from yuki.character.avatar import AvatarStore, CharacterAvatars
+
+        self.character_avatars = CharacterAvatars(
+            self.client_identity,
+            AvatarStore(
+                (settings.sqlite_path.parent if settings.sqlite_path is not None else Path("data"))
+                / "character-assets"
+                / "avatars"
+            ),
+        )
         self.admin_api = build_admin_api(self)
         from yuki.client_api.http import ClientApi
 
@@ -642,6 +652,7 @@ class ApplicationContainer:
             ),
             ClientAutomations(self.client_identity, self.automation_repository, self.automation),
             ClientCapabilities(self.client_identity, self.plugin_manager, self.sandbox_client),
+            self.character_avatars,
         )
         self.semantic_participation.set_promoter(
             partial(self.processor.promote_committed_event, reason="semantic_invitation")

@@ -4,7 +4,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Query
+from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 
@@ -18,8 +18,9 @@ from yuki.admin.config_files import ConfigFileError
 from yuki.admin.operations import AdminOperations
 from yuki.admin.operations.base import authorize, fail
 from yuki.admin.queries import AdminQueries
+from yuki.character.avatar import CharacterAvatars
 from yuki.character.repository import CharacterRepository
-from yuki.client_api.http import CharacterBody
+from yuki.client_api.http import AvatarResetBody, CharacterBody
 from yuki.client_api.http_errors import install_identity_errors
 from yuki.client_api.identity import ClientIdentityService
 from yuki.client_api.models import CharacterProfile, Envelope
@@ -35,6 +36,7 @@ class AdminApi:
     commands: AdminOperations
     identities: ClientIdentityService
     queries: AdminQueries
+    avatars: CharacterAvatars | None = None
 
 
 class CommandBody(BaseModel):
@@ -152,6 +154,87 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
                 str(body.request_id),
                 body.expected_revision,
                 changes,
+                operator_id=actor.principal_id.text,
+            )
+        }
+
+    def avatars() -> CharacterAvatars:
+        service = resolve().avatars
+        if service is None:
+            from yuki.client_api.errors import ClientError
+
+            raise ClientError("unavailable")
+        return service
+
+    async def store_avatar(
+        request: Request,
+        actor: ControlPrincipal,
+        request_id: UUID4,
+        sha256: str,
+        size: int,
+        expected_revision: int,
+        *,
+        default: bool,
+    ) -> Any:
+        authorize(actor, "control.character.mutate")
+        return {
+            "data": await avatars().change(
+                str(request_id),
+                expected_revision,
+                action="default" if default else "set",
+                sha256=sha256,
+                size=size,
+                chunks=request.stream(),
+                operator_id=actor.principal_id.text,
+            )
+        }
+
+    @router.post(
+        "/character/avatar",
+        response_model=Envelope[CharacterProfile],
+        response_model_exclude_unset=True,
+    )
+    async def set_avatar(
+        request: Request,
+        actor: Actor,
+        request_id: UUID4,
+        sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+        size: Annotated[int, Query(ge=0)],
+        expected_revision: Annotated[int, Query(ge=0)],
+    ) -> Any:
+        return await store_avatar(
+            request, actor, request_id, sha256, size, expected_revision, default=False
+        )
+
+    @router.post(
+        "/character/avatar/default",
+        response_model=Envelope[CharacterProfile],
+        response_model_exclude_unset=True,
+    )
+    async def default_avatar(
+        request: Request,
+        actor: Actor,
+        request_id: UUID4,
+        sha256: Annotated[str, Query(pattern=r"^[0-9a-f]{64}$")],
+        size: Annotated[int, Query(ge=0)],
+        expected_revision: Annotated[int, Query(ge=0)],
+    ) -> Any:
+        return await store_avatar(
+            request, actor, request_id, sha256, size, expected_revision, default=True
+        )
+
+    @router.delete(
+        "/character/avatar",
+        response_model=Envelope[CharacterProfile],
+        response_model_exclude_unset=True,
+    )
+    async def reset_avatar(body: AvatarResetBody, actor: Actor) -> Any:
+        authorize(actor, "control.character.mutate")
+        return {
+            "data": await avatars().change(
+                str(body.request_id),
+                body.expected_revision,
+                action="reset",
                 operator_id=actor.principal_id.text,
             )
         }
