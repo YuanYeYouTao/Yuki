@@ -53,6 +53,63 @@ async def test_role_revoke_original_grant_replay_and_person_restore(admin):
         assert (await shown(client, person))["enabled"] is enabled
 
 
+@pytest.mark.parametrize("root_disabled", [False, True])
+async def test_explicit_source_restore_preserves_other_revocations_and_original_receipts(
+    admin, database, root_disabled
+):
+    from yuki.client_api.db_models import ClientDeviceModel
+
+    client, api, *_ = admin
+    source, other, target = [await create(client) for _ in range(3)]
+    devices = {}
+    for person in (source, other):
+        issued = await client.post(
+            f"/admin/v1/persons/{person}/client-pair", json={"request_id": str(uuid4())}
+        )
+        devices[person] = await api.identities.pair(issued.json()["data"]["code"], person)
+        disabled = await client.post(f"/admin/v1/persons/{person}/disable", json=command(1))
+        assert disabled.status_code == 200, disabled.text
+        merged = await client.post(
+            f"/admin/v1/persons/{person}/merge",
+            json={"request_id": str(uuid4()), "to_person": target},
+        )
+        assert merged.status_code == 200, merged.text
+    if root_disabled:
+        disabled = await client.post(
+            f"/admin/v1/persons/{target}/disable",
+            json=command((await shown(client, target))["revision"]),
+        )
+        assert disabled.status_code == 200, disabled.text
+    source_view = await shown(client, source)
+    assert source_view["source_enabled"] is False
+    assert source_view["enabled"] is not root_disabled
+    request = command(source_view["source_revision"])
+    restored = await client.post(f"/admin/v1/persons/{source}/enable", json=request)
+    assert restored.status_code == 200, restored.text
+    assert (await api.identities.authenticate(devices[source]["token"])).person_id == target
+    with pytest.raises(ClientError, match="unauthenticated"):
+        await api.identities.authenticate(devices[other]["token"])
+    async with database.sessions() as session:
+        source_row = await session.get(CanonicalPersonModel, source)
+        other_row = await session.get(CanonicalPersonModel, other)
+        target_row = await session.get(CanonicalPersonModel, target)
+        assert source_row.enabled and target_row.enabled and not other_row.enabled
+        device = await session.get(ClientDeviceModel, devices[source]["device_id"])
+        assert device.person_id == source
+        binding = await session.scalar(
+            select(IdentityBindingModel).where(IdentityBindingModel.person_id == source)
+        )
+        assert binding is not None and binding.person_id == source
+    disabled = await client.post(
+        f"/admin/v1/persons/{target}/disable",
+        json=command((await shown(client, target))["revision"]),
+    )
+    assert disabled.status_code == 200, disabled.text
+    replayed = await client.post(f"/admin/v1/persons/{source}/enable", json=request)
+    assert replayed.json() == restored.json()
+    assert (await shown(client, target))["enabled"] is False
+
+
 async def test_disabled_account_discovery_and_recovery(admin):
     client, *_ = admin
     person = await create(client)

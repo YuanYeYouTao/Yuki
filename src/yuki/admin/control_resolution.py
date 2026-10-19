@@ -1,4 +1,4 @@
-"""Resolve canonical control actors and targets; QQ recovery has an explicit boundary."""
+"""Resolve canonical control actors and native platform recovery targets."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from yuki.admin.models import AdminActor, ControlAuditRef
 from yuki.domain.control import DecisionContext
 from yuki.domain.identity import PersonId, PrincipalId, RequestId, SpaceId
 from yuki.identity.authority import person_is_superuser
-from yuki.identity.canonical_repository import IDENTITY_PLATFORM
 from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -135,14 +134,14 @@ class ControlAccess:
             active=True,
         )
 
-    async def qq_recovery_principal(self, user_id: str) -> ControlPrincipal:
-        """Resolve the real QQ sender only for the pre-ingress group recovery lane."""
+    async def recovery_principal(self, user_id: str, *, platform: str) -> ControlPrincipal:
+        """Resolve the authenticated native sender before ordinary group admission."""
 
         token = user_id.strip()
         if not token:
             raise ControlPrincipalLookupError()
         async with self._database.sessions() as session:
-            binding = await _identity_binding(session, token)
+            binding = await _identity_binding(session, token, platform=platform)
             if binding is None or binding.status != "active":
                 raise ControlPrincipalLookupError()
             original = await session.get(CanonicalPersonModel, binding.person_id)
@@ -155,11 +154,11 @@ class ControlAccess:
             if not current.enabled:
                 raise ControlPrincipalLookupError()
             person_id = PersonId.parse(current.id)
-            privileged = await person_is_superuser(session, person_id.text)
+            privileged = await person_is_superuser(session, original.id)
         return self._principal(
             person_id,
             privileged,
-            PrincipalSource.QQ,
+            PrincipalSource.PLATFORM,
             source_person_id=PersonId.parse(original.id),
         )
 
@@ -184,14 +183,14 @@ class ControlAccess:
                 raise ValueError("没有找到该 Space。")
         return SpaceControlTarget(space_id=SpaceId.parse(space.id), storage_group_id=space.id)
 
-    async def qq_recovery_space_target(self, group_id: str) -> SpaceControlTarget:
-        """The recovery transport may target a QQ group before a Space is bound."""
+    async def recovery_space_target(self, group_id: str, *, platform: str) -> SpaceControlTarget:
+        """Native recovery may target a group before a Space is bound."""
 
         token = group_id.strip()
         if not token:
             raise ValueError("storage_group_id is required")
         async with self._database.sessions() as session:
-            binding = await _space_binding(session, token)
+            binding = await _space_binding(session, token, platform=platform)
         space_id = SpaceId.parse(binding.space_id) if binding is not None else None
         return SpaceControlTarget(space_id=space_id, storage_group_id=token)
 
@@ -246,10 +245,12 @@ def audit_ref_from_actor(actor: AdminActor) -> ControlAuditRef:
     )
 
 
-async def _identity_binding(session: AsyncSession, external_id: str) -> IdentityBindingModel | None:
+async def _identity_binding(
+    session: AsyncSession, external_id: str, *, platform: str
+) -> IdentityBindingModel | None:
     row = await session.scalar(
         select(IdentityBindingModel).where(
-            IdentityBindingModel.platform == IDENTITY_PLATFORM,
+            IdentityBindingModel.platform == platform,
             IdentityBindingModel.external_account_id == external_id,
             IdentityBindingModel.status != "transferred",
         )
@@ -257,10 +258,12 @@ async def _identity_binding(session: AsyncSession, external_id: str) -> Identity
     return row if isinstance(row, IdentityBindingModel) else None
 
 
-async def _space_binding(session: AsyncSession, group_id: str) -> SpaceBindingModel | None:
+async def _space_binding(
+    session: AsyncSession, group_id: str, *, platform: str
+) -> SpaceBindingModel | None:
     row = await session.scalar(
         select(SpaceBindingModel).where(
-            SpaceBindingModel.platform == IDENTITY_PLATFORM,
+            SpaceBindingModel.platform == platform,
             SpaceBindingModel.external_space_id == group_id,
         )
     )

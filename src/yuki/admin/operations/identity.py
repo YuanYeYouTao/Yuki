@@ -341,8 +341,11 @@ class IdentityOperations:
                 CanonicalPersonModel, await current_person_id(session, identity)
             )
             assert person is not None
-            revision(person.revision, command.expected_revision)
             field = "is_superuser" if is_superuser is not None else "enabled"
+            revision(
+                original.revision if field == "enabled" else person.revision,
+                command.expected_revision,
+            )
             value = is_superuser if is_superuser is not None else enabled
             if value is None:
                 raise fail(ProblemCode.VALIDATION_ERROR)
@@ -350,9 +353,13 @@ class IdentityOperations:
                 setattr(person, field, value)
                 person.revision += 1
                 person.updated_at = next_updated_at(person.updated_at)
+            if field == "enabled" and value is True and not original.enabled:
+                original.enabled = True
+                original.revision += 1
+                original.updated_at = next_updated_at(original.updated_at)
             return outcome(
                 identity,
-                person.revision,
+                original.revision if field == "enabled" else person.revision,
                 ("superuser" if value else "revoked")
                 if field == "is_superuser"
                 else ("enabled" if value else "disabled"),

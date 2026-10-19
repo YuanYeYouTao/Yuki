@@ -55,6 +55,7 @@ CACHEABLE_COMMAND_FAILURES: Final[frozenset[ProblemCode]] = frozenset(
         ProblemCode.ROUTE_AMBIGUOUS,
         ProblemCode.POPULATED_MERGE_FORBIDDEN,
         ProblemCode.SECRET_NOT_READABLE,
+        ProblemCode.OPERATION_UNAVAILABLE,
     }
 )
 

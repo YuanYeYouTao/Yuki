@@ -49,7 +49,8 @@ class IdentityAdminCommands:
         async def revision() -> int:
             if action in {"create", "rename", "merge", "forget"}:
                 return 0
-            return int((await queries.person(principal, identity))["revision"])
+            row = await queries.person(principal, identity)
+            return int(row["source_revision" if action == "enable" else "revision"])
 
         if action in {"grant", "revoke"}:
             payload = {"is_superuser": action == "grant"}

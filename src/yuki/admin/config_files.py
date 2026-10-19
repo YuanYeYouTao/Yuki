@@ -348,6 +348,10 @@ class ConfigFileService:
                                 content,
                                 secret_write,
                             )
+                        except ConfigFileError as exc:
+                            # A rejected rollback cannot prove that the original
+                            # files were restored; keep this operation unknown.
+                            raise OSError("model_config_restore_unconfirmed") from exc
                         finally:
                             await asyncio.gather(
                                 *(

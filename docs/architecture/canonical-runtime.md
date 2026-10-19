@@ -45,6 +45,7 @@
 超级管理员资格持久化于当前 root Person 的 `is_superuser`，不再从 QQ Binding 或环境名单推导。
 账号转移不携带资格，账号停用/解绑不删除原人资格；Person 停用保资格并暂停使用。
 同人合并对两个当前 root 的未撤销资格取 OR，不改变来源 enabled；实际使用同时核原人物与最终人物启用，历史成员的旧 true 不作 fallback。设备凭据不成为 operator 凭据。
+原来源的停用可按其内部 Person ID 明确恢复：管理查询分别展示来源和当前人物的启用状态、revision；enable 只恢复该来源及其当前人物，不批量恢复其他成员，也不撤销设备、Binding 或执行自身的停用事实。
 
 人物名称是可空、可修改、允许重名的 `Person.display_name`，不参与身份或授权。
 首次非空观察补齐空名，后续账号昵称变化只更新账号与别名；旧数据按最近全局 nickname 回填。
@@ -151,11 +152,11 @@ admission 再确认原连接与 pin。探测或 CAS 前取消不安装路由；�
 或反向删除可能已提交的路由。数值日志分别报告初读、探测准备、恢复和 fresh recheck，
 恢复包含 CAS，不能将其耗时称作纯数据库锁等待。
 
-群内超管的精确 `/ai admin group current enable` 使用独立的确定性控制入口，不是绕过 ingest 的聊天事件：QQ adapter
-验证真实事件连接与管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
+群内超管的 `/ai admin group current enable` 使用共同的确定性控制入口，不是绕过 ingest 的聊天事件：原生平台入口
+验证真实事件连接与同平台管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
 探针的候选。群启用、必要的两张群路由变更、审计和幂等回执在同一个 `BEGIN IMMEDIATE` 中提交；
 重验身份、路由 revision 与连接快照，冲突整笔退出。命令及回执不进聊天账本、模型或Memory，不修改 ConversationGeneration。普通消息、插件和其他管理命令仍受原围栏限制。
-尚无 SpaceBinding 的新群也只可由上述超管控制入口首次登记：按 Registry 中当前 QQ 连接的内部
+尚无 SpaceBinding 时，上述超管控制入口也可首次登记：按 Registry 中同平台当前连接的内部
 Presence ID 有界读取并在写事务前完成实时成员核验，要求唯一候选就是事件所在账号。writer 重验
 原连接、Presence revision 和外部绑定仍不存在，再将新内部 Space/Binding、两条路由、审计和回执
 一起提交；竞态或多个候选不创建身份，也不采纳或替换期间新出现的 owner。已有绑定继续按原

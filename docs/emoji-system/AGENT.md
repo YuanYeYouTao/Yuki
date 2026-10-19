@@ -7,7 +7,7 @@
 - 原图放在 `/workspace/stickers/<platform>/files/`，资料在同平台的 `index/`。已有 `qq`、`telegram` 目录；其他平台也沿相同结构。
 - 文件名可以用自然名称，保留原格式。资产 ID 按平台和内容生成，同平台同字节复用同一资产，不必再存一份来改名字。
 - 收藏后给它补上贴近情绪、语气和用途的短标签。长描述与 OCR 可以另写，文件名不会自动成为搜索标签。
-- 从聊天附件保存或从 `/inputs/media-cache` 复制都可以。保存完成后运行 `update` 编目；普通复制不会自动补标签，人工编目也不会自动调用 Qwen。
+- 从聊天附件保存或从 `/inputs/media-cache` 复制都可以。保存完成后运行 `update` 编目；普通复制不会自动补标签，人工编目也不会自动调用视觉模型。
 
 ```sh
 python /opt/yuki-runtime/sticker_index.py --workspace /workspace \
@@ -34,7 +34,7 @@ python /opt/yuki-runtime/sticker_index.py --workspace /workspace \
 
 ## 删除
 
-删除整个表情时，先从 JSON 确认实际原图路径和资产 ID，再删除原图及对应 JSON，最后 `rebuild`。同内容副本仍在时，重建也会再次收录。只删 JSON 而保留原图，后续重建会重新编目；只删原图会留下孤立 JSON。已经发布的快照与历史发送回执沿自己的生命周期保留。
+删除整个表情时，先从 JSON 确认实际原图路径和资产 ID，再删除原图及对应 JSON，最后 `rebuild`。同内容副本仍在时，重建也会再次收录；想彻底删除时一起删除这些副本。只删 JSON 而保留原图，后续重建会重新编目；删去原图后的孤立 JSON 由显式 `rebuild` 一并清理，改名或仍有同内容副本时保留原标签。在途描述不会从旧快照重建已删除的 JSON。已经发布的快照与历史发送回执沿自己的生命周期保留。
 
 ## 日常配图
 

@@ -16,6 +16,7 @@ from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.identity.person_identity import person_enabled_condition
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
+from yuki.persistence.unit_of_work import optional_session
 from yuki.runtime.subagent_schema import children
 from yuki.runtime.work_schema_v1 import scope, work
 from yuki.social.db_models import SocialEmojiIntentModel, SocialOperationModel
@@ -163,11 +164,17 @@ class EmojiIntentRepository:
         arguments: dict[str, Any],
         source: dict[str, Any],
         work_effect: ResultCapture | None = None,
+        session: AsyncSession | None = None,
     ) -> EmojiIntent:
         turn_id, call_id = social_source_key(turn_id), social_call_key(call_id)
         digest = payload_hash("send_message", target, arguments, conversation_id)
         now = datetime.now(UTC)
-        async with self.database.immediate_session() as session:
+        transaction = (
+            self.database.immediate_session()
+            if session is None
+            else optional_session(self.database, session, write=True)
+        )
+        async with transaction as session:
             existing = await session.scalar(
                 select(SocialEmojiIntentModel).where(
                     SocialEmojiIntentModel.source_turn_id == turn_id,
@@ -266,22 +273,75 @@ class EmojiIntentRepository:
 
     async def pending(self, after: tuple[datetime, str] | None = None) -> tuple[EmojiIntent, ...]:
         async with self.database.sessions() as session:
-            cursor = (
-                or_(
-                    SocialEmojiIntentModel.created_at > after[0],
-                    (SocialEmojiIntentModel.created_at == after[0])
-                    & (SocialEmojiIntentModel.id > after[1]),
+            while True:
+                cursor = (
+                    or_(
+                        SocialEmojiIntentModel.created_at > after[0],
+                        (SocialEmojiIntentModel.created_at == after[0])
+                        & (SocialEmojiIntentModel.id > after[1]),
+                    )
+                    if after is not None
+                    else true()
                 )
-                if after is not None
-                else true()
+                rows = list(
+                    await session.scalars(
+                        select(SocialEmojiIntentModel)
+                        .where(SocialEmojiIntentModel.closed.is_(False), cursor)
+                        .order_by(SocialEmojiIntentModel.created_at, SocialEmojiIntentModel.id)
+                        .limit(100)
+                    )
+                )
+                ready = []
+                for row in rows:
+                    intent = self.record(row)
+                    finished = await self._text_dispatch_finished(session, intent)
+                    if not finished:
+                        try:
+                            await validate_source(session, intent.source)
+                        except SocialError:
+                            # Revocation is settled even when the original text
+                            # connection or an unsent later step is still pending.
+                            finished = True
+                    if finished:
+                        ready.append(intent)
+                if ready or not rows:
+                    return tuple(ready)
+                after = (rows[-1].created_at, rows[-1].id)
+
+    @staticmethod
+    async def _text_dispatch_finished(session: AsyncSession, intent: EmojiIntent) -> bool:
+        """Order against the original text steps, independently of their success."""
+        operation_id = intent.source.get("after_operation_id")
+        if operation_id is None:
+            return True
+        parent = await session.get(SocialOperationModel, operation_id)
+        if parent is None:
+            return True
+        if parent.status in {"succeeded", "failed", "uncertain"}:
+            return True
+        if parent.action != "send_message_sequence":
+            return parent.status not in {"prepared", "executing"}
+        from yuki.social.repository import sequence_prefix
+
+        prefix = sequence_prefix(parent.tool_call_id)
+        statuses = list(
+            await session.scalars(
+                select(SocialOperationModel.status).where(
+                    SocialOperationModel.source_turn_id == parent.source_turn_id,
+                    SocialOperationModel.tool_call_id.in_(
+                        f"{prefix}{index}" for index in range(parent.planned_parts or 0)
+                    ),
+                )
             )
-            rows = await session.scalars(
-                select(SocialEmojiIntentModel)
-                .where(SocialEmojiIntentModel.closed.is_(False), cursor)
-                .order_by(SocialEmojiIntentModel.created_at, SocialEmojiIntentModel.id)
-                .limit(100)
+        )
+        return "executing" not in statuses and (
+            any(status in {"failed", "uncertain"} for status in statuses)
+            or (
+                bool(statuses)
+                and len(statuses) == parent.planned_parts
+                and all(status == "succeeded" for status in statuses)
             )
-            return tuple(self.record(row) for row in rows)
+        )
 
     async def select(self, identity: str, selected: dict[str, Any]) -> EmojiIntent:
         async with self.database.immediate_session() as session:

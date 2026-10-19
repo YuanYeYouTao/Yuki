@@ -658,9 +658,9 @@ class PresenceRouter:
             raise RouteSendError("ambiguous" if candidates else "none")
         return candidates[0]
 
-    async def unbound_group_recovery_presence(self, group_id: str) -> str:
-        """Prove one live QQ member before an explicit first group registration."""
-        identities = self._registry.connected_presence_ids("qq")
+    async def unbound_group_recovery_presence(self, group_id: str, *, platform: str) -> str:
+        """Prove one live platform member before an explicit first group registration."""
+        identities = self._registry.connected_presence_ids(platform)
         if not identities:
             raise RouteSendError("none")
         async with self._database.sessions() as session:
@@ -674,7 +674,11 @@ class PresenceRouter:
             )
         found: list[str] = []
         for presence in presences:
-            if not presence.enabled or not presence.ingest_eligible or presence.platform != "qq":
+            if (
+                not presence.enabled
+                or not presence.ingest_eligible
+                or presence.platform != platform
+            ):
                 continue
             try:
                 connection = self._registry.resolve_active(presence.id)
