@@ -9,6 +9,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from yuki.domain.audio import ASRProtocol
 from yuki.domain.messages import ReasoningEffort
 from yuki.web.models import WebMode
 
@@ -295,6 +296,7 @@ class VisionSettings(DomainSettings):
 
 class ASRSettings(DomainSettings):
     asr_enabled: bool
+    asr_protocol: ASRProtocol
     asr_base_url: str
     asr_api_key: str = Field(repr=False)
     asr_model: str = Field(min_length=1)

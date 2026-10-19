@@ -587,6 +587,7 @@ class RuntimeConfigService:
             "automation.poll_seconds": "automation_poll_seconds",
             "automation.lease_seconds": "automation_lease_seconds",
         }
+        mapping.update({spec.key: spec.settings_fields[0] for spec in self.registry.list("asr")})
         updates: dict[str, object] = {}
         for key, field_name in mapping.items():
             effective = await self.get_effective(key)

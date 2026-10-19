@@ -1,11 +1,26 @@
 """Reviewed configuration for incoming speech recognition."""
 
+from typing import get_args
+
 from yuki.admin.config_spec_helpers import _configured, _field, _spec
 from yuki.admin.models import ConfigApplyMode, ConfigSpec
+from yuki.domain.audio import ASRProtocol
 
 
 def asr_config_specs() -> tuple[ConfigSpec, ...]:
     return (
+        _spec(
+            "asr.protocol",
+            "语音识别协议",
+            "显式选择聊天音频或 multipart 转写接口；重启后生效。",
+            value_type="enum",
+            choices=get_args(ASRProtocol),
+            mode=ConfigApplyMode.RESTART_REQUIRED,
+            category="asr",
+            getter=_field("asr_protocol"),
+            settings_fields=("asr_protocol",),
+            env_alias="ASR_PROTOCOL",
+        ),
         *(
             _spec(
                 "asr." + name,
@@ -26,7 +41,7 @@ def asr_config_specs() -> tuple[ConfigSpec, ...]:
                     "boolean",
                 ),
                 ("base_url", "语音识别地址", "留空时与 API Key 一起复用现有千问连接。", "string"),
-                ("model", "语音识别模型", "使用千问 ASR 模型，不使用聊天或 TTS 模型。", "string"),
+                ("model", "语音识别模型", "使用所选转写接口实际支持的模型。", "string"),
                 (
                     "timeout_seconds",
                     "语音识别超时",
