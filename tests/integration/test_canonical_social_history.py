@@ -5,12 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_person, ensure_presence
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import social_env
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.canonical_repository import ensure_person, ensure_presence
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel
@@ -21,7 +22,8 @@ from yuki.social.models import SocialError
 
 async def private_entry(env, account, message_id):
     return (
-        await env.service.writer.append(
+        await seed_scoped_event(
+            env.service.writer,
             scope=ConversationScope.private(account, "10001"),
             platform_message_id=message_id,
             sender_user_id="10001",
@@ -114,7 +116,8 @@ async def test_history_discovers_original_entries_after_person_merge(
     env = await social_env(database, tmp_path)
     original = await private_entry(env, "80001", "original-entry")
     other = (
-        await env.service.writer.append(
+        await seed_scoped_event(
+            env.service.writer,
             scope=ConversationScope.private("80001", "10002"),
             platform_message_id="target-entry",
             sender_user_id="10002",
@@ -155,7 +158,8 @@ async def test_history_discovers_original_entries_after_person_merge(
 async def test_delegated_history_keeps_same_person_scope_after_merge(database, tmp_path, grant):
     env = await social_env(database, tmp_path)
     original = await private_entry(env, "80001", "original-entry")
-    await env.service.writer.append(
+    await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="known-foreign-person",
         sender_user_id="1003",

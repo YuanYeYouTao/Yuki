@@ -15,10 +15,7 @@ from sqlalchemy import delete, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.audit import AdminAuditService, AuditSubject, add_audit_event, event_from_model
-from yuki.admin.config_owners import (
-    resolve_group_config_scope,
-    resolve_user_config_scope,
-)
+from yuki.admin.config_owners import resolve_space_owner
 from yuki.admin.config_registry import ConfigRegistry
 from yuki.admin.models import (
     AdminOperationEvent,
@@ -55,10 +52,6 @@ from yuki.identity.person_identity import (
 from yuki.persistence.database import Database
 from yuki.persistence.models import AdminOperationEventModel, RuntimeConfigOverrideModel
 from yuki.persistence.unit_of_work import optional_session
-from yuki.services.canonical_owners import (
-    resolve_live_person_id,
-    resolve_live_space_id,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,8 +245,8 @@ class RuntimeConfigRepository:
         conditions: list[Any] = [
             RuntimeConfigOverrideModel.scope_type == ConfigScopeType.GLOBAL.value
         ]
-        person_id = await resolve_live_person_id(active, user_id) if user_id else None
-        space_id = await resolve_live_space_id(active, group_id) if group_id else None
+        person_id = await current_person_id(active, user_id) if user_id else None
+        space_id = await resolve_space_owner(active, group_id) if group_id else None
         for owner_id, kind, column in (
             (person_id, ConfigScopeType.USER, RuntimeConfigOverrideModel.canonical_person_id),
             (space_id, ConfigScopeType.GROUP, RuntimeConfigOverrideModel.canonical_space_id),
@@ -285,7 +278,7 @@ class RuntimeConfigRepository:
     ) -> RuntimeConfigOverrideRecord | None:
         async with optional_session(self._database, session, write=False) as active:
             if scope_type is ConfigScopeType.USER:
-                person_id = (await resolve_user_config_scope(active, scope_id)).person_id
+                person_id = await current_person_id(active, scope_id)
                 matches = list(
                     await active.scalars(
                         select(RuntimeConfigOverrideModel).where(
@@ -296,7 +289,7 @@ class RuntimeConfigRepository:
                     )
                 )
             elif scope_type is ConfigScopeType.GROUP:
-                space_id = (await resolve_group_config_scope(active, scope_id)).space_id
+                space_id = await resolve_space_owner(active, scope_id)
                 matches = list(
                     await active.scalars(
                         select(RuntimeConfigOverrideModel).where(
@@ -563,36 +556,14 @@ class RuntimeConfigService:
     async def startup_settings_updates(self) -> dict[str, object]:
         """Map activated global restart overrides back to long-lived Settings fields."""
 
-        mapping = {
-            "memory.embedding_enabled": "memory_embedding_enabled",
-            "execution_trace.retention_days": "execution_trace_retention_days",
-            "execution_trace.max_payload_bytes": "execution_trace_max_payload_bytes",
-            "llm.model": "llm_model",
-            "llm.timeout_seconds": "llm_timeout_seconds",
-            "llm.max_retries": "llm_max_retries",
-            "global.llm_concurrency": "global_llm_concurrency",
-            "web.global_concurrency": "web_global_concurrency",
-            "rate_limit.per_user_per_minute": "per_user_requests_per_minute",
-            "rate_limit.per_group_per_minute": "per_group_requests_per_minute",
-            "vision.enabled": "vision_enabled",
-            "vision.base_url": "vision_base_url",
-            "vision.model": "vision_model",
-            "vision.global_concurrency": "vision_global_concurrency",
-            "vision.queue_max_pending": "vision_queue_max_pending",
-            "vision.queue_timeout_seconds": "vision_queue_timeout_seconds",
-            "vision.media_download_timeout_seconds": ("vision_media_download_timeout_seconds"),
-            "vision.timeout_seconds": "vision_timeout_seconds",
-            "vision.max_output_tokens": "vision_max_output_tokens",
-            "automation.enabled": "automation_enabled",
-            "automation.poll_seconds": "automation_poll_seconds",
-            "automation.lease_seconds": "automation_lease_seconds",
-        }
-        mapping.update({spec.key: spec.settings_fields[0] for spec in self.registry.list("asr")})
         updates: dict[str, object] = {}
-        for key, field_name in mapping.items():
-            effective = await self.get_effective(key)
+        for spec in self.registry.list():
+            if spec.apply_mode is not ConfigApplyMode.RESTART_REQUIRED:
+                continue
+            effective = self._resolve(spec, (), user_id=None, group_id=None)
             if effective.value is not None:
-                updates[field_name] = effective.value
+                for field_name in spec.settings_fields:
+                    updates[field_name] = effective.value
         return updates
 
     async def get_effective(
@@ -614,16 +585,14 @@ class RuntimeConfigService:
                 apply_mode=spec.apply_mode,
                 configured=bool(spec.default_getter(self._settings)),
             )
-        records = await self._repository.list_relevant(
-            user_id=user_id,
-            group_id=group_id,
-            session=session,
-        )
-        person_id, space_id = await self._owner_match(
-            user_id=user_id,
-            group_id=group_id,
-            session=session,
-        )
+        if session is None:
+            records, person_id, space_id = await self._repository.read_relevant_snapshot(
+                user_id=user_id, group_id=group_id
+            )
+        else:
+            records, person_id, space_id = await self._repository._read_relevant(
+                session, user_id=user_id, group_id=group_id
+            )
         return self._resolve(
             spec,
             records,
@@ -1675,8 +1644,8 @@ class RuntimeConfigService:
         session: AsyncSession | None = None,
     ) -> tuple[str | None, str | None]:
         async with optional_session(self._database, session, write=False) as active:
-            person_id = await resolve_live_person_id(active, user_id) if user_id else None
-            space_id = await resolve_live_space_id(active, group_id) if group_id else None
+            person_id = await current_person_id(active, user_id) if user_id else None
+            space_id = await resolve_space_owner(active, group_id) if group_id else None
             return person_id, space_id
 
     async def _bind_write_scope(
@@ -1690,10 +1659,10 @@ class RuntimeConfigService:
             return "", None, None
         async with optional_session(self._database, session, write=False) as active:
             if scope is ConfigScopeType.USER:
-                resolved = await resolve_user_config_scope(active, scope_id)
-                return resolved.person_id, resolved.person_id, None
-            resolved_group = await resolve_group_config_scope(active, scope_id)
-            return resolved_group.space_id, None, resolved_group.space_id
+                resolved = await current_person_id(active, scope_id)
+                return resolved, resolved, None
+            resolved_group = await resolve_space_owner(active, scope_id)
+            return resolved_group, None, resolved_group
 
     def _validate_write(
         self,

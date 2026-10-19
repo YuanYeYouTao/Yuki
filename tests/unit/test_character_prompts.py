@@ -301,7 +301,7 @@ async def test_real_process_crashes_recover_original_receipt_and_do_not_rewrite_
 import asyncio, json, os, sys
 from pathlib import Path
 from yuki.config import Settings
-from yuki.client_api.identity import ClientIdentityService
+from tests.support.client_identity import client_identity_service
 from yuki.character.prompts import CharacterPrompts
 from yuki.persistence.database import Database
 import yuki.character.prompts as module
@@ -311,7 +311,7 @@ async def main():
     settings = Settings(database_url=payload["database"],
                         system_prompt_file=Path(payload["system"]),
                         bot_persona_file=Path(payload["persona"]))
-    identity = ClientIdentityService(Database(payload["database"]))
+    identity = client_identity_service(Database(payload["database"]))
     actor = await identity.authenticate(payload["token"])
     service = CharacterPrompts(identity, settings)
     if payload["stage"] == "A":

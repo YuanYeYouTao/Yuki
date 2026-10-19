@@ -974,8 +974,7 @@ class AgentToolService:
                                 "文件已存在工作区，但中转不可用，尚未发送；本轮不要重复发送"
                             ),
                             "invalid_target_id": (
-                                "target_id 必须是联系人查询返回的 UUID；"
-                                "当前私聊用 subject_ref=current_speaker"
+                                "target_id 使用联系人查询返回的内部 UUID；当前会话可省略 target"
                             ),
                             "invalid_message_arguments": (
                                 "检查 text、artifact_id 和 attachment_kind；"
@@ -989,11 +988,8 @@ class AgentToolService:
                             "binding_unavailable": "指定的平台 Binding 无效或不属于目标，未执行",
                             "original_presence_unavailable": "原消息发送账号当前不可用，未撤回",
                             "group_unavailable": "当前没有可访问该群的连接，未执行",
-                            "group_member_unavailable": "无法确认目标平台账号属于该群，未执行",
-                            "mentions_require_group": "结构化 @成员只支持群消息",
                             "group_target_required": (
-                                "顶层目标是群，当前群请省略；要 @ 的人放在 mentions 中，"
-                                "如 mentions=[{subject_ref:current_speaker}]"
+                                "请选择群的内部目标；当前群可省略。提及在正文原位置写 @名字"
                             ),
                             "subject_ref_unavailable": (
                                 "该人物引用不在当前事件中；当前发言人用 current_speaker，"
@@ -1001,7 +997,7 @@ class AgentToolService:
                             ),
                             "target_not_found": (
                                 "名称未精确匹配；先 find_contacts。群发送顶层是群目标，"
-                                "人物应放在 mentions；未找到不代表账号映射损坏"
+                                "提及在正文写 @名字；未找到不代表账号映射损坏"
                             ),
                             "invalid_space_id": ("space_id 必须是内部 Space 编号；当前空间可省略"),
                         }.get(str(exc), "社交操作未执行或结果不确定，请勿盲重试")

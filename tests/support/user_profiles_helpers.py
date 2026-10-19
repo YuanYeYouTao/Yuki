@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from tests.support.canonical_identity import ensure_person, ensure_space
+
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
-from yuki.identity.canonical_repository import ensure_person, ensure_space
 from yuki.persistence.database import Database
 from yuki.persistence.people_repository import PeopleRepository
 

@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -21,9 +21,14 @@ from yuki.conversation.canonical_db_models import (
 )
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.identity import AuthorKind
-from yuki.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
+from yuki.identity.db_models import (
+    CanonicalPersonModel,
+    IdentityBindingModel,
+    PresenceModel,
+    SpaceBindingModel,
+)
 from yuki.identity.errors import CanonicalIdentityError
-from yuki.identity.person_identity import person_family_condition, same_person_id
+from yuki.identity.person_identity import person_family_condition, person_root_id, same_person_id
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_helpers import (
@@ -44,9 +49,7 @@ from yuki.plugin_host.notification_manifest import (
     canonical_json,
     is_sha256_digest,
     manifest_from_request,
-    manifest_from_stored,
     media_part_key,
-    parse_media_part_key,
 )
 from yuki.plugin_host.ownership import (
     CANONICAL_OWNER_DISABLED,
@@ -60,8 +63,8 @@ from yuki.plugin_host.ownership import (
     require_grant_readable,
     require_inherited_publication,
     require_live_conversation,
-    require_live_person,
     require_live_space,
+    require_person_source,
     require_presence_provenance,
     resolve_grant_target_owners,
     resolve_human_person_id,
@@ -100,6 +103,8 @@ class OutboxRecord:
     canonical_target_space_id: str | None
     canonical_presence_id: str | None
     canonical_conversation_id: str | None
+    source_person_id: str | None = None
+    prepared: dict[str, Any] | None = None
 
 
 OUTBOX_LEASE_SECONDS = 300
@@ -136,6 +141,7 @@ class BackgroundTurnJobRecord:
     canonical_conversation_id: str | None
     # The exact original Work bound to this Job, or None before first admission.
     work_id: str | None = None
+    source_person_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +167,87 @@ class PluginNotificationRepository:
         self._scoped_events = scoped_events or ScopedEventLedgerUnitOfWork(
             database,
         )
+
+    async def unprepared_outbox(self, *, after_id: int = 0) -> tuple[OutboxRecord, ...]:
+        async with self._database.sessions() as session:
+            rows = await session.scalars(
+                select(PluginNotificationOutboxModel)
+                .where(
+                    PluginNotificationOutboxModel.status == "pending",
+                    PluginNotificationOutboxModel.id > after_id,
+                    PluginNotificationOutboxModel.next_attempt_at <= datetime.now(UTC),
+                    or_(
+                        PluginNotificationOutboxModel.prepared_json.is_(None),
+                        func.json_extract(
+                            PluginNotificationOutboxModel.prepared_json, "$.message"
+                        ).is_(None),
+                    ),
+                )
+                .order_by(PluginNotificationOutboxModel.id)
+                .limit(128)
+            )
+            return tuple(_outbox_record(row) for row in rows)
+
+    async def fail_unclaimed_outbox(self, item: OutboxRecord, category: str) -> None:
+        async with self._database.immediate_session() as session:
+            await session.execute(
+                update(PluginNotificationOutboxModel)
+                .where(
+                    PluginNotificationOutboxModel.id == item.id,
+                    PluginNotificationOutboxModel.status == "pending",
+                )
+                .values(status="failed", last_error_category=category, updated_at=datetime.now(UTC))
+            )
+
+    async def require_unclaimed_outbox_source(self, item: OutboxRecord) -> None:
+        """Check the original effect source before preparing its platform layout."""
+        async with self._database.sessions() as session:
+            await require_queued_work_readable(session, item)
+            conversation = await require_live_conversation(session, item.canonical_conversation_id)
+            if conversation.identity_binding_id is not None:
+                binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+                if binding is not None and binding.status == "ended":
+                    raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+            presence = await session.get(PresenceModel, item.canonical_presence_id)
+            if presence is not None and presence.status == "ended":
+                raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+
+    async def prepare_outbox(self, item: OutboxRecord, parts: tuple[dict[str, Any], ...]) -> None:
+        """Freeze layout on the original intent before claiming any physical part."""
+        encoded = tuple(canonical_json(part) for part in parts)
+        async with self._database.immediate_session() as session:
+            row = await session.get(PluginNotificationOutboxModel, item.id)
+            if row is None or row.status != "pending":
+                return
+            if row.prepared_json is not None and "message" in json.loads(row.prepared_json):
+                return
+            await require_queued_work_readable(session, row)
+            if row.text != item.text or row.media_handle_id != item.media_handle_id:
+                raise PluginOwnershipError(STATE_MISMATCH)
+            original_key = row.part_key
+            original = {
+                column.name: getattr(row, column.name)
+                for column in PluginNotificationOutboxModel.__table__.columns
+                if column.name not in {"id", "prepared_json", "part_key"}
+            }
+            children = []
+            for index, payload in enumerate(encoded):
+                if index == 0:
+                    child = row
+                else:
+                    child = PluginNotificationOutboxModel(
+                        **original, part_key=f"{original_key}:part:{index}"
+                    )
+                    children.append(child)
+                child.prepared_json = payload
+                child.text = parts[index]["message"]["text"]
+                if not parts[index]["message"]["media"]:
+                    child.part_type = "text"
+                    child.media_handle_id = None
+                else:
+                    child.part_type = original["part_type"]
+                    child.media_handle_id = original["media_handle_id"]
+            session.add_all(children)
 
     async def grant_target(
         self,
@@ -377,6 +464,7 @@ class PluginNotificationRepository:
                 grant.canonical_target_space_id,
                 grant.canonical_conversation_id,
                 grant.canonical_presence_id,
+                grant.canonical_created_by_person_id,
             )
             existing = await _load_existing_external_event(
                 preparation,
@@ -386,6 +474,37 @@ class PluginNotificationRepository:
                 conversation_id=identity.conversation_id,
             )
             existing_id = existing.id if existing is not None else None
+            if existing is not None:
+                return await _existing_event_receipt(
+                    preparation,
+                    plugin_id=plugin_id,
+                    event=existing,
+                    notification_id=str(_publication_data(existing)["notification_id"]),
+                    request=request,
+                )
+            media = await _resolve_request_media(
+                preparation, plugin_id=plugin_id, handle_ids=request.media_handles, now=now
+            )
+            publication = asdict(
+                manifest_from_request(
+                    request,
+                    plugin_id=plugin_id,
+                    media=tuple(MediaIdentity(index=index, sha256=sha) for index, _, sha in media),
+                )
+            )
+            notification_id = _notification_id(
+                plugin_id, request.event_key, target.target_type, identity.conversation_id or ""
+            )
+            source_data = {
+                "notification_id": notification_id,
+                "publication": publication,
+                "media_handles": list(request.media_handles),
+                "publication_hash": hashlib.sha256(
+                    canonical_json(publication).encode()
+                ).hexdigest(),
+                "source_person_id": grant.canonical_created_by_person_id,
+            }
+
         async with self._database.immediate_session() as session:
             installation = await session.get(PluginInstallationModel, plugin_id)
             if installation is None or not installation.enabled or installation.status != "running":
@@ -400,6 +519,7 @@ class PluginNotificationRepository:
                     grant.canonical_target_space_id,
                     grant.canonical_conversation_id,
                     grant.canonical_presence_id,
+                    grant.canonical_created_by_person_id,
                 )
             ):
                 raise PluginPermissionError("notification target is not granted")
@@ -412,19 +532,7 @@ class PluginNotificationRepository:
             )
             existing = await session.get(ChatEventModel, existing_id) if existing_id else None
             if existing is not None:
-                original_id = await session.scalar(
-                    select(PluginNotificationOutboxModel.notification_id)
-                    .where(PluginNotificationOutboxModel.source_event_id == existing.id)
-                    .limit(1)
-                )
-                notification_id = original_id or _notification_id(
-                    plugin_id,
-                    request.event_key,
-                    target.target_type,
-                    existing.canonical_conversation_id
-                    if existing.platform_message_id.startswith("external2-")
-                    else existing.external_target_id or "",
-                )
+                notification_id = str(_publication_data(existing)["notification_id"])
                 receipt = await _existing_event_receipt(
                     session,
                     plugin_id=plugin_id,
@@ -433,12 +541,6 @@ class PluginNotificationRepository:
                     request=request,
                 )
             else:
-                media = await _resolve_request_media(
-                    session,
-                    plugin_id=plugin_id,
-                    handle_ids=request.media_handles,
-                    now=now,
-                )
                 try:
                     appended = await self._scoped_events.append_external(
                         scope=scope,
@@ -463,6 +565,16 @@ class PluginNotificationRepository:
                 _require_system_external(created)
                 if appended.created:
                     created.external_resume_wait = request.resume_waiting_work
+                    segments = json.loads(created.segments_json)
+                    metadata = next(
+                        (part["data"] for part in segments if part.get("type") == "yuki_context"),
+                        None,
+                    )
+                    if metadata is None:
+                        segments.append({"type": "yuki_context", "data": source_data})
+                    else:
+                        metadata.update(source_data)
+                    created.segments_json = canonical_json(segments)
                 if not appended.created:
                     receipt = await _existing_event_receipt(
                         session,
@@ -560,6 +672,9 @@ class PluginNotificationRepository:
         eligible = (
             (PluginNotificationOutboxModel.status == "pending")
             & (PluginNotificationOutboxModel.next_attempt_at <= now)
+            & func.json_extract(PluginNotificationOutboxModel.prepared_json, "$.message").is_not(
+                None
+            )
         ) | (
             (PluginNotificationOutboxModel.status == "processing")
             & (PluginNotificationOutboxModel.lease_until < now)
@@ -1166,10 +1281,10 @@ class PluginNotificationRepository:
                     )
                 except CanonicalIdentityError as exc:
                     raise plugin_ownership_error(exc) from None
-                creator_id = grant.canonical_created_by_person_id
+                creator_id = stored.source_person_id
                 if not creator_id:
                     raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
-                await require_live_person(session, creator_id)
+                await require_person_source(session, creator_id)
                 result = QueuedCanonicalContext(
                     person_id=stored.canonical_target_person_id,
                     space_id=stored.canonical_target_space_id,
@@ -1458,6 +1573,7 @@ async def _turn_fence_category(
     if not await background_authority_live(
         session,
         plugin_id=job.plugin_id,
+        source_person_id=job.source_person_id,
         person_id=job.canonical_target_person_id,
         space_id=job.canonical_target_space_id,
         conversation_id=job.canonical_conversation_id,
@@ -1497,7 +1613,9 @@ async def _turn_fence_category(
 
 
 async def require_queued_work_readable(session: AsyncSession, row: object) -> None:
-    """Require live Person XOR Space, Conversation, and optional Presence."""
+    """Authorize the original actor separately from the current receiving subject."""
+
+    await require_person_source(session, getattr(row, "source_person_id", None))
 
     person_id = getattr(row, "canonical_target_person_id", None)
     space_id = getattr(row, "canonical_target_space_id", None)
@@ -1509,7 +1627,15 @@ async def require_queued_work_readable(session: AsyncSession, row: object) -> No
     if target_type == "private":
         if space_id:
             raise PluginOwnershipError(STATE_MISMATCH)
-        await require_live_person(session, person_id)
+        enabled = await session.scalar(
+            select(CanonicalPersonModel.enabled).where(
+                CanonicalPersonModel.id == person_root_id(person_id)
+            )
+        )
+        if enabled is None:
+            raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+        if not enabled:
+            raise PluginOwnershipError(CANONICAL_OWNER_DISABLED)
     elif target_type == "group":
         if person_id:
             raise PluginOwnershipError(STATE_MISMATCH)
@@ -1538,6 +1664,7 @@ async def background_authority_live(
     session: AsyncSession,
     *,
     plugin_id: str,
+    source_person_id: str | None,
     person_id: str | None,
     space_id: str | None,
     conversation_id: str | None = None,
@@ -1547,6 +1674,7 @@ async def background_authority_live(
     if installation is None or not installation.enabled or installation.status != "running":
         return False
     try:
+        await require_person_source(session, source_person_id)
         grant = await _canonical_enabled_grant(
             session,
             plugin_id=plugin_id,
@@ -1632,9 +1760,17 @@ async def _resolve_request_media(
     handle_ids: tuple[str, ...],
     now: datetime,
 ) -> tuple[tuple[int, str, str], ...]:
+    artifacts = {
+        row.handle_id: row
+        for row in await session.scalars(
+            select(PluginMediaArtifactModel).where(
+                PluginMediaArtifactModel.handle_id.in_(set(handle_ids))
+            )
+        )
+    }
     resolved: list[tuple[int, str, str]] = []
     for index, handle_id in enumerate(handle_ids):
-        artifact = await session.get(PluginMediaArtifactModel, handle_id)
+        artifact = artifacts.get(handle_id)
         if (
             artifact is None
             or artifact.plugin_id != plugin_id
@@ -1646,156 +1782,23 @@ async def _resolve_request_media(
     return tuple(resolved)
 
 
-async def _stored_media_identity(
-    session: AsyncSession,
-    *,
-    plugin_id: str,
-    notification_id: str,
-    source_event_id: int,
-    target_type: str,
-    target_id: str,
-) -> tuple[MediaIdentity, ...]:
-    rows = list(
-        (
-            await session.scalars(
-                select(PluginNotificationOutboxModel).where(
-                    PluginNotificationOutboxModel.notification_id == notification_id,
-                    PluginNotificationOutboxModel.part_type == "media",
-                )
-            )
-        ).all()
-    )
-    items: list[MediaIdentity] = []
-    seen: set[int] = set()
-    for row in rows:
-        _require_publication_child_provenance(
-            row,
-            plugin_id=plugin_id,
-            source_event_id=source_event_id,
-            target_type=target_type,
-            target_id=target_id,
-        )
-        if row.text:
-            raise _receipt_conflict()
-        parsed = parse_media_part_key(row.part_key)
-        if parsed is None:
-            raise _receipt_conflict()
-        index, token = parsed
-        if index in seen:
-            raise _receipt_conflict()
-        seen.add(index)
-        if is_sha256_digest(token):
-            sha256 = token
-            if row.media_handle_id:
-                artifact = await session.get(PluginMediaArtifactModel, row.media_handle_id)
-                if artifact is not None and (
-                    artifact.plugin_id != plugin_id or artifact.sha256 != token
-                ):
-                    raise _receipt_conflict()
-        else:
-            if row.media_handle_id != token:
-                raise _receipt_conflict()
-            artifact = await session.get(PluginMediaArtifactModel, token)
-            if artifact is None:
-                items.append(MediaIdentity(index=index, sha256=None, legacy_handle_id=token))
-                continue
-            if artifact.plugin_id != plugin_id or not is_sha256_digest(artifact.sha256):
-                raise _receipt_conflict()
-            sha256 = artifact.sha256
-        items.append(MediaIdentity(index=index, sha256=sha256))
-    return tuple(sorted(items, key=lambda item: item.index))
+def _publication_data(event: ChatEventModel) -> dict[str, Any]:
+    for segment in json.loads(event.segments_json):
+        if segment.get("type") == "yuki_context" and "publication" in segment.get("data", {}):
+            return dict(segment["data"])
+    raise _receipt_conflict()
 
 
-async def _load_stored_manifest(
-    session: AsyncSession,
-    *,
-    plugin_id: str,
-    event: ChatEventModel,
-    notification_id: str,
-) -> PublicationManifest:
-    try:
-        payload = json.loads(event.external_payload_json or "")
-    except json.JSONDecodeError:
-        raise _receipt_conflict() from None
-    if not isinstance(payload, dict):
-        raise _receipt_conflict()
-    text_row = await session.scalar(
-        select(PluginNotificationOutboxModel).where(
-            PluginNotificationOutboxModel.notification_id == notification_id,
-            PluginNotificationOutboxModel.part_key == "text",
-        )
-    )
-    job = await session.scalar(
-        select(PluginBackgroundTurnJobModel).where(
-            PluginBackgroundTurnJobModel.source_event_id == event.id
-        )
-    )
-    if (
-        not event.source_plugin_id
-        or not event.external_event_key
-        or not event.external_source
-        or not event.external_event_type
-        or not event.external_target_id
-    ):
-        raise _receipt_conflict()
-    if text_row is not None:
-        _require_publication_child_provenance(
-            text_row,
-            plugin_id=plugin_id,
-            source_event_id=event.id,
-            target_type=event.scope_type,
-            target_id=event.external_target_id,
-        )
-        if text_row.part_type != "text" or text_row.media_handle_id is not None:
-            raise _receipt_conflict()
-    if job is not None:
-        _require_publication_child_provenance(
-            job,
-            plugin_id=plugin_id,
-            source_event_id=event.id,
-            target_type=event.scope_type,
-            target_id=event.external_target_id,
-        )
-    return manifest_from_stored(
-        plugin_id=event.source_plugin_id,
-        event_key=event.external_event_key,
-        occurred_at=_aware(event.occurred_at),
-        summary=event.content,
-        payload=payload,
-        text="" if text_row is None else text_row.text,
-        target_type=event.scope_type,
-        target_id=event.external_target_id,
-        external_source=event.external_source,
-        event_type=event.external_event_type,
-        ask_agent=job is not None,
-        resume_waiting_work=event.external_resume_wait,
-        agent_intent="" if job is None else job.agent_intent,
-        media=await _stored_media_identity(
-            session,
-            plugin_id=plugin_id,
-            notification_id=notification_id,
-            source_event_id=event.id,
-            target_type=event.scope_type,
-            target_id=event.external_target_id,
-        ),
-    )
+def publication_source_person(event: ChatEventModel) -> str | None:
+    """Original accepted publication actor, independent of later grant changes."""
+    value = _publication_data(event)["source_person_id"]
+    return str(value) if value is not None else None
 
 
-def _require_publication_child_provenance(
-    child: PluginNotificationOutboxModel | PluginBackgroundTurnJobModel,
-    *,
-    plugin_id: str,
-    source_event_id: int,
-    target_type: str,
-    target_id: str,
-) -> None:
-    if (
-        child.plugin_id != plugin_id
-        or child.source_event_id != source_event_id
-        or child.target_type != target_type
-        or child.target_id != target_id
-    ):
-        raise _receipt_conflict()
+def publication_manifest(event: ChatEventModel) -> PublicationManifest:
+    values = dict(_publication_data(event)["publication"])
+    values["media"] = tuple(MediaIdentity(**item) for item in values["media"])
+    return PublicationManifest(**values)
 
 
 async def _existing_event_receipt(
@@ -1809,35 +1812,35 @@ async def _existing_event_receipt(
     """Exact match returns the prior receipt. Any mismatch fails closed. No child writes."""
 
     _require_system_external(event)
-    stored = await _load_stored_manifest(
-        session,
-        plugin_id=plugin_id,
-        event=event,
-        notification_id=notification_id,
-    )
+    stored = publication_manifest(event)
+    original_handles = _publication_data(event)["media_handles"]
+    artifacts = {
+        row.handle_id: row
+        for row in await session.scalars(
+            select(PluginMediaArtifactModel).where(
+                PluginMediaArtifactModel.handle_id.in_(set(request.media_handles))
+            )
+        )
+    }
+    original_media = {item.index: item for item in stored.media}
     media = []
     for index, handle_id in enumerate(request.media_handles):
-        artifact = await session.get(PluginMediaArtifactModel, handle_id)
+        artifact = artifacts.get(handle_id)
         if artifact is not None:
             if artifact.plugin_id != plugin_id or not is_sha256_digest(artifact.sha256):
                 raise PluginPermissionError("media handle is invalid or foreign")
             media.append(MediaIdentity(index=index, sha256=artifact.sha256))
-            continue
-        # Cleanup removes temporary bytes, never the original publication's handle.
-        part = await session.scalar(
-            select(PluginNotificationOutboxModel).where(
-                PluginNotificationOutboxModel.notification_id == notification_id,
-                PluginNotificationOutboxModel.part_type == "media",
-                PluginNotificationOutboxModel.part_key.like(f"media:{index}:%"),
-                PluginNotificationOutboxModel.media_handle_id == handle_id,
-            )
-        )
-        if part is None:
+        elif (
+            index < len(original_handles)
+            and original_handles[index] == handle_id
+            and index in original_media
+        ):
+            media.append(original_media[index])
+        else:
             raise PluginPermissionError("media handle has no original publication proof")
-        media.append(next(item for item in stored.media if item.index == index))
     incoming = dataclass_replace(
         manifest_from_request(request, plugin_id=plugin_id, media=tuple(media)),
-        target_id=event.external_target_id or request.target.target_id,
+        target_id=stored.target_id,
     )
     if stored != incoming:
         raise _receipt_conflict()
@@ -1865,14 +1868,6 @@ async def _ensure_outbox_part(
     media_handle_id: str | None,
     now: datetime,
 ) -> bool:
-    existing = await session.scalar(
-        select(PluginNotificationOutboxModel).where(
-            PluginNotificationOutboxModel.notification_id == notification_id,
-            PluginNotificationOutboxModel.part_key == part_key,
-        )
-    )
-    if existing is not None:
-        return False
     row = PluginNotificationOutboxModel(
         notification_id=notification_id,
         part_key=part_key,
@@ -1895,24 +1890,25 @@ async def _ensure_outbox_part(
         updated_at=now,
         sent_at=None,
     )
-    await _stamp_publication_child(
-        session,
+    inherit_publication_canonicals(
         row,
         grant=grant,
-        event=event,
+        conversation_id=event.canonical_conversation_id,
+        presence_id=event.ingress_presence_id,
     )
+    row.source_person_id = grant.canonical_created_by_person_id
     session.add(row)
-    await session.flush()
     return True
 
 
 async def _stamp_publication_child(
     session: AsyncSession,
-    row: object,
+    row: PluginNotificationOutboxModel | PluginBackgroundTurnJobModel,
     *,
     grant: PluginBackgroundTargetGrantModel,
     event: ChatEventModel,
 ) -> None:
+    row.source_person_id = grant.canonical_created_by_person_id
     inherit_publication_canonicals(
         row,
         grant=grant,
@@ -2116,6 +2112,8 @@ def _outbox_record(row: PluginNotificationOutboxModel) -> OutboxRecord:
         canonical_target_space_id=row.canonical_target_space_id,
         canonical_presence_id=row.canonical_presence_id,
         canonical_conversation_id=row.canonical_conversation_id,
+        source_person_id=row.source_person_id,
+        prepared=json.loads(row.prepared_json) if row.prepared_json is not None else None,
     )
 
 
@@ -2139,6 +2137,7 @@ def _turn_record(
         canonical_presence_id=row.canonical_presence_id,
         canonical_conversation_id=row.canonical_conversation_id,
         work_id=row.work_id,
+        source_person_id=row.source_person_id,
     )
 
 

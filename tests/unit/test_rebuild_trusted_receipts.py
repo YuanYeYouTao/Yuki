@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.event_seed import seed_event
 from tests.unit.test_rebuild_receipt_finalization import _seed
 
 from yuki.domain.conversations import ScopeType
@@ -27,7 +28,8 @@ from yuki.persistence.models import (
 async def _trusted_page(database: Database, *, target_active: bool = True):
     seed = await _seed(database, 2)
     ledger = EventLedgerRepository(database)
-    await ledger.append(
+    await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=str(uuid.uuid4()),
         scope_type=ScopeType.PRIVATE,
@@ -36,7 +38,8 @@ async def _trusted_page(database: Database, *, target_active: bool = True):
         direction="inbound",
         content="引用目标已登记",
     )
-    mentioned, _ = await ledger.append(
+    mentioned, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=str(uuid.uuid4()),
         scope_type=ScopeType.GROUP,
@@ -46,7 +49,8 @@ async def _trusted_page(database: Database, *, target_active: bool = True):
         content="带可信引用的历史事件",
         segments=({"type": "at", "data": {"qq": "3003"}},),
     )
-    ordinary, _ = await ledger.append(
+    ordinary, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=str(uuid.uuid4()),
         scope_type=ScopeType.GROUP,

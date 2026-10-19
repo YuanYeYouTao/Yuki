@@ -1,6 +1,7 @@
 # Plugin API 5.0 迁移
 
-5.0 删除旧表情池专属 API；Host 精确加载 `plugin_api = "5.0"`。内部 Person、Space、Conversation 与现行媒体、消息、独立 Agent session 合同沿用 [4.0 身份迁移](api-4.0-migration.md)。产品版本与 Plugin API 独立。
+> 本页保留该版本的历史变更；当前开发和部署只使用 [Plugin API 6.0](api-6.0-migration.md)。
+5.0 删除旧表情池专属 API；当时 Host 精确加载 `plugin_api = "5.0"`。内部 Person、Space、Conversation 与现行媒体、消息、独立 Agent session 合同沿用 [4.0 身份迁移](api-4.0-migration.md)。产品版本与 Plugin API 独立。
 
 - 删除 `ctx.emoji` 及其 list/get/search/collect_current/select/adopt/reject/ban 方法，不保留兼容别名。
 - 删除 `emoji.read/collect/select/manage/hook` 权限、`emoji.facade.v1`、`emoji.selection_signals.v1` Feature，以及所有旧 `emoji.*` 生命周期事件。

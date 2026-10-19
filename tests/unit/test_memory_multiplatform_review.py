@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.event_seed import seed_event, seed_scoped_event
 from tests.unit.test_dream_owner_projection import _scene
 from tests.unit.test_memory_rebuild import _admin, _service
 from tests.unit.test_rebuild_receipt_finalization import _seed
@@ -55,7 +56,8 @@ async def test_qq_forget_preserves_same_number_telegram_rebuild_proposal(databas
         tg_owner, tg_presence = binding.person_id, presence.id
         qq_owner = (await find_identity_binding(writer, "1001", platform="qq")).person_id
     source = (
-        await ScopedEventLedgerUnitOfWork(database).append(
+        await seed_scoped_event(
+            ScopedEventLedgerUnitOfWork(database),
             scope=ConversationScope.private(
                 "telegram-bot", "1001", platform="telegram", presence_id=tg_presence
             ),
@@ -110,7 +112,8 @@ async def test_forget_removes_third_party_proposal_by_its_original_person(
     _, ledger, _, _, service = await _service(
         database, provider=provider, people=PeopleRepository(database)
     )
-    source, _ = await ledger.append(
+    source, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="third-party",
         scope_type=ScopeType.GROUP,

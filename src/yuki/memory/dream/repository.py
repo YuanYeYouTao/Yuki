@@ -9,12 +9,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import Table, and_, false, func, or_, select, text, update
+from sqlalchemy import Table, false, func, or_, select, text, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.identity.person_identity import current_person_ids, same_person_condition
+from yuki.identity.person_identity import current_person_ids
 from yuki.memory.dream.db_models import (
     MemoryDreamClusterModel,
     MemoryDreamClusterPreviewModel,
@@ -440,9 +440,16 @@ class DreamRepository:
                             if left != right:
                                 raise ValueError("incomplete_dream_owner")
                         elif left != right:
-                            ownership.append(same_person_condition(left, right))
-            if ownership and not await active.scalar(select(and_(*ownership))):
-                raise ValueError("dream_plan_source_changed")
+                            ownership.append((left, right))
+            if ownership:
+                roots = await current_person_ids(
+                    active, (value for pair in ownership for value in pair)
+                )
+                if any(
+                    left not in roots or roots[left] != roots.get(right)
+                    for left, right in ownership
+                ):
+                    raise ValueError("dream_plan_source_changed")
 
             # Keep a failed bulk INSERT out of the caller's surrounding transaction.
             async with active.begin_nested():

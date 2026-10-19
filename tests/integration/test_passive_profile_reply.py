@@ -1,6 +1,8 @@
 """Real native mentions reply without remote display-metadata enrichment."""
 
 import json
+from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 from nonebot.adapters.onebot.v11 import GroupMessageEvent, Message, MessageSegment
@@ -10,7 +12,13 @@ from tests.integration.test_current_material_main_contract import _deployment
 
 from yuki.adapters.onebot.normalizer import normalize_event
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.identity.canonical_repository import find_space_binding
+from yuki.identity.db_models import (
+    AccountNameObservationModel,
+    AccountSpaceProfileModel,
+    CanonicalPersonModel,
+    IdentityBindingModel,
+)
 from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel, MembershipModel, PersonAliasModel
 from yuki.social.db_models import SocialOperationModel
@@ -18,7 +26,7 @@ from yuki.social.db_models import SocialOperationModel
 
 def _mention(identifier, **sender_fields):
     body = Message([MessageSegment.at(80001), MessageSegment.text(" 请回复这条消息")])
-    return normalize_event(
+    native = normalize_event(
         GroupMessageEvent(
             time=1,
             self_id=80001,
@@ -35,6 +43,9 @@ def _mention(identifier, **sender_fields):
             group_id=20001,
         )
     )
+    # This fixture is a current observation after the existing account stage;
+    # native timestamp decoding itself is covered by the normalizer contracts.
+    return replace(native, occurred_at=datetime.now(UTC))
 
 
 async def _reply_environment(database, tmp_path):
@@ -122,7 +133,13 @@ async def test_missing_profile_fields_preserve_observation_and_do_not_change_fix
             assert result.reason == "chat" and result.sent_messages == 1
             async with database.sessions() as reader:
                 membership = await reader.get(MembershipModel, (env.person, env.space))
-                assert membership is not None and membership.group_card == expected_card
+                assert membership is not None
+                binding = await reader.scalar(
+                    select(IdentityBindingModel).where(IdentityBindingModel.person_id == env.person)
+                )
+                space = await find_space_binding(reader, "20001")
+                profile = await reader.get(AccountSpaceProfileModel, (binding.account_id, space.id))
+                assert profile.display_name == expected_card
                 person = await reader.get(CanonicalPersonModel, env.person)
                 assert person is not None and person.display_name == original_person_name
 
@@ -138,7 +155,15 @@ async def test_missing_profile_fields_preserve_observation_and_do_not_change_fix
                     )
                 )
             )
-            assert {"旧昵称", "新昵称", "原名片"} <= aliases
+            assert not {"旧昵称", "新昵称", "原名片"} & aliases
+            account_names = set(
+                await reader.scalars(
+                    select(AccountNameObservationModel.name).where(
+                        AccountNameObservationModel.account_id == binding.account_id
+                    )
+                )
+            )
+            assert {"旧昵称", "新昵称", "原名片"} <= account_names
             original_event = await reader.scalar(
                 select(ChatEventModel).where(ChatEventModel.platform_message_id == "401")
             )

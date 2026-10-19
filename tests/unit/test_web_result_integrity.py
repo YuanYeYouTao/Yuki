@@ -5,6 +5,7 @@ import json
 
 import httpx
 import pytest
+from tests.support.event_seed import seed_scoped_event
 
 from yuki.domain.messages import ChatResponse, CitationOrigin, ResponseCitation
 from yuki.llm.anthropic_messages import AnthropicMessagesProvider
@@ -204,7 +205,8 @@ async def test_main_history_search_archives_original_requested_page(
     originals = []
     for index in range(101):
         content = f"history-needle {index}: " + "原始资料" * 500 + f" tail-{index}"
-        await case.env.service.writer.append(
+        await seed_scoped_event(
+            case.env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
             platform_message_id=f"history-{index}",
             sender_user_id="10001",

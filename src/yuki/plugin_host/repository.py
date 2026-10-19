@@ -293,6 +293,12 @@ class PluginConfigRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
 
+    async def same_person_scope(self, left: str, right: str) -> bool:
+        from yuki.identity.person_identity import same_person_id
+
+        async with self._database.sessions() as session:
+            return await same_person_id(session, left, right)
+
     async def get(
         self, *, plugin_id: str, scope_type: str, scope_id: str, key: str
     ) -> PluginConfigValueRecord | None:
@@ -301,7 +307,6 @@ class PluginConfigRepository:
         async with self._database.sessions() as session:
             from yuki.plugin_host.ownership import (
                 find_config_lineage,
-                require_config_readable,
                 resolve_config_owners,
             )
 
@@ -318,7 +323,6 @@ class PluginConfigRepository:
             )
             if row is None:
                 return None
-            await require_config_readable(session, row)
             return _config_record(row, scope_id=scope_id)
 
     async def compare_and_set(
@@ -330,6 +334,7 @@ class PluginConfigRepository:
         key: str,
         expected_version: int,
         value: object,
+        expected_row_id: int | None = None,
         now: datetime | None = None,
     ) -> PluginConfigValueRecord:
         """Create at version 0 or replace exactly the expected existing version."""
@@ -348,6 +353,7 @@ class PluginConfigRepository:
                 scope_id=scope_id,
                 key=key,
                 expected_version=expected_version,
+                expected_row_id=expected_row_id,
                 value_json=value_json,
                 timestamp=timestamp,
             )
@@ -361,6 +367,7 @@ class PluginConfigRepository:
         scope_id: str,
         key: str,
         expected_version: int,
+        expected_row_id: int | None,
         value_json: str,
         timestamp: datetime,
     ) -> PluginConfigValueRecord:
@@ -368,7 +375,6 @@ class PluginConfigRepository:
             STATE_MISMATCH,
             PluginOwnershipError,
             find_config_lineage,
-            require_config_readable,
             resolve_config_owners,
         )
 
@@ -386,7 +392,7 @@ class PluginConfigRepository:
             space_id=space_id,
         )
         if row is None:
-            if expected_version != 0:
+            if expected_version != 0 or expected_row_id is not None:
                 raise PluginVersionConflictError("plugin config version changed")
             statement = insert(PluginConfigValueModel).values(
                 plugin_id=plugin_id,
@@ -407,9 +413,8 @@ class PluginConfigRepository:
             if row is None:
                 raise PluginVersionConflictError("plugin config version changed")
             return _config_record(row, scope_id=scope_id)
-        if expected_version == 0 or row.version != expected_version:
+        if row.id != expected_row_id or row.version != expected_version:
             raise PluginVersionConflictError("plugin config version changed")
-        await require_config_readable(session, row)
         replacement = await session.scalar(
             update(PluginConfigValueModel)
             .where(
@@ -441,13 +446,13 @@ class PluginConfigRepository:
         scope_id: str,
         key: str,
         expected_version: int | None = None,
+        expected_row_id: int | None = None,
     ) -> bool:
         scope_id = _validated_scope(scope_type, scope_id)
         key = _storage_key(key, label="config key")
         async with self._database.sessions() as session, session.begin():
             from yuki.plugin_host.ownership import (
                 find_config_lineage,
-                require_config_readable,
                 resolve_config_owners,
             )
 
@@ -466,8 +471,9 @@ class PluginConfigRepository:
                 if expected_version is not None:
                     raise PluginVersionConflictError("plugin config version changed")
                 return False
-            await require_config_readable(session, row)
-            if expected_version is not None and row.version != expected_version:
+            if expected_version is not None and (
+                row.id != expected_row_id or row.version != expected_version
+            ):
                 raise PluginVersionConflictError("plugin config version changed")
             statement = delete(PluginConfigValueModel).where(
                 PluginConfigValueModel.id == row.id,
@@ -518,13 +524,11 @@ class PluginStateRepository:
             if row is None:
                 return None
             from yuki.plugin_host.ownership import (
-                require_live_person,
-                require_state_readable,
+                resolve_human_person_id,
             )
 
-            await require_state_readable(session, row)
             subject = (
-                await require_live_person(session, row.canonical_person_id)
+                await resolve_human_person_id(session, row.canonical_person_id)
                 if row.canonical_person_id
                 else None
             )
@@ -558,17 +562,20 @@ class PluginStateRepository:
                     .limit(max(1, min(limit, 1_000)))
                 )
             ).all()
-            from yuki.plugin_host.ownership import require_live_people
+            from yuki.identity.person_identity import current_person_ids
 
-            await require_live_people(
-                session,
-                tuple(
-                    dict.fromkeys(
-                        row.canonical_person_id for row in rows if row.canonical_person_id
-                    )
-                ),
+            subjects = await current_person_ids(
+                session, (row.canonical_person_id for row in rows if row.canonical_person_id)
             )
-            return tuple(_state_record(row) for row in rows)
+            return tuple(
+                _state_record(
+                    row,
+                    subject_user_id=subjects[row.canonical_person_id]
+                    if row.canonical_person_id
+                    else None,
+                )
+                for row in rows
+            )
 
     async def storage_usage_bytes(
         self,
@@ -619,12 +626,11 @@ class PluginStateRepository:
             from yuki.plugin_host.ownership import (
                 CANONICAL_OWNER_MISMATCH,
                 PluginOwnershipError,
-                require_live_person,
                 resolve_state_owner,
             )
 
             owner_id = await resolve_state_owner(session, subject_user_id)
-            projected_subject = await require_live_person(session, owner_id) if owner_id else None
+            projected_subject = owner_id
             if expected_version == 0:
                 await session.execute(
                     delete(PluginStateModel).where(

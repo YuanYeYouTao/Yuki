@@ -128,11 +128,13 @@ class ClientAutomations:
             if row.status is AutomationStatus.CANCELLED:
                 raise ClientError("precondition_failed", details={"state": row.status.value})
             try:
-                updated = await self.service.administer_transition(
-                    automation_id,
-                    action="cancel" if action == "delete" else action,
-                    session=session,
+                changed = await self.service.transition_status(
+                    row, "cancel" if action == "delete" else action, session=session
                 )
+                if not changed and action != "delete":
+                    raise ValueError("automation state does not allow this action")
+                updated = await self.repository.get(automation_id, session=session)
+                assert updated is not None
             except ValueError as exc:
                 raise ClientError(
                     "precondition_failed", details={"state": row.status.value}

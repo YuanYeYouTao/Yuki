@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock
 
 from sqlalchemy import event, select
+from tests.support.event_seed import seed_event
 from tests.support.semantic_participation_host_helpers import _event_and_route
 from tests.unit.test_work_settlement_writer import _running_work
 
@@ -56,7 +57,8 @@ async def test_wait_rechecks_source_after_external_preparation(database, tmp_pat
             conditions=[{"kind": "conversation"}],
             deadline_at=None,
         )
-        appended = await EventLedgerRepository(database).append(
+        appended = await seed_event(
+            EventLedgerRepository(database),
             bot_user_id="80001",
             platform_message_id="new-wait-source",
             scope_type="group",

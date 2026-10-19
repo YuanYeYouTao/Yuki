@@ -11,6 +11,7 @@ from uuid import NAMESPACE_URL, uuid4, uuid5
 import pytest
 from PIL import Image
 from sqlalchemy import delete, func, select
+from tests.support.event_seed import seed_scoped_event
 from tests.support.workspace_snapshots import snapshot_bytes
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
@@ -328,7 +329,8 @@ async def test_group_result_file_is_readable_only_through_owned_work(app_env, da
     second, _ = await owner(env, database, "1002")
     snapshot = snapshot_bytes(env.store, "group-result.txt", b"only this work result")
     event = (
-        await env.harness.scoped_events.append(
+        await seed_scoped_event(
+            env.harness.scoped_events,
             scope=ConversationScope.group("8000", "2001"),
             platform_message_id=str(uuid4()),
             sender_user_id="8000",
@@ -402,7 +404,8 @@ async def test_artifact_keyset_keeps_two_parts_and_same_name_objects_separate(ap
     event_ids = []
     for snapshots in ([first, second], [first]):
         event = (
-            await env.harness.scoped_events.append(
+            await seed_scoped_event(
+                env.harness.scoped_events,
                 scope=ConversationScope.private("8000", "1001"),
                 platform_message_id=str(uuid4()),
                 sender_user_id="8000",

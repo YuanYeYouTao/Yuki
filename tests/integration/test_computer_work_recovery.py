@@ -17,12 +17,12 @@ from fastapi import FastAPI
 from sqlalchemy import func, select
 from tests.integration.test_acp_manager_peer import observe
 from tests.integration.test_current_material_main_contract import _catalog, _deployment, _profile
+from tests.support.canonical_identity import ensure_person
 
 from yuki.character.repository import CharacterRepository
 from yuki.client_api.http import attach_client_api
 from yuki.container import ApplicationContainer
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.identity.canonical_repository import ensure_person
 from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.runtime.work_budget_schema import budgets

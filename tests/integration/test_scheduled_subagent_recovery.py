@@ -12,7 +12,8 @@ from tests.support.runtime_execution import make_child_executor
 
 from yuki.automation.models import RunStatus
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, SpaceBindingModel
+from yuki.identity.canonical_repository import ensure_account, replace_assignment
+from yuki.identity.db_models import CanonicalPersonModel, SpaceBindingModel
 from yuki.runtime.subagent_repository import SubagentRepository
 from yuki.runtime.subagent_scheduler import SubagentScheduler
 from yuki.runtime.work_repository import WorkRepository
@@ -136,10 +137,18 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     )
     child = next(row for row in rows if json.loads(row["source_json"]).get("worker"))
     source = json.loads(child["source_json"])
+    assert child["parent_work_id"] == parent["id"]
+    assert source == {
+        **json.loads(parent["source_json"]),
+        "work_id": child["id"],
+        "parent_work_id": parent["id"],
+        "worker": True,
+    }
     assert source["automation_run_id"] == case.run.id
     assert source["origin"] == "scheduled_automation" and not source.get("trigger_event_id")
     assert not source.get("initiative_run_id")
     if principal == "person":
+        assert source["actor_person_id"] == case.env.person
         await case.env.router.cas_takeover_person(case.env.person)
     async with database.sessions() as session, session.begin():
         session.add(
@@ -156,19 +165,10 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             )
         )
         if principal == "person":
-            session.add(
-                IdentityBindingModel(
-                    id=str(uuid4()),
-                    person_id=case.env.person,
-                    platform="qq",
-                    external_account_id="10099",
-                    status="active",
-                    first_seen_at=case.clock.now(),
-                    last_seen_at=case.clock.now(),
-                    created_at=case.clock.now(),
-                    updated_at=case.clock.now(),
-                )
-            )
+            person = await session.get(CanonicalPersonModel, case.env.person)
+            assert person is not None
+            account = await ensure_account(session, "10099", platform="qq", now=case.clock.now())
+            await replace_assignment(session, account, None, person, now=case.clock.now())
     await recover_execution_source(
         database,
         child["conversation_id"],

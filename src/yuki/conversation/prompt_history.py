@@ -161,8 +161,6 @@ class PromptHistorySource:
                 replace(
                     row,
                     content="",
-                    projected_content=None,
-                    projected_mentions=(),
                     segments=(),
                     visual_summary="",
                     audio_transcript="",

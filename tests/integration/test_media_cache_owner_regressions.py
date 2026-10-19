@@ -21,17 +21,20 @@ from tests.integration.test_telegram_event_edits import media_reader as media_re
 from tests.integration.test_telegram_runtime import drain, update
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.integration.test_telegram_sticker_inputs import TGS, TGS_DATA, original
+from tests.support.event_seed import seed_event
 
 from yuki.gateway.providers.telegram_ingress import normalize_message
 
 
 @pytest.mark.parametrize(
     "attachment_tools",
-    [{
-        "content": TGS,
-        "kind": "file",
-        "data": {**TGS_DATA, "preview": {"file": "actual-sticker-preview"}},
-    }],
+    [
+        {
+            "content": TGS,
+            "kind": "file",
+            "data": {**TGS_DATA, "preview": {"file": "actual-sticker-preview"}},
+        }
+    ],
     indirect=True,
 )
 async def test_explicit_first_cache_keeps_original_instead_of_registered_preview(
@@ -40,9 +43,7 @@ async def test_explicit_first_cache_keeps_original_instead_of_registered_preview
     case = attachment_tools
     inbound = original(case, preview=True)
     assert inbound.attachments[0].preview is not None
-    _item, path = await case.media.authorized_path(
-        event_id=case.source.id, attachment_index=0
-    )
+    _item, path = await case.media.authorized_path(event_id=case.source.id, attachment_index=0)
     assert path.read_bytes() == TGS
     assert case.wire == [
         ("POST", "/botfixture-a/getFile"),
@@ -54,9 +55,7 @@ async def test_explicit_first_cache_keeps_original_instead_of_registered_preview
     assert path.read_bytes() == TGS
 
 
-async def test_actual_edit_ignores_old_shared_reuse_candidate(
-    telegram_env, database, media_reader
-):
+async def test_actual_edit_ignores_old_shared_reuse_candidate(telegram_env, database, media_reader):
     env, reader = telegram_env, media_reader
     payload = update(text="")
     _photo(payload["message"])
@@ -102,9 +101,7 @@ async def test_cleanup_keeps_actual_stream_owner_even_when_staging_mtime_is_old(
     finally:
         body.release.set()
         await task
-    _, path = await case.media.authorized_path(
-        event_id=case.source.id, attachment_index=0
-    )
+    _, path = await case.media.authorized_path(event_id=case.source.id, attachment_index=0)
     assert path.stat().st_size == body.size
     assert requests == ["getFile", "original"] and body.closed
 
@@ -121,9 +118,7 @@ async def test_incomplete_or_bad_gzip_does_not_gate_raw_original_storage(attachm
     from yuki.emoji.media import inspect_content
 
     case = attachment_tools
-    _item, path = await case.media.authorized_path(
-        event_id=case.source.id, attachment_index=0
-    )
+    _item, path = await case.media.authorized_path(event_id=case.source.id, attachment_index=0)
     assert path.read_bytes() == case.original_bytes
     assert inspect_content(case.original_bytes) == {
         "image_format": "BIN",
@@ -149,12 +144,8 @@ async def test_compressed_original_cache_does_not_require_semantic_decompression
         raise AssertionError("raw original storage must not wait for gzip semantics")
 
     monkeypatch.setattr(media_service, "native_sticker_facts", forbidden_decode)
-    _, path = await case.media.authorized_path(
-        event_id=case.source.id, attachment_index=0
-    )
-    current, _ = await case.media.authorized_path(
-        event_id=case.source.id, attachment_index=0
-    )
+    _, path = await case.media.authorized_path(event_id=case.source.id, attachment_index=0)
+    current, _ = await case.media.authorized_path(event_id=case.source.id, attachment_index=0)
     assert path.read_bytes() == case.original_bytes
     assert current.content_sha256 == hashlib.sha256(case.original_bytes).hexdigest()
 
@@ -176,7 +167,8 @@ async def test_onebot_inline_audio_remains_shared_original_media(database, tmp_p
     incoming = normalize_event(
         private_event(Message([MessageSegment("record", {locator: data_url})]))
     )
-    event, _ = await EventLedgerRepository(database).append(
+    event, _ = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id=incoming.bot_user_id,
         platform_message_id=incoming.message_id,
         scope_type=incoming.scope_type,

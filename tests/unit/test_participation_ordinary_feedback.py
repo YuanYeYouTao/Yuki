@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, func, select, update
 from tests.conftest import build_harness, make_settings
+from tests.support.event_seed import seed_event
 from tests.support.semantic_participation_host_helpers import (
     _event_and_route,
     _host,
@@ -152,7 +153,8 @@ async def ordinary_expression(database, tmp_path, *, admission=True, status="suc
         assert item.controller.observe_unit_input(binding, source.ref)
     if not send:
         return host, item, event, None, None
-    own, _ = await host.app.ledger.append(
+    own, _ = await seed_event(
+        host.app.ledger,
         bot_user_id="8000",
         platform_message_id=str(uuid4()),
         scope_type=ScopeType.GROUP,

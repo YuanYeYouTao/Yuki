@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, false, or_, select
 from sqlalchemy.orm import aliased
 
-from yuki.identity.person_identity import same_person_condition
+from yuki.identity.person_identity import person_family_condition, same_person_condition
 from yuki.memory.enums import MemoryScopeType, MemoryTargetRole, SelfMemoryVisibility
 from yuki.memory.models import MemoryEntityTarget, MemoryFact
 from yuki.persistence.models import MembershipModel, MemoryFactModel
@@ -41,7 +41,7 @@ def authorized_fact_condition(scope: AuthorizedMemoryScope) -> Any:
             select(1)
             .select_from(requester_membership)
             .where(
-                same_person_condition(requester_membership.canonical_person_id, requester),
+                person_family_condition(requester_membership.canonical_person_id, requester),
                 requester_membership.canonical_space_id == fact.canonical_subject_space_id,
             )
             .exists()
@@ -54,7 +54,7 @@ def authorized_fact_condition(scope: AuthorizedMemoryScope) -> Any:
                 .select_from(first)
                 .join(second, second.canonical_space_id == first.canonical_space_id)
                 .where(
-                    same_person_condition(first.canonical_person_id, requester),
+                    person_family_condition(first.canonical_person_id, requester),
                     same_person_condition(
                         second.canonical_person_id, fact.canonical_subject_person_id
                     ),
@@ -67,7 +67,7 @@ def authorized_fact_condition(scope: AuthorizedMemoryScope) -> Any:
                     fact.canonical_subject_person_id.is_not(None),
                     fact.canonical_subject_space_id.is_(None),
                     or_(
-                        same_person_condition(fact.canonical_subject_person_id, requester),
+                        person_family_condition(fact.canonical_subject_person_id, requester),
                         direct_shared_group,
                     ),
                 )
@@ -127,7 +127,7 @@ def authorized_fact_condition(scope: AuthorizedMemoryScope) -> Any:
             visibility.append(
                 and_(
                     fact.visibility_type == SelfMemoryVisibility.PRIVATE.value,
-                    same_person_condition(
+                    person_family_condition(
                         fact.canonical_visibility_person_id, scope.current_private_person_id
                     ),
                     fact.canonical_visibility_space_id.is_(None),
@@ -167,7 +167,7 @@ def authorized_fact_condition(scope: AuthorizedMemoryScope) -> Any:
                         and_(
                             fact.visibility_type == target.visibility_type,
                             (
-                                same_person_condition(
+                                person_family_condition(
                                     fact.canonical_visibility_person_id,
                                     target.canonical_visibility_person_id,
                                 )
@@ -185,7 +185,7 @@ def authorized_fact_condition(scope: AuthorizedMemoryScope) -> Any:
                 and_(
                     fact.scope_type == target.scope_type.value,
                     (
-                        same_person_condition(
+                        person_family_condition(
                             fact.canonical_subject_person_id, target.canonical_subject_person_id
                         )
                         if target.canonical_subject_person_id is not None

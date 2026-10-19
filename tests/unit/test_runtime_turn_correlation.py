@@ -36,7 +36,9 @@ async def test_message_exit_preserves_result_or_error_and_does_no_tail_sql(
     monkeypatch.setattr(
         processor._canonical_ingress,
         "pre_admit",
-        AsyncMock(return_value=SimpleNamespace(dropped=False, message=message)),
+        AsyncMock(
+            return_value=SimpleNamespace(dropped=False, message=message, author_kind="person")
+        ),
     )
     result = ProcessResult(True, sent_messages=1, reason="chat")
     problem = RuntimeError("original error")

@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.commands_and_chat_helpers import inbound
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import social_env
 
 from yuki.domain.conversations import ConversationScope
@@ -25,7 +26,8 @@ async def test_group_compact_revocation_after_context_preparation_buys_no_reques
     )
     chat = harness.processor._chat
     chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
-    await harness.scoped_events.append(
+    await seed_scoped_event(
+        harness.scoped_events,
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="prior-public",
         sender_user_id="10001",

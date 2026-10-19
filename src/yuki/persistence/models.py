@@ -73,7 +73,7 @@ class PersonAliasModel(Base):
 
 
 class MembershipModel(Base):
-    """One person as known inside one exact group."""
+    """Original Person observations inside a Space, independent of account names."""
 
     __tablename__ = "memberships"
     __table_args__ = (
@@ -81,7 +81,6 @@ class MembershipModel(Base):
         Index("ix_memberships_canonical_space_id", "canonical_space_id"),
     )
 
-    group_card: Mapped[str] = mapped_column(String(128), nullable=False, default="")
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     canonical_person_id: Mapped[str] = mapped_column(
@@ -107,12 +106,12 @@ class ChatEventModel(Base):
         Index("ix_chat_events_group_time", "group_id", "occurred_at"),
         Index("ix_chat_events_sender_time", "sender_user_id", "occurred_at"),
         Index(
-            "ix_chat_events_conversation_sender_time",
+            "ix_chat_events_conversation_message_sender_time",
             "canonical_conversation_id",
             "sender_user_id",
             "occurred_at",
             "id",
-            sqlite_where=text("suppression_status = 'keeper'"),
+            sqlite_where=text("suppression_status = 'keeper' AND event_kind = 'message'"),
         ),
         Index("ix_chat_events_private_peer_time", "private_peer_user_id", "occurred_at"),
         Index("ix_chat_events_automation", "automation_id", "automation_run_id"),
@@ -169,7 +168,7 @@ class ChatEventModel(Base):
             name="ck_chat_events_kind_payload",
         ),
         CheckConstraint(
-            "author_kind IN ('person', 'yuki', 'external_bot', 'system')",
+            "author_kind IN ('person', 'yuki', 'external_bot', 'system', 'account')",
             name="ck_chat_events_author_kind",
         ),
         CheckConstraint(
@@ -177,13 +176,20 @@ class ChatEventModel(Base):
             name="ck_chat_events_canonical_event_id",
         ),
         CheckConstraint(
+            "(author_kind = 'account' AND author_account_id IS NOT NULL "
+            "AND author_person_id IS NULL AND author_presence_id IS NULL) OR "
             "(author_kind = 'person' AND author_person_id IS NOT NULL "
-            "AND author_presence_id IS NULL) OR "
+            "AND author_presence_id IS NULL AND author_account_id IS NULL) OR "
             "(author_kind = 'yuki' AND author_person_id IS NULL "
-            "AND author_presence_id IS NOT NULL) OR "
+            "AND author_presence_id IS NOT NULL AND author_account_id IS NULL) OR "
             "(author_kind IN ('external_bot', 'system') AND author_person_id IS NULL "
-            "AND author_presence_id IS NULL)",
+            "AND author_presence_id IS NULL AND author_account_id IS NULL)",
             name="ck_chat_events_author",
+        ),
+        CheckConstraint(
+            "canonical_conversation_id IS NOT NULL OR "
+            "(author_kind = 'account' AND scope_type = 'private' AND direction = 'inbound')",
+            name="ck_chat_events_conversation",
         ),
         CheckConstraint(
             "suppression_status IN ('keeper', 'duplicate')",
@@ -254,10 +260,13 @@ class ChatEventModel(Base):
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     canonical_event_id: Mapped[str] = mapped_column(String(36), nullable=False)
-    canonical_conversation_id: Mapped[str] = mapped_column(
+    canonical_conversation_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("canonical_conversations.id", onupdate="RESTRICT", ondelete="RESTRICT"),
-        nullable=False,
+        nullable=True,
+    )
+    author_account_id: Mapped[str | None] = mapped_column(
+        ForeignKey("accounts.id", ondelete="RESTRICT")
     )
     author_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     author_person_id: Mapped[str | None] = mapped_column(
@@ -267,12 +276,12 @@ class ChatEventModel(Base):
     )
     author_presence_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        ForeignKey("account_assignments.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
     )
     ingress_presence_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        ForeignKey("account_assignments.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
     )
     utterance_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -1074,6 +1083,8 @@ class MemoryRebuildRunModel(Base):
     """Administrator-created immutable historical rebuild snapshot."""
 
     __tablename__ = "memory_rebuild_runs"
+    original_selection_json: Mapped[str | None] = mapped_column(Text)
+    original_selection_hash: Mapped[str | None] = mapped_column(String(64))
     __table_args__ = (
         UniqueConstraint("public_id", name="uq_memory_rebuild_runs_public_id"),
         CheckConstraint("snapshot_max_event_id >= 0", name="ck_memory_rebuild_snapshot"),
@@ -1419,6 +1430,7 @@ class RuntimeConfigOverrideModel(Base):
         ),
         Index("ix_runtime_config_overrides_canonical_person_id", "canonical_person_id"),
         Index("ix_runtime_config_overrides_canonical_space_id", "canonical_space_id"),
+        {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -1646,7 +1658,7 @@ class AutomationModel(Base):
     )
     canonical_presence_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        ForeignKey("account_assignments.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
     )
 
@@ -1685,7 +1697,7 @@ class AutomationVersionModel(Base):
         String(36), ForeignKey("spaces.id", onupdate="RESTRICT", ondelete="RESTRICT")
     )
     canonical_presence_id: Mapped[str | None] = mapped_column(
-        String(36), ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT")
+        String(36), ForeignKey("account_assignments.id", onupdate="RESTRICT", ondelete="RESTRICT")
     )
     updated_by: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from yuki.admin.authority.principal import ControlPrincipal
-from yuki.domain.identity import PersonId
+from yuki.domain.identity import IdentityBindingId, PersonId, PresenceId
 from yuki.domain.messages import InboundMessage
 from yuki.services.commands.help import ADMIN_ACTIONS, admin_usage
 
@@ -91,7 +91,12 @@ class IdentityAdminCommands:
         if action and action not in ADMIN_ACTIONS["binding"]:
             raise ValueError(admin_usage("binding"))
         if action in {"", "list"}:
-            return await queries.bindings(principal, person_id=rest or None)
+            person, _, after = rest.partition(" ")
+            return await queries.bindings(
+                principal,
+                person_id=None if person in {"", "all"} else PersonId.parse(person).text,
+                after=after,
+            )
         if action == "show":
             return await queries.binding(principal, rest)
         values = rest.split(maxsplit=3)
@@ -99,7 +104,7 @@ class IdentityAdminCommands:
             raise ValueError(
                 "请指定 Binding ID；attach 使用 <Person ID> <platform> <account> [名称]。"
             )
-        identity = PersonId.parse(values[0]).text
+        identity = (PersonId if action == "attach" else IdentityBindingId).parse(values[0]).text
         payload: dict[str, Any] = {}
         if action == "attach" and len(values) >= 3:
             payload = {
@@ -109,8 +114,10 @@ class IdentityAdminCommands:
             }
         elif action == "transfer" and len(values) == 2:
             payload = {"to_person": PersonId.parse(values[1]).text}
-        elif action not in {"enable", "disable"}:
-            raise ValueError("账号操作：list [Person ID]|show|attach|enable|disable|transfer")
+        elif action not in {"enable", "disable", "unbind"}:
+            raise ValueError(
+                "账号操作：list [Person ID|all] [cursor]|show|attach|enable|disable|unbind|transfer"
+            )
 
         async def revision() -> int:
             if action == "transfer":
@@ -136,6 +143,10 @@ class IdentityAdminCommands:
             return await self.operations.identity.binding_state(
                 principal, identity, command, enabled=action == "enable"
             )
+        if action == "unbind":
+            return await self.operations.identity.unbind_assignment(
+                principal, identity, command, kind="person"
+            )
         return await self.operations.identity.transfer_binding(
             principal, identity, payload["to_person"], command.request_id.text
         )
@@ -152,15 +163,36 @@ class IdentityAdminCommands:
             return await queries.presences(principal, after=identity)
         if action == "show":
             return await queries.presence(principal, identity)
-        fields = (
-            {"enabled": action == "enable"}
-            if action in {"enable", "disable"}
-            else {"ingest_eligible": action == "ingest-enable"}
-        )
-        if action not in {"enable", "disable", "ingest-enable", "ingest-disable"}:
-            raise ValueError("Presence 操作：list|show|enable|disable|ingest-enable|ingest-disable")
+        values = identity.split()
+        fields: dict[str, Any]
+        if action == "register":
+            if len(values) not in {2, 4}:
+                raise ValueError("register <platform> <account> [Assignment ID revision]")
+            fields = {
+                "platform": values[0],
+                "external_account_id": values[1],
+                "display_name": "",
+                "expected_assignment_id": IdentityBindingId.parse(values[2]).text
+                if len(values) == 4
+                else None,
+            }
+        elif action == "transfer":
+            if len(values) != 2:
+                raise ValueError("transfer <Presence ID> <Person ID>")
+            identity = PresenceId.parse(values[0]).text
+            fields = {"to_person": PersonId.parse(values[1]).text}
+        elif action == "unregister":
+            fields = {}
+        else:
+            fields = (
+                {"enabled": action == "enable"}
+                if action in {"enable", "disable"}
+                else {"ingest_eligible": action == "ingest-enable"}
+            )
 
         async def revision() -> int:
+            if action == "register":
+                return int(values[3]) if len(values) == 4 else 0
             return int((await queries.presence(principal, identity))["revision"])
 
         if message.source_event_id is None:
@@ -171,4 +203,14 @@ class IdentityAdminCommands:
             payload=fields,
             revision=revision,
         )
+        if action == "register":
+            return await self.operations.identity.register_presence(principal, command)
+        if action == "unregister":
+            return await self.operations.identity.unbind_assignment(
+                principal, identity, command, kind="yuki"
+            )
+        if action == "transfer":
+            return await self.operations.identity.transfer_presence(
+                principal, identity, str(fields["to_person"]), command
+            )
         return await self.operations.identity.presence_state(principal, identity, command, **fields)

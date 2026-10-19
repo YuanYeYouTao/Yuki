@@ -13,7 +13,7 @@ from typing import cast
 from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.automation.models import TurnOrigin
 from yuki.conversation.scope import plugin_conversation_key
-from yuki.domain.messages import InboundMessage
+from yuki.domain.messages import InboundMessage, mention_snapshots, snapshot_mention_segments
 from yuki.plugin_host.canonical_projection import projection_from_inbound
 from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
 from yuki_plugin_sdk.models import (
@@ -74,12 +74,16 @@ class PluginAdmissionSignalAdapter:
             origin=SdkTurnOrigin(origin.value),
             current=CurrentMessage(
                 platform=message.platform,
-                mentioned_person_ids=message.mentioned_person_ids,
+                author_kind=message.author_kind,
+                author_account_id=message.author_account_id,
+                mentions=mention_snapshots(
+                    snapshot_mention_segments(message.segments, message.mentions)
+                ),
                 message_id=message.message_id,
                 sender_user_id=message.sender.user_id,
                 scope_type=message.scope_type.value,
                 group_id=message.group_id,
-                text=message.text[:12_000],
+                text=message.text,
                 received_at=message.received_at,
                 **identity.sdk_fields(),
             ),

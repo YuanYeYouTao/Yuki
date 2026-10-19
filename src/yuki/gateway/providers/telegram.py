@@ -161,13 +161,14 @@ class TelegramProvider:
         return TelegramSocialOperations()
 
     provider_id = TELEGRAM_PROVIDER_ID
+    platform = "telegram"
 
     def describe_connection(self, handle: object) -> GatewayConnectionProfile:
         if not isinstance(handle, TelegramClient):
             raise TypeError("Telegram requires its authenticated native client")
         return GatewayConnectionProfile(
             provider_id=self.provider_id,
-            platform="telegram",
+            platform=self.platform,
             external_account_id=handle.self_id,
             capabilities=frozenset(
                 {

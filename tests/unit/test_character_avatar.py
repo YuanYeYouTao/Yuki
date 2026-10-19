@@ -277,13 +277,13 @@ async def test_process_crash_after_publication_and_db_flush_recovers_same_reques
 import asyncio, json, os, sys
 from pathlib import Path
 from yuki.character.avatar import AvatarStore, CharacterAvatars
-from yuki.client_api.identity import ClientIdentityService
+from tests.support.client_identity import client_identity_service
 from yuki.persistence.database import Database
 
 async def main():
     payload = json.loads(sys.stdin.read())
     database = Database(payload["database"])
-    identity = ClientIdentityService(database)
+    identity = client_identity_service(database)
     principal = await identity.authenticate(payload["token"])
     service = CharacterAvatars(identity, AvatarStore(Path(payload["root"])))
     async def crash(session, **kwargs):

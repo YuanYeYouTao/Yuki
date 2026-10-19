@@ -283,7 +283,7 @@ async def test_later_text_preflight_exit_does_not_leave_image_pending_forever(
                 await session.execute(
                     update(PresenceModel)
                     .where(PresenceModel.id == env.presence)
-                    .values(enabled=False)
+                    .values(status="disabled")
                 )
         return result
 

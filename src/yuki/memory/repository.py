@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.identity import AuthorKind
-from yuki.identity.person_identity import same_person_condition
+from yuki.identity.person_identity import person_family_condition, same_person_condition
 from yuki.memory.authorized_scope import AuthorizedMemoryScope, authorized_fact_condition
 from yuki.memory.eligibility import MemoryEventEligibilityPolicy
 from yuki.memory.enums import (
@@ -1428,7 +1428,7 @@ class MemoryFactRepository:
             conditions.append(MemoryFactModel.scope_type == scope_type)
         if person_id is not None:
             conditions.append(
-                same_person_condition(MemoryFactModel.canonical_subject_person_id, person_id)
+                person_family_condition(MemoryFactModel.canonical_subject_person_id, person_id)
             )
         if space_id is not None:
             conditions.append(MemoryFactModel.canonical_subject_space_id == space_id)
@@ -1436,7 +1436,7 @@ class MemoryFactRepository:
             try:
                 if subject_user_id is not None:
                     conditions.append(
-                        same_person_condition(
+                        person_family_condition(
                             MemoryFactModel.canonical_subject_person_id,
                             await resolve_active_person_id(session, subject_user_id),
                         )
@@ -1523,7 +1523,7 @@ class MemoryFactRepository:
             person_id = await resolve_active_person_id(session, user_id)
         except MemoryPartitionResolutionError:
             return self._unmatched_identity()
-        return (same_person_condition(MemoryFactModel.canonical_subject_person_id, person_id),)
+        return (person_family_condition(MemoryFactModel.canonical_subject_person_id, person_id),)
 
     async def _query_identity_conditions(
         self,
@@ -1536,7 +1536,7 @@ class MemoryFactRepository:
             return self._unmatched_identity()
         conditions = [
             (
-                same_person_condition(
+                person_family_condition(
                     MemoryFactModel.canonical_subject_person_id, owners.subject_person_id
                 )
                 if owners.subject_person_id is not None
@@ -1557,7 +1557,7 @@ class MemoryFactRepository:
                 else MemoryFactModel.visibility_type == visibility_value
             )
             conditions.append(
-                same_person_condition(
+                person_family_condition(
                     MemoryFactModel.canonical_visibility_person_id, owners.visibility_person_id
                 )
                 if owners.visibility_person_id is not None
@@ -1584,7 +1584,7 @@ class MemoryFactRepository:
         conditions: list[Any] = [
             MemoryFactModel.scope_type == target.scope_type.value,
             (
-                same_person_condition(
+                person_family_condition(
                     MemoryFactModel.canonical_subject_person_id, owners.subject_person_id
                 )
                 if owners.subject_person_id is not None
@@ -1601,7 +1601,7 @@ class MemoryFactRepository:
                 MemoryFactModel.visibility_type
                 == (target.visibility_type.value if target.visibility_type else ""),
                 (
-                    same_person_condition(
+                    person_family_condition(
                         MemoryFactModel.canonical_visibility_person_id, owners.visibility_person_id
                     )
                     if owners.visibility_person_id is not None

@@ -11,6 +11,7 @@ from tests.integration.test_telegram_event_edits import _edit, _path, _photo, _s
 from tests.integration.test_telegram_event_edits import media_reader as media_reader
 from tests.integration.test_telegram_runtime import drain, update
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
+from tests.support.event_seed import seed_scoped_event
 from tests.support.model_executor import InjectedModelExecutor
 
 from yuki.domain.conversations import ConversationScope
@@ -71,7 +72,8 @@ async def selected(case):
 async def test_cross_conversation_attachment_reaches_main_model(attachment_tools, database):
     case = attachment_tools
     other = (
-        await ScopedEventLedgerUnitOfWork(database).append(
+        await seed_scoped_event(
+            ScopedEventLedgerUnitOfWork(database),
             scope=ConversationScope.group(
                 case.current_client.self_id,
                 "-10042",

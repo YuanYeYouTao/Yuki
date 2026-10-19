@@ -132,5 +132,6 @@ journal = sa.Table(
     sa.Column("source_revision", sa.Integer, nullable=False),
     sa.Column("phase", sa.String(24), nullable=False),
     sa.Column("payload_json", sa.Text, nullable=False),
+    sa.Column("archived_journal_json", sa.Text),
     sa.Column("updated", sa.Float, nullable=False),
 )

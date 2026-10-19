@@ -41,7 +41,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
     ) -> ChatTool:
         return ChatTool(
             name=name,
-            schema_version="3" if name == "send_message" else "1",
+            schema_version="4" if name == "send_message" else "1",
             description=description,
             parameters={
                 "type": "object",
@@ -108,7 +108,8 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "省略 target 默认当前群或当前私聊；发给其他人或群时用 canonical 目标，"
             "由后端选择私聊或群聊及发送账号。结果 uncertain 时不要重发。"
             "App/ACP 主会话显式指定 person 目标时需带 binding_id；省略 target 只回复本入口。"
-            "群内真正 @某人使用 mentions，正文中的 @名字不会产生提醒。",
+            "正文在原位置写 @名字即可真实提及；同名默认选择目标会话最近发言的账号。"
+            "要指定账号时复制目录给出的 @{account:UUID}。",
             {
                 "target": {
                     "type": "object",
@@ -125,9 +126,18 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                                 "不能以主动路由猜测"
                             ),
                         },
-                        **selector,
+                        "target_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": "内部 Person/Space ID",
+                        },
+                        "conversation_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "description": "明确发送入口的内部 Conversation ID",
+                        },
                     },
-                    "required": ["kind"],
+                    "required": ["kind", "target_id"],
                     "additionalProperties": False,
                 },
                 **message,
@@ -148,36 +158,21 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                 "reply_to_event_id": {
                     "type": "integer",
                     "minimum": 1,
-                    "description": "可选；当前上下文中可见的内部 #EventRecord.id，非平台消息号。",
-                },
-                "mentions": {
-                    "type": "array",
-                    "maxItems": 20,
-                    "description": (
-                        "群内真实提及成员，按顺序放在正文前；每项只选一种人物标识。"
-                        "不能用文字 @名字代替。"
-                        "@当前发言人用 mentions=[{subject_ref:current_speaker}]，顶层不填人物。"
-                    ),
-                    "items": {
-                        "type": "object",
-                        "additionalProperties": False,
-                        "properties": {
-                            **selector,
-                            "binding_id": {
-                                "type": "string",
-                                "format": "uuid",
-                                "description": "同平台多入口有歧义时明确指定内部 Binding",
-                            },
-                        },
-                    },
+                    "description": "可选；实际授权会话中的内部 #EventRecord.id，非平台消息号。",
                 },
             },
         ),
         tool(
             "get_group_members",
-            "分页读取本群已观察到的内部人物目录；coverage=observed，不代表平台完整名册。",
+            "分页读取实际群入口已观察到的逐账号目录；coverage=observed，不代表平台完整名册。",
             {
                 **group_selector,
+                "binding_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "description": "具体群入口的内部 SpaceBinding ID",
+                },
+                "conversation_id": {"type": "string", "format": "uuid"},
                 "cursor": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 100},
             },

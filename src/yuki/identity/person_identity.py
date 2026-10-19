@@ -7,7 +7,8 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import delete, func, or_, select, tuple_, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 from sqlalchemy.sql import ColumnElement
@@ -39,6 +40,17 @@ def person_enabled_condition(value: Any) -> ColumnElement[bool]:
         .join(root, root.id == func.coalesce(original.merged_into_person_id, original.id))
         .where(original.id == value, original.enabled.is_(True), root.enabled.is_(True))
         .correlate_except(original, root)
+        .exists()
+    )
+
+
+def current_person_enabled_condition(value: Any) -> ColumnElement[bool]:
+    """Recipient qualification follows the current human, not an old actor source."""
+    current = aliased(CanonicalPersonModel)
+    return (
+        select(current.id)
+        .where(current.id == person_root_id(value), current.enabled.is_(True))
+        .correlate_except(current)
         .exists()
     )
 
@@ -143,13 +155,12 @@ async def merge_persons(
     now: datetime | None = None,
     actor_id: str = "system",
 ) -> str:
-    """Associate the same human, retaining original owners and every entry.
+    """Merge current material in the caller's consistent, atomic DB snapshot.
 
-    The caller owns a consistent read transaction and its short write/commit.
-    Only currently effective unique configuration rows move. Conflicting source
-    rows remain historical and never become fallback values after an unset.
+    Original Person, execution and assignment sources remain unchanged. Routing
+    selects actual available candidates at the application boundary.
     """
-    from yuki.conversation.canonical_db_models import PersonActiveRouteModel
+    from yuki.admin.audit import redact_audit_value
     from yuki.persistence.models import (
         AdminOperationEventModel,
         PersonAliasModel,
@@ -157,24 +168,31 @@ async def merge_persons(
     )
     from yuki.plugin_host.db_models import PluginConfigValueModel
 
-    source_id = await current_person_id(session, source_person_id)
-    target_id = await current_person_id(session, target_person_id)
+    roots = await current_person_ids(session, (source_person_id, target_person_id))
+    if source_person_id not in roots or target_person_id not in roots:
+        raise CanonicalIdentityError("missing_canonical_owner")
+    source_id, target_id = roots[source_person_id], roots[target_person_id]
     if source_id == target_id:
         return target_id
-    moment = now or datetime.now(UTC)
-    members = list(
+    people = {
+        person.id: person
+        for person in await session.scalars(
+            select(CanonicalPersonModel).where(CanonicalPersonModel.id.in_((source_id, target_id)))
+        )
+    }
+    source, target = people[source_id], people[target_id]
+    members = tuple(
         await session.scalars(
-            select(CanonicalPersonModel).where(
+            select(CanonicalPersonModel.id)
+            .where(
                 or_(
                     CanonicalPersonModel.id == source_id,
                     CanonicalPersonModel.merged_into_person_id == source_id,
                 )
             )
+            .order_by(CanonicalPersonModel.id)
         )
     )
-    source = next(person for person in members if person.id == source_id)
-    target = await session.get(CanonicalPersonModel, target_id)
-    assert target is not None
     configs = list(
         await session.scalars(
             select(RuntimeConfigOverrideModel).where(
@@ -191,8 +209,6 @@ async def merge_persons(
             )
         )
     )
-    source_route = await session.get(PersonActiveRouteModel, source_id)
-    target_route = await session.get(PersonActiveRouteModel, target_id)
     source_alias = (
         await session.scalar(
             select(PersonAliasModel.id).where(
@@ -204,39 +220,113 @@ async def merge_persons(
         if source.display_name
         else None
     )
-    # No history, external lookup, or broad catalogue scan follows the first DML.
-    moved: list[dict[str, object]] = []
-    config_keys = {row.config_key for row in configs if row.canonical_person_id == target_id}
-    for row in configs:
-        if row.canonical_person_id == source_id and row.config_key not in config_keys:
-            moved.append(
-                {
-                    "table": row.__tablename__,
-                    "id": row.id,
-                    "version": row.version,
-                    "from": source_id,
-                    "to": target_id,
+    scalar_keys = {row.config_key for row in configs if row.canonical_person_id == target_id}
+    plugin_objects = {row.plugin_id for row in plugins if row.canonical_person_id == target_id}
+    moved, discarded = [], []
+    operations = []
+    for model, rows in (
+        (RuntimeConfigOverrideModel, configs),
+        (PluginConfigValueModel, plugins),
+    ):
+        inherited, losing = [], []
+        for row in rows:
+            if row.canonical_person_id != source_id:
+                continue
+            record = {
+                "table": model.__tablename__,
+                "id": row.id,
+                "version": row.version,
+                "from": source_id,
+                "to": target_id,
+            }
+            if isinstance(row, RuntimeConfigOverrideModel):
+                conflict, key = row.config_key in scalar_keys, row.config_key
+            else:
+                conflict, key = row.plugin_id in plugin_objects, row.key
+            if conflict:
+                losing.append((row.id, row.version))
+                snapshot = {
+                    column.key: getattr(row, column.key) for column in model.__table__.columns
                 }
+                snapshot["value_json"] = json.dumps(
+                    redact_audit_value(
+                        json.loads(row.value_json),
+                        key=key,
+                    ),
+                    ensure_ascii=False,
+                )
+                discarded.append(
+                    {
+                        **record,
+                        "row": snapshot,
+                    }
+                )
+            else:
+                inherited.append((row.id, row.version))
+                moved.append(record)
+        operations.append((model, inherited, losing))
+    moment = now or datetime.now(UTC)
+    # Complete potentially large snapshots before the first DML/autoflush.
+    before_json = json.dumps(
+        {
+            "source_person_id": source_id,
+            "target_person_id": target_id,
+            "discarded_configurations": discarded,
+        },
+        ensure_ascii=False,
+        default=lambda value: value.isoformat(),
+    )
+    after_json = json.dumps(
+        {"person_ids": members, "person_id": target_id, "configuration_moves": moved},
+        ensure_ascii=False,
+    )
+    target_name = target.display_name or source.display_name
+    target_superuser = target.is_superuser or source.is_superuser
+    for model, inherited, losing in operations:
+        if inherited:
+            changed = await session.execute(
+                update(model)
+                .where(
+                    tuple_(model.id, model.version).in_(inherited),
+                    model.canonical_person_id == source_id,
+                )
+                .values(canonical_person_id=target_id)
             )
-            row.canonical_person_id = target_id
-    plugin_keys = {
-        (row.plugin_id, row.key) for row in plugins if row.canonical_person_id == target_id
-    }
-    for plugin_row in plugins:
-        if (
-            plugin_row.canonical_person_id == source_id
-            and (plugin_row.plugin_id, plugin_row.key) not in plugin_keys
-        ):
-            moved.append(
-                {
-                    "table": plugin_row.__tablename__,
-                    "id": plugin_row.id,
-                    "version": plugin_row.version,
-                    "from": source_id,
-                    "to": target_id,
-                }
+            if cast(CursorResult[Any], changed).rowcount != len(inherited):
+                raise CanonicalIdentityError("canonical_owner_mismatch")
+        if losing:
+            removed = await session.execute(
+                delete(model).where(
+                    tuple_(model.id, model.version).in_(losing),
+                    model.canonical_person_id == source_id,
+                )
             )
-            plugin_row.canonical_person_id = target_id
+            if cast(CursorResult[Any], removed).rowcount != len(losing):
+                raise CanonicalIdentityError("canonical_owner_mismatch")
+    await session.execute(
+        update(CanonicalPersonModel)
+        .where(
+            or_(
+                CanonicalPersonModel.id == source_id,
+                CanonicalPersonModel.merged_into_person_id == source_id,
+            )
+        )
+        .values(
+            merged_into_person_id=target_id,
+            revision=CanonicalPersonModel.revision + 1,
+            updated_at=moment,
+        )
+    )
+    await session.execute(
+        update(CanonicalPersonModel)
+        .where(CanonicalPersonModel.id == target_id)
+        .values(
+            display_name=target_name,
+            is_superuser=target_superuser,
+            revision=CanonicalPersonModel.revision + 1,
+            updated_at=moment,
+        )
+    )
     if source.display_name and source_alias is None:
         session.add(
             PersonAliasModel(
@@ -248,29 +338,6 @@ async def merge_persons(
                 last_seen_at=moment,
             )
         )
-    if not target.display_name:
-        target.display_name = source.display_name
-    target.is_superuser = target.is_superuser or source.is_superuser
-    for member in members:
-        member.merged_into_person_id = target_id
-        member.revision += 1
-        member.updated_at = moment
-    target.revision += 1
-    target.updated_at = moment
-    await session.flush()
-    if target_route is None and source_route is not None:
-        session.add(
-            PersonActiveRouteModel(
-                person_id=target_id,
-                identity_binding_id=source_route.identity_binding_id,
-                presence_id=source_route.presence_id,
-                route_generation=source_route.route_generation,
-                paused=source_route.paused,
-                revision=1,
-                created_at=moment,
-                updated_at=moment,
-            )
-        )
     session.add(
         AdminOperationEventModel(
             actor_user_id=actor_id,
@@ -278,14 +345,8 @@ async def merge_persons(
             operation="identity.person.merge",
             target_type="person",
             target_id=target_id,
-            before_json=json.dumps({"source_person_id": source_id, "target_person_id": target_id}),
-            after_json=json.dumps(
-                {
-                    "person_ids": [row.id for row in members],
-                    "person_id": target_id,
-                    "configuration_moves": moved,
-                }
-            ),
+            before_json=before_json,
+            after_json=after_json,
             success=True,
             duration_seconds=0,
             created_at=moment,

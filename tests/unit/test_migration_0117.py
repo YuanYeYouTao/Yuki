@@ -59,6 +59,8 @@ def test_upgrade_removes_only_agent_action_diagnostics(tmp_path, monkeypatch):
     assert not retired.intersection(upgraded)
     assert "agent_actions" not in upgraded
     assert {"client_devices", "client_link_codes"} <= upgraded.keys()
-    assert "history_starts_at" in upgraded["identity_bindings"]
+    assert {"accounts", "account_assignments"} <= upgraded.keys()
+    assert not {"identity_bindings", "presences"} & upgraded.keys()
+    assert "started_at" in upgraded["account_assignments"]
     command.upgrade(config, "head")
     assert asyncio.run(inspect()) == upgraded

@@ -11,6 +11,7 @@ from uuid import uuid4
 from sqlalchemy import and_, or_, select, text
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.initiative_sources import source_revision
@@ -179,7 +180,8 @@ class OrdinaryAdmissionRepository:
         if not event_ids:
             return ()
         a, e, c = OrdinaryTurnAdmissionModel, ChatEventModel, CanonicalConversationModel
-        p, presence, identity = CanonicalPersonModel, PresenceModel, IdentityBindingModel
+        p = CanonicalPersonModel
+        presence, identity = aliased(PresenceModel), aliased(IdentityBindingModel)
         space, binding = CanonicalSpaceModel, SpaceBindingModel
         query = (
             select(a, e)

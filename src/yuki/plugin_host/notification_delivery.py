@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from yuki.automation.gateway import ProactiveGatewayError
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.domain.identity import AuthorKind
-from yuki.gateway.social import TransportMedia, TransportMessage, TransportTarget
+from yuki.gateway.social import (
+    TransportMedia,
+    TransportMessage,
+    TransportTarget,
+    prepared_transport,
+    transport_payload,
+)
 from yuki.identity.routing import PresenceRouter, RouteSendError
+from yuki.persistence.database import Database
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.persistence.worker_recovery import recover_database_loop
@@ -47,11 +53,16 @@ class NotificationDeliveryReceipt:
 
 
 class NotificationTransport(Protocol):
+    async def prepare(
+        self, item: OutboxRecord, message: TransportMessage
+    ) -> tuple[dict[str, Any], ...]: ...
+
     async def send_text(
         self,
         *,
         target_type: str,
         text: str,
+        prepared: dict[str, Any],
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
         canonical_conversation_id: str | None = None,
@@ -65,6 +76,7 @@ class NotificationTransport(Protocol):
         target_type: str,
         local_path: Path,
         content_type: str,
+        prepared: dict[str, Any],
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
         canonical_conversation_id: str | None = None,
@@ -79,15 +91,64 @@ class PlatformNotificationTransport:
     def __init__(
         self,
         *,
+        database: Database,
         router: PresenceRouter | None = None,
     ) -> None:
         self._router = router
+        self._database = database
+
+    async def prepare(
+        self, item: OutboxRecord, message: TransportMessage
+    ) -> tuple[dict[str, Any], ...]:
+        from yuki.social.content import prepare_for_entry
+
+        if self._router is None or item.canonical_conversation_id is None:
+            raise ProactiveGatewayError("none")
+        try:
+            route = await self._router.resolve_send_for_conversation(
+                item.canonical_conversation_id,
+                presence_id=item.canonical_presence_id,
+                source_event_id=item.source_event_id,
+            )
+        except RouteSendError as exc:
+            raise ProactiveGatewayError(exc.category) from exc
+        operations = self._router.operations(route)
+        if item.prepared is not None:
+            message = prepared_transport(item.prepared["content"], message.media)
+        else:
+            async with self._database.sessions() as session:
+                content = await prepare_for_entry(
+                    session,
+                    message.text,
+                    platform=route.platform,
+                    space_binding_id=route.binding_id if item.target_type == "group" else None,
+                    participant_assignment_ids=(route.binding_id, route.presence_id),
+                    conversation_id=item.canonical_conversation_id,
+                    operations=operations,
+                )
+            message = TransportMessage(
+                content.message.text,
+                content.message.mentions,
+                message.reply_reference,
+                message.media,
+            )
+        provenance = {
+            "presence_id": route.presence_id,
+            "binding_id": route.binding_id,
+            "conversation_id": item.canonical_conversation_id,
+            "platform": route.platform,
+        }
+        return tuple(
+            {"message": transport_payload(part), "route": provenance}
+            for part in operations.plan_send(message)
+        )
 
     async def send_text(
         self,
         *,
         target_type: str,
         text: str,
+        prepared: dict[str, Any],
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
         canonical_conversation_id: str | None = None,
@@ -96,7 +157,7 @@ class PlatformNotificationTransport:
     ) -> NotificationDeliveryReceipt:
         return await self._send(
             target_type=target_type,
-            message=TransportMessage(text=text),
+            message=prepared_transport(prepared["message"]),
             canonical_target_person_id=canonical_target_person_id,
             canonical_target_space_id=canonical_target_space_id,
             canonical_conversation_id=canonical_conversation_id,
@@ -110,6 +171,7 @@ class PlatformNotificationTransport:
         target_type: str,
         local_path: Path,
         content_type: str,
+        prepared: dict[str, Any],
         canonical_target_person_id: str | None = None,
         canonical_target_space_id: str | None = None,
         canonical_conversation_id: str | None = None,
@@ -119,13 +181,14 @@ class PlatformNotificationTransport:
         content = await asyncio.to_thread(local_path.read_bytes)
         return await self._send(
             target_type=target_type,
-            message=TransportMessage(
-                media=TransportMedia(
+            message=prepared_transport(
+                prepared["message"],
+                TransportMedia(
                     kind="image",
                     content=content,
                     filename=local_path.name,
                     mime_type=content_type,
-                )
+                ),
             ),
             canonical_target_person_id=canonical_target_person_id,
             canonical_target_space_id=canonical_target_space_id,
@@ -154,11 +217,6 @@ class PlatformNotificationTransport:
                     presence_id=canonical_presence_id,
                     source_event_id=source_event_id,
                 )
-            elif canonical_target_person_id is not None:
-                # Genuine old outbox records may predate the Conversation column.
-                resolved = await self._router.resolve_send_for_person(canonical_target_person_id)
-            elif canonical_target_space_id is not None:
-                resolved = await self._router.resolve_send_for_space(canonical_target_space_id)
             else:
                 raise RouteSendError("none")
         except RouteSendError as exc:
@@ -205,14 +263,14 @@ class PluginNotificationOutboxWorker:
         repository: PluginNotificationRepository,
         artifacts: PluginMediaArtifactStore,
         ledger: EventLedgerRepository,
-        transport: NotificationTransport | None = None,
+        transport: NotificationTransport,
         effect_gate: ConversationEffectGate,
         effect_gate_timeout_seconds: float = 5.0,
     ) -> None:
         self._repository = repository
         self._artifacts = artifacts
         self._ledger = ledger
-        self._transport = transport or PlatformNotificationTransport()
+        self._transport = transport
         self._effect_gate = effect_gate
         self._effect_gate_timeout_seconds = effect_gate_timeout_seconds
         self._stop = asyncio.Event()
@@ -241,6 +299,9 @@ class PluginNotificationOutboxWorker:
         while not self._stop.is_set():
             item = await self._repository.claim_outbox()
             if item is None:
+                await self._prepare_pending()
+                item = await self._repository.claim_outbox()
+            if item is None:
                 self._wake.clear()
                 try:
                     await asyncio.wait_for(self._wake.wait(), timeout=1.0)
@@ -248,6 +309,44 @@ class PluginNotificationOutboxWorker:
                     pass
                 continue
             await self._deliver(item)
+
+    async def _prepare_pending(self) -> None:
+        cursor = 0
+        while items := await self._repository.unprepared_outbox(after_id=cursor):
+            for item in items:
+                try:
+                    await self._repository.require_unclaimed_outbox_source(item)
+                    media = None
+                    if item.part_type == "media" and item.media_handle_id is None:
+                        raise PluginPermanentDeliveryError("media_handle_missing")
+                    if item.media_handle_id is not None:
+                        artifact = await self._artifacts.resolve(
+                            plugin_id=item.plugin_id, handle_id=item.media_handle_id
+                        )
+                        media = TransportMedia(
+                            "image", b"", artifact.local_path.name, artifact.content_type
+                        )
+                    parts = await self._transport.prepare(
+                        item, TransportMessage(item.text, media=media)
+                    )
+                    await self._repository.prepare_outbox(item, parts)
+                    return
+                except ProactiveGatewayError:
+                    continue
+                except (
+                    PluginOwnershipError,
+                    PluginPermissionError,
+                    PluginPermanentDeliveryError,
+                ) as exc:
+                    category = (
+                        queued_work_error_category(exc, item)
+                        if isinstance(exc, PluginOwnershipError)
+                        else exc.category
+                        if isinstance(exc, PluginPermanentDeliveryError)
+                        else "media_invalid"
+                    )
+                    await self._repository.fail_unclaimed_outbox(item, category)
+            cursor = items[-1].id
 
     async def _deliver(self, item: OutboxRecord) -> None:
         try:
@@ -315,6 +414,7 @@ class PluginNotificationOutboxWorker:
         person_id: str | None,
         space_id: str | None,
     ) -> None:
+        assert item.prepared is not None
         try:
             if item.part_type == "media":
                 if item.media_handle_id is None:
@@ -327,6 +427,7 @@ class PluginNotificationOutboxWorker:
                     target_type=item.target_type,
                     local_path=artifact.local_path,
                     content_type=artifact.content_type,
+                    prepared=item.prepared,
                     canonical_target_person_id=person_id,
                     canonical_target_space_id=space_id,
                     canonical_conversation_id=item.canonical_conversation_id,
@@ -337,6 +438,7 @@ class PluginNotificationOutboxWorker:
                 receipt = await self._transport.send_text(
                     target_type=item.target_type,
                     text=item.text,
+                    prepared=item.prepared,
                     canonical_target_person_id=person_id,
                     canonical_target_space_id=space_id,
                     canonical_conversation_id=item.canonical_conversation_id,
@@ -451,7 +553,9 @@ class PluginNotificationOutboxWorker:
         scope = ScopeType(item.target_type)
         source = await self._ledger.get_event(item.source_event_id)
         summary = source.content if source is not None else "插件外部事件通知"
-        content = item.text if item.part_type != "media" else ""
+        assert item.prepared is not None
+        actual_message = prepared_transport(item.prepared["message"])
+        content = actual_message.text
         segments: tuple[dict[str, object], ...]
         if item.part_type == "media":
             segments = (
@@ -465,6 +569,19 @@ class PluginNotificationOutboxWorker:
             )
         else:
             segments = ({"type": "text", "data": {"text": content}},)
+        segments += tuple(
+            {
+                "type": "mention",
+                "data": {
+                    **asdict(mention),
+                    "source": {
+                        "platform": receipt.platform,
+                        "external_account_id": mention.external_id,
+                    },
+                },
+            }
+            for mention in actual_message.mentions
+        )
         sender = receipt.sender_account_id
         target = receipt.external_target_id
         if not sender or not target or not receipt.presence_id:
@@ -494,17 +611,13 @@ class PluginNotificationOutboxWorker:
             direction="outbound",
             content=content,
             segments=segments,
-            sender_is_bot=True,
             origin="plugin_background",
             caused_by_event_id=item.source_event_id,
+            space_binding_id=receipt.binding_id if scope is ScopeType.GROUP else None,
         )
         event = appended.event
         if event is None:
             return
-        if event.author_kind != AuthorKind.YUKI.value:
-            raise PluginPermanentDeliveryError("canonical_owner_mismatch")
-        if event.author_presence_id != receipt.presence_id:
-            raise PluginPermanentDeliveryError("canonical_owner_mismatch")
         if event.ingress_presence_id != receipt.presence_id:
             raise PluginPermanentDeliveryError("canonical_owner_mismatch")
         if (

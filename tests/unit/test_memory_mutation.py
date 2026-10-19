@@ -12,6 +12,8 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from tests.conftest import make_settings
+from tests.support.canonical_identity import ensure_person, ensure_space
+from tests.support.event_seed import seed_event
 
 from yuki.admin.audit import AdminAuditService
 from yuki.admin.models import AdminActor
@@ -19,7 +21,7 @@ from yuki.automation.models import TurnOrigin
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.domain.tool_actor import ToolActor
-from yuki.identity.canonical_repository import active_space_id_for, ensure_person, ensure_space
+from yuki.identity.canonical_repository import active_space_id_for
 from yuki.identity.db_models import CanonicalSpaceModel
 from yuki.memory.audit import MemoryAuditService
 from yuki.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
@@ -251,7 +253,8 @@ async def _event(
             },
         },
     )
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id=bot_user_id,
         platform_message_id=message_id,
         scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,

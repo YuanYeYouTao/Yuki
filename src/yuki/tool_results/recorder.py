@@ -139,7 +139,7 @@ class ToolReceiptRepository:
                         text(
                             "EXISTS ("
                             + self_execution_origin_sql(":self_execution_id")
-                            + " AND ic.generation=:self_generation AND ip.enabled=1 "
+                            + " AND ic.generation=:self_generation AND ip.status='active' "
                             "AND isp.enabled=1)"
                         ).bindparams(
                             self_execution_id=execution_id, self_generation=source.generation

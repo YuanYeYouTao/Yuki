@@ -55,7 +55,7 @@ from yuki.conversation.ordinary_admission import (
 from yuki.conversation.self_initiative import validate_self_initiative
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.memory_config import MemoryConfigScope
-from yuki.domain.messages import InboundMessage
+from yuki.domain.messages import InboundMessage, mention_snapshots
 from yuki.execution_trace.recorder import TraceRecorder, trace_span
 from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
 from yuki.memory.self_origin import read_self_initiative_facts
@@ -652,6 +652,7 @@ class SemanticParticipationService:
             author=author,
             target=target,
             text=row.perceived_content,
+            mentions=mention_snapshots(row.segments),
             at=timestamp(row.occurred_at),
             source_order=row.id,
             kind="human" if row.author_is_human() else "self",

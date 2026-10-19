@@ -11,6 +11,7 @@ from sqlalchemy import select
 from tests.integration.test_telegram_runtime import drain as drain_telegram
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.integration.test_telegram_runtime import update
+from tests.support.client_identity import client_identity_service
 from tests.support.runtime_execution import make_child_executor
 from tests.unit.test_app_messages import app_env as app_env
 from tests.unit.test_app_messages import drain
@@ -18,7 +19,6 @@ from tests.unit.test_client_api import bearer
 from tests.unit.test_client_works import owner
 from tests.unit.test_personal_entry_contract import admin as admin
 
-from yuki.client_api.identity import ClientIdentityService
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel
@@ -159,7 +159,7 @@ async def test_queued_child_keeps_original_owner_and_budget_without_an_active_ac
         await repository.release(lease)
     original = await repository.get(child_id)
     if change == "transfer":
-        await ClientIdentityService(database).transfer_for_operator(
+        await client_identity_service(database).transfer_for_operator(
             original_binding.id, target.person_id, str(uuid4()), str(uuid4())
         )
     else:

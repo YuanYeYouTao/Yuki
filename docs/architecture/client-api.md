@@ -10,7 +10,7 @@
 
 ## 角色身份与个人路由
 
-每个数据库有一个稳定的 `character_profile.id`，由迁移 0141 生成。名称、简介、角色色、
+每个数据库有一个稳定的 `character_profile.id`，由迁移 0143 生成。名称、简介、角色色、
 头像和服务器地址均不参与身份；修改呈现资料不重建 Person、入口、历史或 Work。
 
 | 请求 | 授权与结果 |
@@ -79,22 +79,22 @@ App 的原 Person namespace，`binding_id` 和 `conversation_id` 是实际入口
 
 ## 历史与隐私
 
-迁移 0121 保留旧绑定行和原事实，新列 `history_starts_at` 对迁移前行为空。
-此后每条新绑定的起点都等于自身创建时间。转移时旧行标记 `transferred`，不改 Person；
-旧行的 `updated_at` 是区间终点，新行的起点是转移时刻。原主动路由若指向旧行则暂停。
-账号查询排除 transferred，停用绑定仍阻止自动创建新身份。
+Account 保稳定原生账号，Assignment 保每次实际归属阶段。转移、真解绑和人↔Yuki 结束旧阶段，
+创建新阶段；停用保归属，恢复不创建阶段。当前查询只排除 ended，不把 disabled 当作解绑。
+起止时间只保存有证据的事实；旧阶段结束但准确时刻未知时保持空值，不用升级时刻或 updated_at 填造。
+原主动路由若指向结束阶段则暂停，原 Person、设备、Conversation 与回执不改归新持有人。
 
-平台私聊历史只返回严格晚于起点所在秒的记录；该秒及更早、无法确定时间的记录不返回，计入
-`withheld_unattributed`。新的平台历史读取按实际账号区间授权；已发生的发送回执仍沿原内部来源、
-调用参数与派发事实读取，不以今日 Binding 或 Presence 可用性重新裁定原效果。
-迁移前不设界的绑定保持原读取行为。前任被遗忘后，现任起点仍在，无须保存前任或墓碑。
+新的平台历史读取按原阶段的真实区间授权，不用今日账号反推过去的人物。首次迟到消息按可证明的
+原生时间与阶段入账；无法证明原人物时保 Account 来源，不造人物或临时私聊 Conversation。
+没有原生时间时保真实接收时间，不声称已辨清历史归属。重复接入先读原回执，已发生的发送
+继续沿原内部来源、调用参数与派发事实读取，不以今日 Binding 或 Presence 可用性重裁原效果。
 
 遗忘按当前 Person 的归并集合删除作者事件、全部所属私聊、Work、Memory、设备、码和个人命令回执；
 历史原所属用于定位删除资料，不在读取时重写。
 `/ai forgetme` 只负责从当前认证账号解析一次 Person；operator 可按 Person ID 删除没有
 可用账号的原身份。归属有界的账号不参与跨时期账号字符串清理；号码在正文、转写和
 segments 中的脱敏只覆盖其拥有区间。账本的服务器创建时间为 `observed_at`，平台提供的
-`occurred_at` 不用于判断归属。消息正文在写事务前准备，短事务复核来源元数据并应用。
+`occurred_at` 保存原生发生时间，有证据时用于查原归属阶段；不把接收时刻假装原生时间。消息正文在写事务前准备，短事务复核来源元数据并应用。
 Memory 重建按来源事件处理提案，保留有界账号的运行选择集，不按运行创建时间推断归属。
 
 这些命令复用原审计与 `control_command_receipts`。SQLite 确认未提交的 busy 返回
@@ -141,7 +141,7 @@ App 补充不会自动发往群里；群 Work 后续仍可能按任务内容向�
 ## 快照、事件与提示
 
 事件投影的 `work_ids` 仅包含同一已授权私聊中、由该原事件触发的根 Work，包括已结束的
-Work；子 Work 仍从详情读取。查询限于当前事件页，使用迁移 0143 的部分表达式索引，
+Work；子 Work 仍从详情读取。查询限于当前事件页，使用迁移 0145 的部分表达式索引，
 客户端不必为恢复旧消息下的工作卡而装载全部历史 Work。
 `text` 保留原账本文字；App 入站的正文与附件能从原 segments 明确分开时，另提供
 `display_text`，否则为 null。客户端展示使用 `display_text ?? text`，不按附件标记的文字
@@ -215,7 +215,7 @@ kind 为 file、image、video 或 record。服务器流式写设备／请求暂�
 ## Python 参考客户端与 CLI
 
 主包提供 client_sdk.PersonalClient，所有操作经 HTTP；不直接访问服务器数据库、模型或工具。
-yuki client（同一入口也保留 yuki client）支持 pair、me、home、send、input、cancel、upload、artifact、request、
+yuki client 支持 pair、me、home、send、input、cancel、upload、artifact、request、
 retry、pending、watch、link-code、revoke。URL 取 YUKI_CLIENT_URL，设备凭据取
 YUKI_CLIENT_TOKEN；配对码取 YUKI_CLIENT_CODE，pair 的首次响应返回设备 token。
 凭据不放命令参数或 outbox。--state 选择本地 outbox 文件，文件权限为 0600。

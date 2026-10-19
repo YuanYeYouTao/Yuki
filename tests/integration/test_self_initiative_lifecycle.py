@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+from tests.support.canonical_identity import ensure_presence, ensure_space
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.semantic_participation_host_helpers import _event_and_route, _host
@@ -16,7 +17,6 @@ from tests.support.semantic_participation_host_helpers import _event_and_route, 
 from yuki.conversation.canonical_db_models import SpaceActiveRouteModel
 from yuki.conversation.hydrate import ensure_canonical_conversation
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.identity.canonical_repository import ensure_presence, ensure_space
 from yuki.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
 from yuki.llm.fake import FakeLLMProvider
 from yuki.runtime.work_activation import activate_work

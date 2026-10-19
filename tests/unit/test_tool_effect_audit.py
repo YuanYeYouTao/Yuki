@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import delete, func, select, update
 from tests.conftest import build_harness, make_settings
+from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_self_initiative_memory import record, seed
@@ -31,7 +32,6 @@ from yuki.conversation.canonical_db_models import (
 from yuki.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunction
 from yuki.domain.tool_actor import ToolActor
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
-from yuki.identity.canonical_repository import ensure_person, ensure_space
 from yuki.identity.db_models import SpaceBindingModel
 from yuki.memory.partition import MemoryPartitionResolutionError
 from yuki.persistence.models import ChatEventModel, MemoryToolReceiptModel

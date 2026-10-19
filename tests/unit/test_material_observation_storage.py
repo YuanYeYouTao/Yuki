@@ -20,7 +20,9 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import Column, DateTime, Integer, String, Text, select, text
 from sqlalchemy.orm import declarative_base
-from tests.support.legacy_conversation_seed import enable_binding_column_for_legacy_seed
+from tests.support.canonical_identity import ensure_space
+from tests.support.event_seed import seed_scoped_event
+from tests.support.legacy_conversation_seed import frozen_social_env
 from tests.support.social_identity_cases import social_env
 
 from yuki.conversation.canonical_db_models import (
@@ -32,11 +34,10 @@ from yuki.conversation.observations import (
     encode,
     validate_observations,
 )
-from yuki.conversation.projection_chunks_schema import PROJECTION_TRIGGERS_0133
+from yuki.conversation.projection_chunks_schema import PROJECTION_TRIGGERS_CURRENT
 from yuki.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
 from yuki.conversation.projection_models import PromptProjectionChunkModel, PromptProjectionModel
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.canonical_repository import ensure_space
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
     ChatEventModel,
@@ -124,34 +125,7 @@ def selected_0109(env, identity, payload, event_ids=()):
 async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=True):
     database = Database(url)
     try:
-        # Frozen 0107 rows still require the retired coverage columns. Seed this
-        # old shape explicitly; the current writer must not recreate old fields.
-        async with database.immediate_session() as writer:
-            space = await ensure_space(writer, "20001")
-            conversation = str(uuid4())
-            alias = str(uuid4())
-            now = datetime.now(UTC)
-            await writer.execute(
-                text(
-                    "INSERT INTO canonical_conversations("
-                    "id,kind,space_id,primary_alias_id,primary_marker,generation,"
-                    "starts_after_event_id,last_event_id,last_generation_change_event_id,"
-                    "covered_through_event_id,uncovered_event_count,uncovered_character_count,"
-                    "revision,created_at,updated_at) "
-                    "VALUES(:id,'space',:space,:alias,1,1,0,0,0,0,0,0,1,:now,:now)"
-                ),
-                {"id": conversation, "space": space, "alias": alias, "now": now},
-            )
-            await writer.execute(
-                text(
-                    "INSERT INTO conversation_legacy_aliases("
-                    "id,conversation_id,scope_key,is_primary,created_at,updated_at) "
-                    "VALUES(:alias,:id,'bot:80001:group:20001',1,:now,:now)"
-                ),
-                {"id": conversation, "alias": alias, "now": now},
-            )
-        await enable_binding_column_for_legacy_seed(database)
-        env = await social_env(database, tmp_path)
+        env = await frozen_social_env(database)
         identities = [str(uuid4()) for _ in range(3)]
         summary = str(uuid4())
         useful_note = str(uuid4())
@@ -357,8 +331,10 @@ async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=
                 selected_0109(env, useful_note, "[Observation; derived notes]\n" + useful_payload)
             )
             await writer.flush()
-            owner = await writer.get(CanonicalConversationModel, env.context.conversation_id)
-            original_revision = owner.prompt_source_revision
+            original_revision = await writer.scalar(
+                text("SELECT prompt_source_revision FROM canonical_conversations WHERE id=:id"),
+                {"id": env.context.conversation_id},
+            )
             projection_payload = encode([json.loads(payload) for _, payload in originals])
             await writer.execute(
                 text(
@@ -371,7 +347,7 @@ async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=
                 ),
                 {
                     "view": VIEW,
-                    "conversation": owner.id,
+                    "conversation": env.context.conversation_id,
                     "revision": original_revision,
                     "epoch": str(uuid4()),
                     "key": "b" * 64,
@@ -608,6 +584,10 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
             table: before.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
             for table in private
         }
+        original_columns = {
+            table: [row[1] for row in before.execute(f"PRAGMA table_info({table})")]
+            for table in private
+        }
     cli = Path(sys.executable).parent / ("yuki.exe" if os.name == "nt" else "yuki")
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
@@ -621,7 +601,8 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
         assert after.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert not after.execute("PRAGMA foreign_key_check").fetchall()
         for table, rows in original_rows.items():
-            assert after.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+            columns = ",".join(original_columns[table])
+            assert after.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == rows
         assert not after.execute(
             "SELECT 1 FROM sqlite_master WHERE name='context_observation_reset'"
         ).fetchall()
@@ -646,7 +627,11 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
     with sqlite3.connect(copied) as after:
         for table, rows in original_rows.items():
             if table != "runtime_work":
-                assert after.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+                columns = ",".join(original_columns[table])
+                assert (
+                    after.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall()
+                    == rows
+                )
         assert after.execute(
             "SELECT state,reason,source_json,checkpoint_json,model_requests,tool_calls "
             "FROM runtime_work WHERE id=?",
@@ -828,7 +813,7 @@ async def test_metadata_trigger_invalidates_selected_chat_and_keeps_private_sour
                 )
             ).all()
         )
-        for name, expected in PROJECTION_TRIGGERS_0133.items():
+        for name, expected in PROJECTION_TRIGGERS_CURRENT.items():
             assert " ".join(installed[name].replace("IF NOT EXISTS ", "").split()) == " ".join(
                 expected.split()
             )
@@ -847,7 +832,8 @@ async def _trigger_sources(database, tmp_path, privacy_update):
             await writer.execute(
                 text("INSERT INTO execution_trace_state(id,privacy_generation) VALUES(1,0)")
             )
-    await ledger.append(
+    await seed_scoped_event(
+        ledger,
         scope=ConversationScope.group(env.bot.self_id, "20002"),
         platform_message_id="unrelated-trigger-owner",
         sender_user_id="10001",
@@ -954,8 +940,8 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
     permissions = (
         "persons",
         "spaces",
-        "presences",
-        "identity_bindings",
+        "accounts",
+        "account_assignments",
         "space_bindings",
         "person_active_routes",
         "space_active_routes",

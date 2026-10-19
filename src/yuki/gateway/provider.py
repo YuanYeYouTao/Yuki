@@ -67,6 +67,9 @@ class GatewayProvider(Protocol):
     def provider_id(self) -> str: ...
 
     @property
+    def platform(self) -> str: ...
+
+    @property
     def social(self) -> PlatformSocialOperations: ...
 
     def project_inbound(
@@ -98,6 +101,10 @@ class GatewayProviderCatalog:
     @property
     def provider_ids(self) -> tuple[str, ...]:
         return tuple(sorted(self._providers))
+
+    @property
+    def platforms(self) -> tuple[str, ...]:
+        return tuple(sorted({provider.platform for provider in self._providers.values()}))
 
     def project_inbound(
         self, provider_id: str, message: InboundMessage, yuki_ids: frozenset[str]

@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import delete, select
 from tests.conftest import make_settings
 from tests.integration.test_current_material_main_contract import _catalog, _profile
+from tests.support.canonical_identity import ensure_person
 from tests.support.canonical_ingress import fixture_ingress
 from tests.support.commands_and_chat_helpers import inbound
 from tests.support.model_profiles import write_fake_profiles
@@ -29,7 +30,7 @@ from yuki.asr.provider import HTTPASRProvider
 from yuki.client_api.http import attach_client_api
 from yuki.container import ApplicationContainer
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.identity.canonical_repository import create_presence, ensure_person
+from yuki.identity.canonical_repository import create_presence
 from yuki.identity.person_identity import merge_persons
 from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.pool import ModelClientPool

@@ -4,11 +4,13 @@ import hashlib
 import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
 import pytest
 from sqlalchemy import func, select
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_app_messages import drain
@@ -412,7 +414,7 @@ async def test_claim_account_merges_two_apps_without_changing_their_original_cre
     claimed = await env.identity.claim_account(
         code["code"], platform="qq", account="1001", display_name="account name", message_id="claim"
     )
-    assert claimed["person_id"] == person_b and claimed["merged"] and not claimed["transferred"]
+    assert claimed["person_id"] == person_b and claimed["merged"] and not claimed["ended"]
     assert claimed["binding_id"] == original_id
     for device, original in ((a, me_a), (b, me_b)):
         me = (await env.client.get("/client/v1/me", headers=bearer(device["token"]))).json()["data"]
@@ -432,9 +434,7 @@ async def test_claim_account_merges_two_apps_without_changing_their_original_cre
         display_name="account name",
         message_id="already",
     )
-    assert (
-        not result["merged"] and not result["transferred"] and result["binding_id"] == original_id
-    )
+    assert not result["merged"] and not result["ended"] and result["binding_id"] == original_id
 
 
 async def test_original_work_cancel_receipt_remains_readable_in_source_scope(app_env, database):
@@ -521,7 +521,25 @@ async def test_operator_transfer_pauses_current_root_route_without_moving_histor
                 updated_at=datetime.now(UTC),
             )
         )
-    await merge(database, person_a, person_b)
+    from yuki.domain.conversations import ConversationScope
+
+    accepted = await seed_scoped_event(
+        env.harness.scoped_events,
+        scope=ConversationScope.private("8000", "1001"),
+        platform_message_id="original-before-transfer",
+        sender_user_id="1001",
+        direction="inbound",
+        content="original owner",
+    )
+    original_event = accepted.event.id
+    env.identity.router._registry.connect(
+        SimpleNamespace(self_id="8000"), provider_id="snowluma", presence_id=presence.id
+    )
+    code = await env.identity.issue_for_operator(person_b, str(uuid4()), str(uuid4()))
+    claimed = await env.identity.claim_account(
+        code["code"], platform="qq", account="1001", display_name="", message_id="merge-route"
+    )
+    assert claimed["merged"] and claimed["person_id"] == person_b
     target, _code = await person_and_code(env.client)
     result = await env.identity.transfer_for_operator(
         binding_id, target, str(uuid4()), str(uuid4())
@@ -531,7 +549,9 @@ async def test_operator_transfer_pauses_current_root_route_without_moving_histor
         route = await session.get(PersonActiveRouteModel, person_b)
         original = await session.get(IdentityBindingModel, binding_id)
         assert route.paused and route.identity_binding_id == binding_id
-        assert original.person_id == person_a and original.status == "transferred"
+        assert original.person_id == person_a and original.status == "ended"
+        event = await session.get(ChatEventModel, original_event)
+        assert event.author_person_id == person_a and event.content == "original owner"
 
 
 async def test_disabled_app_does_not_revoke_device_person_or_original_work(app_env, database):

@@ -10,6 +10,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+from tests.support.event_seed import seed_scoped_event
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.gateway import builtin_registry
 from tests.support.runtime_execution import make_work_resumer
@@ -337,7 +338,6 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
                 and event.ingress_presence_id == second_presence
             )
             assert len(bot_b.calls) == 1 and bot_a.calls == []
-            from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
             from yuki.plugin_host.db_models import (
                 PluginBackgroundTargetGrantModel,
                 PluginBackgroundTurnJobModel,
@@ -356,55 +356,49 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
                 grant = await reader.scalar(select(PluginBackgroundTargetGrantModel))
                 assert grant.canonical_conversation_id == conversation_id
                 assert grant.canonical_presence_id == second_presence
-            job = await notifications.claim_turn()
-            assert job is not None and job.id == 1 and job.source_event_id == 10
+            # This old publication never persisted an actor. Today's grant does
+            # not prove its original creator, unlike the independent Work above.
             before_job = len(provider.requests)
-            provider._responder = lambda _: ChatResponse("original job completed internally", 0)
-            worker = PluginBackgroundTurnWorker(
-                repository=notifications,
-                ledger=harness.ledger,
-                runtime_config=chat._runtime_config,
-                chat=chat,
-                turns=chat._turn_coordinator,
-                conversation_scopes=chat._conversation_scopes,
-            )
-            await worker._execute(job)
+            assert await notifications.claim_turn() is None
             async with database.sessions() as reader:
                 retained = await reader.get(PluginBackgroundTurnJobModel, 1)
-                assert retained.status == "completed", retained.last_error_category
+                assert retained.status == "failed"
+                assert retained.last_error_category == "missing_canonical_owner"
+                assert retained.source_person_id is None
                 assert (
-                    retained.source_event_id == 10
+                    retained.id == 1
+                    and retained.source_event_id == 10
                     and retained.canonical_presence_id == second_presence
                 )
-            assert len(provider.requests) == before_job + 1
-            outbox = await notifications.claim_outbox()
-            assert (
-                outbox is not None
-                and outbox.id == 1
-                and outbox.notification_id == "retained-notification"
-            )
+            assert len(provider.requests) == before_job
             delivery = PluginNotificationOutboxWorker(
                 repository=notifications,
                 ledger=harness.ledger,
                 artifacts=PluginMediaArtifactStore(database, tmp_path / "media"),
-                transport=PlatformNotificationTransport(router=router),
+                transport=PlatformNotificationTransport(database=database, router=router),
                 effect_gate=ConversationEffectGate(),
             )
-            await delivery._deliver(outbox)
+            await delivery._prepare_pending()
+            assert await notifications.claim_outbox() is None
             async with database.sessions() as reader:
                 queued_effect = await reader.get(PluginNotificationOutboxModel, 1)
-                assert queued_effect.status == "sent", queued_effect.last_error_category
+                assert queued_effect.status == "failed"
+                assert queued_effect.source_person_id is None
                 assert (
-                    queued_effect.notification_id == "retained-notification"
+                    queued_effect.id == 1
+                    and queued_effect.notification_id == "retained-notification"
                     and queued_effect.source_event_id == 10
+                    and queued_effect.canonical_presence_id == second_presence
                 )
-            assert len(bot_b.calls) == 2 and bot_a.calls == []
+            assert len(provider.requests) == before_job
+            assert len(bot_b.calls) == 1 and bot_a.calls == []
 
             with pytest.raises(RouteSendError):
                 await router.resolve_send_for_conversation(
                     conversation_id, presence_id=second_presence
                 )
-            fresh = await ScopedEventLedgerUnitOfWork(database).append(
+            fresh = await seed_scoped_event(
+                ScopedEventLedgerUnitOfWork(database),
                 scope=ConversationScope.private("testB", "0"),
                 platform_message_id="new-b",
                 sender_user_id="0",

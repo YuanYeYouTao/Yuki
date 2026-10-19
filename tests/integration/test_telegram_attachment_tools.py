@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from PIL import Image
+from tests.support.event_seed import seed_event, seed_scoped_event
 
 from yuki.conversation.media_service import ConversationMediaService
 from yuki.domain.conversations import ConversationScope, ScopeType
@@ -118,7 +119,8 @@ async def attachment_tools(database, tmp_path, request):
         registry.connect(current_client, provider_id="telegram", presence_id=current_presence_id)
         events = ScopedEventLedgerUnitOfWork(database)
         source = (
-            await events.append(
+            await seed_scoped_event(
+                events,
                 scope=ConversationScope.group(
                     original_client.self_id,
                     "-10042",
@@ -139,7 +141,8 @@ async def attachment_tools(database, tmp_path, request):
             )
         ).event
         current = (
-            await events.append(
+            await seed_scoped_event(
+                events,
                 scope=ConversationScope.group(
                     current_client.self_id,
                     "-10042",
@@ -333,7 +336,8 @@ async def test_attachment_bridge_keeps_qq_adapter_and_inline_without_connection(
     Image.new("RGB", (2, 2), "blue").save(image, "PNG")
     content = image.getvalue()
     encoded = base64.b64encode(content).decode()
-    source, _ = await EventLedgerRepository(database).append(
+    source, _ = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id="qq-original-image",
         scope_type=ScopeType.GROUP,

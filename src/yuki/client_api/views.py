@@ -111,7 +111,7 @@ def public_event(
                 },
             }
         )
-    result = {
+    result: dict[str, Any] = {
         "event_id": row.id,
         "conversation_id": row.canonical_conversation_id,
         "binding_id": binding.id,

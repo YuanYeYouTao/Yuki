@@ -8,6 +8,8 @@ from uuid import uuid4
 import httpx
 import pytest
 from sqlalchemy import update
+from tests.support.canonical_identity import ensure_person
+from tests.support.event_seed import seed_event
 from tests.support.semantic_participation_host_helpers import (
     _event_and_route,
     _host,
@@ -24,7 +26,6 @@ from yuki_participation.self_report import SelfDelta, SelfReport
 
 from yuki.domain.conversations import ScopeType
 from yuki.event_prompt import ChatEventPromptRenderer
-from yuki.identity.canonical_repository import ensure_person
 from yuki.persistence.models import ChatEventModel
 from yuki.services.participation_feedback import admission_unit_binding, sync_scope_effects
 
@@ -90,7 +91,8 @@ async def _append(host, *, author="1001", reply_to=None, cause=None, age=20):
     if author != "8000":
         async with host.database.immediate_session() as writer:
             await ensure_person(writer, author, display_name=f"synthetic-{author}")
-    row, created = await host.app.ledger.append(
+    row, created = await seed_event(
+        host.app.ledger,
         bot_user_id="8000",
         platform_message_id=str(uuid4()),
         scope_type=ScopeType.GROUP,

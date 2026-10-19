@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.event_seed import seed_event, seed_scoped_event
 from tests.unit.test_memory_v2 import _append_event
 
 from yuki.domain.conversations import ConversationScope, ScopeType
@@ -115,7 +116,8 @@ async def test_qq_forget_keeps_same_number_telegram_candidate_and_source(databas
         )
         tg_person, tg_presence = binding.person_id, presence.id
     telegram = (
-        await ScopedEventLedgerUnitOfWork(database).append(
+        await seed_scoped_event(
+            ScopedEventLedgerUnitOfWork(database),
             scope=ConversationScope.private(
                 "telegram-bot", "1001", platform="telegram", presence_id=tg_presence
             ),
@@ -143,7 +145,8 @@ async def test_qq_forget_keeps_same_number_telegram_candidate_and_source(databas
 async def test_forget_cleans_candidate_of_other_authors_actually_redacted_mention(database):
     ledger = EventLedgerRepository(database)
     owner = await _append_event(ledger, message_id="private-owner")
-    mention, _ = await ledger.append(
+    mention, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="actual-private-mention",
         scope_type=ScopeType.GROUP,

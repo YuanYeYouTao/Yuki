@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -9,10 +10,12 @@ from typing import Any, cast
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.hydrate import conversation_for_scope
 from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.memory.eligibility import MemoryEventEligibilityPolicy
 from yuki.memory.rebuild.models import (
     MemoryRebuildPlanStatistics,
@@ -93,16 +96,41 @@ class EventLedgerRepository:
         eligible_only: bool,
     ) -> tuple[Any, ...]:
         conditions: list[Any] = [ChatEventModel.id <= snapshot_max_event_id]
-        if selection.bot_user_ids:
-            conditions.append(ChatEventModel.bot_user_id.in_(selection.bot_user_ids))
+        if selection.event_ids is not None:
+            selected_events = func.json_each(json.dumps(selection.event_ids)).table_valued("value")
+            conditions.append(ChatEventModel.id.in_(select(selected_events.c.value)))
+        if selection.presence_ids:
+            conditions.append(ChatEventModel.ingress_presence_id.in_(selection.presence_ids))
         if selection.scope_types:
             conditions.append(
                 ChatEventModel.scope_type.in_(tuple(scope.value for scope in selection.scope_types))
             )
-        if selection.sender_user_ids:
-            conditions.append(ChatEventModel.sender_user_id.in_(selection.sender_user_ids))
-        if selection.group_ids:
-            conditions.append(ChatEventModel.group_id.in_(selection.group_ids))
+        if selection.person_ids:
+            selected = aliased(CanonicalPersonModel)
+            family = aliased(CanonicalPersonModel)
+            conditions.append(
+                ChatEventModel.author_person_id.in_(
+                    select(family.id).where(
+                        func.coalesce(family.merged_into_person_id, family.id).in_(
+                            select(
+                                func.coalesce(selected.merged_into_person_id, selected.id)
+                            ).where(selected.id.in_(selection.person_ids))
+                        )
+                    )
+                )
+            )
+        if selection.space_ids:
+            conditions.append(
+                ChatEventModel.canonical_conversation_id.in_(
+                    select(CanonicalConversationModel.id).where(
+                        CanonicalConversationModel.space_id.in_(selection.space_ids)
+                    )
+                )
+            )
+        if selection.conversation_ids:
+            conditions.append(
+                ChatEventModel.canonical_conversation_id.in_(selection.conversation_ids)
+            )
         if selection.after is not None:
             conditions.append(ChatEventModel.occurred_at >= selection.after)
         if selection.before is not None:
@@ -234,58 +262,6 @@ class EventLedgerRepository:
                 )
             ).all()
         return tuple(_event_record(row) for row in rows)
-
-    async def append(
-        self,
-        *,
-        bot_user_id: str,
-        platform_message_id: str,
-        scope_type: ScopeType,
-        sender_user_id: str,
-        direction: str,
-        content: str,
-        segments: tuple[dict[str, Any], ...] = (),
-        group_id: str | None = None,
-        private_peer_user_id: str | None = None,
-        reply_to_message_id: str | None = None,
-        reply_to_event_id: int | None = None,
-        occurred_at: datetime | None = None,
-        sender_nickname: str = "",
-        sender_group_card: str = "",
-        sender_is_bot: bool = False,
-        origin: str = "user_message",
-        automation_id: int | None = None,
-        automation_run_id: int | None = None,
-        caused_by_event_id: int | None = None,
-    ) -> tuple[EventRecord, bool]:
-        """Append legacy QQ input; canonical ingress writes through its admitted scope."""
-
-        scope = (
-            ConversationScope.group(bot_user_id, group_id or "", platform="qq")
-            if scope_type is ScopeType.GROUP
-            else ConversationScope.private(
-                bot_user_id, private_peer_user_id or sender_user_id, platform="qq"
-            )
-        )
-        result = await self._writer.append(
-            scope=scope,
-            platform_message_id=platform_message_id,
-            sender_user_id=sender_user_id,
-            direction=direction,
-            content=content,
-            segments=segments,
-            reply_to_message_id=reply_to_message_id,
-            reply_to_event_id=reply_to_event_id,
-            occurred_at=occurred_at,
-            sender_nickname=sender_nickname,
-            sender_group_card=sender_group_card,
-            sender_is_bot=sender_is_bot,
-            origin=origin,
-            automation_id=automation_id,
-            automation_run_id=automation_run_id,
-            caused_by_event_id=caused_by_event_id,
-        )
-        return result.event, result.created
 
     async def find_by_platform_message(
         self,

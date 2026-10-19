@@ -13,6 +13,7 @@ import pytest
 from PIL import Image
 from sqlalchemy import delete, select, text
 from sqlalchemy import event as sql_event
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import social_env
 
 from yuki.admin.models import VisionRuntimeConfig
@@ -54,7 +55,8 @@ async def admitted_media(database, tmp_path):
         preprocessor = ImagePreprocessor()
         media = ConversationMediaService(database, tmp_path / "cache", resolver, preprocessor)
         segment = {"type": "image", "data": {"url": "https://example.test/original.png"}}
-        appended = await env.service.writer.append(
+        appended = await seed_scoped_event(
+            env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
             platform_message_id="shared-media",
             sender_user_id="10001",
@@ -145,7 +147,8 @@ async def test_prefetch_keeps_every_admitted_original_past_old_pending_limit(
     events = ScopedEventLedgerUnitOfWork(database)
     identities = []
     for index in range(33):
-        appended = await events.append(
+        appended = await seed_scoped_event(
+            events,
             scope=env.event.scope,
             platform_message_id=f"queued-media-{index}",
             sender_user_id=env.event.sender_user_id,

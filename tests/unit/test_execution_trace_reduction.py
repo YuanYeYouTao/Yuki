@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from sqlalchemy import select
+from tests.support.event_seed import seed_event
 from tests.support.semantic_participation_host_helpers import _observation
 from tests.unit.test_provider_dispatch_preparation import catalog
 from yuki_participation.models import Scope, ScopedEvent, Snapshot, SourceRef
@@ -220,7 +221,8 @@ async def test_tool_details_are_recorded_once_per_item_without_batch_copies(data
 
 @pytest.mark.parametrize("failure", [None, "http", "invalid"])
 async def test_semantic_snapshot_is_not_duplicated_and_failure_details_remain(database, failure):
-    event, _ = await EventLedgerRepository(database).append(
+    event, _ = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id="semantic-original",
         scope_type=ScopeType.GROUP,

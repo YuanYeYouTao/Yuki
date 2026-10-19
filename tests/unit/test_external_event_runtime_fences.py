@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
+from tests.support.event_seed import seed_event
 
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -57,7 +58,8 @@ async def _seed_job(
             )
         )
     repository = PluginNotificationRepository(database)
-    source, _created = await EventLedgerRepository(database).append(
+    source, _created = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id="human-before-external",
         scope_type=ScopeType.PRIVATE,
@@ -143,7 +145,8 @@ async def test_reset_source_is_terminal_before_claim(database: Database) -> None
 @pytest.mark.asyncio
 async def test_later_human_message_is_terminal_before_claim(database: Database) -> None:
     repository, _source_id, _conversation_id = await _seed_job(database)
-    await EventLedgerRepository(database).append(
+    await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id="human-after-external",
         scope_type=ScopeType.PRIVATE,
@@ -164,7 +167,8 @@ async def test_later_human_message_is_terminal_before_claim(database: Database) 
 async def test_message_history_filters_external_before_limit(database: Database) -> None:
     _repository, _source_id, _conversation_id = await _seed_job(database)
     ledger = EventLedgerRepository(database)
-    await ledger.append(
+    await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="human-after-external",
         scope_type=ScopeType.PRIVATE,

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,10 +17,9 @@ from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.tool_actor import ToolActor
 from yuki.identity.canonical_repository import (
     find_identity_binding,
-    find_presence,
     find_space_binding,
 )
-from yuki.identity.db_models import CanonicalPersonModel
+from yuki.identity.db_models import CanonicalPersonModel, PresenceModel
 from yuki.identity.person_identity import current_person_id
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repositories import EventLedgerRepository
@@ -79,7 +78,7 @@ async def prepare_delivery(
             raise SocialError("idempotency_conflict")
         return repository, prior, prior.presence_id or ""
     async with ledger._database.sessions() as session:
-        target, presence_id = await validate_delivery_source(
+        target, presence_id, binding_id = await validate_delivery_source(
             session,
             source_conversation_id=source_conversation_id,
             source_event_id=source_event_id,
@@ -96,6 +95,7 @@ async def prepare_delivery(
         action="send_message",
         target=target,
         payload=payload,
+        prepared={"binding_id": binding_id},
     )
     return repository, receipt, presence_id
 
@@ -110,12 +110,13 @@ async def validate_delivery_source(
     bot_user_id: str,
     group_id: str | None,
     user_id: str | None,
-) -> tuple[SocialTarget, str]:
+) -> tuple[SocialTarget, str, str]:
     """Current source facts for a new send, also checked beside its durable claim."""
     conversation = await session.get(CanonicalConversationModel, source_conversation_id)
     if conversation is None:
         raise SocialError("plugin_send_source_unavailable")
     actor_id = actor.person_id if actor is not None else None
+    presence_id = actor.presence_id if actor is not None else None
     if source_event_id is not None:
         event = await session.get(ChatEventModel, source_event_id)
         if (
@@ -129,6 +130,7 @@ async def validate_delivery_source(
         ):
             raise SocialError("plugin_send_source_mismatch")
         actor_id = event.author_person_id
+        presence_id = event.ingress_presence_id
     elif actor is None:
         raise SocialError("plugin_send_source_unavailable")
     if actor_id is not None:
@@ -136,7 +138,7 @@ async def validate_delivery_source(
         root = await session.get(CanonicalPersonModel, await current_person_id(session, actor_id))
         if original is None or not original.enabled or root is None or not root.enabled:
             raise SocialError("plugin_send_source_mismatch")
-    presence = await find_presence(session, bot_user_id)
+    presence = await session.get(PresenceModel, presence_id)
     if presence is None or not presence.enabled:
         raise SocialError("plugin_send_presence_unavailable")
     kind: Literal["person", "space"]
@@ -144,15 +146,17 @@ async def validate_delivery_source(
         space_binding = await find_space_binding(session, group_id)
         target_id = space_binding.space_id if space_binding is not None else None
         active = space_binding is not None and space_binding.status == "active"
+        binding_id = space_binding.id if space_binding is not None else None
         kind = "space"
     else:
         person_binding = await find_identity_binding(session, user_id or "")
         target_id = person_binding.person_id if person_binding is not None else None
         active = person_binding is not None and person_binding.status == "active"
+        binding_id = person_binding.id if person_binding is not None else None
         kind = "person"
     if not active or not target_id:
         raise SocialError("plugin_send_target_unavailable")
-    return SocialTarget(kind=kind, id=UUID(target_id)), presence.id
+    return SocialTarget(kind=kind, id=UUID(target_id)), presence.id, cast(str, binding_id)
 
 
 def delivery_unknown(receipt: SocialReceipt) -> bool:

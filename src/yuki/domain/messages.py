@@ -7,12 +7,15 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from yuki.domain.conversations import ConversationScope, ScopeType
 
 if TYPE_CHECKING:
     from yuki.services.media_resolver import PreparedAttachment
+
+
+DISPLAY_NAME_LIMIT = 128
 
 
 def sanitize_display_name(value: str) -> str:
@@ -23,7 +26,7 @@ def sanitize_display_name(value: str) -> str:
         for character in value
         if not unicodedata.category(character).startswith("C")
     )
-    return " ".join(visible.split())[:128]
+    return " ".join(visible.split())[:DISPLAY_NAME_LIMIT].rstrip()
 
 
 class AttachmentKind(StrEnum):
@@ -129,6 +132,7 @@ class SenderIdentity:
     is_bot: bool = False
     group_card_known: bool = False
     nickname_known: bool = False
+    native_username: str = ""
 
     @property
     def display_name(self) -> str:
@@ -149,6 +153,8 @@ class MessageMention:
     display_name: str = ""
     person_id: str | None = None
     presence_id: str | None = None
+    account_id: str | None = None
+    assignment_id: str | None = None
 
     @property
     def text(self) -> str:
@@ -196,12 +202,35 @@ def snapshot_mention_segments(
                 "display_name": mention.display_name,
                 "person_id": mention.person_id,
                 "presence_id": mention.presence_id,
+                "account_id": mention.account_id,
+                "assignment_id": mention.assignment_id,
                 "text_start": mention.text_start,
                 "text_end": mention.text_end,
                 "source": source,
             },
         }
     return tuple(result)
+
+
+MENTION_SNAPSHOT_FIELDS = (
+    "kind",
+    "display_name",
+    "account_id",
+    "assignment_id",
+    "person_id",
+    "presence_id",
+    "text_start",
+    "text_end",
+)
+
+
+def mention_snapshots(segments: tuple[dict[str, Any], ...]) -> tuple[dict[str, Any], ...]:
+    """The common event-time identity/span facts, without transport source payloads."""
+    return tuple(
+        {key: data.get(key) for key in MENTION_SNAPSHOT_FIELDS}
+        for segment in segments
+        if segment.get("type") == "mention" and isinstance(data := segment.get("data"), dict)
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +263,7 @@ class InboundMessage:
     canonical_reply_to_yuki: bool | None = None
     canonical_reply_author_kind: str | None = None
     received_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    occurred_at: datetime | None = None
     legacy_conversation_key: str | None = None
     person_id: str | None = None
     space_id: str | None = None
@@ -242,6 +272,8 @@ class InboundMessage:
     thread_id: str | None = None
     # Host-stamped after ledger admission; never supplied by a transport adapter.
     source_event_id: int | None = None
+    author_kind: str | None = None
+    author_account_id: str | None = None
     source_execution_id: str | None = None
     yuki_account_ids: frozenset[str] = frozenset()
     group_name: str = ""

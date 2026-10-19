@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from yuki.conversation.projection_chunks_schema import (
-    PROJECTION_TRIGGERS_0133 as PROJECTION_TRIGGERS_CURRENT,
+    PROJECTION_TRIGGERS_CURRENT,
 )
 
 
@@ -44,6 +44,9 @@ def _normalized_input_repair_index_sql(sql: str) -> str:
 
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "canonical_event_receipts": frozenset(
+        {"ingress_account_id", "transport_namespace", "ingress_presence_id"}
+    ),
     "ordinary_turn_admissions": frozenset(
         {
             "event_id",
@@ -151,7 +154,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     ),
     "runtime_work_effects": frozenset({"effect_key", "work_id", "state", "receipt_json"}),
     "runtime_work_journal": frozenset(
-        {"work_id", "contract", "source_revision", "phase", "payload_json"}
+        {"archived_journal_json", "work_id", "contract", "source_revision", "phase", "payload_json"}
     ),
     "sandbox_task_runs": frozenset(
         {"request_id", "progress_json", "source_json", "completion_json"}
@@ -190,19 +193,17 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "status",
             "target_id",
             "presence_id",
+            "prepared_json",
         }
     ),
     "persons": frozenset({"id", "enabled", "revision", "display_name", "merged_into_person_id"}),
-    "identity_bindings": frozenset(
-        {
-            "id",
-            "person_id",
-            "platform",
-            "external_account_id",
-            "first_seen_at",
-            "last_seen_at",
-            "history_starts_at",
-        }
+    "accounts": frozenset({"id", "platform", "external_account_id", "display_name"}),
+    "account_assignments": frozenset(
+        {"id", "account_id", "kind", "person_id", "status", "started_at", "ended_at"}
+    ),
+    "account_space_profiles": frozenset({"account_id", "space_binding_id", "display_name"}),
+    "account_name_observations": frozenset(
+        {"account_id", "assignment_id", "space_binding_id", "name"}
     ),
     "client_devices": frozenset({"id", "person_id", "token_hash", "revoked_at"}),
     "client_link_codes": frozenset({"id", "person_id", "code_hash", "expires_at", "used_at"}),
@@ -217,7 +218,6 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "last_seen_at",
         }
     ),
-    "presences": frozenset({"id", "platform", "external_account_id", "enabled"}),
     "canonical_conversations": frozenset(
         {"id", "kind", "identity_binding_id", "generation", "prompt_source_revision"}
     ),
@@ -268,7 +268,7 @@ class CanonicalSchemaError(RuntimeError):
 
 
 async def require_canonical_schema(database_url: str) -> None:
-    """Validate the migration head and the canonical storage boundary once."""
+    """Validate the bundled version and metadata without scanning business data."""
 
     if not database_url.startswith("sqlite+aiosqlite:///"):
         raise CanonicalSchemaError("Yuki 3.8 supports only its canonical SQLite schema")
@@ -336,9 +336,6 @@ async def require_canonical_schema(database_url: str) -> None:
                     ):
                         raise CanonicalSchemaError("database budget limits must be nullable")
 
-            foreign_key_rows = await connection.execute(text("PRAGMA foreign_key_check"))
-            if foreign_key_rows.first() is not None:
-                raise CanonicalSchemaError("database canonical foreign-key integrity check failed")
             index_name = "ix_memory_evidence_tool_receipt"
             index_rows = await connection.execute(text('PRAGMA index_list("memory_evidence")'))
             index = next((row for row in index_rows if row[1] == index_name), None)
@@ -362,6 +359,12 @@ async def require_canonical_schema(database_url: str) -> None:
                     "database memory receipt reference index is missing or changed"
                 )
             for index_name, table, index_columns, error_category in (
+                (
+                    "ix_account_names_name_scope_account",
+                    "account_name_observations",
+                    ("name", "space_binding_id", "account_id"),
+                    "mention name lookup",
+                ),
                 (
                     "ix_media_analyses_expires_at",
                     "media_analyses",
@@ -482,46 +485,59 @@ async def require_canonical_schema(database_url: str) -> None:
                 != _normalized_input_repair_index_sql(INPUT_REPAIR_INDEX_SQL)
             ):
                 raise CanonicalSchemaError("database abandoned input index is missing or changed")
-            social_index_name = "ix_chat_events_social_source_author"
-            social_index_sql = (
-                f"CREATE INDEX {social_index_name} ON chat_events (author_person_id, id) "
-                "WHERE direction = 'inbound' AND author_kind = 'person'"
-            )
-            social_index = (
-                await connection.execute(
-                    text("SELECT type,tbl_name,sql FROM sqlite_master WHERE name=:name"),
-                    {"name": social_index_name},
-                )
-            ).first()
-            social_shape = next(
+            for index_name, index_columns, predicate, category in (
                 (
-                    row
-                    for row in await connection.execute(text('PRAGMA index_list("chat_events")'))
-                    if row[1] == social_index_name
+                    "ix_chat_events_social_source_author",
+                    ("author_person_id", "id"),
+                    "direction = 'inbound' AND author_kind = 'person'",
+                    "social source",
                 ),
-                None,
-            )
-            social_keys = tuple(
-                (row[2], row[3], row[4])
-                for row in await connection.execute(
-                    text(f'PRAGMA index_xinfo("{social_index_name}")')
-                )
-                if row[5] == 1
-            )
-            if (
-                social_index is None
-                or social_index[0] != "index"
-                or social_index[1] != "chat_events"
-                or social_index[2] is None
-                or social_shape is None
-                or social_shape[2] != 0
-                or social_shape[3] != "c"
-                or social_shape[4] != 1
-                or social_keys != (("author_person_id", 0, "BINARY"), ("id", 0, "BINARY"))
-                or _normalized_input_repair_index_sql(social_index[2])
-                != _normalized_input_repair_index_sql(social_index_sql)
+                (
+                    "ix_chat_events_conversation_message_sender_time",
+                    ("canonical_conversation_id", "sender_user_id", "occurred_at", "id"),
+                    "suppression_status = 'keeper' AND event_kind = 'message'",
+                    "mention activity",
+                ),
             ):
-                raise CanonicalSchemaError("database social source index is missing or changed")
+                expected_sql = (
+                    f"CREATE INDEX {index_name} ON chat_events ({', '.join(index_columns)}) "
+                    f"WHERE {predicate}"
+                )
+                found = (
+                    await connection.execute(
+                        text("SELECT type,tbl_name,sql FROM sqlite_master WHERE name=:name"),
+                        {"name": index_name},
+                    )
+                ).first()
+                shape = next(
+                    (
+                        row
+                        for row in await connection.execute(
+                            text('PRAGMA index_list("chat_events")')
+                        )
+                        if row[1] == index_name
+                    ),
+                    None,
+                )
+                keys = tuple(
+                    (row[2], row[3], row[4])
+                    for row in await connection.execute(text(f'PRAGMA index_xinfo("{index_name}")'))
+                    if row[5] == 1
+                )
+                if (
+                    found is None
+                    or found[0] != "index"
+                    or found[1] != "chat_events"
+                    or found[2] is None
+                    or shape is None
+                    or shape[2] != 0
+                    or shape[3] != "c"
+                    or shape[4] != 1
+                    or keys != tuple((column, 0, "BINARY") for column in index_columns)
+                    or _normalized_input_repair_index_sql(found[2])
+                    != _normalized_input_repair_index_sql(expected_sql)
+                ):
+                    raise CanonicalSchemaError(f"database {category} index is missing or changed")
             trigger_rows = await connection.execute(
                 text("SELECT name, sql FROM sqlite_master WHERE type='trigger'")
             )
@@ -537,6 +553,7 @@ async def require_canonical_schema(database_url: str) -> None:
             for name, expected in {
                 **PROJECTION_TRIGGERS_CURRENT,
                 **protocol_triggers,
+                **_identity_triggers(),
             }.items():
                 actual = triggers.get(name, "").replace("IF NOT EXISTS ", "")
                 expected = expected.replace("IF NOT EXISTS ", "")
@@ -546,3 +563,9 @@ async def require_canonical_schema(database_url: str) -> None:
                     )
     finally:
         await engine.dispose()
+
+
+def _identity_triggers() -> dict[str, str]:
+    from yuki.conversation.canonical_schema import ASSIGNMENT_ROLE_TRIGGER_SQL, C3_TRIGGER_SQL
+
+    return {sql.split()[2]: sql for sql in (*C3_TRIGGER_SQL, *ASSIGNMENT_ROLE_TRIGGER_SQL)}

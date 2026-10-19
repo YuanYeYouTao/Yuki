@@ -1,11 +1,11 @@
 # 发布插件
 
-Plugin API 5.0 没有在线市场或自动下载。发布物是管理员手动审阅并复制到本地 `plugins/<id>/` 的源码目录。
+Plugin API 6.0 没有在线市场或自动下载。发布物是管理员手动审阅并复制到本地 `plugins/<id>/` 的源码目录。
 
 ## 发布前清单
 
 1. `plugin.toml` 的目录、ID、版本、入口和权限准确。
-2. `yuki_requires` 使用支持范围，`plugin_api = "5.0"`。
+2. `yuki_requires` 使用支持范围，`plugin_api = "6.0"`。
 3. 权限最小化，高风险权限写明必要性和目标范围。
 4. 不包含 `.env`、Token、Cookie、数据库、日志或用户数据。
 5. 插件代码只依赖公开 SDK，不导入 `yuki` 或 `_` 内部对象。
@@ -20,6 +20,20 @@ uv run yuki plugin validate path/to/plugin
 uv run yuki plugin docs path/to/plugin
 uv run yuki plugin test path/to/plugin
 ```
+
+## 独立插件安装
+
+[GitHub Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) 与
+[养鲲](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) 各自发布源码、测试和升级工具，
+不随 Yuki 源码或部署包附带。以 GitHub Monitor 为例，在部署目录安装：
+
+```bash
+git clone https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor.git plugins/github-monitor
+chmod -R a+rX plugins/github-monitor
+```
+
+目录直接包含 `plugin.toml` 与插件模块。Linux 部署的 Bot 用户需能读取源码并遍历各层代码目录；上面的权限设置同样适用于解包安装。保持原插件 ID，原配置、KV 和投递回执继续由 Host 保存。
+插件配置、Secret 与升级步骤见独立仓库，发现与批准使用下方同一安装流程。
 
 ## 安装方流程
 

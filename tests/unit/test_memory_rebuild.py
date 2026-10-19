@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import func, select, update
 from tests.conftest import make_settings
+from tests.support.event_seed import seed_event
 from tests.support.model_executor import InjectedModelExecutor
 
 from yuki.domain.conversations import ScopeType
@@ -130,7 +131,8 @@ async def _event(
     content: str = "我住在杭州",
     occurred_at: datetime | None = None,
 ):
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=message_id,
         scope_type=ScopeType.PRIVATE,
@@ -169,11 +171,11 @@ async def test_rebuild_requires_review_then_commits_one_receipt(database: Databa
         documents=EmbeddingDocumentBuilder(template_version=1, max_characters=4000),
     )
     facts.set_embedding_scheduler(SimpleNamespace(schedule=jobs.enqueue_fact))
-    await _event(ledger, message_id="history")
+    event = await _event(ledger, message_id="history")
     selection = MemoryRebuildSelection(
         all_events=True,
         scope_types=(ScopeType.PRIVATE, ScopeType.PRIVATE),
-        sender_user_ids=("1001", "1001"),
+        person_ids=(event.author_person_id, event.author_person_id),
     )
     run = await service.plan(selection, actor_user_id=await _admin(database))
     await service.start(run.public_id, actor_user_id=await _admin(database))
@@ -319,7 +321,8 @@ async def test_snapshot_keyset_is_stable_and_excludes_later_event(database: Data
 async def test_internal_reply_subject_metadata_never_crosses_group(database: Database) -> None:
     _settings, ledger, _facts, _provider, service = await _service(database)
     assert service is not None
-    referenced, _ = await ledger.append(
+    referenced, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="reply-source",
         scope_type=ScopeType.GROUP,
@@ -328,7 +331,8 @@ async def test_internal_reply_subject_metadata_never_crosses_group(database: Dat
         content="原消息",
         group_id="3001",
     )
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="legacy-subjects",
         scope_type=ScopeType.GROUP,
@@ -344,7 +348,8 @@ async def test_internal_reply_subject_metadata_never_crosses_group(database: Dat
     assert hydrated.mentioned_user_ids == ("3003",)
     assert hydrated.reply_sender_user_id == "2002"
 
-    cross_group, _ = await ledger.append(
+    cross_group, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="cross-group",
         scope_type=ScopeType.GROUP,
@@ -356,7 +361,8 @@ async def test_internal_reply_subject_metadata_never_crosses_group(database: Dat
     )
     assert (await ledger.hydrate_rebuild_subjects(cross_group)).reply_sender_user_id is None
 
-    old_event, _ = await ledger.append(
+    old_event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="old-subjects",
         scope_type=ScopeType.GROUP,
@@ -484,9 +490,9 @@ async def test_commit_detects_source_fingerprint_change(database: Database) -> N
 @pytest.mark.asyncio
 async def test_forget_person_removes_staging_and_redacts_selection(database: Database) -> None:
     settings, ledger, _facts, _provider, service = await _service(database)
-    await _event(ledger, message_id="privacy-staging")
+    event = await _event(ledger, message_id="privacy-staging")
     run = await service.plan(
-        MemoryRebuildSelection(sender_user_ids=("1001",)),
+        MemoryRebuildSelection(person_ids=(event.author_person_id,)),
         actor_user_id=await _admin(database),
     )
     await service.start(run.public_id, actor_user_id=await _admin(database))
@@ -504,7 +510,8 @@ async def test_forget_person_removes_staging_and_redacts_selection(database: Dat
             select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == run.public_id)
         )
     assert proposal_count == 0
-    assert stored is not None and stored.status == "cancelled"
+    assert stored is not None and stored.status == "review"
+    assert MemoryRebuildSelection.model_validate_json(stored.selection_json).event_ids == ()
     assert "1001" not in stored.selection_json
 
 

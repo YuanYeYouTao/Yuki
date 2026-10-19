@@ -341,15 +341,6 @@ class TurnExecution:
                 await self.runtime.work_control.validate()
                 await self.runtime.work_control.session.save("paired")
                 return self._accepted_result(0)
-            if self.runtime.work_control.session.recovered_delivery:
-                # Pause by original ID; never execute a legacy frozen plan.
-                return AgentRunResult(
-                    text="",
-                    tool_calls_used=0,
-                    model_requests=0,
-                    suppress_delivery=True,
-                    work_state="suspended",
-                )
             if self.runtime.work_control.handoff_work_id is not None:
                 await self.runtime.work_control.session.save("paired")
                 return AgentRunResult(

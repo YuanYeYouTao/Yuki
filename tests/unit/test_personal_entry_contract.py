@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_app_messages import drain
@@ -306,8 +307,12 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
     from datetime import UTC, datetime
 
     from yuki.domain.conversations import ConversationScope
-    from yuki.identity.canonical_repository import create_presence
-    from yuki.identity.db_models import IdentityBindingModel
+    from yuki.identity.canonical_repository import (
+        create_presence,
+        ensure_account,
+        replace_assignment,
+    )
+    from yuki.identity.db_models import CanonicalPersonModel
 
     env = app_env
     device, person = await owner(env, database)
@@ -316,23 +321,19 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
         presence = await create_presence(
             session, external_account_id="telegram-test-bot", platform="telegram", now=now
         )
-        binding = IdentityBindingModel(
-            id=str(uuid4()),
-            person_id=person,
+        account = await ensure_account(
+            session,
+            "telegram-test-account",
             platform="telegram",
-            external_account_id="telegram-test-account",
             display_name="Telegram",
-            status="active",
-            revision=1,
-            first_seen_at=now,
-            last_seen_at=now,
-            created_at=now,
-            updated_at=now,
-            history_starts_at=now,
+            now=now,
         )
-        session.add(binding)
+        binding = await replace_assignment(
+            session, account, None, await session.get(CanonicalPersonModel, person), now=now
+        )
     event = (
-        await env.harness.scoped_events.append(
+        await seed_scoped_event(
+            env.harness.scoped_events,
             scope=ConversationScope.private(
                 "telegram-test-bot",
                 "telegram-test-account",

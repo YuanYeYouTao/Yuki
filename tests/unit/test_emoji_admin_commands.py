@@ -14,8 +14,8 @@ from yuki_plugin_sdk.testing.fake_context import FakePluginContext
 
 
 def test_retired_pool_is_absent_from_current_plugin_and_command_contract():
-    assert PLUGIN_API_VERSION == "5.0"
-    assert is_api_compatible("5.0") and not is_api_compatible("4.0")
+    assert PLUGIN_API_VERSION == "6.0"
+    assert is_api_compatible("6.0") and not is_api_compatible("5.0")
     assert "emoji" not in ADMIN_ACTIONS and "/ai admin emoji" not in ADMIN_HELP
     assert not any(value.startswith("emoji.") for value in DEFAULT_FEATURES)
     assert not any(value.value.startswith("emoji.") for value in PluginPermission)

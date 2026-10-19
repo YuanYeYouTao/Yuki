@@ -37,7 +37,7 @@ async def install(database):
         plugin_id="native-notification",
         name="Fixture",
         version="1.0",
-        plugin_api="5.0",
+        plugin_api="6.0",
         yuki_requires=">=3",
         entrypoint="fixture:Plugin",
         requested_permissions=(),
@@ -116,9 +116,10 @@ async def test_two_topics_keep_independent_grant_receipt_and_native_delivery(
         repository=repository,
         artifacts=PluginMediaArtifactStore(database, tmp_path / "artifacts"),
         ledger=env.harness.ledger,
-        transport=PlatformNotificationTransport(router=env.social.router),
+        transport=PlatformNotificationTransport(database=database, router=env.social.router),
         effect_gate=ConversationEffectGate(),
     )
+    await worker._prepare_pending()
     row = await repository.claim_outbox()
     assert row is not None and row.source_event_id == receipts[1].source_event_id
     await worker._deliver(row)
@@ -255,9 +256,10 @@ async def test_notification_media_keeps_handle_mime_and_original_delivery_fact(
         repository=repository,
         artifacts=store,
         ledger=env.harness.ledger,
-        transport=PlatformNotificationTransport(router=env.social.router),
+        transport=PlatformNotificationTransport(database=database, router=env.social.router),
         effect_gate=ConversationEffectGate(),
     )
+    await worker._prepare_pending()
     item = await repository.claim_outbox()
     await worker._deliver(item)
     duplicate = await repository.publish(plugin_id="native-notification", request=request)

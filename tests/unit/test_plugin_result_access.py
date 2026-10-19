@@ -25,6 +25,7 @@ from yuki.services.agent_tools import ToolRuntime
 from yuki.social.db_models import SocialOperationModel
 from yuki.tool_results.access import ArtifactAccess
 from yuki.tool_results.artifacts import ToolArtifactRepository
+from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
 
 @pytest.mark.parametrize(
@@ -36,7 +37,7 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
     env = await social_env(database, tmp_path)
     # Background sends now recheck the current installation and canonical
     # target grant at the actual Social claim, including this direct fixture.
-    await approve_background_plugin(
+    notifications = await approve_background_plugin(
         database,
         plugin_id="test.result-access",
         bot_user_id="80001",
@@ -49,17 +50,23 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
         presence_id=env.presence,
         conversation_id=env.context.conversation_id,
     )
-    external = await env.service.writer.append_external(
-        scope=scope,
-        platform_message_id="plugin-result-source",
-        source_plugin_id="test.result-access",
-        external_source="fixture",
-        external_event_key="one-original-event",
-        external_event_type="fixture.created",
-        external_payload={"id": "one-original-event"},
-        external_target_id="20001",
-        content="A plugin asks the main agent to acknowledge this update.",
-        occurred_at=datetime.now(UTC),
+    publication = await notifications.publish(
+        plugin_id="test.result-access",
+        request=PublishNotificationRequest(
+            target=NotificationTarget(
+                target_type="group",
+                target_id=env.space,
+                conversation_id=env.context.conversation_id,
+            ),
+            external_source="fixture",
+            event_key="one-original-event",
+            event_type="fixture.created",
+            payload={"id": "one-original-event"},
+            summary="A plugin asks the main agent to acknowledge this update.",
+            occurred_at=datetime.now(UTC),
+            ask_agent=True,
+            agent_intent="Acknowledge once with the send tool.",
+        ),
     )
     responses = iter(
         (
@@ -92,7 +99,7 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
     chat._tools.social_service = env.service
     store = ToolArtifactRepository(database, tmp_path / "tool-artifacts", retention_seconds=60)
     chat._tool_artifacts = store
-    event = await harness.ledger.get_event(external.event.id)
+    event = await harness.ledger.get_event(publication.source_event_id)
     state = await harness.conversation_scopes.get(scope)
     config = await chat._runtime_config.snapshot(group_id=env.space)
     actor_checks = []

@@ -7,15 +7,15 @@ import httpx
 from fastapi import FastAPI
 from tests.integration.test_plugin_agent_domain_grants import source_host
 from tests.integration.test_self_reflection_checkpoint_recovery import reflection_case
+from tests.support.canonical_identity import ensure_person
+from tests.support.client_identity import client_identity_service
 from tests.unit.test_dream_owner_projection import _scene as dream_scene
 from tests.unit.test_history_dispatch_ownership import _tool
 
 from yuki.character.prompts import CharacterPrompts
 from yuki.character.repository import CharacterRepository
 from yuki.client_api.http import ClientApi, attach_client_api
-from yuki.client_api.identity import ClientIdentityService
 from yuki.config import read_prompt_documents
-from yuki.identity.canonical_repository import ensure_person
 from yuki.llm.fake import FakeLLMProvider
 
 
@@ -33,7 +33,7 @@ async def editor(database, settings, root):
         )
     )
     assert settings.resolved_bot_persona_file == persona
-    identity = ClientIdentityService(database)
+    identity = client_identity_service(database)
     documents = CharacterPrompts(identity, settings)
     async with database.immediate_session() as writer:
         person = await ensure_person(writer, "background-prompt-owner")

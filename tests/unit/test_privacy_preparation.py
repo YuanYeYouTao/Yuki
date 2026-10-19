@@ -2,9 +2,11 @@
 
 import json
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.event_seed import seed_event
 from tests.unit.test_rebuild_privacy_preparation import _selection
 from tests.unit.test_rebuild_receipt_finalization import _seed
 
@@ -33,7 +35,8 @@ async def pre_0121_binding(database):
 
 
 async def test_forget_redacts_numeric_json_and_keeps_other_person_event(database):
-    event, _ = await EventLedgerRepository(database).append(
+    event, _ = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="9999",
         platform_message_id="numeric-privacy",
         scope_type=ScopeType.GROUP,
@@ -75,6 +78,17 @@ async def test_forget_reprepares_changed_rebuild_selection_before_atomic_write(
     rebuilds = MemoryRebuildRepository(database)
     prepare = rebuilds.prepare_forget_people
     attempts = 0
+    async with database.sessions() as reader:
+        people = dict(
+            (
+                await reader.execute(
+                    select(
+                        IdentityBindingModel.external_account_id, IdentityBindingModel.person_id
+                    ).where(IdentityBindingModel.external_account_id.in_(("1001", "1002")))
+                )
+            ).all()
+        )
+    changing_ids = [str(uuid4()) for _ in range(races)]
 
     async def race(aliases, **kwargs):
         nonlocal attempts
@@ -87,7 +101,11 @@ async def test_forget_reprepares_changed_rebuild_selection_before_atomic_write(
                     .where(
                         MemoryRebuildRunModel.id == seeded.run_id,
                     )
-                    .values(**_selection(sender_user_ids=("1001", "10011", str(10012 + attempts))))
+                    .values(
+                        **_selection(
+                            person_ids=(people["1001"], people["1002"], changing_ids[attempts - 1])
+                        )
+                    )
                 )
         return plan
 
@@ -96,10 +114,8 @@ async def test_forget_reprepares_changed_rebuild_selection_before_atomic_write(
     assert attempts == races + 1
     async with database.sessions() as reader:
         run = await reader.get(MemoryRebuildRunModel, seeded.run_id)
-        assert MemoryRebuildSelection.model_validate_json(run.selection_json).sender_user_ids == (
-            "10011",
-            str(10012 + races),
-        )
+        selected = MemoryRebuildSelection.model_validate_json(run.selection_json)
+        assert set(selected.person_ids) == {people["1002"], changing_ids[-1]}
 
 
 async def test_invalid_legacy_json_rolls_back_entire_privacy_transaction(database):

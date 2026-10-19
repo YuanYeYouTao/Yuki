@@ -8,7 +8,6 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from yuki.plugin_host.repository import (
     PluginConfigRepository,
-    PluginVersionConflictError,
 )
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import JsonValue
@@ -41,7 +40,7 @@ class BoundConfigFacade:
         scope_id: str = "",
     ) -> JsonValue:
         self._require(PluginPermission.PLUGIN_CONFIG_READ)
-        resolved = self._scope(scope_type, scope_id)
+        resolved = await self._scope(scope_type, scope_id)
         row = await self._repository.get(
             plugin_id=self._plugin_id,
             scope_type=scope_type,
@@ -59,28 +58,23 @@ class BoundConfigFacade:
         scope_id: str = "",
     ) -> None:
         self._require(PluginPermission.PLUGIN_CONFIG_WRITE)
-        resolved = self._scope(scope_type, scope_id)
+        resolved = await self._scope(scope_type, scope_id)
         value = self._validate(key, value)
-        for _ in range(3):
-            row = await self._repository.get(
-                plugin_id=self._plugin_id,
-                scope_type=scope_type,
-                scope_id=resolved,
-                key=key,
-            )
-            try:
-                await self._repository.compare_and_set(
-                    plugin_id=self._plugin_id,
-                    scope_type=scope_type,
-                    scope_id=resolved,
-                    key=key,
-                    expected_version=row.version if row is not None else 0,
-                    value=value,
-                )
-                return
-            except PluginVersionConflictError:
-                continue
-        raise PluginVersionConflictError("plugin config changed repeatedly")
+        row = await self._repository.get(
+            plugin_id=self._plugin_id,
+            scope_type=scope_type,
+            scope_id=resolved,
+            key=key,
+        )
+        await self._repository.compare_and_set(
+            plugin_id=self._plugin_id,
+            scope_type=scope_type,
+            scope_id=resolved,
+            key=key,
+            expected_row_id=row.id if row is not None else None,
+            expected_version=row.version if row is not None else 0,
+            value=value,
+        )
 
     def _validate(self, key: str, value: JsonValue) -> JsonValue:
         if self._schema is None:
@@ -89,12 +83,12 @@ class BoundConfigFacade:
         if field is None:
             raise ValueError(f"unknown plugin config key: {key}")
         try:
-            validated: object = TypeAdapter(field.annotation).validate_python(value)
+            validated: object = TypeAdapter(field.rebuild_annotation()).validate_python(value)
         except ValidationError as exc:
             raise ValueError(f"invalid plugin config value for {key}") from exc
         return _json_value(validated)
 
-    def _scope(self, scope_type: str, scope_id: str) -> str:
+    async def _scope(self, scope_type: str, scope_id: str) -> str:
         if scope_type == "global":
             if scope_id:
                 raise PluginPermissionError("global plugin config cannot have scope_id")
@@ -105,8 +99,13 @@ class BoundConfigFacade:
             expected = self._current_group_id
         else:
             raise ValueError("plugin config scope must be global, user, or group")
-        if expected is None or (scope_id and scope_id != expected):
+        if expected is None:
             raise PluginPermissionError("plugin config scope is outside the current turn")
+        if scope_id and scope_id != expected:
+            if scope_type != "user" or not await self._repository.same_person_scope(
+                scope_id, expected
+            ):
+                raise PluginPermissionError("plugin config scope is outside the current turn")
         return expected
 
     def _require(self, permission: PluginPermission) -> None:

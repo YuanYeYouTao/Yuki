@@ -8,11 +8,11 @@ from tests.conftest import make_settings
 from tests.integration.test_telegram_runtime import drain
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.integration.test_telegram_runtime import update as telegram_update
+from tests.support.canonical_identity import ensure_person
 from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_mutation import _context, _event, _service
 from tests.unit.test_memory_worker_shutdown import _Provider as ExtractionProvider
 
-from yuki.identity.canonical_repository import ensure_person
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.memory.models import MemoryFactQuery
 from yuki.memory.mutation.models import MemoryMutationRequest

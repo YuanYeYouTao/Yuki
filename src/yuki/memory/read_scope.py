@@ -6,21 +6,23 @@ actor. No durable grant cache: forgetting membership takes effect on the next re
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.identity.db_models import (
+    AccountModel,
+    AccountNameObservationModel,
+    AccountSpaceProfileModel,
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     SpaceBindingModel,
 )
 from yuki.identity.person_identity import (
-    current_person_id,
     current_person_ids,
+    person_family_condition,
     person_family_ids,
     person_root_id,
     same_person_condition,
@@ -81,8 +83,7 @@ class MemoryReadScopeResolver:
 
     @staticmethod
     async def _person(session: AsyncSession, person_id: str) -> str | None:
-        person = await session.get(CanonicalPersonModel, person_id)
-        return await current_person_id(session, person.id) if person is not None else None
+        return await session.scalar(select(person_root_id(person_id)))
 
     @staticmethod
     async def _space(session: AsyncSession, space_id: str) -> str | None:
@@ -96,7 +97,7 @@ class MemoryReadScopeResolver:
         return set(
             await session.scalars(
                 select(MembershipModel.canonical_space_id).where(
-                    same_person_condition(MembershipModel.canonical_person_id, person_id)
+                    person_family_condition(MembershipModel.canonical_person_id, person_id)
                 )
             )
         )
@@ -165,21 +166,31 @@ class MemoryReadScopeResolver:
         candidate_ids = {owners[target] for target in targets if target in owners}
         groups_by_person: dict[str, set[str]] = {}
         if include_person_groups or group_id is not None or candidate_ids - {requester_id}:
-            values = func.json_each(json.dumps(tuple({requester_id, *candidate_ids}))).table_valued(
-                "value"
+            candidates = tuple({requester_id, *candidate_ids})
+            family = (
+                select(CanonicalPersonModel.id)
+                .where(
+                    or_(
+                        CanonicalPersonModel.id.in_(candidates),
+                        CanonicalPersonModel.merged_into_person_id.in_(candidates),
+                    )
+                )
+                .correlate(None)
             )
+            subject = CanonicalPersonModel
             memberships = (
                 await session.execute(
                     select(
-                        person_root_id(MembershipModel.canonical_person_id),
+                        func.coalesce(subject.merged_into_person_id, subject.id),
                         MembershipModel.canonical_space_id,
-                    ).where(
-                        person_root_id(MembershipModel.canonical_person_id).in_(
-                            select(values.c.value)
-                        ),
+                    )
+                    .select_from(MembershipModel)
+                    .join(subject, subject.id == MembershipModel.canonical_person_id)
+                    .where(
+                        MembershipModel.canonical_person_id.in_(family),
                         MembershipModel.canonical_space_id.in_(
                             select(MembershipModel.canonical_space_id).where(
-                                same_person_condition(
+                                person_family_condition(
                                     MembershipModel.canonical_person_id, requester_id
                                 )
                             )
@@ -258,7 +269,7 @@ class MemoryReadScopeResolver:
             if requester_id is None:
                 return ()
             groups = select(MembershipModel.canonical_space_id).where(
-                same_person_condition(MembershipModel.canonical_person_id, requester_id)
+                person_family_condition(MembershipModel.canonical_person_id, requester_id)
             )
             related = select(person_root_id(MembershipModel.canonical_person_id)).where(
                 MembershipModel.canonical_space_id.in_(groups)
@@ -278,22 +289,50 @@ class MemoryReadScopeResolver:
                 .exists()
             )
             card_match = (
-                select(MembershipModel.canonical_person_id)
+                select(IdentityBindingModel.id)
+                .join(
+                    AccountSpaceProfileModel,
+                    AccountSpaceProfileModel.account_id == IdentityBindingModel.account_id,
+                )
+                .join(
+                    SpaceBindingModel,
+                    SpaceBindingModel.id == AccountSpaceProfileModel.space_binding_id,
+                )
                 .where(
-                    same_person_condition(
-                        MembershipModel.canonical_person_id, CanonicalPersonModel.id
-                    ),
-                    MembershipModel.canonical_space_id.in_(groups),
-                    MembershipModel.group_card == name.strip(),
+                    same_person_condition(IdentityBindingModel.person_id, CanonicalPersonModel.id),
+                    IdentityBindingModel.status != "ended",
+                    SpaceBindingModel.space_id.in_(groups),
+                    AccountSpaceProfileModel.display_name == name.strip(),
                 )
                 .exists()
             )
             display_match = (
                 select(IdentityBindingModel.id)
+                .join(AccountModel, AccountModel.id == IdentityBindingModel.account_id)
                 .where(
                     same_person_condition(IdentityBindingModel.person_id, CanonicalPersonModel.id),
-                    IdentityBindingModel.status == "active",
-                    IdentityBindingModel.display_name == name.strip(),
+                    IdentityBindingModel.status != "ended",
+                    AccountModel.display_name == name.strip(),
+                )
+                .exists()
+            )
+            observed_name = (
+                select(AccountNameObservationModel.id)
+                .join(
+                    IdentityBindingModel,
+                    IdentityBindingModel.id == AccountNameObservationModel.assignment_id,
+                )
+                .outerjoin(
+                    SpaceBindingModel,
+                    SpaceBindingModel.id == AccountNameObservationModel.space_binding_id,
+                )
+                .where(
+                    same_person_condition(IdentityBindingModel.person_id, CanonicalPersonModel.id),
+                    AccountNameObservationModel.name == name.strip(),
+                    or_(
+                        AccountNameObservationModel.space_binding_id.is_(None),
+                        SpaceBindingModel.space_id.in_(groups),
+                    ),
                 )
                 .exists()
             )
@@ -302,7 +341,7 @@ class MemoryReadScopeResolver:
                     select(person_root_id(CanonicalPersonModel.id))
                     .where(
                         or_(
-                            same_person_condition(CanonicalPersonModel.id, requester_id),
+                            person_family_condition(CanonicalPersonModel.id, requester_id),
                             person_root_id(CanonicalPersonModel.id).in_(related),
                         ),
                         or_(
@@ -310,6 +349,7 @@ class MemoryReadScopeResolver:
                             display_match,
                             alias_match,
                             card_match,
+                            observed_name,
                         ),
                     )
                     .distinct()
@@ -324,7 +364,7 @@ class MemoryReadScopeResolver:
             if requester_id is None:
                 return ()
             groups = select(MembershipModel.canonical_space_id).where(
-                same_person_condition(MembershipModel.canonical_person_id, requester_id)
+                person_family_condition(MembershipModel.canonical_person_id, requester_id)
             )
             display_match = (
                 select(SpaceBindingModel.id)

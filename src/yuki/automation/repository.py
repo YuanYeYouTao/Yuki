@@ -531,7 +531,6 @@ class AutomationRepository:
                 authority_creator = await active.get(CanonicalPersonModel, creator_person_id)
                 if (
                     authority_creator is None
-                    or not authority_creator.enabled
                     or authority.canonical_creator_person_id is None
                     or not await same_person_id(
                         active, authority.canonical_creator_person_id, creator_person_id

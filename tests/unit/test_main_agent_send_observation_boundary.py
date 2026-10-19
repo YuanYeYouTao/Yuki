@@ -7,6 +7,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_current_activation_material import _saved
 from tests.unit.test_history_dispatch_ownership import _scene
 
@@ -76,12 +77,12 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
             receipt = await execute(name, args, context)
             if interleaved_events != "none" and name == "send_message" and not interleaved:
                 interleaved.append(True)
-                other = await env.service.writer.append(
+                other = await seed_scoped_event(
+                    env.service.writer,
                     scope=ConversationScope.group("80001", "20001"),
                     platform_message_id="other-execution-outbound",
                     sender_user_id="80001",
                     direction="outbound",
-                    sender_is_bot=True,
                     origin="social_tool",
                     content=foreign_text,
                 )

@@ -5,6 +5,7 @@ import json
 import pytest
 from sqlalchemy import select
 from tests.support.automation_unified_delivery_helpers import sent, setup_run
+from tests.support.event_seed import seed_scoped_event
 
 from yuki.automation.models import RunStatus
 from yuki.domain.conversations import ConversationScope
@@ -34,7 +35,7 @@ async def test_person_notification_uses_real_target_and_only_explicit_send(
                 )
             arguments = {"text": text}
             if delivery == "self_private":
-                arguments["target"] = {"kind": "person", "subject_ref": "current_speaker"}
+                arguments["target"] = {"kind": "person", "target_id": case.env.person}
             calls.append(
                 ToolCall("explicit-send", ToolFunction("send_message", json.dumps(arguments)))
             )
@@ -179,7 +180,8 @@ async def test_long_private_reminder_keeps_actual_history_parts_and_original_rec
 ):
     text = "完整提醒原文：" + "A" * 13000 + "PRIVATE_BODY_TAIL"
     case = await setup_run(database, tmp_path, delivery="self_private", mode="silent", goal=text)
-    await case.env.service.writer.append(
+    await seed_scoped_event(
+        case.env.service.writer,
         scope=ConversationScope.private("80001", "10001"),
         platform_message_id="original-private-material",
         sender_user_id="10001",
@@ -198,7 +200,7 @@ async def test_long_private_reminder_keeps_actual_history_parts_and_original_rec
                         json.dumps(
                             {
                                 "text": text,
-                                "target": {"kind": "person", "subject_ref": "current_speaker"},
+                                "target": {"kind": "person", "target_id": case.env.person},
                             }
                         ),
                     ),

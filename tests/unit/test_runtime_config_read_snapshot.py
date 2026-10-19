@@ -198,7 +198,7 @@ async def test_snapshot_matches_previous_complete_config_and_resolves_once(
     def capture(_connection, _cursor, statement, *_args):
         sql.append(statement)
 
-    for name in ("resolve_live_person_id", "resolve_live_space_id"):
+    for name in ("current_person_id", "resolve_space_owner"):
         original = getattr(module, name)
 
         async def wrapped(*args, _original=original, _name=name, **kw):
@@ -216,8 +216,11 @@ async def test_snapshot_matches_previous_complete_config_and_resolves_once(
     assert len(sessions) == 1
     assert all(statement.lstrip().startswith(("BEGIN", "SELECT")) for statement in sql)
     assert sql[0] == "BEGIN"
-    assert resolved.count("resolve_live_person_id") == int("user_id" in kwargs)
-    assert resolved.count("resolve_live_space_id") == int("group_id" in kwargs)
+    assert resolved.count("current_person_id") == int(
+        "user_id" in kwargs
+        or ("memory_scope" in kwargs and kwargs["memory_scope"].person_id is not None)
+    )
+    assert resolved.count("resolve_space_owner") == int("group_id" in kwargs)
 
 
 @pytest.mark.asyncio
@@ -230,7 +233,7 @@ async def test_rebind_and_override_commit_between_queries_cannot_mix_snapshot_ow
     old, new, _, _ = await _owners(database)
     await _override(database, old, 70000)
     await _override(database, new, 80000)
-    resolve = module.resolve_live_person_id
+    resolve = module.current_person_id
     changed = False
 
     async def concurrent_rebind(session, raw):
@@ -239,10 +242,15 @@ async def test_rebind_and_override_commit_between_queries_cannot_mix_snapshot_ow
         if not changed:
             changed = True
             async with database.immediate_session() as writer:
-                await writer.execute(
-                    update(IdentityBindingModel)
-                    .where(IdentityBindingModel.external_account_id == "10001")
-                    .values(person_id=new, revision=IdentityBindingModel.revision + 1)
+                from yuki.identity.canonical_repository import (
+                    find_identity_binding,
+                    replace_assignment,
+                )
+
+                original = await find_identity_binding(writer, "10001")
+                target = await writer.get(CanonicalPersonModel, new)
+                await replace_assignment(
+                    writer, original.account, original.id, target, now=datetime.now(UTC)
                 )
                 await writer.execute(
                     update(RuntimeConfigOverrideModel)
@@ -251,7 +259,7 @@ async def test_rebind_and_override_commit_between_queries_cannot_mix_snapshot_ow
                 )
         return owner
 
-    monkeypatch.setattr(module, "resolve_live_person_id", concurrent_rebind)
+    monkeypatch.setattr(module, "current_person_id", concurrent_rebind)
     snapshot = await runtime.snapshot(user_id=old)
     assert changed and snapshot.context.compact_trigger_tokens == 70000
     assert (await runtime.snapshot(user_id=old)).context.compact_trigger_tokens == 71000
@@ -290,7 +298,7 @@ async def test_snapshot_under_wal_writer_reads_committed_config_without_dml(data
     "invalid",
     ["person_disabled", "space_disabled", "missing", "presence_kind"],
 )
-async def test_snapshot_preserves_live_identity_rejections(database, invalid):
+async def test_snapshot_reads_disabled_material_owners_and_rejects_missing_types(database, invalid):
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
     person, _, space, presence = await _owners(database)
     kwargs = {"user_id": person}
@@ -317,8 +325,11 @@ async def test_snapshot_preserves_live_identity_rejections(database, invalid):
             kwargs = {"user_id": "no-such-synthetic-owner"}
         else:
             kwargs = {"user_id": presence}
-    with pytest.raises(CanonicalIdentityError):
-        await runtime.snapshot(**kwargs)
+    if invalid in {"person_disabled", "space_disabled"}:
+        assert await runtime.snapshot(**kwargs)
+    else:
+        with pytest.raises(CanonicalIdentityError):
+            await runtime.snapshot(**kwargs)
 
 
 @pytest.mark.asyncio

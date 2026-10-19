@@ -104,23 +104,28 @@ async def test_accepted_media_receipts_restore_before_paired_without_read_or_ree
         await invoke_tool(session, call, invoke, side_effecting=False)
     # Simulated crash: the last persisted journal is still response/pending.
     resumed = WorkSession(control, "result-test")
+    old_work = await control.repository.get(control.current["id"])
+    old_call_key = session.call_key(calls[0].id)
     restored = await resumed.restore(TurnTranscript(()))
     messages = restored.request().messages
-    assert [message.tool_call_id for message in messages if message.role == "tool"] == [
-        "one",
-        "two",
-    ]
+    assert not any(message.role == "tool" or message.tool_calls for message in messages)
+    assert any(
+        "one" in (message.content or "") and "two" in (message.content or "")
+        for message in messages
+    )
     assert [image for message in messages for image in message.images] == originals
     first_image = next(index for index, message in enumerate(messages) if message.images)
     assert all(message.role != "tool" for message in messages[first_image:])
 
-    async def forbidden():
-        pytest.fail("Accepted tool preparation must not execute or reread its source")
-
-    replay = await invoke_tool(resumed, calls[0], forbidden, side_effecting=False)
+    replay = await resumed.journal.effect_result(old_call_key)
     assert result_images(replay) == (originals[0],)
     assert invoked == ["one", "two"]
     assert control.tools_started == 2
+    current = await control.repository.get(control.current["id"])
+    assert current["id"] == old_work["id"]
+    assert current["parent_work_id"] == old_work["parent_work_id"]
+    assert current["source_json"] == old_work["source_json"]
+    assert current["tool_calls"] == old_work["tool_calls"]
     async with database.sessions() as reader:
         receipts = list(await reader.scalars(select(effects.c.receipt_json)))
         assert receipts and all("data:image/" not in receipt for receipt in receipts)

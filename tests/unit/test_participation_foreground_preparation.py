@@ -7,6 +7,8 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import update
+from tests.support.canonical_identity import ensure_person
+from tests.support.event_seed import seed_event
 from tests.support.semantic_participation_host_helpers import _event_and_route, _host
 from tests.unit.test_participation_ordinary_feedback import ordinary_expression
 from tests.unit.test_participation_pipeline_retirement import _relationship
@@ -16,7 +18,6 @@ from yuki_participation.self_report import SelfDelta
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import ChatResponse
-from yuki.identity.canonical_repository import ensure_person
 from yuki.persistence.models import ChatEventModel
 
 
@@ -302,7 +303,8 @@ async def test_binding_hydrates_unseen_confirmed_self_quote_before_freezing_its_
         await host._save(item)
         async with database.immediate_session() as writer:
             await ensure_person(writer, "1002")
-        focus, _ = await host.app.ledger.append(
+        focus, _ = await seed_event(
+            host.app.ledger,
             bot_user_id="8000",
             platform_message_id=str(uuid4()),
             scope_type=ScopeType.GROUP,

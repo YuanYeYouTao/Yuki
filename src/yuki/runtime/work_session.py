@@ -83,11 +83,10 @@ class WorkSession:
         self.source_keys: list[str] = []
         self.input_ids: list[int] = []
         self.sequence = 0
-        self.recovered_delivery: str | None = None
-        self.recovered_phase: str | None = None
         self.progress: dict[str, Any] = {}
         self.handoff_work_id: str | None = None
         self.uses_recovery_transcript = False
+        self.exact_recovery = False
         self.public_event_ids: set[int] = set()
         self.dispatch_boundary: PreparedContextBoundary | None = None
         self.pending_compositions: list[PendingComposition] = []
@@ -139,6 +138,7 @@ class WorkSession:
 
         recovery = control.protocol_recovery_preparation or protocol_recovery_preparation.get()
         control.protocol_recovery_preparation = None
+        self.exact_recovery = False
         if (
             recovery is not None
             and control.current is not None
@@ -147,6 +147,7 @@ class WorkSession:
             and recovery.snapshot.record["contract"] == self.contract
         ):
             loaded = recovery.snapshot
+            self.exact_recovery = True
         else:
             loaded = (
                 await self.journal.load(
@@ -194,8 +195,6 @@ class WorkSession:
                         ),
                     )
                 )
-            if loaded.delivery_record is not None:
-                self.recovered_phase = self.recovered_delivery = loaded.delivery_record["phase"]
         if not row and control.current and loaded and loaded.reason != "fresh":
             await control.refresh_effects()
             evidence = control.known_effects
@@ -205,8 +204,7 @@ class WorkSession:
                     content=(
                         "[持续工作恢复：使用当前获准上下文接续原工作。"
                         "以下为已记录执行证据；状态不明的执行先查原 run_id，"
-                        "不能盲目重跑或重复发送。]\n"
-                        + json.dumps(evidence, ensure_ascii=False)
+                        "不能盲目重跑或重复发送。]\n" + json.dumps(evidence, ensure_ascii=False)
                     ),
                 )
             )
@@ -219,9 +217,11 @@ class WorkSession:
             # each original effect key instead; the original unknown call never
             # acquires permission to dispatch again.
             pending_audit: list[dict[str, Any]] = []
+            assert loaded.previous_chain is not None
             for call in loaded.pending_calls:
                 key = await self._pending_result_key(
-                    call, f"{loaded.previous_chain}:{loaded.pending_sequence}:{call['id']}"
+                    call,
+                    direct_operation_id(loaded.previous_chain, loaded.pending_sequence, call["id"]),
                 )
                 state = await self.journal.effect_state(key)
                 capture = ResultCapture(control.current["id"] if control.current else "", key)
@@ -273,9 +273,11 @@ class WorkSession:
             )
         if row:
             self.uses_recovery_transcript = True
-            self.recovered_phase = row["phase"]
             value = json.loads(row["payload_json"])
             self.transcript = decode_transcript(value["transcript"])
+            # A native checkpoint is the original paid protocol, even after its
+            # calls were paired. Portable receipts cannot replace its signatures.
+            self.exact_recovery |= self.transcript.continuation is not None
             metadata = value.get("metadata", {})
             self.handoff_work_id = metadata.get("handoff_work_id")
             self.progress = {
@@ -292,6 +294,7 @@ class WorkSession:
             self.source_keys = list(metadata.get("source_keys", []))
             self.input_ids = list(metadata.get("input_ids", []))
             compact = self.progress.get("context_compaction")
+            self.exact_recovery |= bool(control.lease.work_id and compact)
             if compact is not None and compact.get("phase") != "paired":
                 if (
                     public_compaction is not None
@@ -327,11 +330,6 @@ class WorkSession:
                     extras = extras[1:]
                     initial = TurnTranscript((*adopted, *extras))
             await control.refresh_effects()
-            if row["phase"] in {"delivery", "delivered"} and self.progress.get("delivery_plan"):
-                # A legacy frozen final-delivery plan is never executed online;
-                # the offline importer reconciles it (see runtime/work_delivery).
-                self.recovered_delivery = row["phase"]
-
             # Pair recorded/unknown outcomes. A definitely undispatched call or
             # open composition still belongs to the original paid response;
             # retain the whole batch until its receipts and media are paired.
@@ -405,9 +403,7 @@ class WorkSession:
                 if control.current_message is not None:
                     self.transcript.append(control.current_message)
             if (
-                not control.lease.work_id
-                and self.recovered_delivery is None
-                and row["phase"] in {"response", "paired"}
+                row["phase"] in {"response", "paired"}
                 and not self.pending
                 and not self.progress.get("provider_pause_replay")
             ):
@@ -421,11 +417,7 @@ class WorkSession:
                 # evidence that the model has observed the result. Never copy
                 # the creation-time chat or opaque provider continuation.
                 await self.rebase_business(initial, append_material=False)
-        if (
-            control.current is not None
-            and not control.lease.work_id
-            and not self.uses_recovery_transcript
-        ):
+        if control.current is not None and not self.uses_recovery_transcript:
             await self._append_business_material()
         trigger = control.source.get("trigger_event_id")
         if isinstance(trigger, int) and trigger not in self.event_ids:
@@ -458,8 +450,7 @@ class WorkSession:
         control = self.control
         if (
             not self.uses_recovery_transcript
-            or control.lease.work_id
-            or self.recovered_delivery is not None
+            or self.exact_recovery
             or self.pending_compositions
             or self.pending
             or self.progress.get("provider_pause_replay")
@@ -467,6 +458,11 @@ class WorkSession:
             return False
         assert self.transcript is not None
         unobserved_round = self._unobserved_tool_round()
+        if control.lease.work_id and not unobserved_round:
+            # An isolated worker's task/finding is its private checkpoint, not
+            # stale public history. Only a completed portable tool round can
+            # supply the existing business-resume boundary for that worker.
+            return False
         previous_chain = self.transcript.chain_id
         # Preserve only Host-selected pixels still needed by the Work.
         # A legal business chain does not replay old calls, opaque state,

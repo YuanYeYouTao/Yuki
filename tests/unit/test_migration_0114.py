@@ -20,7 +20,8 @@ def test_0114_moves_disabled_spaces_to_editable_config(tmp_path, monkeypatch):
     command.upgrade(config, "0113")
 
     async def verify():
-        from yuki.identity.canonical_repository import ensure_space
+        from tests.support.canonical_identity import ensure_space
+
         from yuki.identity.db_models import CanonicalSpaceModel
 
         database = Database(url)

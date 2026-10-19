@@ -7,6 +7,9 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
+from yuki.domain.messages import mention_snapshots
+from yuki.persistence.repository_records import EventRecord
+
 
 def source_revision(row: Any) -> int:
     payload = [
@@ -20,6 +23,12 @@ def source_revision(row: Any) -> int:
         row.caused_by_event_id,
         row.reply_to_event_id,
     ]
+    segments = (
+        row.segments if isinstance(row, EventRecord) else tuple(json.loads(row.segments_json))
+    )
+    mentions = mention_snapshots(segments)
+    if mentions:
+        payload.append(mentions)
     digest = hashlib.sha256(json.dumps(payload, ensure_ascii=False).encode()).hexdigest()
     return int(digest[:15], 16) + 1
 

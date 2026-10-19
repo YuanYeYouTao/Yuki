@@ -107,7 +107,8 @@ class MainAgentContract:
                         # 25: same-entry historical references retain their exact event identity.
                         # 26: persistent computer control and original-run assistance guidance.
                         # 27: current upstream guidance, identity and media execution semantics.
-                        "version": 27,
+                        # 28: Account assignments and prepared mentions preserve original sources.
+                        "version": 28,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),
@@ -158,6 +159,7 @@ class MainAgentContract:
         async with self.chat._ledger._database.sessions() as session:
             platform = await session.scalar(
                 select(IdentityBindingModel.platform)
+                .select_from(IdentityBindingModel)
                 .join(
                     CanonicalConversationModel,
                     CanonicalConversationModel.identity_binding_id == IdentityBindingModel.id,

@@ -526,7 +526,8 @@ async def test_retained_child_resumes_without_reopening_ancestors_or_resetting_b
 
 
 async def test_neutral_resume_cannot_borrow_another_persons_child(database, tmp_path):
-    from yuki.identity.canonical_repository import ensure_person
+    from tests.support.canonical_identity import ensure_person
+
     from yuki.runtime.work_queries import WorkQueries
     from yuki.runtime.work_schema_v1 import inputs
 
@@ -817,8 +818,9 @@ async def test_derived_call_retrieves_terminal_child_without_new_identity_or_bud
 
 
 async def test_privacy_purge_removes_one_actual_tree_and_preserves_other_scope(database, tmp_path):
+    from tests.support.canonical_identity import ensure_space
+
     from yuki.conversation.hydrate import ensure_canonical_conversation
-    from yuki.identity.canonical_repository import ensure_space
     from yuki.runtime.work_schema_v1 import scope
 
     repo, workers, lease, root, sibling = await stack(database, tmp_path)

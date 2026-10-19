@@ -25,7 +25,7 @@ async def setup(database):
         plugin_id=plugin,
         name=plugin,
         version="1",
-        plugin_api="5.0",
+        plugin_api="6.0",
         yuki_requires="*",
         manifest_hash="original-plugin-manifest",
         entrypoint="plugin:register",
@@ -76,7 +76,7 @@ async def test_plugin_config_merge_retains_effective_rows_and_never_falls_back(d
     root_scope = await service.read(plugin, scope_type="user", owner_id=target)
     assert old_scope == root_scope
     assert root_scope["owner_id"] == target
-    assert root_scope["values"] == {"source_key": "source-only", "conflict": "target-effective"}
+    assert root_scope["values"] == {"source_key": "", "conflict": "target-effective"}
     assert await repository.delete(
         plugin_id=plugin, scope_type="user", scope_id=source, key="conflict"
     )
@@ -97,12 +97,17 @@ async def test_plugin_config_merge_retains_effective_rows_and_never_falls_back(d
         },
     )
     async with database.sessions() as reader:
-        historical = await reader.get(PluginConfigValueModel, original["conflict"][0])
-        inherited = await reader.get(PluginConfigValueModel, original["source_key"][0])
-        assert (historical.id, historical.value_json, historical.version) == original["conflict"]
-        assert historical.canonical_person_id == source
-        assert inherited.canonical_person_id == target
-        assert json.loads(inherited.value_json) == "explicit-new-value"
+        assert await reader.get(PluginConfigValueModel, original["conflict"][0]) is None
+        assert await reader.get(PluginConfigValueModel, original["source_key"][0]) is None
+        from yuki.persistence.models import AdminOperationEventModel
+
+        audit = await reader.scalar(
+            select(AdminOperationEventModel).where(
+                AdminOperationEventModel.operation == "identity.person.merge"
+            )
+        )
+        discarded = json.loads(audit.before_json)["discarded_configurations"]
+        assert {item["id"] for item in discarded} == {item[0] for item in original.values()}
 
 
 async def test_person_owned_plugin_cas_accepts_same_human_without_rewriting_global_json(database):

@@ -1,7 +1,7 @@
 # 语义参与 V6：宿主接入与验证边界
 
 2026-10-15。独立仓库：
-[Yuki-Semantic-Participation](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation)。
+[Yuki-Semantic-Participation](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation)。
 本文描述 SELF 接入与普通持续接话的合同。实现、验证和生产启用状态分别由交付记录证明；
 历史 T20 真实 QQ 集成验收不是本轮持续接话的验收结果。
 
@@ -34,6 +34,11 @@ Conversation/generation 保存控制器快照。新观察只以真实人类事�
 Memory 仍由主 Agent 按需查询；
 目标人物只是交流对象，不是执行主体。观测正文保留原事件中按原位置还原的 `@名字`，
 与 Main 共用入账时的目标及名称快照；不在 JEV 侧再补查资料或把其他成员改称 Yuki。
+Host 从同一原 segments 复制窄 `EventMention` 到 `ScopedEvent.mentions`，保原顺序、重复、展示名、
+位置及可证明的 Account／Assignment／Person／Presence。普通文字中的 @ 不反造原生提及。
+新 Jev 请求使用 `semantic-state-v3`：人物随原作者共用当前同人投影，Account 在该请求内只用
+中性 aN 关联，Assignment／Presence UUID 留在本地原 Snapshot；不改变参与 target 或授予权限。
+原来源修订包含提及快照，旧未知位置保未知，旧已付 Snapshot 不补查或改写。
 观测和历史读取完成后才进入短接纳事务，事务中不等待 Jev、主模型或 QQ 网关。
 启动和运行期间会主动发现当前获准的群会话代次；即使 `/ai new` 后还没有新的群消息、
 新代次尚无 selector 行，也会建立控制器并按现行配置选择 owner。只读取新代次事件，
@@ -291,7 +296,7 @@ Memory 依赖只按明确 fact ID 核验 active、verified、有效时间、原�
 
 有限真实 Jev HTTP 验证使用合成样本，只检验协议、投影、延迟和分歧；期望由开发者编写，
 不是独立人工标注准确率，不能宣称改善了群聊。详细证据见独立库的
-[实现记录](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/blob/main/docs/implementation.md)。
+[实现记录](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/blob/main/docs/implementation.md)。
 T20 真实 QQ 小范围集成、长期群聊效果和生产负载仍未验收。代码合并与本地测试
 不能替代这些证据；后续上线另按确认的发布流程处理。
 

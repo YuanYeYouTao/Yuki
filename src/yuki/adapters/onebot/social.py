@@ -13,26 +13,33 @@ from typing import Any, cast
 from uuid import uuid4
 
 from yuki.adapters.onebot.sender import parse_onebot_send_receipt
-from yuki.gateway.social import TransportMessage, TransportReceipt, TransportTarget
+from yuki.gateway.social import (
+    TransportMention,
+    TransportMessage,
+    TransportReceipt,
+    TransportTarget,
+)
 
 
 class OneBotSocialOperations:
-    file_caption_separate = True
+    def native_mention(self, text: str, offset: int) -> TransportMention | None:
+        for name in ("@全体成员", "@all"):
+            if text.startswith(name, offset):
+                return TransportMention("all", "全体成员", offset, offset + len(name), kind="all")
+        return None
 
     def __init__(self, transfer_root: Path | None = None, gateway_root: str = "") -> None:
         self._root = transfer_root.absolute() if transfer_root is not None else None
         self._gateway_root = gateway_root
 
     def plan_send(self, message: TransportMessage) -> tuple[TransportMessage, ...]:
-        if (
-            message.media is not None
-            and message.media.kind == "file"
-            and (message.text or message.mentions)
-        ):
-            return (
-                replace(message, text="", mentions=()),
-                replace(message, media=None, reply_reference=None),
-            )
+        if message.media is not None and message.media.kind == "file":
+            if message.text or message.mentions:
+                return (
+                    replace(message, text="", mentions=(), reply_reference=None),
+                    replace(message, media=None),
+                )
+            return (replace(message, reply_reference=None),)
         return (message,)
 
     @asynccontextmanager
@@ -85,9 +92,21 @@ class OneBotSocialOperations:
         parts: list[dict[str, Any]] = []
         if message.reply_reference is not None:
             parts.append({"type": "reply", "data": {"id": message.reply_reference}})
-        parts.extend({"type": "at", "data": {"qq": item.external_id}} for item in message.mentions)
-        if message.text:
-            parts.append({"type": "text", "data": {"text": message.text}})
+        cursor = 0
+        for mention in message.mentions:
+            if mention.text_start > cursor:
+                parts.append(
+                    {"type": "text", "data": {"text": message.text[cursor : mention.text_start]}}
+                )
+            parts.append(
+                {
+                    "type": "at",
+                    "data": {"qq": "all" if mention.kind == "all" else mention.external_id},
+                }
+            )
+            cursor = mention.text_end
+        if cursor < len(message.text):
+            parts.append({"type": "text", "data": {"text": message.text[cursor:]}})
         if media is not None:
             parts.append(
                 {

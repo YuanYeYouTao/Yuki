@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import event, insert, select, update
+from tests.support.event_seed import seed_event
 
 from yuki.conversation import media_service
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -22,7 +23,8 @@ from yuki.services.image_preprocessor import ImagePreprocessor
 
 
 async def _cache(database, tmp_path, count=1):
-    source, _ = await EventLedgerRepository(database).append(
+    source, _ = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id="cleanup-media",
         scope_type=ScopeType.PRIVATE,

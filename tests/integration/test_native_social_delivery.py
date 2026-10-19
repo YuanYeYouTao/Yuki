@@ -29,9 +29,10 @@ from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.providers.telegram import TelegramClient
 from yuki.gateway.providers.telegram_ingress import TelegramGateway
 from yuki.gateway.registry import GatewayConnectionRegistry
-from yuki.gateway.social import TransportMedia, TransportMessage
-from yuki.identity.canonical_repository import create_presence
+from yuki.gateway.social import TransportMedia, TransportMessage, transport_payload
+from yuki.identity.canonical_repository import create_presence, replace_assignment
 from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
+from yuki.identity.db_models import AccountModel, CanonicalPersonModel, IdentityBindingModel
 from yuki.identity.ingress import CanonicalIngressResolver
 from yuki.identity.routing import PresenceRouter
 from yuki.llm.fake import FakeLLMProvider
@@ -135,6 +136,11 @@ async def native_env(database, tmp_path):
             conversation = await session.get(
                 CanonicalConversationModel, event.canonical_conversation_id
             )
+            account = await session.scalar(
+                select(AccountModel).where(
+                    AccountModel.platform == "telegram", AccountModel.external_account_id == "42"
+                )
+            )
         config = await harness.processor._runtime_config.snapshot(
             user_id=event.author_person_id, group_id=conversation.space_id
         )
@@ -155,7 +161,6 @@ async def native_env(database, tmp_path):
             person_refs={"current_speaker": event.author_person_id},
             space_id=conversation.space_id,
             trigger_event_id=event.id,
-            visible_event_ids=frozenset({event.id}),
             runtime_snapshot=config,
         )
         wire.clear()
@@ -165,6 +170,8 @@ async def native_env(database, tmp_path):
             wire=wire,
             failure=failure,
             event=event,
+            account=account.id,
+            account_name=account.display_name,
             store=social.workspace,
             db=database,
             registry=registry,
@@ -198,7 +205,6 @@ async def test_native_recall_uses_original_presence_and_internal_event_in_topic(
         call_id="topic-send",
         conversation_id=conversation.id,
         trigger_event_id=source.id,
-        visible_event_ids=frozenset({source.id}),
     )
     sent = await env.service.execute(
         "send_message", {"text": "original reply", "reply_to_event_id": source.id}, context
@@ -269,8 +275,7 @@ async def test_native_text_limit_counts_decoded_mentions_and_preserves_reply(nat
     env = native_env
     text = "<&你好>" * 1200
     args = {
-        "text": text,
-        "mentions": [{"subject_ref": "current_speaker"}],
+        "text": f"@{{account:{env.account}}}" + text,
         "reply_to_event_id": env.event.id,
     }
     result = await env.service.execute("send_message", args, env.context)
@@ -280,7 +285,9 @@ async def test_native_text_limit_counts_decoded_mentions_and_preserves_reply(nat
     assert '<a href="tg://user?id=42">' in wire[0][1]["text"]
     assert wire[0][1]["reply_parameters"] == {"message_id": 1}
     assert "reply_parameters" not in wire[1][1] and "<a " not in wire[1][1]["text"]
-    assert "".join(part["delivered_text"] for part in result["parts"]) == text
+    assert (
+        "".join(part["delivered_text"] for part in result["parts"]) == "@" + env.account_name + text
+    )
     assert await env.service.execute("send_message", args, env.context) == result
     assert len(sends(env)) == 2
 
@@ -312,8 +319,7 @@ async def test_native_long_caption_has_distinct_facts_and_never_reuploads(native
     args = {
         "artifact_id": artifact["artifact_id"],
         "attachment_kind": "file",
-        "text": "长" * 5000,
-        "mentions": [{"subject_ref": "current_speaker"}],
+        "text": f"@{{account:{env.account}}}" + "长" * 5000,
     }
     if fail_caption:
         env.failure.method = "sendMessage"
@@ -326,7 +332,10 @@ async def test_native_long_caption_has_distinct_facts_and_never_reuploads(native
     if fail_caption:
         assert result["error"] == "file_sent_caption_unconfirmed"
     else:
-        assert "".join(part["delivered_text"] for part in result["parts"]) == args["text"]
+        assert (
+            "".join(part["delivered_text"] for part in result["parts"])
+            == "@" + env.account_name + "长" * 5000
+        )
     assert await env.service.execute("send_message", args, env.context) == result
     assert len(sends(env)) == 2
 
@@ -345,25 +354,72 @@ async def test_native_timeout_is_unknown_and_same_call_never_retries(native_env)
     assert len(rows) == 1 and rows[0].status == "uncertain" and rows[0].event_id is None
 
 
-async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(database, tmp_path):
+async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(
+    database, tmp_path, monkeypatch
+):
     env = await social_env(database, tmp_path)
+    async with database.sessions() as reader:
+        binding = await reader.scalar(
+            select(IdentityBindingModel).where(IdentityBindingModel.account_id == env.account)
+        )
     artifact = snapshot_bytes(env.store, "qq.txt", b"original")
     args = {
         "artifact_id": artifact["artifact_id"],
         "attachment_kind": "file",
-        "text": "附言",
-        "mentions": [{"target_id": env.person}],
+        "text": f"@{{account:{env.account}}}附言",
     }
     result = await env.service.execute("send_message", args, env.context)
     assert result["file"]["status"] == result["caption"]["status"] == "succeeded"
     async with database.sessions() as reader:
         caption = await reader.get(ChatEventModel, result["caption"]["event_id"])
-    assert json.loads(caption.segments_json) == [
-        {"type": "mention", "data": {"person_id": env.person}},
-        {"type": "text", "data": {"text": "附言"}},
-    ]
+    segments = json.loads(caption.segments_json)
+    mention = next(item["data"] for item in segments if item["type"] == "mention")
+    assert mention["account_id"] == env.account
+    assert mention["person_id"] == env.person
+    assert mention["assignment_id"] == binding.id
+    assert mention["presence_id"] is None and mention["kind"] == "member"
+    assert caption.content[mention["text_start"] : mention["text_end"]].startswith("@")
+    assert caption.content.endswith("附言")
+    sent_caption = next(params for method, params in env.bot.calls if method == "send_group_msg")
+    assert sent_caption["message"][0] == {"type": "at", "data": {"qq": "10001"}}
+    original_segments = caption.segments_json
+    async with database.sessions() as session, session.begin():
+        original_plans = list(
+            await session.execute(
+                select(SocialOperationModel.id, SocialOperationModel.prepared_json).order_by(
+                    SocialOperationModel.id
+                )
+            )
+        )
+        physical = await session.get(AccountModel, env.account)
+        recipient = await session.scalar(
+            select(IdentityBindingModel)
+            .join(AccountModel)
+            .where(AccountModel.platform == "qq", AccountModel.external_account_id == "10002")
+        )
+        owner = await session.get(CanonicalPersonModel, recipient.person_id)
+        replacement = await replace_assignment(
+            session, physical, binding.id, owner, now=datetime.now(UTC)
+        )
+        assert replacement.id != binding.id and replacement.person_id != env.person
+
+    async def must_not_prepare_again(*args, **kwargs):
+        raise AssertionError("successful captions retain the original account and assignment")
+
+    monkeypatch.setattr("yuki.social.service.prepare_for_entry", must_not_prepare_again)
     assert await env.service.execute("send_message", args, env.context) == result
     assert sum(action == "upload_group_file" for action, _ in env.bot.calls) == 1
+    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+    async with database.sessions() as reader:
+        preserved = await reader.get(ChatEventModel, caption.id)
+        plans = list(
+            await reader.execute(
+                select(SocialOperationModel.id, SocialOperationModel.prepared_json).order_by(
+                    SocialOperationModel.id
+                )
+            )
+        )
+    assert preserved.segments_json == original_segments and plans == original_plans
 
 
 @pytest.mark.parametrize("caption_failure", ["failed", "timeout", "preflight"])
@@ -425,7 +481,7 @@ async def test_sequence_replay_reads_confirmed_or_unknown_facts_while_disconnect
     assert len(sends(env)) == sent
 
 
-async def test_legacy_sequence_layout_hash_replays_without_transport(native_env):
+async def test_retired_sequence_hash_never_executes_or_silently_reinterprets(native_env):
     env = native_env
     context = replace(
         env.context,
@@ -449,45 +505,32 @@ async def test_legacy_sequence_layout_hash_replays_without_transport(native_env)
             parent.action, parent.target, old_payload, context.conversation_id
         )
     env.registry.disconnect(env.client)
-    assert await env.service.execute("send_message", args, context) == result
+    with pytest.raises(SocialError, match="idempotency_conflict"):
+        await env.service.execute("send_message", args, context)
+    assert result["status"] == "succeeded"
     assert len(sends(env)) == 3
 
 
-@pytest.mark.parametrize("prepared_child", [False, True])
-async def test_never_dispatched_sequence_can_replan_and_resume_original_call(
-    native_env, monkeypatch, prepared_child
+async def test_never_dispatched_sequence_keeps_first_plan_across_config_changes(
+    native_env, monkeypatch
 ):
     env = native_env
     args = {"text": "恢复" * 3000}
-    original_prepare = env.service.receipts.prepare
-    child_ids = []
+    original_prepare = env.service.receipts.prepare_sequence
 
-    class BeforeDispatch(RuntimeError):
+    class BeforeDispatch(BaseException):
         pass
 
     async def interrupt_prepare(**kwargs):
-        receipt = await original_prepare(**kwargs)
-        child_ids.append(receipt.operation_id)
+        await original_prepare(**kwargs)
         raise BeforeDispatch
 
-    if prepared_child:
-        monkeypatch.setattr(env.service.receipts, "prepare", interrupt_prepare)
-        with pytest.raises(BeforeDispatch):
-            await env.service.execute("send_message", args, env.context)
-    else:
-        target = await env.service.target("space", {}, env.context)
-        await env.service.receipts.prepare(
-            source_turn_id=env.context.turn_id,
-            tool_call_id=env.context.call_id,
-            source_conversation_id=env.context.conversation_id,
-            action="send_message_sequence",
-            target=target,
-            payload=args,
-            planned_parts=2,
-        )
+    monkeypatch.setattr(env.service.receipts, "prepare_sequence", interrupt_prepare)
+    with pytest.raises(BeforeDispatch):
+        await env.service.execute("send_message", args, env.context)
     parent = await env.service.receipts.find(env.context.turn_id, env.context.call_id)
     assert parent.status == "prepared" and not sends(env)
-    monkeypatch.setattr(env.service.receipts, "prepare", original_prepare)
+    monkeypatch.setattr(env.service.receipts, "prepare_sequence", original_prepare)
     context = replace(
         env.context,
         runtime_snapshot=replace(
@@ -499,10 +542,8 @@ async def test_never_dispatched_sequence_can_replan_and_resume_original_call(
     )
     result = await env.service.execute("send_message", args, context)
     assert result["operation_id"] == parent.operation_id
-    assert result["status"] == "succeeded" and result["planned_messages"] == 6
-    assert len(sends(env)) == 6
-    if child_ids:
-        assert result["parts"][0]["operation_id"] == child_ids[0]
+    assert result["status"] == "succeeded" and result["planned_messages"] == 2
+    assert len(sends(env)) == 2
     assert "".join(part["delivered_text"] for part in result["parts"]) == args["text"]
 
 
@@ -547,6 +588,11 @@ async def test_prepared_layout_replacement_cannot_dispatch_stale_child(
         target=target,
         payload=args,
         parts=tuple({"text": chunk} for chunk in old_chunks),
+        prepared={
+            "message": transport_payload(TransportMessage(args["text"])),
+            "parts": [transport_payload(TransportMessage(chunk)) for chunk in old_chunks],
+            "route": env.service._route_payload(route),
+        },
     )
     index = len(old_chunks) - 1
     old_context = replace(
@@ -600,7 +646,7 @@ async def test_prepared_layout_replacement_cannot_dispatch_stale_child(
         release.set()
         stale_result = await old
     assert "".join(visible(item[1]["text"]) for item in sends(env)) == args["text"]
-    assert len(sends(env)) == (3 if new_limit == 1000 else 1)
+    assert len(sends(env)) == len(old_chunks)
     assert stale_result["operation_id"] == old_id[0]
     async with env.db.sessions() as reader:
         original_row = await reader.get(SocialOperationModel, old_id[0])
@@ -998,10 +1044,64 @@ async def test_two_original_executors_cannot_mix_changed_tail_layouts(native_env
         assert result["status"] == "succeeded"
         text = "".join(visible(item[1]["text"]) for item in sends(env))
         assert text.replace("\n", "") == args["text"]
-        assert len(sends(env)) == 2
+        assert len(sends(env)) == 3
     finally:
         old_release.set()
         new_release.set()
         await asyncio.gather(
             old, *(tuple([new]) if new is not None else ()), return_exceptions=True
         )
+
+
+@pytest.mark.parametrize("caption", ["", "文件附言"])
+async def test_qq_file_reply_is_recorded_only_on_the_actual_caption_part(
+    database, tmp_path, caption
+):
+    env = await social_env(database, tmp_path)
+    async with database.sessions() as reader:
+        source = await reader.scalar(
+            select(ChatEventModel).where(ChatEventModel.direction == "inbound")
+        )
+    artifact = snapshot_bytes(env.store, "quoted.txt", b"original file")
+    result = await env.service.execute(
+        "send_message",
+        {
+            "artifact_id": artifact["artifact_id"],
+            "attachment_kind": "file",
+            "text": caption,
+            "reply_to_event_id": source.id,
+        },
+        env.context,
+    )
+    assert result["status"] == "succeeded"
+    async with database.sessions() as reader:
+        events = list(
+            await reader.scalars(
+                select(ChatEventModel)
+                .where(ChatEventModel.direction == "outbound")
+                .order_by(ChatEventModel.id)
+            )
+        )
+    assert events[0].reply_to_event_id is None and events[0].reply_to_message_id is None
+    assert len(events) == (2 if caption else 1)
+    if caption:
+        assert events[1].reply_to_event_id == source.id
+        assert env.bot.calls[-1][1]["message"][0] == {
+            "type": "reply",
+            "data": {"id": source.platform_message_id},
+        }
+    original_effects = list(env.bot.calls)
+    assert (
+        await env.service.execute(
+            "send_message",
+            {
+                "artifact_id": artifact["artifact_id"],
+                "attachment_kind": "file",
+                "text": caption,
+                "reply_to_event_id": source.id,
+            },
+            env.context,
+        )
+        == result
+    )
+    assert env.bot.calls == original_effects

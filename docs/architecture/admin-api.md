@@ -64,6 +64,8 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 | `POST /works/{id}/{cancel\|resume}` | `admin work cancel\|resume` | `control.work.mutate` |
 
 健康投影分别报告 enabled、running、healthy 和检查时间；没有健康证据时为 null。
+平台项来自已登记 Provider 的平台声明和实际 Presence，不按固定平台名单列举。
+聊天 status 显示当前 Conversation 所在平台连接与 `chat_agent` 当前选中 Profile 的模型。
 轨迹查询使用内部事件 ID 与原 turn/Work ID，按有效期过滤，使用 `after` 与 `limit`
 续读；正文单独授权。它不读取私有恢复 journal，也不制造恢复或重新发送资格。
 
@@ -111,6 +113,8 @@ Work 取消与续跑调用 `manage_work`，沿原 revision、执行身份、来�
 Messages 搜索连接，Gemini 使用自身独立桥，Anthropic Messages 使用原生搜索。已有的显式
 关闭、搜索模式、后端和手选连接保留；自定义网关沿实际地址与凭据处理。详见[独立原生搜索](../deepseek-search-bridge.md)。
 密钥写入 `model_profiles.secrets.json`，可新增或更新已有别名；别名使用合法环境变量名称。
+模型文件与密钥 sidecar 共用一个 bundle revision；更新任一文件都会使旧 revision 失效。
+重启配置装配直接消费注册项声明的 Settings 字段；保存值复用这些字段的实际类型与取值约束。
 配置文件中的 `api_key_env` 必须引用该别名。
 读取模型时只返回配置与已配置状态，响应、审计和 TOML 不包含密钥值。
 
@@ -123,6 +127,11 @@ yuki admin person create --display-name "人物名称"
 yuki admin person merge <source-person-id> --to-person <target-person-id>
 yuki admin person rename <person-id> "新名称"
 yuki admin binding attach --person <person-id> --platform qq --account <account> --revision <revision>
+yuki admin binding unbind <binding-id> --revision <revision>
+yuki admin presence register --platform qq --account <account> --revision 0
+yuki admin presence register --platform qq --account <account> --expected-assignment <stage-id> --revision <revision>
+yuki admin presence unregister <presence-id> --revision <revision>
+yuki admin presence transfer <presence-id> --to-person <person-id> --revision <revision>
 ```
 
 `--request-id` 可显式保留原请求；不要在未知结果后换 ID 重做。密钥从命令进程环境读取，

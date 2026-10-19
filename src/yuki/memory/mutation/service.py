@@ -19,7 +19,12 @@ from yuki.domain.conversations import ScopeType
 from yuki.domain.memory_config import MemoryConfigScope
 from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.identity.authority import person_is_superuser
-from yuki.identity.person_identity import same_person_condition, same_person_id
+from yuki.identity.person_identity import (
+    current_person_ids,
+    person_enabled_condition,
+    person_family_condition,
+    same_person_id,
+)
 from yuki.memory.claim_processor import (
     MemoryClaimProcessor,
     MemoryClaimResolution,
@@ -1294,18 +1299,18 @@ class MemoryMutationService:
                     else await self._facts.requested_target_owners(prepared.target, session=session)
                 )
                 current_actor = (
-                    await self._facts.resolve_person_id(
-                        context.trigger_actor_user_id,
-                        session=session,
-                        person_id=context.actor_person_id or context.event.author_person_id,
-                    )
+                    context.actor_person_id or context.event.author_person_id
                     if context.event is not None
                     else None
                 )
+                if current_actor and not await session.scalar(
+                    select(person_enabled_condition(current_actor))
+                ):
+                    raise MemoryMutationRejected("memory_resolution_snapshot_changed")
             except MemoryPartitionResolutionError:
                 raise MemoryMutationRejected("memory_resolution_snapshot_changed") from None
             if (
-                current_owners != prepared.target_owners
+                not await _same_target_owners(session, current_owners, prepared.target_owners)
                 or current_actor != prepared.actor_person_id
                 or await self._mutation_source_snapshot(
                     context.event, evidence_sources, session=session
@@ -1653,11 +1658,11 @@ class MemoryMutationService:
                     claim.fact,
                     session=identity_session,
                 )
-                actor_person_id = await self._facts.resolve_person_id(
-                    event.sender_user_id,
-                    session=identity_session,
-                    person_id=event.author_person_id,
-                )
+                actor_person_id = event.author_person_id
+                if actor_person_id and not await identity_session.scalar(
+                    select(person_enabled_condition(actor_person_id))
+                ):
+                    raise MemoryMutationRejected("memory_resolution_snapshot_changed")
                 source_snapshot = await self._mutation_source_snapshot(
                     event, (claim.evidence,), session=identity_session
                 )
@@ -1714,15 +1719,15 @@ class MemoryMutationService:
                 current_owners = await self._facts.requested_target_owners(
                     claim.fact, session=session
                 )
-                current_actor = await self._facts.resolve_person_id(
-                    event.sender_user_id,
-                    session=session,
-                    person_id=event.author_person_id,
-                )
+                current_actor = event.author_person_id
+                if current_actor and not await session.scalar(
+                    select(person_enabled_condition(current_actor))
+                ):
+                    raise MemoryMutationRejected("memory_resolution_snapshot_changed")
             except MemoryPartitionResolutionError:
                 raise MemoryMutationRejected("memory_resolution_snapshot_changed") from None
             if (
-                current_owners != target_owners
+                not await _same_target_owners(session, current_owners, target_owners)
                 or current_actor != actor_person_id
                 or await self._mutation_source_snapshot(event, (claim.evidence,), session=session)
                 != source_snapshot
@@ -1867,11 +1872,11 @@ class MemoryMutationService:
                         session=identity_session,
                     )
                 )
-                actor_person_id = await self._facts.resolve_person_id(
-                    context.trigger_actor_user_id,
-                    session=identity_session,
-                    person_id=context.actor_person_id or event.author_person_id,
-                )
+                actor_person_id = context.actor_person_id or event.author_person_id
+                if actor_person_id and not await identity_session.scalar(
+                    select(person_enabled_condition(actor_person_id))
+                ):
+                    raise MemoryMutationRejected("memory_resolution_snapshot_changed")
                 actor_owns_target = bool(
                     actor_person_id
                     and target_owners.subject_person_id
@@ -2878,7 +2883,7 @@ class MemoryMutationService:
         return (
             await session.scalar(
                 select(MembershipModel.canonical_person_id).where(
-                    same_person_condition(
+                    person_family_condition(
                         MembershipModel.canonical_person_id, owners.subject_person_id
                     ),
                     MembershipModel.canonical_space_id == source.space_id,
@@ -2964,3 +2969,26 @@ def _request_fingerprint(request: MemoryMutationRequest, context: MemoryMutation
             "execution_id": context.decision_actor_id,
         }
     )
+
+
+async def _same_target_owners(
+    session: AsyncSession,
+    left: MemoryFactCanonicalOwners,
+    right: MemoryFactCanonicalOwners,
+) -> bool:
+    """A same-human merge preserves the original prepared Memory target."""
+    if left == right:
+        return True
+    if (left.subject_space_id, left.visibility_space_id) != (
+        right.subject_space_id,
+        right.visibility_space_id,
+    ):
+        return False
+    pairs = (
+        (left.subject_person_id, right.subject_person_id),
+        (left.visibility_person_id, right.visibility_person_id),
+    )
+    if any((a is None) != (b is None) for a, b in pairs):
+        return False
+    roots = await current_person_ids(session, (p for pair in pairs for p in pair if p))
+    return all(a == b or (a in roots and b in roots and roots[a] == roots[b]) for a, b in pairs)

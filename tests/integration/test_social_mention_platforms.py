@@ -8,7 +8,9 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_person
 from tests.support.commands_and_chat_helpers import inbound
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import add_second_account, social_env
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
@@ -19,7 +21,7 @@ from yuki.identity.canonical_repository import (
     create_presence,
     create_space_binding,
 )
-from yuki.identity.db_models import IdentityBindingModel
+from yuki.identity.db_models import AccountModel, CanonicalPersonModel, IdentityBindingModel
 from yuki.persistence.models import ChatEventModel
 from yuki.services.agent_tools import ToolRuntime
 from yuki.social.agent_adapter import invoke_social
@@ -28,7 +30,8 @@ from yuki.social.models import SocialError
 
 async def invoke(env, arguments, *, account="10001"):
     if account != "10001":
-        await env.service.writer.append(
+        await seed_scoped_event(
+            env.service.writer,
             scope=ConversationScope.group(env.bot.self_id, "20001"),
             platform_message_id="second-account-input",
             sender_user_id=account,
@@ -100,7 +103,9 @@ async def telegram_target(env, accounts):
                 now=now,
                 platform="telegram",
             )
-            binding.person_id = env.person
+            from yuki.identity.person_identity import merge_persons
+
+            await merge_persons(session, binding.person_id, env.person)
             bindings.append(binding.id)
     env.registry.connect(client, provider_id="telegram", presence_id=presence.id)
     assert await env.router.cas_takeover_space(group.space_id) == "taken"
@@ -108,117 +113,167 @@ async def telegram_target(env, accounts):
     return SimpleNamespace(transport=transport, wire=wire, space=group.space_id, bindings=bindings)
 
 
+async def account_id(env, native, platform="qq"):
+    async with env.db.sessions() as session:
+        return await session.scalar(
+            select(AccountModel.id).where(
+                AccountModel.platform == platform, AccountModel.external_account_id == native
+            )
+        )
+
+
+async def observe(env, binding_id, name, *, group="20001"):
+    from yuki.identity.person_state import observe_canonical_person
+
+    async with env.db.sessions() as session, session.begin():
+        binding = await session.get(IdentityBindingModel, binding_id)
+        await observe_canonical_person(
+            session,
+            binding=binding,
+            nickname=name,
+            group_id=group,
+            group_card=name,
+            group_name="",
+            nickname_known=True,
+            group_card_known=True,
+            now=datetime.now(UTC),
+        )
+
+
 @pytest.mark.parametrize("account", ["10001", "10002"])
-async def test_same_platform_current_speaker_keeps_real_inbound_account(
+async def test_same_person_exact_account_does_not_follow_current_speaker(
     database, tmp_path, account
 ):
     env = await social_env(database, tmp_path)
     await add_second_account(env)
-    result = await invoke(
-        env, {"text": "hello", "mentions": [{"subject_ref": "current_speaker"}]}, account=account
-    )
+    selected = await account_id(env, account)
+    result = await invoke(env, {"text": f"前@{{account:{selected}}}后"})
     assert result["status"] == "succeeded"
-    sends = [params for method, params in env.bot.calls if method == "send_group_msg"]
-    assert len(sends) == 1
-    assert sends[0]["message"][0] == {"type": "at", "data": {"qq": account}}
+    sent = [params for method, params in env.bot.calls if method == "send_group_msg"]
+    assert sent[-1]["message"][1] == {"type": "at", "data": {"qq": account}}
 
 
-async def test_same_platform_explicit_binding_overrides_inbound_account(database, tmp_path):
+async def test_retired_subject_shortcut_is_rejected_as_input(database, tmp_path):
     env = await social_env(database, tmp_path)
-    other = await add_second_account(env)
-    result = await invoke(
-        env,
-        {
-            "text": "hello",
-            "mentions": [{"subject_ref": "current_speaker", "binding_id": other}],
-        },
-    )
-    assert result["status"] == "succeeded"
-    sends = [params for method, params in env.bot.calls if method == "send_group_msg"]
-    assert len(sends) == 1
-    assert sends[0]["message"][0] == {"type": "at", "data": {"qq": "10002"}}
+    with pytest.raises(SocialError, match="invalid_message_arguments"):
+        await invoke(env, {"text": "hello", "mentions": [{"subject_ref": "current_speaker"}]})
+    assert not any(method == "send_group_msg" for method, _ in env.bot.calls)
 
 
-@pytest.mark.parametrize("account", ["10001", "10003"])
-async def test_cross_platform_current_speaker_uses_target_person_binding(
-    database, tmp_path, account
-):
+@pytest.mark.parametrize("native", ["10001", "10003"])
+async def test_cross_platform_exact_account_uses_target_namespace(database, tmp_path, native):
     env = await social_env(database, tmp_path)
-    target = await telegram_target(env, [account])
+    target = await telegram_target(env, [native])
     try:
+        selected = await account_id(env, native, "telegram")
         result = await invoke(
             env,
             {
                 "target": {"kind": "space", "target_id": target.space},
-                "text": "hello",
-                "mentions": [{"subject_ref": "current_speaker"}],
+                "text": f"@{{account:{selected}}} hello",
             },
         )
         assert result["status"] == "succeeded"
+        assert [item["account_id"] for item in result["mentioned_accounts"]] == [selected]
         sent = [params for method, params in target.wire if method == "sendMessage"]
-        assert len(sent) == 1 and f"tg://user?id={account}" in sent[0]["text"]
+        assert len(sent) == 1 and f"tg://user?id={native}" in sent[0]["text"]
         assert not any(method == "send_group_msg" for method, _ in env.bot.calls)
     finally:
         await target.transport.aclose()
 
 
-async def test_equal_external_number_does_not_resolve_cross_platform_ambiguity(database, tmp_path):
+async def test_unknown_telegram_username_does_not_invent_an_internal_account(database, tmp_path):
     env = await social_env(database, tmp_path)
-    target = await telegram_target(env, ["10001", "10003"])
-    try:
-        with pytest.raises(SocialError, match="binding_ambiguous"):
-            await invoke(
-                env,
-                {
-                    "target": {"kind": "space", "target_id": target.space},
-                    "text": "hello",
-                    "mentions": [{"subject_ref": "current_speaker"}],
-                },
-            )
-        assert not any(method == "sendMessage" for method, _ in target.wire)
-    finally:
-        await target.transport.aclose()
-
-
-async def test_explicit_binding_resolves_cross_platform_mention(database, tmp_path):
-    env = await social_env(database, tmp_path)
-    target = await telegram_target(env, ["10001", "10003"])
+    target = await telegram_target(env, [])
     try:
         result = await invoke(
             env,
             {
                 "target": {"kind": "space", "target_id": target.space},
-                "text": "hello",
-                "mentions": [{"subject_ref": "current_speaker", "binding_id": target.bindings[1]}],
+                "text": "请到 @Remote_User 看看",
             },
         )
-        assert result["status"] == "succeeded"
+        assert result["status"] == "succeeded" and "mentioned_accounts" not in result
         sent = [params for method, params in target.wire if method == "sendMessage"]
-        assert len(sent) == 1 and "tg://user?id=10003" in sent[0]["text"]
+        assert len(sent) == 1 and "@Remote_User" in sent[0]["text"]
     finally:
         await target.transport.aclose()
 
 
-async def test_mention_rejects_explicit_binding_from_another_platform(database, tmp_path):
+async def test_same_person_two_accounts_default_to_the_recent_speaking_account(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    other = await add_second_account(env)
+    async with env.db.sessions() as session:
+        first = await session.scalar(
+            select(IdentityBindingModel).where(IdentityBindingModel.account_id == env.account)
+        )
+    await observe(env, first.id, "同名")
+    await observe(env, other, "同名")
+    result = await invoke(env, {"text": "@同名看看"})
+    assert result["status"] == "succeeded" and not result.get("unresolved_mentions")
+    sent = env.bot.calls[-1][1]["message"]
+    assert sent == [
+        {"type": "at", "data": {"qq": "10001"}},
+        {"type": "text", "data": {"text": "看看"}},
+    ]
+    assert result["mentioned_accounts"] == [
+        {
+            "account_id": env.account,
+            "display_name": "同名",
+            "reference": f"@{{account:{env.account}}}",
+        }
+    ]
+
+
+async def test_target_with_no_inbound_history_and_disabled_person_can_be_mentioned(
+    database, tmp_path
+):
+    env = await social_env(database, tmp_path)
+    async with env.db.sessions() as session, session.begin():
+        await ensure_person(session, "10003")
+        target = await session.scalar(
+            select(IdentityBindingModel)
+            .join(AccountModel)
+            .where(AccountModel.platform == "qq", AccountModel.external_account_id == "10003")
+        )
+        person = await session.get(CanonicalPersonModel, target.person_id)
+        person.enabled = False
+        target.enabled = False
+        target_id = target.id
+    await observe(env, target_id, "未发言成员")
+    env.bot.missing.add("10003")
+    env.bot.calls.clear()
+    result = await invoke(env, {"text": "@未发言成员你好"})
+    assert result["status"] == "succeeded"
+    assert env.bot.calls == [
+        (
+            "send_group_msg",
+            {
+                "group_id": 20001,
+                "message": [
+                    {"type": "at", "data": {"qq": "10003"}},
+                    {"type": "text", "data": {"text": "你好"}},
+                ],
+            },
+        )
+    ]
+
+
+async def test_exact_account_from_other_platform_remains_literal_with_resolution_feedback(
+    database, tmp_path
+):
     env = await social_env(database, tmp_path)
     target = await telegram_target(env, ["10003"])
-    async with env.db.sessions() as session:
-        source_binding = await session.scalar(
-            select(IdentityBindingModel.id).where(
-                IdentityBindingModel.person_id == env.person,
-                IdentityBindingModel.platform == "qq",
-            )
-        )
     try:
-        with pytest.raises(SocialError, match="binding_unavailable"):
-            await invoke(
-                env,
-                {
-                    "target": {"kind": "space", "target_id": target.space},
-                    "text": "hello",
-                    "mentions": [{"subject_ref": "current_speaker", "binding_id": source_binding}],
-                },
-            )
-        assert not any(method == "sendMessage" for method, _ in target.wire)
+        result = await invoke(
+            env,
+            {
+                "target": {"kind": "space", "target_id": target.space},
+                "text": f"@{{account:{env.account}}}",
+            },
+        )
+        assert result["status"] == "succeeded" and result["unresolved_mentions"]
+        sent = [params for method, params in target.wire if method == "sendMessage"]
+        assert len(sent) == 1 and "tg://user" not in sent[0]["text"]
     finally:
         await target.transport.aclose()

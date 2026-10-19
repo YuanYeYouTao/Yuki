@@ -1,6 +1,7 @@
 """OneBot event normalization and unsupported-content tests."""
 
 import json
+from datetime import UTC, datetime
 
 from nonebot.adapters.onebot.v11 import (
     GroupMessageEvent,
@@ -19,7 +20,7 @@ def private_event(
     message: Message, *, message_id: int = 1, user_id: int = 1001
 ) -> PrivateMessageEvent:
     return PrivateMessageEvent(
-        time=1,
+        time=int(datetime.now(UTC).timestamp()),
         self_id=9999,
         post_type="message",
         sub_type="friend",
@@ -36,7 +37,7 @@ def private_event(
 
 def group_event(message: Message, *, message_id: int = 2) -> GroupMessageEvent:
     return GroupMessageEvent(
-        time=1,
+        time=int(datetime.now(UTC).timestamp()),
         self_id=9999,
         post_type="message",
         sub_type="normal",
@@ -232,7 +233,7 @@ def test_reply_text_and_face_placeholder_are_supported() -> None:
     message = Message([MessageSegment.at(9999), MessageSegment.face(14), MessageSegment.text("ok")])
     event = group_event(message)
     event.reply = Reply(
-        time=1,
+        time=int(datetime.now(UTC).timestamp()),
         message_type="group",
         message_id=8,
         real_id=8,
@@ -247,7 +248,7 @@ def test_reply_text_and_face_placeholder_are_supported() -> None:
 def test_reply_text_uses_the_same_yuki_and_member_projection() -> None:
     event = group_event(Message("继续"))
     event.reply = Reply(
-        time=1,
+        time=int(datetime.now(UTC).timestamp()),
         message_type="group",
         message_id=8,
         real_id=8,
@@ -301,3 +302,32 @@ def test_netease_album_share_card_becomes_bounded_chat_context() -> None:
     assert "用户分享了一个网易云专辑" in normalized.text
     assert "网易云专辑 ID：242154493" in normalized.text
     assert "中国有弹舌" in normalized.text
+
+
+def test_unlocated_account_list_does_not_supply_a_native_mention_signal():
+    from dataclasses import replace
+
+    original = normalize_event(group_event(Message("ordinary @8001 text")))
+    message = replace(original, segments=(), mentioned_user_ids=("8001",))
+    projected = reproject_inbound_mentions(message, frozenset({"9999", "8001"}))
+    assert not projected.mentions_bot and projected.mentions == ()
+    assert projected.text == original.text
+    explicit = replace(message, mentions_bot=True)
+    assert reproject_inbound_mentions(explicit, frozenset({"8001"})).mentions_bot
+
+
+def test_invalid_native_segments_do_not_fall_back_to_old_account_lists():
+    from dataclasses import replace
+
+    import pytest
+
+    from yuki.adapters.onebot.normalizer import SegmentProjectionError
+
+    original = normalize_event(group_event(Message("ordinary text")))
+    malformed = replace(
+        original,
+        segments=({"type": "at", "data": "not-a-native-object"},),
+        mentioned_user_ids=("8001",),
+    )
+    with pytest.raises(SegmentProjectionError, match="segment_data_invalid"):
+        reproject_inbound_mentions(malformed, frozenset({"8001"}))

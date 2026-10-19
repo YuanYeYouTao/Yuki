@@ -10,6 +10,7 @@ from sqlalchemy import select
 from tests.conftest import make_settings
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.integration.test_telegram_runtime import update
+from tests.support.event_seed import seed_event
 from tests.support.semantic_participation_host_helpers import _host, _item
 from tests.unit.test_participation_pipeline_retirement import _relationship
 from yuki_participation.models import Effect, Snapshot, SourceRef
@@ -39,7 +40,8 @@ def actual_config(host):
 
 
 async def append(host, original, sender, *, reply=None):
-    row, _ = await host.app.ledger.append(
+    row, _ = await seed_event(
+        host.app.ledger,
         bot_user_id=original.bot_user_id,
         platform_message_id=str(uuid4()),
         scope_type=ScopeType.GROUP,

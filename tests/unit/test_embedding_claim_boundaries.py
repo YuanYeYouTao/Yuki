@@ -9,8 +9,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import event, insert, select, update
 from sqlalchemy.exc import OperationalError
+from tests.support.canonical_identity import ensure_person
 
-from yuki.identity.canonical_repository import ensure_person
 from yuki.memory.authorized_scope import AuthorizedMemoryScope
 from yuki.memory.embedding.codec import Float32VectorCodec
 from yuki.memory.embedding.fake import FakeEmbeddingProvider

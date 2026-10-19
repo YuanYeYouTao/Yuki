@@ -36,17 +36,20 @@ PluginResult(ok=False, error_code="weather.rate_limited", detail="稍后再试")
 ## CurrentMessage
 
 ```python
-class CurrentMessage(StrictModel):
+class CurrentMessage(CanonicalIdentityProjection):
+    platform: str = ""
+    author_kind: str | None = None
+    author_account_id: str | None = None
     message_id: str
     sender_user_id: str
     scope_type: Literal["private", "group"]
     group_id: str | None
-    text: str  # <=12000
+    text: str
     received_at: datetime
-    mentioned_user_ids: tuple[str, ...] = ()  # <=20，按消息中的可信提及顺序去重
+    mentions: tuple[dict[str, JsonValue], ...] = ()
 ```
 
-它是脱敏投影，不是原始事件。`mentioned_user_ids` 来自 Host 归一化的真实提及，且不包含机器人自身；需要该字段的插件可调用 `ctx.features.require("message.current.mentions.v1")`。
+它是当前事件的投影。`mentions` 保原生提及的顺序、重复、位置、展示名和已证明的内部 Account／Assignment／Person／Presence；未知账号或外部 Bot 不必有 Person。人物业务读取 `person_id`，账号定位读取 `account_id`，不从 `source` 中的传输数字猜业务身份。需要此字段时调用 `ctx.features.require("message.current.mentions.v2")`。
 
 ## Agent Session
 
