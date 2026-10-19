@@ -550,3 +550,38 @@ class ComputerFiles(BaseModel):
 
 class ComputerHint(BaseModel):
     revision: int
+
+
+class MemoryFactView(BaseModel):
+    fact_id: int
+    kind: Literal["fact", "preference", "episode"]
+    key: str
+    text: str
+    confidence: float
+    revision: str
+    updated_at: str
+    evidence_count: int
+
+
+class MemoryPage(BaseModel):
+    items: list[MemoryFactView]
+    next_cursor: str | None
+
+
+class MemoryEvidenceView(BaseModel):
+    event_id: int
+    conversation_id: str
+    excerpt: str
+
+
+class MemoryDetail(MemoryFactView):
+    evidence: list[MemoryEvidenceView]
+
+
+class MemoryCorrectionResult(BaseModel):
+    event_id: int
+    old_fact_id: int
+    new_fact_id: int | None = None
+    applied_operation: Literal["correct", "invalidate"]
+    revision: str | None = None
+    replay: bool = False

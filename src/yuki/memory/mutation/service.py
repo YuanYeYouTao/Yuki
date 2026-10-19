@@ -36,7 +36,6 @@ from yuki.memory.dream.models import (
     DreamOperationStatus,
     DreamOperationType,
 )
-from yuki.memory.dream.repository import fact_signature
 from yuki.memory.enums import (
     MemoryAuthority,
     MemoryClaimOperation,
@@ -84,6 +83,7 @@ from yuki.memory.partition import (
     resolve_canonical_memory_partition_for_event,
 )
 from yuki.memory.service import MemoryFactService
+from yuki.memory.signature import fact_signature
 from yuki.memory.subjects import (
     ResolvedSubject,
     SubjectContextBuilder,
@@ -185,30 +185,42 @@ class MemoryMutationService:
         self,
         request: MemoryMutationRequest,
         context: MemoryMutationContext,
+        *,
+        session: AsyncSession | None = None,
     ) -> MemoryMutationResult:
-        """Validate, resolve, commit, and receipt one requested mutation."""
+        """Apply through the original boundary; a supplied session owns commit and embedding.
 
-        original = await self._original_operation(request, context)
+        Caller-session commands address an existing canonical fact. Their ingress and
+        target authorization are prepared before the writer; checks here revalidate
+        those identities and the actual newly appended source in that same writer.
+        """
+
+        original = await self._original_operation(request, context, session=session)
         if original is not None:
             return original
         try:
-            prepared = await self._prepare(request, context)
+            prepared = await self._prepare(request, context, session=session)
         except MemoryMutationRejected as exc:
             return self._rejected(
                 request.operation,
                 exc.reason_code,
                 candidates=exc.candidates,
             )
-        return await self._commit_prepared(prepared)
+        return await self._commit_prepared(prepared, session=session)
 
     async def _original_operation(
-        self, request: MemoryMutationRequest, context: MemoryMutationContext
+        self,
+        request: MemoryMutationRequest,
+        context: MemoryMutationContext,
+        *,
+        session: AsyncSession | None = None,
     ) -> MemoryMutationResult | None:
         if context.operation_id is None:
             return None
         receipt = await self._receipts.find(
             idempotency_key=_fingerprint({"operation_id": context.operation_id}),
             claim_fingerprint="",
+            session=session,
         )
         if receipt is None:
             return None
@@ -1224,6 +1236,7 @@ class MemoryMutationService:
         prepared: _PreparedMutation,
         *,
         additional_evidence: tuple[MemoryEvidenceCreate, ...] = (),
+        session: AsyncSession | None = None,
         self_reflection_result: tuple[int, str, int] | None = None,
     ) -> MemoryMutationResult:
         request = prepared.request
@@ -1231,6 +1244,7 @@ class MemoryMutationService:
         existing = await self._receipts.find(
             idempotency_key=prepared.idempotency_key,
             claim_fingerprint=prepared.claim_fingerprint,
+            session=session,
         )
         if existing is not None:
             return MemoryMutationResult.from_receipt(
@@ -1239,7 +1253,7 @@ class MemoryMutationService:
                 requested_operation=request.operation,
             )
         evidence_sources = (prepared.evidence, *additional_evidence)
-        async with self._facts.repository.transaction() as source_session:
+        async with self._facts.repository.transaction(session=session) as source_session:
             source_snapshot = await self._mutation_source_snapshot(
                 context.event, evidence_sources, session=source_session
             )
@@ -1321,6 +1335,7 @@ class MemoryMutationService:
                 prepared.merge_fact,
                 current_context,
                 actor_person_id=current_actor,
+                session=session,
             )
             current_prepared = replace(prepared, context=current_context)
             facts = tuple(fact for fact in (prepared.fact, prepared.merge_fact) if fact is not None)
@@ -1457,6 +1472,10 @@ class MemoryMutationService:
             )
             return MemoryMutationResult.from_receipt(receipt, deduplicated=False)
 
+        if session is not None:
+            result = await apply(session)
+            await session.flush()
+            return result
         try:
             result = await self._facts.repository.apply_evidence_write(apply)
         except BaseException as exc:
@@ -1784,6 +1803,7 @@ class MemoryMutationService:
         context: MemoryMutationContext,
         *,
         target_override: ResolvedSubject | None = None,
+        session: AsyncSession | None = None,
     ) -> _PreparedMutation:
         request_fingerprint = _request_fingerprint(request, context)
         event = context.event
@@ -1810,8 +1830,8 @@ class MemoryMutationService:
             raise MemoryMutationRejected("untrusted_trigger_event")
         if tuple(dict.fromkeys(request.evidence_refs)) != ("current_event",):
             raise MemoryMutationRejected("unsupported_evidence_reference")
-        fact = await self._load_fact(request.fact_id)
-        merge_fact = await self._load_fact(request.merge_fact_id)
+        fact = await self._load_fact(request.fact_id, session=session)
+        merge_fact = await self._load_fact(request.merge_fact_id, session=session)
         if request.target is None:
             if fact is None:
                 raise MemoryMutationRejected("target_required")
@@ -1835,9 +1855,10 @@ class MemoryMutationService:
                 raise MemoryMutationRejected("target_scope_mismatch")
         request = self._normalize_visibility_hint(request, target)
         target = self._resolve_visibility(request, target, event, fact=fact)
-        target = await self._subject_context.resolve_target(event, target)
+        if request.target is not None:
+            target = await self._subject_context.resolve_target(event, target)
         try:
-            async with self._facts.repository.transaction() as identity_session:
+            async with self._facts.repository.transaction(session=session) as identity_session:
                 target_owners = (
                     self._facts.persisted_target_owners(fact)
                     if request.target is None and fact is not None
@@ -1904,6 +1925,7 @@ class MemoryMutationService:
             merge_fact,
             context,
             actor_person_id=actor_person_id,
+            session=session,
         )
         if trusted_self_reflection and context.evidence_tool_receipt_id is not None:
             quote = normalize_memory_text(request.evidence_quote or "")
@@ -2306,10 +2328,12 @@ class MemoryMutationService:
             occurred_at=context.occurred_at,
         )
 
-    async def _load_fact(self, fact_id: int | None) -> MemoryFact | None:
+    async def _load_fact(
+        self, fact_id: int | None, *, session: AsyncSession | None = None
+    ) -> MemoryFact | None:
         if fact_id is None:
             return None
-        fact = await self._facts.get_fact(fact_id)
+        fact = await self._facts.get_fact(fact_id, session=session)
         if fact is None:
             raise MemoryMutationRejected("memory_fact_not_found")
         return fact
@@ -2493,6 +2517,7 @@ class MemoryMutationService:
         context: MemoryMutationContext,
         *,
         actor_person_id: str | None,
+        session: AsyncSession | None = None,
     ) -> None:
         if request.review_state is not None and context.decision_actor_type not in {
             MemoryDecisionActorType.SYSTEM,
@@ -2517,7 +2542,7 @@ class MemoryMutationService:
             raise MemoryMutationRejected("expected_fact_state_mismatch")
         if (
             request.operation is not MemoryMutationOperation.REASSIGN
-            and not await self._facts.same_targets((fact, target))
+            and not await self._facts.same_targets((fact, target), session=session)
         ):
             raise MemoryMutationRejected("fact_target_mismatch")
         if request.operation is MemoryMutationOperation.REASSIGN:
@@ -2538,7 +2563,7 @@ class MemoryMutationService:
         if request.operation is MemoryMutationOperation.MERGE:
             if merge_fact is None:
                 raise MemoryMutationRejected("merge_fact_required")
-            if not await self._facts.same_targets((merge_fact, target)):
+            if not await self._facts.same_targets((merge_fact, target), session=session):
                 raise MemoryMutationRejected("merge_target_mismatch")
         elif merge_fact is not None:
             raise MemoryMutationRejected("merge_fact_id_only_valid_for_merge")

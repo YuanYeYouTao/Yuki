@@ -346,3 +346,17 @@ WebSocket `/computer/display?ticket=...` 必须声明 `binary` 子协议。服�
 
 `GET /computer/files` 限工作区安全路径，游标绑定原目录；`files/content?path=...` 返回读取时
 快照、长度及 X-Yuki-Sha256，Cache-Control 为 no-store。这是可变文件读取，不发布 artifact。
+
+## 个人记忆
+
+`GET /memory/facts?about=me|self&cursor=&limit=50` 返回有权读取的当前事实及内容签名，
+最多每页 50 条。游标绑定 about，并按内部 fact ID 翻页。`me` 只含本人 PERSON，
+`self` 沿现行 SELF global/current-private visibility；不从证据所属会话反推事实权限。
+`GET /memory/facts/{id}` 另返回本人可读的原私人会话证据引用，其余不公开摘录。
+
+`POST /memory/facts/{id}/corrections {request_id,expected_revision,action,text?}` 支持
+`correct` 和 `retract`，只允许本人 PERSON。更正需要非空 text，撤回不带 text。
+回执包含原更正事件、旧 ID、操作以及更正产生的新 ID/签名；同号重放回原结果。
+`version_conflict` 带当前事实及 replacement_fact_id。更正写原 App 会话而不激活 Main，
+保留显式选择的原 App entry/namespace；事实、事件与命令回执共同提交。
+详细事务边界见 [Memory 变更合同](memory-change.md#个人-api-入口)。

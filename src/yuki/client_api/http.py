@@ -16,6 +16,7 @@ from yuki.client_api.errors import ClientError
 from yuki.client_api.files import ClientFiles
 from yuki.client_api.http_errors import install_identity_errors
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal
+from yuki.client_api.memory import ClientMemory
 from yuki.client_api.messages import ClientMessages
 from yuki.client_api.models import (
     Accent,
@@ -37,6 +38,9 @@ from yuki.client_api.models import (
     Home,
     LinkCode,
     Me,
+    MemoryCorrectionResult,
+    MemoryDetail,
+    MemoryPage,
     MessageResult,
     Meta,
     OriginalRequest,
@@ -68,11 +72,19 @@ class ClientApi:
     files: ClientFiles | None = None
     prompts: ClientPrompts | None = None
     computer: ClientComputer | None = None
+    memory: ClientMemory | None = None
 
 
 class PersonalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request_id: UUID4 = Field(default_factory=uuid4)
+
+
+class MemoryCorrectionBody(PersonalRequest):
+    request_id: UUID4 = Field(...)
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    action: Literal["retract", "correct"]
+    text: str | None = None
 
 
 class PairBody(BaseModel):
@@ -432,6 +444,42 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
         return {
             "data": await resolve().identity.revoke(
                 actor, str(identity), str(body.request_id) if body else str(uuid4())
+            )
+        }
+
+    def memory() -> ClientMemory:
+        service = resolve().memory
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
+    @router.get("/memory/facts", response_model=Envelope[MemoryPage])
+    async def memory_facts(
+        actor: Actor,
+        about: Literal["me", "self"] = "me",
+        cursor: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=50)] = 50,
+    ) -> Any:
+        return {"data": await memory().list(actor, about=about, before=cursor, limit=limit)}
+
+    @router.get("/memory/facts/{fact_id}", response_model=Envelope[MemoryDetail])
+    async def memory_fact(fact_id: int, actor: Actor) -> Any:
+        return {"data": await memory().get(actor, fact_id)}
+
+    @router.post(
+        "/memory/facts/{fact_id}/corrections",
+        response_model=Envelope[MemoryCorrectionResult],
+        response_model_exclude_unset=True,
+    )
+    async def memory_correction(fact_id: int, body: MemoryCorrectionBody, actor: Actor) -> Any:
+        return {
+            "data": await memory().correct(
+                actor,
+                fact_id,
+                str(body.request_id),
+                body.expected_revision,
+                body.action,
+                body.text,
             )
         }
 

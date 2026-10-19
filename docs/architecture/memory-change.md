@@ -70,3 +70,21 @@ SQLite WAL 读快照在首写前冻结来源和 owner。原生 SQLITE_BUSY（主
 
 普通变更不提供物理 purge；隐私删除继续由现有明确授权入口处理。
 持久证据不做抽样删源；模型请求中的证据摘录预算不改变原 evidence 的保留和授权。
+
+## 个人 API 入口
+
+`/client/v1/memory/facts` 使用现行授权 resolver；`about=me` 进一步选择本人归并集合的
+PERSON，`about=self` 使用 global/current-private 的 canonical visibility。证据另外核对原
+私人 Conversation 的本人权限及既有来源链；事实可见不会扩大来源权限。分页按实际 fact ID
+倒序游标，`revision` 与 Dream 共用 `memory.signature.fact_signature`，不增版本台账。
+
+`POST /memory/facts/{id}/corrections` 仅改本人 PERSON。入口在首写前完成真实 App 入站接纳、
+canonical fact/owner 和完整证据准备。在同一 WAL 快照中重读签名，调用原 canonical UoW
+写入 `origin=memory_correction` 的用户事件，然后向 `MemoryMutationService.mutate` 传同一
+session；事件、原领域变更及 `client.memory_correction` 回执一起提交，不通知 Main。
+`correct` 建新 fact 并 supersede 原 fact，`retract` 走 invalidate；冲突返回当前事实与替代 ID。
+原 request namespace、UUID 和参数哈希决定重放，第二台设备查询或重试取得原事件和新旧 ID。
+
+调用方 session 不由 mutation 服务提交、重试或调度 embedding；调用方负责原子提交与提交后
+调度。证据历史与复制快照在第一条 DML 前准备，服务仅重核当前 canonical 身份、指定事实和
+真实源事件。未知提交确认先查原回执，不能再生成更正事件或重跑 Main。

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import uuid
 from collections import defaultdict
@@ -53,6 +52,7 @@ from yuki.memory.embedding.text import EmbeddingDocumentBuilder
 from yuki.memory.enums import MemoryStatus
 from yuki.memory.models import MemoryFact
 from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.signature import fact_signature as fact_signature
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
     ChatEventModel,
@@ -101,28 +101,6 @@ class DreamCandidateLoad:
     eligible_facts: int
     missing_embeddings: int
     ambiguous_bot_facts: int
-
-
-def fact_signature(fact: MemoryFact) -> str:
-    payload = {
-        "id": fact.id,
-        "content": fact.content,
-        "memory_key": fact.memory_key,
-        "category": fact.category,
-        "importance": fact.importance,
-        "confidence": fact.confidence,
-        "source_type": fact.source_type.value,
-        "authority": fact.authority.value,
-        "status": fact.status.value,
-        "conflict_state": fact.conflict_state.value,
-        "valid_from": fact.valid_from.isoformat() if fact.valid_from else None,
-        "valid_until": fact.valid_until.isoformat() if fact.valid_until else None,
-        "evidence_count": fact.evidence_count,
-        "updated_at": fact.updated_at.isoformat(),
-    }
-    return hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
 
 
 class DreamRepository:

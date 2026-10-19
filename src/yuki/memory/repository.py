@@ -277,6 +277,33 @@ class MemoryFactRepository:
         projected = {fact.id: fact for fact in projected_rows}
         return tuple(projected[fact_id] for fact_id in unique_ids if fact_id in projected)
 
+    async def list_active_authorized(
+        self,
+        scope: AuthorizedMemoryScope,
+        *,
+        before_id: int | None = None,
+        fact_id: int | None = None,
+        limit: int = 50,
+        session: AsyncSession,
+    ) -> tuple[MemoryFact, ...]:
+        conditions = [
+            authorized_fact_condition(scope),
+            MemoryFactModel.status == MemoryStatus.ACTIVE.value,
+            MemoryFactModel.review_state != MemoryReviewState.QUARANTINED.value,
+            or_(
+                MemoryFactModel.valid_until.is_(None),
+                MemoryFactModel.valid_until > datetime.now(UTC),
+            ),
+        ]
+        if before_id is not None:
+            conditions.append(MemoryFactModel.id < before_id)
+        if fact_id is not None:
+            conditions.append(MemoryFactModel.id == fact_id)
+        rows = await self._execute_facts_with_count(
+            session, conditions, order_by=(MemoryFactModel.id.desc(),), limit=limit
+        )
+        return tuple(await project_memory_fact_rows(session, rows))
+
     async def _execute_facts_with_count(
         self,
         session: AsyncSession,
@@ -307,7 +334,12 @@ class MemoryFactRepository:
         return list((await session.execute(statement)).all())
 
     @asynccontextmanager
-    async def transaction(self, *, read_snapshot: bool = False) -> AsyncIterator[AsyncSession]:
+    async def transaction(
+        self, *, read_snapshot: bool = False, session: AsyncSession | None = None
+    ) -> AsyncIterator[AsyncSession]:
+        if session is not None:
+            yield session
+            return
         async with self._database.sessions() as session, session.begin():
             connection = None
 
