@@ -382,6 +382,28 @@ class PluginManager:
     async def list(self) -> tuple[PluginInstallationRecord, ...]:
         return await self._installations.list_all()
 
+    async def public_capabilities(self) -> tuple[dict[str, str], ...]:
+        """Approved, enabled manifests expose only their public presentation fields."""
+        if not self._enabled:
+            return ()
+        async with self._lock:
+            records = await self._installations.list_all()
+            result = []
+            for record in records:
+                available = self._available.get(record.plugin_id)
+                if (
+                    not record.enabled
+                    or record.approved_at is None
+                    or available is None
+                    or record.manifest_hash != available.manifest.manifest_hash
+                ):
+                    continue
+                manifest = available.manifest
+                result.append(
+                    {"id": manifest.id, "name": manifest.name, "description": manifest.description}
+                )
+            return tuple(result)
+
     async def show(self, plugin_id: str) -> PluginInstallationRecord | None:
         return await self._installations.get(plugin_id)
 

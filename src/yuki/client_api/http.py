@@ -11,6 +11,8 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 from starlette.background import BackgroundTask
 
+from yuki.client_api.automations import ClientAutomations
+from yuki.client_api.capabilities import ClientCapabilities
 from yuki.client_api.computer import ClientComputer
 from yuki.client_api.errors import ClientError
 from yuki.client_api.files import ClientFiles
@@ -23,6 +25,9 @@ from yuki.client_api.models import (
     Activity,
     ArtifactPage,
     ArtifactsHint,
+    AutomationPage,
+    AutomationView,
+    CharacterCapabilities,
     CharacterHint,
     CharacterProfile,
     CharacterStatus,
@@ -73,6 +78,8 @@ class ClientApi:
     prompts: ClientPrompts | None = None
     computer: ClientComputer | None = None
     memory: ClientMemory | None = None
+    automations: ClientAutomations | None = None
+    capabilities: ClientCapabilities | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -85,6 +92,11 @@ class MemoryCorrectionBody(PersonalRequest):
     expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
     action: Literal["retract", "correct"]
     text: str | None = None
+
+
+class AutomationActionBody(PersonalRequest):
+    request_id: UUID4 = Field(...)
+    expected_revision: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class PairBody(BaseModel):
@@ -446,6 +458,42 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
                 actor, str(identity), str(body.request_id) if body else str(uuid4())
             )
         }
+
+    @router.get(
+        "/automations", response_model=Envelope[AutomationPage], response_model_exclude_unset=True
+    )
+    async def automations(actor: Actor, scope: Literal["mine", "self"] = "mine") -> Any:
+        service = resolve().automations
+        if service is None:
+            raise ClientError("unavailable")
+        return {"data": await service.list(actor, scope)}
+
+    @router.post(
+        "/automations/{automation_id}/actions/{action}",
+        response_model=Envelope[AutomationView],
+        response_model_exclude_unset=True,
+    )
+    async def automation_action(
+        automation_id: int,
+        action: Literal["pause", "resume", "delete"],
+        body: AutomationActionBody,
+        actor: Actor,
+    ) -> Any:
+        service = resolve().automations
+        if service is None:
+            raise ClientError("unavailable")
+        return {
+            "data": await service.action(
+                actor, automation_id, str(body.request_id), body.expected_revision, action
+            )
+        }
+
+    @router.get("/character/capabilities", response_model=Envelope[CharacterCapabilities])
+    async def capabilities(actor: Actor) -> Any:
+        service = resolve().capabilities
+        if service is None:
+            raise ClientError("unavailable")
+        return {"data": await service.get(actor)}
 
     def memory() -> ClientMemory:
         service = resolve().memory

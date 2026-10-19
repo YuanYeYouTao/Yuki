@@ -623,6 +623,8 @@ class ApplicationContainer:
             client_views,
             self.workspace_service.store,
         )
+        from yuki.client_api.automations import ClientAutomations
+        from yuki.client_api.capabilities import ClientCapabilities
         from yuki.client_api.memory import ClientMemory
 
         self.client_api = ClientApi(
@@ -638,6 +640,8 @@ class ApplicationContainer:
             ClientMemory(
                 self.client_identity, client_gateways, self.memories, self.memory_mutations
             ),
+            ClientAutomations(self.client_identity, self.automation_repository, self.automation),
+            ClientCapabilities(self.client_identity, self.plugin_manager, self.sandbox_client),
         )
         self.semantic_participation.set_promoter(
             partial(self.processor.promote_committed_event, reason="semantic_invitation")

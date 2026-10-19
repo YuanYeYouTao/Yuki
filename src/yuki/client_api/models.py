@@ -585,3 +585,39 @@ class MemoryCorrectionResult(BaseModel):
     applied_operation: Literal["correct", "invalidate"]
     revision: str | None = None
     replay: bool = False
+
+
+class AutomationView(BaseModel):
+    automation_id: int
+    title: str
+    schedule_text: str
+    next_run_at: str | None
+    state: Literal["active", "paused", "completed", "cancelled", "failed", "blocked"]
+    revision: str
+    conversation_id: str | None
+    replay: bool | None = None
+
+
+class AutomationPage(BaseModel):
+    items: list[AutomationView]
+
+
+class PluginCapability(BaseModel):
+    id: str
+    name: str
+    description: str
+
+
+class EnvironmentTool(BaseModel):
+    name: str
+    version: str
+
+
+class EnvironmentCapabilities(BaseModel):
+    tools: list[EnvironmentTool]
+    desktop: bool
+
+
+class CharacterCapabilities(BaseModel):
+    plugins: list[PluginCapability]
+    environment: EnvironmentCapabilities

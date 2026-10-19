@@ -270,6 +270,25 @@ class AutomationRepository:
             ).all()
         return tuple(_automation_record(row) for row in rows)
 
+    async def list_owner_snapshot(
+        self, owner_id: str, *, session: AsyncSession
+    ) -> tuple[AutomationRecord, ...]:
+        """Project current definition IDs and mutable state from the same read view."""
+        current_version = (
+            select(AutomationVersionModel.id)
+            .where(AutomationVersionModel.automation_id == AutomationModel.id)
+            .order_by(AutomationVersionModel.version.desc())
+            .limit(1)
+            .correlate(AutomationModel)
+            .scalar_subquery()
+        )
+        rows = await session.execute(
+            select(AutomationModel, current_version)
+            .where(self._owner_clause(owner_id))
+            .order_by(AutomationModel.updated_at.desc(), AutomationModel.id.desc())
+        )
+        return tuple(_automation_record(row, version_id) for row, version_id in rows)
+
     async def list_directory(
         self,
         *,

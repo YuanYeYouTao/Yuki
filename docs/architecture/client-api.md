@@ -360,3 +360,20 @@ WebSocket `/computer/display?ticket=...` 必须声明 `binary` 子协议。服�
 `version_conflict` 带当前事实及 replacement_fact_id。更正写原 App 会话而不激活 Main，
 保留显式选择的原 App entry/namespace；事实、事件与命令回执共同提交。
 详细事务边界见 [Memory 变更合同](memory-change.md#个人-api-入口)。
+
+## 安排与公开能力
+
+`GET /automations?scope=mine|self` 在一个读快照中投影原定义版本与状态；mine 仅本人归并
+集合创建的安排，self 仅角色拥有者可读。项目包含实际 automation_id、标题、时间说明、
+next_run_at、state、来源 conversation_id，以及 version_id/status/next_run_at/updated_at 的
+SHA-256 revision。暂停或恢复不换定义版本，也会因状态或更新时间改变 revision。
+
+`POST /automations/{id}/actions/{pause|resume|delete} {request_id,expected_revision}`
+仅管理本人安排。签名比较、现行 AutomationService 转换和个人命令回执共用一个写事务。
+delete 调用原 cancel，保留版本及 run 历史；已取消的安排不能被旧 resume 复活。
+SELF 安排的修改继续经 Main。同号原回执可以由另一台本人设备重放或查询。
+
+`GET /character/capabilities` 只公开批准且启用、当前 manifest 哈希仍匹配的插件
+id/name/description，不包含配置、权限、路径或密钥。环境 tools/version/desktop 由 Manager
+实际读到的 `/opt/yuki-runtime/manifest.json` 提供；无 manifest 时 tools 为空、desktop 为
+false，不把部署计划或宿主安装情况当成环境已经具备的能力。
