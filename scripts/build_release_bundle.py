@@ -27,6 +27,7 @@ _CONFIG_FILES = frozenset(
 )
 _EMPTY_DIRECTORIES = (
     "data",
+    "character",
     "workspace",
     "social-transfer",
     "webui-config",
@@ -72,6 +73,7 @@ def select_bundle_files(files: Iterable[str], version: str) -> dict[str, str]:
             upgrade_guide,
             snowluma_guide,
             model_profile_migration,
+            "docs/operations/character-prompt-files.md",
             "docs/operations/persistent-environment.md",
             "docs/operations/persistent-environment.zh-CN.md",
         }

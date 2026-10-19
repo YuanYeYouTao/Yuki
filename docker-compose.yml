@@ -43,6 +43,7 @@ services:
       - ./social-transfer:/app/social-transfer
       - /run/yuki-sandbox:/run/yuki-sandbox:ro
       - ./snowluma-data:/app/snowluma-data
+      - ./character:/app/character
       - ./config:/app/config:ro
       - ./webui-config:/app/webui-config:ro
       - ./plugins:/app/plugins:ro

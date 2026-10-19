@@ -24,3 +24,6 @@ webui-config
 tests
 tmp
 docs/operations/static-review-*.md
+
+# Only runtime documents at the context root; keep src/yuki/character.
+character/**

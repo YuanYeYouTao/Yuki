@@ -2,6 +2,14 @@
 set -eu
 
 mkdir -p /app/data
+mkdir -p /app/character
+chown bot:bot /app/character
+chmod 750 /app/character
+for prompt in /app/character/system_prompt.md /app/character/persona.md; do
+    if [ -f "$prompt" ]; then
+        chown bot:bot "$prompt"
+    fi
+done
 mkdir -p /app/workspace /app/social-transfer
 chown bot:bot /app/workspace /app/social-transfer
 chmod 755 /app/social-transfer

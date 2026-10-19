@@ -63,6 +63,7 @@ _PERSISTENT_DIRECTORIES = (
     "social-transfer",
     "data/setup",
     "config",
+    "character",
     "webui-config",
     "plugins",
     "snowluma-data",
@@ -94,11 +95,24 @@ def add_setup_parser(
     setup.add_argument(
         "setup_action",
         nargs="?",
-        choices=("configure", "validate", "apply-pending", "verify", "environment-check"),
+        choices=(
+            "configure",
+            "validate",
+            "apply-pending",
+            "verify",
+            "environment-check",
+            "prepare-prompts",
+        ),
         default="configure",
     )
     setup.add_argument("--deployment-root", type=Path, default=Path.cwd())
     setup.add_argument("--no-color", action="store_true")
+    setup.add_argument(
+        "--prompt-source",
+        choices=("deployment", "process"),
+        default="deployment",
+        help="prepare-prompts 读取所选部署，或显式采用当前进程的来源覆盖",
+    )
     setup.add_argument("--health-url", default="http://127.0.0.1:8080/healthz")
     setup.add_argument("--timeout", type=float, default=180.0)
 
@@ -118,6 +132,14 @@ def run_setup_command(args: argparse.Namespace) -> int:
             )
             ui.line(json.dumps(result, ensure_ascii=False))
             return 0 if result["ok"] else 1
+        if action == "prepare-prompts":
+            from yuki.deployment_setup.prompts import prepare_prompt_deployment
+
+            result = prepare_prompt_deployment(
+                paths, include_process=args.prompt_source == "process"
+            )
+            ui.line(json.dumps(result, ensure_ascii=False))
+            return 0
         if action == "configure":
             with _working_directory(paths.root):
                 return _configure(paths, ui)
@@ -619,11 +641,21 @@ def _review_and_commit(
         draft.flash_enabled,
         pending_plugins=draft.pending_plugins,
     )
+    if draft.initial:
+        ui.info("提示词将保留原内容，写入可编辑的 character/system_prompt.md 与 persona.md")
     if not ui.confirm("确认写入以上配置？", default=False):
         ui.disabled("用户取消，未写入任何配置")
         return 2
     for relative in _PERSISTENT_DIRECTORIES:
         (paths.root / relative).mkdir(parents=True, exist_ok=True)
+    if draft.initial:
+        from yuki.deployment_setup.prompts import prepare_character_files
+
+        sources = {**draft.environment, **document.prompt_source_values()}
+        prompts = prepare_character_files(paths, sources)
+        draft.environment.update(prompts["environment"])
+        draft.environment.pop("SYSTEM_PROMPT", None)
+        draft.environment.pop("YUKI_PERSONA_FILE", None)
     backup = commit_configuration(paths, document, configuration)
     if backup is not None:
         ui.info(f"原配置已备份到 {backup.relative_to(paths.root)}")

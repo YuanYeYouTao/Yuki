@@ -14,6 +14,7 @@ import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from io import StringIO
 from pathlib import Path, PurePosixPath
 from typing import Any, get_origin
 from urllib.parse import urlsplit
@@ -21,6 +22,8 @@ from uuid import uuid4
 
 import httpx
 import tomlkit
+from dotenv import dotenv_values
+from dotenv.parser import parse_stream
 from pydantic import AliasChoices, AliasPath, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -204,6 +207,29 @@ class EnvironmentDocument:
             values[match.group("key").upper()] = _decode_env_value(raw)
         return values
 
+    def prompt_source_values(self, *, include_process: bool = False) -> dict[str, str]:
+        names = {"SYSTEM_PROMPT", "SYSTEM_PROMPT_FILE", "BOT_PERSONA_FILE", "YUKI_PERSONA_FILE"}
+        values = dotenv_values(stream=StringIO("\n".join(self._lines)), interpolate=True)
+        selected = {
+            key.upper(): value
+            for key, value in values.items()
+            if value is not None and key.upper() in names
+        }
+        if include_process:
+            selected.update(
+                {key.upper(): value for key, value in os.environ.items() if key.upper() in names}
+            )
+        return selected
+
+    def without(self, names: set[str]) -> EnvironmentDocument:
+        return EnvironmentDocument(
+            "".join(
+                binding.original.string
+                for binding in parse_stream(StringIO("\n".join(self._lines) + "\n"))
+                if binding.key is None or binding.key.upper() not in names
+            )
+        )
+
     def merge(self, updates: Mapping[str, str]) -> str:
         normalized = {key.upper(): value for key, value in updates.items()}
         written: set[str] = set()
@@ -332,7 +358,20 @@ def model_profiles_use_flash(profile_path: Path) -> bool:
 
 def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration) -> Settings:
     environment = dict(configuration.environment)
-    environment["BOT_PERSONA_FILE"] = str((paths.root / "config/persona.md").resolve())
+    from yuki.deployment_setup.prompts import source_path
+
+    if (
+        not environment.get("BOT_PERSONA_FILE")
+        and environment.get("YUKI_PERSONA_FILE") == "config/yuki_persona_core.md"
+        and not (paths.root / "config/yuki_persona_core.md").exists()
+    ):
+        environment.pop("YUKI_PERSONA_FILE")
+        environment["BOT_PERSONA_FILE"] = "config/persona.md"
+    for key in ("SYSTEM_PROMPT_FILE", "BOT_PERSONA_FILE", "YUKI_PERSONA_FILE"):
+        if environment.get(key, "").strip():
+            environment[key] = str(source_path(paths, environment[key]).resolve())
+    if not environment.get("BOT_PERSONA_FILE") and not environment.get("YUKI_PERSONA_FILE"):
+        environment["BOT_PERSONA_FILE"] = str((paths.root / "config/persona.md").resolve())
     environment["MODEL_PROFILES_FILE"] = str(paths.model_profiles.resolve())
     environment["YUKI_VERSION"] = __version__
     _validate_gateway_configuration(environment)
@@ -406,8 +445,11 @@ def commit_configuration(
     configuration: SetupConfiguration,
 ) -> Path | None:
     existing_deployment = paths.env.is_file()
+    merged = document
+    if configuration.environment.get("SYSTEM_PROMPT_FILE") == "/app/character/system_prompt.md":
+        merged = document.without({"SYSTEM_PROMPT", "YUKI_PERSONA_FILE"})
     targets: dict[Path, bytes] = {
-        paths.env: document.merge(configuration.environment).encode("utf-8"),
+        paths.env: merged.merge(configuration.environment).encode("utf-8"),
     }
     if configuration.operator_policy is not None:
         targets[paths.root / "config/control-operators.toml"] = (
