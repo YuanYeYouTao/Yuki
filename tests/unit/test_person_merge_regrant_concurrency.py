@@ -12,6 +12,7 @@ from tests.unit.test_notification_preparation_sources import prepare_fixture
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
 from yuki.admin.operations.base import CommandExecutor
 from yuki.admin.operations.identity import IdentityOperations
+from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 from yuki.domain.identity import PrincipalId
 from yuki.identity.canonical_repository import ensure_person
 from yuki.identity.person_identity import current_person_id
@@ -59,6 +60,15 @@ async def test_concurrent_merge_regrant_preserves_new_grant_and_original_publica
         occurred_at=datetime.now(UTC),
     )
     published = await repository.publish(plugin_id="prepare-source", request=request)
+    # Frozen accepted result/budget facts: this offline regression never calls a model.
+    async with database.immediate_session() as writer:
+        paid_job = await writer.scalar(
+            select(PluginBackgroundTurnJobModel).where(
+                PluginBackgroundTurnJobModel.source_event_id == published.source_event_id
+            )
+        )
+        paid_job.model_requests, paid_job.tool_calls_used = 2, 1
+        paid_job.generated_text = "original generated result"
     async with database.sessions() as reader:
         original_event = await reader.get(ChatEventModel, published.source_event_id)
         original_bytes = original_event.segments_json
@@ -204,4 +214,15 @@ async def test_concurrent_merge_regrant_preserves_new_grant_and_original_publica
             )
         )
         assert job.source_person_id == root
-    assert await repository.publish(plugin_id="prepare-source", request=request) == published
+    repeated = await repository.publish(plugin_id="prepare-source", request=request)
+    assert repeated.source_event_id == published.source_event_id and repeated.deduplicated
+    async with database.sessions() as reader:
+        receipts = list(
+            await reader.scalars(
+                select(ControlCommandReceiptModel).where(
+                    ControlCommandReceiptModel.principal_id == principal.principal_id.text,
+                    ControlCommandReceiptModel.request_id == request_id,
+                )
+            )
+        )
+        assert len(receipts) == 1
