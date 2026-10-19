@@ -81,7 +81,16 @@ async def serve(root: Path, port: int) -> None:
         base_url="http://asr.test/v1", api_key="fixture-only", client=asr_http
     )
 
+    work_script = []
+
     def respond(request):
+        if work_script:
+            name, arguments = work_script.pop(0)
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(ToolCall(str(uuid4()), ToolFunction(name, json.dumps(arguments))),),
+            )
         if request.messages[-1].role == "tool":
             return "sent"
         return ChatResponse(
@@ -136,6 +145,24 @@ async def serve(root: Path, port: int) -> None:
     async def lose_next_response():
         nonlocal lose_response
         lose_response = "messages"
+        return {"ok": True}
+
+    @personal.post("/__test/work-scenario")
+    async def work_scenario():
+        work_script[:] = [
+            ("task_control", {"action": "accept", "goal": "原工作整合測試"}),
+            ("send_message", {"text": "需要你提供城市"}),
+            ("task_control", {"action": "need_input", "reason": "city missing"}),
+            ("send_message", {"text": "已依原工作完成"}),
+            ("task_control", {"action": "complete", "result": "original work finished"}),
+        ]
+        return {"ok": True}
+
+    @personal.post("/__test/lose-next-work-response/{action}")
+    async def lose_work_response(action: str):
+        nonlocal lose_response
+        assert action in {"inputs", "cancel"}
+        lose_response = action
         return {"ok": True}
 
     @personal.post("/__test/model-delay/{seconds}")
