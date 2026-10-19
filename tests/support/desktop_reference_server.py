@@ -57,6 +57,8 @@ async def serve(root: Path, port: int) -> None:
             social_transfer_directory=root / "transfer",
             runtime_work_enabled=True,
             asr_enabled=True,
+            automation_enabled=os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1",
+            self_memory_enabled=os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1",
         ),
         database=database,
     )
@@ -127,14 +129,25 @@ async def serve(root: Path, port: int) -> None:
     attach_client_api(personal, lambda: container.client_api)
     if computer:
         computer.attach(personal)
+    if os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1":
+        from tests.support.desktop_character_fixture import attach_character_fixture
+
+        await attach_character_fixture(personal, container, person)
     lose_response = ""
+    hold_original_queries = False
     uploaded_requests = []
     pause_next_me = False
     me_blocked, resume_me = asyncio.Event(), asyncio.Event()
 
     @personal.middleware("http")
     async def failure_injection(request: Request, call_next):
-        nonlocal lose_response, pause_next_me
+        nonlocal lose_response, pause_next_me, hold_original_queries
+        if (
+            hold_original_queries
+            and request.method == "GET"
+            and "/client/v1/requests/" in request.url.path
+        ):
+            return JSONResponse({"problem": {"code": "unavailable"}}, status_code=503)
         if request.method == "POST" and request.url.path.endswith("/uploads"):
             uploaded_requests.append(request.query_params.get("request_id"))
         if pause_next_me and request.url.path.endswith("/client/v1/me"):
@@ -147,6 +160,8 @@ async def serve(root: Path, port: int) -> None:
             and request.method == "POST"
             and request.url.path.endswith(f"/{lose_response}")
         ):
+            if lose_response == "corrections":
+                hold_original_queries = True
             lose_response = ""
             return JSONResponse({"problem": {"code": "unknown"}}, status_code=503)
         return response
@@ -155,6 +170,18 @@ async def serve(root: Path, port: int) -> None:
     async def lose_next_response():
         nonlocal lose_response
         lose_response = "messages"
+        return {"ok": True}
+
+    @personal.post("/__test/release-original-queries")
+    async def release_original_queries():
+        nonlocal hold_original_queries
+        hold_original_queries = False
+        return {"ok": True}
+
+    @personal.post("/__test/lose-next-memory-response")
+    async def lose_memory_response():
+        nonlocal lose_response
+        lose_response = "corrections"
         return {"ok": True}
 
     @personal.post("/__test/lose-next-computer-response")
