@@ -114,6 +114,7 @@ class Settings(BaseSettings):
 
     admin_api_url: str = "http://127.0.0.1:8080"
     client_public_url: str = ""
+    desktop_session_enabled: bool = True
     app_host: str = "0.0.0.0"
     app_port: int = 8080
     log_level: str = "INFO"

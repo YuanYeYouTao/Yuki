@@ -161,3 +161,12 @@ yuki admin work show <WorkID>
 ```
 
 CLI、HTTP 与聊天共用 `admin/operations`，秘密不通过聊天参数提交。聊天语法和一次升级准备见[人物授权升级与命令迁移](../operations/person-admin-control-plane-upgrade.md)。
+
+
+## 初始角色部署
+
+新安装向导保存带原 UUID4 与 `expected_revision=1` 的角色设置，Bot 启动后由
+`yuki setup apply-pending` 沿本页相同的 operator HTTP 授权与角色 CAS 套用。
+回应不明保留原请求供重试，角色已被修改时返回冲突，不重新编号或重建角色。
+角色更新返回角色资料；CLI 沿身份命令结果读取，不按其他管理命令的 `success` 包装解析。
+角色与插件选择互不隐式替换；只套用角色不改变插件状态，也不要求重启 Bot。

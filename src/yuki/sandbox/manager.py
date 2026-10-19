@@ -27,6 +27,15 @@ def identifier(raw: object) -> str:
     return result
 
 
+def desktop_session(value: str) -> bool:
+    normalized = value.strip().lower()
+    if normalized in {"true", "1", "yes", "on"}:
+        return True
+    if normalized in {"false", "0", "no", "off"}:
+        return False
+    raise argparse.ArgumentTypeError("desktop-session must be true or false")
+
+
 async def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, required=True)
@@ -44,6 +53,11 @@ async def main() -> None:
     parser.add_argument(
         "--acp-config", type=Path, default=os.environ.get("YUKI_MANAGER_ACP_CONFIG")
     )
+    parser.add_argument(
+        "--desktop-session",
+        type=desktop_session,
+        default=os.environ.get("YUKI_MANAGER_DESKTOP_SESSION", "true"),
+    )
     args = parser.parse_args()
     from yuki.sandbox.persistent import PersistentManager
 
@@ -57,6 +71,7 @@ async def main() -> None:
         resolv_conf=args.resolv_conf,
         acp_config=args.acp_config,
         media_cache=args.media_cache,
+        desktop_session=args.desktop_session,
     )
     if args.migrate_only:
         print(json.dumps(manager.migrate_files()))

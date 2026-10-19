@@ -59,6 +59,7 @@ class PersistentManager:
         testing: bool = False,
         name: str = "yuki-environment",
         media_cache: Path | None = None,
+        desktop_session: bool = True,
     ) -> None:
         self.root, self.store, self.image = root.resolve(), store, image
         self.network, self.proxy = network, proxy
@@ -79,6 +80,7 @@ class PersistentManager:
         self.db.commit()
         self.home = home.resolve()
         self.runtime, self.testing = runtime, testing
+        self.desktop_session = desktop_session
         if not re.fullmatch(r"yuki-environment(?:-[a-z0-9-]+)?", name):
             raise ValueError("invalid_environment_name")
         self.name = name
@@ -229,8 +231,10 @@ class PersistentManager:
 
     def resource_limits(self) -> dict[str, int | float]:
         limits = {
-            "memory_mib": int(self.setting("resource_memory_mib", "3072")),
-            "cpus": float(self.setting("resource_cpus", "2")),
+            "memory_mib": int(
+                self.setting("resource_memory_mib", "3072" if self.desktop_session else "512")
+            ),
+            "cpus": float(self.setting("resource_cpus", "2" if self.desktop_session else "1")),
             "cpu_shares": int(self.setting("resource_cpu_shares", "1024")),
             "swap_mib": int(self.setting("resource_swap_mib", "512")),
             "pids": int(self.setting("resource_pids", "2048")),

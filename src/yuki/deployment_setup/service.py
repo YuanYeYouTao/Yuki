@@ -99,6 +99,7 @@ class SetupConfiguration:
     pending_plugins: tuple[str, ...] | None
     write_model_profiles: bool = True
     operator_policy: str | None = None
+    initial_character: dict[str, str] | None = None
 
 
 def prepare_operator_configuration(paths: SetupPaths, environment: dict[str, str]) -> str | None:
@@ -457,18 +458,35 @@ def commit_configuration(
         )
     if configuration.write_model_profiles:
         targets[paths.model_profiles] = configuration.model_profiles.encode("utf-8")
-    if configuration.pending_plugins is not None:
-        targets[paths.pending] = (
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "selected_plugins": list(configuration.pending_plugins),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n"
-        ).encode("utf-8")
+    if configuration.pending_plugins is not None or configuration.initial_character is not None:
+        payload: dict[str, Any] = (
+            json.loads(paths.pending.read_text(encoding="utf-8"))
+            if paths.pending.exists()
+            else {"schema_version": 1}
+        )
+        if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            raise SetupValidationError("待应用配置格式不支持")
+        if configuration.pending_plugins is not None:
+            payload["selected_plugins"] = list(configuration.pending_plugins)
+        if configuration.initial_character is not None:
+            previous_role = payload.get("character")
+            if previous_role is not None and not isinstance(previous_role, dict):
+                raise SetupValidationError("待应用角色配置无效")
+            if previous_role is not None and any(
+                previous_role.get(key) != value
+                for key, value in configuration.initial_character.items()
+            ):
+                raise SetupValidationError(
+                    "已有待应用的角色设置，请先启动并应用，之后可在桌面修改角色资料"
+                )
+            payload["character"] = previous_role or {
+                "request_id": str(uuid4()),
+                "expected_revision": 1,
+                **configuration.initial_character,
+            }
+        pending = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        # Publish the original command before .env makes this a completed setup.
+        targets = {paths.pending: pending, **targets}
     previous = {path: path.read_bytes() if path.is_file() else None for path in targets}
     restart_sensitive = {
         paths.env,
@@ -583,26 +601,39 @@ def _validate_gateway_configuration(environment: Mapping[str, str]) -> None:
             raise SetupValidationError("SnowLuma 额外 QQ HOME 必须位于 /app/qq-accounts 下")
 
 
-async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
-    from yuki.admin_api.client import admin_client, plugin_mutation, read
+async def apply_pending_configuration(paths: SetupPaths, settings: Settings) -> dict[str, int]:
+    from yuki.admin_api.client import admin_client, identity_mutation, plugin_mutation, read
     from yuki.persistence.instance_lock import (
         ApplicationAlreadyActiveError,
         SQLiteApplicationLock,
     )
 
     if not paths.pending.is_file():
-        return 0
+        return {"character": 0, "plugins": 0}
+    payload = json.loads(paths.pending.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+        raise SetupValidationError("待应用配置无效")
+    raw_plugins = payload.get("selected_plugins")
+    if raw_plugins is not None and not isinstance(raw_plugins, list):
+        raise SetupValidationError("待应用插件配置无效")
+    character = payload.get("character")
     lock = SQLiteApplicationLock(settings.sqlite_path)
     try:
         lock.acquire()
     except ApplicationAlreadyActiveError:
-        payload = json.loads(paths.pending.read_text(encoding="utf-8"))
-        if payload.get("schema_version") != 1 or not isinstance(
-            payload.get("selected_plugins"), list
-        ):
-            raise SetupValidationError("待应用插件配置无效") from None
-        selected = set(payload["selected_plugins"])
+        selected = set(raw_plugins or [])
+        changed = 0
         async with admin_client(settings) as client:
+            if character is not None:
+                from yuki.admin_api.http import CharacterUpdateBody
+
+                body = CharacterUpdateBody.model_validate(character).model_dump(
+                    mode="json", exclude_unset=True
+                )
+                await identity_mutation(client, "character", **body)
+            if raw_plugins is None:
+                paths.pending.unlink(missing_ok=True)
+                return {"character": int(character is not None), "plugins": 0}
             await plugin_mutation(client, "yuki", "discover")
             rows = await read(client, "plugins")
             if selected - {row["plugin_id"] for row in rows}:
@@ -631,10 +662,17 @@ async def apply_pending_plugins(paths: SetupPaths, settings: Settings) -> int:
                     await plugin_mutation(client, plugin_id, "disable")
                     changed += 1
         paths.pending.unlink(missing_ok=True)
-        return changed
+        return {"character": int(character is not None), "plugins": changed}
     else:
         try:
-            return await _bootstrap_pending_plugins(paths, settings)
+            if character is not None:
+                raise SetupValidationError(
+                    "请先启动 Bot，再以有角色修改权限的 operator 应用初始角色设置"
+                )
+            if raw_plugins is None:
+                paths.pending.unlink(missing_ok=True)
+                return {"character": 0, "plugins": 0}
+            return {"character": 0, "plugins": await _bootstrap_pending_plugins(paths, settings)}
         finally:
             lock.release()
 

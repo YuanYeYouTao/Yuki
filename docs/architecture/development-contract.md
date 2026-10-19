@@ -14,7 +14,7 @@
 
 ## 1. 主体、事件与来源
 
-一个数据库对应一个长期 Yuki。Person、Account、Space、Conversation 与 GatewayConnection 各认自身事实；平台账号、Provider 与连接不是人物或业务所有者。Account 唯一保存原生平台账号与账号资料，AccountAssignment 是唯一归属关系；Binding／Presence 只是其中 person／yuki 的类型投影，不另存两套当前归属。换账号或网关不复制人物、记忆或重置 generation；有多个真实候选时消歧。
+一个数据库对应一个长期角色；Yuki 是第一个角色。Person、Account、Space、Conversation 与 GatewayConnection 各认自身事实；平台账号、Provider 与连接不是人物或业务所有者。Account 唯一保存原生平台账号与账号资料，AccountAssignment 是唯一归属关系；Binding／Presence 只是其中 person／yuki 的类型投影，不另存两套当前归属。换账号或网关不复制人物、记忆或重置 generation；有多个真实候选时消歧。
 
 事件入账后传递可信内部账本主键，canonical 关联 ID 不等于 `chat_events` 主键。平台消息号只用于接入去重、引用、撤回和投递关联，不重建已有业务身份。无用户事件的工作使用可信执行身份，不伪造入站消息。
 

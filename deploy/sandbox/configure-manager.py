@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import tempfile
 from pathlib import Path
 
 KEY = "YUKI_MANAGER_WORKSPACE_STORE"
+DESKTOP_KEY = "YUKI_MANAGER_DESKTOP_SESSION"
 DEFAULT_STORE = Path("/opt/yuki/workspace")
 
 
@@ -37,6 +39,29 @@ def _store_value(value: str) -> str:
     return "".join(decoded)
 
 
+def desktop_profile(deployment_root: Path) -> str:
+    source = deployment_root / ".env"
+    enabled = "true"
+    if not source.is_file():
+        return enabled
+    for line in source.read_text(encoding="utf-8").splitlines():
+        name, separator, value = line.partition("=")
+        words = name.split()
+        key = words[1] if len(words) == 2 and words[0] == "export" else name.strip()
+        if separator and key.upper() == "DESKTOP_SESSION_ENABLED":
+            tokens = shlex.split(value, comments=True)
+            if len(tokens) != 1:
+                raise ValueError("invalid_desktop_session_setting")
+            normalized = tokens[0].lower()
+            if normalized in {"true", "1", "yes", "on"}:
+                enabled = "true"
+            elif normalized in {"false", "0", "no", "off"}:
+                enabled = "false"
+            else:
+                raise ValueError("invalid_desktop_session_setting")
+    return enabled
+
+
 def configure_store(environment: Path, deployment_root: Path | None, *, check: bool) -> Path:
     if environment.is_symlink() or (environment.exists() and not environment.is_file()):
         raise ValueError("unsafe_manager_environment_file")
@@ -48,10 +73,13 @@ def configure_store(environment: Path, deployment_root: Path | None, *, check: b
         raise ValueError("manager_environment_file_too_large")
     content = original.decode("utf-8")
     configured = None
+    configured_desktop = False
     for line in content.splitlines():
         if (len(line) - len(line.rstrip("\\"))) % 2:
             raise ValueError("unsupported_manager_environment_continuation")
         name, separator, value = line.partition("=")
+        if separator and name.strip() == DESKTOP_KEY:
+            configured_desktop = True
         if separator and name.strip() == KEY:
             if configured is not None:
                 raise ValueError("invalid_manager_workspace_configuration")
@@ -72,14 +100,20 @@ def configure_store(environment: Path, deployment_root: Path | None, *, check: b
     if configured is not None:
         if configured != desired:
             raise ValueError("manager_workspace_already_configured_use_existing_deployment")
-        return configured
     if check:
         return desired
     # Only append this installation's independent setting. Never shell-source or
     # replace existing EnvironmentFile values, including custom runtime settings.
-    encoded = str(desired).replace("\\", "\\\\").replace('"', '\\"')
+    lines = []
+    if configured is None:
+        encoded = str(desired).replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'{KEY}="{encoded}"\n')
+    if not configured_desktop:
+        lines.append(f"{DESKTOP_KEY}={desktop_profile(deployment_root)}\n")
+    if not lines:
+        return desired
     updated = original + (b"\n" if original and not original.endswith(b"\n") else b"")
-    updated += f'{KEY}="{encoded}"\n'.encode()
+    updated += "".join(lines).encode()
     environment.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(dir=environment.parent, prefix=".deployment-")
     temporary = Path(name)

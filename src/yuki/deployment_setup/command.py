@@ -17,6 +17,7 @@ from typing import Any
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
 import tomlkit
 
 from yuki import __version__
@@ -26,7 +27,7 @@ from yuki.deployment_setup.service import (
     SetupConfiguration,
     SetupPaths,
     SetupValidationError,
-    apply_pending_plugins,
+    apply_pending_configuration,
     build_model_profiles,
     commit_configuration,
     compose_profiles_with_features,
@@ -48,6 +49,7 @@ from yuki.web.models import WebMode
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 _SECTIONS = (
+    "character",
     "basic",
     "flash",
     "embedding",
@@ -80,6 +82,7 @@ class _SetupDraft:
     flash_enabled: bool
     pending_plugins: tuple[str, ...] | None = None
     initial: bool = False
+    initial_character: dict[str, str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,13 +154,15 @@ def run_setup_command(args: argparse.Namespace) -> int:
             return 0
         if action == "apply-pending":
             with _working_directory(paths.root):
-                changed = asyncio.run(apply_pending_plugins(paths, Settings()))
-            if changed:
+                changed = asyncio.run(apply_pending_configuration(paths, Settings()))
+            if changed["character"]:
+                ui.success("初始角色设置已应用")
+            if changed["plugins"]:
                 paths.restart_required.parent.mkdir(parents=True, exist_ok=True)
                 paths.restart_required.write_text("plugin-selection-changed\n", encoding="utf-8")
-                ui.success(f"已应用 {changed} 个插件的批准与启用状态")
-            else:
-                ui.disabled("没有待应用的插件配置")
+                ui.success(f"已应用 {changed['plugins']} 个插件的批准与启用状态")
+            if not any(changed.values()):
+                ui.disabled("没有待应用的配置")
             return 0
         health = verify_health(str(args.health_url), timeout_seconds=float(args.timeout))
         if health.get("version") != __version__ or health.get("database") != "ok":
@@ -176,7 +181,7 @@ def run_setup_command(args: argparse.Namespace) -> int:
     except BackRequested:
         ui.warning("当前页面已经是向导起点")
         return 2
-    except (SetupValidationError, OSError, ValueError) as exc:
+    except (SetupValidationError, OSError, ValueError, RuntimeError, httpx.HTTPError) as exc:
         ui.error(str(exc) or "Setup 执行失败")
         return 1
 
@@ -249,6 +254,7 @@ def _run_page_state_machine(
     initial: bool,
 ) -> tuple[int | None, _SetupDraft]:
     titles = {
+        "character": "角色与桌面",
         "basic": "基础配置与主模型",
         "flash": "辅助任务模型",
         "embedding": "Embedding",
@@ -259,6 +265,7 @@ def _run_page_state_machine(
         "gateway": "QQ Gateway Provider",
     }
     handlers = {
+        "character": _page_character,
         "basic": _page_basic,
         "flash": _page_flash,
         "embedding": _page_embedding,
@@ -317,6 +324,49 @@ def _run_page_state_machine(
                 "可以修正后重试，或输入 :back 返回、输入 :quit 退出；"
                 "两个命令都必须带开头的英文冒号“:”。"
             )
+
+
+def _page_character(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
+    del paths
+    from uuid import uuid4
+
+    from yuki.admin_api.http import CharacterUpdateBody
+    from yuki.client_api.links import public_base_url
+
+    environment = draft.environment
+    if draft.initial:
+        name = ui.ask(
+            "角色名称", default=environment.get("BOT_DISPLAY_NAME", "Yuki"), required=True
+        ).strip()
+        slug = ui.ask("角色 slug（小写字母、数字和连字符）", default="yuki", required=True).strip()
+        try:
+            CharacterUpdateBody(
+                request_id=uuid4(), expected_revision=1, display_name=name, slug=slug
+            )
+        except ValueError as exc:
+            raise SetupValidationError(
+                "角色名称不能为空，slug 须以小写字母开头，只含小写字母、数字和连字符"
+            ) from exc
+        draft.initial_character = {"display_name": name, "slug": slug}
+        environment["BOT_DISPLAY_NAME"] = name
+    else:
+        ui.info("名称与 slug 沿当前角色资料；可在桌面或 admin character update 修改。")
+    desktop = ui.confirm(
+        "为新环境启用桌面工作阶段资源预设？",
+        default=_as_bool(environment.get("DESKTOP_SESSION_ENABLED", "true")),
+    )
+    environment["DESKTOP_SESSION_ENABLED"] = "true" if desktop else "false"
+    ui.info("桌面预设 3072 MiB／2 CPU；无桌面预设 512 MiB／1 CPU。现有环境与自订资源保持原值。")
+    url = ui.ask(
+        "对外 HTTPS 基底 URL（可含路径前缀；本机可用 HTTP；留空只给纯码）",
+        default=environment.get("CLIENT_PUBLIC_URL", ""),
+    )
+    try:
+        environment["CLIENT_PUBLIC_URL"] = public_base_url(url)
+    except ValueError as exc:
+        raise SetupValidationError(
+            "请输入完整 HTTP(S) 基底 URL，不带凭据、query 或 fragment"
+        ) from exc
 
 
 def _page_basic(paths: SetupPaths, ui: TerminalUI, draft: _SetupDraft) -> None:
@@ -630,6 +680,7 @@ def _review_and_commit(
         pending_plugins=draft.pending_plugins,
         write_model_profiles=write_model_profiles,
         operator_policy=operator_policy,
+        initial_character=draft.initial_character,
     )
     validate_configuration(paths, configuration)
     ui.success("Settings、模型路由和本地配置合同有效")
@@ -641,6 +692,11 @@ def _review_and_commit(
         draft.flash_enabled,
         pending_plugins=draft.pending_plugins,
     )
+    if draft.initial_character is not None:
+        ui.info(
+            f"初始角色：{draft.initial_character['display_name']}"
+            f"（{draft.initial_character['slug']}）；启动后以 operator 套用。"
+        )
     if draft.initial:
         ui.info("提示词将保留原内容，写入可编辑的 character/system_prompt.md 与 persona.md")
     if not ui.confirm("确认写入以上配置？", default=False):
@@ -676,15 +732,15 @@ def _review_and_commit(
     ui.info("依次运行 admin person create --display-name 名称、admin person show <Person ID>，")
     ui.info("再运行 admin person superuser grant <Person ID> --revision <当前 revision>。")
     ui.info("通过 admin client pair --person <Person ID> 配对 App/ACP；管理不需要 QQ 账号。")
-    if draft.pending_plugins is not None:
+    if draft.pending_plugins is not None or draft.initial_character is not None:
         if len(token_envs) == 1:
             ui.info(
-                "Bot 完成迁移后应用插件选择：docker compose exec bot sh -c "
+                "Bot 完成迁移后应用角色与插件选择：docker compose exec bot sh -c "
                 f"'{credential} yuki setup apply-pending'"
             )
         else:
             ui.info(
-                "将 YUKI_CONTROL_CREDENTIAL 设为上述有 control.plugin.mutate 权限的 operator "
+                "将 YUKI_CONTROL_CREDENTIAL 设为上述有相应角色／插件修改权限的 operator "
                 "token_env 对应值，再运行 docker compose exec bot yuki setup apply-pending。"
             )
     ui.warning("路径文件工具和终端还需要 Linux 宿主的持久环境 Manager，默认 Compose 不安装它。")
@@ -700,6 +756,7 @@ def _select_sections(ui: TerminalUI, draft: _SetupDraft) -> tuple[str, ...]:
     ui.info("检测到现有部署；默认不修改任何区块。")
     ui.navigation_hint()
     labels = {
+        "character": "角色、桌面资源与配对地址",
         "basic": "基础配置与主模型（已配置）",
         "flash": f"辅助任务模型（{'开启' if draft.flash_enabled else '关闭'}）",
         "embedding": _feature_label(

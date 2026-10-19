@@ -239,8 +239,12 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
                         "light": args.accent_light or current["accent"]["light"],
                         "dark": args.accent_dark or current["accent"]["dark"],
                     }
-                data = await mutate(
-                    client, "character", args.revision, request_id=args.request_id, **fields
+                data = await identity_mutation(
+                    client,
+                    "character",
+                    expected_revision=args.revision,
+                    request_id=args.request_id,
+                    **fields,
                 )
         elif kind == "operation":
             data = await read(client, f"operations/{args.id}")

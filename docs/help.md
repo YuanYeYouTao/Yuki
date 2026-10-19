@@ -1,7 +1,8 @@
 # Yuki 使用与运维帮助
 
-Yuki 3.9.0 的 Alembic head 为 `0119`，Plugin API 为 `3.5`，只支持 canonical runtime。永久 Yuki、
-Person、Binding、Space、Presence 和 canonical Conversation 的关系见
+正式 3.9.0 Release 的 Alembic head 为 `0119`，Plugin API 为 `3.5`；下列下载步骤对应该 Release。
+当前源码的迁移以 `alembic heads` 为准，Plugin API 沿当前 SDK，只支持 canonical runtime。
+每个长期角色使用自己的实例、数据库与持久环境；Person、Account、Binding、Space、Presence 和 Conversation 的关系见
 [当前架构](architecture/canonical-runtime.md)。
 
 ## 安装与启动
@@ -42,6 +43,19 @@ docker compose logs --tail 200 bot
 部署者可设置 `CLIENT_PUBLIC_URL=https://example.com/role`，发码回覆会同时给出纯码与
 绑定链接；反向代理的路径前缀会保留。留空时只给纯码，不推测对外地址。
 桌面会先显示所连角色，再由使用者确认配对。
+
+## 源码向导的角色与桌面设置
+
+新部署的 `yuki setup` 先询问角色名称、slug、桌面资源预设及对外基底 URL。
+名称不改变角色 UUID，也不复制历史、人物或持久环境。初始角色命令在确认配置时保存原请求号；
+启动 Bot、完成迁移后，使用有 `control.character.mutate` 权限的 operator 运行
+`yuki setup apply-pending`。回应遗失时重跑同一命令即可查询／重放原结果；不会换号覆盖另一台装置的修改。
+如果初始 revision 已变更，会保留待应用配置并返回冲突。现有角色的资料继续通过桌面或
+`yuki admin character update --revision <当前版本>` 修改。只更新角色不会要求重启 Bot。
+
+`DESKTOP_SESSION_ENABLED=true` 为新环境选择 3072 MiB／2 CPU，关闭时为 512 MiB／1 CPU；
+安装 Linux Manager 时，部署目录的选择会写入其独立环境文件。既有 Manager 环境值、显式资源设置与运行中的容器保持原值。
+详见[持久环境](operations/persistent-environment.md)。
 
 ## QQ Provider
 
