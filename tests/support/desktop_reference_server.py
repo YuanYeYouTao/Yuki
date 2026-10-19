@@ -356,6 +356,14 @@ async def serve(root: Path, port: int) -> None:
         resume_asr.set()
         return {"ok": True}
 
+    @personal.post("/__test/other-person-code")
+    async def other_person_code():
+        async with database.immediate_session() as writer:
+            other_person = await ensure_person(
+                writer, "desktop-logout-other-person", display_name="另一位測試本人"
+            )
+        return await identity.issue_for_operator(other_person, str(uuid4()), str(uuid4()))
+
     @personal.post("/__test/link-code")
     async def another_code():
         return await identity.issue_for_operator(person, str(uuid4()), str(uuid4()))
