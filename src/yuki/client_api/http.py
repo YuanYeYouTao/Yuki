@@ -69,6 +69,7 @@ from yuki.client_api.models import (
 )
 from yuki.client_api.prompts import ClientPrompts
 from yuki.client_api.sessions import ClientSessions
+from yuki.client_api.version import CLIENT_API_REVISION
 from yuki.client_api.views import ClientViews
 from yuki.client_api.works import ClientWorks
 
@@ -771,6 +772,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
 
     def openapi_with_sse() -> dict[str, Any]:
         schema = original_openapi()
+        schema["info"]["x-yuki-api-revision"] = CLIENT_API_REVISION
         components = schema.setdefault("components", {}).setdefault("schemas", {})
         for model in (
             SyncHint,

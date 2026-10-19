@@ -51,6 +51,19 @@ async def test_meta_is_public_and_profile_changes_keep_identity_and_original_rec
     assert set(meta) == {"api_revision", "server_version", "character", "min_client"}
     assert set(meta["character"]) == {"id", "display_name", "accent", "avatar_url"}
     assert meta["character"]["avatar_url"] is None
+    assert meta["api_revision"] == 4
+    schema = client_openapi()
+    assert schema["info"]["x-yuki-api-revision"] == meta["api_revision"]
+    for route in (
+        "/client/v1/memory/facts",
+        "/client/v1/memory/facts/{fact_id}/corrections",
+        "/client/v1/automations",
+        "/client/v1/character/capabilities",
+        "/client/v1/character/avatar",
+        "/client/v1/character/prompts",
+        "/client/v1/character/prompts/{key}",
+    ):
+        assert route in schema["paths"]
     assert (await client.get("/client/v1/character")).status_code == 401
     _, code = await person_and_code(client)
     other = await pair(client, code)

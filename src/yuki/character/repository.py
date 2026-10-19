@@ -12,6 +12,7 @@ from yuki import __version__
 from yuki.character.db_models import CharacterOwnerGrantModel, CharacterProfileModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
+from yuki.client_api.version import CLIENT_API_REVISION
 from yuki.identity.person_identity import (
     current_person_id,
     person_enabled_condition,
@@ -79,7 +80,7 @@ class CharacterRepository:
         async with self.database.sessions() as session:
             row = await self._profile(session)
             return {
-                "api_revision": 3,
+                "api_revision": CLIENT_API_REVISION,
                 "server_version": __version__,
                 "character": {
                     "id": row.id,
