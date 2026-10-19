@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import sys
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
@@ -19,6 +20,8 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import delete, select
 from tests.conftest import make_settings
 from tests.integration.test_current_material_main_contract import _catalog, _profile
+from tests.support.canonical_ingress import fixture_ingress
+from tests.support.commands_and_chat_helpers import inbound
 from tests.support.model_profiles import write_fake_profiles
 
 from yuki.asr.provider import QwenASRProvider
@@ -26,6 +29,7 @@ from yuki.client_api.http import attach_client_api
 from yuki.container import ApplicationContainer
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.identity.canonical_repository import create_presence, ensure_person
+from yuki.identity.person_identity import merge_persons
 from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.persistence.database import Database
@@ -88,8 +92,9 @@ async def serve(root: Path, port: int) -> None:
             ),
         )
 
+    model = FakeLLMProvider(respond)
     container.models.apply_catalog(
-        _catalog(_profile()), ModelClientPool(injected_profiles={"main": FakeLLMProvider(respond)})
+        _catalog(_profile()), ModelClientPool(injected_profiles={"main": model})
     )
     await container.model_invocations.writer.start()
     await container.app_gateway.start()
@@ -132,6 +137,35 @@ async def serve(root: Path, port: int) -> None:
         nonlocal lose_response
         lose_response = "messages"
         return {"ok": True}
+
+    @personal.post("/__test/model-delay/{seconds}")
+    async def model_delay(seconds: float):
+        model._delay_seconds = seconds
+        return {"ok": True}
+
+    @personal.post("/__test/qq-entry")
+    async def qq_entry():
+        async with database.immediate_session() as session:
+            await create_presence(
+                session, external_account_id="8000", platform="qq", now=datetime.now(UTC)
+            )
+        ingress = fixture_ingress(database)
+        message = replace(
+            inbound(
+                "QQ 原入口的真實帳本內容", message_id=str(uuid4()), user_id="1001", group_id=None
+            ),
+            bot_user_id="8000",
+        )
+        admitted = await ingress.pre_admit(None, message)
+        appended = await ingress.uow.append_inbound(admitted.message, admitted)
+        async with database.immediate_session() as session:
+            row = await session.get(ChatEventModel, appended.event.id)
+            assert row is not None and row.author_person_id is not None
+            await merge_persons(session, row.author_person_id, person)
+        return {
+            "event_id": appended.event.id,
+            "conversation_id": appended.event.canonical_conversation_id,
+        }
 
     @personal.post("/__test/lose-next-upload-response")
     async def lose_upload_response():
