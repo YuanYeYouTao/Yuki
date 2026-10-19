@@ -25,7 +25,7 @@ from tests.support.commands_and_chat_helpers import inbound
 from tests.support.model_profiles import write_fake_profiles
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from yuki.asr.provider import QwenASRProvider
+from yuki.asr.provider import HTTPASRProvider
 from yuki.client_api.http import attach_client_api
 from yuki.container import ApplicationContainer
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -79,7 +79,7 @@ async def serve(root: Path, port: int) -> None:
         )
 
     asr_http = httpx.AsyncClient(transport=httpx.MockTransport(transcribe_audio), trust_env=False)
-    container.asr._provider = QwenASRProvider(
+    container.asr._provider = HTTPASRProvider(
         base_url="http://asr.test/v1", api_key="fixture-only", client=asr_http
     )
 
@@ -155,6 +155,12 @@ async def serve(root: Path, port: int) -> None:
     async def lose_next_response():
         nonlocal lose_response
         lose_response = "messages"
+        return {"ok": True}
+
+    @personal.post("/__test/lose-next-computer-response")
+    async def lose_computer_response():
+        nonlocal lose_response
+        lose_response = "control"
         return {"ok": True}
 
     @personal.post("/__test/artifacts")

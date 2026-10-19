@@ -20,6 +20,8 @@ Provider 的 `media(handle)` 从该原生连接提供媒体适配器。附件工
 
 业务参数使用内部 Person、Space、Presence、Binding、Conversation、事件与执行 ID。平台账号和消息定位保留在原生传输及历史 provenance。平台数字相同不证明同一人物或授权；只有真正关联的 Person 共享人物事实。
 
+发送提及先按人物引用解析 Person，再选择目标平台的 Binding。显式 Binding 指定此次使用的账号；未指定时，引用携带的来源账号连同其平台保留，只用于同平台账号消歧。跨平台不比较来源与目标的裸账号值；目标平台有多个绑定时沿显式 Binding 选择，原事件和历史提及不随此次发送改写。
+
 私聊以 Binding＋Presence 区分 Conversation；群以 SpaceBinding＋topic 区分 Conversation。同群切换接纳 Presence 不拆群身份。个人客户端同入口的多个设备共享会话。人物关联不合并不同入口的聊天历史。
 
 旧 Conversation、primary alias、generation、Work、已付请求和真实效果回执继续沿原 ID。旧多 Bot 私聊只通过原内部事件和真实旧 alias 证明入口，不能按今天的主动路由重建归属。当前新消息按新入口规则接纳。
@@ -32,6 +34,7 @@ Telegram 普通消息直接读取 `chat.title` 和发送者名称。真实文字
 明确空群名片保持清空语义；Person 独立展示名仍遵守首次补齐与显式改名规则。
 
 QQ `notice/notify` 的 `sub_type=group_name` 使用原注册连接和既有群绑定更新群名。
+各原生平台的 `/ai admin group current enable` 在普通群接纳前调用共同恢复操作，保留实际平台连接、人物资格、成员探针、路由和原回执；停用群和暂停接入均可在原群恢复。恢复命令不进入聊天账本、Main 或 Memory。
 Telegram `new_chat_title` 只更新原群资料；这类资料通知不伪装真人空聊天，不进入聊天账本、
 JEV、Main、Work 或等待输入。资料更新不启用群、不转移绑定或改变路由。
 原事件与已冻结历史的名称保持不变；没有接收到的资料保持未知，不在回复路径补查。

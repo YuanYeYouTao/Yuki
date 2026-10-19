@@ -33,6 +33,7 @@
 自动化和使用已批准插件。Person、SELF、automation 与插件来源分别核验自己的 actor、
 目标、能力批准和权限。固定 Main 合同不再声明 raw OneBot 管理入口；独立批准的插件 QQ 扩展只在真实 QQ 传输边界执行。
 主、子 Agent 在同一会话交错发言时，正文与回执仍归各自原执行，已确认发送不重复交付。
+子任务的最终正文和 `task_control.complete(result=...)` 是回给父任务的内部结果，不会自动发到聊天平台；需要对外交付时仍显式调用 `send_message`。
 
 后台执行沿原内部 Conversation、Person/Space、Presence、event/run 和 Work 租约核验。
 断开连接、同 Presence 重连或活动发送路由变化不终止纯内部执行；真正发送时才解析、核验
@@ -90,6 +91,7 @@ child Work ID、父子归属和通知 revision 读取对应 checkpoint；恢复�
 
 固定提示词、完整工具顺序/schema 和 Provider 设置在资料包之前。
 工作者的固定提示词包含与主 Agent 相同的 Memory 使用规则，新的记忆查询回执不重复附带该规则。
+普通聊天表达、任务进展反馈与公开资料查证沿同一固定合同；已有 child Work 无需再次 accept。子任务的 `need_input(reason=问题)` 会沿父子通信向父任务提问，并按原回执决定是否等待，无需再调用一次 message。
 工作者按 Main 的方式准备当前运行资料；既有私有协议不被新 short_state 或目录改写。
 每条链保存实际协议 continuation；普通唤醒只追加，合同或 Provider 改变时建立新链。
 图片按内容哈希单独保存，恢复时还原原始协议内容，不能因内联图片丢掉整条链。
@@ -118,7 +120,9 @@ SDK child 使用原 plugin_invocation 来源，并核当前 live Host 的批准�
 
 ## 配置、验证与回退
 
-`SUBAGENTS_ENABLED` 默认关闭，只控制新任务接纳；关闭后已存在的任务仍收拢运行。
+`SUBAGENTS_ENABLED` 默认关闭，由 `SubagentRepository.start` 统一控制新工作者登记；
+`subagent_start` 和工作者的 `task_control(derive)` 使用同一入口。关闭后原调用重放仍返回
+原 child ID，已接纳任务继续执行、恢复并提交回执；普通业务子 Work 不受工作者开关影响。
 `AGENT_MAX_MODEL_REQUESTS=24`、`AGENT_MAX_TOOL_CALLS=32` 更新旧环境里的显式配置。
 主、子任务窗口由所选模型 Profile 的容量合同统一提供，不保留子任务独有的默认窗口。
 `SUBAGENT_CONCURRENCY` 由调度器控制后台激活并发，收尾 reconcile 租约不占执行名额。

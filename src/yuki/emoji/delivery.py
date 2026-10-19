@@ -17,6 +17,7 @@ from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.tool_actor import ToolActor
 from yuki.emoji.models import EmojiAsset
 from yuki.identity.person_identity import same_person_id
+from yuki.persistence.unit_of_work import optional_session
 from yuki.persistence.worker_recovery import recover_database_loop
 from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.subagent_schema import children
@@ -78,7 +79,13 @@ class EmojiDeliveryService:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def source(self, context: SocialContext, route: ResolvedSend) -> dict[str, Any]:
+    async def source(
+        self,
+        context: SocialContext,
+        route: ResolvedSend,
+        *,
+        session: AsyncSession | None = None,
+    ) -> dict[str, Any]:
         """Capture real source facts before text dispatch, without retaining its runtime."""
         from yuki.runtime.effect_outcomes import current_result_capture
         from yuki.runtime.work_activation import current_work_control
@@ -111,6 +118,8 @@ class EmojiDeliveryService:
         )
         control = current_work_control.get()
         capture = current_result_capture.get()
+        if capture is not None and not (capture.work_id and capture.effect_key):
+            capture = None
         work_id = (
             capture.work_id
             if capture is not None
@@ -118,15 +127,15 @@ class EmojiDeliveryService:
             if control is not None and control.current is not None
             else None
         )
-        async with self.social.database.sessions() as session:
-            conversation = await session.get(CanonicalConversationModel, context.conversation_id)
+        async with optional_session(self.social.database, session, write=False) as reader:
+            conversation = await reader.get(CanonicalConversationModel, context.conversation_id)
             if conversation is None:
                 raise SocialError("emoji_source_removed")
-            epoch = await session.scalar(
+            epoch = await reader.scalar(
                 select(scope.c.cancel_epoch).where(scope.c.conversation_id == conversation.id)
             )
             child_epoch = (
-                await session.scalar(
+                await reader.scalar(
                     select(children.c.cancel_epoch).where(children.c.work_id == work_id)
                 )
                 if work_id is not None
@@ -159,10 +168,14 @@ class EmojiDeliveryService:
         context: SocialContext,
         target: SocialTarget,
         source: dict[str, Any],
+        *,
+        session: AsyncSession | None = None,
     ) -> dict[str, Any]:
         from yuki.runtime.effect_outcomes import current_result_capture
 
         capture = current_result_capture.get()
+        if capture is not None and not (capture.work_id and capture.effect_key):
+            capture = None
         intent = await self.intents.admit(
             turn_id=context.turn_id,
             call_id=context.call_id,
@@ -171,10 +184,11 @@ class EmojiDeliveryService:
             arguments=arguments,
             source=source,
             work_effect=(capture if not arguments.get("text", "").strip() else None),
+            session=session,
         )
-        self.wake()
-        # Admission has committed. A later projection read must not downgrade
-        # this fact to "not accepted" or invite another illustration request.
+        if session is None:
+            self.wake()
+        # An enclosing text claim commits this same admission before dispatch.
         return project_intent(intent, None)
 
     async def project(self, context: SocialContext) -> dict[str, Any] | None:

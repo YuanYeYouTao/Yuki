@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from yuki.capabilities.invocation import current_invocation
+from yuki.identity.person_identity import same_person_id
 from yuki.identity.routing import RouteSendError
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.origin import TurnOrigin
@@ -132,7 +133,11 @@ async def invoke_social(
         if any(selected.get(key) for key in ("target_id", "subject_ref", "display_name")):
             target = await service.target(kind, selected, context)
             if str(target.id) != target_id:
-                raise SocialError("history_scope_denied")
+                async with service.database.sessions() as session:
+                    if kind != "person" or not await same_person_id(
+                        session, str(target.id), target_id
+                    ):
+                        raise SocialError("history_scope_denied")
         selected.pop("subject_ref", None)
         selected.pop("display_name", None)
         selected.update(kind=kind, target_id=target_id)
@@ -178,7 +183,9 @@ async def invoke_social(
         conversation_id=conversation_id,
         origin=runtime.origin.value,
         person_refs=refs,
-        account_refs={"current_speaker": actor.user_id} if actor.person_id is not None else {},
+        account_refs={"current_speaker": (actor.platform, actor.user_id)}
+        if actor.person_id is not None
+        else {},
         space_id=runtime.space_id or getattr(inbound, "space_id", None),
         trigger_event_id=(
             getattr(runtime, "effective_trigger_event_id", None) if inbound is not None else None

@@ -7,6 +7,7 @@ from yuki.runtime.work_repository import WorkRepository
 
 
 async def stack(database, tmp_path):
+    database.subagents_enabled = True
     env = await social_env(database, tmp_path)
     repository = WorkRepository(database)
     lease = await repository.acquire(env.context.conversation_id, 1)

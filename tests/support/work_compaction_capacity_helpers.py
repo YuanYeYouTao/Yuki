@@ -34,6 +34,7 @@ async def _session(database, tmp_path, *, worker=False):
         lease, source_key="capacity-test", source=control.source, goal="prepare an artifact"
     )
     if worker:
+        database.subagents_enabled = True
         from yuki.runtime.subagent_repository import SubagentRepository
 
         children = SubagentRepository(repository)

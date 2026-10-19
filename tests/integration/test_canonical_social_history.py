@@ -10,8 +10,12 @@ from tests.support.social_identity_cases import social_env
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.canonical_repository import ensure_presence
+from yuki.identity.canonical_repository import ensure_person, ensure_presence
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel
+from yuki.services.agent_tools import ToolRuntime
+from yuki.social.agent_adapter import invoke_social
 from yuki.social.models import SocialError
 
 
@@ -100,4 +104,102 @@ async def test_history_respects_existing_reset_boundary(database, tmp_path):
     result = await env.service.execute("read_conversation_history", {}, env.context)
     assert [row["event_id"] for row in result["messages"]] == [sent["event_id"]]
     assert "after reset" in result["messages"][0]["content"]
+    assert env.bot.calls == []
+
+
+@pytest.mark.parametrize("source_disabled", [False, True])
+async def test_history_discovers_original_entries_after_person_merge(
+    database, tmp_path, source_disabled
+):
+    env = await social_env(database, tmp_path)
+    original = await private_entry(env, "80001", "original-entry")
+    other = (
+        await env.service.writer.append(
+            scope=ConversationScope.private("80001", "10002"),
+            platform_message_id="target-entry",
+            sender_user_id="10002",
+            direction="inbound",
+            content="target entry history",
+        )
+    ).event
+    async with database.immediate_session() as session:
+        target = await ensure_person(session, "10002")
+        original_binding = await session.scalar(
+            select(IdentityBindingModel.id).where(IdentityBindingModel.person_id == env.person)
+        )
+        if source_disabled:
+            (await session.get(CanonicalPersonModel, env.person)).enabled = False
+        await merge_persons(session, env.person, target)
+    env.registry.disconnect(env.bot)
+    env.bot.calls.clear()
+    entries = await env.service.execute(
+        "read_conversation_history", {"kind": "person", "target_id": target}, env.context
+    )
+    assert entries["error"] == "conversation_ambiguous"
+    assert {row["conversation_id"] for row in entries["conversations"]} == {
+        original.canonical_conversation_id,
+        other.canonical_conversation_id,
+    }
+    result = await env.service.execute(
+        "read_conversation_history",
+        {"kind": "person", "target_id": target, "binding_id": original_binding},
+        env.context,
+    )
+    assert result["conversation_id"] == original.canonical_conversation_id
+    assert result["target_id"] == target
+    assert result["messages"][0]["person_id"] == env.person
+    assert env.bot.calls == []
+
+
+@pytest.mark.parametrize("grant", ["original", "current"])
+async def test_delegated_history_keeps_same_person_scope_after_merge(database, tmp_path, grant):
+    env = await social_env(database, tmp_path)
+    original = await private_entry(env, "80001", "original-entry")
+    await env.service.writer.append(
+        scope=ConversationScope.group("80001", "20001"),
+        platform_message_id="known-foreign-person",
+        sender_user_id="1003",
+        direction="inbound",
+        content="separate person",
+    )
+    async with database.immediate_session() as session:
+        target = await ensure_person(session, "10002")
+        foreign = await ensure_person(session, "1003")
+        original_binding = await session.scalar(
+            select(IdentityBindingModel.id).where(IdentityBindingModel.person_id == env.person)
+        )
+        if grant == "current":
+            (await session.get(CanonicalPersonModel, env.person)).enabled = False
+        await merge_persons(session, env.person, target)
+    runtime = ToolRuntime(
+        inbound=None,
+        conversation_id=original.canonical_conversation_id,
+        execution_id="original-delegated-read",
+        read_scope=ConversationScope.private("80001", "10001"),
+        read_target_id=env.person if grant == "original" else target,
+    )
+    env.bot.calls.clear()
+    token = current_invocation.set(ToolInvocationContext(runtime, call_id="delegated"))
+    try:
+        result = await invoke_social(
+            env.service,
+            "read_conversation_history",
+            {"kind": "person", "target_id": target, "binding_id": original_binding},
+            runtime,
+        )
+        assert result["conversation_id"] == original.canonical_conversation_id
+        assert result["messages"][0]["person_id"] == env.person
+        with pytest.raises(SocialError, match="history_scope_denied"):
+            await invoke_social(
+                env.service, "find_contacts", {"kind": "person", "target_id": foreign}, runtime
+            )
+        with pytest.raises(SocialError, match="history_scope_denied"):
+            await invoke_social(
+                env.service,
+                "read_conversation_history",
+                {"conversation_id": env.context.conversation_id},
+                runtime,
+            )
+    finally:
+        current_invocation.reset(token)
     assert env.bot.calls == []

@@ -75,7 +75,8 @@ class SocialContext:
     call_id: str
     conversation_id: str
     person_refs: dict[str, str] = field(default_factory=dict)
-    account_refs: dict[str, str] = field(default_factory=dict)
+    # A source account is meaningful only in its original platform namespace.
+    account_refs: dict[str, tuple[str, str]] = field(default_factory=dict)
     space_id: str | None = None
     # Trusted internal ledger key for an immediate reply. Platform IDs are only
     # transport references and must not reconstruct an already known event.
@@ -588,11 +589,11 @@ class SocialService:
                 IdentityBindingModel.platform == platform,
             )
             bindings = list(await session.scalars(query))
+        account = context.account_refs.get(str(args.get("subject_ref", "")))
         if args.get("binding_id"):
             bindings = [b for b in bindings if b.id == str(args["binding_id"])]
-        account = context.account_refs.get(str(args.get("subject_ref", "")))
-        if account is not None:
-            bindings = [b for b in bindings if b.external_account_id == account]
+        elif account is not None and account[0] == platform:
+            bindings = [b for b in bindings if b.external_account_id == account[1]]
         if len(bindings) != 1:
             raise SocialError("binding_ambiguous" if bindings else "binding_unavailable")
         return bindings[0]
@@ -637,6 +638,7 @@ class SocialService:
             )
         operations = self.router.operations(route)
         planned = tuple(part for item in layout for part in operations.plan_send(item))
+        illustration: dict[str, Any] | None = None
 
         def arguments(part: TransportMessage, index: int) -> dict[str, Any]:
             value = dict(args, text=part.text)
@@ -665,6 +667,7 @@ class SocialService:
         async def send(
             part: TransportMessage, part_context: SocialContext, payload: dict[str, Any]
         ) -> dict[str, Any]:
+            nonlocal illustration
             content = part.text
             if not content and part.media is not None and part.media.kind == "file":
                 content = f"[文件: {part.media.filename}]"
@@ -682,7 +685,7 @@ class SocialService:
                     "表情",
                 )
                 content = f"[表情: {summary}]" if summary != "表情" else "[表情]"
-            return await self._effect(
+            result = await self._effect(
                 "send_message",
                 payload,
                 part_context,
@@ -693,7 +696,13 @@ class SocialService:
                 content=content,
                 ledger_segments=segments(part),
                 known_event_id=known_event_id,
+                emoji_request=(args, context)
+                if args.get("emoji") and self.emoji_delivery is not None
+                else None,
             )
+            if "emoji" in result:
+                illustration = result["emoji"]
+            return result
 
         if len(planned) == 1 and (prior is None or prior.action == "send_message"):
             return await send(planned[0], context, args)
@@ -724,34 +733,48 @@ class SocialService:
         )
         if dispatch:
             prefix = sequence_prefix(context.call_id)
-            for index, part in enumerate(planned):
-                if index and snapshot is not None:
-                    delay = random.uniform(
-                        snapshot.reply.delay_min_seconds, snapshot.reply.delay_max_seconds
+            try:
+                for index, part in enumerate(planned):
+                    if index and snapshot is not None:
+                        delay = random.uniform(
+                            snapshot.reply.delay_min_seconds, snapshot.reply.delay_max_seconds
+                        )
+                        if delay > 0:
+                            await asyncio.sleep(delay)
+                    part_context = replace(
+                        context,
+                        call_id=f"{prefix}{index}",
+                        sequence_part_index=index,
+                        parent_operation_id=parent.operation_id,
                     )
-                    if delay > 0:
-                        await asyncio.sleep(delay)
-                part_context = replace(
-                    context,
-                    call_id=f"{prefix}{index}",
-                    sequence_part_index=index,
-                    parent_operation_id=parent.operation_id,
-                )
-                try:
-                    result = await send(part, part_context, part_arguments[index])
-                except Exception as exc:
-                    if not index:
-                        raise
-                    # A later preflight cannot erase a confirmed original part.
-                    logging.getLogger(__name__).warning(
-                        "social_sequence_preflight_failed category=%s", type(exc).__name__
-                    )
-                    break
-                if result.get("status") != OperationStatus.SUCCEEDED.value:
-                    break
-        return await self._sequence_result(
+                    try:
+                        result = await send(part, part_context, part_arguments[index])
+                    except Exception as exc:
+                        if not index:
+                            raise
+                        # A later preflight cannot erase a confirmed original part.
+                        logging.getLogger(__name__).warning(
+                            "social_sequence_preflight_failed category=%s", type(exc).__name__
+                        )
+                        await self.receipts.stop_sequence(parent.operation_id, type(exc).__name__)
+                        if args.get("emoji") and self.emoji_delivery is not None:
+                            self.emoji_delivery.wake()
+                        break
+                    if result.get("status") != OperationStatus.SUCCEEDED.value:
+                        break
+            except asyncio.CancelledError:
+                # A host shutdown ends this dispatch loop, not the accepted
+                # illustration. Unsent child receipts remain prepared.
+                await self.receipts.stop_sequence(parent.operation_id, "CancelledError")
+                if args.get("emoji") and self.emoji_delivery is not None:
+                    self.emoji_delivery.wake()
+                raise
+        result = await self._sequence_result(
             parent, context, file=args.get("attachment_kind") == "file"
         )
+        if illustration is not None:
+            result["emoji"] = illustration
+        return result
 
     async def _sequence_result(
         self, parent: SocialReceipt, context: SocialContext, *, file: bool = False
@@ -993,7 +1016,7 @@ class SocialService:
             content = message.text
             emoji_source = None
             emoji_error = None
-            if message.emoji is not None:
+            if deferred_only:
                 if self.emoji_delivery is None:
                     emoji_error = "emoji_delivery_unavailable"
                 else:
@@ -1003,19 +1026,18 @@ class SocialService:
                         emoji_error = (
                             str(exc) if isinstance(exc, SocialError) else type(exc).__name__
                         )
-                if deferred_only:
-                    if emoji_source is not None:
-                        emoji_source["mentions"] = frozen_mentions
-                        emoji_source["reply_to_event_id"] = args.get("reply_to_event_id")
-                    illustration = await self._admit_emoji(
-                        args, context, target, emoji_source, emoji_error
-                    )
-                    return {
-                        "status": illustration["status"]
-                        if illustration["status"] in {"accepted", "unknown"}
-                        else "failed",
-                        "emoji": illustration,
-                    }
+                if emoji_source is not None:
+                    emoji_source["mentions"] = frozen_mentions
+                    emoji_source["reply_to_event_id"] = args.get("reply_to_event_id")
+                illustration = await self._admit_emoji(
+                    args, context, target, emoji_source, emoji_error
+                )
+                return {
+                    "status": illustration["status"]
+                    if illustration["status"] in {"accepted", "unknown"}
+                    else "failed",
+                    "emoji": illustration,
+                }
             if message.artifact_id is not None:
                 if self.workspace is None:
                     raise SocialError("artifact_transport_unavailable")
@@ -1071,10 +1093,8 @@ class SocialService:
             args, context, target, route, transport, tuple(ledger), prior, known_event_id
         )
         if message.emoji is not None:
-            receipt["emoji"] = (
-                await self._admit_emoji(args, context, target, emoji_source, emoji_error)
-                if receipt.get("status") != OperationStatus.EXECUTING.value
-                else {"status": "not_accepted", "error": "text_delivery_in_progress"}
+            receipt.setdefault(
+                "emoji", {"status": "not_accepted", "error": "emoji_delivery_unavailable"}
             )
         return receipt
 
@@ -1122,6 +1142,7 @@ class SocialService:
         content: str | None = None,
         ledger_segments: tuple[dict[str, Any], ...] | None = None,
         known_event_id: int | None = None,
+        emoji_request: tuple[dict[str, Any], SocialContext] | None = None,
     ) -> dict[str, Any]:
         from yuki.runtime.effect_outcomes import current_result_capture
 
@@ -1148,6 +1169,7 @@ class SocialService:
         from yuki.runtime.work_repository import encode_json
 
         work_control = current_work_control.get()
+        illustration: dict[str, Any] | None = None
         reservation = (
             encode_json({"target": target.model_dump(mode="json"), "arguments": args})
             if work_control is not None and name.startswith("send_") and name != "send_file_caption"
@@ -1216,6 +1238,16 @@ class SocialService:
                     target_id=str(target.id),
                 )
                 await self._validate_reply_route(session, context, target, route)
+                if emoji_request is not None and context.sequence_part_index in {None, 0}:
+                    assert self.emoji_delivery is not None
+                    emoji_arguments, emoji_context = emoji_request
+                    source = await self.emoji_delivery.source(emoji_context, route, session=session)
+                    source["after_operation_id"] = (
+                        context.parent_operation_id or receipt.operation_id
+                    )
+                    illustration = await self.emoji_delivery.admit(
+                        emoji_arguments, emoji_context, target, source, session=session
+                    )
                 if reservation is not None and work_control is not None:
                     await reserve(
                         work_control,
@@ -1238,19 +1270,26 @@ class SocialService:
             current = await self.receipts.get(receipt.operation_id)
             await self._record_work_delivery(current)
             return await self._receipt_result(current, context)
-        completed = await self._dispatch_claimed(
-            receipt.operation_id,
-            route,
-            action,
-            params,
-            target=target,
-            context=context,
-            content=content,
-            ledger_segments=ledger_segments,
-            reply_to_event_id=args.get("reply_to_event_id"),
-            destination_kind=target.kind,
-        )
-        return await self._receipt_result(completed, context)
+        try:
+            completed = await self._dispatch_claimed(
+                receipt.operation_id,
+                route,
+                action,
+                params,
+                target=target,
+                context=context,
+                content=content,
+                ledger_segments=ledger_segments,
+                reply_to_event_id=args.get("reply_to_event_id"),
+                destination_kind=target.kind,
+            )
+        finally:
+            if emoji_request is not None and self.emoji_delivery is not None:
+                self.emoji_delivery.wake()
+        result = await self._receipt_result(completed, context)
+        if illustration is not None:
+            result["emoji"] = illustration
+        return result
 
     async def _dispatch_claimed(
         self,

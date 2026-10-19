@@ -595,17 +595,18 @@ async def test_admission_commit_acknowledgement_loss_wakes_an_already_sleeping_o
 
     monkeypatch.setattr(delivery.intents, "pending", discover)
     monkeypatch.setattr(delivery.intents, "admit", lose_ack)
+    arguments = {"emoji": ARGS["emoji"]}
     await delivery.start()
     try:
         await asyncio.wait_for(discovered.wait(), 3)
-        result = await env.service.execute("send_message", ARGS, env.context)
-        assert result["status"] == "succeeded" and result["emoji"]["status"] == "unknown"
+        result = await env.service.execute("send_message", arguments, env.context)
+        assert result["status"] == "unknown" and result["emoji"]["status"] == "unknown"
         assert (await settle(delivery, env.context))["status"] == "succeeded"
-        assert len(sends(env.bot)) == 2 and library.select_calls == 1
-        assert (await env.service.execute("send_message", ARGS, env.context))["emoji"][
+        assert len(sends(env.bot)) == 1 and library.select_calls == 1
+        assert (await env.service.execute("send_message", arguments, env.context))["emoji"][
             "status"
         ] == "succeeded"
-        assert len(sends(env.bot)) == 2
+        assert len(sends(env.bot)) == 1
     finally:
         await delivery.close()
 

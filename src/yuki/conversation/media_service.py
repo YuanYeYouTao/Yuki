@@ -233,10 +233,10 @@ class ConversationMediaService:
         self._pending: set[asyncio.Task[None]] = set()
         self._cleaner: asyncio.Task[None] | None = None
         self._prepared: WeakSet[PreparedAttachment] = WeakSet()
-        self._originals: WeakValueDictionary[tuple[int, int, bool], PreparedAttachment] = (
+        self._originals: WeakValueDictionary[tuple[int, int, bool, bool], PreparedAttachment] = (
             WeakValueDictionary()
         )
-        self._cache_tasks: dict[tuple[int, int, str, str | None], asyncio.Task[Path]] = {}
+        self._cache_tasks: dict[tuple[int, int, str, str | None, str], asyncio.Task[Path]] = {}
         self._staging_paths: set[Path] = set()
 
     async def start(self) -> None:
@@ -359,18 +359,19 @@ class ConversationMediaService:
             )
             if event_id is None and attachment.source == "reply":
                 event_id = message.source_event_id
-            if original and event_id is not None:
+            if event_id is not None:
                 self._originals[
                     (
                         event_id,
                         attachment.segment_index,
                         attachment.source == "reply" and message.reply_to_event_id is None,
+                        not original,
                     )
                 ] = shared
             return replace(
                 attachment,
                 preview=prepare(
-                    attachment.preview,
+                    replace(attachment.preview, segment_index=attachment.segment_index),
                     segments,
                     original=False,
                 )
@@ -467,6 +468,11 @@ class ConversationMediaService:
                             )
                         ),
                     )
+                    source = (
+                        await self._sources(((item.source_event_id, item.attachment_index),))
+                    )[(item.source_event_id, item.attachment_index)]
+                    if isinstance(source[1].get("preview"), dict):
+                        await self._cache_preview(source)
             except (ConversationMediaError, MediaResolutionError, OSError, ValueError):
                 # Failed prefetch remains uncached and can be retried on inspection.
                 continue
@@ -562,12 +568,12 @@ class ConversationMediaService:
         if source is None:
             source = (await self._sources(((event_id, index),)))[(event_id, index)]
         item = source[0]
-        key = event_id, index, source[-1], item.source_snapshot_json
+        key = event_id, index, source[-1], item.source_snapshot_json, "original"
         task = self._cache_tasks.get(key)
         if task is None:
             explicit_original = prepared_media is not None
             prepared_media = prepared_media or self._originals.get(
-                (event_id, item.segment_index, item.source_snapshot_json is not None)
+                (event_id, item.segment_index, item.source_snapshot_json is not None, False)
             )
             if prepared_media is not None:
                 prepared_segment = json.loads(prepared_media.source_segments)[item.segment_index]
@@ -589,12 +595,96 @@ class ConversationMediaService:
         return await asyncio.shield(task)
 
     def _finish_cache(
-        self, key: tuple[int, int, str, str | None], task: asyncio.Task[Path]
+        self, key: tuple[int, int, str, str | None, str], task: asyncio.Task[Path]
     ) -> None:
         if self._cache_tasks.get(key) is task:
             del self._cache_tasks[key]
         if not task.cancelled():
             task.exception()
+
+    async def _cache_preview(
+        self, source: tuple[ConversationMediaItemModel, dict[str, Any], str]
+    ) -> Path:
+        item, _data, segments = source
+        key = (
+            item.source_event_id,
+            item.attachment_index,
+            segments,
+            item.source_snapshot_json,
+            "preview",
+        )
+        task = self._cache_tasks.get(key)
+        if task is None:
+            task = asyncio.create_task(
+                self._preview_original(source), name=f"media-preview:{key[:2]}"
+            )
+            self._cache_tasks[key] = task
+            task.add_done_callback(lambda done: self._finish_cache(key, done))
+        return await asyncio.shield(task)
+
+    async def _preview_original(
+        self, source: tuple[ConversationMediaItemModel, dict[str, Any], str]
+    ) -> Path:
+        item, data, _segments = source
+        original = self._path(item)
+        preview = data["preview"]
+        fingerprint = hashlib.sha256(
+            json.dumps(preview, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        final = original.with_name(f"preview-{fingerprint}-{original.name}")
+        if final.is_file() and not final.is_symlink():
+            return final
+        if not original.is_file() or item.cache_status == "expired":
+            raise ConversationMediaError("attachment_expired")
+        shared = self._originals.get(
+            (item.source_event_id, item.segment_index, item.source_snapshot_json is not None, True)
+        )
+        if shared is not None:
+            segment = json.loads(shared.source_segments)[item.segment_index]
+            if segment.get("data", {}).get("preview") != preview:
+                shared = None
+        temporary = original.with_name(f"{uuid4().hex}.part")
+        self._staging_paths.add(temporary)
+        try:
+            if shared is not None:
+                await shared.download(temporary)
+            else:
+                await self.resolver.download_attachment(
+                    MediaReference(file=preview.get("file"), url=preview.get("url")),
+                    temporary,
+                    max_download_bytes=None,
+                    gateway=_EventMediaGateway(
+                        self.database, self.gateway_registry, item.source_event_id
+                    ),
+                    kind="image",
+                )
+            facts = await _media_io(_cache_file_facts, temporary)
+            async with self._lock:
+                current, current_data, _current_segments = (
+                    await self._sources(((item.source_event_id, item.attachment_index),))
+                )[(item.source_event_id, item.attachment_index)]
+                if (
+                    current.content_sha256 != item.content_sha256
+                    or current_data.get("preview") != preview
+                    or current.source_snapshot_json != item.source_snapshot_json
+                ):
+                    raise ConversationMediaError("attachment_source_changed")
+                if current.cache_status == "expired" or not original.is_file():
+                    raise ConversationMediaError("attachment_expired")
+                assert current.cached_at is not None
+                created = _aware(current.cached_at).timestamp()
+                await _media_io(os.utime, temporary, (created, created))
+                # utime changed the staging token; capture the actual publication fact.
+                facts = replace(facts, token=_file_token(await _media_io(temporary.lstat)))
+                await _media_io(_publish_cache_file, temporary, final, facts)
+            return final
+        except MediaResolutionError as exc:
+            raise ConversationMediaError(exc.code) from exc
+        finally:
+            try:
+                await _media_io(partial(temporary.unlink, missing_ok=True))
+            finally:
+                self._staging_paths.discard(temporary)
 
     async def _cache_original(
         self,
@@ -842,29 +932,22 @@ class ConversationMediaService:
                 "reader_version": "document-reader-v1",
                 "result": result,
             }
-        if media_kind == "sticker_preview":
-            assert isinstance(preview, dict)
-            downloaded = await self.resolver.resolve(
-                MediaReference(file=preview["file"], source="current"),
-                _EventMediaGateway(self.database, self.gateway_registry, item.source_event_id),
-            )
-            images = await asyncio.to_thread(
-                self.preparer.prepare_image,
-                downloaded,
-                source="history",
-                max_frames=runtime.max_frames_per_turn if runtime else None,
-            )
-        elif media_kind == "video":
+        if media_kind == "video":
             limit = runtime.video_max_download_bytes if runtime else _DEFAULT_VIDEO_READ_BYTES
             if (await asyncio.to_thread(path.stat)).st_size > limit:
                 raise ConversationMediaError("attachment_too_large")
             images = await self.preparer.prepare_video(path, source="history", runtime=runtime)
         else:
+            image_path = (
+                await self._cache_preview((item, source_data, source_segments)) if is_tgs else path
+            )
 
             def read_image() -> bytes:
-                with path.open("rb") as stream:
+                with image_path.open("rb") as stream:
                     data = stream.read(MAX_IMAGE_BYTES + 1)
-                if len(data) > MAX_IMAGE_BYTES or hashlib.sha256(data).hexdigest() != digest:
+                if len(data) > MAX_IMAGE_BYTES or (
+                    not is_tgs and hashlib.sha256(data).hexdigest() != digest
+                ):
                     raise ConversationMediaError("attachment_invalid")
                 return data
 
@@ -948,8 +1031,10 @@ class ConversationMediaService:
                 != hashlib.sha256((item.source_snapshot_json or _segments).encode()).hexdigest()
             ):
                 raise ConversationMediaError("attachment_source_changed")
-            if item.content_sha256 != content_hash or not await _media_io(self._path(item).is_file):
-                raise ConversationMediaError("attachment_expired")
+            # The selected pixels already belong to the tool result or private
+            # protocol. Expiring its temporary original does not erase them.
+            if content_hash is None or item.content_sha256 != content_hash:
+                raise ConversationMediaError("attachment_source_changed")
 
     async def _expire_page(self, now: datetime) -> None:
         model = ConversationMediaItemModel
@@ -1010,6 +1095,16 @@ class ConversationMediaService:
             for entry in entries
             if stat.S_ISREG(entry.token[2]) or stat.S_ISLNK(entry.token[2])
         )
+        previews = {}
+        for entry in file_entries:
+            preview_parts = entry.path.name.split("-", 2)
+            if (
+                len(preview_parts) == 3
+                and preview_parts[0] == "preview"
+                and len(preview_parts[1]) == 64
+                and all(character in "0123456789abcdef" for character in preview_parts[1])
+            ):
+                previews[entry.path] = entry.path.with_name(preview_parts[2])
         event_ids = set()
         for entry in file_entries:
             try:
@@ -1035,6 +1130,7 @@ class ConversationMediaService:
                                 ConversationMediaItemModel.source_event_id.in_(event_ids),
                                 ConversationMediaItemModel.cache_name.in_(
                                     tuple(entry.path.name for entry in file_entries)
+                                    + tuple(original.name for original in previews.values())
                                 ),
                             )
                             .distinct()
@@ -1063,6 +1159,15 @@ class ConversationMediaService:
                 self.root / row.conversation_id / str(row.source_event_id) / row.cache_name
                 for row in live
             }
+            live_paths.update(
+                entry.path
+                for entry in file_entries
+                if previews.get(entry.path) in live_paths
+                and entry.token[4] / 1_000_000_000 > now.timestamp() - _LIFETIME.total_seconds()
+            )
+            indexed_paths.update(
+                preview for preview, original in previews.items() if original in indexed_paths
+            )
             source_directories = {
                 self.root / conversation_id / str(event_id) for event_id, conversation_id in events
             }

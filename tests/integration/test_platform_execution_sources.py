@@ -306,6 +306,7 @@ async def test_app_child_keeps_entry_contract_and_runs_without_connection_gate(
         parent = await repository.accept(
             lease, source_key=f"app-child:{uuid4()}", source=source, goal="original"
         )
+        database.subagents_enabled = True
         child_id = await SubagentRepository(repository).start(
             lease,
             parent["id"],
@@ -619,6 +620,7 @@ async def test_group_migration_preserves_original_work_and_native_send(
             source=source,
             goal="original goal",
         )
+        database.subagents_enabled = True
         child_id = await SubagentRepository(works).start(
             lease, parent["id"], "original-child", {"goal": "finish original goal"}
         )

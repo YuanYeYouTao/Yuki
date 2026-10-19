@@ -59,9 +59,8 @@ def workspace_tools() -> tuple[ChatTool, ...]:
         tool(
             "save_conversation_attachment_to_workspace",
             "按内部事件 ID 与附件序号直接保存原件为全局共享的持久工作文件。"
-            "可自主收藏图片：保留原格式，保存到 stickers/<platform>/files/<文件名>，"
-            "再通过终端运行 python /opt/yuki-runtime/sticker_index.py --workspace /workspace "
-            "update <原图路径> --tag <短标签> 编目；--tag 可重复。",
+            "可自主收藏图片；收藏或整理表情库时，先用终端阅读 "
+            "/workspace/stickers/AGENT.md，按目录中的说明保存原件、补标签和更新索引。",
             {
                 "event_id": {"type": "integer", "minimum": 1},
                 "attachment_index": {"type": "integer", "minimum": 0},

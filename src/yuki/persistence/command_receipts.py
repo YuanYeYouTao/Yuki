@@ -312,26 +312,6 @@ class CommandReceiptRepository:
             )
             return int(getattr(result, "rowcount", 0) or 0)
 
-    async def require_external_available(
-        self, session: AsyncSession, operation: str, target: str
-    ) -> None:
-        # Reserve the resource, not just the request: two opposite actions cannot race.
-        busy = await session.scalar(
-            select(ControlCommandReceiptModel.id)
-            .join(
-                AdminOperationEventModel,
-                AdminOperationEventModel.id == ControlCommandReceiptModel.audit_id,
-            )
-            .where(
-                ControlCommandReceiptModel.status.in_(("running", "unknown")),
-                AdminOperationEventModel.operation == operation,
-                AdminOperationEventModel.target_id == target,
-            )
-            .limit(1)
-        )
-        if busy is not None:
-            raise ControlCommandError(Problem(ProblemCode.PRECONDITION_FAILED))
-
     async def reserve_external(
         self,
         session: AsyncSession,

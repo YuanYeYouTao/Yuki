@@ -21,18 +21,27 @@ the same interpretation. Quoted audio is available as context but excluded from
 the current speaker's automatic memory evidence. ASR is an interpretation that
 may be wrong; the prompt labels it accordingly.
 
-Original audio is processed transiently and removed after the call. Encoded
-audio is omitted from persisted OneBot segments. URLs and provider responses
+Original audio uses the shared sandbox attachment cache and its 24-hour lifetime;
+temporary decoder outputs are removed after processing. Encoded audio is omitted
+from persisted OneBot segments. URLs and provider responses
 are not included in ASR error logs. Resetting a conversation interrupts ongoing
 recognition and prevents old results from appearing in the new generation.
 Deleting source events also deletes their transcripts and search entries.
 
 ## Provider and configuration
 
-The public DeepSeek API contract checked on 2026-09-12 documents text and image
-inputs, but no audio input or ASR endpoint. This implementation therefore uses
-Qwen's dedicated `qwen3-asr-flash`, with `input_audio` in `chat/completions`.
-It does not send audio to a DeepSeek model or to an ordinary Qwen chat model.
+`ASR_PROTOCOL` explicitly chooses the wire format:
+
+- `chat_completions` (default): Qwen's original user `input_audio` request to
+  `/chat/completions`, with `asr_options.enable_itn=false`; no extra system message.
+- `audio_transcriptions`: multipart `file`, `model` and a prompt requesting only
+  verbatim transcription in the original language, sent to `/audio/transcriptions`;
+  the response is the `text` field. Use a connection that actually supports this
+  endpoint and a model it supports.
+
+The configured base URL includes the API prefix, such as `/v1`. Protocol and model
+are independent explicit settings; the provider does not infer either from the
+model name, retry a failed request, or fall back to another endpoint.
 
 Connection selection is deterministic:
 
@@ -46,6 +55,7 @@ Example for an existing Qwen deployment:
 
 ```dotenv
 ASR_ENABLED=true
+ASR_PROTOCOL=chat_completions
 ASR_MODEL=qwen3-asr-flash
 ASR_BASE_URL=
 ASR_API_KEY=
@@ -54,6 +64,8 @@ ASR_API_KEY=
 An independent connection may use a Model Studio workspace URL or the existing
 DashScope compatible-mode URL, ending in `/compatible-mode/v1`. Choose an API
 key from the same region. Changing ASR configuration requires a Bot restart.
+For a compatible transcription service, explicitly set `ASR_BASE_URL`,
+`ASR_API_KEY`, its actual `ASR_MODEL`, and `ASR_PROTOCOL=audio_transcriptions`.
 The admin config catalog uses `asr.*`; the secret key only exposes configured
 status. `/healthz` includes `asr.enabled`, `asr.configured` and `asr.pending`
 without making a billable provider request.
@@ -74,10 +86,11 @@ URL; SnowLuma documents Base64 with `out_format`. Event URLs remain subject to
 the existing bounded downloader's SSRF,
 redirect and DNS-pinning checks. No private-URL bypass is enabled for ASR.
 
-Defaults are 10 MiB per downloaded clip, 180 seconds per clip, 3 clips per turn,
+Defaults are 10 MiB per downloaded clip, 180 seconds per clip,
 2 concurrent messages, 8 total pending messages, and a 60-second deadline that
 includes queueing, transport, conversion and recognition. The configurable
-duration never exceeds Qwen's 300-second limit. Local decoding accepts common
+duration currently has a 300-second maximum. All current and quoted clips are
+processed in their attachment order within that deadline. Local decoding accepts common
 audio containers and emits mono 16 kHz MP3, bounded below 7 MB before Base64.
 Decoder processes have their own deadlines, no remote protocols and one thread;
 cancellation kills them and removes temporary files.
@@ -105,15 +118,18 @@ image, and replace only the Bot while preserving the QQ gateway and login state.
 并保存到历史与搜索，公共 compact 沿同一账本和来源版本读取；自动记忆只把当前消息的语音当作当前发言者的证据，引用他人的
 语音不会被归到当前用户名下。语音里出现 `/ai new` 等文字不会执行管理命令。
 
-默认复用现有千问地址和密钥，使用专门的 `qwen3-asr-flash`。Yuki 保留语音识别和历史转写，不再提供语音合成或发送。默认上限为单条 10 MiB、180 秒、每轮最多 3 条、并发 2、待处理 8，整轮
+默认复用现有千问地址和密钥，使用 `chat_completions` 与专门的 `qwen3-asr-flash`。
+其他兼容转写服务显式配置地址、密钥、模型和 `audio_transcriptions` 协议。
+Yuki 保留语音识别和历史转写，不再提供语音合成或发送。默认上限为单条 10 MiB、180 秒、并发 2、待处理 8，整轮
 识别最多 60 秒。失败、空结果、超限和繁忙均有明确反馈，不会无声重试或假装听到了。
 
 升级会增加 `0055` 数据库迁移。回滚保留已经识别的文字；`/ai new` 会中断识别，旧任务不能
-把结果写入新会话。原始音频仅用于当次处理，临时文件随处理结束清理。
+把结果写入新会话。原始音频与其他附件统一保存在共享沙箱缓存，24 小时清理；解码临时文件随处理结束清理。
 
 ## Validation
 
-Targeted tests cover Qwen's request and failure contracts, gateway conversion,
+Targeted tests cover the unchanged Qwen request, multipart transcription and shared
+failure contracts, startup configuration, gateway conversion,
 private/group admission, quoted-speaker attribution, history/FTS/source invalidation,
 idempotency, cancellation, and migration downgrade/re-upgrade. Existing file
 delivery tests also cover upload/caption partial success.

@@ -21,6 +21,7 @@ from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.domain.tool_actor import ToolActor
 from yuki.gateway.providers.telegram import TelegramAPIError
+from yuki.identity.canonical_repository import ensure_person
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.people_repository import PeopleRepository
@@ -312,9 +313,71 @@ async def test_onebot_original_receipt_precedes_all_upstream_lifecycle_gates(
         assert replay.ok is not lost_ack
         assert len(env.bot.calls) == before
         with host.bind(replace(source, delivery_identity="new-callback")):
-            with pytest.raises((SocialError, PluginPermissionError)):
-                await send()
+            if change == "binding":
+                new = await send()
+                assert new.data["operation_id"] != first.data["operation_id"]
+                assert len(env.bot.calls) == before + 1
+            else:
+                with pytest.raises((SocialError, PluginPermissionError)):
+                    await send()
+                assert len(env.bot.calls) == before
+    finally:
+        await host.close_host_resources()
+
+
+async def test_onebot_group_send_uses_original_person_after_account_transfer(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    async with database.sessions() as reader:
+        event = await reader.scalar(
+            select(ChatEventModel).where(ChatEventModel.direction == "inbound")
+        )
+        binding = await reader.scalar(
+            select(IdentityBindingModel).where(
+                IdentityBindingModel.person_id == event.author_person_id
+            )
+        )
+    async with database.immediate_session() as writer:
+        other = await ensure_person(writer, "10002")
+
+    class Gateway:
+        async def call_api(self, action, params):
+            return await env.bot.call_api(action, **params)
+
+    plugin = "test.original-transferred-account"
+    host = HostPluginContext(
+        plugin_id=plugin,
+        approved_permissions=(PluginPermission.ONEBOT_SEND,),
+        services=PluginFacadeServices(ledger=EventLedgerRepository(database), social=env.service),
+    )
+    source = await invocation(
+        database, plugin, event, platform="qq", space_id=env.space, gateway=Gateway()
+    )
+    await ClientIdentityService(database).transfer_for_operator(
+        binding.id, other, str(uuid4()), str(uuid4())
+    )
+    env.bot.calls.clear()
+    try:
+        with host.bind(source):
+            first = await host.onebot.send_music_card(provider="qq", resource_id="42")
+        assert first.ok, first
+        assert [action for action, _ in env.bot.calls if action.startswith("send_")] == [
+            "send_group_msg"
+        ]
+        async with database.immediate_session() as writer:
+            (await writer.get(CanonicalPersonModel, event.author_person_id)).enabled = False
+        before = len(env.bot.calls)
+        with host.bind(source):
+            replay = await host.onebot.send_music_card(provider="qq", resource_id="42")
+        assert replay.data["operation_id"] == first.data["operation_id"]
+        assert replay.ok and len(env.bot.calls) == before
+        with host.bind(replace(source, delivery_identity="new-callback")):
+            with pytest.raises(SocialError, match="plugin_send_source_mismatch"):
+                await host.onebot.send_music_card(provider="qq", resource_id="42")
         assert len(env.bot.calls) == before
+        async with database.sessions() as reader:
+            assert (
+                await reader.get(ChatEventModel, event.id)
+            ).author_person_id == event.author_person_id
     finally:
         await host.close_host_resources()
 

@@ -23,17 +23,22 @@ try:
 except ImportError:  # Installed next to this standalone script.
     from media import inspect_path  # type: ignore[no-redef,import-not-found]
 
+CACHE_VERSION = 2
+
 
 def identity(platform: str, digest: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"yuki:sticker:{platform}:{digest}"))
 
 
 def terms(text: str) -> set[str]:
-    values = set(re.findall(r"\w+|[^\w\s]", text.casefold()))
-    for word in tuple(values):
-        if any("\u3400" <= char <= "\u9fff" for char in word):
+    values = set()
+    for word in re.split(r"([\u3400-\u9fff]+)", text.casefold()):
+        if word and "\u3400" <= word[0] <= "\u9fff":
+            values.add(word)
             values.update(word)
             values.update(word[index : index + 2] for index in range(len(word) - 1))
+        else:
+            values.update(re.findall(r"\w+|[^\w\s]", word))
     return values
 
 
@@ -176,7 +181,10 @@ class StickerIndex:
         try:
             db = sqlite3.connect(path)
             tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            if tables and not self.valid_schema(db):
+            if tables and (
+                not self.valid_schema(db)
+                or db.execute("PRAGMA user_version").fetchone()[0] not in {0, CACHE_VERSION}
+            ):
                 db.close()
                 self._unlink_cache(platform)
                 db = sqlite3.connect(path)
@@ -206,7 +214,7 @@ class StickerIndex:
                 if valid:
                     db.execute("SELECT id FROM assets LIMIT 1").fetchone()
                     db.execute("SELECT term,asset_id FROM terms LIMIT 1").fetchone()
-                    return bool(db.execute("PRAGMA user_version").fetchone()[0] == 1)
+                    return bool(db.execute("PRAGMA user_version").fetchone()[0] == CACHE_VERSION)
         except sqlite3.DatabaseError as error:
             if not path.exists():
                 return False
@@ -326,17 +334,17 @@ class StickerIndex:
         self.write_json(canonical, record)
         if selected != canonical:
             selected.unlink(missing_ok=True)
-        self.update_cache(platform, record["id"])
+        affected = {record["id"], selected.stem}
+        if isinstance(old.get("id"), str):
+            affected.add(old["id"])
+        self._cache_batch(platform, tuple(affected))
         return {"asset": record}
 
     def annotate(
         self, asset: dict[str, Any], *, tags: list[str], description: str, ocr_text: str
     ) -> dict[str, Any]:
         path = self.metadata_path(asset["platform"], asset["id"])
-        try:
-            current = self.read_json(path)
-        except FileNotFoundError:
-            current = asset
+        current = self.read_json(path)
         # Ordinary last-writer semantics; no editing lease, revision or permission split.
         current.update(tags=tags, description=description, ocr_text=ocr_text)
         self.write_json(path, current)
@@ -365,16 +373,19 @@ class StickerIndex:
             pending = []
             # Read each metadata file once to pair explicit cross-platform copies.
             copied: dict[str, dict[str, Any]] = {}
+            observed: dict[Path, dict[str, Any]] = {}
             bad = set()
             if (directory / "index").exists():
                 for metadata in (directory / "index").glob("*.json"):
                     try:
                         value = self.read_json(metadata)
                         copied.setdefault(value.get("sha256", ""), value)
+                        observed[metadata] = value
                     except (OSError, ValueError, TypeError) as exc:
                         bad.add(metadata.stem)
                         errors.append({"path": str(metadata), "error": type(exc).__name__})
             originals = directory / "files"
+            files_complete = True
             for path in originals.rglob("*") if originals.exists() else ():
                 if not path.is_file() or path.is_symlink():
                     continue
@@ -397,13 +408,38 @@ class StickerIndex:
                         self._cache_batch(current, tuple(pending))
                         pending.clear()
                 except (OSError, ValueError, TypeError, KeyError) as exc:
+                    files_complete = False
                     errors.append({"path": str(path), "error": type(exc).__name__})
+            # Renames and duplicate originals have already adopted their metadata.
+            # An unreadable original is unknown, so keep its possible old tags.
+            for metadata, value in observed.items() if files_complete else ():
+                try:
+                    previous_id = identity(current, value["sha256"])
+                    if previous_id in indexed:
+                        continue
+                    original = self.original_path(current, value["relative_path"])
+                    remaining: dict[str, Any] | None
+                    try:
+                        remaining = self.facts(original, inspect_pixels=False)
+                    except FileNotFoundError:
+                        remaining = None
+                    if remaining is not None and remaining["sha256"] == value["sha256"]:
+                        continue
+                    with self.cache_writer(current):
+                        # Do not unlink a completed terminal edit seen after discovery.
+                        if self.read_json(metadata) == value:
+                            metadata.unlink()
+                            pending.append(previous_id)
+                except FileNotFoundError:
+                    pending.append(previous_id)
+                except (OSError, ValueError, TypeError, KeyError) as exc:
+                    errors.append({"path": str(metadata), "error": type(exc).__name__})
             pending.extend(initial - indexed)
             for start in range(0, len(pending), 100):
                 self._cache_batch(current, tuple(pending[start : start + 100]))
             with self.cache_writer(current):
                 db = self.cache(current)
-                db.execute("PRAGMA user_version=1")
+                db.execute(f"PRAGMA user_version={CACHE_VERSION}")
                 db.close()
             assets += len(indexed)
         for error in errors:

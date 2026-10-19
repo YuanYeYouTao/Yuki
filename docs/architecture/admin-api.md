@@ -81,7 +81,10 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 `POST /persons/{id}/rename {request_id,display_name}` 需 `identity.person.rename`。
 两者调用共同人物领域操作，当前查询解析最终人物，原请求按原 UUID/参数返回原回执。
 归并和改名不创建 App、不切换入口、不重写 Conversation、原事件或已付输入。
-`GET /persons/{id}` 同时返回当前 `id`、原查询 `source_person_id`、主名和当前 revision。
+`GET /persons/{id}` 同时返回当前 `id`、原查询 `source_person_id`、主名和当前 `revision/enabled`，
+另以 `source_revision/source_enabled` 展示该原来源的真实状态。显式 `enable` 使用该来源的
+`source_revision`，恢复指定来源并启用当前人物；其他已停用的合并成员、设备与 Binding 保持原状。
+disable、超管资格和新账号挂接继续使用当前人物的 `revision`。旧请求重放只返回原回执。
 账号真正转给另一人继续用独立 `binding transfer`，不会创建同人关系。
 
 ## 回执与效果
@@ -94,7 +97,9 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 `idempotency_conflict`。HTTP 中断或超时保留原请求号，查原回执；CLI 不自动重发。
 `admin operation` 同时接受完整 operation ID，或当前 operator 的 request UUID。
 `running`／`unknown` 沿原 ID 查证，未知不重发；CLI 遇到未确认结果会停止当前流程，
-部署向导不会把它当成插件配置已完成。无“清空 unknown”入口。
+部署向导不会把它当成插件配置已完成。已确认未写入或整体回滚的失败按原失败回执返回；
+效果或回滚仍未确认才保留 unknown。旧 unknown 不自动重试，也不永久阻挡新 UUID 的显式操作；
+真实并发由原领域 Manager／文件服务的锁和 revision 裁决，无需清空旧回执。
 
 插件授权、版本检查、启动与停止由原 PluginManager 执行。配置使用已批准安装定义的 schema，首次启用前、停用或启动失败后均可修正，查询不启动插件；
 observe 只调用运行中插件的观察合同。通知只允许原领域规则证明可重试的发送前失败；
@@ -138,7 +143,7 @@ yuki admin person list
 yuki admin person show <PersonID>
 yuki admin person superuser grant <PersonID> --revision <当前revision>
 yuki admin person superuser revoke <PersonID> --revision <当前revision>
-yuki admin person enable <PersonID> --revision <当前revision>
+yuki admin person enable <PersonID> --revision <source_revision>
 yuki admin binding list --person <PersonID>
 yuki admin binding enable <BindingID> --revision <当前revision>
 yuki admin presence disable <PresenceID> --revision <当前revision>

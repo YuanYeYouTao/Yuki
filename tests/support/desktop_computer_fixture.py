@@ -162,5 +162,8 @@ class DesktopComputerFixture:
                 "events": self.events,
                 "clipboard": self.clipboard,
                 "connections": self.connections,
+                "mutations": self.manager.db.execute(
+                    "SELECT COUNT(*) FROM environment_mutations"
+                ).fetchone()[0],
                 "control": self.manager.computer.control(),
             }

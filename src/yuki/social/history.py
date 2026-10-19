@@ -7,10 +7,11 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import select
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.identity.person_identity import person_family_condition, same_person_id
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_helpers import keeper_event_clause
 from yuki.social.db_models import SocialOperationModel
-from yuki.social.models import SocialError, SocialTarget
+from yuki.social.models import SocialError
 
 if TYPE_CHECKING:
     from yuki.social.service import SocialContext, SocialService
@@ -50,14 +51,10 @@ async def read_history(
             if any(args.get(key) for key in ("target_id", "display_name", "subject_ref", "kind")):
                 kind = args.get("kind", "space" if context.space_id else "person")
                 target = await service.target(kind, args, context)
-                await service.check_target(target)
                 query = select(CanonicalConversationModel).where(
-                    (
-                        CanonicalConversationModel.person_id
-                        if kind == "person"
-                        else CanonicalConversationModel.space_id
-                    )
-                    == str(target.id)
+                    person_family_condition(CanonicalConversationModel.person_id, str(target.id))
+                    if kind == "person"
+                    else CanonicalConversationModel.space_id == str(target.id)
                 )
                 if args.get("binding_id"):
                     query = query.where(
@@ -86,13 +83,11 @@ async def read_history(
         conversation = await session.get(CanonicalConversationModel, conversation_id)
         if conversation is None:
             raise SocialError("history_unavailable")
-        target = SocialTarget.model_validate(
-            {
-                "kind": "person" if conversation.kind == "private" else "space",
-                "id": conversation.person_id or conversation.space_id,
-            }
+        target = await service.target(
+            "person" if conversation.kind == "private" else "space",
+            {"target_id": conversation.person_id or conversation.space_id},
+            context,
         )
-        await service.check_target(target)
         # A delegated read contract is a real grant, independent of route/connection.
         from yuki.capabilities.invocation import current_invocation
 
@@ -100,7 +95,10 @@ async def read_history(
         if invocation is not None:
             allowed_target = getattr(invocation.runtime, "read_target_id", None)
             if allowed_target is not None and allowed_target != str(target.id):
-                raise SocialError("history_scope_denied")
+                if target.kind != "person" or not await same_person_id(
+                    session, allowed_target, str(target.id)
+                ):
+                    raise SocialError("history_scope_denied")
         events = select(ChatEventModel).where(
             ChatEventModel.canonical_conversation_id == conversation.id,
             keeper_event_clause(),

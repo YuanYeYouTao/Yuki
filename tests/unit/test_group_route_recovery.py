@@ -604,8 +604,8 @@ async def test_new_group_registration_race_never_creates_or_replaces_owner(
     bot.groups |= {NEW_GROUP}
     original = app.presence_router.unbound_group_recovery_presence
 
-    async def raced(group_id: str) -> str:
-        candidate = await original(group_id)
+    async def raced(group_id: str, *, platform: str) -> str:
+        candidate = await original(group_id, platform=platform)
         if change == "connection":
             app.gateway_registry.disconnect(bot)
             app.gateway_registry.connect(
@@ -679,8 +679,10 @@ async def test_new_group_original_control_request_recovers_receipt_and_rejects_r
     app, bot, presence, _space, _binding = await stack(database)
     bot.groups |= {NEW_GROUP}
     access = ControlAccess(database)
-    principal = await access.qq_recovery_principal("9000")
-    context = access.context(principal, await access.qq_recovery_space_target(NEW_GROUP))
+    principal = await access.recovery_principal("9000", platform="qq")
+    context = access.context(
+        principal, await access.recovery_space_target(NEW_GROUP, platform="qq")
+    )
     assert context.canonical_target.space_id is None
     connection_id = app.gateway_registry.resolve_active(presence).snapshot.connection_id
     audit = ControlAuditRef(

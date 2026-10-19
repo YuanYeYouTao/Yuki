@@ -14,7 +14,6 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
 from yuki import __version__
-from yuki.adapters.onebot.group_recovery import QQGroupRecovery
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.admin.permission_catalog import PermissionCatalogService
@@ -64,6 +63,7 @@ from yuki.services.autonomous_groups import AutonomousGroupService
 from yuki.services.command_service import CommandService
 from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.effect_gate import ConversationEffectGate
+from yuki.services.group_recovery import NativeGroupRecovery
 from yuki.services.native_media import NativeMediaPreparer
 from yuki.services.plugin_events import publish_notification
 from yuki.services.processing_status import ProcessingStatusService
@@ -547,7 +547,7 @@ class ApplicationContainer:
             concurrency=self.concurrency,
             canonical_ingress=self.canonical_ingress,
             client_links=self.client_links,
-            group_recovery=QQGroupRecovery(
+            group_recovery=NativeGroupRecovery(
                 settings, self.database, self.gateway_registry, self.presence_router
             ),
             canonical_uow=self.canonical_uow,

@@ -65,7 +65,10 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                 "plugin_event(plugin_id,event_type)、owned_run(run_id)，"
                 "wait_mode=any/all，deadline_at 可选；信号到达续原 work_id。"
                 "conversation 等当前会话下一条输入，没有人物、主题筛选；定期查证用 time_due。"
-                "wait_status 查询，cancel_wait 撤销。need_input 说明缺失信息；"
+                "wait_status 查询，cancel_wait 撤销。主任务需要用户补充时，"
+                "先用 send_message 提出问题，"
+                "再用 need_input(reason) 登记等待；子任务的 need_input 会直接向父任务提问，"
+                "按回执等待回答。"
                 "complete 提交结束；可在 result 中给出真实内部结果（调用方或父工作读取它，"
                 "不会自动外发）；fail/cancel 终止指定工作及其所属执行。"
                 "complete/wait/need_input 不截断本批后续获准调用；"
@@ -99,7 +102,7 @@ def work_control_tools() -> tuple[ChatTool, ...]:
                         "type": "string",
                         "enum": ["interactive", "quiet"],
                         "description": (
-                            "交互式任务用 interactive，按需说明有意义的进展或阻塞。"
+                            "交互式任务用 interactive，有实质进展、阻塞或完成时简短报告。"
                             "用户要求安静、SELF 自主工作或后台维护用 quiet；新真人追问仍需处理。"
                             "update 可只修改此字段，不改变目标或等待。"
                         ),
@@ -1066,8 +1069,10 @@ class WorkControl:
             raise ValueError("work_goal_required")
         source = {
             **self.source,
+            "actor_person_id": event.author_person_id,
             "actor_user_id": event.sender_user_id,
             "trigger_event_id": event.id,
+            "bot_user_id": event.bot_user_id,
             "presence_id": event.ingress_presence_id,
         }
         queued = await self.repository.accept(

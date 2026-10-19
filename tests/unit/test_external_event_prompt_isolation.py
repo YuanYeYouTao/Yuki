@@ -36,6 +36,12 @@ from yuki.services.context_assembler import (
 from yuki.services.prompt_composer import PromptComposer
 
 _OCCURRED = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
+# The user explicitly retained this search policy while revising the other guidance.
+_PUBLIC_INFORMATION_RULE = (
+    "公开信息只要可能变化、更新或过时，即使熟悉话题或对方说得肯定，也不等用户要求，"
+    "主动联网搜索最新可靠来源，核实后再作事实判断；不熟悉、拿不准或用户要求核实的公开"
+    "事实同样先查证，指定网页用受控读取。"
+)
 
 
 def _message(
@@ -526,8 +532,9 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     assert "external_event_wakeup" in (wakeup_context.current_message.content or "")
 
 
-def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
-    settings = make_settings("sqlite+aiosqlite:///:memory:")
+@pytest.mark.parametrize("code_enabled", (False, True))
+def test_external_wakeup_uses_the_same_main_agent_prompt_program(code_enabled) -> None:
+    settings = make_settings("sqlite+aiosqlite:///:memory:", code_mode_enabled=code_enabled)
     composer = PromptComposer(settings)
     current = ChatMessage(role="user", content="[external] current summary")
     history = (ChatMessage(role="user", content="hello from a person"),)
@@ -565,6 +572,7 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
         MEMORY_GROUNDING_RULE,
     ):
         assert system_text.count(component) == 1
+    assert system_text.count(_PUBLIC_INFORMATION_RULE) == 1
     assert tuple(item.content for item in composed.messages if item.role == "system") == tuple(
         item.content for item in ordinary.messages if item.role == "system"
     )
@@ -575,6 +583,7 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
         item.content or "" for item in composed.messages if item.role != "system"
     )
     assert history_blob.count("current summary") == 1
+    assert _PUBLIC_INFORMATION_RULE not in history_blob
     repeat = composer.compose(
         inbound=None,
         context=context,
