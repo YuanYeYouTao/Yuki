@@ -83,6 +83,7 @@ async def _control(database, tmp_path, *, worker=False):
         lease, source_key="anchor-test", source=control.source, goal="retain the actual task"
     )
     if worker:
+        database.subagents_enabled = True
         from yuki.runtime.subagent_repository import SubagentRepository
 
         children = SubagentRepository(repo)

@@ -21,6 +21,7 @@ from yuki_plugin_sdk.results import ToolResult
 
 
 async def _message_child(database, tmp_path, *, privileged=False):
+    database.subagents_enabled = True
     case = await setup_run(database, tmp_path, mode="silent", privileged=privileged)
     async with database.sessions() as reader:
         event = await reader.scalar(select(ChatEventModel))
@@ -331,6 +332,7 @@ async def test_plugin_background_child_reuses_original_job_authority_after_resta
             .where(PluginBackgroundTurnJobModel.id == job.id)
             .values(work_id=root["id"])
         )
+    database.subagents_enabled = True
     workers = SubagentRepository(repository)
     child = await workers.start(
         lease, root["id"], "plugin-child", {"goal": "check original external event"}

@@ -91,7 +91,7 @@ async def test_tgs_current_uses_shared_real_preview_and_keeps_original_cache(
     analyze = AsyncMock(side_effect=AssertionError("ordinary Main must not call auxiliary Vision"))
     monkeypatch.setattr("yuki.vision.qwen.QwenVisionProvider.analyze", analyze)
     await case.media._cache_event(case.source.id, case.original_client, inbound)
-    assert not any("preview.png" in path for _, path in case.wire)
+    assert case.wire.count(("GET", "/file/botfixture-a/photos/preview.png")) == 1
     prepared = await case.workspace.execute(
         "inspect_conversation_attachment",
         {"event_id": case.source.id, "attachment_index": 0, "question": "查看贴纸预览"},
@@ -346,13 +346,16 @@ async def test_preview_download_failure_does_not_misclassify_native_tgs(
 
     case = attachment_tools
     inbound = original(case, preview=True)
+    resolve = case.original_client.resolve_media_file
+
+    async def fail_preview(file, kind, *, max_download_bytes):
+        if file == "actual-sticker-preview":
+            raise MediaResolutionError("resource_unavailable", "preview unavailable")
+        return await resolve(file, kind, max_download_bytes=max_download_bytes)
+
+    monkeypatch.setattr(case.original_client, "resolve_media_file", fail_preview)
     await case.media._cache_event(case.source.id, case.original_client, inbound)
     item, path = await case.media.authorized_path(event_id=case.source.id, attachment_index=0)
-    monkeypatch.setattr(
-        case.original_client,
-        "resolve_media_file",
-        AsyncMock(side_effect=MediaResolutionError("resource_unavailable", "preview unavailable")),
-    )
     with pytest.raises(WorkspaceError, match="resource_unavailable"):
         await case.workspace.execute(
             "inspect_conversation_attachment",

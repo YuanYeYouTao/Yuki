@@ -18,10 +18,12 @@ from yuki.gateway.providers.telegram_ingress import TelegramGateway
 from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.identity.canonical_repository import create_presence
 from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
+from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel, IdentityBindingModel
 from yuki.identity.ingress import CanonicalIngressResolver
 from yuki.identity.routing import PresenceRouter
 from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel
+from yuki.services.group_recovery import NativeGroupRecovery
 from yuki.services.main_agent_contract import MainAgentContract
 from yuki.social.service import SocialService
 from yuki.workspace.short_state import ShortState
@@ -63,6 +65,9 @@ async def telegram_env(database, tmp_path):
     router = PresenceRouter(database, registry)
     harness.processor._canonical_ingress = CanonicalIngressResolver(database, registry, router)
     harness.processor._canonical_uow = CanonicalIngressUnitOfWork(database, router)
+    harness.processor._group_recovery = NativeGroupRecovery(
+        harness.settings, database, registry, router
+    )
     social = SocialService(database, router, harness.scoped_events)
     harness.processor._chat._tools.social_service = social
     store = WorkspaceStore(tmp_path / "workspace")
@@ -128,6 +133,150 @@ async def test_native_private_main_reply_and_duplicate_keep_original_event(teleg
     assert all(
         "call_onebot_api" not in [tool.name for tool in request.tools]
         for request in env.model.requests
+    )
+
+
+@pytest.mark.parametrize("paused", [False, True])
+async def test_native_group_enable_recovers_disabled_group_without_chat_or_model(
+    telegram_env, database, paused
+):
+    from yuki.conversation.canonical_db_models import (
+        ControlCommandReceiptModel,
+        SpaceActiveRouteModel,
+        SpaceBindingIngestRouteModel,
+    )
+    from yuki.identity.db_models import SpaceBindingModel
+
+    env = telegram_env
+    await env.gateway.receive(update(text="establish sender"))
+    await drain(env)
+    async with database.immediate_session() as session:
+        binding = await session.scalar(
+            select(IdentityBindingModel).where(
+                IdentityBindingModel.platform == "telegram",
+                IdentityBindingModel.external_account_id == "42",
+            )
+        )
+        person = await session.get(CanonicalPersonModel, binding.person_id)
+        person.is_superuser = True
+    await env.gateway.receive(update(2, chat=-10042, text="!ai establish group"))
+    await drain(env)
+    await env.gateway.receive(update(3, chat=-10042, text="/ai admin group current disable"))
+    await drain(env)
+    async with database.immediate_session() as session:
+        space = await session.scalar(
+            select(CanonicalSpaceModel).where(CanonicalSpaceModel.name == "G")
+        )
+        assert not space.enabled
+        space_id = space.id
+        binding = await session.scalar(
+            select(SpaceBindingModel).where(SpaceBindingModel.space_id == space_id)
+        )
+        ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
+        route = await session.get(SpaceActiveRouteModel, space_id)
+        if paused:
+            ingest.paused = True
+            if route is not None:
+                route.paused = True
+        before_events = list(await session.scalars(select(ChatEventModel.id)))
+        conversation = await session.scalar(
+            select(CanonicalConversationModel).where(
+                CanonicalConversationModel.space_id == space_id
+            )
+        )
+        before_generation = conversation.generation
+    before_requests = len(env.model.requests)
+    await env.gateway.receive(update(4, chat=-10042, text="/ai admin group CURRENT enable"))
+    await drain(env)
+    async with database.sessions() as session:
+        space = await session.get(CanonicalSpaceModel, space_id)
+        ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
+        route = await session.get(SpaceActiveRouteModel, space_id)
+        assert space.enabled and not ingest.paused and not route.paused
+        assert list(await session.scalars(select(ChatEventModel.id))) == before_events
+        conversation = await session.get(CanonicalConversationModel, conversation.id)
+        assert conversation.generation == before_generation
+        receipt = await session.scalar(
+            select(ControlCommandReceiptModel).where(
+                ControlCommandReceiptModel.result_resource_id == space_id,
+                ControlCommandReceiptModel.operation_kind.is_(None),
+            )
+        )
+        assert receipt is not None and receipt.status == "succeeded"
+    assert len(env.model.requests) == before_requests
+    assert [p["text"] for method, p in env.wire if method == "sendMessage"][-1].startswith(
+        "已启用当前群"
+    )
+
+
+async def test_group_recovery_uses_platform_person_and_current_superuser(telegram_env, database):
+    from yuki.identity.canonical_repository import ensure_person
+
+    env = telegram_env
+    await env.gateway.receive(update(text="establish sender"))
+    await drain(env)
+    await env.gateway.receive(update(2, chat=-10042, text="!ai establish group"))
+    await drain(env)
+    async with database.immediate_session() as session:
+        qq_id = await ensure_person(session, "42")
+        qq_person = await session.get(CanonicalPersonModel, qq_id)
+        qq_person.is_superuser = True
+        space = await session.scalar(
+            select(CanonicalSpaceModel).where(CanonicalSpaceModel.name == "G")
+        )
+        space_id = space.id
+        space.enabled = False
+    before_requests = len(env.model.requests)
+    await env.gateway.receive(update(3, chat=-10042, text="/ai admin group current enable"))
+    await drain(env)
+    async with database.sessions() as session:
+        space = await session.get(CanonicalSpaceModel, space_id)
+        assert not space.enabled
+    assert len(env.model.requests) == before_requests
+    assert [p["text"] for method, p in env.wire if method == "sendMessage"][-1].startswith(
+        "无法恢复"
+    )
+
+
+async def test_group_recovery_keeps_original_merged_actor(telegram_env, database):
+    from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
+    from yuki.identity.canonical_repository import create_person_binding
+    from yuki.identity.person_identity import merge_persons
+
+    env = telegram_env
+    await env.gateway.receive(update(text="establish sender"))
+    await drain(env)
+    async with database.immediate_session() as session:
+        binding = await session.scalar(
+            select(IdentityBindingModel).where(
+                IdentityBindingModel.platform == "telegram",
+                IdentityBindingModel.external_account_id == "42",
+            )
+        )
+        original_person = binding.person_id
+        target = await create_person_binding(
+            session,
+            external_account_id="merge-target",
+            display_name="Merge target",
+            now=datetime.now(UTC),
+            platform="telegram",
+        )
+        person = await session.get(CanonicalPersonModel, target.person_id)
+        person.is_superuser = True
+        await merge_persons(session, original_person, person.id)
+    before_requests = len(env.model.requests)
+    await env.gateway.receive(update(2, chat=-10042, text="/ai admin group current enable"))
+    await drain(env)
+    async with database.sessions() as session:
+        receipt = await session.scalar(
+            select(ControlCommandReceiptModel).where(
+                ControlCommandReceiptModel.principal_id == original_person
+            )
+        )
+        assert receipt is not None and receipt.status == "succeeded"
+    assert len(env.model.requests) == before_requests
+    assert [p["text"] for method, p in env.wire if method == "sendMessage"][-1].startswith(
+        "已启用当前群"
     )
 
 

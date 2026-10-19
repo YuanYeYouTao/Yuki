@@ -356,6 +356,7 @@ async def test_self_child_runs_and_continues_after_parent_and_original_initiativ
         source=source,
         goal="inspect the original SELF scene",
     )
+    database.subagents_enabled = True
     workers = SubagentRepository(repository)
     identity = await workers.start(
         lease, parent["id"], "self-child", {"goal": "check independently"}
@@ -439,6 +440,7 @@ async def test_expired_worker_does_not_repurchase_response_lost_with_process(dat
     root = await repository.accept(
         lease, source_key=f"initiative:{source['initiative_run_id']}", source=source, goal="inspect"
     )
+    database.subagents_enabled = True
     workers = SubagentRepository(repository)
     identity = await workers.start(
         lease, root["id"], "paid-child", {"goal": "inspect independently"}
@@ -552,6 +554,7 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
 
     source, _admissions, _binding = await self_source(database)
     repository = WorkRepository(database)
+    database.subagents_enabled = True
     workers = SubagentRepository(repository)
     lease = await repository.acquire(source["conversation_id"], source["generation"])
     root = await repository.accept(

@@ -21,6 +21,7 @@ from yuki.sandbox.task_repository import SandboxTaskRepository
 
 @pytest_asyncio.fixture
 async def owned(database, tmp_path):
+    database.subagents_enabled = True
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
     lease = await repo.acquire(env.context.conversation_id, 1)

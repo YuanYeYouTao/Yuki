@@ -333,6 +333,7 @@ async def test_self_child_preserves_run_without_adopting_person(database):
         source=source,
         goal="inspect",
     )
+    database.subagents_enabled = True
     children = SubagentRepository(repo)
     child_id = await children.start(
         lease,
@@ -485,6 +486,7 @@ async def test_self_worker_runs_with_one_model_slot_without_synthetic_inbound(da
     item = await repo.accept(
         lease, source_key=f"initiative:{source['initiative_run_id']}", source=source, goal="inspect"
     )
+    database.subagents_enabled = True
     children = SubagentRepository(repo)
     child_id = await children.start(
         lease,

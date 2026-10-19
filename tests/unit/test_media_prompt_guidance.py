@@ -44,10 +44,12 @@ def test_media_guidance_preserves_casual_and_explicit_image_tasks(code_enabled):
     assert casual_system == tuple(item for item in requested.messages if item.role == "system")
     instructions = "\n".join(item.content or "" for item in casual_system)
     for guidance in (
-        "表情顺着聊天语气",
+        "表情包主要传达情绪和语气",
         "按当前话题和任务需要选读",
         "原事件编号、附件序号及共享缓存位置",
-        "inspect_conversation_attachment 或终端",
+        "看聊天图片用 inspect_conversation_attachment",
+        "工作区图片用 workspace_inspect",
+        "终端可处理、复制和保存原件",
         "emoji.goal",
         "后台选图无需等候",
     ):

@@ -77,6 +77,8 @@ class AdminQueries:
             return {
                 "id": root,
                 "source_person_id": row.id,
+                "source_enabled": row.enabled,
+                "source_revision": row.revision,
                 "revision": current.revision,
                 "enabled": current.enabled,
                 "display_name": current.display_name,

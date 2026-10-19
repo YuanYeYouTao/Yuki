@@ -14,6 +14,7 @@ from yuki.runtime.work_wait import WorkWaitRepository, normalize_conditions
 
 
 async def _running_work(database, tmp_path, *, interactive=False, goal="answer"):
+    database.subagents_enabled = True
     env = await social_env(database, tmp_path)
     repository = WorkRepository(database)
     lease = await repository.acquire(env.context.conversation_id, 1)

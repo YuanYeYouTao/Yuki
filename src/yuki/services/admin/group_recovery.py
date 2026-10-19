@@ -17,9 +17,9 @@ from yuki.conversation.canonical_db_models import (
     SpaceBindingIngestRouteModel,
 )
 from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
+from yuki.identity.authority import person_is_superuser
 from yuki.identity.canonical_repository import find_space_binding, new_identity_id
 from yuki.identity.db_models import (
-    CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     PresenceModel,
@@ -58,24 +58,25 @@ class GroupRecoveryService:
         principal_id = context.principal.principal_id.text
         if context.principal.person_id is None:
             raise PermissionError("invalid_control_principal")
-        person_id = context.principal.person_id.text
         payload_hash = self._payload_hash(context, space_id, presence_id, audit, event_type)
         async with self._database.sessions() as session:
-            await self._require_actor(session, person_id, audit)
             presence = await session.get(PresenceModel, presence_id)
             if (
                 presence is None
                 or not presence.enabled
                 or not presence.ingest_eligible
-                or presence.platform != "qq"
                 or presence.external_account_id != audit.bot_user_id
             ):
                 raise RouteSendError("none")
-            if await self._request_replayed(session, context, presence_id, audit, event_type):
+            platform = presence.platform
+            await self._require_actor(session, principal_id, audit, platform=platform)
+            if await self._request_replayed(
+                session, context, presence_id, audit, event_type, platform=platform
+            ):
                 return False
             if await self._replayed(session, principal_id, payload_hash):
                 return False
-            binding = await find_space_binding(session, target.storage_group_id)
+            binding = await find_space_binding(session, target.storage_group_id, platform=platform)
             if registering:
                 if binding is not None:
                     raise RouteSendError("conflict")
@@ -85,7 +86,7 @@ class GroupRecoveryService:
                     "ingest": None,
                     "send": None,
                 }
-                live_ids = self._registry.connected_presence_ids("qq")
+                live_ids = self._registry.connected_presence_ids(platform)
                 presences = await self._live_presences(session, live_ids)
             else:
                 if binding is None or binding.space_id != space_id:
@@ -96,7 +97,9 @@ class GroupRecoveryService:
                 presences = list(await session.scalars(select(PresenceModel)))
         connections_before = self._connections(presences)
         candidate_id = (
-            await self._router.unbound_group_recovery_presence(target.storage_group_id)
+            await self._router.unbound_group_recovery_presence(
+                target.storage_group_id, platform=platform
+            )
             if registering
             else (await self._router.group_recovery_candidate(binding_id)).presence_id
         )
@@ -104,15 +107,20 @@ class GroupRecoveryService:
             raise RouteSendError("not_ingest")
         preserve_send = not registering and await self._router.space_send_pin_healthy(space_id)
         async with self._database.immediate_session() as session:
-            await self._require_actor(session, person_id, audit)
-            if await self._request_replayed(session, context, presence_id, audit, event_type):
+            await self._require_actor(session, principal_id, audit, platform=platform)
+            if await self._request_replayed(
+                session, context, presence_id, audit, event_type, platform=platform
+            ):
                 return False
             if await self._replayed(session, principal_id, payload_hash):
                 return False
             if registering:
-                if await find_space_binding(session, target.storage_group_id) is not None:
+                if (
+                    await find_space_binding(session, target.storage_group_id, platform=platform)
+                    is not None
+                ):
                     raise RouteSendError("conflict")
-                if live_ids != self._registry.connected_presence_ids("qq"):
+                if live_ids != self._registry.connected_presence_ids(platform):
                     raise RouteSendError("conflict")
                 current_presences = await self._live_presences(session, live_ids)
             else:
@@ -146,7 +154,7 @@ class GroupRecoveryService:
                         SpaceBindingModel(
                             id=binding_id,
                             space_id=space_id,
-                            platform="qq",
+                            platform=platform,
                             external_space_id=target.storage_group_id,
                             display_name="",
                             status="active",
@@ -243,7 +251,7 @@ class GroupRecoveryService:
             await session.flush()
             if connections_before != self._connections(current_presences):
                 raise RouteSendError("conflict")
-            if registering and live_ids != self._registry.connected_presence_ids("qq"):
+            if registering and live_ids != self._registry.connected_presence_ids(platform):
                 raise RouteSendError("conflict")
         return True
 
@@ -292,6 +300,8 @@ class GroupRecoveryService:
         presence_id: str,
         audit: ControlAuditRef,
         event_type: str,
+        *,
+        platform: str,
     ) -> bool:
         receipt = await session.scalar(
             select(ControlCommandReceiptModel)
@@ -319,7 +329,7 @@ class GroupRecoveryService:
             select(SpaceBindingModel.id)
             .where(
                 SpaceBindingModel.space_id == space_id,
-                SpaceBindingModel.platform == "qq",
+                SpaceBindingModel.platform == platform,
                 SpaceBindingModel.external_space_id == target.storage_group_id,
             )
             .limit(1)
@@ -329,27 +339,28 @@ class GroupRecoveryService:
         return True
 
     @staticmethod
-    async def _require_actor(session: AsyncSession, person_id: str, audit: ControlAuditRef) -> None:
+    async def _require_actor(
+        session: AsyncSession, person_id: str, audit: ControlAuditRef, *, platform: str
+    ) -> None:
         actor = await session.scalar(
             select(IdentityBindingModel).where(
-                IdentityBindingModel.platform == "qq",
+                IdentityBindingModel.platform == platform,
                 IdentityBindingModel.external_account_id == audit.user_id,
                 IdentityBindingModel.status != "transferred",
             )
         )
-        person = await session.get(CanonicalPersonModel, person_id)
         yuki = await session.scalar(
             select(PresenceModel.id).where(
-                PresenceModel.platform == "qq",
+                PresenceModel.platform == platform,
                 PresenceModel.external_account_id == audit.user_id,
+                PresenceModel.enabled.is_(True),
             )
         )
         if (
             actor is None
             or actor.status != "active"
             or actor.person_id != person_id
-            or person is None
-            or not person.enabled
+            or not await person_is_superuser(session, person_id)
             or yuki is not None
         ):
             raise PermissionError("invalid_control_principal")

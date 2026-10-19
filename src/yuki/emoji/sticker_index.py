@@ -334,17 +334,17 @@ class StickerIndex:
         self.write_json(canonical, record)
         if selected != canonical:
             selected.unlink(missing_ok=True)
-        self.update_cache(platform, record["id"])
+        affected = {record["id"], selected.stem}
+        if isinstance(old.get("id"), str):
+            affected.add(old["id"])
+        self._cache_batch(platform, tuple(affected))
         return {"asset": record}
 
     def annotate(
         self, asset: dict[str, Any], *, tags: list[str], description: str, ocr_text: str
     ) -> dict[str, Any]:
         path = self.metadata_path(asset["platform"], asset["id"])
-        try:
-            current = self.read_json(path)
-        except FileNotFoundError:
-            current = asset
+        current = self.read_json(path)
         # Ordinary last-writer semantics; no editing lease, revision or permission split.
         current.update(tags=tags, description=description, ocr_text=ocr_text)
         self.write_json(path, current)
@@ -373,16 +373,19 @@ class StickerIndex:
             pending = []
             # Read each metadata file once to pair explicit cross-platform copies.
             copied: dict[str, dict[str, Any]] = {}
+            observed: dict[Path, dict[str, Any]] = {}
             bad = set()
             if (directory / "index").exists():
                 for metadata in (directory / "index").glob("*.json"):
                     try:
                         value = self.read_json(metadata)
                         copied.setdefault(value.get("sha256", ""), value)
+                        observed[metadata] = value
                     except (OSError, ValueError, TypeError) as exc:
                         bad.add(metadata.stem)
                         errors.append({"path": str(metadata), "error": type(exc).__name__})
             originals = directory / "files"
+            files_complete = True
             for path in originals.rglob("*") if originals.exists() else ():
                 if not path.is_file() or path.is_symlink():
                     continue
@@ -405,7 +408,32 @@ class StickerIndex:
                         self._cache_batch(current, tuple(pending))
                         pending.clear()
                 except (OSError, ValueError, TypeError, KeyError) as exc:
+                    files_complete = False
                     errors.append({"path": str(path), "error": type(exc).__name__})
+            # Renames and duplicate originals have already adopted their metadata.
+            # An unreadable original is unknown, so keep its possible old tags.
+            for metadata, value in observed.items() if files_complete else ():
+                try:
+                    previous_id = identity(current, value["sha256"])
+                    if previous_id in indexed:
+                        continue
+                    original = self.original_path(current, value["relative_path"])
+                    remaining: dict[str, Any] | None
+                    try:
+                        remaining = self.facts(original, inspect_pixels=False)
+                    except FileNotFoundError:
+                        remaining = None
+                    if remaining is not None and remaining["sha256"] == value["sha256"]:
+                        continue
+                    with self.cache_writer(current):
+                        # Do not unlink a completed terminal edit seen after discovery.
+                        if self.read_json(metadata) == value:
+                            metadata.unlink()
+                            pending.append(previous_id)
+                except FileNotFoundError:
+                    pending.append(previous_id)
+                except (OSError, ValueError, TypeError, KeyError) as exc:
+                    errors.append({"path": str(metadata), "error": type(exc).__name__})
             pending.extend(initial - indexed)
             for start in range(0, len(pending), 100):
                 self._cache_batch(current, tuple(pending[start : start + 100]))

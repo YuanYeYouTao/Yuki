@@ -17,6 +17,7 @@ from tests.unit.test_external_event_prompt_isolation import (
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatMessage
+from yuki.prompting.contracts import CORE_CONTRACT
 from yuki.runtime.trigger import ExternalEventTurnTrigger
 from yuki.services.prompt_composer import PromptComposer
 from yuki.services.prompt_registry import PromptFragment, PromptRegistry, PromptStage
@@ -85,7 +86,7 @@ def test_loaded_main_prompt_keeps_source_labels_without_blanket_distrust(tmp_pat
     payload = "\n".join(message.content or "" for message in composed.messages)
 
     assert "来自配置文件的人设正文" in composed.messages[0].content
-    assert "不是聊天成员发言" in composed.messages[0].content
+    assert CORE_CONTRACT in composed.messages[0].content
     assert history in composed.messages
     assert "[Conversation compact checkpoint]" in payload and "已有会话摘要" in payload
     assert "插件资料：" in payload and "当前天气资料" in payload

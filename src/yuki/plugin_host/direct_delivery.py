@@ -21,7 +21,7 @@ from yuki.identity.canonical_repository import (
     find_space_binding,
 )
 from yuki.identity.db_models import CanonicalPersonModel
-from yuki.identity.person_identity import current_person_id, same_person_id
+from yuki.identity.person_identity import current_person_id
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.social.models import OperationStatus, SocialError, SocialReceipt, SocialTarget
@@ -124,18 +124,11 @@ async def validate_delivery_source(
             or event.sender_user_id != actor_user_id
             or event.bot_user_id != bot_user_id
             or event.direction != "inbound"
+            or event.author_person_id is None
             or event.id <= conversation.starts_after_event_id
         ):
             raise SocialError("plugin_send_source_mismatch")
         actor_id = event.author_person_id
-        source_binding = await find_identity_binding(session, actor_user_id)
-        if (
-            source_binding is None
-            or source_binding.status != "active"
-            or event.author_person_id is None
-            or not await same_person_id(session, source_binding.person_id, event.author_person_id)
-        ):
-            raise SocialError("plugin_send_source_mismatch")
     elif actor is None:
         raise SocialError("plugin_send_source_unavailable")
     if actor_id is not None:

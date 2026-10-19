@@ -269,7 +269,6 @@ class CommandExecutor:
                 return await self._replay(
                     session, old, principal, command, operation, capability, target, bound
                 )
-            await self.receipts.require_external_available(session, operation, target)
             await self.receipts.reserve_external(
                 session,
                 principal,

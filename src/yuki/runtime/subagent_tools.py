@@ -18,6 +18,7 @@ def subagent_tools() -> tuple[ChatTool, ...]:
             "subagent_start",
             "将复杂工作交给后台工作者，立即返回 ID；可以继续聊天。"
             "需要当前 Work；尚未登记时先用 task_control accept 父任务。"
+            "派出的子任务已经登记工作，直接执行；结果由最终正文或 complete.result 回传父任务。"
             "已有子任务用 subagent_control，勿重复派生。",
             {
                 "goal": {"type": "string"},
@@ -58,8 +59,6 @@ async def execute_subagent(
     if name == "subagent_start":
         if control.current is None:
             raise ValueError("accept_work_before_execution")
-        if not getattr(control.repository.database, "subagents_enabled", False):
-            raise ValueError("subagent_admission_disabled")
         spawned_id = await repository.start(control.lease, control.current["id"], key, args)
         return {"ok": True, "child_id": spawned_id, "state": "queued", "pending": True}
     identity = args.get("child_id")

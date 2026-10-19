@@ -18,7 +18,7 @@ from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.unit_of_work import optional_session
-from yuki.social.db_models import SocialOperationModel
+from yuki.social.db_models import SocialEmojiIntentModel, SocialOperationModel
 from yuki.social.models import OperationStatus, SocialError, SocialReceipt, SocialTarget
 from yuki.social.source_keys import social_call_key, social_source_key
 
@@ -424,6 +424,23 @@ class SocialOperationRepository:
             )
             return cast(CursorResult[Any], result).rowcount == 1
 
+    async def stop_sequence(self, operation_id: str, error_category: str) -> None:
+        """Record a real preflight exit without claiming any unsent child step."""
+        async with self.database.immediate_session() as session:
+            await session.execute(
+                update(SocialOperationModel)
+                .where(
+                    SocialOperationModel.id == operation_id,
+                    SocialOperationModel.action == "send_message_sequence",
+                    SocialOperationModel.status == "prepared",
+                )
+                .values(
+                    status="failed",
+                    error_category=error_category,
+                    updated_at=datetime.now(UTC),
+                )
+            )
+
     async def finish(
         self,
         operation_id: str,
@@ -494,6 +511,39 @@ class SocialOperationRepository:
 
     async def recover_interrupted(self) -> int:
         """Startup-only recovery, before admitting turns; never execute old payloads."""
+        # Only live illustration dependencies need an interrupted text owner.
+        # Prepare their original plan before any UPDATE acquires the writer.
+        interrupted = []
+        async with self.database.sessions() as reader:
+            parents = await reader.scalars(
+                select(SocialOperationModel)
+                .join(
+                    SocialEmojiIntentModel,
+                    SocialOperationModel.id
+                    == func.json_extract(
+                        SocialEmojiIntentModel.source_json, "$.after_operation_id"
+                    ),
+                )
+                .where(
+                    SocialEmojiIntentModel.closed.is_(False),
+                    SocialOperationModel.action == "send_message_sequence",
+                    SocialOperationModel.status == "prepared",
+                )
+                .distinct()
+            )
+            for parent in parents:
+                prefix = sequence_prefix(parent.tool_call_id)
+                keys = tuple(f"{prefix}{index}" for index in range(parent.planned_parts or 0))
+                statuses = list(
+                    await reader.scalars(
+                        select(SocialOperationModel.status).where(
+                            SocialOperationModel.source_turn_id == parent.source_turn_id,
+                            SocialOperationModel.tool_call_id.in_(keys),
+                        )
+                    )
+                )
+                if "prepared" in statuses and any(status != "prepared" for status in statuses):
+                    interrupted.append((parent.id, parent.source_turn_id, keys))
         async with self.database.sessions() as session, session.begin():
             result = await session.execute(
                 update(SocialOperationModel)
@@ -506,7 +556,31 @@ class SocialOperationRepository:
                     updated_at=datetime.now(UTC),
                 )
             )
-            return cast(CursorResult[Any], result).rowcount
+            recovered = cast(CursorResult[Any], result).rowcount
+            steps = SocialOperationModel.__table__.alias("original_text_step")
+            for identity, source_turn_id, keys in interrupted:
+                original = select(steps.c.id).where(
+                    steps.c.source_turn_id == source_turn_id,
+                    steps.c.tool_call_id.in_(keys),
+                )
+                stopped = await session.execute(
+                    update(SocialOperationModel)
+                    .where(
+                        SocialOperationModel.id == identity,
+                        SocialOperationModel.action == "send_message_sequence",
+                        SocialOperationModel.status == "prepared",
+                        SocialOperationModel.planned_parts == len(keys),
+                        original.where(steps.c.status == "prepared").exists(),
+                        original.where(steps.c.status != "prepared").exists(),
+                    )
+                    .values(
+                        status="failed",
+                        error_category="process_interrupted",
+                        updated_at=datetime.now(UTC),
+                    )
+                )
+                recovered += cast(CursorResult[Any], stopped).rowcount
+            return recovered
 
     @staticmethod
     async def delivery_facts(

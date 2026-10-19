@@ -477,6 +477,7 @@ async def test_worker_failure_that_revokes_child_epoch_stops_its_pending_image(d
     lease = await repository.acquire(env.context.conversation_id, 1)
     source = {"origin": "user_message", "actor_user_id": "10001"}
     parent = await repository.accept(lease, source_key="parent", source=source, goal="delegate")
+    database.subagents_enabled = True
     workers = SubagentRepository(repository)
     identity = await workers.start(lease, parent["id"], "image-worker", {"goal": "send picture"})
     child_lease = await workers.acquire(identity)
@@ -721,7 +722,7 @@ async def test_cancellation_after_claim_preserves_confirmed_image(database, tmp_
         await delivery.close()
 
 
-async def test_admission_acknowledgement_loss_does_not_claim_rejection_or_repeat_text(
+async def test_pure_illustration_admission_acknowledgement_loss_is_not_rejection(
     database, tmp_path, monkeypatch
 ):
     env = await social_env(database, tmp_path)
@@ -733,14 +734,15 @@ async def test_admission_acknowledgement_loss_does_not_claim_rejection_or_repeat
         raise OperationalError("commit acknowledgement", (), sqlite3.OperationalError("lost"))
 
     monkeypatch.setattr(delivery, "admit", lose_acknowledgement)
-    first = await env.service.execute("send_message", ARGS, env.context)
-    assert first["status"] == "succeeded" and first["emoji"]["status"] == "unknown"
-    replay = await env.service.execute("send_message", ARGS, env.context)
-    assert replay["emoji"]["status"] == "accepted" and len(sends(env)) == 1
+    arguments = {"emoji": ARGS["emoji"]}
+    first = await env.service.execute("send_message", arguments, env.context)
+    assert first["status"] == "unknown" and first["emoji"]["status"] == "unknown"
+    replay = await env.service.execute("send_message", arguments, env.context)
+    assert replay["emoji"]["status"] == "accepted" and len(sends(env)) == 0
     await delivery.start()
     try:
         assert (await settle(delivery, env.context))["status"] == "succeeded"
-        assert len(sends(env)) == 2
+        assert len(sends(env)) == 1
     finally:
         await delivery.close()
 

@@ -79,7 +79,7 @@ async def test_self_mentions_recall_and_receipt_history_use_original_social_back
         "send-with-mention",
         actor.conversation_id,
         person_refs={"known_person": env.person},
-        account_refs={"known_person": "10001"},
+        account_refs={"known_person": ("qq", "10001")},
         space_id=env.space,
         origin=actor.origin.value,
         initiative_run_id=actor.initiative_run_id,

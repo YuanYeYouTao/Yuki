@@ -62,12 +62,6 @@ class MainAgentBackend(AgentToolBackend):
         selected = tuple(dict.fromkeys(images))
         workspace = tuple(image for image in selected if image.source in {"history", "workspace"})
         if workspace:
-            if any(
-                image.source == "history"
-                and image.conversation_id != runtime.canonical_conversation_id
-                for image in workspace
-            ):
-                raise LLMError("attachment_scope_denied")
             service = self._service._tools.workspace_service
             if service is None:
                 raise LLMError("workspace_unavailable")
@@ -401,9 +395,7 @@ class MainAgentBackend(AgentToolBackend):
                                 if PluginPermission.MEMORY_GROUP_READ in host._approved_permissions
                                 else ()
                             )
-                            binding_runtime = replace(
-                                binding_runtime, memory_allowed_scopes=scopes
-                            )
+                            binding_runtime = replace(binding_runtime, memory_allowed_scopes=scopes)
                     except PluginPermissionError as exc:
                         return ToolExecutionResult(
                             ok=False,

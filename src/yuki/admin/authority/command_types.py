@@ -55,6 +55,7 @@ CACHEABLE_COMMAND_FAILURES: Final[frozenset[ProblemCode]] = frozenset(
         ProblemCode.ROUTE_AMBIGUOUS,
         ProblemCode.POPULATED_MERGE_FORBIDDEN,
         ProblemCode.SECRET_NOT_READABLE,
+        ProblemCode.OPERATION_UNAVAILABLE,
     }
 )
 
@@ -178,10 +179,9 @@ def project_replayed_result(
             raise _error()
     elif operation == CommandOperation.BINDING_ATTACH:
         state = _object(raw_state, {"binding_id", "person_id", "platform", "status", "revision"})
-        if (
-            _binding(state["binding_id"]) != resource_id
-            or _person(state["person_id"]) != semantic_target_id
-            or state["platform"] != material.get("platform")
+        _person(state["person_id"])
+        if _binding(state["binding_id"]) != resource_id or state["platform"] != material.get(
+            "platform"
         ):
             raise _error()
     else:

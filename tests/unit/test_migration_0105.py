@@ -273,6 +273,7 @@ def test_fresh_and_0104_upgrade_preserve_work_identity_source_receipts_and_budge
                     lease, source_key="new-root", source={}, goal="new work"
                 )
                 derived = await repository.derive(lease, parent["id"], "new-derived", "new subgoal")
+                database.subagents_enabled = True
                 identity = await SubagentRepository(repository).start(
                     lease, derived["id"], "new-worker", {"goal": "new worker"}
                 )

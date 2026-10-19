@@ -149,6 +149,7 @@ async def test_queued_child_keeps_original_owner_and_budget_without_an_active_ac
         parent = await repository.accept(
             lease, source_key="original-parent", source=source, goal="internal task"
         )
+        database.subagents_enabled = True
         child_id = await SubagentRepository(repository).start(
             lease, parent["id"], "original-spawn", {"goal": "internal calculation"}
         )

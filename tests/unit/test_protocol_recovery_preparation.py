@@ -51,6 +51,7 @@ from yuki.workspace.store import WorkspaceStore
 
 
 async def as_child(control, original):
+    control.repository.database.subagents_enabled = True
     children = SubagentRepository(control.repository)
     identity = await children.start(
         control.lease,

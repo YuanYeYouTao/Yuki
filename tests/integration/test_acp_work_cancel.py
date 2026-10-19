@@ -105,6 +105,7 @@ async def test_cancel_joins_original_work_tree_and_flushes_already_claimed_send(
     if work_kind != "root":
         parent = await repository.get(work_id)
         lease = await repository.acquire(parent["conversation_id"], parent["generation"])
+        database.subagents_enabled = True
         execution_id = await SubagentRepository(repository).start(
             lease, work_id, str(uuid4()), {"goal": "Send the original ACP child result"}
         )
@@ -197,6 +198,7 @@ async def test_cancel_completed_parent_stops_only_its_child_model(
         session, request_id, work_id = await prepare_resumable_work(env, queue_input=False)
         parent = await repository.get(work_id)
         lease = await repository.acquire(parent["conversation_id"], parent["generation"])
+        database.subagents_enabled = True
         child_id = await SubagentRepository(repository).start(
             lease, work_id, str(uuid4()), {"goal": "Keep this original child's model separate"}
         )
