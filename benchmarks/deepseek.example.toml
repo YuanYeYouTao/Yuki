@@ -1,0 +1,20 @@
+# Copy outside the repository (or into .cache/benchmark/) and set env_file.
+# Only the named key is read from env_file. No production data/config is imported.
+env_file = "/absolute/path/to/local.env"
+api_key_env = "LLM_API_KEY"
+protocol = "chat_completions"
+
+[settings]
+llm_provider = "deepseek"
+llm_base_url = "https://api.deepseek.com"
+llm_model = "deepseek-flash"
+llm_thinking_enabled = true
+llm_reasoning_effort = "high"
+# Provider-declared limits from DeepSeek /models, checked 2026-10-20.
+# inf removes the local HTTP timeout; the official benchmark owns its deadline.
+llm_max_output_tokens = 393216
+llm_timeout_seconds = inf
+context_compact_trigger_tokens = 1048576
+
+[profile]
+context_window_tokens = 1048576

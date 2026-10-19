@@ -328,12 +328,9 @@ class AgentRunner:
                     else runtime.runtime_config.agent.max_tool_calls
                 ),
             )
-        if control is not None:
+            control.segment_model_limit = runtime.max_model_requests
             for _ in range(runtime.preparation_model_requests):
                 await control.reserve_request(auxiliary=True)
-        if control is not None:
-            assert runtime.max_model_requests is not None
-            control.segment_model_limit = runtime.max_model_requests
         try:
             try:
                 from yuki.services.turn_execution import TurnExecution

@@ -224,8 +224,8 @@ class LLMRuntimeConfig:
 
 @dataclass(frozen=True, slots=True)
 class AgentRuntimeConfig:
-    max_tool_calls: int
-    max_model_requests: int
+    max_tool_calls: int | None
+    max_model_requests: int | None
     tool_result_max_characters: int
 
 

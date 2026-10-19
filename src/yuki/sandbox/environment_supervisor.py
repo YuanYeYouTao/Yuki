@@ -48,7 +48,7 @@ def children(parent: int) -> set[int]:
 
 def main() -> int:
     identity = str(UUID(sys.argv[1]))
-    root = Path("/var/lib/yuki-runtime") / identity
+    root = Path(sys.argv[2] if len(sys.argv) > 2 else "/var/lib/yuki-runtime") / identity
     spec = json.loads((root / "spec.json").read_text())
     state = root / "state"
     try:

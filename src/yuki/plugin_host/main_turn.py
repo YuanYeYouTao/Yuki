@@ -705,11 +705,26 @@ async def resume_plugin_work(
                     runtime,
                     execution_id=source["parent_execution_id"],
                     max_model_requests=min(
-                        runtime.runtime_config.agent.max_model_requests,
-                        source["max_model_requests"],
+                        (
+                            limit
+                            for limit in (
+                                runtime.runtime_config.agent.max_model_requests,
+                                source["max_model_requests"],
+                            )
+                            if limit is not None
+                        ),
+                        default=None,
                     ),
                     max_tool_calls=min(
-                        runtime.runtime_config.agent.max_tool_calls, source["max_tool_calls"]
+                        (
+                            limit
+                            for limit in (
+                                runtime.runtime_config.agent.max_tool_calls,
+                                source["max_tool_calls"],
+                            )
+                            if limit is not None
+                        ),
+                        default=None,
                     ),
                 ),
                 tools=None,

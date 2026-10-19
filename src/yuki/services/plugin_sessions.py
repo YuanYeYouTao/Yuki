@@ -200,8 +200,15 @@ class PluginAgentSessionService:
                     max_tool_calls=0,
                     before_model_request=reserve_parent_request,
                     max_model_requests=min(
-                        max(1, max_model_requests or runtime.agent.max_model_requests),
-                        max(1, runtime.agent.max_model_requests),
+                        (
+                            max(1, limit)
+                            for limit in (
+                                max_model_requests or None,
+                                runtime.agent.max_model_requests,
+                            )
+                            if limit is not None
+                        ),
+                        default=None,
                     ),
                     canonical_conversation_id=(
                         persisted_conversation_id or authority.conversation_id

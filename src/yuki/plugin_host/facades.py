@@ -1526,21 +1526,28 @@ class _AgentFacade:
         assert invocation is not None
         _, base_runtime = await _agent_dependencies(self._host, invocation)
         tool_limit = min(
-            max_tool_calls
-            if max_tool_calls is not None
-            else base_runtime.runtime_config.agent.max_tool_calls,
-            base_runtime.runtime_config.agent.max_tool_calls,
+            (
+                limit
+                for limit in (max_tool_calls, base_runtime.runtime_config.agent.max_tool_calls)
+                if limit is not None
+            ),
+            default=None,
         )
         request_limit = min(
-            max_model_requests
-            if max_model_requests is not None
-            else base_runtime.runtime_config.agent.max_model_requests,
-            base_runtime.runtime_config.agent.max_model_requests,
+            (
+                limit
+                for limit in (
+                    max_model_requests,
+                    base_runtime.runtime_config.agent.max_model_requests,
+                )
+                if limit is not None
+            ),
+            default=None,
         )
         runtime = replace(
             base_runtime,
-            max_tool_calls=max(0, tool_limit),
-            max_model_requests=max(1, request_limit),
+            max_tool_calls=max(0, tool_limit) if tool_limit is not None else None,
+            max_model_requests=max(1, request_limit) if request_limit is not None else None,
         )
         result = await run_plugin_main_turn(
             self._host,

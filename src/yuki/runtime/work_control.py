@@ -161,7 +161,7 @@ class WorkControl:
     # Set only by the original SELF source when its first scene/Presence
     # preparation failed before any activation; see work_supervisor.
     protocol_recovery_preparation: Any = None
-    segment_model_limit: int = 24
+    segment_model_limit: int | None = 24
     tools_started: int = 0
     yield_segment: bool = False
     handoff_work_id: str | None = None
@@ -559,7 +559,11 @@ class WorkControl:
             self.handoff_work_id = identity
 
     async def reserve_request(self, *, auxiliary: bool = False) -> None:
-        if auxiliary and self.requests_started >= self.segment_model_limit:
+        if (
+            auxiliary
+            and self.segment_model_limit is not None
+            and self.requests_started >= self.segment_model_limit
+        ):
             from yuki.runtime.activation_outcome import SegmentBudgetReached
 
             raise SegmentBudgetReached()

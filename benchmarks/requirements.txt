@@ -1,0 +1,3 @@
+# Historical Terminal-Bench baseline shared with the Diana comparison.
+harbor==0.1.44
+swebench==5.0.2
