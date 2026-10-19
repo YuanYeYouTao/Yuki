@@ -125,7 +125,14 @@ async def test_transcript_patch_changes_history_revision_without_a_new_event(app
     assert before["items"][0]["attachments"][0]["availability"] == "not_readable"
     async with database.immediate_session() as session:
         row = await session.get(ChatEventModel, event_id)
-        row.audio_transcript = "later original transcript"
+        from yuki.domain.audio import AudioTranscript, serialize_transcripts
+
+        row.audio_transcript = serialize_transcripts(
+            (
+                AudioTranscript("current", 0, "later original transcript"),
+                AudioTranscript("reply", 1, "quoted voice belongs to its original event"),
+            )
+        )
     after = (await env.client.get(url, headers=bearer(first["token"]))).json()["data"]
     assert after["latest_event_id"] == before["latest_event_id"]
     assert after["revision"] > before["revision"]

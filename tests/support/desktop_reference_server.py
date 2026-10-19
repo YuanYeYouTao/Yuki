@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
@@ -20,6 +21,7 @@ from tests.conftest import make_settings
 from tests.integration.test_current_material_main_contract import _catalog, _profile
 from tests.support.model_profiles import write_fake_profiles
 
+from yuki.asr.provider import QwenASRProvider
 from yuki.client_api.http import attach_client_api
 from yuki.container import ApplicationContainer
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -48,8 +50,31 @@ async def serve(root: Path, port: int) -> None:
             conversation_media_cache_directory=root / "media",
             social_transfer_directory=root / "transfer",
             runtime_work_enabled=True,
+            asr_enabled=True,
         ),
         database=database,
+    )
+    asr_started, resume_asr = asyncio.Event(), asyncio.Event()
+
+    async def transcribe_audio(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload["messages"][0]["content"][0]["input_audio"]["data"].startswith(
+            "data:audio/mpeg;base64,"
+        )
+        asr_started.set()
+        await resume_asr.wait()
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"finish_reason": "stop", "message": {"content": "原語音轉寫：請把附件留下。"}}
+                ]
+            },
+        )
+
+    asr_http = httpx.AsyncClient(transport=httpx.MockTransport(transcribe_audio), trust_env=False)
+    container.asr._provider = QwenASRProvider(
+        base_url="http://asr.test/v1", api_key="fixture-only", client=asr_http
     )
 
     def respond(request):
@@ -127,6 +152,15 @@ async def serve(root: Path, port: int) -> None:
             queue.put_nowait(False)
         return {"ok": True}
 
+    @personal.get("/__test/asr-started")
+    async def asr_state():
+        return {"started": asr_started.is_set()}
+
+    @personal.post("/__test/resume-asr")
+    async def release_asr():
+        resume_asr.set()
+        return {"ok": True}
+
     @personal.post("/__test/link-code")
     async def another_code():
         return await identity.issue_for_operator(person, str(uuid4()), str(uuid4()))
@@ -192,7 +226,9 @@ async def serve(root: Path, port: int) -> None:
             )
         ).serve()
     finally:
+        resume_asr.set()
         assert not await container.lifecycle._close_entries(container.lifecycle._entries)
+        await asr_http.aclose()
 
 
 if __name__ == "__main__":

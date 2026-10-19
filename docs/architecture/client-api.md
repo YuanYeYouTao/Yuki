@@ -168,7 +168,8 @@ conversation、work、activity 变化提示。事实仍须经对应 GET 读取�
 
 ## 上传与原文件下载
 
-事件附件保留真实 attachment_index、size/file_size 和原缓存期限；语音只提供原事件转写，
+事件附件保留真实 attachment_index、size/file_size 和原缓存期限；语音从原事件的结构化转写序列取当前语音文字，保留完整内容，不把 JSON 编码或引用语音当成这则语音的转写。
+语音只提供原事件转写，
 不新增语音下载。`GET /conversations/{id}/events/{event}/attachments/{index}` 只读取
 本人私聊的图片、视频与文件，重用原媒体缓存与接收连接，返回 X-Yuki-Sha256。
 media_unavailable 的 reason 为 expired、cleaned、source_unavailable 或 source_changed；

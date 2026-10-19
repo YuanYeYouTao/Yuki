@@ -20,6 +20,7 @@ from yuki.client_api.work_projection import steps_token
 from yuki.client_api.works import ClientWorks, personal_work, root_work_query, work_access
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.media_index import indexed_media_segments
+from yuki.domain.audio import parse_transcripts
 from yuki.execution_trace.db_models import ExecutionTraceEntryModel
 from yuki.execution_trace.recorder import TraceRecorder
 from yuki.identity.db_models import IdentityBindingModel
@@ -116,10 +117,13 @@ def public_event(
         "attachments": attachments,
     }
     if has_audio:
+        transcript = "\n\n".join(
+            item.text
+            for item in parse_transcripts(row.audio_transcript)
+            if item.source == "current"
+        )
         result["transcript"] = (
-            {"state": "available", "text": row.audio_transcript}
-            if row.audio_transcript
-            else {"state": "none"}
+            {"state": "available", "text": transcript} if transcript else {"state": "none"}
         )
     return result
 
