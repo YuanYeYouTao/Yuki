@@ -660,3 +660,19 @@ async def test_fixed_platform_app_and_code_contract_have_one_local_device(local,
         if code:
             assert "local_device" in contract.script_api.schemas
             assert "local_device" in contract.app_script_api.schemas
+
+
+async def test_configuration_digest_hashes_the_actual_http_grants(local):
+    from yuki.client_api.identity import secret_hash
+    from yuki.executor.service import canonical
+
+    await grant(local)
+    response = await local.client.get(
+        "/executor/v1/config", headers=bearer(local.executor["token"])
+    )
+    config = response.json()["data"]
+    assert config["grants"] == [{"capability": "notify"}]
+    assert config["grants_digest"] == secret_hash(canonical(config["grants"]))
+    listed = await local.client.get("/client/v1/executors", headers=bearer(local.device["token"]))
+    assert listed.json()["data"][0]["last_seen_at"] is None
+    assert listed.json()["data"][0]["grants"] == config["grants"]

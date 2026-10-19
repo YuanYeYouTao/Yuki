@@ -44,7 +44,7 @@ def attach_executor_api(
 
     Executor = Annotated[str, Depends(executor_principal)]
 
-    @device.get("", response_model=Envelope[list[ExecutorView]])
+    @device.get("", response_model=Envelope[list[ExecutorView]], response_model_exclude_unset=True)
     async def listed(actor: Actor) -> Any:
         return {"data": await resolve().list(actor)}
 
@@ -56,7 +56,11 @@ def attach_executor_api(
             )
         }
 
-    @device.put("/{identity}/grants", response_model=Envelope[ExecutorConfig])
+    @device.put(
+        "/{identity}/grants",
+        response_model=Envelope[ExecutorConfig],
+        response_model_exclude_unset=True,
+    )
     async def grants(identity: UUID4, body: ReplaceGrants, actor: Actor) -> Any:
         return {
             "data": await resolve().command(
@@ -69,13 +73,19 @@ def attach_executor_api(
             )
         }
 
-    @device.post("/{identity}/{action}", response_model=Envelope[ExecutorConfig])
+    @device.post(
+        "/{identity}/{action}",
+        response_model=Envelope[ExecutorConfig],
+        response_model_exclude_unset=True,
+    )
     async def pause(identity: UUID4, action: str, actor: Actor, body: Command) -> Any:
         if action not in {"pause", "resume"}:
             raise ClientError("not_found")
         return {"data": await resolve().command(actor, str(body.request_id), action, str(identity))}
 
-    @device.delete("/{identity}", response_model=Envelope[ExecutorConfig])
+    @device.delete(
+        "/{identity}", response_model=Envelope[ExecutorConfig], response_model_exclude_unset=True
+    )
     async def revoke(identity: UUID4, actor: Actor, body: Command) -> Any:
         return {
             "data": await resolve().command(actor, str(body.request_id), "delete", str(identity))
@@ -90,7 +100,9 @@ def attach_executor_api(
     ) -> Any:
         return {"data": await resolve().history(actor, str(identity), cursor, limit)}
 
-    @executor.get("/config", response_model=Envelope[ExecutorConfig])
+    @executor.get(
+        "/config", response_model=Envelope[ExecutorConfig], response_model_exclude_unset=True
+    )
     async def config(actor: Executor) -> Any:
         return {"data": await resolve().config(actor)}
 
