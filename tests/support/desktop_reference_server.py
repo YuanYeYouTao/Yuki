@@ -8,7 +8,7 @@ import asyncio
 import json
 import os
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
@@ -27,7 +27,7 @@ from yuki.identity.canonical_repository import create_presence, ensure_person
 from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.persistence.database import Database
-from yuki.persistence.models import ChatEventModel
+from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
 
 
 async def serve(root: Path, port: int) -> None:
@@ -78,27 +78,69 @@ async def serve(root: Path, port: int) -> None:
     os.chmod(ready, 0o600)
     personal = FastAPI()
     attach_client_api(personal, lambda: container.client_api)
-    lose_response = False
+    lose_response = ""
+    uploaded_requests = []
     pause_next_me = False
     me_blocked, resume_me = asyncio.Event(), asyncio.Event()
 
     @personal.middleware("http")
     async def failure_injection(request: Request, call_next):
         nonlocal lose_response, pause_next_me
+        if request.method == "POST" and request.url.path.endswith("/uploads"):
+            uploaded_requests.append(request.query_params.get("request_id"))
         if pause_next_me and request.url.path.endswith("/client/v1/me"):
             pause_next_me = False
             me_blocked.set()
             await resume_me.wait()
         response = await call_next(request)
-        if lose_response and request.method == "POST" and request.url.path.endswith("/messages"):
-            lose_response = False
+        if (
+            lose_response
+            and request.method == "POST"
+            and request.url.path.endswith(f"/{lose_response}")
+        ):
+            lose_response = ""
             return JSONResponse({"problem": {"code": "unknown"}}, status_code=503)
         return response
 
     @personal.post("/__test/lose-next-response")
     async def lose_next_response():
         nonlocal lose_response
-        lose_response = True
+        lose_response = "messages"
+        return {"ok": True}
+
+    @personal.post("/__test/lose-next-upload-response")
+    async def lose_upload_response():
+        nonlocal lose_response
+        lose_response = "uploads"
+        return {"ok": True}
+
+    @personal.get("/__test/uploads")
+    async def upload_requests():
+        return {"requests": uploaded_requests}
+
+    @personal.post("/__test/disconnect")
+    async def disconnect_clients():
+        for queue in tuple(database.commit_hints.subscribers):
+            database.commit_hints.unsubscribe(queue)
+            while not queue.empty():
+                queue.get_nowait()
+            queue.put_nowait(False)
+        return {"ok": True}
+
+    @personal.post("/__test/link-code")
+    async def another_code():
+        return await identity.issue_for_operator(person, str(uuid4()), str(uuid4()))
+
+    @personal.post("/__test/expire-attachments/{event_id}")
+    async def expire_attachments(event_id: int):
+        async with database.immediate_session() as session:
+            items = await session.scalars(
+                select(ConversationMediaItemModel).where(
+                    ConversationMediaItemModel.source_event_id == event_id
+                )
+            )
+            for item in items:
+                item.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         return {"ok": True}
 
     @personal.post("/__test/pause-next-me")
