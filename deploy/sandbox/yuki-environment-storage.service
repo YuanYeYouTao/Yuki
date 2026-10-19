@@ -1,5 +1,5 @@
 [Unit]
-Description=Yuki persistent home with 2 GiB filesystem capacity
+Description=Yuki persistent home with 16 GiB initial filesystem capacity
 Before=yuki-sandbox.service
 After=local-fs.target
 

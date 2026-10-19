@@ -1,0 +1,14 @@
+[Unit]
+Description=Independent persistent storage for Yuki character %i
+Before=yuki-sandbox@%i.service
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/yuki-sandbox/%i/deployment.env
+ExecStart=/bin/sh /opt/yuki-sandbox/deploy/sandbox/environment-storage.sh ${YUKI_MANAGER_ROOT}
+# The active environment retains its mounts across Manager restarts.
+
+[Install]
+WantedBy=multi-user.target

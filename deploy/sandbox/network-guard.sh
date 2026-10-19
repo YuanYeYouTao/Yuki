@@ -35,3 +35,7 @@ ensure DOCKER-USER -i yuki-egress0 -j YUKI-EGRESS
 if [ -x /etc/yuki-sandbox/upstream-firewall.sh ]; then
     /etc/yuki-sandbox/upstream-firewall.sh
 fi
+# The operator collaboration inlet is a separate exact-source/client-API exception.
+if [ -x /etc/yuki-sandbox/collaboration-firewall.sh ]; then
+    /etc/yuki-sandbox/collaboration-firewall.sh
+fi

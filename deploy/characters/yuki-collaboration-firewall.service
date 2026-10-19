@@ -1,0 +1,14 @@
+[Unit]
+Description=Keep Yuki collaboration ingress bound to actual environment addresses
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/opt/yuki-sandbox/venv/bin/python /opt/yuki-sandbox/deploy/characters/collaboration.py --watch /etc/yuki-sandbox/collaboration.json
+Restart=on-failure
+RestartSec=2
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

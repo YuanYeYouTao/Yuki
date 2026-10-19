@@ -1,0 +1,44 @@
+name: yuki-${YUKI_CHARACTER_SLUG}
+services:
+  bot:
+    image: ${YUKI_BOT_IMAGE:?select a verified image}
+    init: true
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8080
+      DATABASE_URL: sqlite+aiosqlite:////app/data/yuki.db
+      MODEL_PROFILES_FILE: /app/config/model_profiles.toml
+      BOT_PERSONA_FILE: /app/character/persona.md
+      SYSTEM_PROMPT_FILE: /app/character/system_prompt.md
+      CONTROL_OPERATORS_FILE: /app/config/control-operators.toml
+      WORKSPACE_DIRECTORY: /app/workspace
+      CONVERSATION_MEDIA_CACHE_DIRECTORY: /app/data/conversation-media-cache
+      SANDBOX_SOCKET: /run/yuki-sandbox/manager.sock
+      CODE_MODE_ENABLED: "false"
+      HTTP_PROXY: "${http_proxy-${HTTP_PROXY-}}"
+      http_proxy: "${http_proxy-${HTTP_PROXY-}}"
+      HTTPS_PROXY: "${https_proxy-${HTTPS_PROXY-}}"
+      https_proxy: "${https_proxy-${HTTPS_PROXY-}}"
+      ALL_PROXY: "${all_proxy-${ALL_PROXY-}}"
+      all_proxy: "${all_proxy-${ALL_PROXY-}}"
+      NO_PROXY: "${no_proxy-${NO_PROXY-localhost,127.0.0.1,::1}}"
+      no_proxy: "${no_proxy-${NO_PROXY-localhost,127.0.0.1,::1}}"
+    ports:
+      - "127.0.0.1:${YUKI_HTTP_PORT:?select an unused loopback port}:8080"
+    volumes:
+      - ./data:/app/data
+      - ./workspace:/app/workspace
+      - ./character:/app/character
+      - ./config:/app/config:ro
+      - ./plugins:/app/plugins:ro
+      - ./social-transfer:/app/social-transfer
+      - /run/yuki-sandbox/${YUKI_CHARACTER_SLUG}:/run/yuki-sandbox:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/livez', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    stop_grace_period: 20s

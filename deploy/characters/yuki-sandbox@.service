@@ -1,0 +1,23 @@
+[Unit]
+Description=Persistent environment for Yuki character %i
+After=docker.service yuki-environment-storage@%i.service
+Requires=docker.service yuki-environment-storage@%i.service
+
+[Service]
+Type=simple
+Group=10001
+WorkingDirectory=/opt/yuki-sandbox
+Environment=PYTHONPATH=/opt/yuki-sandbox/src
+EnvironmentFile=/etc/yuki-sandbox/%i/deployment.env
+ExecStartPre=/bin/sh /opt/yuki-sandbox/deploy/sandbox/network-guard.sh
+ExecStart=/opt/yuki-sandbox/venv/bin/python -m yuki.sandbox.manager --name yuki-environment-%i --root ${YUKI_MANAGER_ROOT} --workspace ${YUKI_MANAGER_WORKSPACE_STORE} --socket /run/yuki-sandbox/%i/manager.sock --persistent-home ${YUKI_MANAGER_HOME} --image ${YUKI_MANAGER_IMAGE} --media-cache ${YUKI_MANAGER_MEDIA_CACHE} --acp-config /etc/yuki-sandbox/%i/acp-agents.toml
+RuntimeDirectory=yuki-sandbox/%i
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+UMask=0007
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=infinity
+
+[Install]
+WantedBy=multi-user.target

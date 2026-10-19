@@ -60,6 +60,14 @@ async def serve(root: Path, port: int) -> None:
             else None,
             "bot_persona_file": persona,
         }
+    deployment_fixture = os.environ.get("YUKI_DESKTOP_DEPLOYMENT_ROOT")
+    operator_options = {}
+    if deployment_fixture:
+        deployment = await asyncio.to_thread(Path(deployment_fixture).resolve)
+        parent = await asyncio.to_thread(root.parent.resolve)
+        if not deployment.is_relative_to(parent):
+            raise ValueError("deployment fixture must remain in the isolated test directory")
+        operator_options["control_operators_file"] = deployment / "config/control-operators.toml"
     container = ApplicationContainer(
         make_settings(
             database.url,
@@ -70,6 +78,7 @@ async def serve(root: Path, port: int) -> None:
             conversation_media_cache_directory=root / "media",
             social_transfer_directory=root / "transfer",
             **prompt_options,
+            **operator_options,
             runtime_work_enabled=True,
             asr_enabled=True,
             automation_enabled=os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1",
@@ -136,12 +145,17 @@ async def serve(root: Path, port: int) -> None:
         await computer.start(person)
     identity = container.client_api.identity
     code = await identity.issue_for_operator(person, str(uuid4()), str(uuid4()))
-    base = f"http://127.0.0.1:{port}/role/yuki"
+    base_path = os.environ.get("YUKI_DESKTOP_BASE_PATH", "/role/yuki")
+    base = f"http://127.0.0.1:{port}{base_path}"
     ready = root / "ready.json"
     ready.write_text(json.dumps({"url": base, "code": code["code"]}), encoding="utf-8")
     os.chmod(ready, 0o600)
     personal = FastAPI()
     attach_client_api(personal, lambda: container.client_api)
+    if deployment_fixture:
+        from yuki.admin_api.http import attach_admin_api
+
+        attach_admin_api(personal, lambda: container.admin_api)
     if os.environ.get("YUKI_DESKTOP_EXECUTOR_FIXTURE") == "1":
         from tests.support.desktop_executor_fixture import attach_executor_fixture
 
@@ -426,7 +440,7 @@ async def serve(root: Path, port: int) -> None:
         return {"ok": True}
 
     http = FastAPI()
-    http.mount("/role/yuki", personal)
+    http.mount(base_path, personal)
     try:
         await uvicorn.Server(
             uvicorn.Config(
