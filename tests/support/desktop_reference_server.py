@@ -15,7 +15,7 @@ from uuid import uuid4
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from tests.conftest import make_settings
 from tests.integration.test_current_material_main_contract import _catalog, _profile
 from tests.support.model_profiles import write_fake_profiles
@@ -116,6 +116,19 @@ async def serve(root: Path, port: int) -> None:
     @personal.post("/__test/resume-me")
     async def release_me():
         resume_me.set()
+        return {"ok": True}
+
+    @personal.delete("/__test/events/{event_id}")
+    async def delete_event(event_id: int, lose_hint: bool = False):
+        queues = tuple(database.commit_hints.subscribers) if lose_hint else ()
+        for queue in queues:
+            database.commit_hints.unsubscribe(queue)
+        async with database.immediate_session() as session:
+            await session.execute(delete(ChatEventModel).where(ChatEventModel.id == event_id))
+        for queue in queues:
+            while not queue.empty():
+                queue.get_nowait()
+            queue.put_nowait(False)
         return {"ok": True}
 
     @personal.get("/__test/events")
