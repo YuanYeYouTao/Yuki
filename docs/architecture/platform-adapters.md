@@ -100,7 +100,7 @@ TG 与 QQ 使用同一份平台 Main 工具合同，默认 direct 为 29 项；�
 
 监控旧状态只按真实历史 grant 迁移。来源未知、存在歧义或目标合并冲突时，完整保留源 JSON 并报告具体升级问题，不能创建空状态覆盖它，也不能用今天的同数字账号猜 owner。监控迁移保原游标、源指纹、正文、notification/source_event ID、状态和已接受投递，不能重新抓取或重发代替恢复。
 
-养鲲插件按用户要求移到独立 [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game) 仓库；主仓库不再附带游戏代码、玩法文档、测试或专用数据库迁移。旧游戏 KV 不删除，离线升级脚本由独立插件仓库维护。
+养鲲与 GitHub Monitor 分别在独立 [Yuki-Kun-Game](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) 和 [Yuki-GitHub-Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) 仓库维护；主仓库不再附带这两个插件的代码、测试与专用工具。插件 ID 不随仓库转移更名，原配置、KV、授权与回执保留；插件数据升级由各自仓库维护。
 
 本地验证与实际平台、付费模型、合并、Release、上线分别记录。离线 payload 和缓存字段回归不证明真实缓存命中率；usage 缺字段时保持未知。实施与当前验证见[实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)。
 

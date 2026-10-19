@@ -1,12 +1,11 @@
 """Frozen monitor rows upgrade without using today's publisher on yesterday's schema."""
 
-import importlib
+import hashlib
 import json
 import sqlite3
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -14,141 +13,33 @@ from alembic import command
 from alembic.config import Config
 from tests.unit.test_migration_0110 import insert_row
 
-from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
+from yuki_plugin_sdk.models import NotificationTarget
 
 NOW = datetime(2026, 10, 16, 12, tzinfo=UTC)
 
 
-def _modules(monkeypatch):
-    root = Path(__file__).parents[2]
-    for name in ("github-monitor", "subscription-monitor"):
-        monkeypatch.syspath_prepend(str(root / "plugins" / name))
-    return SimpleNamespace(
-        github=importlib.import_module("github_monitor.models"),
-        github_config=importlib.import_module("github_monitor.config"),
-        feed=importlib.import_module("subscription_monitor.polling"),
-        feed_config=importlib.import_module("subscription_monitor.config"),
+def _old_materials():
+    """Frozen 0124 wire records; later plugin releases do not define migrations."""
+    path = Path(__file__).parents[1] / "data" / "monitor_0124_materials.json"
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    return tuple(
+        saved[key]
+        for key in ("github_queue", "github_repositories", "feed_state", "feed_subscriptions")
     )
 
 
-def _old_materials(modules):
-    model = modules.github
-    prepared = model.build_prepared_notification(
-        event_key="original-github-source",
-        event_type="WatchEvent",
-        target_type="group",
-        target_id="2001",
-        occurred_at=NOW,
-        summary="original summary",
-        payload={"target": {"target_id": "leave-payload-raw"}, "message": "原正文"},
-        text="原消息正文",
-        media=tuple(
-            model.PreparedMedia(
-                index=index,
-                handle_id=f"frozen-media-{index}",
-                sha256=digest * 64,
-                expires_at=NOW + timedelta(days=7),
-            )
-            for index, digest in enumerate(("a", "b"))
-        ),
-        ask_agent=True,
-        agent_intent="原判断意图",
-    )
-    policy = model.TargetPolicySnapshot(
-        target_type="group", target_id="2001", send_text=True, send_card=False, ask_agent=True
-    )
-
-    def source(number, fingerprint):
-        return model.QueuedSourceEvent(
-            github_event_id=number,
-            source_fingerprint=fingerprint * 64,
-            source_created_at=NOW,
-            normalized=model.NormalizedGitHubEvent(
-                github_event_id=number,
-                repository="owner/repo",
-                event_type="WatchEvent",
-                actor="original",
-                created_at=NOW,
-                summary="source",
-                event_key=f"source:{number}",
-                payload={"target": "leave-source-payload-raw"},
-            ),
-            target_snapshot=(policy,),
-        )
-
-    delivery = model.TargetDelivery(
-        target_key="group:2001",
-        target_type="group",
-        target_id="2001",
-        send_text=True,
-        send_card=False,
-        ask_agent=True,
-        status="attempting",
-        prepared=prepared,
-    )
-    queue = model.QueueState(
-        accepted_cursor="102",
-        accepted_fingerprint="c" * 64,
-        committed_cursor="100",
-        committed_fingerprint="a" * 64,
-        committed_created_at=NOW,
-        pending=(source("102", "c"),),
-        inflight=model.DeliveryUnit(
-            unit_id="original-unit",
-            members=(source("101", "b"),),
-            deliveries=(delivery,),
-            sealed_at=NOW,
-        ),
-        activation=model.ActivationState(
-            activation_id="original-activation", occurred_at=NOW, deliveries=(delivery,)
-        ),
-    ).model_dump(mode="json")
-    github_config = [
-        {
-            "repository": "owner/repo",
-            "targets": [
-                {
-                    "target_type": "group",
-                    "target_id": "2001",
-                    "send_text": True,
-                    "send_card": False,
-                    "ask_agent": True,
-                }
-            ],
-        }
-    ]
-    feed_request = PublishNotificationRequest(
-        event_key="original-feed-source",
-        event_type="feed.entry",
-        external_source="feed",
-        target=NotificationTarget(target_type="private", target_id="1001"),
-        occurred_at=NOW,
-        summary="original feed summary",
-        payload={"target_id": "leave-feed-payload-raw"},
-        text="原订阅正文",
-        ask_agent=True,
-        agent_intent="原订阅判断",
-    )
-    feed = modules.feed.FeedState(
-        url="https://example.invalid/feed",
-        initialized=True,
-        seen=("original-fingerprint",),
-        unmarked=("pending-entry",),
-        pending=(feed_request,),
-        etag="original-etag",
-        accepted=7,
-        filtered=2,
-    ).model_dump(mode="json")
-    feed_config = [
-        {
-            "id": "original-feed",
-            "url": "https://example.invalid/feed",
-            "targets": [
-                {"target_type": "private", "target_id": "1001"},
-            ],
-        }
-    ]
-    return queue, github_config, feed, feed_config
+def _prepared_hash(prepared):
+    """Check the frozen request wire hash without importing a plugin schema."""
+    value = deepcopy(prepared)
+    value.pop("request_hash")
+    if value["conversation_id"] is None:
+        value.pop("conversation_id")
+    value["occurred_at"] = datetime.fromisoformat(value["occurred_at"]).isoformat()
+    for item in value["media"]:
+        if item["expires_at"] is not None:
+            item["expires_at"] = datetime.fromisoformat(item["expires_at"]).isoformat()
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode()).hexdigest()
 
 
 def seed_conversation(
@@ -501,13 +392,11 @@ def state_values(connection):
 
 
 def test_monitor_upgrade_keeps_original_publication_and_delivery_evidence(tmp_path, monkeypatch):
-    modules = _modules(monkeypatch)
-    values = _old_materials(modules)
+    values = _old_materials()
     queue = values[0]
     original = deepcopy(queue)
-    prepared = modules.github.PreparedNotification.model_validate(
-        queue["inflight"]["deliveries"][0]["prepared"]
-    )
+    prepared = deepcopy(queue["inflight"]["deliveries"][0]["prepared"])
+    assert prepared["request_hash"] == _prepared_hash(prepared)
     path = tmp_path / "monitor.db"
     targets = seed_original(path, monkeypatch, values)
     with sqlite3.connect(path) as connection:
@@ -530,30 +419,45 @@ def test_monitor_upgrade_keeps_original_publication_and_delivery_evidence(tmp_pa
         }
         for table, original_rows in evidence.items():
             assert saved_rows(connection, table) == original_rows
-    converted = modules.github.QueueState.model_validate(states["github_monitor_queue_v1"][0])
-    current = converted.inflight.deliveries[0]
+    converted = states["github_monitor_queue_v1"][0]
+    current = converted["inflight"]["deliveries"][0]
     assert states["github_monitor_queue_v1"][1] == 13
-    assert current.target_id == targets["group"].target_id
-    assert current.conversation_id == targets["group"].conversation_id
-    assert (current.notification_id, current.source_event_id) == ("original-notification", 1)
-    assert current.status == "attempting" and current.prepared.payload_json == prepared.payload_json
+    assert current["target_id"] == targets["group"].target_id
+    assert current["conversation_id"] == targets["group"].conversation_id
+    assert (current["notification_id"], current["source_event_id"]) == ("original-notification", 1)
+    assert current["status"] == "attempting"
+    expected = {
+        **prepared,
+        "target_id": targets["group"].target_id,
+        "conversation_id": targets["group"].conversation_id,
+    }
+    expected["request_hash"] = _prepared_hash(expected)
+    assert current["prepared"] == expected
+    assert current["prepared"]["request_hash"] != prepared["request_hash"]
     assert (
-        current.prepared.text == prepared.text and current.prepared.event_key == prepared.event_key
+        converted["pending"][0]["source_fingerprint"]
+        == original["pending"][0]["source_fingerprint"]
     )
+    assert converted["accepted_cursor"] == "102" and converted["committed_cursor"] == "100"
+    assert converted["pending"][0]["normalized"]["payload"]["target"] == "leave-source-payload-raw"
     assert (
-        current.prepared.request_hash != prepared.request_hash
-        and current.prepared.media == prepared.media
+        converted["activation"]["deliveries"][0]["conversation_id"]
+        == targets["group"].conversation_id
     )
-    assert converted.pending[0].source_fingerprint == original["pending"][0]["source_fingerprint"]
-    assert converted.accepted_cursor == "102" and converted.committed_cursor == "100"
-    assert converted.pending[0].normalized.payload["target"] == "leave-source-payload-raw"
-    assert converted.activation.deliveries[0].conversation_id == targets["group"].conversation_id
-    modules.github_config.GitHubMonitorConfig(repositories=configs["repositories"][0])
-    modules.feed_config.MonitorConfig(subscriptions=configs["subscriptions"][0])
-    feed = modules.feed.FeedState.model_validate(states["feed_state_v1"][0])
-    assert feed.pending[0].target == targets["private"]
-    assert feed.pending[0].payload["target_id"] == "leave-feed-payload-raw"
-    assert feed.pending[0].event_key == "original-feed-source" and feed.accepted == 7
+    assert converted["activation"]["deliveries"][0]["prepared"] == expected
+    github_target = configs["repositories"][0][0]["targets"][0]
+    feed_target = configs["subscriptions"][0][0]["targets"][0]
+    for actual, target in ((github_target, targets["group"]), (feed_target, targets["private"])):
+        assert (
+            NotificationTarget.model_validate(
+                {key: actual.get(key) for key in NotificationTarget.model_fields}
+            )
+            == target
+        )
+    feed = states["feed_state_v1"][0]
+    assert NotificationTarget.model_validate(feed["pending"][0]["target"]) == targets["private"]
+    assert feed["pending"][0]["payload"]["target_id"] == "leave-feed-payload-raw"
+    assert feed["pending"][0]["event_key"] == "original-feed-source" and feed["accepted"] == 7
     command.upgrade(Config("alembic.ini"), "head")
     with sqlite3.connect(path) as connection:
         connection.row_factory = sqlite3.Row
@@ -578,8 +482,7 @@ def test_monitor_upgrade_keeps_original_publication_and_delivery_evidence(tmp_pa
 def test_unresolved_monitor_row_keeps_exact_original_json_and_upgrade_diagnostic(
     tmp_path, monkeypatch, caplog, reason
 ):
-    modules = _modules(monkeypatch)
-    values = _old_materials(modules)
+    values = _old_materials()
     queue, github_config, _feed, _feed_config = values
     if reason == "missing":
         queue["pending"][0]["target_snapshot"][0]["target_id"] = "no-original-grant"
@@ -610,7 +513,7 @@ def test_unresolved_monitor_row_keeps_exact_original_json_and_upgrade_diagnostic
             "SELECT value_json FROM plugin_state WHERE plugin_id='subscription-monitor'"
         ).fetchone()[0]
         assert (
-            modules.feed.FeedState.model_validate_json(feed_json).pending[0].target
+            NotificationTarget.model_validate(json.loads(feed_json)["pending"][0]["target"])
             == targets["private"]
         )
     assert "monitor_target_upgrade_unresolved" in caplog.text

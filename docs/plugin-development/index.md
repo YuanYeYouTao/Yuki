@@ -49,7 +49,7 @@ Plugin API `6.0` 的通用目标参数使用内部 Person/Space/Conversation ID�
 
 仓库中的 [`com.example.echo`](../../examples/plugins/com.example.echo/README.md) 是可运行的无网络参考实现，覆盖工具、命令、事件、Prompt、配置和 KV，并说明共同 TaskSpec 的定时安排接口。
 
-订阅类插件可参考 [GitHub Monitor](../../plugins/github-monitor/README.md) 和
+订阅类插件可参考 [独立 GitHub Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) 和
 [Subscription Monitor](../../plugins/subscription-monitor/README.md)。后者展示如何轮询 feed、
 持久化增量事件，并将订阅条件交给统一主 Agent 判断，通过 `send_message` 通知。
 

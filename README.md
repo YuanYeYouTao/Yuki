@@ -51,7 +51,7 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 当前源码的 Python 模块和发行包统一为 `yuki`，管理、个人客户端与 ACP 共用 `yuki` 命令，服务进程使用 `yuki-bot`；旧命令别名已删除。源码开发使用 `uv sync --all-extras` 或本地 Docker 构建。新发行镜像使用 `ghcr.io/yuanyeyoutao/yuki`，尚未据此发布新版本；下方正式 3.9.0 的下载、镜像和安装步骤继续对应其原 Release 产物。
 
-养鲲已移至独立仓库 [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game)，本仓库不再附带游戏源码或专用迁移。独立插件须适配当前 Plugin API 6.0；安装与旧存档离线升级见插件仓库。
+养鲲与 GitHub 仓库监控分别在独立仓库 [Yuki-Kun-Game](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) 和 [Yuki-GitHub-Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) 维护，本仓库与部署包不再附带这两个插件的源码或专用工具。独立插件适配当前 Plugin API 6.0；安装、配置与插件数据升级见各自仓库。
 
 会话 [Compact](docs/architecture/conversation-compact.md)（[#417](https://github.com/YuanYeYouTao/Yuki/issues/417)、[#418](https://github.com/YuanYeYouTao/Yuki/issues/418)）由当前 Main 模型统一整理公共历史或私有执行尾部。`CONTEXT_COMPACT_TRIGGER_TOKENS` 默认 `96000`，用于提前整理，不要求结果必须降到该值以下；模型硬容量沿 Profile 的明确设置，未声明时保持未知。子 Agent 共用 Main 的完整工具合同，执行按自己的真实来源与授权核验；旧独立 Rollup 和 Work/ordinary 摘要链已退役。
 

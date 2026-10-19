@@ -73,5 +73,5 @@ context 仅有 `get_config(key)` 和 `get_state(namespace, key)`，绑定自身�
 从原插件状态投影审核过的字段，不返回 Secret、私有 payload 或未来执行的冻结原文。
 Host 在 Manager lock/写事务外调用，工厂与 callback 最多 5 秒、JSON 结果最多 64 KiB，
 生命周期发生变化则拒绝旧投影。仍是可信 Python 插件合同，不能替代 OS 隔离。
-GitHub Monitor 的实现参考 `github_monitor/observation.py`；Host 不解释插件私有 KV。
+可参考独立 [GitHub Monitor 的 observation.py](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor/blob/main/github_monitor/observation.py)；Host 不解释插件私有 KV。
 

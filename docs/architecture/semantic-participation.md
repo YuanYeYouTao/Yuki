@@ -1,7 +1,7 @@
 # 语义参与 V6：宿主接入与验证边界
 
 2026-10-15。独立仓库：
-[Yuki-Semantic-Participation](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation)。
+[Yuki-Semantic-Participation](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation)。
 本文描述 SELF 接入与普通持续接话的合同。实现、验证和生产启用状态分别由交付记录证明；
 历史 T20 真实 QQ 集成验收不是本轮持续接话的验收结果。
 
@@ -296,7 +296,7 @@ Memory 依赖只按明确 fact ID 核验 active、verified、有效时间、原�
 
 有限真实 Jev HTTP 验证使用合成样本，只检验协议、投影、延迟和分歧；期望由开发者编写，
 不是独立人工标注准确率，不能宣称改善了群聊。详细证据见独立库的
-[实现记录](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/blob/main/docs/implementation.md)。
+[实现记录](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/blob/main/docs/implementation.md)。
 T20 真实 QQ 小范围集成、长期群聊效果和生产负载仍未验收。代码合并与本地测试
 不能替代这些证据；后续上线另按确认的发布流程处理。
 
