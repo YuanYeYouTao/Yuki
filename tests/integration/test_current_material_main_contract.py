@@ -552,20 +552,35 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
             assert final["id"] == old_work["id"] and final["source_key"] == old_work["source_key"]
             assert final["source_json"] == old_work["source_json"]
             assert final["state"] == "completed" and final["model_requests"] == 3
-            assert len(wire) == 3 and neutral[2].request_chain_id != old_journal["chain_id"]
-            assert neutral[2].continuation is None and not neutral[2].continuation_items
-            assert all(item.response_item is None for item in neutral[2].messages)
-            assert "original-paid-" not in json.dumps(wire[2])
-            assert "ORIGINAL_SENT_RESULT" in _text(wire[2])
+            assert len(wire) == 3 and neutral[2].request_chain_id == old_journal["chain_id"]
+            assert neutral[2].continuation == transcript.request().continuation
+            assert neutral[2].continuation is not None
+            assert neutral[2].continuation.provider == "gemini"
+            assert neutral[2].continuation.protocol == "gemini"
+            assert wire[2]["contents"][: len(wire[1]["contents"])] == wire[1]["contents"]
+            resumed_parts = [part for item in wire[2]["contents"] for part in item["parts"]]
+            calls = [part["functionCall"] for part in resumed_parts if "functionCall" in part]
+            responses = [
+                part["functionResponse"] for part in resumed_parts if "functionResponse" in part
+            ]
+            assert [(call["id"], call["name"]) for call in calls] == [
+                ("original-accept", "task_control"),
+                ("original-send", "send_message"),
+                ("original-read", "time_get_current"),
+            ]
+            assert [(response["id"], response["name"]) for response in responses] == [
+                (call["id"], call["name"]) for call in calls
+            ]
+            assert [
+                part["thoughtSignature"] for part in resumed_parts if "thoughtSignature" in part
+            ] == [
+                "original-paid-accept-signature",
+                "original-paid-send-signature",
+                "original-paid-private-read-signature",
+            ]
+            assert all(response["response"]["output"] for response in responses)
+            assert calls[1]["args"] == {"text": "ORIGINAL_SENT_RESULT"}
             assert _fixed(wire[1]) == _fixed(wire[2])
-            resumed_parts = wire[2]["contents"][-1]["parts"]
-            assert resumed_parts[-1]["text"] == neutral[2].messages[-1].content
-            materials = [part["text"] for part in resumed_parts if part["text"].startswith("\n\n{")]
-            assert {json.loads(text)["kind"] for text in materials} == {
-                "work_current_material",
-                "work_unobserved_tool_round",
-            }
-            assert all(text.endswith("\n\n") for text in materials)
             main_session = f"yuki:{old_work['conversation_id']}:g{old_work['generation']}"
             assert sessions == [
                 f"{main_session}:main",
