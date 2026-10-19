@@ -46,6 +46,19 @@ async def serve(root: Path, port: int) -> None:
             session, external_account_id="yuki-app", platform="app", now=datetime.now(UTC)
         )
         person = await ensure_person(session, "desktop-test-person", display_name="測試本人")
+    prompt_options = {}
+    if os.environ.get("YUKI_DESKTOP_PROMPT_FIXTURE") in {"1", "readonly"}:
+        system, persona = root / "system_prompt.md", root / "persona.md"
+        if not system.exists():
+            system.write_bytes(b"# Desktop prompt\r\nORIGINAL_SYSTEM {{YUKI_PERSONA_CORE}}\r\n")
+        if not persona.exists():
+            persona.write_bytes(b"ORIGINAL_PERSONA\n")
+        prompt_options = {
+            "system_prompt_file": system
+            if os.environ["YUKI_DESKTOP_PROMPT_FIXTURE"] == "1"
+            else None,
+            "bot_persona_file": persona,
+        }
     container = ApplicationContainer(
         make_settings(
             database.url,
@@ -55,6 +68,7 @@ async def serve(root: Path, port: int) -> None:
             workspace_directory=root / "workspace",
             conversation_media_cache_directory=root / "media",
             social_transfer_directory=root / "transfer",
+            **prompt_options,
             runtime_work_enabled=True,
             asr_enabled=True,
             automation_enabled=os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1",
@@ -133,6 +147,10 @@ async def serve(root: Path, port: int) -> None:
         from tests.support.desktop_character_fixture import attach_character_fixture
 
         await attach_character_fixture(personal, container, person)
+    if prompt_options:
+        from tests.support.desktop_prompt_fixture import attach_prompt_fixture
+
+        attach_prompt_fixture(personal, container, root, model)
     lose_response = ""
     hold_original_queries = False
     uploaded_requests = []
@@ -159,11 +177,16 @@ async def serve(root: Path, port: int) -> None:
             lose_response
             and (
                 request.method == "POST"
-                or (lose_response == "character/avatar" and request.method in {"PUT", "DELETE"})
+                or (
+                    lose_response.startswith(("character/avatar", "character/prompts/"))
+                    and request.method in {"PUT", "DELETE"}
+                )
             )
             and request.url.path.endswith(f"/{lose_response}")
         ):
-            if lose_response in {"corrections", "character/avatar"}:
+            if lose_response in {"corrections", "character/avatar"} or lose_response.startswith(
+                "character/prompts/"
+            ):
                 hold_original_queries = True
             lose_response = ""
             return JSONResponse({"problem": {"code": "unknown"}}, status_code=503)
@@ -185,6 +208,13 @@ async def serve(root: Path, port: int) -> None:
     async def lose_avatar_response():
         nonlocal lose_response
         lose_response = "character/avatar"
+        return {"ok": True}
+
+    @personal.post("/__test/lose-next-prompt-response/{key}")
+    async def lose_prompt_response(key: str):
+        nonlocal lose_response
+        assert key in {"system_prompt", "persona", "reload"}
+        lose_response = f"character/prompts/{key}"
         return {"ok": True}
 
     @personal.post("/__test/lose-next-memory-response")
