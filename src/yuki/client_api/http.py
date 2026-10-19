@@ -15,6 +15,25 @@ from yuki.client_api.files import ClientFiles
 from yuki.client_api.http_errors import install_identity_errors
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal
 from yuki.client_api.messages import ClientMessages
+from yuki.client_api.models import (
+    Accent,
+    Activity,
+    CharacterProfile,
+    DeviceRevocation,
+    Entry,
+    Envelope,
+    EventsPage,
+    Home,
+    LinkCode,
+    Me,
+    MessageResult,
+    Meta,
+    OriginalRequest,
+    PairResult,
+    ProactiveRoute,
+    SyncHint,
+    WorkHint,
+)
 from yuki.client_api.prompts import ClientPrompts
 from yuki.client_api.sessions import ClientSessions
 from yuki.client_api.views import ClientViews
@@ -61,6 +80,18 @@ class WorkCancelBody(BaseModel):
     expected_revision: int = Field(strict=True, ge=1)
 
 
+class CharacterBody(PersonalRequest):
+    expected_revision: int = Field(strict=True, ge=1)
+    display_name: str | None = Field(default=None, min_length=1)
+    bio: str | None = None
+    accent: Accent | None = None
+
+
+class ProactiveRouteBody(PersonalRequest):
+    expected_revision: int = Field(strict=True, ge=0)
+    binding_id: UUID4
+
+
 def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
     router = APIRouter(prefix="/client/v1")
 
@@ -85,6 +116,60 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
         return await principal(authorization, x_yuki_entry, None)
 
     BaseActor = Annotated[ClientPrincipal, Depends(base_principal)]
+
+    from yuki.character.repository import CharacterRepository
+    from yuki.client_api.routes import ClientProactiveRoute
+
+    @router.get("/meta", response_model=Envelope[Meta])
+    async def meta() -> Any:
+        return {"data": await CharacterRepository(resolve().identity).meta()}
+
+    @router.get(
+        "/character", response_model=Envelope[CharacterProfile], response_model_exclude_unset=True
+    )
+    async def character(actor: Actor) -> Any:
+        return {"data": await CharacterRepository(resolve().identity).get(actor)}
+
+    @router.patch(
+        "/character", response_model=Envelope[CharacterProfile], response_model_exclude_unset=True
+    )
+    async def update_character(body: CharacterBody, actor: Actor) -> Any:
+        changes = body.model_dump(
+            mode="json", exclude={"request_id", "expected_revision"}, exclude_unset=True
+        )
+        if any(value is None for value in changes.values()):
+            raise ClientError("validation_error")
+        return {
+            "data": await CharacterRepository(resolve().identity).update(
+                str(body.request_id),
+                body.expected_revision,
+                changes,
+                principal=actor,
+            )
+        }
+
+    @router.get(
+        "/me/proactive-route",
+        response_model=Envelope[ProactiveRoute],
+        response_model_exclude_unset=True,
+    )
+    async def proactive_route(actor: Actor) -> Any:
+        return {"data": await ClientProactiveRoute(resolve().identity).get(actor)}
+
+    @router.put(
+        "/me/proactive-route",
+        response_model=Envelope[ProactiveRoute],
+        response_model_exclude_unset=True,
+    )
+    async def set_proactive_route(body: ProactiveRouteBody, actor: Actor) -> Any:
+        return {
+            "data": await ClientProactiveRoute(resolve().identity).set(
+                actor,
+                str(body.request_id),
+                body.expected_revision,
+                str(body.binding_id),
+            )
+        }
 
     @router.post("/acp/sessions")
     async def new_session(body: PersonalRequest, actor: BaseActor) -> Any:
@@ -153,11 +238,15 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             },
         )
 
-    @router.get("/home")
+    @router.get("/home", response_model=Envelope[Home])
     async def home(actor: Actor) -> Any:
         return {"data": await views().home(actor)}
 
-    @router.get("/conversations/{identity}/events")
+    @router.get(
+        "/conversations/{identity}/events",
+        response_model=Envelope[EventsPage],
+        response_model_exclude_unset=True,
+    )
     async def events(
         identity: UUID4,
         actor: Actor,
@@ -171,7 +260,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             )
         }
 
-    @router.get("/activity")
+    @router.get("/activity", response_model=Envelope[Activity])
     async def activity(actor: Actor, conversation_id: UUID4) -> Any:
         return {"data": await views().activity(actor, str(conversation_id))}
 
@@ -199,7 +288,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             )
         }
 
-    @router.post("/messages")
+    @router.post("/messages", response_model=Envelope[MessageResult])
     async def messages(body: MessageBody, actor: Actor) -> Any:
         service = resolve().messages
         if service is None:
@@ -208,7 +297,11 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             "data": await service.submit(actor, str(body.request_id), body.text, body.attachments)
         }
 
-    @router.get("/requests/{request_id}")
+    @router.get(
+        "/requests/{request_id}",
+        response_model=Envelope[OriginalRequest],
+        response_model_exclude_unset=True,
+    )
     async def original_request(request_id: UUID4, actor: Actor) -> Any:
         from yuki.client_api.requests import ClientRequests
 
@@ -218,7 +311,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             )
         }
 
-    @router.post("/pair")
+    @router.post("/pair", response_model=Envelope[PairResult])
     async def pair(body: PairBody, authorization: Annotated[str | None, Header()] = None) -> Any:
         if authorization is not None:
             raise ClientError("unauthenticated")
@@ -226,11 +319,13 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             "data": await resolve().identity.pair(body.code.get_secret_value(), body.device_label)
         }
 
-    @router.get("/me")
+    @router.get("/me", response_model=Envelope[Me])
     async def me(actor: Actor) -> Any:
         return {"data": await resolve().identity.me(actor)}
 
-    @router.post("/link-codes")
+    @router.post(
+        "/link-codes", response_model=Envelope[LinkCode], response_model_exclude_unset=True
+    )
     async def link_code(actor: Actor, body: PersonalRequest | None = None) -> Any:
         return {
             "data": await resolve().identity.issue_for_device(
@@ -238,7 +333,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             )
         }
 
-    @router.delete("/devices/{identity}")
+    @router.delete("/devices/{identity}", response_model=Envelope[DeviceRevocation])
     async def revoke(identity: UUID4, actor: Actor, body: PersonalRequest | None = None) -> Any:
         return {
             "data": await resolve().identity.revoke(
@@ -248,3 +343,21 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
 
     install_identity_errors(app)
     app.include_router(router)
+    original_openapi = app.openapi
+
+    def openapi_with_sse() -> dict[str, Any]:
+        schema = original_openapi()
+        components = schema.setdefault("components", {}).setdefault("schemas", {})
+        for model in (SyncHint, Entry, WorkHint, Activity):
+            document = model.model_json_schema(ref_template="#/components/schemas/{model}")
+            components.update(document.pop("$defs", {}))
+            components[model.__name__] = document
+        schema["x-yuki-sse-kinds"] = {
+            "sync": "#/components/schemas/SyncHint",
+            "conversation": "#/components/schemas/Entry",
+            "work": "#/components/schemas/WorkHint",
+            "activity": "#/components/schemas/Activity",
+        }
+        return schema
+
+    app.openapi = openapi_with_sse  # type: ignore[method-assign]

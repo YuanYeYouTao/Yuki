@@ -13,6 +13,9 @@ DENIED_CAPABILITY_ID: Final[str] = "control.denied"
 CONTROL_CAPABILITY_IDS: Final[frozenset[str]] = frozenset(
     {
         "control.audit.read",
+        "control.character.read",
+        "control.character.mutate",
+        "control.character.owner",
         "control.automation.content.read",
         "control.automation.mutate",
         "control.automation.read",

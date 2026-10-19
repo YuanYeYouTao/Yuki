@@ -120,6 +120,9 @@ def prepare_operator_configuration(paths: SetupPaths, environment: dict[str, str
                     "enabled": True,
                     "roles": ["operator"],
                     "capabilities": [
+                        "control.character.read",
+                        "control.character.mutate",
+                        "control.character.owner",
                         "control.system.read",
                         "control.health.read",
                         "control.operation.read",

@@ -70,6 +70,7 @@ class ClientPrincipal:
     platform: str = APP_PLATFORM
     presence_id: str | None = None
     thread_id: str | None = None
+    is_owner: bool = False
 
     @property
     def request_conversation_id(self) -> str | None:
@@ -168,6 +169,8 @@ class ClientIdentityService:
             )
             if conversation is None:
                 raise ClientError("unauthenticated")
+        from yuki.character.repository import is_character_owner
+
         return ClientPrincipal(
             device.id,
             root_id,
@@ -179,6 +182,7 @@ class ClientIdentityService:
             binding.platform,
             presence.id,
             conversation.thread_id,
+            await is_character_owner(session, root_id),
         )
 
     async def require_principal(

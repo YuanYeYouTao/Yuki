@@ -22,6 +22,20 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 
 ## 方法与 CLI
 
+角色管理沿同一个 operator 入口与原命令回执：
+
+| 方法 | CLI | 权限 |
+| --- | --- | --- |
+| `GET /character` | `admin character show` | `control.character.read` |
+| `POST /character {request_id,expected_revision,display_name?,bio?,accent?,slug?}` | `admin character update --revision <n> --display-name <name> [--slug <slug>] [--bio <text>] [--accent-light <hex> --accent-dark <hex>]` | `control.character.mutate` |
+| `GET /character/owners` | `admin character owner list` | `control.character.owner` |
+| `POST /character/owners {request_id,person_id}` | `admin character owner grant --person <id>` | `control.character.owner` |
+| `POST /character/owners/{person_id}/revoke {request_id}` | `admin character owner revoke --person <id>` | `control.character.owner` |
+
+角色名称和 slug 可以修改，稳定角色 ID 不变。新能力必须在 operator 文件中明确声明，
+既有角色描述不隐含授予。拥有者可以经个人 API 修改角色呈现；operator 不因此成为 Person。
+撤销覆盖归并集合中的有效授予；重复原请求不再次授予。人物遗忘随外键级联删除拥有者记录。
+
 状态命令使用 UUID4 `request_id` 与非负整数 `expected_revision`；下述身份关联类操作只使用原请求 UUID，不接受请求方自报主体。
 返回 `data`；命令含 `success`、资源 ID、revision、审计 ID 与公开结果，外部命令可含原 operation。
 

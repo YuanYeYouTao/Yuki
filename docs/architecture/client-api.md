@@ -3,6 +3,35 @@
 个人入口使用原 Bot HTTP 服务的 `/client/v1`。operator 与个人设备使用不同凭据，
 设备凭据解析当前 Person，但保留原设备与 App 入口，不具有管理或设备执行器权限。公开服务沿部署提供 HTTPS。
 
+## 角色身份与个人路由
+
+每个数据库有一个稳定的 `character_profile.id`，由迁移 0141 生成。名称、简介、角色色、
+头像和服务器地址均不参与身份；修改呈现资料不重建 Person、入口、历史或 Work。
+
+| 请求 | 授权与结果 |
+| --- | --- |
+| `GET /meta` | 无需认证；返回 api_revision、真实 server_version、角色 ID/名称/色彩/公开头像 URL、min_client |
+| `GET /character` | 设备 Bearer；角色资料与持久 revision、头像描述、viewer.is_owner |
+| `PATCH /character {request_id,expected_revision,display_name?,bio?,accent?}` | 角色拥有者；同一短事务核 revision、更新呈现并保存原命令回执 |
+| `GET /me/proactive-route` | 本人当前的 binding_id/platform/paused/revision；尚未有路由时 binding_id/platform 为 null、revision=0 |
+| `PUT /me/proactive-route {request_id,expected_revision,binding_id}` | 仅本人归并集合中的 active Binding；沿 person_active_routes 与原一致性触发器更新，推进 route_generation/revision |
+
+角色拥有者由 operator 明确授予。每次设备鉴权重新查询当前有效资格，归并集合继承来源
+资格；撤销覆盖当前整个人物集合，旧 grant 请求重放只返回原结果。停用或遗忘不会复活
+资格。一般设备调用拥有者写入方法返回 `owner_required`（403）。operator 能力与设备资格分开。
+若一个目标 Binding 对应多个可用 Presence，且没有原路由可沿用，返回
+`precondition_failed`/`route_ambiguous`，不猜测发送账号。没有可用 Presence 时原因是 route_unavailable。
+
+`/meta` 返回的头像路径相对于实例基底地址，客户端应保留部署的路径前缀。
+没有头像时为 null；不按名称假设任何默认图片。
+
+`yuki client openapi --out client-openapi.json` 离线导出当前 HTTP 路由的 OpenAPI，不加载设备
+凭据或启动 Bot。JSON 按键排序，客户端可固定文件、源版本/提交与 SHA-256 后生成类型，
+不依赖另一个仓库的浮动分支。当前已有明确响应模型的接口为 meta、character、me、home、pair、
+本人 proactive-route、events、activity、messages、requests、link-codes 与 devices 撤销。
+SSE 的 sync/conversation/work/activity 数据模型以 x-yuki-sse-kinds 标明；后续新增方法同步补齐
+响应模型，不能把空响应 schema 当作完整类型。
+
 ## 配对与账号绑定
 
 第一台设备可由 operator 执行 `yuki admin person create`，再执行

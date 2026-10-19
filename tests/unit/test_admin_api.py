@@ -44,6 +44,9 @@ from yuki.plugin_host.repository import PluginInstallationRepository
 TOKEN = "test-admin-" + "a" * 48
 READER = "test-reader-" + "b" * 48
 GRANTS = (
+    "control.character.read",
+    "control.character.mutate",
+    "control.character.owner",
     "control.health.read",
     "control.operation.read",
     "identity.person.create",

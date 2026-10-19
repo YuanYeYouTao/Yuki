@@ -28,6 +28,23 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     admin = subparsers.add_parser("admin", help="通过 operator API 管理正在运行的 Yuki")
     commands = admin.add_subparsers(dest="admin_command", required=True)
     commands.add_parser("health")
+    character = commands.add_parser("character").add_subparsers(
+        dest="character_action", required=True
+    )
+    character.add_parser("show")
+    update = character.add_parser("update")
+    _mutation(update)
+    update.add_argument("--display-name")
+    update.add_argument("--slug")
+    update.add_argument("--bio")
+    update.add_argument("--accent-light")
+    update.add_argument("--accent-dark")
+    owners = character.add_parser("owner").add_subparsers(dest="owner_action", required=True)
+    owners.add_parser("list")
+    for action in ("grant", "revoke"):
+        owner = owners.add_parser(action)
+        owner.add_argument("--person", required=True)
+        _mutation(owner, revision=False)
     operation = commands.add_parser("operation")
     operation.add_argument("id", help="原 operation ID 或本 operator 的请求 UUID")
     trace = commands.add_parser("trace")
@@ -130,6 +147,38 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
         data: Any
         if kind == "health":
             data = await read(client, "health")
+        elif kind == "character":
+            if args.character_action == "show":
+                data = await read(client, "character")
+            elif args.character_action == "owner":
+                if args.owner_action == "list":
+                    data = await read(client, "character/owners")
+                elif args.owner_action == "grant":
+                    data = await identity_mutation(
+                        client,
+                        "character/owners",
+                        request_id=args.request_id,
+                        person_id=args.person,
+                    )
+                else:
+                    data = await identity_mutation(
+                        client, f"character/owners/{args.person}/revoke", request_id=args.request_id
+                    )
+            else:
+                fields = {
+                    key: getattr(args, key)
+                    for key in ("display_name", "slug", "bio")
+                    if getattr(args, key) is not None
+                }
+                if args.accent_light is not None or args.accent_dark is not None:
+                    current = await read(client, "character")
+                    fields["accent"] = {
+                        "light": args.accent_light or current["accent"]["light"],
+                        "dark": args.accent_dark or current["accent"]["dark"],
+                    }
+                data = await mutate(
+                    client, "character", args.revision, request_id=args.request_id, **fields
+                )
         elif kind == "operation":
             data = await read(client, f"operations/{args.id}")
         elif kind == "trace":

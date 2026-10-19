@@ -18,8 +18,11 @@ from yuki.admin.config_files import ConfigFileError
 from yuki.admin.operations import AdminOperations
 from yuki.admin.operations.base import authorize, fail
 from yuki.admin.queries import AdminQueries
+from yuki.character.repository import CharacterRepository
+from yuki.client_api.http import CharacterBody
 from yuki.client_api.http_errors import install_identity_errors
 from yuki.client_api.identity import ClientIdentityService
+from yuki.client_api.models import CharacterProfile, Envelope
 from yuki.domain.identity import RequestId
 from yuki.plugin_host.configuration_service import PluginConfigurationError
 from yuki.plugin_host.manager import PluginManagementRejected
@@ -95,6 +98,14 @@ class RenameBody(IdentityRequest):
     display_name: str = Field(max_length=128)
 
 
+class CharacterUpdateBody(CharacterBody):
+    slug: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9-]*$")
+
+
+class OwnerBody(IdentityRequest):
+    person_id: UUID4
+
+
 def result_view(result: ControlResult) -> dict[str, Any]:
     return {
         "success": result.success,
@@ -116,6 +127,63 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         return await resolve().access.authenticate(credential, source=PrincipalSource.CLI)
 
     Actor = Annotated[ControlPrincipal, Depends(principal)]
+
+    @router.get(
+        "/character", response_model=Envelope[CharacterProfile], response_model_exclude_unset=True
+    )
+    async def character(actor: Actor) -> Any:
+        authorize(actor, "control.character.read")
+        return {"data": await CharacterRepository(resolve().identities).get()}
+
+    @router.post(
+        "/character", response_model=Envelope[CharacterProfile], response_model_exclude_unset=True
+    )
+    async def update_character(body: CharacterUpdateBody, actor: Actor) -> Any:
+        authorize(actor, "control.character.mutate")
+        changes = body.model_dump(
+            mode="json", exclude={"request_id", "expected_revision"}, exclude_unset=True
+        )
+        if any(value is None for value in changes.values()):
+            from yuki.client_api.errors import ClientError
+
+            raise ClientError("validation_error")
+        return {
+            "data": await CharacterRepository(resolve().identities).update(
+                str(body.request_id),
+                body.expected_revision,
+                changes,
+                operator_id=actor.principal_id.text,
+            )
+        }
+
+    @router.get("/character/owners")
+    async def owners(actor: Actor) -> Any:
+        authorize(actor, "control.character.owner")
+        return {"data": await CharacterRepository(resolve().identities).owners()}
+
+    @router.post("/character/owners")
+    async def grant_owner(body: OwnerBody, actor: Actor) -> Any:
+        authorize(actor, "control.character.owner")
+        return {
+            "data": await CharacterRepository(resolve().identities).set_owner(
+                actor.principal_id.text,
+                str(body.person_id),
+                str(body.request_id),
+                granted=True,
+            )
+        }
+
+    @router.post("/character/owners/{person_id}/revoke")
+    async def revoke_owner(person_id: UUID4, body: IdentityRequest, actor: Actor) -> Any:
+        authorize(actor, "control.character.owner")
+        return {
+            "data": await CharacterRepository(resolve().identities).set_owner(
+                actor.principal_id.text,
+                str(person_id),
+                str(body.request_id),
+                granted=False,
+            )
+        }
 
     @router.get("/health")
     async def health(actor: Actor) -> Any:
