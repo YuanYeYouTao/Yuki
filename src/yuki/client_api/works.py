@@ -3,16 +3,26 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.authority.json_types import JsonValue
 from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
+from yuki.client_api.work_projection import (
+    cursor,
+    decode_cursor,
+    public_step,
+    step_position,
+    step_secret,
+    steps_token,
+    wait_view,
+)
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
@@ -23,11 +33,9 @@ from yuki.identity.person_identity import person_family_condition, same_person_i
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_budget_schema import budgets
 from yuki.runtime.work_management import WorkManagementError, manage_work
-from yuki.runtime.work_recovery_schema import deliveries
 from yuki.runtime.work_repository import TERMINAL, WorkLease, WorkRepository
 from yuki.runtime.work_schema_v1 import effects, inputs, work
 from yuki.runtime.work_tree import budget_root_id
-from yuki.social.db_models import SocialOperationModel
 
 
 def work_access(person_id: str) -> Any:
@@ -39,6 +47,22 @@ def work_access(person_id: str) -> Any:
             CanonicalConversationModel.kind == "private",
             person_family_condition(CanonicalConversationModel.person_id, person_id),
         ),
+    )
+
+
+def root_work_query(person_id: str, group: str = "active") -> Any:
+    return (
+        select(work)
+        .join(CanonicalConversationModel, CanonicalConversationModel.id == work.c.conversation_id)
+        .where(
+            work_access(person_id),
+            work.c.parent_work_id.is_(None),
+            work.c.state.in_(TERMINAL)
+            if group == "ended"
+            else work.c.state.in_(
+                ["queued", "running", "waiting_external", "waiting_user", "suspended"]
+            ),
+        )
     )
 
 
@@ -122,8 +146,11 @@ class ClientWorks:
         self.gateways = dict(gateway) if isinstance(gateway, Mapping) else {"app": gateway}
         self.database = identity.database
         self.repository = WorkRepository(self.database)
+        self.step_secret = step_secret(self.database.url)
 
-    async def _public(self, session: AsyncSession, row: dict[str, Any]) -> dict[str, Any]:
+    async def _public(
+        self, session: AsyncSession, row: dict[str, Any], *, detail: bool = True
+    ) -> dict[str, Any]:
         conversation = await session.get(CanonicalConversationModel, row["conversation_id"])
         assert conversation is not None
         source = json.loads(row["source_json"])
@@ -170,32 +197,14 @@ class ClientWorks:
             .mappings()
             .first()
         )
+        from yuki.client_api.result_events import confirmed_outbound, result_for_work
+
         events = list(
             await session.scalars(
                 select(ChatEventModel)
-                .join(SocialOperationModel, SocialOperationModel.event_id == ChatEventModel.id)
                 .where(
-                    SocialOperationModel.status == "succeeded",
-                    ChatEventModel.direction == "outbound",
-                    ChatEventModel.author_kind == "yuki",
-                    ChatEventModel.suppression_status == "keeper",
-                    or_(
-                        select(deliveries.c.id)
-                        .where(
-                            deliveries.c.work_id == row["id"],
-                            deliveries.c.id == SocialOperationModel.id,
-                        )
-                        .exists(),
-                        select(effects.c.effect_key)
-                        .where(
-                            effects.c.work_id == row["id"],
-                            func.json_extract(
-                                effects.c.receipt_json, "$.invocation.original_domain_ref"
-                            )
-                            == "social:" + SocialOperationModel.id,
-                        )
-                        .exists(),
-                    ),
+                    *confirmed_outbound(),
+                    result_for_work(row["id"]),
                 )
                 .order_by(ChatEventModel.id)
             )
@@ -215,13 +224,32 @@ class ClientWorks:
                     "artifacts": artifacts,
                 }
             )
+        token: str | None
+        if detail or row["state"] not in TERMINAL:
+            count, token = await steps_token(session, row["id"])
+        else:
+            count = (
+                await session.scalar(
+                    select(func.count())
+                    .select_from(effects)
+                    .where(effects.c.work_id == row["id"], effects.c.kind == "tool")
+                )
+                or 0
+            )
+            token = None
         return {
             "work_id": row["id"],
             "conversation_id": row["conversation_id"],
             "generation": row["generation"],
             "state": row["state"],
             "revision": row["revision"],
-            "goal": row["goal"][:240],
+            "goal": row["goal"] if detail else row["goal"][:240],
+            "trigger_event_id": source.get("trigger_event_id"),
+            "reason": row["reason"],
+            "step_count": count,
+            "steps_token": token,
+            "help_requested": False,
+            "wait": await wait_view(session, row["id"]),
             "source": origin,
             "result_delivery": origin,
             "waiting_kind": "user"
@@ -251,6 +279,108 @@ class ClientWorks:
             return await self._public(
                 session, await personal_work(session, principal.person_id, identity)
             )
+
+    async def steps(
+        self, principal: ClientPrincipal, identity: str, after: str | None, limit: int
+    ) -> dict[str, Any]:
+        async with self.database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            current = await self.identity.require_principal(session, principal)
+            row = await personal_work(session, current.person_id, identity)
+            query = select(effects).where(effects.c.work_id == identity, effects.c.kind == "tool")
+            if after:
+                created, key = await step_position(session, identity, after, self.step_secret)
+                query = query.where(
+                    tuple_(effects.c.created, effects.c.effect_key) > (created, key)
+                )
+            rows = (
+                (
+                    await session.execute(
+                        query.order_by(effects.c.created, effects.c.effect_key).limit(limit + 1)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            selected = rows[:limit]
+            children = (
+                (
+                    await session.execute(
+                        select(work.c.id, work.c.goal, work.c.state, work.c.revision)
+                        .where(work.c.parent_work_id == identity)
+                        .order_by(work.c.created, work.c.id)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            _, token = await steps_token(session, identity)
+            return {
+                "steps": [public_step(item, self.step_secret) for item in selected],
+                "next_after": cursor(
+                    [
+                        selected[-1]["created"],
+                        public_step(selected[-1], self.step_secret)["step_id"],
+                    ]
+                )
+                if len(rows) > limit
+                else None,
+                "children": [
+                    {
+                        "work_id": item["id"],
+                        "goal": item["goal"],
+                        "state": item["state"],
+                        "revision": item["revision"],
+                    }
+                    for item in children
+                ],
+                "wait": await wait_view(session, identity),
+                "steps_token": token,
+                "work_revision": row["revision"],
+            }
+
+    async def list(
+        self, principal: ClientPrincipal, group: str, origin: str, before: str | None, limit: int
+    ) -> dict[str, Any]:
+        async with self.database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            current = await self.identity.require_principal(session, principal)
+            query = root_work_query(current.person_id, group)
+            if origin != "all":
+                query = query.where(
+                    work.c.conversation_id == current.conversation_id
+                    if origin == "this_entry"
+                    else work.c.conversation_id != current.conversation_id
+                )
+            if before:
+                value = decode_cursor(before)
+                if (
+                    not isinstance(value, list)
+                    or len(value) != 2
+                    or type(value[0]) not in (float, int)
+                    or not math.isfinite(value[0])
+                    or not isinstance(value[1], str)
+                ):
+                    raise ClientError("validation_error")
+                query = query.where(tuple_(work.c.updated, work.c.id) < tuple(value))
+            rows = (
+                (
+                    await session.execute(
+                        query.order_by(work.c.updated.desc(), work.c.id.desc()).limit(limit + 1)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            selected = rows[:limit]
+            return {
+                "works": [
+                    await self._public(session, dict(item), detail=False) for item in selected
+                ],
+                "next_before": cursor([selected[-1]["updated"], selected[-1]["id"]])
+                if len(rows) > limit
+                else None,
+            }
 
     async def _record(
         self,

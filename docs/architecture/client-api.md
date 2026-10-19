@@ -115,7 +115,7 @@ QQ 已派发消息也按派发时的绑定记录事实，发送途中转移不�
 ## 原 Work 的个人访问与补充
 
 `GET /home` 列出本人发起的私聊／群 Work，`GET /works/{id}` 返回来源入口、结果投递
-位置、状态、revision、目标摘要、等待类型、该 Work 已确认发送的问题／结果、子 Work 数
+位置、状态、revision、目标（清单为摘要，详情为完整目标）、等待类型、该 Work 已确认发送的问题／结果、子 Work 数
 与原预算。群聊其他消息、工具参数、checkpoint 和 journal 不进入个人投影。
 
 `POST /works/{id}/inputs {request_id,text}` 接受与原发起者当前为同一 Person 的设备。App 的 `work_input`
@@ -135,6 +135,22 @@ App 补充不会自动发往群里；群 Work 后续仍可能按任务内容向�
 
 ## 快照、事件与提示
 
+桌面接口 revision 3 增加角色状态、公开步骤、根 Work 历史与成果引用列表。
+`GET /home?works=active` 和 `GET /stream?works=active` 共用非终态根 Work 查询；
+省略参数仍返回原全部本人 Work。历史经 `GET /works?group=ended&origin=all|this_entry|other`
+按 `(updated DESC,id DESC)` 翻页，没有按天数截断；active 包括 suspended。
+`GET /works/{id}/steps?after=&limit=` 按 `(created,effect_key)` 分页，公开 ID 与游标不含内部键。
+步骤状态沿原执行证据，pending 与 uncertain 分别保留 running 与 unknown。
+active 快照和每个 Work 详情提供 steps_token；已加载终态详情在重连时仍须重新核对它，
+以接纳迟到的原执行结果，不改变 Work 的终态。children 与 any/all 等待摘要独立返回。
+步骤私钥在数据库同目录的 `<database>.client-steps.key`（0600），与实例一起保存；
+它只稳定公开步骤身份，不授予任何 Work 或文件权限。
+
+`GET /character/status` 返回当前本人活动证据和 Work 状态计数。failed_recent 明确定义为
+最近 24 小时失败的根 Work。环境来自 Manager 的真实观察；未观察到的 display/control/help
+保留 unavailable 或 null，不能据此判断没有人接手。revision 只在进程内使用，重连总是重读。
+SSE 增加 character、work_steps、artifacts 提示；先提交后提示，回滚不提示。
+
 `GET /home` 在同一读快照返回 main、其他入口 entries、本人 Work 与 snapshot_at。
 `GET /conversations/{id}/events?after=&before=&limit=` 以内部事件 ID 分页，最多 50 条，
 只读当前本人归并集合的原私聊账本；不同原入口各自保留，群记录与无关人物的会话均为 not_found。公开事件只含正文、方向、
@@ -151,6 +167,13 @@ conversation、work、activity 变化提示。事实仍须经对应 GET 读取�
 客户端在重连／回前台时用持久事件 ID 和 Work revision 补读。撤销／遗忘使后续读取与流失效。
 
 ## 上传与原文件下载
+
+事件附件保留真实 attachment_index、size/file_size 和原缓存期限；语音只提供原事件转写，
+不新增语音下载。`GET /conversations/{id}/events/{event}/attachments/{index}` 只读取
+本人私聊的图片、视频与文件，重用原媒体缓存与接收连接，返回 X-Yuki-Sha256。
+media_unavailable 的 reason 为 expired、cleaned、source_unavailable 或 source_changed；
+来源变化后重新读取原事件。转写、编辑、删除或遗忘改变 conversation revision，客户端
+必须重新读取已加载范围并移除已消失的事件，不能只比较 latest_event_id。
 
 `POST /uploads?request_id=&sha256=&size=&filename=&kind=` 使用原始文件字节作为请求体，
 kind 为 file、image、video 或 record。服务器流式写设备／请求暂存文件并计算摘要与长度，
@@ -169,6 +192,12 @@ kind 为 file、image、video 或 record。服务器流式写设备／请求暂�
 不可变 artifact 和内容版本。App 本地 Social 投递和 QQ artifact 投递都将真实摘要写入
 原出站事件；不因工作文件后来变更而改读新版本。无引用、他人引用、版本不符或来源删除
 均为 not_found。文件读取在数据库写事务外，读取前后复核个人授权。
+
+`GET /artifacts?cursor=&limit=&kind=all|image|document|code` 列出同一授权查询中的引用，
+每项身份为 `(event_id,part_index)`，按两者降序 keyset 翻页。同一事件多个文件、同一文件多次
+投递均保留；同名不同 artifact 不合并。Work 详情、列表和下载共用原 Social/Work 结果选择。
+本人群 Work 结果可读，群内其他消息不会因此可读。published_path 只取原 workspace_publish
+回执；没有回执就是 null，不能按文件名推断版本关系。
 
 ## Python 参考客户端与 CLI
 

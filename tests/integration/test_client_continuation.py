@@ -196,8 +196,8 @@ async def test_real_sse_reconnects_after_last_hint_lost_and_refreshes_every_entr
     subscribe = database.commit_hints.subscribe
     registrations = []
 
-    def counted():
-        queue = subscribe()
+    def counted(**options):
+        queue = subscribe(**options)
         registrations.append(queue)
         return queue
 

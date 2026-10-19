@@ -712,6 +712,35 @@ class ConversationMediaService:
                 raise ConversationMediaError("attachment_source_changed")
         return item, path
 
+    async def personal_path(
+        self, event_id: int, index: int
+    ) -> tuple[ConversationMediaItemModel, Path]:
+        """Read an indexed original for an already-authorized personal ledger reader.
+
+        Do not introduce a second cache or apply the active model's generation floor.
+        The caller checks the Person and exact event before and after this I/O.
+        """
+        key = (event_id, index)
+        source = (await self._sources((key,)))[key]
+        item = source[0]
+        if item.kind not in {"image", "video", "file"}:
+            raise ConversationMediaError("attachment_not_found")
+        if item.cache_status == "expired" or (
+            item.expires_at is not None and _aware(item.expires_at) <= datetime.now(UTC)
+        ):
+            raise ConversationMediaError("attachment_expired")
+        if item.cache_status == "cached" and not await _media_io(self._path(item).is_file):
+            raise ConversationMediaError("cache_missing")
+        path = await self._cache(event_id, index, None, source=source)
+        live = await self._validated_cached_path(item, path)
+        current = (await self._sources((key,)))[key]
+        if (
+            current[-1] != source[-1]
+            or current[0].source_snapshot_json != item.source_snapshot_json
+        ):
+            raise ConversationMediaError("attachment_source_changed")
+        return live, path
+
     async def inspect(
         self,
         item: ConversationMediaItemModel,

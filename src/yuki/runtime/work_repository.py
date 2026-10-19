@@ -432,6 +432,8 @@ class WorkRepository:
             raise WorkConflict("work_source_conflict")
         if row["state"] in TERMINAL and parent_work_id is None:
             raise WorkConflict("work_already_terminal")
+        if parent_work_id:
+            session.info.setdefault("work_step_hints", set()).add(parent_work_id)
         if handoff_from is not None:
             previous = (
                 (await session.execute(select(work).where(work.c.id == handoff_from)))
@@ -1967,6 +1969,8 @@ class WorkRepository:
                     .returning(effects.c.effect_key)
                 )
             ).first()
+            if inserted is not None and kind == "tool":
+                session.info.setdefault("work_step_hints", set()).add(identity)
             return inserted is not None
 
     async def publish_code_boundary(
@@ -2630,7 +2634,7 @@ class WorkRepository:
             async with self.database.immediate_session() as writer:
                 await self._assert_lease(writer, lease)
                 for key, previous_json, next_json in prepared[offset : offset + 128]:
-                    await writer.execute(
+                    changed = await writer.scalar(
                         update(effects)
                         .where(
                             effects.c.effect_key == key,
@@ -2639,7 +2643,10 @@ class WorkRepository:
                             select(work.c.id).where(owned).exists(),
                         )
                         .values(receipt_json=next_json, updated=time.time())
+                        .returning(effects.c.effect_key)
                     )
+                    if changed is not None:
+                        writer.info.setdefault("work_step_hints", set()).add(identity)
 
     async def record_effect(
         self,
@@ -2767,5 +2774,7 @@ class WorkRepository:
                     await ProtocolStore(self.database, policy=protocol_policy).publish_refs(
                         writer, existing["work_id"], prepared_protocol
                     )
+                if changed is not None and existing["kind"] == "tool":
+                    writer.info.setdefault("work_step_hints", set()).add(existing["work_id"])
             if changed is not None:
                 return

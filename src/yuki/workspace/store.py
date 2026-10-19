@@ -101,6 +101,11 @@ class WorkspaceStore:
             ).fetchone()
             return row[0] if row is not None else None
 
+    def metadata(self, artifact_id: str) -> dict[str, Any]:
+        """Read original metadata without loading file content."""
+        with self._transaction(write=False) as db:
+            return self._metadata(self._row(db, artifact_id))
+
     def _row(self, db: sqlite3.Connection, artifact_id: str) -> sqlite3.Row:
         row = db.execute(
             "SELECT *, EXISTS(SELECT 1 FROM artifact_snapshots s WHERE s.id=artifacts.id) "

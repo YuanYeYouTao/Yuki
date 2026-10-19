@@ -1,13 +1,38 @@
 """Public response schemas exported for independently built personal clients."""
 
 from datetime import datetime
-from typing import Literal
+from enum import StrEnum
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 
 class Envelope[T](BaseModel):
     data: T
+
+
+class PublicProblemCode(StrEnum):
+    UNAUTHENTICATED = "unauthenticated"
+    OWNER_REQUIRED = "owner_required"
+    NOT_FOUND = "not_found"
+    REQUEST_CONFLICT = "request_conflict"
+    VERSION_CONFLICT = "version_conflict"
+    PRECONDITION_FAILED = "precondition_failed"
+    VALIDATION_ERROR = "validation_error"
+    UNAVAILABLE = "unavailable"
+    UNKNOWN = "unknown"
+    CONTROL_HELD = "control_held"
+    MEDIA_UNAVAILABLE = "media_unavailable"
+    EXECUTOR_OFFLINE = "executor_offline"
+
+
+class PublicProblem(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    code: PublicProblemCode | str
+
+
+class ProblemEnvelope(BaseModel):
+    problem: PublicProblem
 
 
 class Accent(BaseModel):
@@ -127,6 +152,39 @@ class WorkBudget(BaseModel):
     tool_limit: int | None
 
 
+class TimeDueCondition(BaseModel):
+    kind: Literal["time_due"]
+    due_at: str
+
+
+class ConversationCondition(BaseModel):
+    kind: Literal["conversation"]
+
+
+class PluginEventCondition(BaseModel):
+    kind: Literal["plugin_event"]
+    plugin_id: str
+    event_type: str
+
+
+class OwnedRunCondition(BaseModel):
+    kind: Literal["owned_run"]
+    run_kind: Literal["terminal", "acp", "help_request", "wait_control", "other"]
+
+
+WaitCondition = Annotated[
+    TimeDueCondition | ConversationCondition | PluginEventCondition | OwnedRunCondition,
+    Field(discriminator="kind"),
+]
+
+
+class WorkWait(BaseModel):
+    mode: Literal["any", "all"]
+    since: str
+    deadline_at: str | None
+    conditions: list[WaitCondition]
+
+
 class WorkView(BaseModel):
     model_config = ConfigDict(extra="allow")
     work_id: str
@@ -152,6 +210,95 @@ class WorkView(BaseModel):
     budget: WorkBudget
     results: list[WorkResult]
     updated_at: float
+    trigger_event_id: int | None = None
+    step_count: int | None = None
+    steps_token: str | None = None
+    reason: str | None = None
+    help_requested: bool = False
+    wait: WorkWait | None = None
+
+
+class WorkPage(BaseModel):
+    works: list[WorkView]
+    next_before: str | None
+
+
+class StepArtifact(BaseModel):
+    artifact_id: str
+    version: str
+
+
+class PublicStep(BaseModel):
+    step_id: str
+    category: str
+    label: str
+    record: Literal["prepared", "accepted", "failed", "unknown"]
+    status: Literal["recorded", "running", "succeeded", "failed", "unknown"]
+    created_at: str
+    updated_at: str
+    artifacts: list[StepArtifact]
+
+
+class ChildWork(BaseModel):
+    work_id: str
+    goal: str
+    state: str
+    revision: int
+
+
+class WorkSteps(BaseModel):
+    steps: list[PublicStep]
+    next_after: str | None
+    children: list[ChildWork]
+    wait: WorkWait | None
+    steps_token: str
+    work_revision: int
+
+
+class ArtifactReference(BaseModel):
+    event_id: int
+    part_index: int
+
+
+class ArtifactItem(BaseModel):
+    ref: ArtifactReference
+    artifact_id: str
+    version: str
+    name: str
+    size: int | None
+    media_type: str
+    conversation_id: str
+    work_id: str | None
+    published_path: str | None
+    created_at: str
+
+
+class ArtifactPage(BaseModel):
+    items: list[ArtifactItem]
+    next_cursor: str | None
+
+
+class WorkInputResult(BaseModel):
+    event_id: int
+    input_id: int
+    replay: bool
+
+
+class WorkCancelResult(BaseModel):
+    work_id: str
+    state: str
+    revision: int
+    replay: bool
+
+
+class UploadResult(BaseModel):
+    media_id: str
+    sha256: str
+    size: int
+    filename: str
+    kind: str
+    expires_at: float
+    replay: bool
 
 
 class Home(BaseModel):
@@ -183,6 +330,14 @@ class Attachment(BaseModel):
     filename: str | None = None
     mime_type: str | None = None
     size: int | None = None
+    attachment_index: int
+    availability: Literal["available", "expired", "not_readable"]
+    expires_at: str | None
+
+
+class Transcript(BaseModel):
+    state: Literal["available", "none"]
+    text: str | None = None
 
 
 class PublicEvent(BaseModel):
@@ -197,6 +352,7 @@ class PublicEvent(BaseModel):
     origin: str
     created_at: str
     attachments: list[Attachment]
+    transcript: Transcript | None = None
 
 
 class EventsPage(BaseModel):
@@ -262,12 +418,46 @@ class Activity(BaseModel):
 class WorkHint(BaseModel):
     work_id: str
     revision: int
+    steps_token: str | None = None
+
+
+class CharacterHint(BaseModel):
+    revision: int
+
+
+class WorkStepsHint(BaseModel):
+    work_id: str
+
+
+class ArtifactsHint(BaseModel):
+    pass
+
+
+class CharacterEnvironment(BaseModel):
+    state: Literal["running", "stopped", "unavailable"]
+    display: Literal["running", "stopped", "starting", "unavailable"]
+    generation: str | None
+    control: dict[str, JsonValue] | None
+    help_requested: bool | None
+
+
+class CharacterMine(BaseModel):
+    live_conversations: list[str]
+    works: dict[str, int]
+
+
+class CharacterStatus(BaseModel):
+    observed_at: str
+    environment: CharacterEnvironment
+    mine: CharacterMine
+    revision: int
 
 
 class SyncHint(BaseModel):
     conversations: list[Entry]
     works: list[WorkHint]
     activity: list[Activity]
+    character_revision: int
 
 
 class DeviceRevocation(BaseModel):

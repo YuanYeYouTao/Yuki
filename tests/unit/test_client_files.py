@@ -215,6 +215,31 @@ async def app_context(env, device):
     )
 
 
+async def test_confirmed_file_delivery_emits_authorized_artifact_hint(app_env, database):
+    env = app_env
+    device, _ = await owner(env, database)
+    context = await app_context(env, device)
+    principal = await env.identity.authenticate(device["token"])
+    stream = env.files.views.stream(principal, active=True)
+    await anext(stream)
+    snapshot = snapshot_bytes(env.store, "delivered.txt", b"confirmed content")
+    try:
+        result = await env.social.execute(
+            "send_message",
+            {"artifact_id": snapshot["artifact_id"], "attachment_kind": "file"},
+            context,
+        )
+        assert result["status"] == "succeeded"
+        async with asyncio.timeout(3):
+            while True:
+                hint = await anext(stream)
+                if "event: artifacts" in hint:
+                    assert "data: {}" in hint
+                    break
+    finally:
+        await stream.aclose()
+
+
 @pytest.mark.parametrize("named", [False, True])
 async def test_local_artifact_pins_original_snapshot_and_download_authorization(
     app_env, database, named
@@ -353,6 +378,94 @@ async def test_group_result_file_is_readable_only_through_owned_work(app_env, da
     own = await env.client.get(path, headers=bearer(device["token"]))
     assert own.status_code == 200 and own.content == b"only this work result"
     assert (await env.client.get(path, headers=bearer(second["token"]))).status_code == 404
+    own_files = (
+        await env.client.get("/client/v1/artifacts", headers=bearer(device["token"]))
+    ).json()["data"]["items"]
+    assert [(item["artifact_id"], item["work_id"]) for item in own_files] == [
+        (snapshot["artifact_id"], original.row["id"])
+    ]
+    assert (await env.client.get("/client/v1/artifacts", headers=bearer(second["token"]))).json()[
+        "data"
+    ]["items"] == []
+
+
+async def test_artifact_keyset_keeps_two_parts_and_same_name_objects_separate(app_env, database):
+    from datetime import UTC, datetime
+
+    from yuki.domain.conversations import ConversationScope
+    from yuki.social.db_models import SocialOperationModel
+
+    env = app_env
+    device, _ = await owner(env, database)
+    first = snapshot_bytes(env.store, "same.txt", b"first immutable")
+    second = snapshot_bytes(env.store, "same.txt", b"second immutable")
+    event_ids = []
+    for snapshots in ([first, second], [first]):
+        event = (
+            await env.harness.scoped_events.append(
+                scope=ConversationScope.private("8000", "1001"),
+                platform_message_id=str(uuid4()),
+                sender_user_id="8000",
+                direction="outbound",
+                content="actual parts",
+                segments=tuple(
+                    {
+                        "type": "file",
+                        "data": {"artifact_id": item["artifact_id"], "version": item["sha256"]},
+                    }
+                    for item in snapshots
+                ),
+            )
+        ).event
+        event_ids.append(event.id)
+        async with database.immediate_session() as session:
+            session.add(
+                SocialOperationModel(
+                    id=str(uuid4()),
+                    source_turn_id=str(uuid4()),
+                    tool_call_id=str(uuid4()),
+                    source_conversation_id=event.canonical_conversation_id,
+                    action="send_message",
+                    payload_hash="a" * 64,
+                    target_kind="person",
+                    target_id=event.canonical_conversation_id,
+                    presence_id=event.ingress_presence_id,
+                    status="succeeded",
+                    event_id=event.id,
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                )
+            )
+    cursor, rows = None, []
+    while True:
+        response = await env.client.get(
+            "/client/v1/artifacts",
+            params={"limit": 1, **({"cursor": cursor} if cursor else {})},
+            headers=bearer(device["token"]),
+        )
+        assert response.status_code == 200, response.text
+        page = response.json()["data"]
+        rows.extend(page["items"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert [item["artifact_id"] for item in rows] == [
+        first["artifact_id"],
+        second["artifact_id"],
+        first["artifact_id"],
+    ]
+    assert [item["ref"] for item in rows] == [
+        {"event_id": event_ids[1], "part_index": 0},
+        {"event_id": event_ids[0], "part_index": 1},
+        {"event_id": event_ids[0], "part_index": 0},
+    ]
+    assert all(item["name"] == "same.txt" and item["published_path"] is None for item in rows)
+    async with database.immediate_session() as session:
+        await session.execute(delete(ChatEventModel).where(ChatEventModel.id == event_ids[0]))
+    after = (await env.client.get("/client/v1/artifacts", headers=bearer(device["token"]))).json()[
+        "data"
+    ]["items"]
+    assert len(after) == 1 and after[0]["artifact_id"] == first["artifact_id"]
 
 
 async def test_cancelled_upload_retains_its_actual_write_until_thread_finishes(

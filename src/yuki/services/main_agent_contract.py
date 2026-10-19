@@ -104,7 +104,8 @@ class MainAgentContract:
                         # 14: retired MCP and fixed direct view, discovery and full execution API.
                         # 19: lifecycle decisions settle after the original tool round.
                         # 24: optional illustrations are accepted separately from text delivery.
-                        "version": 24,
+                        # 25: same-entry historical references retain their exact event identity.
+                        "version": 25,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

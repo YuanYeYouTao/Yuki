@@ -77,7 +77,7 @@ class CharacterRepository:
         async with self.database.sessions() as session:
             row = await self._profile(session)
             return {
-                "api_revision": 2,
+                "api_revision": 3,
                 "server_version": __version__,
                 "character": {
                     "id": row.id,
@@ -89,7 +89,7 @@ class CharacterRepository:
                         else None
                     ),
                 },
-                "min_client": {"desktop": "1.0.0", "android": None},
+                "min_client": {"desktop": "1.0.0-beta.1", "android": None},
             }
 
     async def get(self, principal: ClientPrincipal | None = None) -> dict[str, Any]:

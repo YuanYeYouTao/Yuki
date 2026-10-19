@@ -188,7 +188,7 @@ scene/include_memories/history_limit/context_profile 读取预设或 creator_pri
 检查点、真实预算和效果回执接续。模型最终文字只作内部结束，QQ 可见内容必须显式发送。
 delivery.target 是任务要求与原目标，不裁剪工具或制造另一套静默 Agent。
 
-`task_control(complete)` 可在同一次调用中携带真实内部 `result`。当前主合同版本 19，工作者沿 Main 同一完整声明与 revision；Code 控制 API 为 `yuki.codemode.api.v2`。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
+`task_control(complete)` 可在同一次调用中携带真实内部 `result`。当前主合同版本 25，工作者沿 Main 同一完整声明与 revision；Code 控制 API 为 `yuki.codemode.api.v2`。direct 与 Code 共用原结束入口，把 Agent 的结束决定写入 Work `checkpoint_json` 的
 `accepted_control`（complete/fail/need_input/wait 各一份，wait(conditions) 与原 wait
 绑定同事务）。普通 complete、wait、need_input 与交接只登记决定，同一份原响应及 Code 程序中仍获准的调用按原顺序收拢；不要求模型把控制放在最后，也不因普通结束提案裁剪工具。原批次、程序和配对保存后，本次 activation 沿共同出口结束，不再请求后续模型。结算 writer 仅复核真实新授权输入及尚在执行的所属执行，等待期间保留结束决定；真正提交 completed 时才把 result 原子转存为 `sync_result`。caller 与子任务通知只读已提交行。need_input/fail 的 reason、context_note 和 reporting 是可选资料，不作为结束审批。
 合法无工具 final（包括空正文）走同一结束路径；正文供内部结果，QQ 仍须显式发送。旧 unknown、暂停子目标、产物标签与辅助通知不否决业务完成，查询仍保存实际失败和未知事实。
@@ -591,3 +591,8 @@ Provider 实际返回的可读思考、重试与单项工具结果。逻辑 turn
 诊断可以丢弃，不建立额外持久恢复状态，也不替代任何真实效果回执。
 
 纯文本 LENGTH 截断保留已付费响应并报告 incomplete，不自动购买下一轮纠正请求。原本未执行的截断本地工具调用仍配对 non-execution 回执；受支持的 Provider pause 仍按原 checkpoint 续接。
+
+
+App/ACP 的 `read_personal_entry` 可按本人授权读取当前入口的旧事件，也可读取本人其他私聊。
+正文中的 `[[yuki-ref conversation=<UUID> event=<内部ID>]]` 是精确引用；读取后核对返回 ID，
+原事件已删除或无权读取时不能用下一条消息替代。引用本身不授予新权限，不修改旧请求链。

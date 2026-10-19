@@ -3,23 +3,30 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal
-from yuki.client_api.works import ClientWorks, work_access
+from yuki.client_api.work_projection import steps_token
+from yuki.client_api.works import ClientWorks, personal_work, root_work_query, work_access
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.media_index import indexed_media_segments
 from yuki.execution_trace.db_models import ExecutionTraceEntryModel
 from yuki.execution_trace.recorder import TraceRecorder
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.identity.person_identity import person_family_condition
-from yuki.persistence.models import ChatEventModel
+from yuki.persistence.commit_hints import CommittedHint
+from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
+from yuki.runtime.work_repository import TERMINAL
 from yuki.runtime.work_schema_v1 import work
 from yuki.social.db_models import SocialOperationModel
 
@@ -39,29 +46,63 @@ async def personal_conversation(
     return row
 
 
-def public_event(row: ChatEventModel, binding: IdentityBindingModel) -> dict[str, Any]:
+def public_event(
+    row: ChatEventModel,
+    binding: IdentityBindingModel,
+    media: dict[tuple[int, int], ConversationMediaItemModel] | None = None,
+) -> dict[str, Any]:
     attachments = []
-    for segment in json.loads(row.segments_json):
-        if segment["type"] in {"image", "audio", "record", "video", "file"}:
-            data = segment.get("data", {})
-            attachments.append(
-                {
-                    "kind": segment["type"],
-                    **{
-                        key: data[key]
-                        for key in (
-                            "media_id",
-                            "artifact_id",
-                            "version",
-                            "filename",
-                            "mime_type",
-                            "size",
-                        )
-                        if key in data
-                    },
-                }
+    has_audio = False
+    for index, _position, kind, data in indexed_media_segments(json.loads(row.segments_json)):
+        has_audio = has_audio or kind in {"record", "audio"}
+        item = (media or {}).get((row.id, index))
+        expires = item.expires_at if item else None
+        expired = bool(
+            item
+            and (
+                item.cache_status == "expired"
+                or (expires and expires.replace(tzinfo=UTC) <= datetime.now(UTC))
             )
-    return {
+        )
+        size = next(
+            (
+                value
+                for value in (
+                    data.get("size"),
+                    data.get("file_size"),
+                    item.declared_size if item else None,
+                )
+                if type(value) is int and value >= 0
+            ),
+            None,
+        )
+        attachments.append(
+            {
+                "kind": kind,
+                "attachment_index": index,
+                **({"size": size} if size is not None else {}),
+                "availability": "not_readable"
+                if kind in {"audio", "record"}
+                else "expired"
+                if expired
+                else "available"
+                if item
+                else "not_readable",
+                "expires_at": expires.isoformat() if expires else None,
+                **{
+                    key: data[key]
+                    for key in (
+                        "media_id",
+                        "artifact_id",
+                        "version",
+                        "filename",
+                        "mime_type",
+                    )
+                    if key in data
+                },
+            }
+        )
+    result = {
         "event_id": row.id,
         "conversation_id": row.canonical_conversation_id,
         "binding_id": binding.id,
@@ -73,6 +114,29 @@ def public_event(row: ChatEventModel, binding: IdentityBindingModel) -> dict[str
         "created_at": row.observed_at.isoformat(),
         "attachments": attachments,
     }
+    if has_audio:
+        result["transcript"] = (
+            {"state": "available", "text": row.audio_transcript}
+            if row.audio_transcript
+            else {"state": "none"}
+        )
+    return result
+
+
+async def public_events(
+    session: AsyncSession, rows: list[ChatEventModel], binding: IdentityBindingModel
+) -> list[dict[str, Any]]:
+    items = (
+        await session.scalars(
+            select(ConversationMediaItemModel).where(
+                ConversationMediaItemModel.source_event_id.in_([row.id for row in rows])
+            )
+        )
+        if rows
+        else ()
+    )
+    media = {(item.source_event_id, item.attachment_index): item for item in items}
+    return [public_event(row, binding, media) for row in rows]
 
 
 class ClientViews:
@@ -84,6 +148,68 @@ class ClientViews:
     ) -> None:
         self.identity, self.works, self.traces = identity, works, traces
         self.database = identity.database
+        self._character_revision = 0
+        self._character_facts: dict[str, str] = {}
+
+    async def character_status(self, principal: ClientPrincipal) -> dict[str, Any]:
+        from yuki.character.repository import CharacterRepository
+
+        async with self.database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            current = await self.identity.require_principal(session, principal)
+            entries = await self._entries(session, current)
+            activity = [
+                await self._activity(session, entry["conversation_id"]) for entry in entries
+            ]
+            counts = (
+                await session.execute(
+                    root_work_query(current.person_id)
+                    .with_only_columns(work.c.state, func.count())
+                    .group_by(work.c.state)
+                )
+            ).all()
+            mine: dict[str, Any] = {
+                "live_conversations": [
+                    entry["conversation_id"]
+                    for entry in activity
+                    if entry["evidence"] == "executing"
+                ],
+                "works": {state: count for state, count in counts},
+            }
+            mine["works"]["failed_recent"] = (
+                await session.scalar(
+                    root_work_query(current.person_id, "ended")
+                    .with_only_columns(func.count())
+                    .where(work.c.state == "failed", work.c.updated >= time.time() - 86400)
+                )
+                or 0
+            )
+        environment: dict[str, Any] = {
+            "state": "unavailable",
+            "display": "unavailable",
+            "generation": None,
+            "control": None,
+            "help_requested": None,
+        }
+        manager = self.database.sandbox_client
+        if manager:
+            status = await manager.execute("environment_status", {}, request_id=str(uuid4()))
+            if "error" not in status and type(status.get("ready")) is bool:
+                environment["state"] = "running" if status.get("ready") else "stopped"
+        profile = await CharacterRepository(self.identity).get(current)
+        facts = json.dumps(
+            {"mine": mine, "environment": environment, "profile": profile}, sort_keys=True
+        )
+        digest = hashlib.sha256(facts.encode()).hexdigest()
+        if self._character_facts.get(current.person_id) != digest:
+            self._character_facts[current.person_id] = digest
+            self._character_revision += 1
+        return {
+            "observed_at": datetime.now(UTC).isoformat(),
+            "environment": environment,
+            "mine": mine,
+            "revision": self._character_revision,
+        }
 
     async def _entries(
         self, session: AsyncSession, principal: ClientPrincipal
@@ -118,23 +244,23 @@ class ClientViews:
             for row, binding in rows
         ]
 
-    async def home(self, principal: ClientPrincipal) -> dict[str, Any]:
+    async def home(self, principal: ClientPrincipal, *, active: bool = False) -> dict[str, Any]:
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
             entries = await self._entries(session, principal)
-            rows = (
-                (
-                    await session.execute(
-                        select(work)
-                        .join(
-                            CanonicalConversationModel,
-                            CanonicalConversationModel.id == work.c.conversation_id,
-                        )
-                        .where(work_access(principal.person_id))
-                        .order_by(work.c.updated.desc(), work.c.id)
-                    )
+            query = (
+                root_work_query(principal.person_id)
+                if active
+                else select(work)
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == work.c.conversation_id,
                 )
+                .where(work_access(principal.person_id))
+            )
+            rows = (
+                (await session.execute(query.order_by(work.c.updated.desc(), work.c.id)))
                 .mappings()
                 .all()
             )
@@ -145,7 +271,9 @@ class ClientViews:
                 "entries": [
                     item for item in entries if item["conversation_id"] != principal.conversation_id
                 ],
-                "works": [await self.works._public(session, dict(row)) for row in rows],
+                "works": [
+                    await self.works._public(session, dict(row), detail=False) for row in rows
+                ],
                 "snapshot_at": datetime.now(UTC).isoformat(),
             }
 
@@ -193,7 +321,7 @@ class ClientViews:
             if before is not None:
                 selected.reverse()
             return {
-                "items": [public_event(row, binding) for row in selected],
+                "items": await public_events(session, selected, binding),
                 "has_more": len(rows) > limit,
                 "next_after": selected[-1].id if selected else after,
                 "next_before": selected[0].id if selected else before,
@@ -246,31 +374,46 @@ class ClientViews:
             "revision": latest.id if latest else 0,
         }
 
-    async def sync(self, principal: ClientPrincipal) -> dict[str, Any]:
+    async def sync(self, principal: ClientPrincipal, *, active: bool = False) -> dict[str, Any]:
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
             entries = await self._entries(session, principal)
+            query = (
+                root_work_query(principal.person_id)
+                if active
+                else select(work)
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == work.c.conversation_id,
+                )
+                .where(work_access(principal.person_id))
+            )
             rows = (
                 await session.execute(
-                    select(work.c.id, work.c.revision)
-                    .join(
-                        CanonicalConversationModel,
-                        CanonicalConversationModel.id == work.c.conversation_id,
-                    )
-                    .where(work_access(principal.person_id))
+                    query.with_only_columns(work.c.id, work.c.revision, work.c.state)
                 )
             ).all()
-            return {
+            hints = []
+            for row in rows:
+                hint: dict[str, Any] = {"work_id": row.id, "revision": row.revision}
+                if row.state not in TERMINAL:
+                    hint["steps_token"] = (await steps_token(session, row.id))[1]
+                hints.append(hint)
+            result: dict[str, Any] = {
                 "conversations": entries,
-                "works": [{"work_id": row.id, "revision": row.revision} for row in rows],
+                "works": hints,
                 "activity": [
                     await self._activity(session, item["conversation_id"]) for item in entries
                 ],
             }
+        result["character_revision"] = (await self.character_status(principal))["revision"]
+        return result
 
-    async def stream(self, principal: ClientPrincipal) -> AsyncIterator[str]:
-        queue = self.database.commit_hints.subscribe()
+    async def stream(
+        self, principal: ClientPrincipal, *, active: bool = False
+    ) -> AsyncIterator[str]:
+        queue = self.database.commit_hints.subscribe(details=True)
         sequence = 0
 
         def frame(kind: str, data: Any) -> str:
@@ -281,7 +424,7 @@ class ClientViews:
             )
 
         try:
-            previous = await self.sync(principal)
+            previous = await self.sync(principal, active=active)
             yield frame("sync", previous)
             while True:
                 try:
@@ -291,7 +434,50 @@ class ClientViews:
                     continue
                 if not available:
                     break
-                current = await self.sync(principal)
+                if isinstance(available, CommittedHint):
+                    detail: tuple[str, dict[str, Any]] | None = None
+                    async with self.database.sessions() as session:
+                        current_principal = await self.identity.require_principal(
+                            session, principal
+                        )
+                        if available.kind == "work_steps" and isinstance(available.reference, str):
+                            try:
+                                await personal_work(
+                                    session, current_principal.person_id, available.reference
+                                )
+                            except ClientError:
+                                continue
+                            detail = ("work_steps", {"work_id": available.reference})
+                        elif available.kind == "artifacts":
+                            from yuki.client_api.result_events import (
+                                confirmed_outbound,
+                                visible_outbound,
+                            )
+
+                            parts = func.json_each(ChatEventModel.segments_json).table_valued(
+                                "value", joins_implicitly=True
+                            )
+                            visible = await session.scalar(
+                                select(ChatEventModel.id)
+                                .select_from(ChatEventModel, parts)
+                                .where(
+                                    ChatEventModel.id == available.reference,
+                                    *confirmed_outbound(),
+                                    visible_outbound(current_principal.person_id),
+                                    func.json_extract(parts.c.value, "$.data.artifact_id").is_not(
+                                        None
+                                    ),
+                                )
+                                .limit(1)
+                            )
+                            if visible is not None:
+                                detail = ("artifacts", {})
+                    if detail is not None:
+                        yield frame(*detail)
+                    continue
+                current = await self.sync(principal, active=active)
+                if current["character_revision"] != previous["character_revision"]:
+                    yield frame("character", {"revision": current["character_revision"]})
                 for category, key, event_kind in (
                     ("conversations", "conversation_id", "conversation"),
                     ("works", "work_id", "work"),

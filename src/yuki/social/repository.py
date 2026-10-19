@@ -471,6 +471,8 @@ class SocialOperationRepository:
         row = result.scalar_one_or_none()
         if row is None:
             raise SocialError("invalid_transition")
+        if event_id is not None:
+            session.info.setdefault("artifact_event_hints", set()).add(event_id)
         return self._receipt(row)
 
     async def get(self, operation_id: str) -> SocialReceipt:

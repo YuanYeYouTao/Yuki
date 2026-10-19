@@ -113,9 +113,9 @@ async def test_subscribe_before_sync_covers_snapshot_gap_and_hint_follows_commit
     await drain(env)
     sync = views.sync
 
-    async def checked(actor):
+    async def checked(actor, **options):
         assert database.commit_hints.subscribers
-        return await sync(actor)
+        return await sync(actor, **options)
 
     monkeypatch.setattr(views, "sync", checked)
     stream = views.stream(principal)
@@ -141,6 +141,9 @@ async def test_subscribe_before_sync_covers_snapshot_gap_and_hint_follows_commit
         await asyncio.sleep(0.02)
         assert not pending.done()
     kind, changed = decode(await asyncio.wait_for(pending, 2))
+    async with asyncio.timeout(2):
+        while kind != "work":
+            kind, changed = decode(await anext(stream))
     assert kind == "work" and changed["revision"] == original.row["revision"] + 1
     await stream.aclose()
     assert not database.commit_hints.subscribers

@@ -104,7 +104,16 @@ effects = sa.Table(
     sa.CheckConstraint(
         "state IN ('prepared','accepted','failed','unknown')", name="ck_runtime_work_effect_state"
     ),
+    sa.Index(
+        "ix_runtime_work_tool_steps",
+        "work_id",
+        "created",
+        "effect_key",
+        "updated",
+        sqlite_where=sa.text("kind = 'tool'"),
+    ),
 )
+
 
 journal = sa.Table(
     "runtime_work_journal",

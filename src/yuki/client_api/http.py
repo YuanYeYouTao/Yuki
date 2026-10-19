@@ -2,12 +2,12 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request
-from fastapi.responses import Response, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 
 from yuki.client_api.errors import ClientError
@@ -18,7 +18,11 @@ from yuki.client_api.messages import ClientMessages
 from yuki.client_api.models import (
     Accent,
     Activity,
+    ArtifactPage,
+    ArtifactsHint,
+    CharacterHint,
     CharacterProfile,
+    CharacterStatus,
     DeviceRevocation,
     Entry,
     Envelope,
@@ -31,8 +35,16 @@ from yuki.client_api.models import (
     OriginalRequest,
     PairResult,
     ProactiveRoute,
+    ProblemEnvelope,
     SyncHint,
+    UploadResult,
+    WorkCancelResult,
     WorkHint,
+    WorkInputResult,
+    WorkPage,
+    WorkSteps,
+    WorkStepsHint,
+    WorkView,
 )
 from yuki.client_api.prompts import ClientPrompts
 from yuki.client_api.sessions import ClientSessions
@@ -93,7 +105,12 @@ class ProactiveRouteBody(PersonalRequest):
 
 
 def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
-    router = APIRouter(prefix="/client/v1")
+    router = APIRouter(
+        prefix="/client/v1",
+        responses={
+            status: {"model": ProblemEnvelope} for status in (401, 403, 404, 409, 422, 500, 503)
+        },
+    )
 
     async def principal(
         authorization: Annotated[str | None, Header()] = None,
@@ -129,6 +146,10 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
     )
     async def character(actor: Actor) -> Any:
         return {"data": await CharacterRepository(resolve().identity).get(actor)}
+
+    @router.get("/character/status", response_model=Envelope[CharacterStatus])
+    async def character_status(actor: Actor) -> Any:
+        return {"data": await views().character_status(actor)}
 
     @router.patch(
         "/character", response_model=Envelope[CharacterProfile], response_model_exclude_unset=True
@@ -210,7 +231,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             raise ClientError("unavailable")
         return service
 
-    @router.post("/uploads")
+    @router.post("/uploads", response_model=Envelope[UploadResult])
     async def upload(
         request: Request,
         actor: Actor,
@@ -226,6 +247,15 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             )
         }
 
+    @router.get("/artifacts", response_model=Envelope[ArtifactPage])
+    async def artifact_page(
+        actor: Actor,
+        cursor: str | None = None,
+        limit: int = Query(default=50, ge=1, le=50),
+        kind: Literal["all", "image", "document", "code"] = "all",
+    ) -> Any:
+        return {"data": await files().list(actor, cursor, limit, kind)}
+
     @router.get("/artifacts/{identity}")
     async def artifact(identity: UUID, actor: Actor, version: str) -> Response:
         metadata, content = await files().artifact(actor, str(identity), version)
@@ -234,13 +264,14 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             media_type="application/octet-stream",
             headers={
                 "ETag": f'"{metadata["sha256"]}"',
+                "X-Yuki-Sha256": metadata["sha256"],
                 "Content-Disposition": f"attachment; filename*=UTF-8''{quote(metadata['name'])}",
             },
         )
 
     @router.get("/home", response_model=Envelope[Home])
-    async def home(actor: Actor) -> Any:
-        return {"data": await views().home(actor)}
+    async def home(actor: Actor, works: Literal["active"] | None = None) -> Any:
+        return {"data": await views().home(actor, active=works == "active")}
 
     @router.get(
         "/conversations/{identity}/events",
@@ -264,23 +295,64 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
     async def activity(actor: Actor, conversation_id: UUID4) -> Any:
         return {"data": await views().activity(actor, str(conversation_id))}
 
+    @router.get(
+        "/conversations/{identity}/events/{event_id}/attachments/{index}",
+        response_class=FileResponse,
+        responses={
+            200: {
+                "content": {"application/octet-stream": {}},
+                "headers": {"X-Yuki-Sha256": {"schema": {"type": "string"}}},
+            }
+        },
+    )
+    async def attachment_content(
+        identity: UUID4, event_id: int, index: int, actor: Actor
+    ) -> FileResponse:
+        item, path = await files().attachment_content(actor, str(identity), event_id, index)
+        assert item.content_sha256 is not None
+        return FileResponse(
+            path,
+            media_type="application/octet-stream",
+            filename=item.display_name or f"attachment-{index}",
+            headers={"X-Yuki-Sha256": item.content_sha256},
+        )
+
     @router.get("/stream")
-    async def stream(actor: Actor) -> StreamingResponse:
+    async def stream(actor: Actor, works: Literal["active"] | None = None) -> StreamingResponse:
         return StreamingResponse(
-            views().stream(actor),
+            views().stream(actor, active=works == "active"),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache"},
         )
 
-    @router.get("/works/{identity}")
+    @router.get("/works", response_model=Envelope[WorkPage])
+    async def works_page(
+        actor: Actor,
+        group: Literal["active", "ended"] = "active",
+        origin: Literal["all", "this_entry", "other"] = "all",
+        before: str | None = None,
+        limit: int = Query(default=50, ge=1, le=50),
+    ) -> Any:
+        return {"data": await works().list(actor, group, origin, before, limit)}
+
+    @router.get("/works/{identity}/steps", response_model=Envelope[WorkSteps])
+    async def work_steps(
+        identity: UUID4,
+        actor: Actor,
+        after: str | None = None,
+        limit: int = Query(default=50, ge=1, le=100),
+    ) -> Any:
+        return {"data": await works().steps(actor, str(identity), after, limit)}
+
+    @router.get("/works/{identity}", response_model=Envelope[WorkView])
     async def work(identity: UUID4, actor: Actor) -> Any:
         return {"data": await works().get(actor, str(identity))}
 
-    @router.post("/works/{identity}/inputs")
+    @router.post("/works/{identity}/inputs", response_model=Envelope[WorkInputResult])
     async def work_input(identity: UUID4, body: WorkInputBody, actor: Actor) -> Any:
         return {"data": await works().submit(actor, str(identity), str(body.request_id), body.text)}
 
-    @router.post("/works/{identity}/cancel")
+    @router.post("/works/{identity}/cancel", response_model=Envelope[WorkCancelResult])
     async def work_cancel(identity: UUID4, body: WorkCancelBody, actor: Actor) -> Any:
         return {
             "data": await works().cancel(
@@ -348,7 +420,15 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
     def openapi_with_sse() -> dict[str, Any]:
         schema = original_openapi()
         components = schema.setdefault("components", {}).setdefault("schemas", {})
-        for model in (SyncHint, Entry, WorkHint, Activity):
+        for model in (
+            SyncHint,
+            Entry,
+            WorkHint,
+            Activity,
+            CharacterHint,
+            WorkStepsHint,
+            ArtifactsHint,
+        ):
             document = model.model_json_schema(ref_template="#/components/schemas/{model}")
             components.update(document.pop("$defs", {}))
             components[model.__name__] = document
@@ -357,6 +437,9 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             "conversation": "#/components/schemas/Entry",
             "work": "#/components/schemas/WorkHint",
             "activity": "#/components/schemas/Activity",
+            "character": "#/components/schemas/CharacterHint",
+            "work_steps": "#/components/schemas/WorkStepsHint",
+            "artifacts": "#/components/schemas/ArtifactsHint",
         }
         return schema
 

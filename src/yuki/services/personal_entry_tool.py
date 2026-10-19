@@ -1,10 +1,10 @@
-"""Explicit, read-only access to one's other private entry ledgers."""
+"""Explicit, read-only access to one's private entry ledgers."""
 
 from typing import Any
 
 from sqlalchemy import select, text
 
-from yuki.client_api.views import public_event
+from yuki.client_api.views import public_events
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatTool
 from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
@@ -18,9 +18,12 @@ ENTRY_TOOL = ChatTool(
     name="read_personal_entry",
     result_cacheable=False,
     description=(
-        "仅在 App/ACP 个人会话显式读取本人其他私聊入口的账本窗口。"
+        "仅在 App/ACP 个人会话显式读取本人私聊入口的账本窗口，含当前入口的旧事件。"
         "返回平台、绑定、会话及内部事件 ID，"
         "不读取群聊、不修改任何会话。"
+        "遇到 [[yuki-ref conversation=<会话UUID> event=<内部事件ID>]] 引用时，"
+        "按 conversation_id、after=事件ID-1、limit=1 读取，并核返回 event_id 等于原引用。"
+        "空结果、not_found 或 ID 不相等都说明原引用无法读取，不得把下一则当作原引用。"
     ),
     parameters={
         "type": "object",
@@ -70,7 +73,6 @@ async def read_entry(database: Database, runtime: Any, args: dict[str, Any]) -> 
             .where(
                 CanonicalConversationModel.kind == "private",
                 person_family_condition(CanonicalConversationModel.person_id, actor.person_id),
-                CanonicalConversationModel.id != source[0].id,
             )
         )
         if getattr(runtime, "read_target_id", None) is not None:
@@ -117,7 +119,7 @@ async def read_entry(database: Database, runtime: Any, args: dict[str, Any]) -> 
             "binding_id": binding.id,
             "conversation_id": conversation.id,
             "generation": conversation.generation,
-            "items": [public_event(row, binding) for row in selected],
+            "items": await public_events(session, selected, binding),
             "has_more": len(rows) > limit,
             "next_after": selected[-1].id if selected else args.get("after", 0),
         }

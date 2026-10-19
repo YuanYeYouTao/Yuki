@@ -115,10 +115,12 @@ async def test_execution_requires_main_and_own_private_target(app_env, database)
     for identity in (
         other.row["conversation_id"],
         group.row["conversation_id"],
-        principal.conversation_id,
     ):
         with pytest.raises(SocialError, match="not_found"):
             await read_entry(database, runtime, {"conversation_id": identity})
+    assert (await read_entry(database, runtime, {"conversation_id": principal.conversation_id}))[
+        "items"
+    ] == []
     runtime.effective_conversation_id = own.row["conversation_id"]
     with pytest.raises(SocialError, match="main_entry_required"):
         await read_entry(database, runtime, {"conversation_id": other.row["conversation_id"]})
