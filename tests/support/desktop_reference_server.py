@@ -142,6 +142,10 @@ async def serve(root: Path, port: int) -> None:
     os.chmod(ready, 0o600)
     personal = FastAPI()
     attach_client_api(personal, lambda: container.client_api)
+    if os.environ.get("YUKI_DESKTOP_EXECUTOR_FIXTURE") == "1":
+        from tests.support.desktop_executor_fixture import attach_executor_fixture
+
+        attach_executor_fixture(personal, container, work_script)
     if computer:
         computer.attach(personal)
     if os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1":
