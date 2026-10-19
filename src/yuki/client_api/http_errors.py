@@ -25,7 +25,7 @@ async def client_error_response(_request: Any, exc: Any) -> JSONResponse:
 
 async def credential_safe_validation(request: Any, exc: Any) -> JSONResponse:
     path = getattr(request.scope.get("route"), "path", request.url.path)
-    if path.startswith(("/client/v1/", "/admin/v1/")):
+    if path.startswith(("/client/v1/", "/admin/v1/", "/executor/v1/")):
         return JSONResponse({"problem": {"code": "validation_error"}}, status_code=422)
     from fastapi.exception_handlers import request_validation_exception_handler
 

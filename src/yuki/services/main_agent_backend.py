@@ -689,6 +689,16 @@ class MainAgentBackend(AgentToolBackend):
     ) -> CapabilityDescriptor:
         """Use a gateway target descriptor for risk/commit coordination."""
 
+        if call.function.name == "local_device":
+            try:
+                arguments = json.loads(call.function.arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+            if isinstance(arguments, dict) and arguments.get("action") in {"list", "get"}:
+                return replace(
+                    descriptor, risk=CapabilityRisk.READ, effect=CapabilityEffect.READ_STATE,
+                    parallel_safe=True,
+                )
         resolver = getattr(descriptor.binding, "target_descriptor", None)
         if not callable(resolver):
             return descriptor

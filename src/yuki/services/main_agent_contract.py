@@ -108,7 +108,7 @@ class MainAgentContract:
                         # 26: persistent computer control and original-run assistance guidance.
                         # 27: current upstream guidance, identity and media execution semantics.
                         # 28: Account assignments and prepared mentions preserve original sources.
-                        "version": 28,
+                        "version": 29,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

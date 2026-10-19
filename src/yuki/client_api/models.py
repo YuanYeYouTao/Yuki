@@ -458,12 +458,23 @@ class CharacterStatus(BaseModel):
     revision: int
 
 
+class ExecutorHint(BaseModel):
+    executor_id: str
+    revision: int
+
+
+class ExecutorSyncItem(BaseModel):
+    id: str
+    revision: int
+
+
 class SyncHint(BaseModel):
     conversations: list[Entry]
     works: list[WorkHint]
     activity: list[Activity]
     character_revision: int
     computer_revision: int | None = None
+    executors: list[ExecutorSyncItem] = Field(default_factory=list)
 
 
 class DeviceRevocation(BaseModel):

@@ -51,7 +51,7 @@ async def test_meta_is_public_and_profile_changes_keep_identity_and_original_rec
     assert set(meta) == {"api_revision", "server_version", "character", "min_client"}
     assert set(meta["character"]) == {"id", "display_name", "accent", "avatar_url"}
     assert meta["character"]["avatar_url"] is None
-    assert meta["api_revision"] == 4
+    assert meta["api_revision"] == 5
     schema = client_openapi()
     assert schema["info"]["x-yuki-api-revision"] == meta["api_revision"]
     for route in (

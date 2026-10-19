@@ -3,7 +3,7 @@
 个人入口使用原 Bot HTTP 服务的 `/client/v1`。operator 与个人设备使用不同凭据，
 设备凭据解析当前 Person，但保留原设备与 App 入口，不具有管理或设备执行器权限。公开服务沿部署提供 HTTPS。
 
-当前 `api_revision=4` 包含记忆、安排、能力、头像和提示词文件接口；revision 3 的角色电脑接口保持兼容。
+当前 `api_revision=5` 新增[本机执行器](local-executors.md)；revision 4 的记忆、安排、能力、头像和提示词文件接口，以及 revision 3 的角色电脑接口保持兼容。
 客户端需要这些新增方法时先要求 revision ≥ 4，再发送设备凭据。OpenAPI 的
 `info.x-yuki-api-revision` 与 `/meta` 使用同一个版本常量，固定合同同时记录此版本、源提交及内容哈希。
 更高 revision 的新增能力不要求客户端拒绝已兼容的现有方法。

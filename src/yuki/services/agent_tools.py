@@ -20,11 +20,13 @@ from yuki.admin.models import RuntimeConfigSnapshot
 from yuki.admin.permission_catalog import CapabilityReport, PermissionCatalogService
 from yuki.automation.models import TurnOrigin
 from yuki.capabilities.results import ToolExecutionResult
+from yuki.client_api.errors import ClientError
 from yuki.config import Settings
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import ChatTool, InboundMessage
 from yuki.domain.tool_actor import ToolActor
+from yuki.executor.service import LocalExecutors
 from yuki.memory.authorized_scope import AuthorizedMemoryScope
 from yuki.memory.context import MemoryContextService
 from yuki.memory.enums import (
@@ -427,6 +429,7 @@ class AgentToolService:
         self.short_state: Any = None
         self.workspace_service: Any = None
         self.sandbox_client: Any = None
+        self.local_executors: LocalExecutors | None = None
 
     @staticmethod
     def _work_source() -> dict[str, str]:
@@ -438,6 +441,31 @@ class AgentToolService:
     def definitions(self, runtime: ToolRuntime) -> tuple[ChatTool, ...]:
         bot_name = self._settings.bot_display_name
         tools = [
+            ChatTool(
+                name="local_device",
+                description=(
+                    "操作本次可信請求人自己的本機執行器。list 查能力與授權；"
+                    "invoke 登記並等待最多20秒；"
+                    "get 以原op_id查證。離線新請求不排隊。pending 時保留原ID，"
+                    "Work可time_due稍後查詢。"
+                    "unknown表示結果未知，不可當作失敗而重做；新操作須新invoke。"
+                    "folder.read {path,mode:list|read}，"
+                    "folder.write {path,content_base64|artifact_id+version,if_absent?}，"
+                    "open.url {url}，open.file {path}，notify {title,body}。"
+                    "path使用授權alias與相對路徑。"
+                    "folder讀寫為confirmed；open與notify僅submitted，不代表使用者已看到或程式已載入。"
+                ),
+                parameters=_object_schema(
+                    {
+                        "action": {"type": "string", "enum": ["list", "invoke", "get"]},
+                        "executor_id": {"type": "string"},
+                        "capability": {"type": "string"},
+                        "params": {"type": "object"},
+                        "op_id": {"type": "string"},
+                    },
+                    required=("action",),
+                ),
+            ),
             ChatTool(
                 name="get_my_capabilities",
                 description=(
@@ -805,6 +833,29 @@ class AgentToolService:
             try:
                 from yuki.social.tools import social_tool_definitions
 
+                if name == "local_device":
+                    from yuki.capabilities.invocation import current_invocation
+                    from yuki.runtime.work_activation import current_work_control
+
+                    invocation = current_invocation.get()
+                    control = current_work_control.get()
+                    if self.local_executors is None or invocation is None:
+                        return self._result(error="unavailable")
+                    if runtime.tools_closed:
+                        return self._result(error="permission_denied")
+                    try:
+                        local_result = await self.local_executors.tools(
+                            runtime.actor_person_id,
+                            arguments.get("action", ""),
+                            arguments,
+                            invocation.call_id,
+                            control.current["id"] if control and control.current else None,
+                        )
+                    except ClientError as exc:
+                        return self._result(error=exc.code)
+                    return self._result(
+                        data=local_result, uncertain=local_result.get("uncertain", False)
+                    )
                 if name in SANDBOX_TOOLS:
                     from yuki.capabilities.invocation import current_invocation
 

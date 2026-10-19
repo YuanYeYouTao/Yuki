@@ -65,7 +65,9 @@ async def wire(desktop_http, monkeypatch):
     task = asyncio.create_task(server.serve(sockets=[listener]))
     await asyncio.wait_for(ready.wait(), 5)
     try:
-        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}/role/yuki") as client:
+        async with httpx.AsyncClient(
+            base_url=f"http://127.0.0.1:{port}/role/yuki", trust_env=False
+        ) as client:
             yield SimpleNamespace(env=env, client=client, received=received, port=port)
     finally:
         server.should_exit = True
@@ -110,9 +112,9 @@ async def test_prefix_one_use_binary_tickets_viewer_input_and_immediate_release(
     uri = await ticket(wire, device)
     # Rejecting an unsupported subprotocol does not consume the valid ticket.
     with pytest.raises(InvalidStatus):
-        async with connect(uri):
+        async with connect(uri, proxy=None):
             pass
-    async with connect(uri, subprotocols=["binary"]) as ws:
+    async with connect(uri, proxy=None, subprotocols=["binary"]) as ws:
         assert ws.subprotocol == "binary"
         await handshake(ws)
         marker = struct.pack(">BBHHHH", 3, 0, 0, 0, 16, 16)
@@ -134,7 +136,7 @@ async def test_prefix_one_use_binary_tickets_viewer_input_and_immediate_release(
             + struct.pack(">BBHH", 5, 0, 7, 8)
         )
         with pytest.raises(InvalidStatus):
-            async with connect(uri, subprotocols=["binary"]):
+            async with connect(uri, proxy=None, subprotocols=["binary"]):
                 pass
 
 
@@ -142,7 +144,7 @@ async def test_actual_revoke_closes_connected_stream_and_releases_lease(wire):
     env = wire.env
     actor, device = await env.base.paired()
     await env.base.commands.execute(actor, str(uuid4()), "take", {})
-    async with connect(await ticket(wire, device), subprotocols=["binary"]) as ws:
+    async with connect(await ticket(wire, device), proxy=None, subprotocols=["binary"]) as ws:
         await handshake(ws)
         await env.base.identity.revoke(actor, actor.device_id, str(uuid4()))
         with pytest.raises(ConnectionClosed):
@@ -166,9 +168,9 @@ async def test_expired_ticket_is_rejected_then_new_ticket_reconnects_same_lease(
     expired = await ticket(wire, device)
     clock.value += 61
     with pytest.raises(InvalidStatus):
-        async with connect(expired, subprotocols=["binary"]):
+        async with connect(expired, proxy=None, subprotocols=["binary"]):
             pass
-    async with connect(await ticket(wire, device), subprotocols=["binary"]) as ws:
+    async with connect(await ticket(wire, device), proxy=None, subprotocols=["binary"]) as ws:
         await handshake(ws)
         assert wire.env.base.manager.computer.control()["lease_id"] == lease
         assert (await wire.env.service.get(actor))["control"]["device_online"]
@@ -194,7 +196,7 @@ async def test_manager_watch_disconnect_closes_display_without_returning_human_c
     monkeypatch.setattr(env.base.manager.computer, "watch", capture)
     await env.service.start()
     await until(env.service, lambda: env.service.connected)
-    async with connect(await ticket(wire, device), subprotocols=["binary"]) as ws:
+    async with connect(await ticket(wire, device), proxy=None, subprotocols=["binary"]) as ws:
         await handshake(ws)
         writers[0].close()
         with pytest.raises(ConnectionClosed):

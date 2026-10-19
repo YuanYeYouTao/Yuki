@@ -2634,19 +2634,16 @@ class WorkRepository:
             async with self.database.immediate_session() as writer:
                 await self._assert_lease(writer, lease)
                 for key, previous_json, next_json in prepared[offset : offset + 128]:
-                    changed = await writer.scalar(
-                        update(effects)
-                        .where(
-                            effects.c.effect_key == key,
-                            effects.c.work_id == identity,
-                            effects.c.receipt_json == previous_json,
-                            select(work.c.id).where(owned).exists(),
-                        )
-                        .values(receipt_json=next_json, updated=time.time())
-                        .returning(effects.c.effect_key)
+                    from yuki.runtime.effect_settlement import replace_effect_receipt
+
+                    await replace_effect_receipt(
+                        writer,
+                        key,
+                        identity,
+                        previous_json,
+                        next_json,
+                        select(work.c.id).where(owned).exists(),
                     )
-                    if changed is not None:
-                        writer.info.setdefault("work_step_hints", set()).add(identity)
 
     async def record_effect(
         self,
@@ -2739,6 +2736,15 @@ class WorkRepository:
                 candidate["invocation"] = {**metadata, "revision": metadata["revision"] + 1}
             serialized = encode_json(candidate)
             async with self.database.immediate_session() as writer:
+                if existing["state"] in {"prepared", "unknown"} and state == "accepted":
+                    metadata = candidate.get("invocation", {})
+                    if metadata.get("tool_id") == "local_device":
+                        from yuki.executor.settlement import first_acceptance
+
+                        candidate = await first_acceptance(
+                            writer, key, existing["work_id"], candidate
+                        )
+                        serialized = encode_json(candidate)
                 if media_source is not None:
                     from yuki.execution_trace.db_models import ExecutionTraceStateModel
 

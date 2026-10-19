@@ -98,3 +98,5 @@
 - [Pi/Code 移植来源](pi-port-provenance.md)：设计参考、实现来源与第三方许可；Code Mode 已合入主线，不是待移植实验入口。
 
 真实 Provider 测量、日期部署和自然 QQ 验收按各自证据读取。版本/迁移以实际源码或镜像为准，正式发行范围见[3.9.0 发布说明](../releases/v3.9.0.md)与[升级指南](../upgrade-3.9.0.md)；不改写旧 Release 或历史部署的基线。
+
+本机能力与操作回执见[本机执行器](local-executors.md)。

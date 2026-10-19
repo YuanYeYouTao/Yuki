@@ -482,6 +482,10 @@ class ApplicationContainer:
         from yuki.client_api.identity import ClientIdentityService
 
         self.client_identity = ClientIdentityService(self.database, self.presence_router)
+        from yuki.executor.service import LocalExecutors
+
+        self.local_executors = LocalExecutors(self.client_identity, self.workspace_service.store)
+        self.agent_tools.local_executors = self.local_executors
         from yuki.character.avatar import AvatarStore, CharacterAvatars
 
         self.character_avatars = CharacterAvatars(
@@ -642,6 +646,7 @@ class ApplicationContainer:
             self.models.traces,
             computer=self.client_computer,
             documents=self.character_prompts,
+            executors=self.local_executors,
         )
         client_files = ClientFiles(
             ConversationUploads(self.client_api.identity, self.conversation_media),
@@ -669,6 +674,7 @@ class ApplicationContainer:
             ClientCapabilities(self.client_identity, self.plugin_manager, self.sandbox_client),
             self.character_avatars,
             self.character_prompts,
+            self.local_executors,
         )
         self.semantic_participation.set_promoter(
             partial(self.processor.promote_committed_event, reason="semantic_invitation")

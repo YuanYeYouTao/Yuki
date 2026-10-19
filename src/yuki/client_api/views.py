@@ -51,6 +51,7 @@ async def personal_conversation(
 if TYPE_CHECKING:
     from yuki.character.prompts import CharacterPrompts
     from yuki.client_api.computer import ClientComputer
+    from yuki.executor.service import LocalExecutors
 
 
 def public_event(
@@ -192,10 +193,12 @@ class ClientViews:
         *,
         computer: ClientComputer | None = None,
         documents: CharacterPrompts | None = None,
+        executors: LocalExecutors | None = None,
     ) -> None:
         self.identity, self.works, self.traces = identity, works, traces
         self.computer = computer
         self.documents = documents
+        self.executors = executors
         self.database = identity.database
         self._character_revision = 0
         self._character_facts: dict[str, str] = {}
@@ -469,6 +472,14 @@ class ClientViews:
         result["character_revision"] = (await self.character_status(principal))["revision"]
         if self.computer and principal.is_owner:
             result["computer_revision"] = self.computer.revision
+        result["executors"] = (
+            [
+                {"id": row["executor_id"], "revision": row["revision"]}
+                for row in await self.executors.list(principal)
+            ]
+            if self.executors
+            else []
+        )
         return result
 
     async def stream(
@@ -543,6 +554,14 @@ class ClientViews:
                     yield frame("character", {"revision": current["character_revision"]})
                 if current.get("computer_revision") != previous.get("computer_revision"):
                     yield frame("computer", {"revision": current.get("computer_revision", 0)})
+                old_executors = {item["id"]: item for item in previous["executors"]}
+                for item in current["executors"]:
+                    if item != old_executors.get(item["id"]):
+                        yield frame(
+                            "executor", {"executor_id": item["id"], "revision": item["revision"]}
+                        )
+                if old_executors.keys() - {item["id"] for item in current["executors"]}:
+                    yield frame("sync", current)
                 for category, key, event_kind in (
                     ("conversations", "conversation_id", "conversation"),
                     ("works", "work_id", "work"),

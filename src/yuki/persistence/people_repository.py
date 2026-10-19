@@ -1295,6 +1295,35 @@ class PeopleRepository:
                 )
             )
         )
+        from yuki.executor.db_models import ExecutorModel, ExecutorOperationModel
+
+        await session.execute(
+            update(ExecutorOperationModel)
+            .where(ExecutorOperationModel.person_id.in_(person_ids))
+            .values(
+                person_id=None,
+                executor_id=None,
+                work_id=None,
+                tool_call_key="forgotten:" + ExecutorOperationModel.op_id,
+                created_at=None,
+                dispatched_at=None,
+                acknowledged_at=None,
+                settled_at=None,
+                capability=None,
+                params_json=None,
+                result_json=None,
+                observation_json=None,
+                level=None,
+                state=case(
+                    (
+                        ExecutorOperationModel.state.in_(("succeeded", "failed", "unknown")),
+                        ExecutorOperationModel.state,
+                    ),
+                    else_="unknown",
+                ),
+            )
+        )
+        await session.execute(delete(ExecutorModel).where(ExecutorModel.person_id.in_(person_ids)))
         device_ids = select(ClientDeviceModel.id).where(ClientDeviceModel.person_id.in_(person_ids))
         audit_ids = select(AdminOperationEventModel.id).where(
             or_(

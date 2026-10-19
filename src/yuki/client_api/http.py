@@ -42,6 +42,7 @@ from yuki.client_api.models import (
     Entry,
     Envelope,
     EventsPage,
+    ExecutorHint,
     Home,
     LinkCode,
     Me,
@@ -72,6 +73,7 @@ from yuki.client_api.sessions import ClientSessions
 from yuki.client_api.version import CLIENT_API_REVISION
 from yuki.client_api.views import ClientViews
 from yuki.client_api.works import ClientWorks
+from yuki.executor.service import LocalExecutors
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +90,7 @@ class ClientApi:
     capabilities: ClientCapabilities | None = None
     avatars: CharacterAvatars | None = None
     documents: CharacterPrompts | None = None
+    executors: LocalExecutors | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -766,11 +769,22 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             },
         )
 
+    from yuki.executor.http import attach_executor_api
+
+    def executors() -> LocalExecutors:
+        service = resolve().executors
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
     install_identity_errors(app)
     app.include_router(router)
+    attach_executor_api(app, executors, principal)
     original_openapi = app.openapi
 
     def openapi_with_sse() -> dict[str, Any]:
+        from yuki.executor.models import ExecutorConfigHint, ExecutorOperationHint, ExecutorSync
+
         schema = original_openapi()
         schema["info"]["x-yuki-api-revision"] = CLIENT_API_REVISION
         components = schema.setdefault("components", {}).setdefault("schemas", {})
@@ -783,6 +797,10 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             ComputerHint,
             WorkStepsHint,
             ArtifactsHint,
+            ExecutorHint,
+            ExecutorSync,
+            ExecutorOperationHint,
+            ExecutorConfigHint,
         ):
             document = model.model_json_schema(ref_template="#/components/schemas/{model}")
             components.update(document.pop("$defs", {}))
@@ -796,6 +814,12 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             "computer": "#/components/schemas/ComputerHint",
             "work_steps": "#/components/schemas/WorkStepsHint",
             "artifacts": "#/components/schemas/ArtifactsHint",
+            "executor": "#/components/schemas/ExecutorHint",
+        }
+        schema["x-yuki-executor-sse-kinds"] = {
+            "sync": "#/components/schemas/ExecutorSync",
+            "operation": "#/components/schemas/ExecutorOperationHint",
+            "config": "#/components/schemas/ExecutorConfigHint",
         }
         schema["x-yuki-websockets"] = {
             "/client/v1/computer/display": {
