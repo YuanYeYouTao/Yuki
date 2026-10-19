@@ -111,6 +111,8 @@ class EmojiDeliveryService:
         )
         control = current_work_control.get()
         capture = current_result_capture.get()
+        if capture is not None and not (capture.work_id and capture.effect_key):
+            capture = None
         work_id = (
             capture.work_id
             if capture is not None
@@ -163,6 +165,8 @@ class EmojiDeliveryService:
         from yuki.runtime.effect_outcomes import current_result_capture
 
         capture = current_result_capture.get()
+        if capture is not None and not (capture.work_id and capture.effect_key):
+            capture = None
         intent = await self.intents.admit(
             turn_id=context.turn_id,
             call_id=context.call_id,

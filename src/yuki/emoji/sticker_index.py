@@ -23,17 +23,22 @@ try:
 except ImportError:  # Installed next to this standalone script.
     from media import inspect_path  # type: ignore[no-redef,import-not-found]
 
+CACHE_VERSION = 2
+
 
 def identity(platform: str, digest: str) -> str:
     return str(uuid5(NAMESPACE_URL, f"yuki:sticker:{platform}:{digest}"))
 
 
 def terms(text: str) -> set[str]:
-    values = set(re.findall(r"\w+|[^\w\s]", text.casefold()))
-    for word in tuple(values):
-        if any("\u3400" <= char <= "\u9fff" for char in word):
+    values = set()
+    for word in re.split(r"([\u3400-\u9fff]+)", text.casefold()):
+        if word and "\u3400" <= word[0] <= "\u9fff":
+            values.add(word)
             values.update(word)
             values.update(word[index : index + 2] for index in range(len(word) - 1))
+        else:
+            values.update(re.findall(r"\w+|[^\w\s]", word))
     return values
 
 
@@ -176,7 +181,10 @@ class StickerIndex:
         try:
             db = sqlite3.connect(path)
             tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            if tables and not self.valid_schema(db):
+            if tables and (
+                not self.valid_schema(db)
+                or db.execute("PRAGMA user_version").fetchone()[0] not in {0, CACHE_VERSION}
+            ):
                 db.close()
                 self._unlink_cache(platform)
                 db = sqlite3.connect(path)
@@ -206,7 +214,7 @@ class StickerIndex:
                 if valid:
                     db.execute("SELECT id FROM assets LIMIT 1").fetchone()
                     db.execute("SELECT term,asset_id FROM terms LIMIT 1").fetchone()
-                    return bool(db.execute("PRAGMA user_version").fetchone()[0] == 1)
+                    return bool(db.execute("PRAGMA user_version").fetchone()[0] == CACHE_VERSION)
         except sqlite3.DatabaseError as error:
             if not path.exists():
                 return False
@@ -403,7 +411,7 @@ class StickerIndex:
                 self._cache_batch(current, tuple(pending[start : start + 100]))
             with self.cache_writer(current):
                 db = self.cache(current)
-                db.execute("PRAGMA user_version=1")
+                db.execute(f"PRAGMA user_version={CACHE_VERSION}")
                 db.close()
             assets += len(indexed)
         for error in errors:

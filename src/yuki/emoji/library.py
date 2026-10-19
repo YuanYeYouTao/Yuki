@@ -189,12 +189,8 @@ class EmojiLibrary:
             result = await self._index("search", platform=platform, query=query, limit=limit)
         return tuple(EmojiAsset.model_validate(item) for item in result["items"])
 
-    async def select(
-        self, goal: str, emotion: str = "", reply_text: str = "", *, platform: str
-    ) -> EmojiAsset | None:
-        candidates = await self.search(
-            " ".join((goal, emotion, reply_text)), platform=platform, limit=1
-        )
+    async def select(self, goal: str, emotion: str = "", *, platform: str) -> EmojiAsset | None:
+        candidates = await self.search(" ".join((goal, emotion)), platform=platform, limit=1)
         return candidates[0] if candidates else None
 
     async def publish(self, asset: EmojiAsset, *, request_id: str) -> dict[str, Any]:
