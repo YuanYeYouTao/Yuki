@@ -15,6 +15,9 @@ if TYPE_CHECKING:
     from yuki.services.media_resolver import PreparedAttachment
 
 
+DISPLAY_NAME_LIMIT = 128
+
+
 def sanitize_display_name(value: str) -> str:
     """Flatten untrusted platform identity text for one-line model metadata."""
 
@@ -23,7 +26,7 @@ def sanitize_display_name(value: str) -> str:
         for character in value
         if not unicodedata.category(character).startswith("C")
     )
-    return " ".join(visible.split())[:128]
+    return " ".join(visible.split())[:DISPLAY_NAME_LIMIT].rstrip()
 
 
 class AttachmentKind(StrEnum):

@@ -275,6 +275,7 @@ class AccountNameObservationModel(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     __table_args__ = (
         Index("ix_account_names_scope_account", "space_binding_id", "account_id", "assignment_id"),
+        Index("ix_account_names_name_scope_account", "name", "space_binding_id", "account_id"),
         Index(
             "uq_account_names_observation",
             "account_id",

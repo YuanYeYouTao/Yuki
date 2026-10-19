@@ -30,9 +30,9 @@ from yuki.gateway.providers.telegram import TelegramClient
 from yuki.gateway.providers.telegram_ingress import TelegramGateway
 from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.gateway.social import TransportMedia, TransportMessage, transport_payload
-from yuki.identity.canonical_repository import create_presence
+from yuki.identity.canonical_repository import create_presence, replace_assignment
 from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
-from yuki.identity.db_models import AccountModel
+from yuki.identity.db_models import AccountModel, CanonicalPersonModel, IdentityBindingModel
 from yuki.identity.ingress import CanonicalIngressResolver
 from yuki.identity.routing import PresenceRouter
 from yuki.llm.fake import FakeLLMProvider
@@ -354,8 +354,14 @@ async def test_native_timeout_is_unknown_and_same_call_never_retries(native_env)
     assert len(rows) == 1 and rows[0].status == "uncertain" and rows[0].event_id is None
 
 
-async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(database, tmp_path):
+async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(
+    database, tmp_path, monkeypatch
+):
     env = await social_env(database, tmp_path)
+    async with database.sessions() as reader:
+        binding = await reader.scalar(
+            select(IdentityBindingModel).where(IdentityBindingModel.account_id == env.account)
+        )
     artifact = snapshot_bytes(env.store, "qq.txt", b"original")
     args = {
         "artifact_id": artifact["artifact_id"],
@@ -368,11 +374,52 @@ async def test_qq_file_caption_keeps_canonical_segments_and_does_not_reupload(da
         caption = await reader.get(ChatEventModel, result["caption"]["event_id"])
     segments = json.loads(caption.segments_json)
     mention = next(item["data"] for item in segments if item["type"] == "mention")
-    assert mention["account_id"] == env.account and mention["person_id"] is None
+    assert mention["account_id"] == env.account
+    assert mention["person_id"] == env.person
+    assert mention["assignment_id"] == binding.id
+    assert mention["presence_id"] is None and mention["kind"] == "member"
     assert caption.content[mention["text_start"] : mention["text_end"]].startswith("@")
     assert caption.content.endswith("附言")
+    sent_caption = next(params for method, params in env.bot.calls if method == "send_group_msg")
+    assert sent_caption["message"][0] == {"type": "at", "data": {"qq": "10001"}}
+    original_segments = caption.segments_json
+    async with database.sessions() as session, session.begin():
+        original_plans = list(
+            await session.execute(
+                select(SocialOperationModel.id, SocialOperationModel.prepared_json).order_by(
+                    SocialOperationModel.id
+                )
+            )
+        )
+        physical = await session.get(AccountModel, env.account)
+        recipient = await session.scalar(
+            select(IdentityBindingModel)
+            .join(AccountModel)
+            .where(AccountModel.platform == "qq", AccountModel.external_account_id == "10002")
+        )
+        owner = await session.get(CanonicalPersonModel, recipient.person_id)
+        replacement = await replace_assignment(
+            session, physical, binding.id, owner, now=datetime.now(UTC)
+        )
+        assert replacement.id != binding.id and replacement.person_id != env.person
+
+    async def must_not_prepare_again(*args, **kwargs):
+        raise AssertionError("successful captions retain the original account and assignment")
+
+    monkeypatch.setattr("yuki.social.service.prepare_for_entry", must_not_prepare_again)
     assert await env.service.execute("send_message", args, env.context) == result
     assert sum(action == "upload_group_file" for action, _ in env.bot.calls) == 1
+    assert sum(action == "send_group_msg" for action, _ in env.bot.calls) == 1
+    async with database.sessions() as reader:
+        preserved = await reader.get(ChatEventModel, caption.id)
+        plans = list(
+            await reader.execute(
+                select(SocialOperationModel.id, SocialOperationModel.prepared_json).order_by(
+                    SocialOperationModel.id
+                )
+            )
+        )
+    assert preserved.segments_json == original_segments and plans == original_plans
 
 
 @pytest.mark.parametrize("caption_failure", ["failed", "timeout", "preflight"])

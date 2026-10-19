@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import random
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
@@ -56,7 +57,7 @@ from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.persistence.unit_of_work import optional_session
 from yuki.services.message_splitter import OutboundMessageSplitter
 from yuki.services.renderer import sanitize_model_output
-from yuki.social.content import prepare_for_entry, validate_mentions
+from yuki.social.content import prepare_for_entry
 from yuki.social.models import (
     OperationStatus,
     SocialError,
@@ -110,6 +111,24 @@ class SocialContext:
 
 def _self_scene(context: SocialContext) -> bool:
     return context.initiative_run_id is not None or context.automation_run_id is not None
+
+
+def _mentioned_accounts(messages: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """Project confirmed native targets from the original persisted transport plan."""
+    accounts: dict[str, dict[str, str]] = {}
+    for message in messages:
+        for mention in message["mentions"]:
+            account_id = mention.get("account_id")
+            if account_id is not None:
+                accounts.setdefault(
+                    account_id,
+                    {
+                        "account_id": account_id,
+                        "display_name": mention["display_name"],
+                        "reference": f"@{{account:{account_id}}}",
+                    },
+                )
+    return list(accounts.values())
 
 
 class SocialService:
@@ -881,6 +900,14 @@ class SocialService:
                 caused_by_event_id=context.caused_by_event_id,
             )
         assert result is not None
+        if parent.prepared is not None:
+            accounts = _mentioned_accounts(
+                parent.prepared["parts"][index]
+                for index, part in enumerate(result["parts"])
+                if part["status"] == OperationStatus.SUCCEEDED.value
+            )
+            if accounts:
+                result["mentioned_accounts"] = accounts
         if result["status"] != "succeeded":
             last: dict[str, Any] = next(
                 (part for part in result["parts"] if part["status"] != "succeeded"), {}
@@ -1063,6 +1090,7 @@ class SocialService:
                         platform=route.platform,
                         space_binding_id=route.binding_id if target.kind == "space" else None,
                         participant_assignment_ids=(route.binding_id, route.presence_id),
+                        conversation_id=route.conversation_id,
                         operations=operations,
                     )
             mentions = prepared.message.mentions
@@ -1316,8 +1344,6 @@ class SocialService:
                     target_id=str(target.id),
                 )
                 await self._validate_reply_route(session, context, target, route)
-                if action == "send":
-                    await validate_mentions(session, params["message"].mentions, route.platform)
                 if emoji_request is not None and context.sequence_part_index in {None, 0}:
                     assert self.emoji_delivery is not None
                     emoji_arguments, emoji_context = emoji_request
@@ -1599,6 +1625,10 @@ class SocialService:
             "send_file_caption",
         }:
             return result
+        if receipt.prepared is not None:
+            accounts = _mentioned_accounts((receipt.prepared["message"],))
+            if accounts:
+                result["mentioned_accounts"] = accounts
         result["delivered_text_available"] = False
         if receipt.event_id is None:
             # Historical receipts prove transport but have no authoritative ledger
