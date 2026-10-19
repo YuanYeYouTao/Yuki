@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 from yuki.config import Settings
-from yuki.identity.canonical_repository import ensure_space
+from yuki.identity.canonical_repository import create_space_binding, find_space_binding
 from yuki.persistence.database import Database
 
 
@@ -15,4 +15,14 @@ async def bootstrap_settings_identity(database: Database, settings: Settings) ->
     now = datetime.now(UTC)
     async with database.sessions() as session, session.begin():
         for group_id in settings.enabled_groups:
-            await ensure_space(session, group_id, enabled=True, now=now)
+            if await find_space_binding(session, group_id, platform="qq") is None:
+                await create_space_binding(
+                    session,
+                    external_space_id=group_id,
+                    platform="qq",
+                    name="",
+                    enabled=True,
+                    autonomous_enabled=True,
+                    require_mention=True,
+                    now=now,
+                )

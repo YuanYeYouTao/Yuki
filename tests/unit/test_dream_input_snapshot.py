@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import event, func, select, update
 from tests.conftest import make_settings
+from tests.support.event_seed import seed_event
 from tests.unit.test_memory_dream import _empty_dream_statistics, _fact_with_evidence, _services
 
 from yuki.domain.conversations import ScopeType
@@ -36,7 +37,8 @@ async def test_dream_rejects_hidden_input_even_when_readable_evidence_count_is_u
         ]
     )
     original = (await facts.list_evidence(sources[0].id))[0]
-    alternate, _ = await ledger.append(
+    alternate, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="dream-input-alternate",
         scope_type=ScopeType.GROUP,

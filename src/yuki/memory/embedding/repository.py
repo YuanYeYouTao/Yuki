@@ -9,7 +9,7 @@ from typing import Any
 from sqlalchemy import and_, delete, func, or_, select, text
 from sqlalchemy.dialects.sqlite import insert
 
-from yuki.identity.person_identity import same_person_condition
+from yuki.identity.person_identity import person_family_condition
 from yuki.memory.authorized_scope import AuthorizedMemoryScope, authorized_fact_condition
 from yuki.memory.embedding.models import (
     EmbeddingProviderProfile,
@@ -171,7 +171,7 @@ class MemoryEmbeddingRepository:
                 return ()
             conditions.extend(
                 (
-                    same_person_condition(
+                    person_family_condition(
                         MemoryFactModel.canonical_subject_person_id, owners.subject_person_id
                     )
                     if owners.subject_person_id is not None
@@ -186,7 +186,7 @@ class MemoryEmbeddingRepository:
                     MemoryFactModel.visibility_type
                     == (target.visibility_type.value if target.visibility_type else ""),
                     (
-                        same_person_condition(
+                        person_family_condition(
                             MemoryFactModel.canonical_visibility_person_id,
                             owners.visibility_person_id,
                         )

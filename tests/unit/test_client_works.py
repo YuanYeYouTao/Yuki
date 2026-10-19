@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, insert, select, update
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_client_api import bearer, pair
@@ -42,7 +43,8 @@ async def seeded(
     env, database, *, account="1001", group=False, state="running", retain_lease=False
 ):
     event = (
-        await env.harness.scoped_events.append(
+        await seed_scoped_event(
+            env.harness.scoped_events,
             scope=ConversationScope.group("8000", "2001")
             if group
             else ConversationScope.private("8000", account),
@@ -370,7 +372,8 @@ async def test_home_and_group_work_show_only_this_works_confirmed_question(app_e
     other = await seeded(env, database, account="1002", group=True)
     for target, body in ((original, "what city?"), (other, "other person's question")):
         event = (
-            await env.harness.scoped_events.append(
+            await seed_scoped_event(
+                env.harness.scoped_events,
                 scope=ConversationScope.group("8000", "2001"),
                 platform_message_id=str(uuid4()),
                 sender_user_id="8000",
@@ -410,7 +413,8 @@ async def test_home_and_group_work_show_only_this_works_confirmed_question(app_e
                     updated=1.0,
                 )
             )
-    await env.harness.scoped_events.append(
+    await seed_scoped_event(
+        env.harness.scoped_events,
         scope=ConversationScope.group("8000", "2001"),
         platform_message_id=str(uuid4()),
         sender_user_id="1002",

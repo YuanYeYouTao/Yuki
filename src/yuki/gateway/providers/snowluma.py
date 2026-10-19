@@ -30,6 +30,8 @@ SNOWLUMA_CAPABILITIES: Final[frozenset[str]] = frozenset(
 class SnowLumaProvider:
     """Profile SnowLuma OneBot handles without leaking them into core services."""
 
+    platform = SNOWLUMA_PLATFORM
+
     def __init__(self, transfer_root: Path | None = None, gateway_root: str = "") -> None:
         self.social = OneBotSocialOperations(transfer_root, gateway_root)
 

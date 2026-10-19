@@ -8,11 +8,12 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from sqlalchemy import event, select
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.canonical_identity import ensure_presence
 from tests.support.commands_and_chat_helpers import inbound
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import Bot, social_env
 
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.canonical_repository import ensure_presence
 from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel
 from yuki.services.processing_status import ProcessingStatusService
@@ -456,7 +457,8 @@ async def test_supported_private_activity_keeps_the_second_bot_entry_and_target(
     async with database.immediate_session() as writer:
         presence_id = await ensure_presence(writer, second.self_id)
     env.registry.connect(second, provider_id="snowluma", presence_id=presence_id)
-    event = await env.service.writer.append(
+    event = await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.private(second.self_id, "10001", presence_id=presence_id),
         platform_message_id="second-private-entry",
         sender_user_id="10001",

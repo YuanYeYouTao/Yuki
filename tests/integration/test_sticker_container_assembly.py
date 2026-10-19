@@ -9,6 +9,7 @@ from tests.unit.test_sticker_library import LocalDirectoryBridge, picture
 
 from yuki.container import ApplicationContainer
 from yuki.health import build_health_payload
+from yuki.social.tools import social_tool_definitions
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 
@@ -47,7 +48,7 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
     monkeypatch.setattr(app.sandbox_client, "execute", manager_read_or_file)
     try:
         await app.start()
-        assert PLUGIN_API_VERSION == "5.0"
+        assert PLUGIN_API_VERSION == "6.0"
         assert app.social_service.emoji_delivery is app.emoji_delivery
         assert app.emoji_library.source_valid == app.conversation_media.source_current
         assert not hasattr(app.workspace_service, "stickers")
@@ -61,7 +62,17 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
         }
         assert ("execute_code" in {tool.name for tool in platform}) == code_enabled
         message = next(tool for tool in platform if tool.name == "send_message")
-        assert message.schema_version == "3"
+        declared_message = next(
+            tool for tool in social_tool_definitions() if tool.name == "send_message"
+        )
+        personal_message = next(tool for tool in personal if tool.name == "send_message")
+        assert message == personal_message
+        assert message.parameters == declared_message.parameters
+        assert message.description == declared_message.description
+        assert message.schema_version == declared_message.schema_version == "4"
+        assert "mentions" not in message.parameters["properties"]
+        target_fields = message.parameters["properties"]["target"]["properties"]
+        assert not {"display_name", "subject_ref"} & target_fields.keys()
         assert "后台配图" in message.parameters["properties"]["emoji"]["description"]
         asset = await app.emoji_library.store_content(picture(), platform="qq", is_sticker=True)
         assert asset.relative_path is not None

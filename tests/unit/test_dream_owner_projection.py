@@ -6,6 +6,7 @@ import json
 import pytest
 from sqlalchemy import func, select
 from tests.conftest import make_settings
+from tests.support.event_seed import seed_event
 from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_dream import _empty_dream_statistics, _services
 
@@ -67,7 +68,8 @@ async def _scene(database, provider, *, owner):
     rows = []
     for index in range(2):
         private = owner == "self_private"
-        event, _ = await ledger.append(
+        event, _ = await seed_event(
+            ledger,
             bot_user_id="8000",
             platform_message_id=f"owner-proof-{owner}-{index}",
             scope_type=ScopeType.PRIVATE if private else ScopeType.GROUP,

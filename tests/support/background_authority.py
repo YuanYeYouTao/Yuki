@@ -2,6 +2,7 @@
 
 from yuki.plugin_host.notification_repository import PluginNotificationRepository
 from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki_plugin_sdk import PLUGIN_API_VERSION
 from yuki_plugin_sdk.models import NotificationTarget
 
 
@@ -11,7 +12,7 @@ async def approve_background_plugin(database, *, plugin_id, bot_user_id, group_i
         plugin_id=plugin_id,
         name="Offline background fixture",
         version="1.0",
-        plugin_api="1",
+        plugin_api=PLUGIN_API_VERSION,
         yuki_requires=">=3",
         entrypoint="plugin:Plugin",
         requested_permissions=(),

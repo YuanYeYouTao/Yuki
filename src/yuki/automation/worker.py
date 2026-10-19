@@ -255,7 +255,6 @@ class AutomationWorker:
                     state.id,
                     source,
                     request_id=execution_id,
-
                 )
 
                 async def validate() -> None:
@@ -264,7 +263,6 @@ class AutomationWorker:
                         state.id,
                         source,
                         request_id=execution_id,
-
                     )
                     if fresh != recovered:
                         raise ValueError("automation_source_changed")

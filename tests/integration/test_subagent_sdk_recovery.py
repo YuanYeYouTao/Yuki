@@ -149,7 +149,8 @@ async def test_code_child_uses_main_script_api_and_fixed_direct_tools(database, 
 
 
 async def test_sdk_message_child_keeps_original_plugin_origin_and_delegation(database, tmp_path):
-    from yuki.identity.canonical_repository import ensure_space
+    from tests.support.canonical_identity import ensure_space
+
     from yuki.persistence.models import ChatEventModel
     from yuki.services.execution_sources import recover_source
 

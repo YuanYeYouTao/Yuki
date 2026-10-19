@@ -183,7 +183,7 @@ async def test_operator_transfer_replay_and_app_binding_refusal(personal, databa
     )
     assert (
         disabled.status_code == 200
-        and disabled.json()["data"]["effective_state"]["status"] == "transferred"
+        and disabled.json()["data"]["effective_state"]["status"] == "ended"
     )
     prohibited = await client.post(
         f"/admin/v1/bindings/{app_id}/transfer",

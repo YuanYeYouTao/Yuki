@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
+from uuid import uuid4
 
 from sqlalchemy import (
     Boolean,
@@ -10,28 +11,38 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     UniqueConstraint,
+    func,
+    select,
     text,
 )
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.sql import ColumnElement
+from sqlalchemy.sql.selectable import ScalarSelect
 
 from yuki.identity.sql_constraints import uuid4_text36_sql
 from yuki.persistence.models import Base
 
 CANONICAL_IDENTITY_TABLES: tuple[str, ...] = (
     "persons",
-    "identity_bindings",
+    "accounts",
+    "account_assignments",
     "spaces",
     "space_bindings",
-    "presences",
+    "account_space_profiles",
+    "account_name_observations",
 )
 CANONICAL_IDENTITY_CREATE_ORDER: tuple[str, ...] = (
     "persons",
+    "accounts",
     "spaces",
-    "presences",
-    "identity_bindings",
     "space_bindings",
+    "account_assignments",
+    "account_space_profiles",
+    "account_name_observations",
 )
 
 
@@ -77,60 +88,201 @@ class CanonicalPersonModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-class IdentityBindingModel(Base):
-    """One external human account owned by one permanent Person."""
+class AccountModel(Base):
+    """One stable physical account, independently of its current owner."""
 
-    __tablename__ = "identity_bindings"
+    __tablename__ = "accounts"
     __table_args__ = (
-        Index(
-            "uq_identity_bindings_platform_account",
-            "platform",
-            "external_account_id",
-            unique=True,
-            sqlite_where=text("status <> 'transferred'"),
-        ),
-        Index(
-            "uq_identity_bindings_app_person",
-            "person_id",
-            unique=True,
-            sqlite_where=text("platform='app' AND status <> 'transferred'"),
-        ),
-        Index(
-            "uq_identity_bindings_acp_person",
-            "person_id",
-            unique=True,
-            sqlite_where=text("platform='acp' AND status <> 'transferred'"),
-        ),
-        CheckConstraint(uuid4_text36_sql("id"), name="ck_identity_bindings_id"),
-        CheckConstraint(uuid4_text36_sql("person_id"), name="ck_identity_bindings_person_id"),
-        CheckConstraint(canonical_platform_sql("platform"), name="ck_identity_bindings_platform"),
+        UniqueConstraint("platform", "external_account_id", name="uq_accounts_native_key"),
+        CheckConstraint(uuid4_text36_sql("id"), name="ck_accounts_id"),
+        CheckConstraint(canonical_platform_sql("platform"), name="ck_accounts_platform"),
         CheckConstraint(
-            opaque_external_id_sql("external_account_id"),
-            name="ck_identity_bindings_external_account_id",
+            opaque_external_id_sql("external_account_id"), name="ck_accounts_native_id"
         ),
-        CheckConstraint(
-            "status IN ('active', 'disabled', 'transferred')", name="ck_identity_bindings_status"
-        ),
-        CheckConstraint("revision >= 1", name="ck_identity_bindings_revision"),
-        CheckConstraint("first_seen_at <= last_seen_at", name="ck_identity_bindings_seen_range"),
-        Index("ix_identity_bindings_person_id", "person_id"),
     )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    person_id: Mapped[str] = mapped_column(
-        ForeignKey("persons.id", onupdate="RESTRICT", ondelete="RESTRICT"), nullable=False
-    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
     platform: Mapped[str] = mapped_column(String(32), nullable=False)
     external_account_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    display_name: Mapped[str] = mapped_column(String(128), nullable=False, default="")
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
-    revision: Mapped[int] = mapped_column(nullable=False, default=1)
-    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    history_starts_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
+    display_name: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class AccountAssignmentModel(Base):
+    """The only account ownership fact; ended stages retain their original IDs."""
+
+    __tablename__ = "account_assignments"
+    __table_args__ = (
+        CheckConstraint(uuid4_text36_sql("id"), name="ck_account_assignments_id"),
+        CheckConstraint("kind IN ('person', 'yuki')", name="ck_account_assignments_kind"),
+        CheckConstraint(
+            "(kind='person' AND person_id IS NOT NULL) OR (kind='yuki' AND person_id IS NULL)",
+            name="ck_account_assignments_owner",
+        ),
+        CheckConstraint(
+            "status IN ('active', 'disabled', 'ended')", name="ck_account_assignments_status"
+        ),
+        CheckConstraint("revision >= 1", name="ck_account_assignments_revision"),
+        Index(
+            "uq_account_assignments_current",
+            "account_id",
+            unique=True,
+            sqlite_where=text("status <> 'ended'"),
+        ),
+        Index("ix_account_assignments_person", "person_id", "id"),
+        Index("ix_account_assignments_history", "account_id", "started_at", "id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id", ondelete="RESTRICT"))
+    kind: Mapped[str] = mapped_column(String(16))
+    person_id: Mapped[str | None] = mapped_column(ForeignKey("persons.id", ondelete="RESTRICT"))
+    status: Mapped[str] = mapped_column(String(16), default="active", server_default="active")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    revision: Mapped[int] = mapped_column(default=1)
+    ingest_eligible: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    account: Mapped[AccountModel] = relationship(lazy="joined")
+    __mapper_args__ = {"polymorphic_on": kind}  # noqa: RUF012
+
+    @hybrid_property
+    def platform(self) -> str:
+        return self.account.platform
+
+    @platform.inplace.expression
+    @classmethod
+    def _platform_expression(cls) -> ScalarSelect[str]:
+        return (
+            select(AccountModel.platform).where(AccountModel.id == cls.account_id).scalar_subquery()
+        )
+
+    @hybrid_property
+    def external_account_id(self) -> str:
+        return self.account.external_account_id
+
+    @external_account_id.inplace.expression
+    @classmethod
+    def _external_account_expression(cls) -> ScalarSelect[str]:
+        return (
+            select(AccountModel.external_account_id)
+            .where(AccountModel.id == cls.account_id)
+            .scalar_subquery()
+        )
+
+    @hybrid_property
+    def display_name(self) -> str:
+        return self.account.display_name
+
+    @display_name.inplace.setter
+    def _set_display_name(self, value: str) -> None:
+        self.account.display_name = value
+
+    @display_name.inplace.expression
+    @classmethod
+    def _display_name_expression(cls) -> ScalarSelect[str]:
+        return (
+            select(AccountModel.display_name)
+            .where(AccountModel.id == cls.account_id)
+            .scalar_subquery()
+        )
+
+    @hybrid_property
+    def history_starts_at(self) -> datetime | None:
+        return self.started_at
+
+    @history_starts_at.inplace.setter
+    def _set_history_start(self, value: datetime | None) -> None:
+        self.started_at = value
+
+    @history_starts_at.inplace.expression
+    @classmethod
+    def _history_start_expression(cls) -> ColumnElement[datetime | None]:
+        return cls.started_at.expression
+
+
+class IdentityBindingModel(AccountAssignmentModel):
+    """The Person projection of the one Assignment table."""
+
+    person_id: Mapped[str] = mapped_column(use_existing_column=True, nullable=True)
+    __mapper_args__ = {"polymorphic_identity": "person"}  # noqa: RUF012
+
+
+class PresenceModel(AccountAssignmentModel):
+    """The Yuki projection of the one Assignment table."""
+
+    __mapper_args__ = {"polymorphic_identity": "yuki"}  # noqa: RUF012
+
+    @hybrid_property
+    def enabled(self) -> bool:
+        return self.status == "active"
+
+    @enabled.inplace.setter
+    def _set_enabled(self, value: bool) -> None:
+        self.status = "active" if value else "disabled"
+
+    @enabled.inplace.expression
+    @classmethod
+    def _enabled_expression(cls) -> ColumnElement[bool]:
+        return cls.status == "active"
+
+
+class AccountSpaceProfileModel(Base):
+    """An observed account name in a physical platform space."""
+
+    __tablename__ = "account_space_profiles"
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id", ondelete="CASCADE"), primary_key=True
+    )
+    space_binding_id: Mapped[str] = mapped_column(
+        ForeignKey("space_bindings.id", ondelete="CASCADE"), primary_key=True
+    )
+    display_name: Mapped[str] = mapped_column(String(128), default="", server_default="")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (Index("ix_account_space_profiles_space", "space_binding_id", "account_id"),)
+
+
+class AccountNameObservationModel(Base):
+    """A real name observation; never a permission or an identity cache."""
+
+    __tablename__ = "account_name_observations"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    account_id: Mapped[str] = mapped_column(ForeignKey("accounts.id", ondelete="CASCADE"))
+    assignment_id: Mapped[str | None] = mapped_column(
+        ForeignKey("account_assignments.id", ondelete="CASCADE")
+    )
+    space_binding_id: Mapped[str | None] = mapped_column(
+        ForeignKey("space_bindings.id", ondelete="CASCADE")
+    )
+    name: Mapped[str] = mapped_column(String(128))
+    kind: Mapped[str] = mapped_column(String(32), default="nickname")
+    first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (
+        Index("ix_account_names_scope_account", "space_binding_id", "account_id", "assignment_id"),
+        Index(
+            "uq_account_names_observation",
+            "account_id",
+            func.coalesce(assignment_id, ""),
+            func.coalesce(space_binding_id, ""),
+            "name",
+            unique=True,
+        ),
     )
 
 
@@ -190,36 +342,5 @@ class SpaceBindingModel(Base):
     revision: Mapped[int] = mapped_column(nullable=False, default=1)
     first_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class PresenceModel(Base):
-    """One Yuki platform account; a Presence is never a Person."""
-
-    __tablename__ = "presences"
-    __table_args__ = (
-        UniqueConstraint(
-            "platform",
-            "external_account_id",
-            name="uq_presences_platform_account",
-        ),
-        CheckConstraint(uuid4_text36_sql("id"), name="ck_presences_id"),
-        CheckConstraint(canonical_platform_sql("platform"), name="ck_presences_platform"),
-        CheckConstraint(
-            opaque_external_id_sql("external_account_id"),
-            name="ck_presences_external_account_id",
-        ),
-        CheckConstraint("enabled IN (0, 1)", name="ck_presences_enabled"),
-        CheckConstraint("ingest_eligible IN (0, 1)", name="ck_presences_ingest_eligible"),
-        CheckConstraint("revision >= 1", name="ck_presences_revision"),
-    )
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True)
-    platform: Mapped[str] = mapped_column(String(32), nullable=False)
-    external_account_id: Mapped[str] = mapped_column(String(255), nullable=False)
-    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    ingest_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    revision: Mapped[int] = mapped_column(nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

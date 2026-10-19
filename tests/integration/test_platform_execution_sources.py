@@ -764,16 +764,17 @@ async def test_app_sdk_admin_grants_an_explicit_telegram_topic(
                     text="topic effect",
                 )
             )
-        row = await repository.claim_outbox()
-        assert row.source_event_id == receipt.source_event_id
-        assert row.canonical_presence_id == tg.gateway.presence_id
         worker = PluginNotificationOutboxWorker(
             repository=repository,
             ledger=tg.harness.ledger,
             artifacts=PluginMediaArtifactStore(database, tmp_path / "cross-entry-media"),
-            transport=PlatformNotificationTransport(router=tg.social.router),
+            transport=PlatformNotificationTransport(database=database, router=tg.social.router),
             effect_gate=ConversationEffectGate(),
         )
+        await worker._prepare_pending()
+        row = await repository.claim_outbox()
+        assert row.source_event_id == receipt.source_event_id
+        assert row.canonical_presence_id == tg.gateway.presence_id
         await worker._deliver(row)
         sends = [params for method, params in tg.wire if method == "sendMessage"]
         assert (

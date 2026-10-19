@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.exc import IntegrityError
 from tests.conftest import make_settings
+from tests.support.event_seed import seed_event
 from tests.support.model_executor import InjectedModelExecutor
 
 from yuki.domain.conversations import ScopeType
@@ -137,7 +138,8 @@ async def _append_event(
     direction: str = "inbound",
     sender_is_bot: bool = False,
 ) -> EventRecord:
-    row, _ = await ledger.append(
+    row, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=message_id,
         scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,

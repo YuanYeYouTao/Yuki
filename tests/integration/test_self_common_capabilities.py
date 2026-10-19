@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from tests.support.event_seed import seed_scoped_event
 from tests.support.semantic_participation_host_helpers import _event_and_route, _host, _item
 from tests.support.social_identity_cases import social_env
 from tests.unit.test_plugin_native_media import environment
@@ -79,14 +80,13 @@ async def test_self_mentions_recall_and_receipt_history_use_original_social_back
         "send-with-mention",
         actor.conversation_id,
         person_refs={"known_person": env.person},
-        account_refs={"known_person": ("qq", "10001")},
         space_id=env.space,
         origin=actor.origin.value,
         initiative_run_id=actor.initiative_run_id,
         presence_id=env.presence,
         actor=actor,
     )
-    arguments = {"text": "hello", "mentions": [{"subject_ref": "known_person"}]}
+    arguments = {"text": f"@{{account:{env.account}}} hello"}
     sent = await env.service.execute("send_message", arguments, context)
     assert sent["status"] == "succeeded"
     assert await env.service.execute("send_message", arguments, context) == sent
@@ -307,7 +307,8 @@ async def test_self_sdk_main_isolates_existing_work_and_reports_actual_scope_lea
     )
     actor = await self_actor(database, env)
     source = replace(runtime(actor, env), runtime_config=await chat._runtime_config.snapshot())
-    private = await env.service.writer.append(
+    private = await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.private(actor.bot_user_id, "10001"),
         platform_message_id="independent-real-source",
         sender_user_id="10001",

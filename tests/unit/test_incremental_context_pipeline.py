@@ -7,6 +7,7 @@ import httpx
 import pytest
 from sqlalchemy import select, update
 from tests.conftest import MemorySender
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_history_dispatch_ownership import _scene
 
 from yuki.conversation.frozen_fragments import FrozenFragments
@@ -91,7 +92,8 @@ async def test_real_foreground_delta_preserves_full_render_bytes_and_dispatch(
         )
         env, harness, chat, state, message = await _scene(database, tmp_path, provider)
         for number in range(64):
-            await env.service.writer.append(
+            await seed_scoped_event(
+                env.service.writer,
                 scope=message.scope(),
                 platform_message_id=f"raw-{number}",
                 sender_user_id="10001",
@@ -192,7 +194,8 @@ async def test_legacy_summary_rebuild_reads_raw_bodies_from_real_assembler(datab
     env, harness, chat, _, message = await _scene(
         database, tmp_path, FakeLLMProvider(lambda _: "内部结束")
     )
-    await env.service.writer.append(
+    await seed_scoped_event(
+        env.service.writer,
         scope=message.scope(),
         platform_message_id="legacy-old",
         sender_user_id="10001",
@@ -246,7 +249,8 @@ async def test_concurrent_admission_cannot_remove_an_older_candidates_captured_h
 
     env, _, chat, _, message = await _scene(database, tmp_path, FakeLLMProvider())
     for number in range(2):
-        await env.service.writer.append(
+        await seed_scoped_event(
+            env.service.writer,
             scope=message.scope(),
             platform_message_id=f"hole-{number}",
             sender_user_id="10001",

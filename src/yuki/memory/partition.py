@@ -17,13 +17,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
-from yuki.identity.canonical_repository import IDENTITY_PLATFORM, optional_external_id
-from yuki.identity.db_models import (
-    CanonicalPersonModel,
-    CanonicalSpaceModel,
-    IdentityBindingModel,
-    SpaceBindingModel,
+from yuki.identity.canonical_repository import (
+    IDENTITY_PLATFORM,
+    find_identity_binding,
+    find_space_binding,
+    optional_external_id,
 )
+from yuki.identity.db_models import (
+    CanonicalSpaceModel,
+)
+from yuki.identity.person_identity import person_enabled_condition
 
 PERSON_PREFIX = "person:"
 SPACE_PREFIX = "space:"
@@ -115,53 +118,25 @@ async def resolve_active_person_id(
     external = optional_external_id(user_id)
     if external is None:
         raise MemoryPartitionResolutionError("missing_owner")
-    bindings = list(
-        await session.scalars(
-            select(IdentityBindingModel).where(
-                IdentityBindingModel.platform == platform,
-                IdentityBindingModel.external_account_id == external,
-                IdentityBindingModel.status == "active",
-            )
-        )
-    )
-    if not bindings:
+    binding = await find_identity_binding(session, external, platform=platform)
+    if binding is None or binding.status != "active":
         raise MemoryPartitionResolutionError("missing_owner")
-    person_ids = {row.person_id for row in bindings}
-    if len(person_ids) != 1:
-        raise MemoryPartitionResolutionError("ambiguous_owner")
-    person = await session.get(CanonicalPersonModel, bindings[0].person_id)
-    if person is None or not person.enabled:
+    if not await session.scalar(select(person_enabled_condition(binding.person_id))):
         raise MemoryPartitionResolutionError("missing_owner")
-    return person.id
+    return binding.person_id
 
 
 async def resolve_active_space_id(session: AsyncSession, group_id: str | None) -> str:
     external = optional_external_id(group_id)
     if external is None:
         raise MemoryPartitionResolutionError("missing_owner")
-    bindings = list(
-        await session.scalars(
-            select(SpaceBindingModel).where(
-                SpaceBindingModel.platform == IDENTITY_PLATFORM,
-                SpaceBindingModel.external_space_id == external,
-                SpaceBindingModel.status == "active",
-            )
-        )
-    )
-    if not bindings:
+    binding = await find_space_binding(session, external)
+    if binding is None or binding.status != "active":
         raise MemoryPartitionResolutionError("missing_owner")
-    space_ids = {row.space_id for row in bindings}
-    if len(space_ids) != 1:
-        raise MemoryPartitionResolutionError("ambiguous_owner")
-    space = await session.get(CanonicalSpaceModel, bindings[0].space_id)
+    space = await session.get(CanonicalSpaceModel, binding.space_id)
     if space is None or not space.enabled:
         raise MemoryPartitionResolutionError("missing_owner")
     return space.id
-
-
-async def _reject_conversation_uuid(session: AsyncSession, owner_id: str) -> None:
-    if await session.get(CanonicalConversationModel, owner_id) is not None:
-        raise MemoryPartitionResolutionError("conversation_uuid")
 
 
 def _event_group_id(event: Any) -> str | None:
@@ -204,14 +179,12 @@ async def resolve_canonical_memory_partition_for_event(
     group_id, peer = _event_scope_owners(event)
     if group_id:
         space_id = await resolve_active_space_id(session, group_id)
-        await _reject_conversation_uuid(session, space_id)
         return MemoryPartition(
             value=format_canonical_memory_partition(space_id=space_id),
             person_id=None,
             space_id=space_id,
         )
     person_id = await resolve_active_person_id(session, peer)
-    await _reject_conversation_uuid(session, person_id)
     return MemoryPartition(
         value=format_canonical_memory_partition(person_id=person_id),
         person_id=person_id,

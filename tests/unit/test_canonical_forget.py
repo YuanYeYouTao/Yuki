@@ -6,8 +6,8 @@ import json
 from datetime import UTC, datetime
 
 from sqlalchemy import text
+from tests.support.canonical_identity import ensure_person
 
-from yuki.identity.canonical_repository import ensure_person
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.persistence.database import Database
 from yuki.persistence.people_repository import PeopleRepository

@@ -7,7 +7,7 @@ import json
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from sqlalchemy import delete, select
@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.authority.json_types import JsonValue
 from yuki.client_api.db_models import (
-    ACP_ACCOUNT_ID,
     ACP_PLATFORM,
     APP_PLATFORM,
     ClientDeviceModel,
@@ -28,8 +27,13 @@ from yuki.conversation.canonical_db_models import (
     PersonActiveRouteModel,
 )
 from yuki.conversation.hydrate import conversation_for_binding, ensure_canonical_conversation
-from yuki.identity.canonical_repository import find_identity_binding, find_presence
-from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.identity.canonical_repository import (
+    ensure_account,
+    find_identity_binding,
+    find_presence,
+    replace_assignment,
+)
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from yuki.identity.person_identity import (
     current_person_id,
     merge_persons,
@@ -38,6 +42,9 @@ from yuki.identity.person_identity import (
 )
 from yuki.persistence.command_receipts import CommandReceiptRepository, aware
 from yuki.persistence.database import Database
+
+if TYPE_CHECKING:
+    from yuki.identity.routing import PresenceRouter
 
 
 def secret_hash(value: str) -> str:
@@ -88,8 +95,9 @@ class ClientPrincipal:
 
 
 class ClientIdentityService:
-    def __init__(self, database: Database) -> None:
+    def __init__(self, database: Database, router: PresenceRouter) -> None:
         self.database = database
+        self.router = router
         self.receipts = CommandReceiptRepository(database)
 
     async def authenticate(
@@ -137,7 +145,11 @@ class ClientIdentityService:
                 if conversation is not None and conversation.kind == "private"
                 else None
             )
-            presence = await find_presence(session, ACP_ACCOUNT_ID, platform=ACP_PLATFORM)
+            presence = (
+                await session.get(PresenceModel, conversation.entry_presence_id)
+                if conversation is not None
+                else None
+            )
             if (
                 conversation is None
                 or binding is None
@@ -160,14 +172,12 @@ class ClientIdentityService:
             )
             if binding is None or not await same_person_id(session, binding.person_id, root_id):
                 raise ClientError("unauthenticated")
-            presence = await find_presence(session, "yuki-app", platform=APP_PLATFORM)
-            if presence is None:
-                raise ClientError("unavailable")
-            conversation = await conversation_for_binding(
-                session, binding.id, presence_id=presence.id
-            )
+            conversation = await conversation_for_binding(session, binding.id)
             if conversation is None:
                 raise ClientError("unauthenticated")
+            presence = await session.get(PresenceModel, conversation.entry_presence_id)
+            if presence is None:
+                raise ClientError("unavailable")
         return ClientPrincipal(
             device.id,
             root_id,
@@ -253,22 +263,15 @@ class ClientIdentityService:
         display_name: str,
         now: datetime,
     ) -> IdentityBindingModel:
-        binding = IdentityBindingModel(
-            id=str(uuid4()),
-            person_id=person_id,
-            platform=platform,
-            external_account_id=account,
-            display_name=display_name,
-            status="active",
-            revision=1,
-            first_seen_at=now,
-            last_seen_at=now,
-            created_at=now,
-            updated_at=now,
-            history_starts_at=now,
+        owner = await session.get(CanonicalPersonModel, person_id)
+        if owner is None:
+            raise ClientError("not_found")
+        physical = await ensure_account(
+            session, account, platform=platform, now=now, display_name=display_name
         )
-        session.add(binding)
-        await session.flush()
+        binding = cast(
+            IdentityBindingModel, await replace_assignment(session, physical, None, owner, now=now)
+        )
         if platform == APP_PLATFORM:
             presence = await find_presence(session, "yuki-app", platform=APP_PLATFORM)
             if presence is None:
@@ -367,6 +370,14 @@ class ClientIdentityService:
         )
         if code is None or code.used_at is not None or aware(code.expires_at) <= now:
             raise ClientError("unauthenticated")
+        if code.source_binding_id is not None:
+            source = await session.get(IdentityBindingModel, code.source_binding_id)
+            if (
+                source is None
+                or source.status != "active"
+                or not await same_person_id(session, source.person_id, code.person_id)
+            ):
+                raise ClientError("unauthenticated")
         person = await session.get(CanonicalPersonModel, code.person_id)
         if person is None or not person.enabled:
             raise ClientError("unauthenticated")
@@ -383,7 +394,7 @@ class ClientIdentityService:
                 select(IdentityBindingModel).where(
                     IdentityBindingModel.person_id == code.person_id,
                     IdentityBindingModel.platform == APP_PLATFORM,
-                    IdentityBindingModel.status != "transferred",
+                    IdentityBindingModel.status != "ended",
                 )
             )
             if binding is None:
@@ -424,11 +435,14 @@ class ClientIdentityService:
     async def transfer_binding(
         self, session: AsyncSession, binding: IdentityBindingModel, to_person: str, *, now: datetime
     ) -> IdentityBindingModel:
-        await self._person(session, to_person)
-        if binding.platform in {APP_PLATFORM, ACP_PLATFORM} or binding.status == "transferred":
+        target = await session.get(
+            CanonicalPersonModel, await current_person_id(session, to_person)
+        )
+        if target is None:
+            raise ClientError("not_found")
+        if binding.platform in {APP_PLATFORM, ACP_PLATFORM} or binding.status == "ended":
             raise ClientError("precondition_failed")
-        to_person = await current_person_id(session, to_person)
-        if await same_person_id(session, binding.person_id, to_person):
+        if await same_person_id(session, binding.person_id, target.id):
             return binding
         route = await session.get(
             PersonActiveRouteModel, await current_person_id(session, binding.person_id)
@@ -438,17 +452,9 @@ class ClientIdentityService:
             route.route_generation += 1
             route.revision += 1
             route.updated_at = now
-        binding.status = "transferred"
-        binding.revision += 1
-        binding.updated_at = now
-        await session.flush()
-        return await self._binding(
-            session,
-            person_id=to_person,
-            platform=binding.platform,
-            account=binding.external_account_id,
-            display_name=binding.display_name,
-            now=now,
+        return cast(
+            IdentityBindingModel,
+            await replace_assignment(session, binding.account, binding.id, target, now=now),
         )
 
     async def cleanup_expired(self) -> int:
@@ -596,6 +602,11 @@ class ClientIdentityService:
         session: AsyncSession | None = None,
     ) -> dict[str, Any]:
         if session is None:
+            bound = fingerprint("identity.binding.transfer", binding_id, {"to_person": to_person})
+            async with self.database.sessions() as reader:
+                previous = await self.replay(reader, principal_id, request_id, bound)
+            if previous is not None:
+                return previous
             async with self.database.immediate_session() as writer:
                 return await self.transfer_for_operator(
                     binding_id, to_person, principal_id, request_id, session=writer
@@ -675,18 +686,20 @@ class ClientIdentityService:
         now = datetime.now(UTC)
         code = await self._code(session, raw_code, now)
         presence = await find_presence(session, account, platform=platform)
-        if platform in {APP_PLATFORM, ACP_PLATFORM} or (presence is not None and presence.enabled):
+        if platform in {APP_PLATFORM, ACP_PLATFORM} or presence is not None:
             raise ClientError("precondition_failed")
         old = await find_identity_binding(session, account, platform=platform)
         merged = old is not None and not await same_person_id(
             session, old.person_id, code.person_id
         )
         if old is not None:
-            if old.status != "active":
-                raise ClientError("precondition_failed")
+            apply_routes = await self.router.prepare_person_merge_routes(
+                session, old.person_id, code.person_id
+            )
             await merge_persons(
                 session, old.person_id, code.person_id, now=now, actor_id=code.issuer_principal_id
             )
+            apply_routes()
             binding = old
         else:
             binding = await self._binding(
@@ -701,7 +714,7 @@ class ClientIdentityService:
         result: dict[str, JsonValue] = {
             "binding_id": binding.id,
             "person_id": await current_person_id(session, binding.person_id),
-            "transferred": False,
+            "ended": False,
             "merged": merged,
         }
         await self.receipts.record_personal_command(

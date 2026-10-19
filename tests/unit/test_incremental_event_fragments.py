@@ -11,7 +11,7 @@ from tests.unit.test_history_time_projection import _event
 
 from yuki.conversation.frozen_fragments import FrozenFragments
 from yuki.conversation.projections import ProjectionConflict
-from yuki.domain.messages import ChatMessage, MessageMention
+from yuki.domain.messages import ChatMessage
 from yuki.event_prompt import ChatEventPromptRenderer, EventPromptIndex, prompt_origin_class
 from yuki.time.formatting import local_datetime, stored_utc
 
@@ -119,10 +119,9 @@ def test_reference_capture_keeps_historical_accounts_and_original_predecessors()
         _event(5, at),
         reply_to_event_id=old.id,
         mentioned_user_ids=("1002",),
-        projected_content="[提及1002] [提及old-bot]",
-        projected_mentions=(
-            MessageMention("member", 0, 0, 8, "1002"),
-            MessageMention("member", 2, 9, 20, "old-bot"),
+        content="@原名 @Yuki",
+        segments=(
+            {"type": "mention", "data": {"display_name": "原名", "account_id": "original-account"}},
         ),
     )
     owner = EventPromptIndex((foreign, old, quoted))
@@ -131,7 +130,7 @@ def test_reference_capture_keeps_historical_accounts_and_original_predecessors()
         references=captured, yuki_account_ids=frozenset({"explicit-only"})
     )
     original = renderer.render_reference_event(quoted)
-    assert "原名/person:person-1" in original and "[提及原名] [提及Yuki]" in original
+    assert "原名/person:person-1" in original and "@原名 @Yuki" in original
     owner.extend((later, replace(old, id=3, sender_group_card="晚补旧洞")))
     assert renderer.render_reference_event(quoted) == original
     assert captured.get(3) is None and captured.get(8) is None
@@ -142,7 +141,7 @@ def test_reference_capture_keeps_historical_accounts_and_original_predecessors()
         through_event_id=5, extra_events=(replace(old, id=3, sender_group_card="晚补旧洞"),)
     )
     updated = ChatEventPromptRenderer(references=overlay).render_reference_event(quoted)
-    assert "[提及晚补旧洞]" in updated
+    assert "@原名 @Yuki" in updated and "@晚补旧洞" not in updated
     assert renderer.render_reference_event(quoted) == original
 
 
@@ -156,15 +155,15 @@ def test_duplicate_reference_ids_keep_last_metadata_and_all_inferred_bot_account
         id=2,
         sender_user_id="other",
         mentioned_user_ids=(first.sender_user_id,),
-        projected_content="[提及old-bot] [提及new-bot]",
-        projected_mentions=(
-            MessageMention("member", 0, 0, 11, "old-bot"),
-            MessageMention("member", 2, 12, 23, "new-bot"),
+        content="@原Yuki @新Yuki",
+        segments=(
+            {"type": "mention", "data": {"display_name": "原Yuki", "account_id": "old-account"}},
+            {"type": "mention", "data": {"display_name": "新Yuki", "account_id": "new-account"}},
         ),
     )
     rendered = ChatEventPromptRenderer((first, last, focus)).render_reference_event(focus)
-    assert "提及:新" in rendered
-    assert rendered.endswith(">[提及Yuki] [提及Yuki]")
+    assert "提及:原Yuki/@{account:old-account},新Yuki/@{account:new-account}" in rendered
+    assert rendered.endswith(">@原Yuki @新Yuki")
 
 
 def _item(identifier, text="原正文"):

@@ -39,6 +39,10 @@ def test_sticker_upgrade_retires_pool_and_active_config_but_keeps_original_facts
                 "runtime_work",
             )
         }
+        original_columns = {
+            table: [row[1] for row in connection.execute(f"PRAGMA table_info({table})")]
+            for table in facts
+        }
     command.upgrade(config, "0138")
     with sqlite3.connect(path) as connection:
         names = {
@@ -72,7 +76,25 @@ def test_sticker_upgrade_retires_pool_and_active_config_but_keeps_original_facts
             "SELECT name FROM sqlite_master WHERE name='social_emoji_intents'"
         ).fetchone()
         for table, original in facts.items():
+            if table == "identity_bindings":
+                columns = ",".join(
+                    "assignment.started_at"
+                    if name == "history_starts_at"
+                    else ("account." + name)
+                    if name in {"platform", "external_account_id", "display_name"}
+                    else ("assignment." + name)
+                    for name in original_columns[table]
+                )
+                preserved = connection.execute(
+                    f"SELECT {columns} FROM account_assignments assignment "
+                    "JOIN accounts account ON account.id=assignment.account_id "
+                    "WHERE assignment.kind='person'"
+                ).fetchall()
+                assert set(preserved) == set(original)
+                continue
+            columns = ",".join(original_columns[table])
             assert (
-                connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall() == original
+                connection.execute(f'SELECT {columns} FROM "{table}" ORDER BY rowid').fetchall()
+                == original
             )
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()

@@ -105,6 +105,7 @@ class PluginConfigValueModel(Base):
         ),
         Index("ix_plugin_config_values_canonical_person_id", "canonical_person_id"),
         Index("ix_plugin_config_values_canonical_space_id", "canonical_space_id"),
+        {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -380,7 +381,7 @@ class PluginBackgroundTargetGrantModel(Base):
     )
     canonical_presence_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        ForeignKey("account_assignments.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
     )
 
@@ -466,6 +467,10 @@ class PluginNotificationOutboxModel(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_person_id: Mapped[str | None] = mapped_column(
+        ForeignKey("persons.id", ondelete="RESTRICT"), nullable=True
+    )
+    prepared_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     notification_id: Mapped[str] = mapped_column(String(64), nullable=False)
     part_key: Mapped[str] = mapped_column(String(255), nullable=False)
     source_event_id: Mapped[int] = mapped_column(
@@ -508,7 +513,7 @@ class PluginNotificationOutboxModel(Base):
     )
     canonical_presence_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        ForeignKey("account_assignments.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
     )
 
@@ -564,6 +569,9 @@ class PluginBackgroundTurnJobModel(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_person_id: Mapped[str | None] = mapped_column(
+        ForeignKey("persons.id", ondelete="RESTRICT"), nullable=True
+    )
     source_event_id: Mapped[int] = mapped_column(
         ForeignKey("chat_events.id", ondelete="CASCADE"), nullable=False
     )
@@ -603,7 +611,7 @@ class PluginBackgroundTurnJobModel(Base):
     )
     canonical_presence_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("presences.id", onupdate="RESTRICT", ondelete="RESTRICT"),
+        ForeignKey("account_assignments.id", onupdate="RESTRICT", ondelete="RESTRICT"),
         nullable=True,
     )
     # The exact original Work admitted for this Job. Set only null -> id in the

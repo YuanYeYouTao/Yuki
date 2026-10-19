@@ -3,6 +3,7 @@
 from dataclasses import replace
 from types import SimpleNamespace
 
+from tests.support.event_seed import seed_event
 from tests.support.gateway import builtin_registry
 
 from yuki.domain.conversations import ScopeType
@@ -68,7 +69,8 @@ async def append_user_event(
     content: str = "正常聊天",
     user_id: str = "1001",
 ) -> int:
-    row, _ = await EventLedgerRepository(database).append(
+    row, _ = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id=message_id,
         scope_type=ScopeType.PRIVATE,

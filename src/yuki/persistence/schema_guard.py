@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
 from yuki.conversation.projection_chunks_schema import (
-    PROJECTION_TRIGGERS_0133 as PROJECTION_TRIGGERS_CURRENT,
+    PROJECTION_TRIGGERS_CURRENT,
 )
 
 
@@ -44,6 +44,9 @@ def _normalized_input_repair_index_sql(sql: str) -> str:
 
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "canonical_event_receipts": frozenset(
+        {"ingress_account_id", "transport_namespace", "ingress_presence_id"}
+    ),
     "ordinary_turn_admissions": frozenset(
         {
             "event_id",
@@ -151,7 +154,7 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
     ),
     "runtime_work_effects": frozenset({"effect_key", "work_id", "state", "receipt_json"}),
     "runtime_work_journal": frozenset(
-        {"work_id", "contract", "source_revision", "phase", "payload_json"}
+        {"archived_journal_json", "work_id", "contract", "source_revision", "phase", "payload_json"}
     ),
     "sandbox_task_runs": frozenset(
         {"request_id", "progress_json", "source_json", "completion_json"}
@@ -190,19 +193,17 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "status",
             "target_id",
             "presence_id",
+            "prepared_json",
         }
     ),
     "persons": frozenset({"id", "enabled", "revision", "display_name", "merged_into_person_id"}),
-    "identity_bindings": frozenset(
-        {
-            "id",
-            "person_id",
-            "platform",
-            "external_account_id",
-            "first_seen_at",
-            "last_seen_at",
-            "history_starts_at",
-        }
+    "accounts": frozenset({"id", "platform", "external_account_id", "display_name"}),
+    "account_assignments": frozenset(
+        {"id", "account_id", "kind", "person_id", "status", "started_at", "ended_at"}
+    ),
+    "account_space_profiles": frozenset({"account_id", "space_binding_id", "display_name"}),
+    "account_name_observations": frozenset(
+        {"account_id", "assignment_id", "space_binding_id", "name"}
     ),
     "client_devices": frozenset({"id", "person_id", "token_hash", "revoked_at"}),
     "client_link_codes": frozenset({"id", "person_id", "code_hash", "expires_at", "used_at"}),
@@ -217,7 +218,6 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
             "last_seen_at",
         }
     ),
-    "presences": frozenset({"id", "platform", "external_account_id", "enabled"}),
     "canonical_conversations": frozenset(
         {"id", "kind", "identity_binding_id", "generation", "prompt_source_revision"}
     ),
@@ -268,7 +268,7 @@ class CanonicalSchemaError(RuntimeError):
 
 
 async def require_canonical_schema(database_url: str) -> None:
-    """Validate the migration head and the canonical storage boundary once."""
+    """Validate the bundled version and metadata without scanning business data."""
 
     if not database_url.startswith("sqlite+aiosqlite:///"):
         raise CanonicalSchemaError("Yuki 3.8 supports only its canonical SQLite schema")
@@ -336,9 +336,6 @@ async def require_canonical_schema(database_url: str) -> None:
                     ):
                         raise CanonicalSchemaError("database budget limits must be nullable")
 
-            foreign_key_rows = await connection.execute(text("PRAGMA foreign_key_check"))
-            if foreign_key_rows.first() is not None:
-                raise CanonicalSchemaError("database canonical foreign-key integrity check failed")
             index_name = "ix_memory_evidence_tool_receipt"
             index_rows = await connection.execute(text('PRAGMA index_list("memory_evidence")'))
             index = next((row for row in index_rows if row[1] == index_name), None)
@@ -537,6 +534,7 @@ async def require_canonical_schema(database_url: str) -> None:
             for name, expected in {
                 **PROJECTION_TRIGGERS_CURRENT,
                 **protocol_triggers,
+                **_identity_triggers(),
             }.items():
                 actual = triggers.get(name, "").replace("IF NOT EXISTS ", "")
                 expected = expected.replace("IF NOT EXISTS ", "")
@@ -546,3 +544,9 @@ async def require_canonical_schema(database_url: str) -> None:
                     )
     finally:
         await engine.dispose()
+
+
+def _identity_triggers() -> dict[str, str]:
+    from yuki.conversation.canonical_schema import ASSIGNMENT_ROLE_TRIGGER_SQL, C3_TRIGGER_SQL
+
+    return {sql.split()[2]: sql for sql in (*C3_TRIGGER_SQL, *ASSIGNMENT_ROLE_TRIGGER_SQL)}

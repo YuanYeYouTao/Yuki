@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender
+from tests.support.event_seed import seed_scoped_event
 from tests.support.projection import projection_record
 from tests.unit.test_history_dispatch_ownership import _scene
 
@@ -100,7 +101,8 @@ async def _boundary_scene(database, tmp_path):
     )
 
     async def add(*, private=None, allowed=None, sender="10002"):
-        appended = await env.service.writer.append(
+        appended = await seed_scoped_event(
+            env.service.writer,
             scope=message.scope(),
             platform_message_id=f"boundary-{len(candidates)}",
             sender_user_id=sender,

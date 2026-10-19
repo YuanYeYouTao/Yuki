@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from collections.abc import Iterable
 
+from pydantic import TypeAdapter, ValidationError
+
 from yuki.admin.config_specs_asr import asr_config_specs
 from yuki.admin.config_specs_future import future_config_specs
 from yuki.admin.config_specs_hot import hot_config_specs
@@ -14,6 +16,7 @@ from yuki.admin.config_specs_restart import restart_config_specs
 from yuki.admin.config_specs_social import social_config_specs
 from yuki.admin.config_specs_tooling import tooling_config_specs
 from yuki.admin.models import ConfigSpec, ConfigValue
+from yuki.config import Settings
 
 
 def _registered_specs() -> tuple[ConfigSpec, ...]:
@@ -145,4 +148,13 @@ class ConfigRegistry:
                 raise ValueError(f"不能小于 {spec.minimum:g}")
             if spec.maximum is not None and converted > spec.maximum:
                 raise ValueError(f"不能大于 {spec.maximum:g}")
+        for name in spec.settings_fields:
+            try:
+                TypeAdapter(Settings.model_fields[name].rebuild_annotation()).validate_python(
+                    converted
+                )
+            except ValidationError as exc:
+                raise ValueError(
+                    exc.errors(include_input=False, include_url=False)[0]["msg"]
+                ) from exc
         return converted

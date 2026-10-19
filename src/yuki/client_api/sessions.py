@@ -43,7 +43,7 @@ class ClientSessions:
                 select(IdentityBindingModel).where(
                     IdentityBindingModel.person_id == principal.request_person_id,
                     IdentityBindingModel.platform == ACP_PLATFORM,
-                    IdentityBindingModel.status != "transferred",
+                    IdentityBindingModel.status != "ended",
                 )
             )
             if binding is None:

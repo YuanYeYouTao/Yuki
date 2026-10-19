@@ -8,9 +8,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.domain.messages import InboundMessage, render_message_mentions, sanitize_display_name
-from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
-from yuki.identity.person_identity import person_root_id
-from yuki.persistence.models import ChatEventModel, MembershipModel
+from yuki.identity.db_models import (
+    AccountModel,
+    AccountSpaceProfileModel,
+    SpaceBindingModel,
+)
+from yuki.identity.ownership_interval import assignments_at
 
 
 async def resolve_message_mentions(
@@ -23,109 +26,79 @@ async def resolve_message_mentions(
     accounts = tuple(
         dict.fromkeys(item.target_user_id for item in message.mentions if item.target_user_id)
     )
-    bindings = (
-        {
-            account: (person_id, nickname, person_name, root_id)
-            for account, person_id, nickname, person_name, root_id in (
+    account_rows = (
+        list(
+            await session.scalars(
+                select(AccountModel).where(
+                    AccountModel.platform == message.platform,
+                    AccountModel.external_account_id.in_(accounts),
+                )
+            )
+        )
+        if accounts
+        else []
+    )
+    stages = await assignments_at(
+        session, tuple(account.id for account in account_rows), message.occurred_at
+    )
+    identities = {
+        account.external_account_id: (account, stages.get(account.id)) for account in account_rows
+    }
+    cards: dict[str, str] = {}
+    if identities and message.group_id is not None:
+        cards = {
+            key: value
+            for key, value in (
                 await session.execute(
                     select(
-                        IdentityBindingModel.external_account_id,
-                        IdentityBindingModel.person_id,
-                        IdentityBindingModel.display_name,
-                        CanonicalPersonModel.display_name,
-                        person_root_id(IdentityBindingModel.person_id),
+                        AccountSpaceProfileModel.account_id, AccountSpaceProfileModel.display_name
                     )
-                    .outerjoin(
-                        CanonicalPersonModel,
-                        CanonicalPersonModel.id == person_root_id(IdentityBindingModel.person_id),
+                    .join(
+                        SpaceBindingModel,
+                        SpaceBindingModel.id == AccountSpaceProfileModel.space_binding_id,
                     )
                     .where(
-                        IdentityBindingModel.platform == message.platform,
-                        IdentityBindingModel.external_account_id.in_(accounts),
-                        IdentityBindingModel.status == "active",
+                        SpaceBindingModel.platform == message.platform,
+                        SpaceBindingModel.external_space_id == message.group_id,
+                        AccountSpaceProfileModel.account_id.in_(
+                            [account.id for account, _ in identities.values()]
+                        ),
                     )
                 )
             ).all()
         }
-        if accounts
-        else {}
-    )
-    presences: dict[str, str] = (
-        {
-            account: identity
-            for account, identity in (
-                await session.execute(
-                    select(PresenceModel.external_account_id, PresenceModel.id).where(
-                        PresenceModel.platform == message.platform,
-                        PresenceModel.external_account_id.in_(accounts),
-                        PresenceModel.enabled.is_(True),
-                    )
-                )
-            ).all()
-        }
-        if accounts
-        else {}
-    )
-    cards: dict[str, str] = {}
-    if bindings and space_id is not None:
-        for person_id, card in (
-            await session.execute(
-                select(
-                    person_root_id(MembershipModel.canonical_person_id), MembershipModel.group_card
-                )
-                .where(
-                    person_root_id(MembershipModel.canonical_person_id).in_(
-                        tuple(values[3] for values in bindings.values())
-                    ),
-                    MembershipModel.canonical_space_id == space_id,
-                )
-                .order_by(MembershipModel.last_seen_at.desc(), MembershipModel.canonical_person_id)
-            )
-        ).all():
-            cards.setdefault(person_id, card)
+
     resolved = []
-    observed_names: dict[str, str] = {}
     for mention in message.mentions:
         if mention.kind == "all":
             resolved.append(mention)
             continue
-        account = mention.target_user_id
-        presence_id = presences.get(account or "")
-        person_id, nickname, person_name, root_id = bindings.get(account or "", (None, "", "", ""))
+        identity = identities.get(mention.target_user_id or "")
+        account, assignment = identity if identity is not None else (None, None)
+        is_yuki = assignment is not None and assignment.kind == "yuki"
+        current_names_apply = account is not None and (
+            message.occurred_at is None or (assignment is not None and assignment.status != "ended")
+        )
         name = (
             mention.display_name
-            or (message.sender.display_name if account == message.sender.user_id else "")
-            or cards.get(root_id, "")
-            or nickname
-            or person_name
+            or (
+                message.sender.display_name
+                if mention.target_user_id == message.sender.user_id
+                else ""
+            )
+            or (cards.get(account.id, "") if current_names_apply and account else "")
+            or (account.display_name if current_names_apply and account else "")
+            or ("Yuki" if is_yuki else "未识别成员")
         )
-        if not name and account and message.conversation_id:
-            if account not in observed_names:
-                previous = (
-                    await session.execute(
-                        select(ChatEventModel.sender_group_card, ChatEventModel.sender_nickname)
-                        .join(PresenceModel, PresenceModel.id == ChatEventModel.ingress_presence_id)
-                        .where(
-                            PresenceModel.platform == message.platform,
-                            ChatEventModel.sender_user_id == account,
-                            ChatEventModel.canonical_conversation_id == message.conversation_id,
-                            ChatEventModel.occurred_at <= message.received_at,
-                            ChatEventModel.suppression_status == "keeper",
-                        )
-                        .order_by(ChatEventModel.occurred_at.desc(), ChatEventModel.id.desc())
-                        .limit(1)
-                    )
-                ).first()
-                observed_names[account] = (previous[0] or previous[1]) if previous else ""
-            name = observed_names[account]
-        name = name or ("Yuki" if presence_id is not None else "未识别成员")
         resolved.append(
             replace(
                 mention,
-                kind="yuki" if presence_id is not None else "member",
+                kind="yuki" if is_yuki else mention.kind,
                 display_name=sanitize_display_name(name),
-                person_id=None if presence_id is not None else person_id,
-                presence_id=presence_id,
+                account_id=account.id if account else None,
+                assignment_id=assignment.id if assignment else None,
+                person_id=assignment.person_id if assignment else None,
+                presence_id=assignment.id if assignment and is_yuki else None,
             )
         )
     text, mentions = render_message_mentions(message.text, tuple(resolved))

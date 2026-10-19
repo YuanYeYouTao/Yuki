@@ -9,8 +9,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from sqlalchemy import select
-
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import (
     InboundMessage,
@@ -21,7 +20,8 @@ from yuki.domain.messages import (
 )
 from yuki.gateway.providers.app import AppHandle
 from yuki.gateway.registry import GatewayConnectionRegistry
-from yuki.identity.db_models import IdentityBindingModel, PresenceModel
+from yuki.identity.canonical_repository import find_presence
+from yuki.identity.db_models import IdentityBindingModel
 from yuki.persistence.database import Database
 from yuki.persistence.scoped_event_uow import ScopedAppendResult
 from yuki.social.service import SocialContext, SocialService
@@ -45,9 +45,11 @@ class AppSender:
         binding: IdentityBindingModel,
         conversation_id: str,
         request_id: str,
+        presence_id: str,
     ) -> None:
         self.bot, self.social, self.binding = handle, social, binding
         self.conversation_id, self.request_id = conversation_id, request_id
+        self.presence_id = presence_id
         self.event_id: int | None = None
         self.sequence = 0
 
@@ -63,9 +65,7 @@ class AppSender:
                 f"reply:{self.sequence}",
                 self.conversation_id,
                 person_refs={"current_speaker": self.binding.person_id},
-                reply_presence_id=self.social.router._registry.resolve_by_handle(
-                    self.bot
-                ).snapshot.presence_id,
+                reply_presence_id=self.presence_id,
                 trigger_event_id=self.event_id,
                 caused_by_event_id=self.event_id,
             ),
@@ -118,17 +118,10 @@ class AppGateway:
 
     async def start(self) -> None:
         async with self.database.sessions() as session:
-            presence = await session.scalar(
-                select(PresenceModel).where(
-                    PresenceModel.platform == self.platform,
-                    PresenceModel.external_account_id == self.handle.self_id,
-                )
-            )
-        if presence is None:
-            raise RuntimeError(f"{self.platform} Presence unavailable; apply migrations")
-        if not presence.enabled:
-            return
-        self.registry.connect(self.handle, provider_id=self.platform, presence_id=presence.id)
+            presence = await find_presence(session, self.handle.self_id, platform=self.platform)
+        self.registry.connect(
+            self.handle, provider_id=self.platform, presence_id=presence.id if presence else None
+        )
 
     async def close(self) -> None:
         self.registry.disconnect(self.handle)
@@ -185,6 +178,10 @@ class AppGateway:
         principal: ClientPrincipal | None = None,
         thread_id: str | None = None,
     ) -> ScopedAppendResult:
+        async with self.database.sessions() as session:
+            conversation = await session.get(CanonicalConversationModel, conversation_id)
+            assert conversation is not None and conversation.entry_presence_id is not None
+            presence_id = conversation.entry_presence_id
         key = (conversation_id, request_id)
         existing = self._requests.get(key)
         if existing is not None:
@@ -198,7 +195,9 @@ class AppGateway:
             thread_id=thread_id,
             conversation_id=conversation_id,
         )
-        sender = AppSender(self.handle, self.social, binding, conversation_id, request_id)
+        sender = AppSender(
+            self.handle, self.social, binding, conversation_id, request_id, presence_id
+        )
         acknowledged: asyncio.Future[ScopedAppendResult] = (
             asyncio.get_running_loop().create_future()
         )

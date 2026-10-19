@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.tool_actor import ToolActor
 from yuki.emoji.models import EmojiAsset
+from yuki.gateway.social import TransportMessage, prepared_transport, transport_payload
 from yuki.identity.person_identity import same_person_id
 from yuki.persistence.unit_of_work import optional_session
 from yuki.persistence.worker_recovery import recover_database_loop
@@ -143,6 +144,7 @@ class EmojiDeliveryService:
             )
         return {
             "context": original,
+            "content": transport_payload(TransportMessage()),
             "binding_id": route.binding_id,
             "target_presence_id": route.presence_id,
             "platform": route.platform,
@@ -273,39 +275,34 @@ class EmojiDeliveryService:
         if actor is not None:
             actor["origin"] = TurnOrigin(actor["origin"])
             values["actor"] = ToolActor(**actor)
+        content = prepared_transport(intent.source["content"])
         reply_id = intent.source.get("reply_to_event_id")
         values.update(
             call_id=derived_call_id(intent.id),
             deferred_emoji_id=intent.id,
             media_metadata=intent.selected,
             target_presence_id=intent.source["target_presence_id"],
-            visible_event_ids=frozenset((reply_id,)) if reply_id is not None else frozenset(),
+            prepared_content=intent.source["content"],
         )
         target = {"kind": intent.target.kind, "target_id": str(intent.target.id)}
         if intent.target.kind == "person":
             target["binding_id"] = intent.source["binding_id"]
         args: dict[str, Any] = {
-            "text": "",
+            "text": content.text,
             "target": target,
             "artifact_id": artifact_id,
             "attachment_kind": "image",
         }
-        if intent.source.get("mentions"):
-            args["mentions"] = intent.source["mentions"]
         if reply_id is not None:
             args["reply_to_event_id"] = reply_id
         return args, SocialContext(**values)
 
     async def _deliver(self, intent: EmojiIntent) -> None:
-        from yuki.emoji.library import snapshot_identity
 
         try:
             if intent.selected is not None:
-                args, context = self._send_input(
-                    intent,
-                    snapshot_identity(intent.selected["platform"], intent.selected["sha256"]),
-                )
-                if await self.social.replay_send(args, context) is not None:
+                facts = await self._project(intent)
+                if facts["status"] != "accepted":
                     await self.intents.close(intent.id)
                     return
             async with self.social.database.sessions() as session:

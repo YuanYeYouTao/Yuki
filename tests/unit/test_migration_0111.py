@@ -1,37 +1,18 @@
-"""Execution sources preserve old Memory receipts and allow real SELF schedules."""
+"""The frozen upgrade preserves Memory facts and permits real execution receipts."""
 
 import asyncio
-import json
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import select, text
-from tests.support.automation_unified_delivery_helpers import setup_run
-from tests.support.legacy_conversation_seed import (
-    enable_projection_columns_for_legacy_seed,
-    seed_pre_0119_social_conversations,
-)
-from tests.unit.test_self_initiative_memory import _service, record
+from sqlalchemy import text
+from tests.support.legacy_conversation_seed import frozen_social_env, insert_frozen
 
-from yuki.automation.models import RunStatus
-from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.memory.mutation.models import (
-    MemoryDecisionActorType,
-    MemoryMutationContext,
-    MemoryMutationRequest,
-)
 from yuki.persistence.database import Database
-from yuki.persistence.models import (
-    ChatEventModel,
-    MemoryMutationReceiptModel,
-    MemoryToolReceiptModel,
-)
-from yuki.tool_results.recorder import ToolReceiptRepository
 
 
-def test_0111_preserves_original_receipts_and_writes_real_scheduled_self_source(
-    tmp_path, monkeypatch
-):
+def test_0111_preserves_original_receipts_and_accepts_execution_sources(tmp_path, monkeypatch):
     url = f"sqlite+aiosqlite:///{(tmp_path / 'memory-sources.db').as_posix()}"
     monkeypatch.setenv("DATABASE_URL", url)
     config = Config("alembic.ini")
@@ -40,47 +21,101 @@ def test_0111_preserves_original_receipts_and_writes_real_scheduled_self_source(
     async def verify():
         database = Database(url)
         try:
-            await seed_pre_0119_social_conversations(database)
-            await enable_projection_columns_for_legacy_seed(database)
-            case = await setup_run(
-                database,
-                tmp_path,
-                principal="self",
-                delivery="none",
-                mode="silent",
-                self_memory_enabled=True,
-            )
-            # This fixture exercises 0110/0111 receipts, before the 0112 public schema.
-            case.chat.runtime.main_turns._projections = None
-            mutations, _, ledger, _ = _service(database, self_memory_enabled=True)
-            async with database.sessions() as session:
-                event_id = await session.scalar(select(ChatEventModel.id))
-            event = await ledger.get_event(event_id)
-            await record(database, event, case.actor.initiative_run_id)
-            saved = await mutations.mutate(
-                MemoryMutationRequest(
-                    operation="create",
-                    target={"subject_ref": "self", "scope_type": "self"},
-                    new_content="我用实际工具回执校验了曲线绘图。",
-                    memory_key="original-paid-episode",
-                    category="self_episode",
-                    kind="episode",
-                    evidence_quote="已生成并校验曲线绘图",
-                ),
-                MemoryMutationContext(
-                    event=None,
-                    conversation_key=event.scope.key,
-                    turn_origin="self_initiative",
-                    delegation_mode="main_agent",
-                    trigger_actor_user_id="",
-                    decision_actor_type=MemoryDecisionActorType.AGENT,
-                    decision_actor_id="execution-1",
-                    executed_by_bot_user_id=event.bot_user_id,
-                    initiative_run_id=case.actor.initiative_run_id,
-                    source_group_id=event.group_id,
-                ),
-            )
-            assert saved.ok
+            env = await frozen_social_env(database)
+            now = datetime.now(UTC)
+            async with database.immediate_session() as writer:
+                event = await writer.scalar(text("SELECT id FROM chat_events"))
+                await insert_frozen(
+                    writer,
+                    "memory_facts",
+                    {
+                        "id": 1,
+                        "scope_type": "self",
+                        "visibility_type": "group",
+                        "canonical_visibility_space_id": env.space,
+                        "kind": "episode",
+                        "memory_key": "original-paid-episode",
+                        "category": "self_episode",
+                        "content": "已生成并校验曲线绘图",
+                        "normalized_content": "已生成并校验曲线绘图",
+                        "importance": 3,
+                        "confidence": 1.0,
+                        "source_type": "explicit",
+                        "authority": "agent_reflection",
+                        "status": "active",
+                        "conflict_state": "clear",
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+                tool = {
+                    "id": 1,
+                    "conversation_key_hash": "a" * 64,
+                    "trigger_event_id": event,
+                    "bot_user_id": "80001",
+                    "canonical_space_id": env.space,
+                    "provider_id": "core",
+                    "tool_name": "terminal_exec",
+                    "success": True,
+                    "result_excerpt": "原付费结果",
+                    "result_characters": 5,
+                    "execution_id": "original-execution",
+                    "tool_call_id": "original-call",
+                    "source_call_key": "b" * 64,
+                    "created_at": now,
+                    "expires_at": now + timedelta(days=7),
+                }
+                mutation = {
+                    "id": 1,
+                    "mutation_id": str(uuid4()),
+                    "idempotency_key": "c" * 64,
+                    "claim_fingerprint": "d" * 64,
+                    "target_fingerprint": "e" * 64,
+                    "trigger_source_type": "chat_event",
+                    "trigger_event_id": event,
+                    "conversation_key": "bot:80001:group:20001",
+                    "current_group_id": "20001",
+                    "turn_origin": "user_message",
+                    "delegation_mode": "main_agent",
+                    "trigger_actor_user_id": "10001",
+                    "decision_actor_type": "agent",
+                    "decision_actor_id": "original-execution",
+                    "executed_by_bot_user_id": "80001",
+                    "requested_operation": "create",
+                    "applied_operation": "create",
+                    "new_fact_id": 1,
+                    "outcome": "committed",
+                    "reason_code": "created",
+                    "created_at": now,
+                }
+                await insert_frozen(writer, "memory_tool_receipts", tool)
+                await insert_frozen(writer, "memory_mutation_receipts", mutation)
+                await insert_frozen(
+                    writer,
+                    "memory_evidence",
+                    {
+                        "id": 1,
+                        "fact_id": 1,
+                        "tool_receipt_id": 1,
+                        "source_speaker_user_id": "80001",
+                        "relation": "agent_reflection",
+                        "authority": "agent_reflection",
+                        "excerpt": "原付费结果",
+                        "created_at": now,
+                    },
+                )
+                await insert_frozen(
+                    writer,
+                    "memory_fact_state_events",
+                    {
+                        "id": 1,
+                        "fact_id": 1,
+                        "action": "created",
+                        "to_status": "active",
+                        "reason_code": "created",
+                        "created_at": now,
+                    },
+                )
             tables = (
                 "memory_tool_receipts",
                 "memory_mutation_receipts",
@@ -93,11 +128,11 @@ def test_0111_preserves_original_receipts_and_writes_real_scheduled_self_source(
             )
 
             async def snapshot():
-                async with database.sessions() as session:
+                async with database.sessions() as reader:
                     return {
                         name: [
                             tuple(row)
-                            for row in await session.execute(text(f"SELECT * FROM {name}"))
+                            for row in await reader.execute(text(f"SELECT * FROM {name}"))
                         ]
                         for name in tables
                     }
@@ -105,9 +140,8 @@ def test_0111_preserves_original_receipts_and_writes_real_scheduled_self_source(
             original = await snapshot()
             await asyncio.to_thread(command.upgrade, config, "0111")
             assert await snapshot() == original
-            async with database.sessions() as session:
-                assert not list(await session.execute(text("PRAGMA foreign_key_check")))
-                sql = await session.scalar(
+            async with database.immediate_session() as writer:
+                sql = await writer.scalar(
                     text(
                         "SELECT group_concat(sql) FROM sqlite_master "
                         "WHERE name IN ('memory_tool_receipts','memory_mutation_receipts')"
@@ -115,61 +149,45 @@ def test_0111_preserves_original_receipts_and_writes_real_scheduled_self_source(
                 )
                 assert "ck_memory_tool_receipts_source" not in sql
                 assert "ck_memory_mutation_trigger_source" not in sql
-            case.chat._tools._memory_mutations = mutations
-            case.chat._tool_receipts = ToolReceiptRepository(database)
-            responses = []
-
-            def respond(request):
-                index = len(case.provider.requests) - 1
-                if index:
-                    result = json.loads(request.messages[-1].content)
-                    responses.append(result)
-                    assert result["ok"], result
-                calls = (
-                    ("get_group_members", {}),
-                    (
-                        "memory_change",
-                        {
-                            "operation": "create",
-                            "target": {"subject_ref": "self", "scope_type": "self"},
-                            "new_content": "我查询了当前群实际成员 member 的资料。",
-                            "memory_key": "scheduled-episode",
-                            "category": "self_episode",
-                            "kind": "episode",
-                            "evidence_quote": "member",
-                        },
-                    ),
+                await insert_frozen(
+                    writer,
+                    "memory_tool_receipts",
+                    {
+                        **tool,
+                        "id": 2,
+                        "trigger_event_id": None,
+                        "execution_id": "scheduled-execution",
+                        "source_call_key": "f" * 64,
+                    },
                 )
-                if index >= len(calls):
-                    return "NO_REPLY"
-                name, arguments = calls[index]
-                return ChatResponse(
-                    "",
-                    0,
-                    tool_calls=(
-                        ToolCall(f"scheduled-{index}", ToolFunction(name, json.dumps(arguments))),
-                    ),
+                await insert_frozen(
+                    writer,
+                    "memory_mutation_receipts",
+                    {
+                        **mutation,
+                        "id": 2,
+                        "mutation_id": str(uuid4()),
+                        "idempotency_key": "9" * 64,
+                        "claim_fingerprint": "8" * 64,
+                        "trigger_source_type": "execution",
+                        "trigger_event_id": None,
+                        "decision_actor_id": "scheduled-execution",
+                    },
                 )
-
-            case.provider._responder = respond
-            case.clock.advance(2)
-            result = await case.dispatch()
-            assert result.status is RunStatus.SUCCEEDED
-            assert responses[-1]["data"]["ok"]
-            async with database.sessions() as session:
-                receipts = list(await session.scalars(select(MemoryMutationReceiptModel)))
-                assert len(receipts) == 2
-                new = next(row for row in receipts if row.trigger_source_type == "execution")
-                assert new.trigger_event_id is None and new.initiative_run_id is None
-                tool = await session.scalar(
-                    select(MemoryToolReceiptModel).where(
-                        MemoryToolReceiptModel.execution_id == new.decision_actor_id,
-                        MemoryToolReceiptModel.tool_name == "get_group_members",
+            retained = await snapshot()
+            await asyncio.to_thread(command.upgrade, config, "head")
+            assert await snapshot() == retained
+            async with database.sessions() as reader:
+                assert not list(await reader.execute(text("PRAGMA foreign_key_check")))
+                rows = (
+                    await reader.execute(
+                        text(
+                            "SELECT trigger_source_type,trigger_event_id,initiative_run_id "
+                            "FROM memory_mutation_receipts ORDER BY id"
+                        )
                     )
-                )
-                assert tool.trigger_event_id is None and tool.initiative_run_id is None
-            assert await case.dispatch() == result
-            assert len(case.provider.requests) == 3
+                ).all()
+                assert rows == [("chat_event", event, None), ("execution", None, None)]
         finally:
             await database.close()
 

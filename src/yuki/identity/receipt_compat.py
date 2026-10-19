@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
 from yuki.domain.conversations import ConversationScope
+from yuki.identity.db_models import AccountAssignmentModel
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.persistence.models import ChatEventModel
 
@@ -61,6 +62,41 @@ def occurred_at_token(value: datetime | None) -> str:
     return aware.astimezone(UTC).isoformat()
 
 
+def transport_namespace(scope: ConversationScope) -> str:
+    """Native chat/topic namespace; no owner, connection or Conversation ID."""
+    return json.dumps(
+        [scope.scope_type.value, scope.group_id or scope.private_peer_user_id, scope.thread_id],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+async def transport_receipt(
+    session: AsyncSession,
+    *,
+    presence_id: str,
+    scope: ConversationScope,
+    event_type: str,
+    platform_message_id: str,
+) -> CanonicalEventReceiptModel | None:
+    account = (
+        select(AccountAssignmentModel.account_id)
+        .where(AccountAssignmentModel.id == presence_id)
+        .scalar_subquery()
+    )
+    return cast(
+        CanonicalEventReceiptModel | None,
+        await session.scalar(
+            select(CanonicalEventReceiptModel).where(
+                CanonicalEventReceiptModel.ingress_account_id == account,
+                CanonicalEventReceiptModel.transport_namespace == transport_namespace(scope),
+                CanonicalEventReceiptModel.event_type == event_type,
+                CanonicalEventReceiptModel.platform_message_id == platform_message_id,
+            )
+        ),
+    )
+
+
 async def load_claimed_keeper(
     session: AsyncSession, canonical_event_id: str | None
 ) -> ChatEventModel | None:
@@ -98,7 +134,7 @@ def require_compatible_v2_live(
     existing: ChatEventModel,
     *,
     scope: ConversationScope,
-    conversation_id: str,
+    conversation_id: str | None,
     presence_id: str,
     platform_message_id: str,
     sender_user_id: str,
@@ -123,8 +159,7 @@ def require_compatible_v2_live(
         raise CanonicalIdentityError("receipt_conflict")
     if receipt is not None:
         if (
-            receipt.ingress_presence_id != presence_id
-            or receipt.event_type != receipt_event_type
+            receipt.event_type != receipt_event_type
             or receipt.platform_message_id != platform_message_id[:128]
             or receipt.canonical_event_id != existing.canonical_event_id
         ):

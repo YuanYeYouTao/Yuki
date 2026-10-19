@@ -27,6 +27,7 @@ class AuthorKind(StrEnum):
     """
 
     PERSON = "person"
+    ACCOUNT = "account"
     YUKI = "yuki"
     EXTERNAL_BOT = "external_bot"
     SYSTEM = "system"

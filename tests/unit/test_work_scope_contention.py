@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import event as sql_event
 from sqlalchemy import select, update
+from tests.support.event_seed import seed_scoped_event
 from tests.support.projection_sql_counts import capture_sql
 from tests.support.social_identity_cases import social_env
 
@@ -221,7 +222,8 @@ async def test_busy_scope_with_many_qualified_work_does_not_hide_independent_sco
 
     env = await social_env(database, tmp_path)
     ledger = ScopedEventLedgerUnitOfWork(database)
-    await ledger.append(
+    await seed_scoped_event(
+        ledger,
         scope=ConversationScope.private("80001", "10001"),
         platform_message_id="independent-private-source",
         sender_user_id="10001",

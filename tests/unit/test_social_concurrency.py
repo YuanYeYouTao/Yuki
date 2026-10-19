@@ -7,11 +7,11 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.canonical_identity import ensure_space
 from tests.support.social_identity_cases import social_env
 
 from yuki.conversation.canonical_db_models import SpaceActiveRouteModel
 from yuki.gateway.social import TransportMessage
-from yuki.identity.canonical_repository import ensure_space
 from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
 from yuki.identity.routing import RouteSendError
 from yuki.persistence.database import Database

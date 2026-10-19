@@ -48,8 +48,8 @@ from yuki.identity.canonical_repository import (
     AccountRole,
     bindings_for_person,
     external_id,
+    find_assignment,
     find_identity_binding,
-    find_presence,
     forget_person_by_id,
     trip,
 )
@@ -156,6 +156,17 @@ def _redact_privacy_json(value: str, pattern: re.Pattern[str], marker: str) -> s
         return item
 
     return json.dumps(redact(json.loads(value)), ensure_ascii=False, separators=(",", ":"))
+
+
+def _erase_person_configuration_snapshots(value: str, person_ids: tuple[str, ...]) -> str:
+    """Forget archived Person config values while retaining original effect metadata."""
+    material = json.loads(value)
+    if isinstance(material, dict):
+        for item in material.get("discarded_configurations", ()):
+            if isinstance(item, dict) and isinstance(item.get("row"), dict):
+                if item["row"].get("canonical_person_id") in person_ids:
+                    item.pop("row")
+    return json.dumps(material, ensure_ascii=False)
 
 
 def _privacy_json_match(
@@ -354,16 +365,14 @@ async def _observe_role(
     platform: str = "qq",
 ) -> tuple[AccountRole, IdentityBindingModel | None]:
     settings = identity_write_settings()
-    if is_bot or user_id in settings.ignored_bot_users:
-        return "external_bot", None
     external = external_id(user_id)
-    if external in settings.ignored_bot_users:
+    if is_bot or (platform == "qq" and external in settings.ignored_bot_users):
         return "external_bot", None
-    presence = await find_presence(session, external, platform=platform)
     if binding is None:
-        binding = await find_identity_binding(session, external, platform=platform)
-    if presence is not None and presence.enabled and binding is None:
-        return "yuki_self", None
+        assignment = await find_assignment(session, external, platform=platform)
+        if isinstance(assignment, PresenceModel) and assignment.enabled:
+            return "yuki_self", None
+        binding = assignment if isinstance(assignment, IdentityBindingModel) else None
     return "human", binding
 
 
@@ -483,7 +492,8 @@ class PeopleRepository:
         """Update current values and retain historical aliases."""
 
         now = datetime.now(UTC)
-        async with self._database.immediate_session() as session:
+
+        async def observe(session: AsyncSession) -> None:
             current_binding = None
             if expected_person_id is not None:
                 current_binding = await find_identity_binding(
@@ -510,6 +520,8 @@ class PeopleRepository:
                 now=now,
                 space_id=space_id,
             )
+
+        await self._database.apply_snapshot_write(observe)
 
     async def get(
         self,
@@ -920,7 +932,13 @@ class PeopleRepository:
                             if audit.target_id in audit_aliases
                             else audit.target_id,
                             conversation_key=pattern.sub(lambda _: marker, audit.conversation_key),
-                            before_json=_redact_privacy_json(audit.before_json, pattern, marker),
+                            before_json=_redact_privacy_json(
+                                _erase_person_configuration_snapshots(
+                                    audit.before_json, person_ids
+                                ),
+                                pattern,
+                                marker,
+                            ),
                             after_json=_redact_privacy_json(audit.after_json, pattern, marker),
                         ),
                     )
@@ -1233,11 +1251,10 @@ class PeopleRepository:
                 AutonomyBindingModel.conversation_id.in_(prepared.private_ids)
             )
         )
-        for member_id in person_ids:
-            await self._forget_person_plugin(session, member_id, legacy)
-            await self._forget_person_automations(session, member_id)
-            await self._forget_person_memory(session, member_id)
-            await self._forget_person_conversation(session, member_id, legacy)
+        await self._forget_person_plugin(session, person_ids, legacy)
+        await self._forget_person_automations(session, person_ids)
+        await self._forget_person_memory(session, person_ids)
+        await self._forget_person_conversation(session, prepared.private_ids, legacy)
         trip("after_forget_plugin")
         trip("after_forget_automations")
         trip("after_forget_memory")
@@ -1325,78 +1342,72 @@ class PeopleRepository:
     @staticmethod
     async def _forget_person_plugin(
         session: AsyncSession,
-        person_id: str,
+        person_ids: tuple[str, ...],
         owner_externals: tuple[str, ...],
     ) -> None:
         """Delete Person-owned plugin rows before the generic shadow-null loop.
 
-        Space/global content stays unless a P-created grant attributes it.
-        Q-created grants targeting the same Space are preserved.
+        A publication/job keeps its own source even when today's grant changes.
         """
 
         for model in (PluginNotificationOutboxModel, PluginBackgroundTurnJobModel):
-            owned_space_grant = (
-                select(PluginBackgroundTargetGrantModel.id)
-                .where(
-                    PluginBackgroundTargetGrantModel.canonical_created_by_person_id == person_id,
-                    PluginBackgroundTargetGrantModel.plugin_id == model.plugin_id,
-                    PluginBackgroundTargetGrantModel.canonical_target_space_id
-                    == model.canonical_target_space_id,
-                )
-                .exists()
-            )
             await session.execute(
                 delete(model).where(
-                    or_(model.canonical_target_person_id == person_id, owned_space_grant)
+                    or_(
+                        model.canonical_target_person_id.in_(person_ids),
+                        model.source_person_id.in_(person_ids),
+                    )
                 )
             )
         await session.execute(
             delete(PluginBackgroundTargetGrantModel).where(
                 or_(
-                    PluginBackgroundTargetGrantModel.canonical_created_by_person_id == person_id,
-                    PluginBackgroundTargetGrantModel.canonical_target_person_id == person_id,
+                    PluginBackgroundTargetGrantModel.canonical_created_by_person_id.in_(person_ids),
+                    PluginBackgroundTargetGrantModel.canonical_target_person_id.in_(person_ids),
                     PluginBackgroundTargetGrantModel.created_by_user_id.in_(owner_externals),
                 )
             )
         )
         await session.execute(
             delete(PluginStateModel).where(
-                PluginStateModel.canonical_person_id == person_id,
+                PluginStateModel.canonical_person_id.in_(person_ids),
             )
         )
         await session.execute(
             delete(PluginConfigValueModel).where(
                 PluginConfigValueModel.scope_type == "user",
-                PluginConfigValueModel.canonical_person_id == person_id,
+                PluginConfigValueModel.canonical_person_id.in_(person_ids),
             )
         )
         await session.execute(
             delete(PluginAgentSessionModel).where(
                 PluginAgentSessionModel.scope_type == "user",
-                PluginAgentSessionModel.canonical_owner_person_id == person_id,
+                PluginAgentSessionModel.canonical_owner_person_id.in_(person_ids),
             )
         )
         await session.execute(
             delete(PluginAgentMessageModel).where(
-                PluginAgentMessageModel.canonical_sender_person_id == person_id,
+                PluginAgentMessageModel.canonical_sender_person_id.in_(person_ids),
             )
         )
 
     @staticmethod
-    async def _forget_person_automations(session: AsyncSession, person_id: str) -> None:
+    async def _forget_person_automations(
+        session: AsyncSession, person_ids: tuple[str, ...]
+    ) -> None:
         """Delete automations this Person created or is the send target of."""
 
         await session.execute(
             delete(AutomationModel).where(
                 or_(
-                    AutomationModel.canonical_target_person_id == person_id,
-                    AutomationModel.canonical_creator_person_id == person_id,
+                    AutomationModel.canonical_target_person_id.in_(person_ids),
+                    AutomationModel.canonical_creator_person_id.in_(person_ids),
                 )
             )
         )
 
     @staticmethod
-    async def _forget_person_memory(session: AsyncSession, person_id: str) -> None:
+    async def _forget_person_memory(session: AsyncSession, person_ids: tuple[str, ...]) -> None:
         """Delete Person-owned live Memory rows before canonical Person delete.
 
         Clusters first (RESTRICT on persons). Facts next so their evidence
@@ -1406,34 +1417,34 @@ class PeopleRepository:
         """
 
         person_dream = or_(
-            MemoryDreamClusterModel.canonical_subject_person_id == person_id,
-            MemoryDreamClusterModel.canonical_visibility_person_id == person_id,
+            MemoryDreamClusterModel.canonical_subject_person_id.in_(person_ids),
+            MemoryDreamClusterModel.canonical_visibility_person_id.in_(person_ids),
         )
         await session.execute(delete(MemoryDreamClusterModel).where(person_dream))
         await session.execute(
             delete(MemoryFactModel).where(
                 or_(
-                    MemoryFactModel.canonical_subject_person_id == person_id,
-                    MemoryFactModel.canonical_visibility_person_id == person_id,
+                    MemoryFactModel.canonical_subject_person_id.in_(person_ids),
+                    MemoryFactModel.canonical_visibility_person_id.in_(person_ids),
                 )
             )
         )
         await session.execute(
-            delete(MemoryJobModel).where(MemoryJobModel.canonical_person_id == person_id)
+            delete(MemoryJobModel).where(MemoryJobModel.canonical_person_id.in_(person_ids))
         )
         await session.execute(
             delete(MemoryToolReceiptModel).where(
-                MemoryToolReceiptModel.canonical_person_id == person_id
+                MemoryToolReceiptModel.canonical_person_id.in_(person_ids)
             )
         )
         await session.execute(
             delete(MemorySelfReflectionStateModel).where(
-                MemorySelfReflectionStateModel.canonical_person_id == person_id
+                MemorySelfReflectionStateModel.canonical_person_id.in_(person_ids)
             )
         )
         await session.execute(
             delete(MemorySelfReflectionRunModel).where(
-                MemorySelfReflectionRunModel.canonical_person_id == person_id
+                MemorySelfReflectionRunModel.canonical_person_id.in_(person_ids)
             )
         )
 
@@ -1476,7 +1487,7 @@ class PeopleRepository:
     @staticmethod
     async def _forget_person_conversation(
         session: AsyncSession,
-        person_id: str,
+        conversation_ids: tuple[str, ...],
         owner_externals: tuple[str, ...],
     ) -> None:
         """Delete Person-owned correlations before private Conversation delete.
@@ -1495,15 +1506,6 @@ class PeopleRepository:
         may SET NULL (nullable) so RESTRICT does not block delete.
         """
 
-        conversation_ids = tuple(
-            str(item)
-            for item in await session.scalars(
-                select(CanonicalConversationModel.id).where(
-                    CanonicalConversationModel.kind == "private",
-                    CanonicalConversationModel.person_id == person_id,
-                )
-            )
-        )
         alias_keys = await PeopleRepository._private_conversation_alias_keys(
             session, conversation_ids, owner_externals
         )

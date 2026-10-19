@@ -425,6 +425,7 @@ class ApplicationContainer:
             artifacts=self.plugin_media_artifacts,
             ledger=self.ledger,
             transport=PlatformNotificationTransport(
+                database=self.database,
                 router=self.presence_router,
             ),
             effect_gate=self.conversation_effect_gate,
@@ -480,7 +481,7 @@ class ApplicationContainer:
         from yuki.application.modules.admin_api import build_admin_api
         from yuki.client_api.identity import ClientIdentityService
 
-        self.client_identity = ClientIdentityService(self.database)
+        self.client_identity = ClientIdentityService(self.database, self.presence_router)
         self.admin_api = build_admin_api(self)
         from yuki.client_api.http import ClientApi
 
@@ -509,7 +510,15 @@ class ApplicationContainer:
             people=self.people,
             memories=self.memories,
             concurrency=self.concurrency,
-            onebot_connected=self.onebot_connected,
+            platform_connected=lambda scope: (
+                self.gateway_registry.snapshot_presence(
+                    presence_id=scope.presence_id or "",
+                    platform=scope.platform,
+                    external_account_id=scope.bot_user_id,
+                ).health.value
+                == "connected"
+            ),
+            model_executor=self.models,
             runtime_config=self.runtime_config,
             memory_admin=self.memory_admin,
             memory_rebuild=self.memory_rebuild_service,

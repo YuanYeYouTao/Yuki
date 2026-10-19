@@ -116,11 +116,17 @@ item 回执都已收尾，run 才能进入 completed。
 /ai memory rebuild purge <run_id>
 ```
 
-示例：只规划某个 QQ 的历史入站消息，不会调用模型：
+示例：只规划某个人物的历史入站消息，不会调用模型：
 
 ```text
-/ai memory rebuild plan {"sender_user_ids":["123456789"],"third_party_mode":"disabled"}
+/ai memory rebuild plan {"person_ids":["72f050da-6580-42ec-a067-bf8b742418eb"],"third_party_mode":"disabled"}
 ```
+
+身份筛选只接受内部 `person_ids`、`presence_ids`、`space_ids`、`conversation_ids`。
+人物筛选覆盖当前合并家族，Presence、Space 和 Conversation 沿原事件资料匹配。
+`event_ids` 可指定精确的内部事件集合：省略时不附加此项筛选，空数组明确匹配空集。
+旧请求的账号筛选在一次离线升级时按原快照固化为事件集合，原选择正文和 hash 留作只读证据；
+运行时不再接收裸平台账号过滤或解析旧选择格式。
 
 只有 completed/cancelled/failed run 可 purge。purge 只删除 staging；已提交事实、证据和事件
 receipt 保留。cancel 只停止后续处理，不回滚已提交事实。

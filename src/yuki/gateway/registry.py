@@ -226,6 +226,22 @@ class GatewayConnectionRegistry:
                 raise RegistryClosed("disconnected")
             return ConnectionResolution(snapshot=self._snapshot(live), bot=live.bot)
 
+    def unbind_presence(self, presence_id: str) -> None:
+        """End an assignment pin while retaining its physical connections."""
+        with self._lock:
+            for connection_id in self._by_presence.pop(presence_id, ()):
+                live = self._by_id.get(connection_id)
+                if live is None or live.presence_id != presence_id:
+                    continue
+                live.presence_id = None
+                account = _account_key(live.platform, live.external_account_id)
+                if self._account_presence.get(account) == presence_id:
+                    self._account_presence.pop(account)
+            for account in tuple(self._account_presence):
+                if self._account_presence[account] == presence_id:
+                    self._account_presence.pop(account)
+            self._pins.pop(presence_id, None)
+
     def resolve_active(self, presence_id: str) -> ConnectionResolution:
         """Exactly one determined active connection for a Presence, or fail-closed."""
 
@@ -255,8 +271,6 @@ class GatewayConnectionRegistry:
         account = _account_key(platform, external_account_id)
         with self._lock:
             ids = self._live_ids_for_presence(presence_id.strip())
-            if not ids:
-                ids = self._live_ids_for_account(account)
             live_count = len(ids)
             if live_count == 0:
                 return PresenceConnectionSnapshot(

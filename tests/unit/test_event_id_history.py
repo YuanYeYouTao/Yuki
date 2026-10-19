@@ -5,10 +5,11 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
+from tests.support.canonical_identity import ensure_person, ensure_presence
+from tests.support.event_seed import seed_event
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.identity.canonical_repository import ensure_person, ensure_presence
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repositories import EventLedgerRepository
@@ -24,7 +25,8 @@ async def test_history_around_keeps_original_event_across_presence_switch(
         await ensure_presence(session, "8000")
         await ensure_presence(session, "8001")
     ledger = EventLedgerRepository(database)
-    old, _ = await ledger.append(
+    old, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10001",
@@ -32,7 +34,8 @@ async def test_history_around_keeps_original_event_across_presence_switch(
         platform_message_id="same-platform-id",
         content="old Presence",
     )
-    await ledger.append(
+    await seed_event(
+        ledger,
         bot_user_id="8001",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10001",
@@ -40,7 +43,8 @@ async def test_history_around_keeps_original_event_across_presence_switch(
         platform_message_id="new-message",
         content="new Presence",
     )
-    collision, _ = await ledger.append(
+    collision, _ = await seed_event(
+        ledger,
         bot_user_id="8001",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10002",
@@ -92,7 +96,8 @@ async def test_history_around_keeps_one_snapshot_and_rejects_duplicate_center(
     ledger = EventLedgerRepository(database)
     events = []
     for index in range(3):
-        row, _ = await ledger.append(
+        row, _ = await seed_event(
+            ledger,
             bot_user_id="8000",
             scope_type=ScopeType.PRIVATE,
             sender_user_id="10001",
@@ -129,7 +134,8 @@ async def test_history_around_keeps_one_snapshot_and_rejects_duplicate_center(
     assert [row.id for row in earlier] == [events[0].id]
     assert [row.id for row in later] == [events[2].id]
     assert (await ledger.list_scope_around(scope, event_id=center.id, before=1, after=1))[0] is None
-    duplicate, _ = await ledger.append(
+    duplicate, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="10001",

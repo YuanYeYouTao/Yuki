@@ -27,9 +27,7 @@ from yuki.plugin_host.notification_manifest import (
     canonical_json,
     canonical_occurred_at,
     is_sha256_digest,
-    legacy_media_part_key,
     media_part_key,
-    parse_media_part_key,
 )
 from yuki.plugin_host.notification_repository import PluginNotificationRepository
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
@@ -217,6 +215,25 @@ async def _media_parts(database: Database) -> list[tuple[str, str | None]]:
         ]
 
 
+async def _prepare_text_delivery(repository):
+    from yuki.gateway.social import TransportMessage, transport_payload
+
+    for pending in await repository.unprepared_outbox():
+        await repository.prepare_outbox(
+            pending,
+            (
+                {
+                    "message": transport_payload(TransportMessage(pending.text)),
+                    "route": {
+                        "platform": "qq",
+                        "presence_id": pending.canonical_presence_id,
+                        "conversation_id": pending.canonical_conversation_id,
+                    },
+                },
+            ),
+        )
+
+
 async def _count(database: Database, model: type[Any]) -> int:
     async with database.sessions() as session:
         return int(await session.scalar(select(func.count()).select_from(model)) or 0)
@@ -336,7 +353,7 @@ async def test_missing_children_are_not_backfilled_on_retry(database: Database) 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("child_kind", ("text", "media", "job"))
-async def test_deleted_requested_child_conflicts_without_backfill(
+async def test_original_manifest_survives_deleted_child_without_backfill(
     database: Database,
     child_kind: str,
 ) -> None:
@@ -357,15 +374,14 @@ async def test_deleted_requested_child_conflicts_without_backfill(
         assert child is not None
         await session.delete(child)
     before = await _state(database)
-    with pytest.raises(CanonicalIdentityError) as exc:
-        await repository.publish(plugin_id=_PLUGIN_ID, request=request)
-    assert exc.value.category == "receipt_conflict"
+    replay = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+    assert replay.deduplicated and not replay.delivery_enqueued and not replay.agent_turn_enqueued
     assert await _state(database) == before
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("child_kind", ("text", "media", "job"))
-async def test_child_target_provenance_mismatch_fails_closed(
+async def test_original_manifest_ignores_mutable_child_target(
     database: Database,
     child_kind: str,
 ) -> None:
@@ -386,9 +402,8 @@ async def test_child_target_provenance_mismatch_fails_closed(
         assert child is not None
         child.target_id = "corrupted-target"
     before = await _state(database)
-    with pytest.raises(CanonicalIdentityError) as exc:
-        await repository.publish(plugin_id=_PLUGIN_ID, request=request)
-    assert exc.value.category == "receipt_conflict"
+    replay = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+    assert replay.deduplicated and not replay.delivery_enqueued and not replay.agent_turn_enqueued
     assert await _state(database) == before
 
 
@@ -440,7 +455,7 @@ async def test_original_publication_receipt_ignores_media_expiry(database, legac
                     PluginNotificationOutboxModel.part_type == "media"
                 )
             )
-            part.part_key = legacy_media_part_key(index=0, handle_id="original-expiring")
+            part.part_key = "media:0:original-expiring"
     before = await _state(database)
     replay = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
     assert replay.deduplicated and replay.source_event_id == first.source_event_id
@@ -491,7 +506,7 @@ async def test_original_receipt_survives_actual_media_lifecycle_cleanup(
         )
         part.status = status
         if legacy:
-            part.part_key = legacy_media_part_key(index=0, handle_id=handle.handle_id)
+            part.part_key = f"media:0:{handle.handle_id}"
     assert await asyncio.to_thread(path.is_file)
     pending = status in {"pending", "processing"}
     assert await store.cleanup() == (0 if pending else 1)
@@ -666,7 +681,7 @@ async def test_legacy_handle_key_is_accepted_only_when_artifact_sha_matches(
             )
         )
         assert row is not None
-        row.part_key = legacy_media_part_key(index=0, handle_id="legacy-handle")
+        row.part_key = "media:0:legacy-handle"
     before = await _state(database)
     same_handle = await repository.publish(
         plugin_id=_PLUGIN_ID,
@@ -688,7 +703,7 @@ async def test_legacy_handle_key_is_accepted_only_when_artifact_sha_matches(
     assert exc.value.category == "receipt_conflict"
     assert await _state(database) == before
     parts = await _media_parts(database)
-    assert parts == [(legacy_media_part_key(index=0, handle_id="legacy-handle"), "legacy-handle")]
+    assert parts == [("media:0:legacy-handle", "legacy-handle")]
 
 
 @pytest.mark.asyncio
@@ -712,9 +727,7 @@ def test_canonical_json_and_utc_tokens_are_stable() -> None:
     assert canonical_occurred_at(offset) == canonical_occurred_at(_NOW)
     key = media_part_key(index=0, sha256=digest)
     assert key == f"media:0:{digest}"
-    assert parse_media_part_key(key) == (0, digest)
     assert is_sha256_digest(digest)
-    assert parse_media_part_key(legacy_media_part_key(index=0, handle_id="h1")) == (0, "h1")
 
 
 def test_canonical_json_rejects_non_finite_numbers() -> None:
@@ -776,7 +789,7 @@ async def test_equivalent_utc_occurred_at_deduplicates(database: Database) -> No
 
 
 @pytest.mark.asyncio
-async def test_legacy_key_without_artifact_proof_fails_closed(database: Database) -> None:
+async def test_original_manifest_does_not_require_outbox_artifact_proof(database: Database) -> None:
     repository = await _install(database)
     digest = _sha(b"legacy-bytes")
     await _add_artifact(database, handle_id="legacy-handle", digest=digest)
@@ -792,24 +805,25 @@ async def test_legacy_key_without_artifact_proof_fails_closed(database: Database
             )
         )
         assert row is not None
-        row.part_key = legacy_media_part_key(index=0, handle_id="legacy-handle")
+        row.part_key = "media:0:legacy-handle"
         artifact = await session.get(PluginMediaArtifactModel, "legacy-handle")
         assert artifact is not None
         await session.delete(artifact)
     before = await _state(database)
-    with pytest.raises(CanonicalIdentityError) as exc:
-        await repository.publish(
-            plugin_id=_PLUGIN_ID,
-            request=_request(media_handles=("alias-handle",)),
-        )
-    assert exc.value.category == "receipt_conflict"
+    replay = await repository.publish(
+        plugin_id=_PLUGIN_ID,
+        request=_request(media_handles=("alias-handle",)),
+    )
+    assert replay.deduplicated
     assert await _state(database) == before
     parts = await _media_parts(database)
     assert len(parts) == 1
 
 
 @pytest.mark.asyncio
-async def test_legacy_key_must_match_the_outbox_media_handle(database: Database) -> None:
+async def test_original_manifest_is_independent_of_mutable_outbox_handle(
+    database: Database,
+) -> None:
     repository = await _install(database)
     digest = _sha(b"legacy-bytes")
     await _add_artifact(database, handle_id="legacy-handle", digest=digest)
@@ -823,12 +837,11 @@ async def test_legacy_key_must_match_the_outbox_media_handle(database: Database)
             )
         )
         assert row is not None
-        row.part_key = legacy_media_part_key(index=0, handle_id="legacy-handle")
+        row.part_key = "media:0:legacy-handle"
         row.media_handle_id = "other-handle"
     before = await _state(database)
-    with pytest.raises(CanonicalIdentityError) as exc:
-        await repository.publish(plugin_id=_PLUGIN_ID, request=request)
-    assert exc.value.category == "receipt_conflict"
+    replay = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+    assert replay.deduplicated
     assert await _state(database) == before
 
 
@@ -860,7 +873,7 @@ async def test_unique_event_key_is_unchanged(database: Database) -> None:
         request=_request(event_key="other-key"),
     )
     event_ids, _parts, _intents = await _state(database)
-    assert PLUGIN_API_VERSION == "5.0"
+    assert PLUGIN_API_VERSION == "6.0"
     assert second.deduplicated is True
     assert second.source_event_id == first.source_event_id
     assert other_target.source_event_id != first.source_event_id
@@ -909,6 +922,7 @@ async def test_expired_send_is_quarantined_and_late_original_receipt_is_retained
     await repository.publish(
         plugin_id=_PLUGIN_ID, request=_request(ask_agent=False, agent_intent="")
     )
+    await _prepare_text_delivery(repository)
     claimed = await repository.claim_outbox()
     assert claimed is not None
     async with database.immediate_session() as session:
@@ -963,6 +977,7 @@ async def test_only_proven_presend_failures_can_retry(database: Database) -> Non
     await repository.publish(
         plugin_id=_PLUGIN_ID, request=_request(ask_agent=False, agent_intent="")
     )
+    await _prepare_text_delivery(repository)
     claimed = await repository.claim_outbox()
     assert claimed is not None
     assert not await repository.retry_outbox(
@@ -992,6 +1007,12 @@ async def test_original_raw_target_publication_returns_same_receipt_after_canoni
         stored = await session.get(ChatEventModel, receipt.source_event_id)
         stored.external_target_id = "1001"
         stored.platform_message_id = "external-" + original_id
+        import json
+
+        segments = json.loads(stored.segments_json)
+        data = next(part["data"] for part in segments if part["type"] == "yuki_context")
+        data["notification_id"] = original_id
+        stored.segments_json = json.dumps(segments)
         for model in (PluginNotificationOutboxModel, PluginBackgroundTurnJobModel):
             rows = await session.scalars(select(model).where(model.source_event_id == stored.id))
             for row in rows:

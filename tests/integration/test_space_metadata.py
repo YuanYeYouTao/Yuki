@@ -43,8 +43,10 @@ async def existing_group(database, *, platform="qq", group_id="40001", account="
 async def protected_rows(database):
     names = (
         "persons",
-        "identity_bindings",
+        "accounts",
+        "account_assignments",
         "canonical_conversations",
+        "ordinary_turn_admissions",
         "chat_events",
         "runtime_work",
         "model_invocations",

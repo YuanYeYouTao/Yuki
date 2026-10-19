@@ -1,9 +1,9 @@
 """Entrance histories resolve their binding even when legacy aliases collide."""
 
 from datetime import UTC, datetime
-from uuid import uuid4
 
 from sqlalchemy import select
+from tests.support.event_seed import seed_scoped_event
 
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -15,10 +15,12 @@ from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
 from yuki.identity.canonical_repository import (
     create_presence,
+    ensure_account,
     find_identity_binding,
     find_presence,
+    replace_assignment,
 )
-from yuki.identity.db_models import IdentityBindingModel
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -43,20 +45,20 @@ async def entries(database):
                 )
             else:
                 presence = primary_presence
-            binding = IdentityBindingModel(
-                id=str(uuid4()),
-                person_id=primary.person_id,
+            account_row = await ensure_account(
+                session,
+                account,
                 platform=platform,
-                external_account_id=account,
                 display_name="same name",
-                status="active",
-                revision=1,
-                first_seen_at=now,
-                last_seen_at=now,
-                created_at=now,
-                updated_at=now,
+                now=now,
             )
-            session.add(binding)
+            binding = await replace_assignment(
+                session,
+                account_row,
+                None,
+                await session.get(CanonicalPersonModel, primary.person_id),
+                now=now,
+            )
             bindings.append(binding.id)
             scopes.append(
                 ConversationScope.private(bot, account, platform=platform, presence_id=presence.id)
@@ -70,7 +72,8 @@ async def test_four_bindings_keep_identity_but_separate_prompts_and_generation(d
     repository = ConversationScopeRepository(database)
     events = []
     for index, scope in enumerate(scopes):
-        event = await writer.append(
+        event = await seed_scoped_event(
+            writer,
             scope=scope,
             platform_message_id=f"in-{index}",
             sender_user_id=scope.private_peer_user_id,
@@ -109,7 +112,8 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
     _, _, scopes = await entries(database)
     first, second = scopes[:2]
     writer = ScopedEventLedgerUnitOfWork(database)
-    original = await writer.append(
+    original = await seed_scoped_event(
+        writer,
         scope=first,
         platform_message_id="old",
         sender_user_id="1001",
@@ -129,7 +133,8 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
     expected = []
     for index in range(3):
         for direction in ("inbound", "outbound"):
-            event = await writer.append(
+            event = await seed_scoped_event(
+                writer,
                 scope=second,
                 platform_message_id=f"new-{index}-{direction}",
                 sender_user_id="second-qq" if direction == "inbound" else "8000",
@@ -173,7 +178,8 @@ async def test_person_erasure_removes_all_private_binding_conversations(database
     writer = ScopedEventLedgerUnitOfWork(database)
     ids = []
     for index, scope in enumerate(scopes):
-        event = await writer.append(
+        event = await seed_scoped_event(
+            writer,
             scope=scope,
             platform_message_id=f"erase-{index}",
             direction="inbound",

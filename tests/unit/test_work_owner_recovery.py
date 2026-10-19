@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select, update
 from tests.conftest import MemorySender, make_settings
+from tests.support.event_seed import seed_event
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
@@ -686,30 +687,17 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
     assert parent["state"] == "completed" and child["state"] == "queued"
     assert child["source_json"] == parent["source_json"]
     if promoted:
-        from uuid import uuid4
-
         from yuki.automation.authority import PermissionLevel
         from yuki.automation.control_context import resolve_execution_identity
-        from yuki.identity.db_models import IdentityBindingModel
+        from yuki.identity.canonical_repository import ensure_account, replace_assignment
 
         await case.env.router.cas_takeover_person(case.env.person)
         now = case.clock.now()
         async with database.immediate_session() as writer:
             person = await writer.get(CanonicalPersonModel, case.env.person)
             person.is_superuser = True
-            writer.add(
-                IdentityBindingModel(
-                    id=str(uuid4()),
-                    person_id=case.env.person,
-                    platform="qq",
-                    external_account_id="9001",
-                    status="active",
-                    first_seen_at=now,
-                    last_seen_at=now,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
+            account = await ensure_account(writer, "9001", platform="qq", now=now)
+            await replace_assignment(writer, account, None, person, now=now)
         async with database.sessions() as reader:
             actor, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
         assert actor == "" and permission is PermissionLevel.SUPERUSER
@@ -744,7 +732,8 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         if not observed:
             observed = True
             assert current_work_control.get() is None
-            await case.chat._ledger.append(
+            await seed_event(
+                case.chat._ledger,
                 bot_user_id="80001",
                 platform_message_id="derived-automation-observation",
                 scope_type=ScopeType.GROUP,

@@ -10,6 +10,7 @@ from yuki.admin.operations.models import ModelOperations
 from yuki.admin.operations.plugins import PluginOperations
 from yuki.admin.operations.work import WorkOperations
 from yuki.client_api.identity import ClientIdentityService
+from yuki.identity.routing import PresenceRouter
 from yuki.persistence.database import Database
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.persistence.repositories import GroupSettingsRepository
@@ -27,11 +28,12 @@ class AdminOperations:
         people: PeopleRepository,
         config: RuntimeConfigService,
         groups: GroupSettingsRepository,
+        router: PresenceRouter,
     ) -> None:
         self.executor = CommandExecutor(database)
         self.config = ConfigOperations(self.executor, config)
         self.group = GroupOperations(self.executor, groups)
-        self.identity = IdentityOperations(self.executor, identities, people)
+        self.identity = IdentityOperations(self.executor, identities, people, router=router)
         self.plugin = PluginOperations(self.executor, plugins)
         self.model = ModelOperations(self.executor, files)
         self.work = WorkOperations(self.executor)

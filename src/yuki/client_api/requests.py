@@ -13,11 +13,13 @@ from yuki.client_api.db_models import ClientDeviceModel
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal, fingerprint
 from yuki.conversation.canonical_db_models import (
-    CanonicalEventReceiptModel,
+    CanonicalConversationModel,
     ControlCommandReceiptModel,
 )
-from yuki.identity.db_models import PresenceModel
+from yuki.domain.conversations import ConversationScope
+from yuki.identity.db_models import IdentityBindingModel, PresenceModel
 from yuki.identity.person_identity import person_family_condition, same_person_id
+from yuki.identity.receipt_compat import transport_receipt
 from yuki.persistence.models import ChatEventModel
 
 if TYPE_CHECKING:
@@ -70,18 +72,26 @@ class ClientRequests:
     async def message(
         self, session: AsyncSession, principal: ClientPrincipal, request_id: str
     ) -> ChatEventModel | None:
-        presence = await session.scalar(
-            select(PresenceModel.id).where(
-                PresenceModel.platform == principal.platform,
-                PresenceModel.external_account_id == f"yuki-{principal.platform}",
-            )
+        conversation = await session.get(CanonicalConversationModel, principal.conversation_id)
+        if conversation is None:
+            return None
+        presence = await session.get(PresenceModel, conversation.entry_presence_id)
+        binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+        assert presence is not None and binding is not None
+        scope = ConversationScope.private(
+            presence.external_account_id,
+            binding.external_account_id,
+            platform=presence.platform,
+            presence_id=presence.id,
+            conversation_id=conversation.id,
+            thread_id=conversation.thread_id,
         )
-        receipt = await session.scalar(
-            select(CanonicalEventReceiptModel).where(
-                CanonicalEventReceiptModel.ingress_presence_id == presence,
-                CanonicalEventReceiptModel.event_type == f"message:{principal.platform}",
-                CanonicalEventReceiptModel.platform_message_id == principal.message_key(request_id),
-            )
+        receipt = await transport_receipt(
+            session,
+            presence_id=presence.id,
+            scope=scope,
+            event_type=f"message:{principal.platform}",
+            platform_message_id=principal.message_key(request_id),
         )
         if receipt is None:
             return None

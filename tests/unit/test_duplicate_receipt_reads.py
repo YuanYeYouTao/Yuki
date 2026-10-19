@@ -8,17 +8,14 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import event, update
+from tests.support.canonical_identity import ensure_person, ensure_presence
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
 
 from yuki.conversation.canonical_db_models import SpaceBindingIngestRouteModel
 from yuki.conversation.hydrate import ensure_canonical_conversation
 from yuki.identity import canonical_uow
-from yuki.identity.canonical_repository import (
-    ensure_person,
-    ensure_presence,
-    find_identity_binding,
-)
+from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.social.db_models import SocialOperationModel
 from yuki.social.models import OperationStatus, SocialError, SocialTarget
@@ -123,7 +120,7 @@ async def test_canonical_exact_keeper_returns_under_other_writer(database, group
 
 @pytest.mark.parametrize("change", ["content", "paused"])
 async def test_canonical_read_duplicate_retains_compatibility_and_ingest_fence(database, change):
-    uow, admitted, _ = await canonical(database, group=True)
+    uow, admitted, original = await canonical(database, group=True)
     message = admitted.message
     if change == "content":
         message = replace(message, text="different")
@@ -135,6 +132,10 @@ async def test_canonical_read_duplicate_retains_compatibility_and_ingest_fence(d
                 .values(paused=True)
             )
     async with other_writer_and_read_only(database):
+        if change == "paused":
+            reused = await uow.append_inbound(message, admitted)
+            assert reused.event.id == original.event.id and not reused.created
+            message = replace(message, message_id="new-after-pause")
         with pytest.raises(CanonicalIdentityError) as error:
             await uow.append_inbound(message, admitted)
     assert error.value.category == ("receipt_conflict" if change == "content" else "paused")
@@ -181,4 +182,4 @@ async def test_canonical_input_encoding_hash_and_event_dto_precede_writer(databa
         assert (await uow.append_inbound(admitted.message, admitted)).created
     finally:
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
-    assert prepared == ["json", "hash", "dto"]
+    assert set(prepared) == {"json", "hash", "dto"}

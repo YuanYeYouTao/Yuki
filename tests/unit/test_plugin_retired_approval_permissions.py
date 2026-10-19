@@ -75,7 +75,7 @@ def test_old_api_or_retired_permission_is_rejected_during_discovery(tmp_path, ch
     manifest = root / "plugin.toml"
     text = manifest.read_text()
     if change == "old_api":
-        text = text.replace('plugin_api = "5.0"', 'plugin_api = "3.4"')
+        text = text.replace('plugin_api = "6.0"', 'plugin_api = "3.4"')
     else:
         permission = "runtime.config.read" if change == "retired_read" else "runtime.config.write"
         text = text.replace('permissions = ["tool.register"]', f'permissions = ["{permission}"]')

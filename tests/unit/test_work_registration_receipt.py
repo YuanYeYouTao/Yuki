@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.sql.dml import Insert
 from tests.support.agent_backend import StubAgentBackend
+from tests.support.event_seed import seed_scoped_event
 from tests.support.work_runner_helpers import case, run, tool
 from tests.unit.test_subagent_lifecycle import worker_case
 
@@ -78,7 +79,8 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
     assert await probe.control.session.journal.effect_state(original_key) == "accepted"
     source = dict(probe.control.source)
     if new_trigger:
-        await probe.env.service.writer.append(
+        await seed_scoped_event(
+            probe.env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
             platform_message_id="later-input",
             sender_user_id="10001",

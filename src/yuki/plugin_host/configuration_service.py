@@ -14,16 +14,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.persistence.database import Database
-from yuki.persistence.unit_of_work import next_updated_at, state_revision
+from yuki.persistence.unit_of_work import next_updated_at
 from yuki.plugin_host.db_models import PluginConfigValueModel, PluginInstallationModel
 from yuki.plugin_host.ownership import (
     PluginOwnershipError,
-    require_config_readable,
-    require_live_person,
-    require_live_space,
+    resolve_config_owners,
 )
-
-MAX_BYTES = 256 * 1024
 
 
 class PluginConfigurationError(ValueError):
@@ -33,10 +29,7 @@ class PluginConfigurationError(ValueError):
 
 
 def _json(value: Any) -> str:
-    encoded = json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True)
-    if len(encoded.encode("utf-8")) > MAX_BYTES:
-        raise PluginConfigurationError("validation_error")
-    return encoded
+    return json.dumps(value, ensure_ascii=False, allow_nan=False, sort_keys=True)
 
 
 def _plain(value: Any) -> Any:
@@ -76,10 +69,12 @@ class PluginConfigurationService:
         if installation is None:
             raise PluginConfigurationError("not_found")
         try:
-            if scope_type == "user":
-                owner_id = await require_live_person(session, owner_id)
-            elif scope_type == "group":
-                await require_live_space(session, owner_id)
+            person_id, space_id = await resolve_config_owners(
+                session, scope_type=scope_type, scope_id=owner_id or ""
+            )
+            owner_id = (
+                person_id if scope_type == "user" else space_id if scope_type == "group" else None
+            )
             stmt = select(PluginConfigValueModel).where(
                 PluginConfigValueModel.plugin_id == plugin_id,
                 PluginConfigValueModel.scope_type == scope_type,
@@ -88,20 +83,11 @@ class PluginConfigurationService:
                 stmt = stmt.where(PluginConfigValueModel.canonical_person_id == owner_id)
             elif scope_type == "group":
                 stmt = stmt.where(PluginConfigValueModel.canonical_space_id == owner_id)
-            rows = list(
-                (await session.scalars(stmt.order_by(PluginConfigValueModel.key).limit(257))).all()
-            )
-            if (
-                len(rows) > 256
-                or sum(len(row.value_json.encode("utf-8")) for row in rows) > MAX_BYTES
-            ):
-                raise PluginConfigurationError("state_mismatch")
-            for row in rows:
-                await require_config_readable(session, row)
+            rows = list((await session.scalars(stmt.order_by(PluginConfigValueModel.key))).all())
         except PluginOwnershipError as exc:
             raise PluginConfigurationError("state_mismatch") from exc
         return (
-            self._revision(plugin_id, scope_type, owner_id, installation, rows),
+            self._revision(plugin_id, scope_type, installation, rows),
             rows,
             installation,
             owner_id,
@@ -111,23 +97,15 @@ class PluginConfigurationService:
     def _revision(
         plugin_id: str,
         scope_type: str,
-        owner_id: str | None,
         installation: PluginInstallationModel,
         rows: list[PluginConfigValueModel],
     ) -> int:
         material = [
             plugin_id,
             scope_type,
-            owner_id,
             installation.manifest_hash,
-            state_revision(installation.updated_at),
-            [
-                (row.id, row.key, row.version, row.value_json)
-                for row in sorted(rows, key=lambda row: row.key)
-            ],
+            [(row.id, row.key, row.version) for row in sorted(rows, key=lambda row: row.key)],
         ]
-        # Values are bounded separately. Hash framing must not halve their byte
-        # budget by JSON-escaping the already serialized original row values.
         encoded = json.dumps(material, ensure_ascii=False, allow_nan=False, sort_keys=True)
         revision = int(hashlib.sha256(encoded.encode()).hexdigest()[:13], 16) + 1
         return revision
@@ -137,8 +115,6 @@ class PluginConfigurationService:
             raise PluginConfigurationError("validation_error")
         schema = self._schema(plugin_id)
         if schema is None:
-            raise PluginConfigurationError("operation_unavailable")
-        if len(schema.model_fields) > 256:
             raise PluginConfigurationError("operation_unavailable")
         return schema
 
@@ -196,9 +172,9 @@ class PluginConfigurationService:
             _json(values)
         except (TypeError, ValueError, ValidationError) as exc:
             raise PluginConfigurationError("validation_error") from exc
-        async with self._database.sessions() as session, session.begin():
-            await session.execute(text("BEGIN IMMEDIATE"))
-            revision, rows, installation, owner_id = await self._read(
+
+        async def write(session: AsyncSession) -> int:
+            revision, rows, installation, current_owner_id = await self._read(
                 session, plugin_id, scope_type, owner_id
             )
             if revision != expected_revision or self._schema(plugin_id) is not schema:
@@ -217,8 +193,8 @@ class PluginConfigurationService:
                         value_json=content,
                         version=1,
                         updated_at=now,
-                        canonical_person_id=owner_id if scope_type == "user" else None,
-                        canonical_space_id=owner_id if scope_type == "group" else None,
+                        canonical_person_id=current_owner_id if scope_type == "user" else None,
+                        canonical_space_id=current_owner_id if scope_type == "group" else None,
                     )
                     session.add(row)
                 else:
@@ -229,4 +205,6 @@ class PluginConfigurationService:
             for key in existing.keys() - serialized.keys():
                 await session.delete(existing[key])
             await session.flush()
-            return self._revision(plugin_id, scope_type, owner_id, installation, saved_rows)
+            return self._revision(plugin_id, scope_type, installation, saved_rows)
+
+        return await self._database.apply_snapshot_write(write)

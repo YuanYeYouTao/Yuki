@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text
 from tests.conftest import make_settings
+from tests.support.canonical_identity import ensure_person
 from tests.unit.test_runtime_config_read_snapshot import _override, _owners
 
 from yuki.admin.config_service import RuntimeConfigService
@@ -16,16 +17,22 @@ from yuki.conversation.canonical_db_models import PersonActiveRouteModel
 from yuki.domain.memory_config import MemoryConfigScope
 from yuki.identity.canonical_repository import (
     create_person_binding,
-    ensure_person,
     find_identity_binding,
     find_presence,
+    replace_assignment,
 )
-from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
+from yuki.identity.db_models import (
+    AccountModel,
+    CanonicalPersonModel,
+    IdentityBindingModel,
+    PresenceModel,
+)
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.event_author import project_event_author
 from yuki.identity.person_identity import (
     current_person_id,
     merge_persons,
+    person_enabled_condition,
     person_family_ids,
     rename_person,
 )
@@ -37,7 +44,6 @@ from yuki.identity.person_state import (
 )
 from yuki.persistence.models import AdminOperationEventModel, RuntimeConfigOverrideModel
 from yuki.persistence.people_repository import PeopleRepository
-from yuki.services.canonical_owners import require_live_person
 
 NOW = datetime(2026, 10, 17, tzinfo=UTC)
 
@@ -158,7 +164,15 @@ async def test_configuration_target_wins_unique_moves_and_unset_never_falls_back
                 RuntimeConfigOverrideModel.config_key == "context.compact_trigger_tokens",
             )
         )
-        assert json.loads(original.value_json) == 70000
+        assert original is None
+        audit = await session.scalar(
+            select(AdminOperationEventModel).where(
+                AdminOperationEventModel.operation == "identity.person.merge"
+            )
+        )
+        discarded = json.loads(audit.before_json)["discarded_configurations"]
+        assert len(discarded) == 1
+        assert json.loads(discarded[0]["row"]["value_json"]) == 70000
 
 
 @pytest.mark.parametrize("old_format", [False, True])
@@ -244,7 +258,16 @@ async def test_route_trigger_accepts_root_to_original_binding_and_keeps_target_r
     await merge(database, a, b)
     async with database.immediate_session() as session:
         route = await session.get(PersonActiveRouteModel, b)
-        assert route.identity_binding_id == bindings[a]
+        assert route is None  # Pure identity merge has no real connection candidates.
+        route = PersonActiveRouteModel(
+            person_id=b,
+            identity_binding_id=bindings[a],
+            presence_id=presence,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+        session.add(route)
+        await session.flush()  # Original Binding is a valid current same-human route.
         route.revision += 1  # Real UPDATE trigger also accepts source-owned binding.
         route.identity_binding_id = bindings[b]
     c = str(uuid4())
@@ -267,13 +290,28 @@ async def test_profile_observation_of_retired_presence_requires_and_uses_person_
         await people.observe(user_id="8001", nickname="Ordinary account")
     assert error.value.category == "unclassified"
     async with database.immediate_session() as session:
-        person_id = await ensure_person(session, "8001", now=NOW)
+        with pytest.raises(CanonicalIdentityError, match="canonical identity invariant failed"):
+            await ensure_person(session, "8001", now=NOW)
+        presence = await session.get(PresenceModel, presence_id)
+        person = CanonicalPersonModel(
+            id=str(uuid4()), display_name="", created_at=NOW, updated_at=NOW
+        )
+        session.add(person)
+        replacement = await replace_assignment(
+            session, presence.account, presence.id, person, now=NOW
+        )
+        person_id, replacement_id = person.id, replacement.id
     await people.observe(user_id="8001", nickname="Ordinary account", expected_person_id=person_id)
     profile = await people.get(person_id=person_id)
     assert profile is not None and profile.nickname == "Ordinary account"
     async with database.sessions() as session:
         presence = await session.get(PresenceModel, presence_id)
-        assert presence is not None and presence.external_account_id == "8001"
+        assert (
+            presence is not None
+            and presence.external_account_id == "8001"
+            and presence.status == "ended"
+        )
+        assert (await session.get(IdentityBindingModel, replacement_id)).person_id == person_id
 
 
 async def test_initial_name_is_person_owned_and_rename_survives_platform_observation(database):
@@ -295,13 +333,14 @@ async def test_initial_name_is_person_owned_and_rename_survives_platform_observa
                 now=NOW,
             )
         assert (await session.get(CanonicalPersonModel, person)).display_name == "First"
+        account_id = binding.account_id
         await rename_person(session, person, "Chosen", now=NOW)
         binding.status = "disabled"
     async with database.sessions() as session:
         assert await load_canonical_profile(session, person_id=person) == ("Chosen", "")
-        assert {"First", "Platform rename"} <= set(
-            await load_canonical_aliases(session, person, limit=20)
-        )
+        assert (await session.get(AccountModel, account_id)).display_name == "Platform rename"
+        aliases = set(await load_canonical_aliases(session, person, limit=20))
+        assert "First" in aliases and "Platform rename" not in aliases
 
 
 async def test_disable_source_does_not_revoke_target_but_disable_root_blocks_every_entry(database):
@@ -310,16 +349,12 @@ async def test_disable_source_does_not_revoke_target_but_disable_root_blocks_eve
         await set_canonical_person_enabled(session, a, False, now=NOW)
     await merge(database, a, b)
     async with database.sessions() as session:
-        with pytest.raises(CanonicalIdentityError) as error:
-            await require_live_person(session, a)
-        assert error.value.category == "canonical_owner_disabled"
-        assert await require_live_person(session, b) == b
+        assert not await session.scalar(select(person_enabled_condition(a)))
+        assert await session.scalar(select(person_enabled_condition(b)))
     async with database.immediate_session() as session:
         await set_canonical_person_enabled(session, b, False, now=NOW)
     async with database.sessions() as session:
-        with pytest.raises(CanonicalIdentityError) as error:
-            await require_live_person(session, b)
-        assert error.value.category == "canonical_owner_disabled"
+        assert not await session.scalar(select(person_enabled_condition(b)))
 
 
 async def test_root_disable_rejects_original_actor_but_keeps_person_qualification(database):

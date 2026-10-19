@@ -12,6 +12,8 @@ Provider 提供真实连接资料、入站投影和 `PlatformSocialOperations`�
 
 已由原 Conversation/Presence 或明确主动路由选定的群发送不再预先查询 Bot 自身成员状态；成员查询不能证明实际可发言。Social 复用本次准备的目标和路由，短 writer 核验真实 Binding、Presence、连接与原 claim，平台网络在 writer 外执行，ACK 后原子保存出站事件与成功回执。多候选发现仍按真实成员资料消歧，实际发送失败或结果未知不换账号补发。分条继续按原配置间隔顺序派发；读取 sequence 回执批量获取原操作和账本，保留来源、隐私及部分成功事实。
 
+已确认发送的作者直接认原发送 Presence。账号在网络请求期间退役、换人或重新登记为 Yuki，均不改变原 ACK 的作者；重复原回执沿已入账事件读取，不重新推断或修写旧作者。SDK 原生私聊扩展在发送准备时保留原 Binding，确认后不再按账号查今日人物。原生入站只走 CanonicalIngress，读取账本的 Repository 不再提供按 QQ 号码写入的旧接口。
+
 Provider 的 `media(handle)` 从该原生连接提供媒体适配器。附件工具按所选原事件的 `ingress_presence_id` 取原接收连接，不读取工具上下文的当前网关，也不按平台账号数字补归属。已有缓存、公共 URL 和内联资料不要求原连接在线；只有解析原生文件引用才取得原 Presence 的连接，不把旧 file_id 交给另一 Bot。App 上传沿已保存缓存读取，没有远端文件查询能力时返回真实不可用。
 
 新增平台至少覆盖原生入站、接纳后确认、重复/编辑、连接启停、媒体、实际发送/撤回和失败事实。没有某项原生能力时，按真实不可用处理，不伪造 OneBot action 或成功结果。默认模型工具合同固定，目录查询不改变声明，权限在实际执行时核验。
@@ -20,7 +22,7 @@ Provider 的 `media(handle)` 从该原生连接提供媒体适配器。附件工
 
 业务参数使用内部 Person、Space、Presence、Binding、Conversation、事件与执行 ID。平台账号和消息定位保留在原生传输及历史 provenance。平台数字相同不证明同一人物或授权；只有真正关联的 Person 共享人物事实。
 
-发送提及先按人物引用解析 Person，再选择目标平台的 Binding。显式 Binding 指定此次使用的账号；未指定时，引用携带的来源账号连同其平台保留，只用于同平台账号消歧。跨平台不比较来源与目标的裸账号值；目标平台有多个绑定时沿显式 Binding 选择，原事件和历史提及不随此次发送改写。
+发送正文直接在原位置写 `@名字`，共同准备按目标入口的 Account 昵称与 Account＋SpaceBinding 名片解析。目录提供可复制的 `@{account:UUID}` 用于同名消歧；未知账号或外部 Bot 无需 Person 也能原生提及。不按人物主名选同人的另一个账号，不在入站时把普通 `@文字` 伪造成原生提及。原事件、重复位置与冻结历史不随此次发送改写。
 
 私聊以 Binding＋Presence 区分 Conversation；群以 SpaceBinding＋topic 区分 Conversation。同群切换接纳 Presence 不拆群身份。个人客户端同入口的多个设备共享会话。人物关联不合并不同入口的聊天历史。
 
@@ -94,7 +96,7 @@ TG 与 QQ 使用同一份平台 Main 工具合同，默认 direct 为 29 项；�
 
 迁移顺序为 `0122` 会话入口、`0123` Memory 操作身份、`0124` 通知 Conversation、`0126` 监控目标、`0127` Rebuild 原 canonical 目标与 `0128` 通知原媒体 handle。保留既有库、挂载和配置，运行真实随包迁移；不能 `stamp` 跳过，也不能覆盖旧库来回退代码。
 
-当前 Plugin API 为 **5.0**，Main 合同为 **24**，Code API 仍为 `yuki.codemode.api.v2`。插件的 Person/Space 参数使用内部 ID，通知可明确原 Conversation；同名参数旧的裸平台号语义不能静默沿用，身份升级见 [API 4.0 迁移](../plugin-development/api-4.0-migration.md)，旧表情 facade 退役见 [API 5.0 迁移](../plugin-development/api-5.0-migration.md)。旧 frozen 请求、checkpoint、通知 source、outbox 和回执不改写成新调用。
+当前 Plugin API 为 **6.0**，Main 合同随固定声明生成新 revision，Code API 仍为 `yuki.codemode.api.v2`。插件的 Person/Space 参数使用内部 ID，通知可明确原 Conversation；同名参数旧的裸平台号语义不能静默沿用，身份升级见 [API 4.0 迁移](../plugin-development/api-4.0-migration.md)，旧表情 facade 退役见 [API 5.0 迁移](../plugin-development/api-5.0-migration.md)。本次提及快照见 [API 6.0 迁移](../plugin-development/api-6.0-migration.md)。旧 frozen 请求、checkpoint、通知 source、outbox 和回执不改写成新调用。迁移 0141 一次替换双归属表，保原 UUID 和原 Work；使用退役工具合同的私有链只读封存，在现有新链边界以当前合同继续，不保旧执行器。
 
 监控旧状态只按真实历史 grant 迁移。来源未知、存在歧义或目标合并冲突时，完整保留源 JSON 并报告具体升级问题，不能创建空状态覆盖它，也不能用今天的同数字账号猜 owner。监控迁移保原游标、源指纹、正文、notification/source_event ID、状态和已接受投递，不能重新抓取或重发代替恢复。
 

@@ -8,12 +8,14 @@ from tests.integration.test_telegram_ingress_content import _service_update
 from tests.integration.test_telegram_runtime import drain, update
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 
+from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
 from yuki.identity.canonical_repository import (
     create_space_binding,
     find_identity_binding,
     find_space_binding,
 )
 from yuki.identity.db_models import (
+    AccountNameObservationModel,
     CanonicalPersonModel,
     CanonicalSpaceModel,
 )
@@ -26,6 +28,16 @@ async def test_new_group_message_updates_native_names_in_its_original_admission(
     env = telegram_env
     await env.gateway.receive(update(chat=-10042, text="!ai first"))
     await drain(env)
+    async with database.sessions() as session:
+        first = await session.scalar(
+            select(ChatEventModel).where(ChatEventModel.direction == "inbound")
+        )
+        original = first.id, first.canonical_event_id, first.author_person_id, first.sender_nickname
+        receipt_id = await session.scalar(
+            select(CanonicalEventReceiptModel.id).where(
+                CanonicalEventReceiptModel.canonical_event_id == first.canonical_event_id
+            )
+        )
     incoming = update(2, chat=-10042, text="!ai next")
     incoming["message"]["chat"]["title"] = "New group"
     incoming["message"]["from"]["first_name"] = "New nickname"
@@ -50,6 +62,20 @@ async def test_new_group_message_updates_native_names_in_its_original_admission(
         assert space.name == binding.display_name == "New group"
         assert person.display_name == "P" and account.display_name == "New nickname"
         assert [row.sender_nickname for row in events] == ["P", "New nickname"]
+        assert (
+            events[0].id,
+            events[0].canonical_event_id,
+            events[0].author_person_id,
+            events[0].sender_nickname,
+        ) == original
+        assert (
+            await session.scalar(
+                select(CanonicalEventReceiptModel.id).where(
+                    CanonicalEventReceiptModel.canonical_event_id == events[0].canonical_event_id
+                )
+            )
+            == receipt_id
+        )
         assert events[0].author_person_id == events[1].author_person_id
         assert await session.get(MembershipModel, (person.id, space.id)) is not None
         aliases = set(
@@ -59,7 +85,17 @@ async def test_new_group_message_updates_native_names_in_its_original_admission(
                 )
             )
         )
-        assert {"P", "New nickname"} <= aliases
+        assert not {"P", "New nickname"} & aliases
+        names = set(
+            await session.scalars(
+                select(AccountNameObservationModel.name).where(
+                    AccountNameObservationModel.account_id == account.account_id,
+                    AccountNameObservationModel.assignment_id == account.id,
+                    AccountNameObservationModel.space_binding_id.is_(None),
+                )
+            )
+        )
+        assert {"P", "New nickname"} <= names
     assert {method for method, _ in env.wire} <= {
         "getMe",
         "getChatMember",

@@ -7,9 +7,9 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import delete, event, func, select, update
 from sqlalchemy.exc import IntegrityError
+from tests.support.canonical_identity import ensure_person
 from tests.unit.test_memory_dream import _empty_dream_statistics, _fact_with_evidence, _services
 
-from yuki.identity.canonical_repository import ensure_person
 from yuki.memory.dream.db_models import (
     MemoryDreamClusterModel,
     MemoryDreamOperationModel,

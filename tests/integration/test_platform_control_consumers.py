@@ -1,5 +1,7 @@
 """Native control commands and admitted consumers share canonical identity."""
 
+from datetime import UTC
+from math import ceil
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -153,8 +155,16 @@ async def test_same_person_across_platform_bindings_shares_chat_bucket(telegram_
     env.harness.processor._client_links = ClientLinkCommands(service, env.gateway.registry)
     await env.gateway.receive(update(text=f"/ai link {issued['code']}"))
     await drain(env)
+    async with database.sessions() as reader:
+        telegram = await find_identity_binding(reader, "42", platform="telegram")
+        assert telegram.person_id == qq.person_id
+        started_at = telegram.started_at.replace(tzinfo=UTC)
     before = len(env.model.requests)
-    await env.gateway.receive(update(2, text="same person on TG"))
+    current = update(2, text="same person on TG")
+    # This message belongs to the newly linked stage, after the binding command;
+    # the shared Telegram fixture otherwise carries a historical source date.
+    current["message"]["date"] = ceil(started_at.timestamp())
+    await env.gateway.receive(current)
     await drain(env)
     assert len(env.model.requests) == before
     sends = [params for action, params in env.wire if action == "sendMessage"]

@@ -7,16 +7,18 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import delete, select, update
 from sqlalchemy import event as sql_event
+from tests.support.canonical_identity import ensure_space
+from tests.support.event_seed import seed_event
 from tests.support.semantic_participation_host_helpers import _event_and_route
 
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
-from yuki.conversation.projection_revision_schema import EVENT_METADATA_COLUMNS_0082
+from yuki.conversation.projection_chunks_schema import EVENT_METADATA_COLUMNS_CURRENT
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatImage, ChatMessage
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
-from yuki.identity.canonical_repository import ensure_space
+from yuki.identity.canonical_repository import ensure_account
 from yuki.persistence.event_repository import ConversationReadVersion, EventLedgerRepository
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_repository import WorkConflict, WorkRepository
@@ -187,7 +189,7 @@ async def test_metadata_trigger_closure_and_noop_preserve_revision(database):
         "canonical_conversation_id",
         "audio_transcript",
     }
-    assert columns == set(EVENT_METADATA_COLUMNS_0082) | content_columns
+    assert columns == set(EVENT_METADATA_COLUMNS_CURRENT) | content_columns
     source = await _event_and_route(database, EventLedgerRepository(database))
     async with database.sessions() as session:
         before = await session.scalar(
@@ -208,6 +210,37 @@ async def test_metadata_trigger_closure_and_noop_preserve_revision(database):
             )
         )
     assert before == after
+
+
+async def test_account_author_only_change_invalidates_original_work_source(database):
+    ledger = EventLedgerRepository(database)
+    source = await _event_and_route(database, ledger)
+    now = datetime.now(UTC)
+    async with database.immediate_session() as writer:
+        first = await ensure_account(writer, "unresolved-first", platform="qq", now=now)
+        second = await ensure_account(writer, "unresolved-second", platform="qq", now=now)
+        await writer.flush()
+        await writer.execute(
+            update(ChatEventModel)
+            .where(ChatEventModel.id == source.id)
+            .values(
+                author_kind="account",
+                author_person_id=None,
+                author_presence_id=None,
+                author_account_id=first.id,
+            )
+        )
+        second_id = second.id
+    original = await ledger.get_event(source.id)
+    guard, control = await _guard(database, original)
+    assert await guard.check(control)
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(ChatEventModel)
+            .where(ChatEventModel.id == source.id)
+            .values(author_account_id=second_id)
+        )
+    assert not await guard.check(control)
 
 
 async def test_unchanged_guard_reuses_sources_but_restoration_reproves_original_rows(database):
@@ -355,7 +388,8 @@ async def test_shared_attachment_pixels_do_not_import_other_conversation_history
     output = io.BytesIO()
     Image.new("RGB", (8, 8), "green").save(output, "PNG")
     ledger = EventLedgerRepository(database)
-    old_image, _ = await ledger.append(
+    old_image, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="shared-pixels",
         scope_type=ScopeType.GROUP,

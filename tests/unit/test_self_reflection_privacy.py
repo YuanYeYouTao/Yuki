@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import TypeAdapter
 from sqlalchemy import delete, select
+from tests.support.event_seed import seed_event
 from tests.unit.test_memory_candidate_privacy import _candidate, _values
 from tests.unit.test_memory_v2 import _append_event
 
@@ -90,7 +91,8 @@ async def test_forget_clears_only_related_group_checkpoint_and_preserves_paid_fa
     if copy_kind in {"event", "event_expired"}:
         raw["event_map"]["event_1"] = TypeAdapter(EventRecord).dump_python(erased, mode="json")
     elif copy_kind == "event_edited":
-        mention, _ = await ledger.append(
+        mention, _ = await seed_event(
+            ledger,
             bot_user_id="8000",
             platform_message_id="original-mention",
             scope_type=ScopeType.GROUP,

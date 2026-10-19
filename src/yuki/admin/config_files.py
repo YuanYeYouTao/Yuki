@@ -56,6 +56,14 @@ def _revision(content: bytes | None) -> int:
     return 0 if content is None else int(hashlib.sha256(content).hexdigest()[:13], 16) + 1
 
 
+def _bundle_revision(content: bytes | None, secrets: bytes | None) -> int:
+    if content is None and secrets is None:
+        return 0
+    return _revision(
+        hashlib.sha256(content or b"").digest() + hashlib.sha256(secrets or b"").digest()
+    )
+
+
 def _read(path: Path) -> bytes | None:
     try:
         before = path.lstat()
@@ -121,6 +129,10 @@ class ConfigFileService:
         )
 
     async def read(self) -> dict[str, Any]:
+        async with self._lock:
+            return await self._read_snapshot()
+
+    async def _read_snapshot(self) -> dict[str, Any]:
         path = self._settings.model_profiles_file.absolute()
         content = await asyncio.to_thread(_read, path)
         result: dict[str, Any] = {
@@ -135,7 +147,8 @@ class ConfigFileService:
         try:
             text = "" if content is None else content.decode("utf-8")
             result["search_backend"] = self._settings.web_search_backend
-            _secret_bytes, saved_keys = await asyncio.to_thread(read_model_secrets, path)
+            secret_bytes, saved_keys = await asyncio.to_thread(read_model_secrets, path)
+            result["revision"] = _bundle_revision(content, secret_bytes)
             # Headers are kept server-side even for content-authorized readers.
             raw: dict[str, Any] = (
                 tomllib.loads(text) if text else {"schema_version": 3, "profiles": {}, "routes": {}}
@@ -221,7 +234,13 @@ class ConfigFileService:
         async with self._lock:
             path = self._settings.model_profiles_file.absolute()
             original = await asyncio.to_thread(_read, path)
-            if _revision(original) != expected_revision:
+            try:
+                previous_secret_bytes, saved_keys = await asyncio.to_thread(
+                    read_model_secrets, path
+                )
+            except ValueError as exc:
+                raise ConfigFileError("validation_error") from exc
+            if _bundle_revision(original, previous_secret_bytes) != expected_revision:
                 raise ConfigFileError("version_conflict")
             secret_write: tuple[Path, bytes | None, bytes] | None = None
             pending_catalog: ModelProfileCatalog | None = None
@@ -242,9 +261,6 @@ class ConfigFileService:
                 updates = spec.get("api_keys", {})
                 if not isinstance(updates, Mapping):
                     raise ValueError("invalid key updates")
-                previous_secret_bytes, saved_keys = await asyncio.to_thread(
-                    read_model_secrets, path
-                )
                 for name, value in updates.items():
                     if (
                         type(name) is not str
@@ -326,7 +342,12 @@ class ConfigFileService:
             async def persist_and_activate() -> int:
                 try:
                     revision = await asyncio.to_thread(
-                        self._replace_model_bundle, path, original, content, secret_write
+                        self._replace_model_bundle,
+                        path,
+                        original,
+                        content,
+                        secret_write,
+                        previous_secret_bytes,
                     )
                     if pending_catalog is not None and pending_pool is not None:
                         assert self._model_executor is not None
@@ -386,11 +407,15 @@ class ConfigFileService:
         original: bytes | None,
         content: bytes,
         secret_write: tuple[Path, bytes | None, bytes] | None,
+        original_secrets: bytes | None,
     ) -> int:
+        if read_model_secrets(path)[0] != original_secrets:
+            raise ConfigFileError("version_conflict")
         if secret_write is not None:
             secret_path, previous, replacement = secret_write
             self._replace(secret_path, previous, replacement)
-        return self._replace(path, original, content)
+        self._replace(path, original, content)
+        return _bundle_revision(content, secret_write[2] if secret_write else original_secrets)
 
     def _restore_model_bundle(
         self,

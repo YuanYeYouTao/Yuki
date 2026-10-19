@@ -9,6 +9,7 @@ import httpx
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+from tests.support.event_seed import seed_scoped_event
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
@@ -210,7 +211,7 @@ async def test_native_group_enable_recovers_disabled_group_without_chat_or_model
 
 
 async def test_group_recovery_uses_platform_person_and_current_superuser(telegram_env, database):
-    from yuki.identity.canonical_repository import ensure_person
+    from tests.support.canonical_identity import ensure_person
 
     env = telegram_env
     await env.gateway.receive(update(text="establish sender"))
@@ -314,8 +315,9 @@ async def test_topics_keep_original_reply_destination_and_one_space(telegram_env
 async def test_forget_qq_same_number_preserves_telegram_conversation_and_work(
     telegram_env, database
 ):
+    from tests.support.canonical_identity import ensure_person, ensure_presence
+
     from yuki.domain.conversations import ConversationScope
-    from yuki.identity.canonical_repository import ensure_person, ensure_presence
     from yuki.persistence.people_repository import PeopleRepository
     from yuki.runtime.work_repository import WorkRepository
 
@@ -337,7 +339,8 @@ async def test_forget_qq_same_number_preserves_telegram_conversation_and_work(
     async with database.immediate_session() as session:
         qq_person = await ensure_person(session, "42")
         await ensure_presence(session, "80001")
-    await env.harness.scoped_events.append(
+    await seed_scoped_event(
+        env.harness.scoped_events,
         scope=ConversationScope.private("80001", "42"),
         platform_message_id="qq-original",
         sender_user_id="42",

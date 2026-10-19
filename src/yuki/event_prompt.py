@@ -436,7 +436,6 @@ class ChatEventPromptRenderer:
             current_event_id,
             current_content,
             yuki_account_ids=self._yuki_account_ids,
-            projected_content=self._mention_content(row),
         )
         if not content:
             return ""
@@ -463,7 +462,6 @@ class ChatEventPromptRenderer:
             current_event_id,
             current_content,
             yuki_account_ids=self._yuki_account_ids,
-            projected_content=self._mention_content(row),
         )
         if not content:
             return ""
@@ -498,28 +496,6 @@ class ChatEventPromptRenderer:
             envelope = proactive_label
         return f"{envelope}\n{'|'.join(fields)}>{content}"
 
-    def _mention_content(self, row: EventRecord) -> str | None:
-        # New events already carry immutable @name snapshots. Old QQ events
-        # expose real AT spans through their adapter reader, leaving literal
-        # markers, quoted material and later ASR/visual summaries untouched.
-        content = row.projected_content
-        if content is None or not row.projected_mentions:
-            return content
-        parts: list[str] = []
-        cursor = 0
-        for mention in row.projected_mentions:
-            label = (
-                "全体成员"
-                if mention.kind == "all"
-                else sanitize_display_name(mention.display_name)
-                or self._legacy_identity_label(mention.target_user_id or "", row)
-            )
-            parts.append(content[cursor : mention.text_start])
-            parts.append(f"@{label}" if row.platform else f"[提及{label}]")
-            cursor = mention.text_end
-        parts.append(content[cursor:])
-        return "".join(parts)
-
     @staticmethod
     def event_content(
         row: EventRecord,
@@ -527,7 +503,6 @@ class ChatEventPromptRenderer:
         current_content: str,
         *,
         yuki_account_ids: frozenset[str] = frozenset(),
-        projected_content: str | None = None,
     ) -> str:
         """Return clean visible event content without internal transport markers."""
 
@@ -567,10 +542,7 @@ class ChatEventPromptRenderer:
             and "发送了一条语音，声线：" in row.content
         ):
             return marked("")
-        projected = row.projected_content if projected_content is None else projected_content
-        base = _LEGACY_HISTORY_PREFIX.sub(
-            "", projected if projected is not None else row.content, count=1
-        )
+        base = _LEGACY_HISTORY_PREFIX.sub("", row.content, count=1)
         base = strip_internal_history_markers(base).strip()
         if row.direction == "outbound" and _MEDIA_DESCRIPTION.fullmatch(base):
             return marked("")
@@ -622,41 +594,16 @@ class ChatEventPromptRenderer:
             for segment in row.segments
             if segment.get("type") == "mention" and isinstance(data := segment.get("data"), dict)
         )
-        person_ids = row.mentioned_person_ids or tuple(
-            str(data["person_id"]) for data in snapshots if data.get("person_id")
-        )
-        if person_ids:
-            names = {
-                str(data["person_id"]): sanitize_display_name(str(data.get("display_name") or ""))
-                for data in snapshots
-                if data.get("person_id")
-            }
-            labels = [
-                f"{names[person_id]}/person:{person_id}"
-                if names.get(person_id)
-                else f"person:{person_id}"
-                for person_id in dict.fromkeys(person_ids)
-            ]
-            labels.extend(
-                f"{sanitize_display_name(str(data.get('display_name') or 'Yuki'))}"
-                + (f"/presence:{data['presence_id']}" if data.get("presence_id") else "")
-                for data in snapshots
-                if data.get("kind") == "yuki"
+        labels = []
+        for data in snapshots:
+            name = sanitize_display_name(
+                str(
+                    data.get("display_name")
+                    or ("全体成员" if data.get("kind") == "all" else "未识别成员")
+                )
             )
-        elif snapshots:
-            labels = [
-                sanitize_display_name(str(data.get("display_name") or "全体成员"))
-                + (f"/presence:{data['presence_id']}" if data.get("presence_id") else "")
-                for data in snapshots
-                if data.get("display_name") or data.get("kind") == "all"
-            ]
-        elif row.projected_mentions:
-            labels = [
-                self._legacy_identity_label(user_id, row)
-                for user_id in dict.fromkeys(row.mentioned_user_ids)
-            ]
-        else:
-            labels = []
+            account = data.get("account_id")
+            labels.append(f"{name}/@{{account:{account}}}" if account else name)
         return f"提及:{','.join(labels)}" if labels else ""
 
     @staticmethod
@@ -665,25 +612,17 @@ class ChatEventPromptRenderer:
             return f"person:{row.author_person_id}"
         if row.author_presence_id:
             return f"presence:{row.author_presence_id}"
+        if row.author_account_id:
+            return f"account:{row.author_account_id}"
         return row.author_kind or "unknown"
 
     def _sender_identity(self, row: EventRecord) -> tuple[str, ...]:
-        if row.author_person_id or row.author_presence_id:
+        if row.author_person_id or row.author_presence_id or row.author_account_id:
             return (self._principal_ref(row),)
         return (row.author_kind or "unknown", row.platform, row.sender_user_id)
 
     def _row_identity_label(self, row: EventRecord) -> str:
         return f"{self._row_display_name(row)}/{self._principal_ref(row)}"
-
-    def _legacy_identity_label(self, user_id: str, row: EventRecord) -> str:
-        """Old raw mentions retain a display label, never canonical ownership."""
-
-        previous = self._references.previous(user_id, row)
-        if previous is not None:
-            return self._row_display_name(previous)
-        if user_id == row.bot_user_id or (not row.platform and user_id in self._yuki_account_ids):
-            return self._bot_display_name
-        return "未识别成员"
 
     def _row_display_name(self, row: EventRecord) -> str:
         return (

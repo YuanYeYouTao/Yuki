@@ -8,19 +8,19 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel, ConfigDict
 from tests.conftest import make_settings
+from tests.support.canonical_identity import ensure_person
+from tests.support.client_identity import client_identity_service
 from tests.unit.test_memory_mutation import _context, _event, _service
 
 from yuki.admin.audit import AdminAuditService
 from yuki.admin.control_resolution import ControlAccess
 from yuki.admin.models import AdminActor
-from yuki.client_api.identity import ClientIdentityService
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.identity.authority import person_is_superuser
 from yuki.identity.bootstrap import bootstrap_settings_identity
 from yuki.identity.canonical_repository import (
     create_person_binding,
-    ensure_person,
     find_identity_binding,
     forget_person_by_id,
 )
@@ -90,7 +90,7 @@ async def test_transfer_and_binding_disable_never_move_qualification(database):
         )
         other = foreign.person_id
     assert not await qualified(database, other)
-    service = ClientIdentityService(database)
+    service = client_identity_service(database)
     async with database.immediate_session() as session:
         original_binding = await find_identity_binding(session, "9000")
         original_binding.status = "disabled"
@@ -328,7 +328,7 @@ async def test_queued_privileged_plugin_rechecks_person_after_scope_wait(databas
         plugin_id="authority.plugin",
         name="Authority",
         version="1.0",
-        plugin_api="5.0",
+        plugin_api="6.0",
         yuki_requires=">=3.8",
         manifest_hash="a" * 64,
         entrypoint="plugin:Plugin",

@@ -7,14 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import select
-from tests.unit.test_migration_0126 import (
-    NOW,
-)
-from tests.unit.test_migration_0126 import (
-    test_monitor_upgrade_parses_new_models_and_replays_original_publication as seed_upgrade,
-)
+from tests.unit.test_migration_0126 import NOW, _modules, _old_materials, seed_original
 
+from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
 from yuki.plugin_host import notification_repository as publication
 from yuki.plugin_host.db_models import (
@@ -27,9 +25,24 @@ from yuki.plugin_host.notification_repository import PluginNotificationRepositor
 
 @pytest.mark.parametrize("activation", [False, True])
 async def test_migrated_attempting_delivery_reads_original_receipt_after_expiry(
-    database, monkeypatch, activation
+    tmp_path, monkeypatch, activation
 ):
-    await seed_upgrade(database, monkeypatch)
+    modules = _modules(monkeypatch)
+    path = tmp_path / "original-notification.db"
+
+    def upgrade():
+        seed_original(path, monkeypatch, _old_materials(modules))
+        command.upgrade(Config("alembic.ini"), "head")
+
+    await asyncio.to_thread(upgrade)
+    database = Database(f"sqlite+aiosqlite:///{path}")
+    try:
+        await replay_expired(database, monkeypatch, activation)
+    finally:
+        await database.close()
+
+
+async def replay_expired(database, monkeypatch, activation):
     model = importlib.import_module("github_monitor.models")
     polling = importlib.import_module("github_monitor.polling")
     state = importlib.import_module("github_monitor.state")
