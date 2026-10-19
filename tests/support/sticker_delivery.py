@@ -69,7 +69,7 @@ class StickerLibrary:
         self.selected_platforms = []
         self.publish_calls = 0
 
-    async def select(self, goal, emotion="", reply_text="", *, platform):
+    async def select(self, goal, emotion="", *, platform):
         self.select_calls += 1
         self.selected_platforms.append(platform)
         self.entered.set()

@@ -104,7 +104,7 @@ Provider 响应继续受实际读取字节预算和完整性检查约束；保�
 
 平台明确标记的表情从本次共享原件直接收藏到持久环境的 `/workspace/stickers/<platform>/files/`，不再次下载；QQ 只有编号的内置 face 保留文字语义。原生贴纸标记和实际 MIME/动画格式分开保存，Telegram WEBP/TGS/WEBM 原件不以静态图片解码成功作为收藏条件。普通图片可通过现有保存桥显式放入对应平台目录，原目的路径不被静默改写。平台目录是编目用途，原事件/人物来源独立保留，不按账号或群再拆库。旧 collector、worker、候选池、采用/作用域、容量替换、冷却、拼图和专属插件 facade 已退役。
 
-原图与 `stickers/<platform>/index/<asset-id>.json` 是唯一图库资料源，短 tags 与长 description/OCR 分开。Main 与 Qwen 自由编辑相同文件；Yuki 主业务库不保存资产、标签、来源或倒排资料。每平台 `search.sqlite3` 是可删除重建的派生缓存。独立 helper 在原持久环境运行，Main 可直接 update/rebuild/search；Manager 调同一实现，Host 不直接连接用户可编辑路径的 SQLite。任意终端编辑后新标签在 update/rebuild 完成后可搜；命中项重读当前 JSON 和原件，不全库扫描、不从缓存回写旧资料。冷构建不冒充无候选，也不阻塞正文。
+原图与 `stickers/<platform>/index/<asset-id>.json` 是唯一图库资料源，短 tags 与长 description/OCR 分开。Main 与 Qwen 自由编辑相同文件；Yuki 主业务库不保存资产、标签、来源或倒排资料。每平台 `search.sqlite3` 是可删除重建的派生缓存。独立 helper 在原持久环境运行，Main 可直接 update/rebuild/search；Manager 调同一实现，Host 不直接连接用户可编辑路径的 SQLite。任意终端编辑后新标签在 update/rebuild 完成后可搜；命中项重读当前 JSON 和原件，不全库扫描、不从缓存回写旧资料。冷构建不冒充无候选，也不阻塞正文。自动选图只使用明确的 goal/emotion，中文连续段与其他语言词、原生 emoji 分别取词，不把混合标签中的英文拆成单字；分词格式变化沿派生缓存版本重建，原图与 JSON 不变。
 
 Main 主动收藏聊天图片时，直接沿 `save_conversation_attachment_to_workspace` 把原件存入 `stickers/<platform>/files/<filename>`，不必为了保存再先看图。已有工作区图片也可用普通 `cp` 放进去。随后在自己的终端增量编目这一张：
 
@@ -126,6 +126,8 @@ python /opt/yuki-runtime/sticker_index.py --workspace /workspace search --platfo
 首次完整 JSON 原子创建的赢家可沿现有明确 Vision 配置后台补一次描述；没有配置、解码失败、请求失败或关闭不阻止收藏，不隐式重试 HTTP。合法大尺寸原件保存和最小编目不依赖像素解码成功。普通文件保存没有图库后置 hook，Main 自行用终端编目。共享复制前只读核原事件/附件/segments，接纳后普通完成或遗忘不回滚共享原件；不另建来源表或接纳状态。原件访问已按用户要求统一共享，各 Conversation 的文本历史与人物归属仍按原合同。
 
 `send_message.emoji` 表示可选配图意图。图文先完成原正文发送，再持久接纳配图输入并返回；选图、publish 和图片发送由后台完成，Main 不等待。纯配图返回接纳事实，不能冒充已投递。图片沿原 Social 服务使用独立稳定派生键与不可变 artifact，发送结果只认原 Social 回执，不追加进已开始的正文分段计划。普通 Main/Work 完成不撤销已接纳配图，真实取消、换代和撤权在原 claim 边界处理；已 claim 中断保留未知，不自动重发。公共图片记录仅有表情标记和短 tags，长描述不进入公共历史或自动摘要。恢复与 Work 效果查询复用原 Social 实际分步回执，父 PREPARED 不否认已成功子项；已派发或未知不因图库或 Manager 失效而重发。纯图提及/引用交给原图片计划，有正文时仅正文提醒一次。
+
+普通聊天的图文与纯配图都不要求先登记 Work。工具结果采集中的空 Work ID 只表示没有任务，不参与任务取消检查或 Work 效果绑定；配图仍保存原 Social 意图与发送回执。存在真实 Work 时保留原任务身份、效果归属及实际取消事实。
 
 明确指定的 artifact 图片和普通文件保持原同步发送语义。QQ 小表情沿 OneBot 原生 `image.data.sub_type=1`，普通图片不附此字段。Telegram 原生贴纸使用 `sendSticker`，GIF 配图使用动画发送，明确的 GIF 文件仍使用 `sendDocument`；无原生跨端转换的格式按实际传输结果报告，不伪造静态替代图。
 
