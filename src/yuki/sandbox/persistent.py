@@ -28,6 +28,7 @@ from yuki.sandbox.acp_manager import ACP_KINDS, ACPResources
 from yuki.sandbox.acp_peer import read_protocol_line
 from yuki.sandbox.completions import CompletionOutbox
 from yuki.sandbox.computer_control import ComputerControl
+from yuki.sandbox.computer_runtime import ComputerRuntime
 from yuki.sandbox.environment_tools import EXECUTION_TOOLS
 from yuki.sandbox.execd import Execd
 from yuki.sandbox.manager import TERMINAL, identifier
@@ -83,6 +84,8 @@ class PersistentManager:
         self.files = FileWorkspace(self.home / "workspace")
         self.media_cache = FileWorkspace(media_cache.resolve()) if media_cache is not None else None
         self.media_cache_shared = False
+        self.applied_limits: dict[str, int | float] | None = None
+        self.environment_manifest: dict[str, Any] | None = None
         self.runtime_root = self.root / "environment-jobs"
         self.runtime_root.mkdir(mode=0o755, exist_ok=True)
         self.runtime_root.chmod(0o755)
@@ -113,6 +116,13 @@ class PersistentManager:
         self.last_layer_check = 0.0
         self.acp = ACPResources(self, acp_config)
         self.computer = ComputerControl(self)
+        self.desktop = ComputerRuntime(self)
+        if "start_key" not in {
+            row[1] for row in self.db.execute("PRAGMA table_info(environment_services)")
+        }:
+            self.db.execute("ALTER TABLE environment_services ADD COLUMN start_key TEXT")
+            self.db.commit()
+        self.service_lock = asyncio.Lock()
 
     async def command(self, *args: str, deadline_seconds: float = 30) -> tuple[int, bytes]:
         proc = await asyncio.create_subprocess_exec(
@@ -211,9 +221,12 @@ class PersistentManager:
 
     def resource_limits(self) -> dict[str, int | float]:
         limits = {
-            "memory_mib": int(self.setting("resource_memory_mib", "512")),
-            "cpus": float(self.setting("resource_cpus", "1")),
+            "memory_mib": int(self.setting("resource_memory_mib", "3072")),
+            "cpus": float(self.setting("resource_cpus", "2")),
             "cpu_shares": int(self.setting("resource_cpu_shares", "1024")),
+            "swap_mib": int(self.setting("resource_swap_mib", "512")),
+            "pids": int(self.setting("resource_pids", "2048")),
+            "tmp_mib": int(self.setting("resource_tmp_mib", "512")),
         }
         return limits
 
@@ -299,6 +312,12 @@ class PersistentManager:
             and self.db.execute("SELECT 1 FROM environment_jobs WHERE id=?", (identity,)).fetchone()
         ):
             result.update(self.output(identity))
+            try:
+                label = json.loads(self.read_state_file(identity, "step-label.json"))
+                if label.get("step_label") in {"browser", "computer"}:
+                    result["step_label"] = label["step_label"]
+            except (OSError, ValueError, WorkspaceError):
+                pass
         return result
 
     def finish(self, identity: str, state: str, result: dict[str, Any]) -> bool:
@@ -384,13 +403,13 @@ class PersistentManager:
                 "--memory",
                 f"{limits['memory_mib']}m",
                 "--memory-swap",
-                f"{limits['memory_mib'] + 128}m",
+                f"{limits['memory_mib'] + limits['swap_mib']}m",
                 "--cpus",
                 str(limits["cpus"]),
                 "--cpu-shares",
                 str(limits["cpu_shares"]),
                 "--pids-limit",
-                "128",
+                str(limits["pids"]),
                 "--restart",
                 "no",
                 "--security-opt",
@@ -403,7 +422,7 @@ class PersistentManager:
                 "--log-opt",
                 "max-file=2",
                 "--tmpfs",
-                "/tmp:rw,nosuid,nodev,size=128m,mode=1777",
+                f"/tmp:rw,nosuid,nodev,size={limits['tmp_mib']}m,mode=1777",
                 "--mount",
                 f"type=bind,src={self.home},dst=/home/yuki",
                 "--mount",
@@ -417,6 +436,16 @@ class PersistentManager:
                 "--env",
                 f"EXECD_ACCESS_TOKEN={token}",
             ]
+            for source, target in (
+                ("yuki_computer.py", "yuki_computer.py"),
+                ("desktop_service.py", "desktop_service.py"),
+            ):
+                args.extend(
+                    (
+                        "--mount",
+                        f"type=bind,src={Path(__file__).with_name(source).resolve()},dst=/opt/yuki-runtime/{target},readonly",
+                    )
+                )
             if self.resolv_conf is not None:
                 args.extend(("--mount", f"type=bind,src={self.resolv_conf},dst=/etc/resolv.conf"))
             if self.media_cache is not None:
@@ -439,6 +468,17 @@ class PersistentManager:
                 raise RuntimeError("environment_create_failed")
             current = await self.inspect_container()
         assert current is not None
+        host = current.get("HostConfig")
+        if host is not None:
+            memory = host.get("Memory", 0)
+            swap = host.get("MemorySwap", 0)
+            self.applied_limits = {
+                "memory_mib": memory // (1024 * 1024),
+                "cpus": host.get("NanoCpus", 0) / 1_000_000_000,
+                "swap_mib": (swap - memory) // (1024 * 1024) if swap > 0 else swap,
+                "pids": host.get("PidsLimit", 0),
+                "cpu_shares": host.get("CpuShares", 0),
+            }
         self.media_cache_shared = self.media_cache is not None and any(
             mount.get("Destination") == "/home/yuki/inputs/media-cache"
             and mount.get("Source") == str(self.media_cache.root)
@@ -492,6 +532,11 @@ class PersistentManager:
             else:
                 await self.reconcile(row)
         self.computer.deliver_results()
+        if not self.testing:
+            code, manifest = await self.command(
+                "docker", "exec", self.name, "cat", "/opt/yuki-runtime/manifest.json"
+            )
+            self.environment_manifest = json.loads(manifest) if not code else None
         self.ready = True
 
     def active(self) -> list[Any]:
@@ -527,6 +572,12 @@ class PersistentManager:
                 key: record[key] for key in ("exit_code", "error", "finished_at") if key in record
             }
             result.update(self.output(identity))
+            try:
+                label = json.loads(self.read_state_file(identity, "step-label.json"))
+                if label.get("step_label") in {"browser", "computer"}:
+                    result["step_label"] = label["step_label"]
+            except (OSError, ValueError, WorkspaceError):
+                pass
             self.finish(identity, record["status"], result)
             connection = self.connections.pop(identity, None)
             if connection:
@@ -1006,11 +1057,10 @@ class PersistentManager:
             "storage": self.disk_status(),
             "checkpoint": self.setting("checkpoint_image", self.image),
             "host_available_bytes": self.available_memory(),
-            "limits": {
-                **self.resource_limits(),
-                "swap_mib": 128,
-                "pids": 128,
-            },
+            "limits": self.applied_limits
+            if self.applied_limits is not None
+            else self.resource_limits(),
+            "manifest": self.environment_manifest,
             "runs": [
                 dict(row)
                 for row in self.db.execute(
@@ -1067,6 +1117,12 @@ class PersistentManager:
                 "run": self.get(row["run_id"]) if row["run_id"] else None,
             }
         if action == "start":
+            if row["run_id"] and not self.get(row["run_id"]).get("pending"):
+                with self.db:
+                    self.db.execute(
+                        "UPDATE environment_services SET run_id=NULL,start_key=NULL WHERE name=?",
+                        (name,),
+                    )
             with self.db:
                 self.db.execute(
                     "UPDATE environment_services SET enabled"
@@ -1080,6 +1136,17 @@ class PersistentManager:
                 self.db.execute("UPDATE environment_services SET enabled=0 WHERE name=?", (name,))
             if row["run_id"]:
                 await self.control(row["run_id"], "cancel")
+            elif row["start_key"]:
+                original = self.db.execute(
+                    "SELECT id FROM jobs WHERE request_id=?", (row["start_key"],)
+                ).fetchone()
+                if original:
+                    await self.control(original["id"], "cancel")
+                    with self.db:
+                        self.db.execute(
+                            "UPDATE environment_services SET run_id=?,start_key=NULL WHERE name=?",
+                            (original["id"], name),
+                        )
             if action == "delete":
                 with self.db:
                     self.db.execute("DELETE FROM environment_services WHERE name=?", (name,))
@@ -1087,6 +1154,10 @@ class PersistentManager:
         raise ValueError("invalid_service_action")
 
     async def restore_services(self) -> None:
+        async with self.service_lock:
+            await self._restore_services()
+
+    async def _restore_services(self) -> None:
         for row in self.db.execute("SELECT * FROM environment_services WHERE enabled=1").fetchall():
             previous = self.get(row["run_id"]) if row["run_id"] else {}
             if previous.get("pending"):
@@ -1099,11 +1170,21 @@ class PersistentManager:
                 or (spec["restart"] == "on-failure" and previous.get("status") == "succeeded")
             ):
                 continue
-            result = await self.submit("service", spec, f"service:{uuid4()}")
+            key = row["start_key"] or f"service:{uuid4()}"
+            if not row["start_key"]:
+                with self.db:
+                    self.db.execute(
+                        "UPDATE environment_services SET start_key=? WHERE name=?",
+                        (key, row["name"]),
+                    )
+            original = self.db.execute("SELECT id FROM jobs WHERE request_id=?", (key,)).fetchone()
+            result = (
+                self.get(original["id"]) if original else await self.submit("service", spec, key)
+            )
             if result.get("run_id"):
                 with self.db:
                     self.db.execute(
-                        "UPDATE environment_services SET run_id=?,at"
+                        "UPDATE environment_services SET run_id=?,start_key=NULL,at"
                         "tempts=attempts+1,next_start=? WHERE name=?",
                         (
                             result["run_id"],
@@ -1117,6 +1198,8 @@ class PersistentManager:
         if not isinstance(method, str) or not isinstance(args, dict):
             return {"error": "invalid_arguments"}
         try:
+            if method in {"display_status", "display_wake", "display_sleep", "tabs_list"}:
+                return await self.desktop.handle(method, args, request.get("request_id", ""))
             if method == "control_get":
                 return self.computer.snapshot()
             if method == "control_set":
@@ -1230,6 +1313,7 @@ class PersistentManager:
                     self.pumps.pop(key, None)
             try:
                 self.computer.collect_requests()
+                await self.desktop.collect_commands()
             except (OSError, ValueError, WorkspaceError):
                 LOGGER.warning("computer_wait_reconcile_pending")
             try:

@@ -128,6 +128,9 @@ def public_step(row: Any, secret: bytes) -> dict[str, Any]:
         if tool == "send_message"
         else ("other", "其他")
     )
+    if tool.startswith("terminal_") and evidence.get("step_label") in {"browser", "computer"}:
+        category = evidence["step_label"]
+        label = "使用瀏覽器" if category == "browser" else "操作電腦"
     artifacts = []
     stack = [receipt.get("result", {}), receipt.get("outcome", {})]
     while stack:

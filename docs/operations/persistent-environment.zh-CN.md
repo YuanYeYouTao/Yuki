@@ -4,7 +4,7 @@
 
 Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人物或群划分，普通持久文件不自动过期。`short_state` 仍是独立、有期限的短提示；目录、文件和完整执行日志不自动载入上下文。Bot 的 `./workspace:/app/workspace` 是 artifact/short_state 库；终端文件在宿主 `/var/lib/yuki-sandbox/home/workspace`，经原家目录挂载显示为环境内 `/workspace`。两者通过显式发布和附件导入衔接。
 
-所有会话的临时媒体共用 `/inputs/media-cache`，它是 Bot 原缓存目录的同一份只读挂载，不在 2 GiB HOME 中再复制一份。Bot 仍是唯一写入和到期清理 owner；媒体到期后由原清理器删除，普通工作文件、已收藏表情和不可变 artifact 不随它清理。Main 可直接用终端读取、复制到 `/workspace` 或表情目录自由编辑，也可用原 `workspace_inspect` / `workspace_publish` 的 `/inputs/media-cache/...` 路径选读或发布；Host 复用原安全 FD 桥，不跟随模型写的链接访问宿主文件。临时媒体的全局共享由用户明确授权，不再声称终端读取受当前 Conversation 限制。
+所有会话的临时媒体共用 `/inputs/media-cache`，它是 Bot 原缓存目录的同一份只读挂载，不在持久 HOME 中再复制一份。Bot 仍是唯一写入和到期清理 owner；媒体到期后由原清理器删除，普通工作文件、已收藏表情和不可变 artifact 不随它清理。Main 可直接用终端读取、复制到 `/workspace` 或表情目录自由编辑，也可用原 `workspace_inspect` / `workspace_publish` 的 `/inputs/media-cache/...` 路径选读或发布；Host 复用原安全 FD 桥，不跟随模型写的链接访问宿主文件。临时媒体的全局共享由用户明确授权，不再声称终端读取受当前 Conversation 限制。
 
 ## 运行时与工具
 
@@ -53,7 +53,7 @@ Manager 在派发前持久化原请求、执行意图和 execd 会话标识。�
 
 容器 ID 与启动时间共同组成环境代际。Bot/Manager 重启保留原容器和进程；实际环境重建后，旧普通任务记录真实中断，登记服务按策略恢复。容器 restart policy 为 `no`，由 Manager 在文件系统挂载后启动。升级 Manager 不会暗中删除或重建原环境。
 
-默认部署保留 2 GiB 家目录 ext4、独立 128 MiB 运行记录 ext4，以及 Docker 的 512 MiB 内存、额外 128 MiB swap、1 CPU、128 进程和有界 `/tmp`。这些是部署资源，不是任务接纳评分。没有主要执行 1 个、PTY 4 个、服务 2 个、低内存 256 MiB、安装增量 1 GiB、队列 4 或未确认完成 512 项门槛。容量、进程和 OOM 结果按真实 OS/Docker 事实返回。每任务保留两个 4 MiB 日志段；回收已完成日志和七天前已确认的运行文件，SQLite 执行与完成回执独立保留。
+新桌面环境默认使用 16 GiB HOME ext4、独立 128 MiB 运行记录 ext4，以及 Docker 的 3072 MiB 内存、额外 512 MiB swap、2 CPU、2048 进程和 512 MiB `/tmp`。Manager 的 `resource_memory_mib`、`resource_swap_mib`、`resource_cpus`、`resource_pids`、`resource_tmp_mib` 可保留部署显式配置；已存在容器不因默认值改变而重建，状态优先返回 inspect 中实际应用的资源。这些是部署资源，不是任务接纳评分。没有主要执行 1 个、PTY 4 个、服务 2 个、低内存 256 MiB、安装增量 1 GiB、队列 4 或未确认完成 512 项门槛。容量、进程和 OOM 结果按真实 OS/Docker 事实返回。每任务保留两个 4 MiB 日志段；回收已完成日志和七天前已确认的运行文件，SQLite 执行与完成回执独立保留。
 
 新环境接入现有 `yuki-sandbox-egress` 公网 Docker bridge。宿主防火墙阻止环境主动访问宿主、私网、链路本地及其他非公网 IPv4 目标；普通公网 TCP/UDP（包括 SSH）不按端口白名单限制。execd 不发布宿主端口，只允许回应宿主已建立的控制连接。环境不挂 Docker socket、Bot 配置/数据库、QQ 凭据或私有 artifact 索引。该 bridge 关闭 IPv6。默认不强制 HTTP 代理，仅运维显式 `--proxy` 配置代理。旧内网 Squid bridge 可为部署过渡保留，新环境不依靠它出公网。
 
@@ -99,6 +99,20 @@ python /opt/yuki-runtime/sticker_index.py --workspace /workspace search --platfo
 ```
 
 把示例资产 ID 换成真实文件名。去掉 rebuild 的 `--platform` 可整理现有各平台目录。普通文件操作不要求经过 helper；编辑后新标签的搜索生效点是 update/rebuild 完成，不用父目录 mtime 猜测。helper 不需要 Bot 数据库或管理凭据，不调用模型、发送消息或重写历史。首次索引未完成不能当无候选，JSON 和文件仍自由编辑。
+
+桌面环境镜像可在仓库根构建为 `yuki-environment:desktop-1`（`deploy/sandbox/Dockerfile.environment`），验证镜像接受 `YUKI_ENVIRONMENT_IMAGE` build arg。新镜像安装 TigerVNC、Openbox、Chromium、中文／Emoji 字体及 `yuki-computer`；`/opt/yuki-runtime/manifest.json` 记录实际包版本。桌面以原 Supervisor 的 `yuki-desktop` 服务运行，RFB 只在容器 loopback，浏览器 profile 留在 HOME。没有闲置自动停止。
+
+旧 rootFS 可显式原地安装桌面组件：
+
+```sh
+sudo sh /opt/yuki-sandbox/deploy/sandbox/install-desktop.sh --container yuki-environment
+```
+
+脚本核对原容器标签与运行状态，安装包、复制 CLI／服务并生成 manifest，不重建容器、不启动桌面、不修改 HOME 或执行账本。只读源挂载已存在时核对文件 SHA，内容不同会要求沿原升级流程处理，不覆盖挂载。安装后按前述私有完整 rootFS checkpoint 流程保留新安装；新建容器只读挂载 CLI 与服务，旧容器复制的文件保留原 rootFS 语义。
+
+HOME 扩容须在受控维护时段核对原 ext4 loop backing file。停止原 Manager 后，将原 `home.ext4` 用 `truncate -s 32G` **增大**，对已挂载的原 loop device 执行 `losetup -c`、`resize2fs`，再启动 Manager；不得缩小文件、重新 `mkfs` 或换空 HOME。未挂载时先对原 ext4 完成 `e2fsck`，再扩展文件与 `resize2fs`。脚本会接受现有不同容量；改默认值不自动扩容。Docker 内存／CPU／pids 可在授权后对原容器显式更新，已有 `/tmp` 的容量或只读挂载变化仍沿完整 rootFS 保留与替换流程处理。
+
+`yuki-computer status --json` 查看控制与有来源的浏览器标签页；`browser open URL --tab NAME` 记录原 Work，`snapshot` 返回实际 AX 节点供 `click --node ID`／`type TEXT --node ID` 使用；`press KEY`、`scroll --delta-y N`、`screenshot --tab TARGET --out FILE` 和 X 层 `input click/type/key` 使用同一浏览器或画面。输入动作持有 Manager Agent lease，人类接手后下一动作返回 75；读取 AX 与截图可在观看期间执行。`wake`／`sleep` 沿原服务命令；`help-request --note TEXT`／`wait-control` 保留原终端 run 等待。标签页归属仅依 target ID 记录，重启恢复或用户自行新开的浏览器标签页不从名称猜归属。
 
 新环境镜像已包含 ACP SDK 0.12.1；旧 rootFS 快照保留原安装，需显式原地补 SDK：
 

@@ -127,6 +127,7 @@ async def test_late_terminal_receipt_updates_same_step_and_hints_without_revivin
                 "ok": True,
                 "pending": False,
                 "uncertain": False,
+                "step_label": "browser",
             },
         )
         async with asyncio.timeout(3):
@@ -139,6 +140,7 @@ async def test_late_terminal_receipt_updates_same_step_and_hints_without_revivin
             "steps"
         ][0]
         assert step["status"] == "succeeded"
+        assert (step["category"], step["label"]) == ("browser", "使用瀏覽器")
     finally:
         await stream.aclose()
         await original.repository.release(original.lease)

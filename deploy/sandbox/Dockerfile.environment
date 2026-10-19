@@ -11,6 +11,8 @@ FROM node:22-bookworm-slim AS node
 FROM python:3.12-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash git curl jq ripgrep zip unzip tar gzip ca-certificates build-essential procps \
+    tigervnc-standalone-server openbox chromium socat fonts-noto-cjk fonts-noto-color-emoji \
+    xdotool x11-utils imagemagick \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 yuki && useradd --uid 10001 --gid yuki --home-dir /home/yuki yuki
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
@@ -19,11 +21,17 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
     && ln -s /home/yuki/workspace /workspace \
     && ln -s /home/yuki/work /work && ln -s /home/yuki/inputs /inputs
-RUN pip install --no-cache-dir Pillow openpyxl pypdf agent-client-protocol==0.12.1
+RUN pip install --no-cache-dir Pillow openpyxl pypdf agent-client-protocol==0.12.1 websockets==15.0.1
 COPY --from=execd /execd /opt/opensandbox/execd
 COPY --from=execd /source/LICENSE /usr/share/licenses/opensandbox/LICENSE
 COPY src/yuki/sandbox/environment_supervisor.py /opt/yuki-runtime/supervisor.py
 COPY src/yuki/sandbox/acp_peer.py /opt/yuki-runtime/acp_peer.py
+COPY src/yuki/sandbox/yuki_computer.py /opt/yuki-runtime/yuki_computer.py
+COPY src/yuki/sandbox/desktop_service.py /opt/yuki-runtime/desktop_service.py
+COPY deploy/sandbox/desktop-manifest.py /opt/yuki-runtime/desktop-manifest.py
+COPY deploy/sandbox/yuki-computer.sh /usr/local/bin/yuki-computer
+RUN chmod 755 /usr/local/bin/yuki-computer \
+    && python /opt/yuki-runtime/desktop-manifest.py
 COPY src/yuki/emoji/sticker_index.py /opt/yuki-runtime/sticker_index.py
 COPY src/yuki/emoji/media.py /opt/yuki-runtime/media.py
 ENV HOME=/home/yuki \

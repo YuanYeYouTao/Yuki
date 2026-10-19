@@ -178,6 +178,11 @@ def execution_evidence(
         "delivered_message": delivered_message,
         "delivery_target": body.get("target") if delivered or delivered_message else None,
         "run_id": body.get("run_id"),
+        **(
+            {"step_label": body["step_label"]}
+            if tool.startswith("terminal_") and body.get("step_label") in {"browser", "computer"}
+            else {}
+        ),
         **({"request_id": body["request_id"]} if isinstance(body.get("request_id"), str) else {}),
         **(
             {"resource_request_id": body["resource_request_id"]}

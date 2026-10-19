@@ -14,13 +14,12 @@ if mountpoint -q "$home_mount"; then
     device=$(findmnt -n -o SOURCE --target "$home_mount")
     test "$(losetup -n -O BACK-FILE "$device")" = "$image"
 elif [ ! -e "$image" ]; then
-    test "$(df -B1 --output=avail "$root" | tail -n1)" -gt 4294967296
     umask 077
-    fallocate -l 2G "$image.pending"
+    fallocate -l 16G "$image.pending"
     mkfs.ext4 -q -F -m 0 "$image.pending"
     mv "$image.pending" "$image"
 fi
-test "$(stat -c %s "$image")" = 2147483648
+test -s "$image" # Existing and explicitly expanded filesystems retain their real capacity.
 mountpoint -q "$home_mount" || mount -o loop,nodev,nosuid "$image" "$home_mount"
 chmod 755 "$home_mount"
 chown 10001:10001 "$home_mount"
