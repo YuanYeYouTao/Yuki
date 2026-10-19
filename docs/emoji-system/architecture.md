@@ -2,6 +2,8 @@
 
 原件位于持久沙盒的 `/workspace/stickers/<platform>/files/`，每份 `index/<asset-id>.json` 保存短 tags、长 description、OCR 与真实文件资料。原图和 JSON 是唯一资料源，Main 和后台 Qwen 自由操作同一份文件。平台目录不按账号、人物或群拆分，增加平台不用修改 QQ/TG 白名单。Yuki 主业务库不保存图库资产、来源、标签或倒排表。
 
+图库旁的 `/workspace/stickers/AGENT.md` 保存操作说明，初始内容见[目录说明](AGENT.md)。附件保存工具只提供阅读入口，Agent 按需用终端读取；不自动载入固定系统提示词，也不增加文件操作门禁。该文件位于原持久工作区，Yuki 可自行维护。
+
 同目录 `search.sqlite3` 只是可删除重建的检索缓存。Main 用普通终端编辑文件，然后调用独立 helper 的 update 或 rebuild；它不需要 Bot 数据库、Host operator 或管理凭据。任意外部改标签后，新标签的搜索生效点是 update/rebuild 完成。命中候选再核当前 JSON 和真实文件，失效项移出缓存后继续查，正常选图不扫描全库。首次冷构建与真正无候选分开，构建不会阻塞正文发送。索引写协调只覆盖派生缓存，不给用户文件增加权限或 CAS。
 
 QQ/TG 明确标记的贴纸复用本次 `PreparedAttachment` 的真实原件收藏，不重复下载，不等待临时缓存、像素解码或辅助模型。入账来源在共享复制前由 Host 媒体 owner 只读核验；已接纳副本独立于原临时附件和 Work。所有入站原件同时保存在共享沙箱可读的 24 小时缓存，Agent 可直接复制到图库。图库 JSON 不保存私聊、人物、平台 file_id 或凭据，共享原文件不合并不同 Conversation 的消息历史。普通保存成功不等待图库编目。
