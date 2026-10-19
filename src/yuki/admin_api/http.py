@@ -19,11 +19,19 @@ from yuki.admin.operations import AdminOperations
 from yuki.admin.operations.base import authorize, fail
 from yuki.admin.queries import AdminQueries
 from yuki.character.avatar import CharacterAvatars
+from yuki.character.prompts import CharacterPrompts
 from yuki.character.repository import CharacterRepository
-from yuki.client_api.http import AvatarResetBody, CharacterBody
+from yuki.client_api.http import AvatarResetBody, CharacterBody, PromptReloadBody, PromptSaveBody
 from yuki.client_api.http_errors import install_identity_errors
 from yuki.client_api.identity import ClientIdentityService
-from yuki.client_api.models import CharacterProfile, Envelope
+from yuki.client_api.models import (
+    CharacterProfile,
+    Envelope,
+    PromptDocument,
+    PromptDocuments,
+    PromptReloadResult,
+    PromptSaveResult,
+)
 from yuki.domain.identity import RequestId
 from yuki.plugin_host.configuration_service import PluginConfigurationError
 from yuki.plugin_host.manager import PluginManagementRejected
@@ -37,6 +45,7 @@ class AdminApi:
     identities: ClientIdentityService
     queries: AdminQueries
     avatars: CharacterAvatars | None = None
+    documents: CharacterPrompts | None = None
 
 
 class CommandBody(BaseModel):
@@ -155,6 +164,59 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
                 body.expected_revision,
                 changes,
                 operator_id=actor.principal_id.text,
+            )
+        }
+
+    def documents() -> CharacterPrompts:
+        service = resolve().documents
+        if service is None:
+            from yuki.client_api.errors import ClientError
+
+            raise ClientError("unavailable")
+        return service
+
+    @router.get("/character/prompts", response_model=Envelope[PromptDocuments])
+    async def prompt_documents(actor: Actor) -> Any:
+        authorize(actor, "control.character.read")
+        return {"data": await documents().read(operator_id=actor.principal_id.text)}
+
+    @router.get("/character/prompts/{key}", response_model=Envelope[PromptDocument])
+    async def prompt_document(key: Literal["system_prompt", "persona"], actor: Actor) -> Any:
+        authorize(actor, "control.character.read")
+        result = await documents().read(operator_id=actor.principal_id.text)
+        return {
+            "data": next(document for document in result["documents"] if document["key"] == key)
+        }
+
+    @router.put(
+        "/character/prompts/{key}",
+        response_model=Envelope[PromptSaveResult],
+        response_model_exclude_unset=True,
+    )
+    async def save_prompt(
+        key: Literal["system_prompt", "persona"], body: PromptSaveBody, actor: Actor
+    ) -> Any:
+        authorize(actor, "control.character.mutate")
+        return {
+            "data": await documents().save(
+                key,
+                str(body.request_id),
+                body.expected_revision,
+                body.content,
+                operator_id=actor.principal_id.text,
+            )
+        }
+
+    @router.post(
+        "/character/prompts/reload",
+        response_model=Envelope[PromptReloadResult],
+        response_model_exclude_unset=True,
+    )
+    async def reload_prompts(body: PromptReloadBody, actor: Actor) -> Any:
+        authorize(actor, "control.character.mutate")
+        return {
+            "data": await documents().reload(
+                str(body.request_id), operator_id=actor.principal_id.text
             )
         }
 

@@ -49,6 +49,7 @@ async def personal_conversation(
 
 
 if TYPE_CHECKING:
+    from yuki.character.prompts import CharacterPrompts
     from yuki.client_api.computer import ClientComputer
 
 
@@ -190,9 +191,11 @@ class ClientViews:
         traces: TraceRecorder | None = None,
         *,
         computer: ClientComputer | None = None,
+        documents: CharacterPrompts | None = None,
     ) -> None:
         self.identity, self.works, self.traces = identity, works, traces
         self.computer = computer
+        self.documents = documents
         self.database = identity.database
         self._character_revision = 0
         self._character_facts: dict[str, str] = {}
@@ -246,7 +249,15 @@ class ClientViews:
                 environment["state"] = "running" if status.get("ready") else "stopped"
         profile = await CharacterRepository(self.identity).get(current)
         facts = json.dumps(
-            {"mine": mine, "environment": environment, "profile": profile}, sort_keys=True
+            {
+                "mine": mine,
+                "environment": environment,
+                "profile": profile,
+                "prompt_documents": self.documents.revision
+                if self.documents and current.is_owner
+                else None,
+            },
+            sort_keys=True,
         )
         digest = hashlib.sha256(facts.encode()).hexdigest()
         if self._character_facts.get(current.person_id) != digest:

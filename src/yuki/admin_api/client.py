@@ -133,3 +133,32 @@ async def avatar_mutation(
             f"request {request_id} unconfirmed; query `admin operation {request_id}`"
         ) from exc
     return dict(response.json()["data"])
+
+
+async def prompt_mutation(
+    client: httpx.AsyncClient,
+    key: str | None,
+    content: str | None = None,
+    *,
+    revision: str | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    request_id = request_id or str(uuid4())
+    payload: dict[str, Any] = {"request_id": request_id}
+    path = f"/admin/v1/character/prompts/{key}" if key else "/admin/v1/character/prompts/reload"
+    if key:
+        if revision is None:
+            revision = (await read(client, f"character/prompts/{key}"))["revision"]
+        payload.update(expected_revision=revision, content=content)
+    try:
+        response = await client.request("PUT" if key else "POST", path, json=payload)
+        if response.status_code >= 500:
+            raise RuntimeError(
+                f"request {request_id} unconfirmed; query `admin operation {request_id}`"
+            )
+        response.raise_for_status()
+    except httpx.TransportError as exc:
+        raise RuntimeError(
+            f"request {request_id} unconfirmed; query `admin operation {request_id}`"
+        ) from exc
+    return dict(response.json()["data"])

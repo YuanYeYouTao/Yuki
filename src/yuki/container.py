@@ -491,6 +491,9 @@ class ApplicationContainer:
                 / "avatars"
             ),
         )
+        from yuki.character.prompts import CharacterPrompts
+
+        self.character_prompts = CharacterPrompts(self.client_identity, settings)
         self.admin_api = build_admin_api(self)
         from yuki.client_api.http import ClientApi
 
@@ -627,6 +630,7 @@ class ApplicationContainer:
             client_works,
             self.models.traces,
             computer=self.client_computer,
+            documents=self.character_prompts,
         )
         client_files = ClientFiles(
             ConversationUploads(self.client_api.identity, self.conversation_media),
@@ -653,6 +657,7 @@ class ApplicationContainer:
             ClientAutomations(self.client_identity, self.automation_repository, self.automation),
             ClientCapabilities(self.client_identity, self.plugin_manager, self.sandbox_client),
             self.character_avatars,
+            self.character_prompts,
         )
         self.semantic_participation.set_promoter(
             partial(self.processor.promote_committed_event, reason="semantic_invitation")

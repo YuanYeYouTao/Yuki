@@ -27,8 +27,8 @@
 
 `yuki client openapi --out client-openapi.json` 离线导出当前 HTTP 路由的 OpenAPI，不加载设备
 凭据或启动 Bot。JSON 按键排序，客户端可固定文件、源版本/提交与 SHA-256 后生成类型，
-不依赖另一个仓库的浮动分支。当前已有明确响应模型的接口为 meta、character、me、home、pair、
-本人 proactive-route、events、activity、messages、requests、link-codes 与 devices 撤销。
+不依赖另一个仓库的浮动分支。明确响应模型覆盖身份与会话、Work/步骤、附件/成果、角色电脑、记忆、安排、公开能力、
+头像及提示词文件。
 SSE 的 sync/conversation/work/activity 数据模型以 x-yuki-sse-kinds 标明；后续新增方法同步补齐
 响应模型，不能把空响应 schema 当作完整类型。
 
@@ -404,3 +404,38 @@ operator 的 `POST|DELETE /admin/v1/character/avatar`、
 转换 sRGB 并规范输出。可显式给 `--revision`、`--request-id`；未给 revision 只先读一次
 当前 C2，再以该版本提交，冲突不会自动覆盖。未知响应使用原请求 ID 查 operation。
 部署只准备命令，不因代码落地自动更改运行实例的头像或默认图。
+
+## 角色提示词文件
+
+拥有者的 `GET /character/prompts` 返回原 system/persona 文件内容、UTF-8 字节 SHA-256
+（`sha256:` 前缀）、mtime、最后有据可查的编辑来源、实际目录写入能力及当前 active 版本。
+无文件的 SYSTEM_PROMPT 环境变量来源只读。目录写入能力以真实临时文件创建探测，不以
+权限位或部署路径名称猜测；旧只读 config 部署仍能读取，启用编辑需完成部署路径迁移。
+
+`PUT /character/prompts/{system_prompt|persona} {request_id,expected_revision,content}`
+与 `POST /character/prompts/reload {request_id}` 使用原 control 命令回执。
+同实例保存和 reload 共用一把 asyncio 锁。回执先预约 running，再在事务外做内容签名 CAS、
+同目录临时文件/fsync/rename/fsync；完整读回并验证两个来源后，经 Settings 所属同步方法
+整体套用，最后结束原回执。未储存提示词正文作为另一套配置来源；当前来源始终是配置指定
+文件（或原环境变量模板）。mtime、活跃版本与字节版本各按事实呈现。
+
+启动与热套用共用纯 read/render 函数，保持既有 strip、通用换行及人格占位符替换规则。
+不含占位符仍可保存，warnings 含 persona_placeholder_missing。原始环境模板单独保留供
+人格 reload 使用，不把上次渲染结果再当模板。验证失败时两个活跃值都保留；若新文件已经
+写入，failed 回执带 written=true 及原 active，可在修复后用 reload 套用。
+
+中断后的同号请求沿原 namespace、参数哈希和行恢复：文件仍为原基线则写入，已经等于本次
+目标则只确认耐久性并套用，其余返回版本冲突。新 UUID 不能以“内容刚好相同”绕过旧基线。
+完成后的同号请求回原结果。启动沿现行控制回执恢复标 unknown 后仍可查证；不盲目重写文件。
+文件在写入和套用之间又被外部修改时不误报已经套用所送版本。
+
+新聊天、SELF 主动轮、自动化和新 Work 从下一次激活采用新前缀。进行中的 Main 激活保留
+初始 transcript/合同；既有 Work 下次恢复经原合法新 chain，保 Work/来源/预算/journal/
+执行与完成回执，不重买已完成请求。character SSE 只提示拥有者重读；草稿基线由客户端
+保留，服务器的提示不会替客户端覆盖编辑区。
+
+operator 使用 `GET /admin/v1/character/prompts[/{key}]`、
+`PUT /admin/v1/character/prompts/{key}`、`POST /admin/v1/character/prompts/reload`，
+分别核 control.character.read/mutate。CLI 是
+`yuki admin character prompt show [key]`、`prompt set <key> <file> [--revision <sha>]`、
+`prompt reload`；不自动覆盖冲突，未知响应保原 UUID 供 operation 查询。

@@ -12,6 +12,7 @@ from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 from starlette.background import BackgroundTask
 
 from yuki.character.avatar import CharacterAvatars
+from yuki.character.prompts import CharacterPrompts
 from yuki.client_api.automations import ClientAutomations
 from yuki.client_api.capabilities import ClientCapabilities
 from yuki.client_api.computer import ClientComputer
@@ -53,6 +54,9 @@ from yuki.client_api.models import (
     PairResult,
     ProactiveRoute,
     ProblemEnvelope,
+    PromptDocuments,
+    PromptReloadResult,
+    PromptSaveResult,
     SyncHint,
     UploadResult,
     WorkCancelResult,
@@ -82,6 +86,7 @@ class ClientApi:
     automations: ClientAutomations | None = None
     capabilities: ClientCapabilities | None = None
     avatars: CharacterAvatars | None = None
+    documents: CharacterPrompts | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -104,6 +109,16 @@ class AutomationActionBody(PersonalRequest):
 class AvatarResetBody(PersonalRequest):
     request_id: UUID4 = Field(...)
     expected_revision: int = Field(strict=True, ge=0)
+
+
+class PromptReloadBody(PersonalRequest):
+    request_id: UUID4 = Field(...)
+
+
+class PromptSaveBody(PersonalRequest):
+    request_id: UUID4 = Field(...)
+    expected_revision: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    content: str
 
 
 class PairBody(BaseModel):
@@ -465,6 +480,38 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
                 actor, str(identity), str(body.request_id) if body else str(uuid4())
             )
         }
+
+    def documents() -> CharacterPrompts:
+        service = resolve().documents
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
+    @router.get("/character/prompts", response_model=Envelope[PromptDocuments])
+    async def prompt_documents(actor: Actor) -> Any:
+        return {"data": await documents().read(principal=actor)}
+
+    @router.put(
+        "/character/prompts/{key}",
+        response_model=Envelope[PromptSaveResult],
+        response_model_exclude_unset=True,
+    )
+    async def save_prompt(
+        key: Literal["system_prompt", "persona"], body: PromptSaveBody, actor: Actor
+    ) -> Any:
+        return {
+            "data": await documents().save(
+                key, str(body.request_id), body.expected_revision, body.content, principal=actor
+            )
+        }
+
+    @router.post(
+        "/character/prompts/reload",
+        response_model=Envelope[PromptReloadResult],
+        response_model_exclude_unset=True,
+    )
+    async def reload_prompts(body: PromptReloadBody, actor: Actor) -> Any:
+        return {"data": await documents().reload(str(body.request_id), principal=actor)}
 
     def avatars() -> CharacterAvatars:
         service = resolve().avatars

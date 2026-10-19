@@ -152,4 +152,5 @@ def build_admin_api(app: ApplicationContainer) -> AdminApi:
         app.client_identity,
         AdminQueries(app.database, app.plugin_manager, files, lambda: runtime_health(app)),
         app.character_avatars,
+        app.character_prompts,
     )

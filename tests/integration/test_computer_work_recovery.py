@@ -90,6 +90,18 @@ class ManagerProcess:
 async def test_computer_return_resumes_original_work_once_with_duplicate_completion(
     database, tmp_path, monkeypatch, kind, crash
 ):
+    await computer_work_recovery_case(database, tmp_path, monkeypatch, kind, crash)
+
+
+async def computer_work_recovery_case(
+    database,
+    tmp_path,
+    monkeypatch,
+    kind,
+    crash,
+    *,
+    prompt_change_at=None,
+):
     manager = ManagerProcess(tmp_path)
     await manager.start()
     phase, original_run = 0, None
@@ -97,6 +109,14 @@ async def test_computer_return_resumes_original_work_once_with_duplicate_complet
     def response(request):
         nonlocal phase, original_run
         phase += 1
+        if prompt_change_at is not None:
+            prefix = "\n".join(
+                message.content or "" for message in request.messages if message.role == "system"
+            )
+            new = prompt_change_at == "before" or phase > 3
+            assert ("NEW_SYSTEM" if new else "OLD_SYSTEM") in prefix
+            assert ("NEW_PERSONA" if new else "OLD_PERSONA") in prefix
+            assert ("OLD_SYSTEM" if new else "NEW_SYSTEM") not in prefix
         if phase == 1:
             name, args = (
                 "task_control",
@@ -130,8 +150,18 @@ async def test_computer_return_resumes_original_work_once_with_duplicate_complet
             tool_calls=(ToolCall(str(uuid4()), ToolFunction(name, json.dumps(args))),),
         )
 
+    prompt_sources = {}
+    if prompt_change_at is not None:
+        system, persona = tmp_path / "hot-system.md", tmp_path / "hot-persona.md"
+        system.write_text("OLD_SYSTEM\n{{YUKI_PERSONA_CORE}}", encoding="utf-8")
+        persona.write_text("OLD_PERSONA", encoding="utf-8")
+        prompt_sources = {"system_prompt_file": system, "bot_persona_file": persona}
     app, env, message, sender = await _deployment(
-        database, tmp_path, FakeLLMProvider(response), sandbox_socket=manager.socket
+        database,
+        tmp_path,
+        FakeLLMProvider(response),
+        sandbox_socket=manager.socket,
+        **prompt_sources,
     )
     identity = app.client_api.identity
     await app.app_gateway.start()
@@ -154,6 +184,30 @@ async def test_computer_return_resumes_original_work_once_with_duplicate_complet
                 return device, {"Authorization": "Bearer " + device["token"]}
 
             _device, headers = await paired(helper)
+
+            async def change_prompts():
+                current = await http.get("/client/v1/character/prompts", headers=headers)
+                assert current.status_code == 200, current.text
+                for document in current.json()["data"]["documents"]:
+                    content = (
+                        "NEW_SYSTEM\n{{YUKI_PERSONA_CORE}}"
+                        if document["key"] == "system_prompt"
+                        else "NEW_PERSONA"
+                    )
+                    result = await http.put(
+                        f"/client/v1/character/prompts/{document['key']}",
+                        headers=headers,
+                        json={
+                            "request_id": str(uuid4()),
+                            "expected_revision": document["revision"],
+                            "content": content,
+                        },
+                    )
+                    assert result.status_code == 200, result.text
+                assert app.settings.bot_persona == "NEW_PERSONA"
+
+            if prompt_change_at == "before":
+                await change_prompts()
             taken = await http.post(
                 "/client/v1/computer/control",
                 headers=headers,
@@ -207,6 +261,8 @@ async def test_computer_return_resumes_original_work_once_with_duplicate_complet
             assert projected["wait"]["conditions"][0]["run_kind"] == (
                 "help_request" if kind == "help-request" else "wait_control"
             )
+            if prompt_change_at == "waiting":
+                await change_prompts()
             # A transfer must not finish the original wait-control run.
             other, other_headers = await paired(helper)
             transferred = await http.post(

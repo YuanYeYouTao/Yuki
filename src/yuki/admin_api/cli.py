@@ -9,7 +9,14 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from yuki.admin_api.client import admin_client, avatar_mutation, identity_mutation, mutate, read
+from yuki.admin_api.client import (
+    admin_client,
+    avatar_mutation,
+    identity_mutation,
+    mutate,
+    prompt_mutation,
+    read,
+)
 from yuki.config import Settings
 
 
@@ -39,6 +46,16 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     update.add_argument("--bio")
     update.add_argument("--accent-light")
     update.add_argument("--accent-dark")
+    prompts = character.add_parser("prompt").add_subparsers(dest="prompt_action", required=True)
+    shown = prompts.add_parser("show")
+    shown.add_argument("key", nargs="?", choices=("system_prompt", "persona"))
+    saved = prompts.add_parser("set")
+    saved.add_argument("key", choices=("system_prompt", "persona"))
+    saved.add_argument("file", type=Path)
+    _mutation(saved, revision=False)
+    saved.add_argument("--revision")
+    reloaded = prompts.add_parser("reload")
+    _mutation(reloaded, revision=False)
     avatars = character.add_parser("avatar").add_subparsers(dest="avatar_action", required=True)
     for action in ("set", "set-default", "reset"):
         avatar = avatars.add_parser(action)
@@ -157,6 +174,21 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
         elif kind == "character":
             if args.character_action == "show":
                 data = await read(client, "character")
+            elif args.character_action == "prompt":
+                if args.prompt_action == "show":
+                    data = await read(
+                        client, "character/prompts" + (f"/{args.key}" if args.key else "")
+                    )
+                elif args.prompt_action == "set":
+                    data = await prompt_mutation(
+                        client,
+                        args.key,
+                        args.file.read_bytes().decode("utf-8"),
+                        revision=args.revision,
+                        request_id=args.request_id,
+                    )
+                else:
+                    data = await prompt_mutation(client, None, request_id=args.request_id)
             elif args.character_action == "avatar":
                 from yuki.character.avatar_cli import normalized_png
 

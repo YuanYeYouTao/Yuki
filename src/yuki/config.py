@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -44,6 +45,60 @@ class BotIdentity:
 
     display_name: str
     aliases: tuple[str, ...]
+
+
+def prompt_document_revision(content: bytes) -> str:
+    return "sha256:" + hashlib.sha256(content).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class RenderedPromptDocuments:
+    system_prompt: str
+    persona: str
+    persona_file: Path
+    system_revision: str
+    persona_revision: str
+    persona_placeholder_present: bool
+
+    @property
+    def revisions(self) -> dict[str, str]:
+        return {"system_prompt": self.system_revision, "persona": self.persona_revision}
+
+
+def read_prompt_documents(
+    system_prompt_file: Path | None,
+    persona_file: Path,
+    *,
+    system_prompt_template: str,
+    persona_setting: str = "BOT_PERSONA_FILE",
+) -> RenderedPromptDocuments:
+    """Read and validate both sources without mutating a running Settings object."""
+    try:
+        persona_bytes = persona_file.read_bytes()
+        persona = persona_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n").strip()
+    except OSError as exc:
+        raise ValueError(f"cannot read {persona_setting}: {persona_file}") from exc
+    if not persona:
+        raise ValueError(f"{persona_setting} must not be empty")
+    if system_prompt_file is not None:
+        try:
+            system_bytes = system_prompt_file.read_bytes()
+            prompt = system_bytes.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n").strip()
+        except OSError as exc:
+            raise ValueError(f"cannot read SYSTEM_PROMPT_FILE: {system_prompt_file}") from exc
+        if not prompt:
+            raise ValueError("SYSTEM_PROMPT_FILE must not be empty")
+    else:
+        system_bytes = system_prompt_template.encode("utf-8")
+        prompt = system_prompt_template
+    return RenderedPromptDocuments(
+        system_prompt=prompt.replace("{{YUKI_PERSONA_CORE}}", persona),
+        persona=persona,
+        persona_file=persona_file,
+        system_revision=prompt_document_revision(system_bytes),
+        persona_revision=prompt_document_revision(persona_bytes),
+        persona_placeholder_present="{{YUKI_PERSONA_CORE}}" in prompt,
+    )
 
 
 class Settings(BaseSettings):
@@ -128,6 +183,8 @@ class Settings(BaseSettings):
     yuki_persona_file: Path | None = None
     _bot_persona: str = PrivateAttr(default="")
     _loaded_bot_persona_file: Path | None = PrivateAttr(default=None)
+    _system_prompt_template: str | None = PrivateAttr(default=None)
+    _prompt_documents: RenderedPromptDocuments | None = PrivateAttr(default=None)
 
     database_url: str = "sqlite+aiosqlite:///./data/yuki.db"
     control_operators_file: Path | None = None
@@ -424,30 +481,40 @@ class Settings(BaseSettings):
             if self.bot_persona_file is not None or self.yuki_persona_file is None
             else "YUKI_PERSONA_FILE"
         )
-        try:
-            persona = persona_file.read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            raise ValueError(f"cannot read {persona_setting}: {persona_file}") from exc
-        if not persona:
-            raise ValueError(f"{persona_setting} must not be empty")
-        self._bot_persona = persona
-        self._loaded_bot_persona_file = persona_file
-
-        if self.system_prompt_file is not None:
-            try:
-                prompt = self.system_prompt_file.read_text(encoding="utf-8").strip()
-            except OSError as exc:
-                raise ValueError(
-                    f"cannot read SYSTEM_PROMPT_FILE: {self.system_prompt_file}"
-                ) from exc
-            if not prompt:
-                raise ValueError("SYSTEM_PROMPT_FILE must not be empty")
-            self.system_prompt = prompt
-        self.system_prompt = self.system_prompt.replace(
-            "{{YUKI_PERSONA_CORE}}",
-            self._bot_persona,
+        if self._system_prompt_template is None:
+            self._system_prompt_template = self.system_prompt
+        rendered = read_prompt_documents(
+            self.system_prompt_file,
+            persona_file,
+            system_prompt_template=self._system_prompt_template,
+            persona_setting=persona_setting,
         )
+        self.apply_prompt_documents(rendered)
         return self
+
+    def apply_prompt_documents(self, rendered: RenderedPromptDocuments) -> None:
+        """Apply one fully validated pair synchronously between activations."""
+        self.system_prompt = rendered.system_prompt
+        self._bot_persona = rendered.persona
+        self._loaded_bot_persona_file = rendered.persona_file
+        self._prompt_documents = rendered
+
+    def read_prompt_documents(self) -> RenderedPromptDocuments:
+        return read_prompt_documents(
+            self.system_prompt_file,
+            self.resolved_bot_persona_file,
+            system_prompt_template=self.system_prompt_template,
+        )
+
+    @property
+    def system_prompt_template(self) -> str:
+        assert self._system_prompt_template is not None
+        return self._system_prompt_template
+
+    @property
+    def active_prompt_revisions(self) -> dict[str, str]:
+        assert self._prompt_documents is not None
+        return self._prompt_documents.revisions
 
     @property
     def resolved_bot_persona_file(self) -> Path:

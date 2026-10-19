@@ -624,3 +624,39 @@ class EnvironmentCapabilities(BaseModel):
 class CharacterCapabilities(BaseModel):
     plugins: list[PluginCapability]
     environment: EnvironmentCapabilities
+
+
+class PromptActive(BaseModel):
+    system_prompt: str
+    persona: str
+
+
+class PromptDocument(BaseModel):
+    key: Literal["system_prompt", "persona"]
+    file_name: str
+    content: str
+    revision: str
+    updated_at: str | None
+    updated_by: str
+    writable: bool
+    reason: str | None
+
+
+class PromptDocuments(BaseModel):
+    documents: list[PromptDocument]
+    placeholder: str
+    active: PromptActive
+
+
+class PromptSaveResult(BaseModel):
+    revision: str
+    applied_at: str
+    warnings: list[str]
+    replay: bool | None = None
+
+
+class PromptReloadResult(BaseModel):
+    active: PromptActive
+    applied_at: str
+    warnings: list[str]
+    replay: bool | None = None
