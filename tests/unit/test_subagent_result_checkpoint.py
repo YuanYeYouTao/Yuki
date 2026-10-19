@@ -1262,9 +1262,8 @@ async def test_completed_nested_artifact_remains_readable_until_retained_tree_se
     await repo.release(lease)
 
 
-async def test_worker_need_input_without_reason_records_wait_without_fabricated_question(
-    database, tmp_path
-):
+@pytest.mark.parametrize("reason", [None, "Which source file should I use?"])
+async def test_worker_need_input_only_passes_actual_question_to_parent(database, tmp_path, reason):
     repo, workers, parent_lease, root, identity = await stack(database, tmp_path)
     lease = await workers.acquire(identity)
     row = await repo.get(identity)
@@ -1275,18 +1274,28 @@ async def test_worker_need_input_without_reason_records_wait_without_fabricated_
     control = WorkControl(
         repo, lease, row["source_key"], json.loads(row["source_json"]), validate, current=row
     )
-    result = json.loads(
-        await control.execute("task_control", {"action": "need_input"}, "wait-for-parent")
-    )
+    arguments = {"action": "need_input"}
+    if reason is not None:
+        arguments["reason"] = reason
+    result = json.loads(await control.execute("task_control", arguments, "wait-for-parent"))
     assert result["ok"], result
     await control.settle(pending_inputs=False)
     await workers.finish(lease)
     assert (await repo.get(identity))["state"] == "waiting_user"
     pending = await repo.pending(parent_lease, work_id=root["id"])
-    assert len(pending) == 1
-    fact = json.loads(json.loads(pending[0]["payload_json"])["text"])
+    facts = [json.loads(json.loads(item["payload_json"])["text"]) for item in pending]
+    questions = [fact for fact in facts if fact.get("kind") == "subagent_question"]
+    assert len(questions) == int(reason is not None)
+    if questions:
+        assert questions[0]["text"] == reason
+        assert questions[0]["message_id"] == "wait-for-parent"
+        assert questions[0]["sender_work_id"] == identity
+        assert questions[0]["target_work_id"] == root["id"]
+    notifications = [fact for fact in facts if "state" in fact]
+    assert len(notifications) == 1
+    fact = notifications[0]
     assert fact["child_id"] == identity and fact["state"] == "waiting_user"
-    assert fact["text"] == ""
+    assert fact["text"] == (reason or "")
     await repo.release(lease)
     await repo.release(parent_lease)
 

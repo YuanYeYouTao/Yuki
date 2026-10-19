@@ -260,7 +260,7 @@ async def test_group_mention_resolves_binding_without_first_item(social_env, sel
         context = replace(
             context,
             person_refs={"mentioned_user": env.person},
-            account_refs={"mentioned_user": "10002"},
+            account_refs={"mentioned_user": ("qq", "10002")},
         )
     elif selector == "foreign":
         person["binding_id"] = str(uuid4())

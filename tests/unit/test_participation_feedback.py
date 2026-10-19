@@ -339,6 +339,7 @@ async def test_retained_wait_releases_new_opportunity_without_revoking_original_
 
 @pytest.mark.asyncio
 async def test_running_child_does_not_block_intrinsic_admission_while_parent_waits(database):
+    database.subagents_enabled = True
     service, _item, run, task = await setup(database)
     lease = await service.work.acquire(run.conversation_id, run.generation)
     workers = SubagentRepository(service.work)

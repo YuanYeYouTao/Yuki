@@ -69,6 +69,64 @@ def receipts(control):
     }
 
 
+async def test_worker_admission_switch_covers_both_routes_and_keeps_accepted_child(
+    database, tmp_path
+):
+    probe, parent, workers, identity = await worker_case(database, tmp_path, ())
+    database.subagents_enabled = False
+    direct = json.loads(
+        await probe.control.execute("subagent_start", {"goal": "new child"}, "disabled-start")
+    )
+    derived = json.loads(
+        await probe.control.execute(
+            "task_control", {"action": "derive", "goal": "new child"}, "disabled-derive"
+        )
+    )
+    assert direct == derived == {"ok": False, "error": "subagent_admission_disabled"}
+    async with database.sessions() as reader:
+        assert list(await reader.scalars(select(children.c.work_id))) == [identity]
+    # The original accepted call keeps its identity after new admission closes.
+    replayed = await workers.start(
+        parent.lease, parent.current["id"], "original-worker", {"goal": "original child goal"}
+    )
+    assert replayed == identity
+    await probe.repository.release(probe.control.lease)
+    lease = await workers.acquire(identity)
+    assert lease is not None
+    row = await probe.repository.get(identity)
+
+    async def validate():
+        assert await probe.repository.valid(lease)
+
+    resumed = WorkControl(
+        probe.repository,
+        lease,
+        row["source_key"],
+        json.loads(row["source_json"]),
+        validate,
+        current=row,
+    )
+    completed = json.loads(
+        await resumed.execute(
+            "task_control", {"action": "complete", "result": "original result"}, "complete"
+        )
+    )
+    assert completed["ok"], completed
+    await resumed.settle(pending_inputs=False)
+    await workers.finish(lease)
+    result = await workers.related(parent.current["id"], identity, include_checkpoint=True)
+    assert json.loads(result["result_json"])["text"] == "original result"
+    assert len(await parent.pending()) == 1
+    ordinary = await probe.repository.derive(
+        parent.lease, parent.current["id"], "ordinary-subgoal", "continue the business goal"
+    )
+    assert ordinary["parent_work_id"] == parent.current["id"]
+    async with database.sessions() as reader:
+        assert list(await reader.scalars(select(children.c.work_id))) == [identity]
+    await probe.repository.release(lease)
+    await probe.repository.release(parent.lease)
+
+
 async def test_parent_complete_still_dispatches_original_child(database, tmp_path):
     database.subagents_enabled = True
     calls = (

@@ -71,6 +71,8 @@ class SubagentRepository:
                 if actual_parent != parent_id or previous["brief_json"] != encoded:
                     raise WorkConflict("subagent_start_conflict")
                 return str(previous["work_id"])
+            if not self.database.subagents_enabled:
+                raise ValueError("subagent_admission_disabled")
             await self.repository.accept_in_session(
                 session,
                 lease,

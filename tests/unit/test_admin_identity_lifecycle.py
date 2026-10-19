@@ -9,7 +9,8 @@ from tests.unit.test_admin_api import command, plugin_action
 
 from yuki.client_api.errors import ClientError
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
-from yuki.identity.db_models import PresenceModel
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
+from yuki.identity.person_identity import person_enabled_condition
 from yuki.runtime.work_repository import WorkRepository
 
 admin = admin_fixture
@@ -80,6 +81,55 @@ async def test_disabled_account_discovery_and_recovery(admin):
     assert [row["id"] for row in found] == [binding]
     assert found[0]["person_id"] == person
     assert (await shown(client, person))["bindings"][0]["id"] == binding
+
+
+async def test_new_binding_uses_current_person_without_reviving_disabled_original(admin, database):
+    client, *_ = admin
+    original, current = await create(client, "Original"), await create(client, "Current")
+    old = await client.post(
+        f"/admin/v1/persons/{original}/bindings",
+        json=command(
+            (await shown(client, original))["revision"],
+            platform="telegram",
+            external_account_id="old-source-account",
+        ),
+    )
+    assert old.status_code == 200, old.text
+    old_binding = old.json()["data"]["resource_id"]
+    disabled = await client.post(
+        f"/admin/v1/persons/{original}/disable",
+        json=command((await shown(client, original))["revision"]),
+    )
+    assert disabled.status_code == 200, disabled.text
+    merged = await client.post(
+        f"/admin/v1/persons/{original}/merge",
+        json={"request_id": str(uuid4()), "to_person": current},
+    )
+    assert merged.status_code == 200, merged.text
+    request = command(
+        (await shown(client, original))["revision"],
+        platform="telegram",
+        external_account_id="new-post-merge-account",
+    )
+    attached = await client.post(f"/admin/v1/persons/{original}/bindings", json=request)
+    assert attached.status_code == 200, attached.text
+    result = attached.json()
+    assert result["data"]["effective_state"]["person_id"] == current
+    latest = await create(client, "Later current")
+    moved = await client.post(
+        f"/admin/v1/persons/{current}/merge",
+        json={"request_id": str(uuid4()), "to_person": latest},
+    )
+    assert moved.status_code == 200, moved.text
+    assert (
+        await client.post(f"/admin/v1/persons/{original}/bindings", json=request)
+    ).json() == result
+    async with database.sessions() as session:
+        new = await session.get(IdentityBindingModel, result["data"]["resource_id"])
+        assert new.person_id == current and new.status == "active"
+        assert await session.scalar(select(person_enabled_condition(new.person_id)))
+        assert (await session.get(IdentityBindingModel, old_binding)).person_id == original
+        assert not (await session.get(CanonicalPersonModel, original)).enabled
 
 
 async def test_app_binding_restore_allows_new_pair_without_reviving_revoked_device(admin):

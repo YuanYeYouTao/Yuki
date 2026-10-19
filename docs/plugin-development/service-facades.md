@@ -142,6 +142,8 @@ await ctx.messages.send_text(turn.text)
 OneBot `music` 消息段发送到触发插件的当前真实私聊或群聊。插件不能为这个方法传入 QQ 号或
 群号，因此它不能跨会话改变目标；Host 会再次验证真实执行来源、provider、资源 ID 和
 发送权限，成功后再写事件账本与脱敏审计。
+已入账来源沿原事件作者核当前人物资格，不以发送者账号今日的绑定归属重建作者；
+发送目标仍核实际 Binding、Presence 和批准权限，原投递回执按原调用键读取。
 
 SELF 与定时 Main 使用原 actor 和场景，无真人事件时不伪造 Inbound；来源、原调用 ID 与
 发送回执继续由 Host 持有，媒体和音乐卡不另有来源菜单。

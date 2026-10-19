@@ -12,7 +12,7 @@ App/ACP 个人消息不解析管理员或插件直达命令。Person 是超管�
 
 `admin/operations/` 按身份、群、运行配置、插件、模型和 Work 组织共同应用操作；`admin/queries.py` 提供原事实的只读投影。HTTP/CLI 和 `services/commands/` 的聊天适配只解析、调用、呈现，不互相调用字符串 handler，不复制身份与领域规则。
 
-原人物领域、RuntimeConfigService、PluginManager、Memory mutation、Emoji 生命周期和 manage_work 继续拥有实际修改。公共身份 owner 由应用装配一次构造，分别注入个人 API、关联命令和管理操作，不依赖 Admin API 对象取得身份服务。
+原人物领域、RuntimeConfigService、PluginManager、Memory mutation 和 manage_work 继续拥有实际修改。公共身份 owner 由应用装配一次构造，分别注入个人 API、关联命令和管理操作，不依赖 Admin API 对象取得身份服务。
 
 管理语法为 `/ai admin <领域> <操作>`；普通会话控制、本人 Memory/Preference/Automation、`/ai link`、`forgetme` 与插件注册调用各保真实职责。停用/未登记群恢复保接纳前真实连接与路由证明，不依赖普通聊天先成功入账。Person enable/disable 是全局人物启停，旧 private/on/off 管理语法已删除。
 

@@ -20,6 +20,8 @@ Provider 的 `media(handle)` 从该原生连接提供媒体适配器。附件工
 
 业务参数使用内部 Person、Space、Presence、Binding、Conversation、事件与执行 ID。平台账号和消息定位保留在原生传输及历史 provenance。平台数字相同不证明同一人物或授权；只有真正关联的 Person 共享人物事实。
 
+发送提及先按人物引用解析 Person，再选择目标平台的 Binding。显式 Binding 指定此次使用的账号；未指定时，引用携带的来源账号连同其平台保留，只用于同平台账号消歧。跨平台不比较来源与目标的裸账号值；目标平台有多个绑定时沿显式 Binding 选择，原事件和历史提及不随此次发送改写。
+
 私聊以 Binding＋Presence 区分 Conversation；群以 SpaceBinding＋topic 区分 Conversation。同群切换接纳 Presence 不拆群身份。个人客户端同入口的多个设备共享会话。人物关联不合并不同入口的聊天历史。
 
 旧 Conversation、primary alias、generation、Work、已付请求和真实效果回执继续沿原 ID。旧多 Bot 私聊只通过原内部事件和真实旧 alias 证明入口，不能按今天的主动路由重建归属。当前新消息按新入口规则接纳。

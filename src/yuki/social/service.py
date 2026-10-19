@@ -75,7 +75,8 @@ class SocialContext:
     call_id: str
     conversation_id: str
     person_refs: dict[str, str] = field(default_factory=dict)
-    account_refs: dict[str, str] = field(default_factory=dict)
+    # A source account is meaningful only in its original platform namespace.
+    account_refs: dict[str, tuple[str, str]] = field(default_factory=dict)
     space_id: str | None = None
     # Trusted internal ledger key for an immediate reply. Platform IDs are only
     # transport references and must not reconstruct an already known event.
@@ -588,11 +589,11 @@ class SocialService:
                 IdentityBindingModel.platform == platform,
             )
             bindings = list(await session.scalars(query))
+        account = context.account_refs.get(str(args.get("subject_ref", "")))
         if args.get("binding_id"):
             bindings = [b for b in bindings if b.id == str(args["binding_id"])]
-        account = context.account_refs.get(str(args.get("subject_ref", "")))
-        if account is not None:
-            bindings = [b for b in bindings if b.external_account_id == account]
+        elif account is not None and account[0] == platform:
+            bindings = [b for b in bindings if b.external_account_id == account[1]]
         if len(bindings) != 1:
             raise SocialError("binding_ambiguous" if bindings else "binding_unavailable")
         return bindings[0]

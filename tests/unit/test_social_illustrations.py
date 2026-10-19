@@ -477,6 +477,7 @@ async def test_worker_failure_that_revokes_child_epoch_stops_its_pending_image(d
     lease = await repository.acquire(env.context.conversation_id, 1)
     source = {"origin": "user_message", "actor_user_id": "10001"}
     parent = await repository.accept(lease, source_key="parent", source=source, goal="delegate")
+    database.subagents_enabled = True
     workers = SubagentRepository(repository)
     identity = await workers.start(lease, parent["id"], "image-worker", {"goal": "send picture"})
     child_lease = await workers.acquire(identity)

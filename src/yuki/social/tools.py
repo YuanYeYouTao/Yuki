@@ -134,7 +134,8 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                 "emoji": {
                     "type": "object",
                     "description": (
-                        "可选的后台配图意图，goal写明想表达的完整含义。正文先发送，"
+                        "可选的后台配图意图，goal写明想表达的完整含义。可以只发表情，不填 text；"
+                        "有正文时先发正文，"
                         "后台从图库选图并单独发送；accepted只表示已接纳，无须等待或重发。"
                     ),
                     "properties": {
@@ -153,7 +154,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
                     "type": "array",
                     "maxItems": 20,
                     "description": (
-                        "真实提及成员，按顺序放在正文前；每项只选一种人物标识。"
+                        "群内真实提及成员，按顺序放在正文前；每项只选一种人物标识。"
                         "不能用文字 @名字代替。"
                         "@当前发言人用 mentions=[{subject_ref:current_speaker}]，顶层不填人物。"
                     ),

@@ -258,7 +258,7 @@ class IdentityOperations:
             now = datetime.now(UTC)
             binding = IdentityBindingModel(
                 id=str(uuid4()),
-                person_id=identity,
+                person_id=person.id,
                 platform=parsed.platform,
                 external_account_id=parsed.external_account_id,
                 display_name=parsed.display_name,
@@ -275,7 +275,7 @@ class IdentityOperations:
             person.updated_at = next_updated_at(person.updated_at, now)
             state: dict[str, JsonValue] = {
                 "binding_id": binding.id,
-                "person_id": identity,
+                "person_id": person.id,
                 "platform": binding.platform,
                 "status": binding.status,
                 "revision": 1,

@@ -345,7 +345,7 @@ async def test_shared_attachment_pixels_do_not_import_other_conversation_history
     from PIL import Image
 
     from yuki.conversation.hydrate import bump_canonical_generation
-    from yuki.conversation.media_service import ConversationMediaError, ConversationMediaService
+    from yuki.conversation.media_service import ConversationMediaService
     from yuki.domain.conversations import ScopeType
     from yuki.services.image_preprocessor import ImagePreprocessor
     from yuki.services.media_resolver import MediaResolver
@@ -396,11 +396,10 @@ async def test_shared_attachment_pixels_do_not_import_other_conversation_history
             assert await WorkSourceGuard.restore(saved).check(control)
         assert old_image.id not in guard.additional_events
         assert guard.version.visible_event_ids == (current.id,)
-        # The shared file still has a real lifetime. Removing it invalidates
-        # the selected pixels; it does not fabricate a history dependency.
+        # Selected pixels belong to the tool result independently of the
+        # temporary original. Its removal creates no history dependency.
         path.unlink()
-        with pytest.raises(ConversationMediaError, match="attachment_expired"):
-            await media.validate_images(result.images)
+        await media.validate_images(result.images)
     finally:
         await media.close()
         await resolver.close()
