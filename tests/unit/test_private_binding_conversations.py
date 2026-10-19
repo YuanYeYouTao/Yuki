@@ -1,7 +1,6 @@
 """Entrance histories resolve their binding even when legacy aliases collide."""
 
 from datetime import UTC, datetime
-from uuid import uuid4
 
 from sqlalchemy import select
 
@@ -15,10 +14,12 @@ from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
 from yuki.identity.canonical_repository import (
     create_presence,
+    ensure_account,
     find_identity_binding,
     find_presence,
+    replace_assignment,
 )
-from yuki.identity.db_models import IdentityBindingModel
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.people_repository import PeopleRepository
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -43,20 +44,20 @@ async def entries(database):
                 )
             else:
                 presence = primary_presence
-            binding = IdentityBindingModel(
-                id=str(uuid4()),
-                person_id=primary.person_id,
+            account_row = await ensure_account(
+                session,
+                account,
                 platform=platform,
-                external_account_id=account,
                 display_name="same name",
-                status="active",
-                revision=1,
-                first_seen_at=now,
-                last_seen_at=now,
-                created_at=now,
-                updated_at=now,
+                now=now,
             )
-            session.add(binding)
+            binding = await replace_assignment(
+                session,
+                account_row,
+                None,
+                await session.get(CanonicalPersonModel, primary.person_id),
+                now=now,
+            )
             bindings.append(binding.id)
             scopes.append(
                 ConversationScope.private(bot, account, platform=platform, presence_id=presence.id)

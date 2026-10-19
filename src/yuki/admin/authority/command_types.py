@@ -18,7 +18,7 @@ from yuki.admin.authority.commands import ControlResult
 from yuki.admin.authority.json_types import JsonValue, freeze_json_object
 from yuki.admin.authority.problems import Problem, ProblemCode
 from yuki.admin.authority.tokens import require_opaque_token
-from yuki.domain.identity import IdentityBindingId, PersonId
+from yuki.domain.identity import IdentityBindingId, PersonId, PresenceId
 
 
 class ControlCommandError(Exception):
@@ -36,6 +36,10 @@ class CommandOperation(StrEnum):
     PRESENCE_STATE = "identity.presence.state"
     BINDING_ATTACH = "identity.binding.attach"
     BINDING_DISABLE = "identity.binding.disable"
+    BINDING_UNBIND = "identity.binding.unbind"
+    PRESENCE_REGISTER = "identity.presence.register"
+    PRESENCE_UNREGISTER = "identity.presence.unregister"
+    PRESENCE_TRANSFER = "identity.presence.transfer"
     PLUGIN_MUTATE = "control.plugin.mutate"
     PLUGIN_CONFIGURE = "control.plugin.configure"
     CONFIG_FILE_SAVE = "control.config.file.save"
@@ -194,9 +198,17 @@ def project_replayed_result(
             raise _error()
         if operation == CommandOperation.PERSON_CREATE:
             _person(resource_id)
+        elif operation == CommandOperation.PRESENCE_REGISTER:
+            PresenceId.parse(resource_id)
+        elif operation == CommandOperation.PRESENCE_TRANSFER:
+            _binding(resource_id)
         elif resource_id != semantic_target_id:
             raise _error()
-        if operation in {CommandOperation.BINDING_DISABLE, CommandOperation.BINDING_ENABLE}:
+        if operation in {
+            CommandOperation.BINDING_DISABLE,
+            CommandOperation.BINDING_ENABLE,
+            CommandOperation.BINDING_UNBIND,
+        }:
             _binding(resource_id)
     if _revision(state["revision"]) != revision:
         raise _error()
@@ -303,6 +315,10 @@ def failure_audit_target_type(operation: str) -> str:
         CommandOperation.PRESENCE_STATE: "presence",
         CommandOperation.BINDING_ATTACH: "person",
         CommandOperation.BINDING_DISABLE: "identity_binding",
+        CommandOperation.BINDING_UNBIND: "identity_binding",
+        CommandOperation.PRESENCE_REGISTER: "presence",
+        CommandOperation.PRESENCE_UNREGISTER: "presence",
+        CommandOperation.PRESENCE_TRANSFER: "identity_binding",
         CommandOperation.PLUGIN_MUTATE: "plugin",
         CommandOperation.PLUGIN_CONFIGURE: "plugin",
         CommandOperation.CONFIG_FILE_SAVE: "config",

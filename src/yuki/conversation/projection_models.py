@@ -7,7 +7,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.schema import MetaData
 
-from yuki.conversation.projection_chunks_schema import PROJECTION_TRIGGERS_0133
+from yuki.conversation.projection_chunks_schema import PROJECTION_TRIGGERS_CURRENT
 from yuki.persistence.models import Base
 
 
@@ -58,7 +58,7 @@ def install_projection_triggers(
     metadata: MetaData, connection: Connection, **kwargs: object
 ) -> None:
     if connection.dialect.name == "sqlite" and inspect(connection).has_table("prompt_projections"):
-        for statement in PROJECTION_TRIGGERS_0133.values():
+        for statement in PROJECTION_TRIGGERS_CURRENT.values():
             connection.exec_driver_sql(
                 statement.replace("CREATE TRIGGER", "CREATE TRIGGER IF NOT EXISTS", 1)
             )

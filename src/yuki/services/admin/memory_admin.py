@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.audit import AdminAuditService
@@ -550,10 +551,10 @@ class MemoryAdminService:
     ) -> MemoryRetrievalResult:
         if not await self._is_superuser(actor):
             raise PermissionError("只有超级管理员可以诊断群记忆")
-        from yuki.services.canonical_owners import require_live_space
+        from yuki.admin.config_owners import resolve_space_owner
 
         async with self._database.sessions() as session:
-            space_id = await require_live_space(session, space_id or actor.space_id)
+            space_id = await resolve_space_owner(session, space_id or actor.space_id)
         runtime = await self._runtime_config.snapshot(group_id=space_id)
         target = MemoryEntityTarget(
             role=MemoryTargetRole.CURRENT_GROUP,
@@ -1110,22 +1111,26 @@ class MemoryAdminService:
         person_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> str:
-        from yuki.identity.person_identity import same_person_id
+        from yuki.identity.errors import CanonicalIdentityError
+        from yuki.identity.person_identity import (
+            current_person_id,
+            person_enabled_condition,
+            same_person_id,
+        )
         from yuki.persistence.unit_of_work import optional_session
-        from yuki.services.canonical_owners import require_live_person
 
         actor_person_id = await self._actor_person_id(actor)
         async with optional_session(self._database, session, write=False) as reader:
-            active_actor = (
-                await require_live_person(reader, actor_person_id)
-                if actor_person_id is not None
-                else None
-            )
-            target_person_id = await require_live_person(
-                reader, person_id or (active_actor if target == actor.user_id else None)
-            )
-            own = active_actor is not None and await same_person_id(
-                reader, active_actor, target_person_id
+            if actor_person_id is not None and not await reader.scalar(
+                select(person_enabled_condition(actor_person_id))
+            ):
+                raise CanonicalIdentityError("canonical_owner_disabled")
+            subject = person_id or (actor_person_id if target == actor.user_id else None)
+            if subject is None:
+                raise CanonicalIdentityError("missing_canonical_owner")
+            target_person_id = await current_person_id(reader, subject)
+            own = actor_person_id is not None and await same_person_id(
+                reader, actor_person_id, target_person_id
             )
             privileged = await self._is_superuser(actor, session=reader)
         if privileged or own:

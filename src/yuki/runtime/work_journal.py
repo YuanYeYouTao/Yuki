@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import time
-from copy import deepcopy
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -109,9 +108,6 @@ class JournalSnapshot:
     pending_calls: tuple[dict[str, str], ...] = ()
     pending_sequence: int = 0
     task_material: dict[str, Any] | None = None
-    # A delivery-only view survives a static contract change, without replaying
-    # the old provider transcript, pending response or private continuation.
-    delivery_record: dict[str, Any] | None = None
 
 
 class WorkJournal:
@@ -179,7 +175,7 @@ class WorkJournal:
                 if used:
                     raise JournalUnavailable("work_journal_missing")
                 return JournalSnapshot("fresh")
-            if row["phase"] == "dispatched":
+            if row["phase"] == "dispatched" and row["contract"] == contract:
                 if not await self.repository.has_pending_business_inputs(lease, work_id):
                     raise JournalUnavailable("work_response_not_persisted")
                 return JournalSnapshot("lost_response", previous_chain=row["chain_id"])
@@ -197,52 +193,6 @@ class WorkJournal:
                 raise JournalUnavailable("work_journal_corrupt") from exc
             if not isinstance(payload, dict) or not isinstance(payload.get("metadata", {}), dict):
                 raise JournalUnavailable("work_journal_corrupt")
-            delivery_record = None
-            metadata = payload["metadata"]
-            progress = metadata.get("progress", {})
-            if (
-                row["phase"] in {"delivery", "delivered"}
-                and isinstance(progress, dict)
-                and (progress.get("delivery_plan"))
-            ):
-                owner = (
-                    await session.execute(
-                        select(work.c.conversation_id, work.c.generation).where(
-                            work.c.id == work_id
-                        )
-                    )
-                ).one_or_none()
-                if owner is None or tuple(owner) != (lease.conversation_id, lease.generation):
-                    raise WorkConflict("work_journal_source_control_mismatch")
-                origin = metadata.get(
-                    "delivery_origin",
-                    {
-                        "work_id": work_id,
-                        "chain_id": row["chain_id"],
-                        "sequence": metadata.get("sequence", 0),
-                    },
-                )
-                if (
-                    not isinstance(origin, dict)
-                    or set(origin) != {"work_id", "chain_id", "sequence"}
-                    or origin.get("work_id") != work_id
-                    or not isinstance(origin.get("chain_id"), str)
-                    or not origin["chain_id"]
-                    or len(origin["chain_id"]) > 36
-                    or ":" in origin["chain_id"]
-                    or type(origin.get("sequence")) is not int
-                    or origin["sequence"] < 0
-                ):
-                    raise JournalUnavailable("work_journal_corrupt")
-                delivery_record = {
-                    "phase": row["phase"],
-                    "origin": deepcopy(origin),
-                    "plan": deepcopy(progress["delivery_plan"]),
-                    "event_ids": metadata.get("event_ids", []),
-                    "source_keys": metadata.get("source_keys", []),
-                    "input_ids": metadata.get("input_ids", []),
-                    "source_guard": metadata.get("source_guard"),
-                }
             contract_changed = row["contract"] != contract
             pending_calls: tuple[dict[str, str], ...] = ()
             pending_sequence = 0
@@ -308,8 +258,6 @@ class WorkJournal:
                 payload = None
             try:
                 refs = references(payload)
-                if delivery_record is not None:
-                    refs |= references(delivery_record)
                 if any(not isinstance(digest, str) for digest in refs):
                     raise ValueError("invalid media reference")
             except (TypeError, ValueError) as exc:
@@ -328,8 +276,6 @@ class WorkJournal:
                     raise JournalUnavailable("work_journal_media_missing") from exc
                 try:
                     payload = hydrate(payload, blobs)
-                    if delivery_record is not None:
-                        delivery_record = hydrate(delivery_record, blobs)
                     result["payload_json"] = json.dumps(payload, ensure_ascii=False)
                 except (ValueError, KeyError) as exc:
                     raise JournalUnavailable("work_journal_media_missing") from exc
@@ -347,7 +293,6 @@ class WorkJournal:
                     task_material=progress.get("task_material")
                     if isinstance(progress, dict)
                     else None,
-                    delivery_record=delivery_record,
                 )
             if contract_changed:
                 return JournalSnapshot(
@@ -362,7 +307,6 @@ class WorkJournal:
                     task_material=progress.get("task_material")
                     if isinstance(progress, dict)
                     else None,
-                    delivery_record=delivery_record,
                 )
             return JournalSnapshot("resume", result, row["chain_id"])
 
@@ -506,10 +450,41 @@ class WorkJournal:
                 )
 
     async def invalidate(self, lease: WorkLease, work_id: str) -> None:
+        async with self.repository.database.sessions() as reader:
+            archived = await reader.scalar(
+                select(journal.c.archived_journal_json).where(journal.c.work_id == work_id)
+            )
+        original = json.loads(archived) if archived is not None else None
         async with self.repository.database.sessions() as session, session.begin():
             await self.repository._assert_lease(session, lease)
             from yuki.runtime.protocol_schema import refs as protocol_refs
 
+            if original is not None:
+                # The offline cutover's retired contract remains a read-only
+                # source. The current manifest enters its normal new-chain path.
+                restored = await session.scalar(
+                    update(journal)
+                    .where(
+                        journal.c.work_id == work_id, journal.c.archived_journal_json == archived
+                    )
+                    .values(
+                        **{
+                            key: original[key]
+                            for key in (
+                                "chain_id",
+                                "contract",
+                                "source_revision",
+                                "phase",
+                                "payload_json",
+                                "updated",
+                            )
+                        }
+                    )
+                    .returning(journal.c.work_id)
+                )
+                if restored is None:
+                    raise WorkConflict("work_archive_changed")
+                return
             await session.execute(delete(journal).where(journal.c.work_id == work_id))
             await session.execute(delete(protocol_refs).where(protocol_refs.c.work_id == work_id))
             await session.execute(delete(media_refs).where(media_refs.c.work_id == work_id))

@@ -13,9 +13,10 @@ from datetime import UTC, datetime
 from typing import Final, Literal, cast
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import contains_eager
 
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -23,6 +24,8 @@ from yuki.conversation.canonical_db_models import (
     PersonActiveRouteModel,
 )
 from yuki.identity.db_models import (
+    AccountAssignmentModel,
+    AccountModel,
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
@@ -30,7 +33,7 @@ from yuki.identity.db_models import (
     SpaceBindingModel,
 )
 from yuki.identity.errors import CanonicalIdentityError
-from yuki.identity.person_identity import person_family_ids
+from yuki.identity.person_identity import person_family_ids, same_person_id
 from yuki.persistence.models import ChatEventModel
 
 IDENTITY_PLATFORM: Final[str] = "qq"
@@ -72,39 +75,132 @@ def optional_external_id(raw: object | None) -> str | None:
     return normalized
 
 
-async def find_identity_binding(
-    session: AsyncSession,
-    external_account_id: str,
-    *,
-    platform: str = IDENTITY_PLATFORM,
-) -> IdentityBindingModel | None:
+async def find_account(
+    session: AsyncSession, external_account_id: str, *, platform: str = IDENTITY_PLATFORM
+) -> AccountModel | None:
     return cast(
-        IdentityBindingModel | None,
+        AccountModel | None,
         await session.scalar(
-            select(IdentityBindingModel).where(
-                IdentityBindingModel.platform == platform,
-                IdentityBindingModel.external_account_id == external_account_id,
-                IdentityBindingModel.status != "transferred",
+            select(AccountModel).where(
+                AccountModel.platform == platform,
+                AccountModel.external_account_id == external_account_id,
             )
         ),
     )
+
+
+async def find_assignment(
+    session: AsyncSession, external_account_id: str, *, platform: str = IDENTITY_PLATFORM
+) -> AccountAssignmentModel | None:
+    return cast(
+        AccountAssignmentModel | None,
+        await session.scalar(
+            select(AccountAssignmentModel)
+            .join(AccountAssignmentModel.account)
+            .options(contains_eager(AccountAssignmentModel.account))
+            .where(
+                AccountModel.platform == platform,
+                AccountModel.external_account_id == external_account_id,
+                AccountAssignmentModel.status != "ended",
+            )
+        ),
+    )
+
+
+async def find_identity_binding(
+    session: AsyncSession, external_account_id: str, *, platform: str = IDENTITY_PLATFORM
+) -> IdentityBindingModel | None:
+    row = await find_assignment(session, external_account_id, platform=platform)
+    return row if isinstance(row, IdentityBindingModel) else None
 
 
 async def find_presence(
+    session: AsyncSession, external_account_id: str, *, platform: str = IDENTITY_PLATFORM
+) -> PresenceModel | None:
+    row = await find_assignment(session, external_account_id, platform=platform)
+    return row if isinstance(row, PresenceModel) else None
+
+
+async def ensure_account(
     session: AsyncSession,
     external_account_id: str,
     *,
-    platform: str = IDENTITY_PLATFORM,
-) -> PresenceModel | None:
-    return cast(
-        PresenceModel | None,
-        await session.scalar(
-            select(PresenceModel).where(
-                PresenceModel.platform == platform,
-                PresenceModel.external_account_id == external_account_id,
-            )
-        ),
+    platform: str,
+    now: datetime,
+    display_name: str = "",
+) -> AccountModel:
+    account = await find_account(session, external_account_id, platform=platform)
+    if account is None:
+        account = AccountModel(
+            id=new_identity_id(),
+            platform=platform,
+            external_account_id=external_account_id,
+            display_name=display_name,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(account)
+    return account
+
+
+async def replace_assignment(
+    session: AsyncSession,
+    account: AccountModel,
+    expected_assignment_id: str | None,
+    new_owner: CanonicalPersonModel | Literal["yuki"] | None,
+    *,
+    now: datetime,
+) -> AccountAssignmentModel | None:
+    """Replace one ownership relation atomically; a pause is never an unbind."""
+    with session.no_autoflush:
+        current = await find_assignment(
+            session, account.external_account_id, platform=account.platform
+        )
+        if (current.id if current is not None else None) != expected_assignment_id:
+            raise CanonicalIdentityError("assignment_changed")
+        if current is not None:
+            if new_owner == "yuki" and current.kind == "yuki":
+                return current
+            if isinstance(new_owner, CanonicalPersonModel) and current.person_id is not None:
+                if await same_person_id(session, current.person_id, new_owner.id):
+                    return current
+    if current is not None:
+        current.status = "ended"
+        current.ended_at = now
+        current.updated_at = now
+        current.revision += 1
+        await session.flush()
+    if new_owner is None:
+        return None
+    cls = PresenceModel if new_owner == "yuki" else IdentityBindingModel
+    result = cls(
+        id=new_identity_id(),
+        account=account,
+        person_id=new_owner.id if isinstance(new_owner, CanonicalPersonModel) else None,
+        status="active",
+        started_at=now,
+        ended_at=None,
+        first_seen_at=now,
+        last_seen_at=now,
+        created_at=now,
+        updated_at=now,
+        revision=1,
     )
+    session.add(result)
+    await session.flush()
+    return result
+
+
+def set_assignment_usage(
+    assignment: AccountAssignmentModel, enabled: bool, *, now: datetime
+) -> None:
+    if assignment.status == "ended":
+        raise CanonicalIdentityError("assignment_ended")
+    status = "active" if enabled else "disabled"
+    if assignment.status != status:
+        assignment.status = status
+        assignment.updated_at = now
+        assignment.revision += 1
 
 
 async def find_space_binding(
@@ -258,44 +354,26 @@ async def create_person_binding(
     now: datetime,
     platform: str = IDENTITY_PLATFORM,
 ) -> IdentityBindingModel:
-    """Create one Person and Binding, re-reading after a uniqueness race."""
-
-    try:
-        async with session.begin_nested():
-            person = CanonicalPersonModel(
-                id=new_identity_id(),
-                display_name=display_name[:128],
-                enabled=True,
-                revision=1,
-                created_at=now,
-                updated_at=now,
-            )
-            binding = IdentityBindingModel(
-                id=new_identity_id(),
-                person_id=person.id,
-                platform=platform,
-                external_account_id=external_account_id,
-                display_name=display_name[:128],
-                status="active",
-                revision=1,
-                first_seen_at=now,
-                last_seen_at=now,
-                created_at=now,
-                updated_at=now,
-                history_starts_at=now,
-            )
-            session.add_all((person, binding))
-            await session.flush()
-            return binding
-    except IntegrityError:
-        existing = await find_identity_binding(
-            session,
-            external_account_id,
-            platform=platform,
-        )
-        if existing is None:
-            raise CanonicalIdentityError("canonical_kind_mismatch") from None
-        return existing
+    current = await find_assignment(session, external_account_id, platform=platform)
+    if current is not None:
+        if isinstance(current, IdentityBindingModel):
+            return current
+        raise CanonicalIdentityError("canonical_kind_mismatch")
+    account = await ensure_account(
+        session, external_account_id, platform=platform, now=now, display_name=display_name
+    )
+    person = CanonicalPersonModel(
+        id=new_identity_id(),
+        display_name=display_name,
+        enabled=True,
+        revision=1,
+        created_at=now,
+        updated_at=now,
+    )
+    session.add(person)
+    return cast(
+        IdentityBindingModel, await replace_assignment(session, account, None, person, now=now)
+    )
 
 
 async def create_presence(
@@ -305,26 +383,24 @@ async def create_presence(
     now: datetime,
     platform: str = IDENTITY_PLATFORM,
 ) -> PresenceModel:
-    try:
-        async with session.begin_nested():
-            presence = PresenceModel(
-                id=new_identity_id(),
-                platform=platform,
-                external_account_id=external_account_id,
-                enabled=True,
-                ingest_eligible=True,
-                revision=1,
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(presence)
-            await session.flush()
-            return presence
-    except IntegrityError:
-        existing = await find_presence(session, external_account_id, platform=platform)
-        if existing is None:
-            raise CanonicalIdentityError("canonical_kind_mismatch") from None
-        return existing
+    current = await find_assignment(session, external_account_id, platform=platform)
+    if current is not None:
+        if isinstance(current, PresenceModel):
+            return current
+        raise CanonicalIdentityError("canonical_kind_mismatch")
+    account = await find_account(session, external_account_id, platform=platform)
+    if (
+        account is not None
+        and await session.scalar(
+            select(AccountAssignmentModel.id)
+            .where(AccountAssignmentModel.account_id == account.id)
+            .limit(1)
+        )
+        is not None
+    ):
+        raise CanonicalIdentityError("assignment_ended")
+    account = await ensure_account(session, external_account_id, platform=platform, now=now)
+    return cast(PresenceModel, await replace_assignment(session, account, None, "yuki", now=now))
 
 
 async def create_space_binding(
@@ -384,19 +460,13 @@ async def ensure_person(
     display_name: str = "",
     now: datetime | None = None,
 ) -> str:
-    account_id = external_id(user_id)
-    binding = await find_identity_binding(session, account_id)
-    presence = await find_presence(session, account_id)
-    if presence is not None and presence.enabled:
-        raise CanonicalIdentityError("canonical_kind_mismatch")
-    if binding is None:
-        binding = await create_person_binding(
-            session,
-            external_account_id=account_id,
-            display_name=display_name,
-            now=now or datetime.now(UTC),
-        )
-        trip("after_identity_foundation")
+    binding = await create_person_binding(
+        session,
+        external_account_id=external_id(user_id),
+        display_name=display_name,
+        now=now or datetime.now(UTC),
+    )
+    trip("after_identity_foundation")
     return binding.person_id
 
 
@@ -406,20 +476,10 @@ async def ensure_presence(
     *,
     now: datetime | None = None,
 ) -> str:
-    account_id = external_id(bot_user_id)
-    presence = await find_presence(session, account_id)
-    binding = await find_identity_binding(session, account_id)
-    if presence is not None and binding is not None:
-        raise CanonicalIdentityError("canonical_kind_mismatch")
-    if binding is not None:
-        raise CanonicalIdentityError("canonical_kind_mismatch")
-    if presence is None:
-        presence = await create_presence(
-            session,
-            external_account_id=account_id,
-            now=now or datetime.now(UTC),
-        )
-        trip("after_identity_foundation")
+    presence = await create_presence(
+        session, external_account_id=external_id(bot_user_id), now=now or datetime.now(UTC)
+    )
+    trip("after_identity_foundation")
     return presence.id
 
 
@@ -531,57 +591,36 @@ async def forget_person_by_id(session: AsyncSession, person_id: str) -> None:
 
     trip("before_forget_canonical")
     family = await person_family_ids(session, person_id)
-    bindings = list(
+    conversations = tuple(
         await session.scalars(
-            select(IdentityBindingModel).where(IdentityBindingModel.person_id.in_(family))
-        )
-    )
-    routes = list(
-        await session.scalars(
-            select(PersonActiveRouteModel).where(PersonActiveRouteModel.person_id.in_(family))
-        )
-    )
-    conversations = list(
-        await session.scalars(
-            select(CanonicalConversationModel).where(
+            select(CanonicalConversationModel.id).where(
                 CanonicalConversationModel.kind == "private",
                 CanonicalConversationModel.person_id.in_(family),
             )
         )
     )
-    aliases = list(
-        await session.scalars(
-            select(ConversationLegacyAliasModel).where(
-                ConversationLegacyAliasModel.conversation_id.in_(
-                    tuple(row.id for row in conversations)
-                )
-            )
-        )
+    await session.execute(
+        delete(PersonActiveRouteModel).where(PersonActiveRouteModel.person_id.in_(family))
     )
-    people = list(
-        await session.scalars(
-            select(CanonicalPersonModel).where(CanonicalPersonModel.id.in_(family))
-        )
-    )
-    for route in routes:
-        await session.delete(route)
     # Delete Conversations before their pinned aliases, whose trigger protects live entries.
-    for conversation in conversations:
-        await session.delete(conversation)
-    await session.flush()
-    for alias in aliases:
-        await session.delete(alias)
-    for binding in bindings:
-        await session.delete(binding)
-    await session.flush()
-    for person in people:
-        if person.merged_into_person_id is not None:
-            await session.delete(person)
-    await session.flush()
-    for person in people:
-        if person.merged_into_person_id is None:
-            await session.delete(person)
-    await session.flush()
+    await session.execute(
+        delete(CanonicalConversationModel).where(CanonicalConversationModel.id.in_(conversations))
+    )
+    await session.execute(
+        delete(ConversationLegacyAliasModel).where(
+            ConversationLegacyAliasModel.conversation_id.in_(conversations)
+        )
+    )
+    await session.execute(
+        delete(IdentityBindingModel).where(IdentityBindingModel.person_id.in_(family))
+    )
+    await session.execute(
+        delete(CanonicalPersonModel).where(
+            CanonicalPersonModel.id.in_(family),
+            CanonicalPersonModel.merged_into_person_id.is_not(None),
+        )
+    )
+    await session.execute(delete(CanonicalPersonModel).where(CanonicalPersonModel.id.in_(family)))
 
 
 __all__ = [

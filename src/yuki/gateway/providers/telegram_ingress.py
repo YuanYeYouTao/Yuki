@@ -7,8 +7,6 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
-
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import (
     AttachmentKind,
@@ -28,10 +26,10 @@ from yuki.identity.canonical_repository import (
     create_space_binding,
     find_space_binding,
 )
+from yuki.identity.receipt_compat import load_claimed_keeper, transport_receipt
 from yuki.identity.routing import PresenceRouter
 from yuki.identity.space_metadata import observe_space_name
 from yuki.persistence.database import Database
-from yuki.persistence.models import ChatEventModel
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 from yuki.services.processor import MessageProcessor
 
@@ -42,18 +40,35 @@ def _text_mentions(
     raw: dict[str, Any], client: TelegramClient
 ) -> tuple[str, tuple[MessageMention, ...], list[dict[str, Any]]]:
     text = str(raw.get("text") or raw.get("caption") or "")
-    encoded = text.encode("utf-16-le")
     entities = raw.get("entities") or raw.get("caption_entities") or []
+    entities = sorted(
+        (item for item in entities if item.get("type") in {"mention", "text_mention"}),
+        key=lambda item: item["offset"],
+    )
+    if not entities:
+        return text, (), [{"type": "text", "data": {"text": text}}] if text else []
+    boundaries = {
+        point
+        for entity in entities
+        for point in (entity["offset"], entity["offset"] + entity["length"])
+    }
+    offsets = {}
+    units = 0
+    for index, character in enumerate(text):
+        if units in boundaries:
+            offsets[units] = index
+        units += 2 if ord(character) > 0xFFFF else 1
+    if units in boundaries:
+        offsets[units] = len(text)
     mentions: list[MessageMention] = []
     segments: list[dict[str, Any]] = []
     cursor = 0
-    for entity in sorted(entities, key=lambda item: item["offset"]):
+    for entity in entities:
         kind = entity.get("type")
         if kind not in {"mention", "text_mention"}:
             continue
         start_units, end_units = entity["offset"], entity["offset"] + entity["length"]
-        start = len(encoded[: start_units * 2].decode("utf-16-le"))
-        end = len(encoded[: end_units * 2].decode("utf-16-le"))
+        start, end = offsets[start_units], offsets[end_units]
         if start > cursor:
             segments.append({"type": "text", "data": {"text": text[cursor:start]}})
         token = text[start:end]
@@ -80,7 +95,13 @@ def _text_mentions(
         segments.append(
             {
                 "type": "telegram_mention",
-                "data": {"text": token, "target_user_id": target, "entity_type": kind},
+                "data": {
+                    "text": token,
+                    "target_user_id": target,
+                    "entity_type": kind,
+                    "display_name": name,
+                    "native_username": user.get("username", ""),
+                },
             }
         )
         cursor = end
@@ -224,6 +245,7 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
             ),
             is_bot=bool(author.get("is_bot")),
             nickname_known=True,
+            native_username=author.get("username", ""),
         ),
         text=text,
         raw_text=text,
@@ -244,7 +266,10 @@ def normalize_message(raw: dict[str, Any], client: TelegramClient) -> InboundMes
         reply_to_message_id=f"{chat_id}:{reply['message_id']}" if isinstance(reply, dict) else None,
         reply_sender_user_id=str(reply_author["id"]) if isinstance(reply_author, dict) else None,
         reply_text=reply_text,
-        received_at=datetime.fromtimestamp(raw["date"], UTC),
+        occurred_at=datetime.fromtimestamp(raw["date"], UTC)
+        if raw.get("date") is not None
+        else None,
+        received_at=datetime.now(UTC),
     )
 
 
@@ -403,32 +428,27 @@ class TelegramGateway:
         message = normalize_message(raw, self.client)
         if message is None:
             return
+        async with self.database.sessions() as session:
+            receipt = await transport_receipt(
+                session,
+                presence_id=self.presence_id,
+                scope=message.scope(),
+                event_type=message.event_type,
+                platform_message_id=message.message_id,
+            )
+            original = await load_claimed_keeper(
+                session, receipt.canonical_event_id if receipt is not None else None
+            )
         if "edited_message" in update:
-            async with self.database.sessions() as session:
-                event = await session.scalar(
-                    select(ChatEventModel).where(
-                        ChatEventModel.ingress_presence_id == self.presence_id,
-                        ChatEventModel.platform_message_id == message.message_id,
-                        ChatEventModel.direction == "inbound",
-                    )
-                )
-            if event is not None:
+            if original is not None:
                 await self.writer.update_platform_message(
-                    event.id,
+                    original.id,
                     message,
                     presence_id=self.presence_id,
                     edited_at=datetime.fromtimestamp(raw["edit_date"], UTC),
                     revision=update["update_id"],
                 )
             return
-        async with self.database.sessions() as session:
-            original = await session.scalar(
-                select(ChatEventModel).where(
-                    ChatEventModel.ingress_presence_id == self.presence_id,
-                    ChatEventModel.platform_message_id == message.message_id,
-                    ChatEventModel.direction == "inbound",
-                )
-            )
         if original is not None:
             if original.sender_user_id != message.sender.user_id:
                 raise PermissionError("telegram_source_conflict")

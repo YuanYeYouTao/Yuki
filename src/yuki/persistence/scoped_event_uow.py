@@ -46,6 +46,8 @@ from yuki.identity.receipt_compat import (
     require_claimed_event,
     require_compatible_v2_live,
     require_reply_source,
+    transport_namespace,
+    transport_receipt,
 )
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
@@ -244,7 +246,6 @@ class ScopedEventLedgerUnitOfWork:
                 original = await reader.get(ChatEventModel, event_id)
                 if (
                     original is None
-                    or original.ingress_presence_id != presence_id
                     or original.platform_message_id != message.message_id
                     or original.sender_user_id != message.sender.user_id
                     or original.direction != "inbound"
@@ -252,15 +253,21 @@ class ScopedEventLedgerUnitOfWork:
                     raise CanonicalIdentityError("receipt_conflict")
                 source_segments, source_content = original.segments_json, original.content
                 conversation_id = original.canonical_conversation_id
-                conversation = await reader.get(CanonicalConversationModel, conversation_id)
+                conversation = (
+                    await reader.get(CanonicalConversationModel, conversation_id)
+                    if conversation_id
+                    else None
+                )
                 presence = await reader.get(PresenceModel, presence_id)
+                original_presence = await reader.get(PresenceModel, original.ingress_presence_id)
                 if (
-                    conversation is None
-                    or presence is None
+                    presence is None
+                    or original_presence is None
+                    or original_presence.account_id != presence.account_id
                     or presence.platform != message.platform
                 ):
-                    raise CanonicalIdentityError("no_conversation")
-                generation = conversation.generation
+                    raise CanonicalIdentityError("receipt_conflict")
+                generation = conversation.generation if conversation else 0
                 prepared_message = await resolve_message_mentions(
                     reader,
                     replace(
@@ -268,7 +275,7 @@ class ScopedEventLedgerUnitOfWork:
                         conversation_id=conversation_id,
                         reply_to_event_id=original.reply_to_event_id,
                     ),
-                    space_id=conversation.space_id,
+                    space_id=conversation.space_id if conversation else None,
                 )
                 prepared_segments = snapshot_mention_segments(
                     prepared_message.segments, prepared_message.mentions
@@ -316,14 +323,18 @@ class ScopedEventLedgerUnitOfWork:
             segments = json.dumps(
                 [*prepared_segments, *metadata], ensure_ascii=False, separators=(",", ":")
             )
-            media = prepare_event_media(
-                event_id=event_id,
-                conversation_id=conversation_id,
-                generation=generation,
-                segments=prepared_segments,
-                reply_segments=prepared_message.reply_segments
-                if prepared_message.reply_to_event_id is None
-                else (),
+            media = (
+                prepare_event_media(
+                    event_id=event_id,
+                    conversation_id=conversation_id,
+                    generation=generation,
+                    segments=prepared_segments,
+                    reply_segments=prepared_message.reply_segments
+                    if prepared_message.reply_to_event_id is None
+                    else (),
+                )
+                if conversation_id is not None
+                else ()
             )
             async with self._database.immediate_session() as session:
                 event = await session.get(ChatEventModel, event_id)
@@ -331,13 +342,14 @@ class ScopedEventLedgerUnitOfWork:
                     raise CanonicalIdentityError("receipt_conflict")
                 if event.segments_json != source_segments or event.content != source_content:
                     continue
-                conversation = await session.get(CanonicalConversationModel, conversation_id)
-                if conversation is None:
-                    raise CanonicalIdentityError("no_conversation")
-                if (
-                    conversation.generation != generation
-                    or tuple((await session.execute(mentions_query)).all()) != mention_facts
-                ):
+                conversation = (
+                    await session.get(CanonicalConversationModel, conversation_id)
+                    if conversation_id
+                    else None
+                )
+                if (conversation is not None and conversation.generation != generation) or tuple(
+                    (await session.execute(mentions_query)).all()
+                ) != mention_facts:
                     continue
                 current_media = {
                     item.attachment_index: item
@@ -370,8 +382,9 @@ class ScopedEventLedgerUnitOfWork:
                     await session.delete(removed)
                 event.content, event.segments_json = prepared_message.text, segments
                 event.visual_summary, event.audio_transcript = "", ""
-                conversation.prompt_source_revision += 1
-                conversation.revision += 1
+                if conversation is not None:
+                    conversation.prompt_source_revision += 1
+                    conversation.revision += 1
             return
 
     async def set_audio_transcript(
@@ -495,12 +508,12 @@ class ScopedEventLedgerUnitOfWork:
         external_target_id: str | None = None,
         event_kind: str = "message",
     ) -> tuple[ChatEventModel | None, CanonicalEventReceiptModel | None]:
-        receipt = await session.scalar(
-            select(CanonicalEventReceiptModel).where(
-                CanonicalEventReceiptModel.ingress_presence_id == presence_id,
-                CanonicalEventReceiptModel.event_type == event_type,
-                CanonicalEventReceiptModel.platform_message_id == platform_message_id[:128],
-            )
+        receipt = await transport_receipt(
+            session,
+            presence_id=presence_id,
+            scope=scope,
+            event_type=event_type,
+            platform_message_id=platform_message_id,
         )
         if receipt is not None:
             claimed = await load_claimed_keeper(session, receipt.canonical_event_id)
@@ -555,16 +568,17 @@ class ScopedEventLedgerUnitOfWork:
         self,
         session: AsyncSession,
         *,
+        scope: ConversationScope,
         presence_id: str,
         event_type: str,
         platform_message_id: str,
     ) -> tuple[CanonicalEventReceiptModel | None, ChatEventModel | None]:
-        receipt = await session.scalar(
-            select(CanonicalEventReceiptModel).where(
-                CanonicalEventReceiptModel.ingress_presence_id == presence_id,
-                CanonicalEventReceiptModel.event_type == event_type,
-                CanonicalEventReceiptModel.platform_message_id == platform_message_id[:128],
-            )
+        receipt = await transport_receipt(
+            session,
+            presence_id=presence_id,
+            scope=scope,
+            event_type=event_type,
+            platform_message_id=platform_message_id,
         )
         if receipt is None:
             return None, None
@@ -882,12 +896,12 @@ class ScopedEventLedgerUnitOfWork:
                 raise CanonicalIdentityError("no_conversation")
             if original.kind == "private":
                 binding = await session.get(IdentityBindingModel, original.identity_binding_id)
-                from yuki.conversation.legacy_entries import legacy_private_entry_matches
+                from yuki.conversation.event_entry import event_entry_matches
 
-                legacy_entry = (
+                original_entry = (
                     binding is not None
                     and direction == "outbound"
-                    and await legacy_private_entry_matches(
+                    and await event_entry_matches(
                         session, original, binding, presence, source_event_id or caused_by_event_id
                     )
                 )
@@ -900,7 +914,7 @@ class ScopedEventLedgerUnitOfWork:
                     or (
                         original.entry_presence_id is not None
                         and original.entry_presence_id != presence.id
-                        and not legacy_entry
+                        and not original_entry
                     )
                 ):
                     raise CanonicalIdentityError("canonical_owner_mismatch")
@@ -1055,6 +1069,8 @@ class ScopedEventLedgerUnitOfWork:
                     session.add(
                         CanonicalEventReceiptModel(
                             ingress_presence_id=presence_id,
+                            ingress_account_id=presence.account_id,
+                            transport_namespace=transport_namespace(scope),
                             event_type=receipt_event_type,
                             platform_message_id=platform_message_id[:128],
                             canonical_event_id=canonical_event_id,
@@ -1066,6 +1082,7 @@ class ScopedEventLedgerUnitOfWork:
             except IntegrityError as exc:
                 raced_receipt, raced = await self._load_receipt_claimed_event(
                     session,
+                    scope=scope,
                     presence_id=presence_id,
                     event_type=receipt_event_type,
                     platform_message_id=platform_message_id,

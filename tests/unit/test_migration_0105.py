@@ -11,14 +11,14 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import Column, Integer, MetaData, Table, select, text
 from tests.support.legacy_conversation_seed import (
-    enable_history_column_for_legacy_seed,
-    seed_pre_0119_social_conversations,
+    frozen_social_env,
+    seed_legacy_person,
+    seed_legacy_space,
 )
 from tests.support.social_identity_cases import social_env
 
 from yuki.automation.authority import DelegatedAuthority, PermissionLevel
 from yuki.automation.repository import AutomationRepository
-from yuki.identity.canonical_repository import ensure_person, ensure_space
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
     AutomationStepRunModel,
@@ -57,10 +57,9 @@ def test_0107_query_migration_removes_retired_overrides_without_removing_other_c
     async def seed():
         database = Database(url)
         try:
-            await enable_history_column_for_legacy_seed(database)
             async with database.immediate_session() as writer:
-                person = await ensure_person(writer, "10001")
-                space = await ensure_space(writer, "20001")
+                person = await seed_legacy_person(writer, "10001")
+                space = await seed_legacy_space(writer, "20001")
                 now = datetime.now(UTC)
                 for scope, person_id, space_id, key, value in (
                     ("global", None, None, "memory.max_referenced_targets", "5"),
@@ -123,8 +122,7 @@ def test_fresh_and_0104_upgrade_preserve_work_identity_source_receipts_and_budge
     async def seed_0104():
         database = Database(url)
         try:
-            await seed_pre_0119_social_conversations(database)
-            env = await social_env(database, tmp_path)
+            env = await frozen_social_env(database)
             async with database.immediate_session() as session:
                 for identity, parent, state, checkpoint in (
                     (
@@ -324,8 +322,7 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
     async def seed():
         database = Database(url)
         try:
-            await seed_pre_0119_social_conversations(database)
-            env = await social_env(database, tmp_path)
+            env = await frozen_social_env(database)
             authority = DelegatedAuthority(
                 creator_user_id="10001",
                 bot_user_id="80001",

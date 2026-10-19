@@ -6,18 +6,19 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from sqlalchemy import select
+from tests.support.client_identity import client_identity_service
 from tests.support.user_profiles_helpers import observe_members
 from tests.unit.test_canonical_ingress import _Bot, _stack
 from tests.unit.test_normalizer import group_event, private_event
 
 from yuki.adapters.onebot.normalizer import normalize_event
-from yuki.client_api.identity import ClientIdentityService
 from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
 from yuki.conversation.hydrate import ensure_canonical_conversation
 from yuki.identity.canonical_repository import ensure_presence, find_identity_binding
+from yuki.identity.db_models import AccountSpaceProfileModel
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.receipt_compat import occurred_at_token
-from yuki.persistence.models import ChatEventModel, MembershipModel
+from yuki.persistence.models import ChatEventModel
 
 
 @pytest.mark.parametrize("private", [False, True])
@@ -53,15 +54,17 @@ async def test_receipt_replay_after_person_transfer_keeps_original_author_conver
         target = await find_identity_binding(session, "1002")
         mentioned = await find_identity_binding(session, "1003")
         target_person = target.person_id
-        await ClientIdentityService(database).transfer_binding(
+        await client_identity_service(database).transfer_binding(
             session, binding, target_person, now=datetime.now(UTC)
         )
         mentioned.display_name = "renamed target"
         if first_admission.space_id:
-            member = await session.get(
-                MembershipModel, (mentioned.person_id, first_admission.space_id)
+            profile = await session.get(
+                AccountSpaceProfileModel,
+                (mentioned.account_id, first_admission.space_binding_id),
             )
-            member.group_card = ""
+            assert profile is not None
+            profile.display_name = ""
         receipt = await session.scalar(
             select(CanonicalEventReceiptModel).where(
                 CanonicalEventReceiptModel.canonical_event_id == first.event.canonical_event_id
@@ -69,10 +72,10 @@ async def test_receipt_replay_after_person_transfer_keeps_original_author_conver
         )
         original_receipt_id = receipt.id
     current = await resolver.pre_admit(bot, native)
-    assert current.author_person_id == target_person != first.event.author_person_id
-    assert "@renamed target" in current.message.text
+    assert current.author_person_id == first.event.author_person_id != target_person
+    assert current.reason == "receipt_replay"
     if private:
-        assert current.conversation_id != first.event.canonical_conversation_id
+        assert current.conversation_id == first.event.canonical_conversation_id
     recovered = await uow.append_inbound(current.message, current)
     assert not recovered.created
     assert occurred_at_token(recovered.event.occurred_at) == occurred_at_token(
@@ -89,13 +92,13 @@ async def test_receipt_replay_after_person_transfer_keeps_original_author_conver
         factory(Message([MessageSegment.at(1002), MessageSegment.text(" original question")]))
     )
     changed_admission = await resolver.pre_admit(
-        bot, replace(changed_native, received_at=native.received_at)
+        bot, replace(changed_native, occurred_at=native.occurred_at)
     )
     attempts = (
         (changed_admission.message, changed_admission),
         (replace(current.message, text=current.message.text + " changed"), current),
         (replace(current.message, sender=replace(current.message.sender, user_id="1002")), current),
-        (replace(current.message, received_at=native.received_at + timedelta(seconds=1)), current),
+        (replace(current.message, occurred_at=native.occurred_at + timedelta(seconds=1)), current),
         (replace(current.message, reply_to_message_id="different-reply"), current),
         (replace(current.message, thread_id="different-thread"), current),
     )

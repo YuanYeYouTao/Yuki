@@ -1,203 +1,259 @@
-"""Explicit canonical rows for migration fixtures before Rollup retirement."""
+"""Frozen SQL facts for historical migration tests, never current runtime adapters."""
 
+import hashlib
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
 from yuki.persistence.database import Database
 
 
-async def enable_history_column_for_legacy_seed(database: Database) -> None:
-    """Supply current identity ORM fields only while seeding an old database."""
-    async with database.immediate_session() as writer:
-        await writer.execute(
-            text("ALTER TABLE identity_bindings ADD COLUMN history_starts_at DATETIME")
-        )
-        await writer.execute(
-            text("ALTER TABLE persons ADD COLUMN merged_into_person_id VARCHAR(36)")
-        )
-        await writer.execute(
-            text("ALTER TABLE persons ADD COLUMN display_name TEXT NOT NULL DEFAULT ''")
-        )
-        await writer.execute(
-            text("ALTER TABLE persons ADD COLUMN is_superuser BOOLEAN NOT NULL DEFAULT 0")
-        )
-    original_close = database.close
-
-    async def close_seed() -> None:
-        try:
-            async with database.immediate_session() as writer:
-                await writer.execute(
-                    text("ALTER TABLE identity_bindings DROP COLUMN history_starts_at")
-                )
-                await writer.execute(text("ALTER TABLE persons DROP COLUMN display_name"))
-                await writer.execute(text("ALTER TABLE persons DROP COLUMN is_superuser"))
-                await writer.execute(text("ALTER TABLE persons DROP COLUMN merged_into_person_id"))
-        finally:
-            await original_close()
-
-    database.close = close_seed
+async def insert_frozen(session: AsyncSession, table: str, values: dict) -> None:
+    """Write only the historical table's real columns, retaining its own defaults."""
+    columns = {row[1] for row in await session.execute(text(f'PRAGMA table_info("{table}")'))}
+    selected = {key: value for key, value in values.items() if key in columns}
+    await session.execute(
+        text(
+            f'INSERT INTO "{table}" ('
+            + ",".join(selected)
+            + ") VALUES ("
+            + ",".join(":" + key for key in selected)
+            + ")"
+        ),
+        selected,
+    )
 
 
-async def enable_projection_columns_for_legacy_seed(database: Database) -> None:
-    """Let today's raw reader seed paid facts without publishing a current view.
-
-    The seed disables Main publication; these two reader-only columns are removed
-    before the frozen upgrade runs. The historical payload and receipts remain
-    untouched, and no current chunk table is introduced into the old schema.
-    """
-    async with database.immediate_session() as writer:
-        for name in ("tail_ordinal", "item_count"):
-            await writer.execute(
-                text(f"ALTER TABLE prompt_projections ADD COLUMN {name} INTEGER NOT NULL DEFAULT 0")
-            )
-    original_close = database.close
-
-    async def close_seed() -> None:
-        try:
-            async with database.immediate_session() as writer:
-                for name in ("tail_ordinal", "item_count"):
-                    await writer.execute(text(f"ALTER TABLE prompt_projections DROP COLUMN {name}"))
-        finally:
-            await original_close()
-
-    database.close = close_seed
-
-
-async def enable_binding_column_for_legacy_seed(database: Database) -> None:
-    """Let current runtime build old test facts, then restore the frozen schema.
-
-    These tests seed pre-0120 databases using the real current Work machinery.
-    The nullable seed-only column carries the old single private owner's binding;
-    closing the seed connection removes it before Alembic tests the real upgrade.
-    No production compatibility path or historical migration is changed.
-    """
-    await enable_history_column_for_legacy_seed(database)
-    async with database.immediate_session() as writer:
-        await writer.execute(
-            text("ALTER TABLE canonical_conversations ADD COLUMN identity_binding_id VARCHAR(36)")
-        )
-        for name, kind in (
-            ("entry_presence_id", "VARCHAR(36)"),
-            ("space_binding_id", "VARCHAR(36)"),
-            ("thread_id", "VARCHAR(128)"),
-        ):
-            await writer.execute(
-                text(f"ALTER TABLE canonical_conversations ADD COLUMN {name} {kind}")
-            )
-        await writer.execute(
-            text(
-                "UPDATE canonical_conversations SET identity_binding_id=("
-                "SELECT b.id FROM identity_bindings b "
-                "WHERE b.person_id=canonical_conversations.person_id) "
-                "WHERE kind='private'"
-            )
-        )
-    await populate_entry_columns_for_legacy_seed(database)
-    original_close = database.close
-
-    async def close_seed() -> None:
-        try:
-            async with database.immediate_session() as writer:
-                for name in ("thread_id", "space_binding_id", "entry_presence_id"):
-                    await writer.execute(
-                        text(f"ALTER TABLE canonical_conversations DROP COLUMN {name}")
-                    )
-                await writer.execute(
-                    text("ALTER TABLE canonical_conversations DROP COLUMN identity_binding_id")
-                )
-        finally:
-            await original_close()
-
-    database.close = close_seed
+async def seed_legacy_person(session: AsyncSession, account: str = "10001") -> str:
+    owner = await session.scalar(
+        text(
+            "SELECT person_id FROM identity_bindings "
+            "WHERE platform='qq' AND external_account_id=:id"
+        ),
+        {"id": account},
+    )
+    if owner is not None:
+        return owner
+    now = datetime.now(UTC)
+    owner = str(uuid4())
+    await insert_frozen(
+        session,
+        "persons",
+        {
+            "id": owner,
+            "enabled": True,
+            "revision": 1,
+            "display_name": "person",
+            "merged_into_person_id": None,
+            "is_superuser": False,
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
+    await insert_frozen(
+        session,
+        "identity_bindings",
+        {
+            "id": str(uuid4()),
+            "person_id": owner,
+            "platform": "qq",
+            "external_account_id": account,
+            "display_name": "person",
+            "status": "active",
+            "revision": 1,
+            "first_seen_at": now,
+            "last_seen_at": now,
+            "history_starts_at": now,
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
+    return owner
 
 
-async def populate_entry_columns_for_legacy_seed(database: Database) -> None:
-    """Use each original QQ alias, never today's cross-platform representative.
+async def seed_legacy_space(session: AsyncSession, native: str = "20001") -> str:
+    space = await session.scalar(
+        text("SELECT space_id FROM space_bindings WHERE platform='qq' AND external_space_id=:id"),
+        {"id": native},
+    )
+    if space is not None:
+        return space
+    now = datetime.now(UTC)
+    space = str(uuid4())
+    await insert_frozen(
+        session,
+        "spaces",
+        {
+            "id": space,
+            "name": "group",
+            "enabled": True,
+            "autonomous_enabled": True,
+            "require_mention": True,
+            "revision": 1,
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
+    await insert_frozen(
+        session,
+        "space_bindings",
+        {
+            "id": str(uuid4()),
+            "space_id": space,
+            "platform": "qq",
+            "external_space_id": native,
+            "display_name": "group",
+            "status": "active",
+            "revision": 1,
+            "first_seen_at": now,
+            "last_seen_at": now,
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
+    return space
 
-    The three entry columns only let the current service seed historical test
-    data. ``close_seed`` drops them before Alembic sees the frozen old schema.
-    """
-    async with database.immediate_session() as writer:
-        rows = (
-            await writer.execute(
+
+async def seed_legacy_presence(session: AsyncSession, account: str = "80001") -> str:
+    presence = await session.scalar(
+        text("SELECT id FROM presences WHERE platform='qq' AND external_account_id=:id"),
+        {"id": account},
+    )
+    if presence is not None:
+        return presence
+    now = datetime.now(UTC)
+    presence = str(uuid4())
+    await insert_frozen(
+        session,
+        "presences",
+        {
+            "id": presence,
+            "platform": "qq",
+            "external_account_id": account,
+            "display_name": "Yuki",
+            "enabled": True,
+            "ingest_eligible": True,
+            "revision": 1,
+            "created_at": now,
+            "updated_at": now,
+        },
+    )
+    return presence
+
+
+async def frozen_social_env(database: Database, *, private: bool = False) -> SimpleNamespace:
+    """Seed original identity, Conversation and event rows without calling today's services."""
+    now = datetime.now(UTC)
+    async with database.immediate_session() as session:
+        person = await seed_legacy_person(session)
+        space = await seed_legacy_space(session)
+        presence = await seed_legacy_presence(session)
+        conversation = None
+        for kind in ("space", "private") if private else ("space",):
+            scope = f"bot:80001:{'group:20001' if kind == 'space' else 'private:10001'}"
+            original = await session.scalar(
                 text(
-                    "SELECT c.id,c.kind,c.person_id,c.space_id,a.scope_key "
-                    "FROM canonical_conversations c JOIN conversation_legacy_aliases a "
-                    "ON a.id=c.primary_alias_id"
-                )
-            )
-        ).all()
-        for row in rows:
-            _, bot, kind, account = row.scope_key.split(":", 3)
-            presence = await ensure_presence(writer, bot)
-            binding = (
-                await writer.scalar(
-                    text(
-                        "SELECT id FROM space_bindings WHERE platform='qq' "
-                        "AND external_space_id=:account AND space_id=:space"
-                    ),
-                    {"account": account, "space": row.space_id},
-                )
-                if kind == "group"
-                else None
-            )
-            await writer.execute(
-                text(
-                    "UPDATE canonical_conversations "
-                    "SET entry_presence_id=:presence,space_binding_id=:binding WHERE id=:id"
+                    "SELECT conversation_id FROM conversation_legacy_aliases WHERE scope_key=:key"
                 ),
-                {"presence": presence, "binding": binding, "id": row.id},
+                {"key": scope},
             )
-
-
-async def seed_pre_0119_social_conversations(database: Database, *, private: bool = False) -> None:
-    """Seed the frozen NOT NULL layout used by the 0104–0118 upgrade tests."""
-    await enable_binding_column_for_legacy_seed(database)
-    async with database.immediate_session() as writer:
-        space = await ensure_space(writer, "20001")
-        owners = [("space", None, space, "bot:80001:group:20001")]
-        if private:
-            person = await ensure_person(writer, "10001")
-            owners.append(("private", person, None, "bot:80001:private:10001"))
-        now = datetime.now(UTC)
-        for kind, person_id, space_id, scope_key in owners:
-            conversation, alias = str(uuid4()), str(uuid4())
-            values = {
-                "id": conversation,
-                "alias": alias,
-                "kind": kind,
-                "person": person_id,
-                "space": space_id,
-                "scope": scope_key,
-                "now": now,
-            }
-            await writer.execute(
-                text(
-                    "INSERT INTO canonical_conversations("
-                    "id,kind,person_id,space_id,primary_alias_id,primary_marker,generation,"
-                    "starts_after_event_id,last_event_id,last_generation_change_event_id,"
-                    "covered_through_event_id,uncovered_event_count,uncovered_character_count,"
-                    "revision,created_at,updated_at) "
-                    "VALUES(:id,:kind,:person,:space,:alias,1,1,0,0,0,0,0,0,1,:now,:now)"
-                ),
-                values,
-            )
-            await writer.execute(
-                text(
-                    "INSERT INTO conversation_legacy_aliases("
-                    "id,conversation_id,scope_key,is_primary,created_at,updated_at) "
-                    "VALUES(:alias,:id,:scope,1,:now,:now)"
-                ),
-                values,
-            )
-        await writer.execute(
-            text(
-                "UPDATE canonical_conversations SET identity_binding_id=("
-                "SELECT b.id FROM identity_bindings b "
-                "WHERE b.person_id=canonical_conversations.person_id) WHERE kind='private'"
-            )
+            if original is None:
+                original, alias = str(uuid4()), str(uuid4())
+                binding = await session.scalar(
+                    text("SELECT id FROM identity_bindings WHERE person_id=:id"), {"id": person}
+                )
+                space_binding = await session.scalar(
+                    text("SELECT id FROM space_bindings WHERE space_id=:id"), {"id": space}
+                )
+                await insert_frozen(
+                    session,
+                    "canonical_conversations",
+                    {
+                        "id": original,
+                        "kind": kind,
+                        "person_id": person if kind == "private" else None,
+                        "space_id": space if kind == "space" else None,
+                        "identity_binding_id": binding if kind == "private" else None,
+                        "entry_presence_id": presence,
+                        "space_binding_id": space_binding if kind == "space" else None,
+                        "thread_id": None,
+                        "primary_alias_id": alias,
+                        "primary_marker": 1,
+                        "generation": 1,
+                        "prompt_source_revision": 0,
+                        "starts_after_event_id": 0,
+                        "last_event_id": 0,
+                        "last_generation_change_event_id": 0,
+                        "covered_through_event_id": 0,
+                        "uncovered_event_count": 0,
+                        "uncovered_character_count": 0,
+                        "revision": 1,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+                await insert_frozen(
+                    session,
+                    "conversation_legacy_aliases",
+                    {
+                        "id": alias,
+                        "conversation_id": original,
+                        "scope_key": scope,
+                        "is_primary": True,
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+            if kind == "space":
+                conversation = original
+        event_id = await session.scalar(
+            text("SELECT id FROM chat_events WHERE canonical_conversation_id=:id LIMIT 1"),
+            {"id": conversation},
         )
-    await populate_entry_columns_for_legacy_seed(database)
+        if event_id is None:
+            await insert_frozen(
+                session,
+                "chat_events",
+                {
+                    "bot_user_id": "80001",
+                    "platform_message_id": "inbound",
+                    "scope_type": "group",
+                    "group_id": "20001",
+                    "sender_user_id": "10001",
+                    "sender_nickname": "person",
+                    "sender_group_card": "",
+                    "direction": "inbound",
+                    "event_kind": "message",
+                    "content": "hello",
+                    "visual_summary": "",
+                    "audio_transcript": "",
+                    "segments_json": "[]",
+                    "origin": "user_message",
+                    "occurred_at": now,
+                    "observed_at": now,
+                    "canonical_event_id": str(uuid4()),
+                    "canonical_conversation_id": conversation,
+                    "author_kind": "person",
+                    "author_person_id": person,
+                    "ingress_presence_id": presence,
+                    "utterance_fingerprint": hashlib.sha256(b"hello").hexdigest(),
+                    "suppression_status": "keeper",
+                    "ingress_provider": "snowluma",
+                    "ingress_gateway_instance_id": "historical-seed",
+                },
+            )
+            event_id = await session.scalar(text("SELECT last_insert_rowid()"))
+            await session.execute(
+                text("UPDATE canonical_conversations SET last_event_id=:event WHERE id=:id"),
+                {"event": event_id, "id": conversation},
+            )
+    return SimpleNamespace(
+        person=person,
+        presence=presence,
+        space=space,
+        context=SimpleNamespace(conversation_id=conversation),
+        bot=SimpleNamespace(self_id="80001"),
+    )

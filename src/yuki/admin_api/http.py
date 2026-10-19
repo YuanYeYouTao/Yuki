@@ -62,6 +62,14 @@ class PresenceBody(CommandBody):
     ingest_eligible: bool | None = None
 
 
+class PresenceRegistrationBody(BindingBody):
+    expected_assignment_id: UUID4 | None = None
+
+
+class PresenceTransferBody(CommandBody):
+    to_person: UUID4
+
+
 class PluginBody(CommandBody):
     permissions: list[str] = Field(default_factory=list)
 
@@ -174,6 +182,38 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
     @router.get("/presences/{identity}")
     async def presence(identity: UUID4, actor: Actor) -> Any:
         return {"data": await resolve().queries.presence(actor, str(identity))}
+
+    @router.post("/presences")
+    async def register_presence(body: PresenceRegistrationBody, actor: Actor) -> Any:
+        payload = body.model_dump(mode="json", exclude={"request_id", "expected_revision"})
+        return {
+            "data": result_view(
+                await resolve().commands.identity.register_presence(actor, body.command(payload))
+            )
+        }
+
+    @router.post("/presences/{identity}/unregister")
+    async def unregister_presence(identity: UUID4, body: CommandBody, actor: Actor) -> Any:
+        return {
+            "data": result_view(
+                await resolve().commands.identity.unbind_assignment(
+                    actor, str(identity), body.command({}), kind="yuki"
+                )
+            )
+        }
+
+    @router.post("/presences/{identity}/transfer")
+    async def transfer_presence(identity: UUID4, body: PresenceTransferBody, actor: Actor) -> Any:
+        return {
+            "data": result_view(
+                await resolve().commands.identity.transfer_presence(
+                    actor,
+                    str(identity),
+                    str(body.to_person),
+                    body.command({"to_person": str(body.to_person)}),
+                )
+            )
+        }
 
     @router.post("/presences/{identity}")
     async def presence_state(identity: UUID4, body: PresenceBody, actor: Actor) -> Any:
@@ -337,6 +377,16 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
             "data": result_view(
                 await resolve().commands.identity.disable_binding(
                     actor, str(identity), body.command({})
+                )
+            )
+        }
+
+    @router.post("/bindings/{identity}/unbind")
+    async def unbind_binding(identity: UUID4, body: CommandBody, actor: Actor) -> Any:
+        return {
+            "data": result_view(
+                await resolve().commands.identity.unbind_assignment(
+                    actor, str(identity), body.command({}), kind="person"
                 )
             )
         }

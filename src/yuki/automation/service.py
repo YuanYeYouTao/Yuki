@@ -17,7 +17,6 @@ from yuki.automation.authority import (
     PermissionLevel,
 )
 from yuki.automation.control_context import (
-    ControlAutomationContext,
     CreationProvenance,
     resolve_control_context,
 )
@@ -569,181 +568,6 @@ class AutomationService:
     def current_time(self) -> dict[str, str]:
         return self._time.current_default().to_model_dict()
 
-    def _control_authority(self, context: ControlAutomationContext) -> DelegatedAuthority:
-        return DelegatedAuthority(
-            creator_user_id=context.provenance.creator_user_id,
-            bot_user_id=context.provenance.bot_user_id,
-            created_from_message_id="",
-            created_at=self._time.clock.now().isoformat(),
-            permission_level=context.provenance.permission,
-            current_group_id=context.provenance.current_group_id,
-            principal_kind="self" if context.owner_id == "self" else "person",
-            canonical_creator_person_id=None if context.owner_id == "self" else context.owner_id,
-            canonical_conversation_id=context.conversation_id,
-            conversation_generation=context.generation,
-            canonical_presence_id=context.presence_id,
-            canonical_space_id=context.space_id,
-        )
-
-    async def administer_create(
-        self,
-        task_payload: object,
-        *,
-        owner_id: str,
-        creation_source_key: str,
-        conversation_id: str | None = None,
-        session: AsyncSession | None = None,
-        max_runs: int | None = None,
-    ) -> AutomationRecord:
-        """Persist a control request with canonical ownership, never a fabricated event."""
-        task = TaskSpec.model_validate(task_payload)
-        now = self._time.clock.now()
-        transaction = (
-            self._repository._database.immediate_session()
-            if session is None
-            else optional_session(self._repository._database, session, write=True)
-        )
-        async with transaction as active:
-            context = await resolve_control_context(
-                active, owner_id=owner_id, conversation_id=conversation_id
-            )
-            task = prepare_task(
-                task,
-                timezone=self._time.default_timezone,
-                current_group_id=context.provenance.current_group_id,
-            )
-            existing = await self._repository.get_by_creation_key(
-                owner_id, creation_source_key, session=active
-            )
-            if existing is not None:
-                if (
-                    await self._repository.initial_script_hash(existing.id, session=active)
-                    != canonical_task_hash(task)
-                    or existing.max_runs != max_runs
-                ):
-                    raise ValueError("automation_creation_key_conflict")
-                return existing
-            self._require_enabled()
-            return await self._commit_task(
-                task,
-                self._control_authority(context),
-                creator_person_id=owner_id,
-                creation_source_key=creation_source_key,
-                max_runs=max_runs,
-                now=now,
-                session=active,
-            )
-
-    async def administer_update(
-        self,
-        automation_id: int,
-        task_payload: object,
-        *,
-        session: AsyncSession | None = None,
-    ) -> AutomationRecord:
-        task = TaskSpec.model_validate(task_payload)
-        now = self._time.clock.now()
-        async with optional_session(self._repository._database, session, write=True) as active:
-            existing = await self._repository.get(automation_id, session=active)
-            if existing is None:
-                raise LookupError("automation not found")
-            owner_id = (
-                "self" if existing.creator_kind == "self" else existing.canonical_creator_person_id
-            )
-            if owner_id is None:
-                raise PermissionError("automation has no canonical creator")
-            conversation_id = existing.authority_snapshot.get("canonical_conversation_id")
-            if conversation_id is None and existing.canonical_target_space_id is not None:
-                from sqlalchemy import select
-
-                from yuki.conversation.canonical_db_models import CanonicalConversationModel
-
-                conversation_id = await active.scalar(
-                    select(CanonicalConversationModel.id).where(
-                        CanonicalConversationModel.space_id == existing.canonical_target_space_id
-                    )
-                )
-            if conversation_id is not None and not isinstance(conversation_id, str):
-                raise PermissionError("invalid automation scene")
-            context = await resolve_control_context(
-                active, owner_id=owner_id, conversation_id=conversation_id
-            )
-            task = prepare_task(
-                task,
-                timezone=self._time.default_timezone,
-                current_group_id=context.provenance.current_group_id,
-            )
-            row = await self._commit_task(
-                task,
-                self._control_authority(context),
-                automation_id=automation_id,
-                creator_person_id=owner_id,
-                now=now,
-                next_run_at=initial_run_at(task.trigger, now, cast(str, task.timezone))
-                if _schedule_changed(existing, task)
-                else None,
-                session=active,
-            )
-            return row
-
-    async def administer_transition(
-        self,
-        automation_id: int,
-        *,
-        action: str,
-        session: AsyncSession | None = None,
-    ) -> AutomationRecord:
-        existing = await self._repository.get(automation_id, session=session)
-        if existing is None:
-            raise LookupError("automation not found")
-        owner_person_id = (
-            "self" if existing.creator_kind == "self" else existing.canonical_creator_person_id
-        )
-        if owner_person_id is None:
-            raise PermissionError("automation has no canonical creator")
-        now = self._time.clock.now()
-        if action == "pause":
-            changed = await self._repository.set_status(
-                automation_id,
-                creator_person_id=owner_person_id,
-                status=AutomationStatus.PAUSED,
-                now=now,
-                session=session,
-            )
-        elif action == "cancel":
-            changed = await self._repository.cancel(
-                automation_id,
-                creator_person_id=owner_person_id,
-                now=now,
-                session=session,
-            )
-        elif action == "resume":
-            TaskSpec.model_validate(existing.script)
-            next_run = existing.next_run_at or now
-            changed = await self._repository.resume(
-                automation_id,
-                creator_person_id=owner_person_id,
-                next_run_at=next_run,
-                now=now,
-                session=session,
-            )
-        elif action == "run_now":
-            TaskSpec.model_validate(existing.script)
-            changed = await self._repository.schedule_now(
-                automation_id,
-                creator_person_id=owner_person_id,
-                now=now,
-                session=session,
-            )
-        else:
-            raise ValueError(f"unsupported automation action: {action}")
-        if not changed and action != "cancel":
-            raise ValueError("automation state does not allow this action")
-        current = await self._repository.get(automation_id, session=session)
-        if current is None:
-            raise LookupError("automation not found")
-        return current
-
     async def _resolve_creator_person(
         self,
         person_id: str,
@@ -775,7 +599,8 @@ class AutomationService:
             return "self", permission, self._creation_provenance(actor, permission=permission)
         if actor.person_id is None:
             raise PermissionError("automation_owner_unavailable")
-        creator_person_id = await self._resolve_creator_person(actor.person_id, session=session)
+        await self._resolve_creator_person(actor.person_id, session=session)
+        creator_person_id = actor.person_id
         from yuki.identity.authority import person_is_superuser
 
         async with optional_session(self._repository._database, session, write=False) as reader:

@@ -45,6 +45,12 @@ class TracedSemanticObserver:
                 for event in (*snapshot.context, snapshot.focus)
                 for value in (event.author, event.target)
             }
+            ids.update(
+                mention.person_id
+                for event in (*snapshot.context, snapshot.focus)
+                for mention in event.mentions
+                if mention.person_id is not None
+            )
             ids.update(option.target for option in snapshot.focus.unit_options)
             if snapshot.participation is not None:
                 ids.update(unit.target for unit in snapshot.participation.units)

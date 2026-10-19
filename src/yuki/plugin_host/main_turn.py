@@ -602,6 +602,10 @@ async def resume_plugin_work(
         inbound = InboundMessage(
             message_id=event.platform_message_id,
             source_event_id=event.id,
+            author_kind=event.author_kind,
+            author_account_id=event.author_account_id,
+            segments=event.segments,
+            occurred_at=event.occurred_at,
             event_type="message",
             scope_type=event.scope_type,
             sender=SenderIdentity(source["actor_user_id"]),

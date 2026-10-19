@@ -39,7 +39,6 @@ async def invoke_social(
             initiative_run_id=actor.initiative_run_id,
             automation_run_id=scheduled_run,
             presence_id=actor.presence_id,
-            visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
             actor=actor,
             runtime_snapshot=getattr(runtime, "runtime_config", None),
             turn_token=getattr(runtime, "turn_token", None),
@@ -93,7 +92,6 @@ async def invoke_social(
             space_id=runtime.space_id,
             origin="plugin_background",
             caused_by_event_id=event_id,
-            visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
             runtime_snapshot=getattr(runtime, "runtime_config", None),
             turn_token=getattr(runtime, "turn_token", None),
             conversation_key=getattr(runtime, "conversation_key", ""),
@@ -159,20 +157,21 @@ async def invoke_social(
     inbound = runtime.inbound
     actor = runtime.require_actor()
     refs = {"current_speaker": actor.person_id} if actor.person_id is not None else {}
-    for index, person_id in enumerate(actor.mentioned_person_ids, 1):
-        refs[f"mentioned_user_{index}"] = person_id
-    if actor.mentioned_person_ids:
-        refs["mentioned_user"] = actor.mentioned_person_ids[0]
-    reply_id = getattr(inbound, "reply_to_event_id", None)
-    if reply_id is not None:
-        async with service.database.sessions() as session:
-            reply = await session.get(ChatEventModel, reply_id)
-            if (
-                reply is not None
-                and reply.canonical_conversation_id == runtime.effective_conversation_id
-                and reply.author_person_id is not None
-            ):
-                refs["replied_message_author"] = reply.author_person_id
+    if name in {"read_conversation_history", "find_contacts"}:
+        for index, person_id in enumerate(actor.mentioned_person_ids, 1):
+            refs[f"mentioned_user_{index}"] = person_id
+        if actor.mentioned_person_ids:
+            refs["mentioned_user"] = actor.mentioned_person_ids[0]
+        reply_id = getattr(inbound, "reply_to_event_id", None)
+        if reply_id is not None:
+            async with service.database.sessions() as session:
+                reply = await session.get(ChatEventModel, reply_id)
+                if (
+                    reply is not None
+                    and reply.canonical_conversation_id == runtime.effective_conversation_id
+                    and reply.author_person_id is not None
+                ):
+                    refs["replied_message_author"] = reply.author_person_id
     conversation_id = runtime.effective_conversation_id
     if not conversation_id:
         raise SocialError("missing_call_context")
@@ -183,9 +182,6 @@ async def invoke_social(
         conversation_id=conversation_id,
         origin=runtime.origin.value,
         person_refs=refs,
-        account_refs={"current_speaker": (actor.platform, actor.user_id)}
-        if actor.person_id is not None
-        else {},
         space_id=runtime.space_id or getattr(inbound, "space_id", None),
         trigger_event_id=(
             getattr(runtime, "effective_trigger_event_id", None) if inbound is not None else None
@@ -193,7 +189,6 @@ async def invoke_social(
         reply_presence_id=inbound.presence_id
         if inbound is not None and inbound.scope_type == "private"
         else None,
-        visible_event_ids=frozenset(getattr(runtime, "visible_event_ids", ())),
         actor=actor,
         presence_id=actor.presence_id,
         runtime_snapshot=getattr(runtime, "runtime_config", None),

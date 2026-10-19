@@ -22,9 +22,9 @@ from yuki.plugin_host.ownership import (
     actor_matches_session,
     inherit_message_sender_person,
     require_live_actor,
-    require_live_person,
     require_live_space,
     require_session_readable,
+    resolve_human_person_id,
     resolve_session_owners,
 )
 
@@ -449,11 +449,11 @@ async def _session_record(
     owner_user_id: str | None = None
     scope_id = ""
     if row.scope_type == "user":
-        owner_user_id = await require_live_person(session, row.canonical_owner_person_id)
+        owner_user_id = await resolve_human_person_id(session, row.canonical_owner_person_id)
         scope_id = owner_user_id
     elif row.scope_type == "group":
         if row.canonical_owner_person_id:
-            owner_user_id = await require_live_person(session, row.canonical_owner_person_id)
+            owner_user_id = await resolve_human_person_id(session, row.canonical_owner_person_id)
         scope_id = await require_live_space(session, row.canonical_space_id)
     return PluginAgentSessionRecord(
         session_id=row.session_id,

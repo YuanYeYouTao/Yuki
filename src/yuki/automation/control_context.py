@@ -50,11 +50,11 @@ async def resolve_control_context(
     conversation_id: str | None,
     presence_id: str | None = None,
 ) -> ControlAutomationContext:
-    """An operator chooses a canonical scene, never an impersonated account."""
+    """Read the original task scene for an already authorized management action."""
     if owner_id != "self":
         PersonId.parse(owner_id)
         person = await session.get(CanonicalPersonModel, owner_id)
-        if person is None or not person.enabled:
+        if person is None:
             raise PermissionError("automation_owner_unavailable")
     if conversation_id is None:
         route = await session.get(PersonActiveRouteModel, owner_id) if owner_id != "self" else None
@@ -90,12 +90,7 @@ async def resolve_control_context(
             space_route.space_binding_id if space_route else None
         )
         binding = await session.get(SpaceBindingModel, binding_id) if binding_id else None
-        if (
-            space is None
-            or not space.enabled
-            or binding is None
-            or binding.space_id != conversation.space_id
-        ):
+        if space is None or binding is None or binding.space_id != conversation.space_id:
             raise PermissionError("automation_route_unavailable")
         group_id = binding.external_space_id
         presence_id = presence_id or (space_route.presence_id if space_route else None)
@@ -104,16 +99,18 @@ async def resolve_control_context(
         raise PermissionError("automation_presence_unavailable")
     if binding is not None and binding.platform != presence.platform:
         raise PermissionError("automation_route_changed")
-    account, permission = (
-        await resolve_execution_identity(
-            session,
-            owner_id=owner_id,
-            conversation_id=conversation.id,
-            presence_id=presence.id,
-        )
-        if owner_id != "self"
-        else ("", PermissionLevel.SELF)
-    )
+    account = ""
+    permission = PermissionLevel.SELF
+    if owner_id != "self":
+        root = await session.get(CanonicalPersonModel, await current_person_id(session, owner_id))
+        assert root is not None
+        permission = PermissionLevel.SUPERUSER if root.is_superuser else PermissionLevel.USER
+        if conversation.kind == "private":
+            original_binding = await session.get(
+                IdentityBindingModel, conversation.identity_binding_id
+            )
+            if original_binding is not None:
+                account = original_binding.external_account_id
     return ControlAutomationContext(
         owner_id=owner_id,
         provenance=CreationProvenance(account, presence.external_account_id, group_id, permission),

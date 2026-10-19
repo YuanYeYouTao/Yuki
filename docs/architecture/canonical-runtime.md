@@ -13,21 +13,24 @@
 核心身份对象如下：
 
 - `Person`：一个永久的人类主体。人物记忆和长期偏好按 Person 保存。
-- `IdentityBinding`：Person 在某个平台上的外部账号。一个 Person 可以有多个 Binding。
+- `Account`：唯一的平台原生账号及昵称等账号资料；未知账号和外部 Bot 也可登记而无 Person。
+- `AccountAssignment`：账号的一段归属，只有 person／yuki 两种；每个账号至多一个未结束阶段。
+- `IdentityBinding`：Assignment 的 person 类型投影。一个 Person 可以有多个 Binding，也可以没有账号。
 - `Space`：永久共享空间；QQ 群只是它的一种外部表现。
 - `SpaceBinding`：Space 与外部群号的绑定。
-- `Presence`：Yuki 自己的平台账号。Presence 不是 Person。
+- `Presence`：Assignment 的 yuki 类型投影，保原 Presence UUID，不是第二张归属事实表。
 - `CanonicalConversation`：私聊按 IdentityBinding＋Presence＋可选 thread 区分，群聊按 SpaceBinding＋topic 区分。
   同一 Person 的多个入口分别保有历史、generation、检查点与模型 session；Memory 仍归 Person。
   `/ai new` 只推进命令所在会话的 generation。
 
-第三方机器人使用 `external_bot` 作者类型，不创建 Person 或人物记忆。事件作者只有
-`person`、`yuki`、`external_bot`、`system` 四类；命令、插件和自动化属于 event origin，
-不是作者类型。
+第三方机器人使用 `external_bot` 作者类型，不创建 Person 或人物记忆。已证明原生账号、
+但不能证明历史归属阶段的首次迟到消息使用 `account` 作者，保存内部 Account，不猜 Person。
+另有 `person`、`yuki`、`system` 作者；命令、插件和自动化属于 event origin，不是作者类型。
 
-只有启用的 Presence 参与当前 Yuki 账号识别。退役时保留原 Presence ID、外部账号和已有
-作者、Conversation、接入与投递回执；它不再阻止该外部账号今后关联 Person。新的人物
-绑定从新的绑定时段开始，不能把先前的 Yuki 发言改归某个人，也不自动关联已有 Person。
+Assignment 统一使用 active／disabled／ended。暂停保留归属，结束才释放账号；恢复原阶段与
+结束后重新登记不同。人↔Yuki、换人和真解绑后再绑创建新阶段，同人重复关联只读返回。
+首次从无归属的账号可自动登记；有过阶段的账号不靠重连复活旧 Presence。角色变化不关闭
+物理连接，也不改原作者、Conversation、设备 namespace、接入与投递回执。
 
 ## 人物归并、账号转移与名称
 
@@ -51,10 +54,12 @@
 首次非空观察补齐空名，后续账号昵称变化只更新账号与别名；旧数据按最近全局 nickname 回填。
 明确改名保旧名为别名；归并保目标主名，目标空时采用来源主名，来源主名入原人物别名。
 目录与资料按当前人物读取主名，无账号人物也能读取；未命名显示占位不落库。
-群名片、Space 范围别名与事件当时名称仍保原来源，同人目录命中及共同群按人物去重。
+账号昵称认 Account，群名片认 Account＋SpaceBinding；同人的多个账号不会互相覆盖名片。
+Membership 只记录原 Person 在 Space 中的首次、末次观察时间，不再保存账号群名片。
+人物别名与事件当时名称保原来源，同人目录命中及共同群按人物去重。
 
 人物资料只观察当前真实事件携带的昵称、群名片和已知标记，在首次入账的同一事务更新
-原人物、账号、别名与 Membership。缺失字段不擦除已有资料；明确的空群名片可以清空
+原人物、Account、别名与账号名片。缺失字段不擦除已有资料；明确的空群名片可以清空
 当前名片。事件当时名称仍按原消息保存，不用库中的旧名字补写该事件，也不改过去的
 公共历史。缺少名称不阻止接纳或回复，人物身份与权限继续使用内部 ID。
 
@@ -63,7 +68,9 @@
 改名不修改启用设置、路由或聊天历史。独立资料通知不建立聊天事件，
 不触发模型，也不要求先远端补齐资料。没有资料时保留已知值，不另设刷新缓存、TTL 或 worker。
 
-当前 Runtime/Plugin USER 配置保目标有效键，来源独有有效键连原行 ID/版本迁入目标。
+当前 Runtime USER 配置保目标有效键，来源独有有效键连原行 ID/版本迁入目标。
+Plugin USER 配置按整个对象归属：目标已有对象则保目标；目标无对象才移动来源整组原行，
+不拼成双方都未配置过的混合对象。
 来源冲突行只保历史，不作 fallback；unset 和再次归并不会使它复活。原配置审计仍可查，
 rollback 核对原行与修订，旧审计跨归并只沿实际配置移动审计确认，不凭相同值和版本冒领另一行。
 Plugin-global KV 不改键值、版本或原所属。目标已有主动路由优先，未设置时只继承来源已有路由，
@@ -199,12 +206,12 @@ Memory 使用 canonical owner 分区：SELF 属于永久 Yuki，PERSON 属于 Pe
 PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真实事件来源，读取仍受作用域、
 权限和内容能力约束。Presence 或 Provider 变化不会复制或迁移记忆。
 
-偏好、自动化目标、插件状态、Emoji、Speech 和配置投影均使用 canonical owner。
+偏好、自动化目标、插件状态、Speech 和配置投影均使用 canonical owner；表情原件与标签由共享沙箱文件保存。
 定时 Main 保留真实创建主体、原触发场景和 generation；SELF 保自身主体和来源，
 Person 按原永久身份与当前同人关系核权限，纯内部工作无需当前账号或发送路由。发送由共同 Social 按明确目标和当前路由处理，
 触发群与 Presence 不构成额外的发送目标菜单。路由暂停只控制实际发送，不阻止内部 Main 工作。
 
-Plugin API 当前为 `5.0`，Host 只加载 API 与已批准 manifest 精确匹配的插件。兼容键仍使用 primary
+Plugin API 当前为 `6.0`，Host 只加载 API 与已批准 manifest 精确匹配的插件。兼容键仍使用 primary
 `conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
 插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。
 

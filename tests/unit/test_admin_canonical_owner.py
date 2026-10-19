@@ -17,10 +17,12 @@ from yuki.identity.canonical_repository import (
     create_person_binding,
     create_presence,
     create_space_binding,
+    ensure_account,
     find_identity_binding,
     find_space_binding,
+    replace_assignment,
 )
-from yuki.identity.db_models import IdentityBindingModel
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.services.policies import CommandName
 
 
@@ -38,21 +40,19 @@ async def identities(database):
             platform="telegram",
         )
         operator = await find_identity_binding(session, "9000")
-        session.add(
-            IdentityBindingModel(
-                id=str(uuid4()),
-                person_id=operator.person_id,
-                platform="telegram",
-                external_account_id="operator-account",
-                display_name="Linked operator",
-                status="active",
-                revision=1,
-                first_seen_at=now,
-                last_seen_at=now,
-                created_at=now,
-                updated_at=now,
-                history_starts_at=now,
-            )
+        account = await ensure_account(
+            session,
+            "operator-account",
+            platform="telegram",
+            display_name="Linked operator",
+            now=now,
+        )
+        await replace_assignment(
+            session,
+            account,
+            None,
+            await session.get(CanonicalPersonModel, operator.person_id),
+            now=now,
         )
         space = await create_space_binding(
             session,

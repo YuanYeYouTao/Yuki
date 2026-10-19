@@ -33,7 +33,12 @@ from yuki.automation.models import AutomationRecord, TurnOrigin
 from yuki.automation.service import AutomationService
 from yuki.conversation.scope import runtime_conversation_key
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.domain.messages import ChatImage, InboundMessage
+from yuki.domain.messages import (
+    ChatImage,
+    InboundMessage,
+    mention_snapshots,
+    snapshot_mention_segments,
+)
 from yuki.domain.tool_actor import ToolActor
 from yuki.gateway.media import PlatformMediaGateway
 from yuki.llm.base import LLMEmptyResponseError
@@ -2831,30 +2836,20 @@ def _facade_error_category(exc: Exception) -> str:
     return type(exc).__name__[:64]
 
 
-def _legacy_facade_mentions_excluding_current_handle(inbound: InboundMessage) -> tuple[str, ...]:
-    """v1 plugin DTO strip of the current transport handle. Not author_kind."""
-
-    return tuple(
-        dict.fromkeys(
-            user_id for user_id in inbound.mentioned_user_ids if user_id != inbound.bot_user_id
-        )
-    )[:20]
-
-
 def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
     if inbound is None:
         return None
-    mentioned_user_ids = _legacy_facade_mentions_excluding_current_handle(inbound)
     projection = projection_from_inbound(inbound)
     return CurrentMessage(
         platform=inbound.platform,
-        mentioned_person_ids=inbound.mentioned_person_ids,
+        author_kind=inbound.author_kind,
+        author_account_id=inbound.author_account_id,
         message_id=inbound.message_id,
         sender_user_id=inbound.sender.user_id,
         scope_type=inbound.scope_type.value,
         group_id=inbound.group_id,
-        text=inbound.text[:12_000],
-        mentioned_user_ids=mentioned_user_ids,
+        text=inbound.text,
+        mentions=mention_snapshots(snapshot_mention_segments(inbound.segments, inbound.mentions)),
         received_at=inbound.received_at,
         **projection.sdk_fields(),
     )
@@ -2864,12 +2859,14 @@ def _record_message(record: Any) -> CurrentMessage:
     projection = projection_from_event(record)
     return CurrentMessage(
         platform=record.platform,
-        mentioned_person_ids=record.mentioned_person_ids,
+        author_kind=record.author_kind,
+        author_account_id=record.author_account_id,
         message_id=record.platform_message_id,
         sender_user_id=record.sender_user_id,
         scope_type=record.scope_type.value,
         group_id=record.group_id,
-        text=record.content[:12_000],
+        text=record.content,
+        mentions=mention_snapshots(record.segments),
         received_at=record.occurred_at,
         **projection.sdk_fields(),
     )

@@ -5,21 +5,25 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, text
+from tests.support.client_identity import client_identity_service
 
 from yuki.client_api.db_models import ClientDeviceModel, ClientLinkCodeModel
 from yuki.client_api.errors import ClientError
-from yuki.client_api.identity import ClientIdentityService
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.hydrate import ensure_canonical_conversation
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.canonical_repository import find_identity_binding, find_presence
+from yuki.identity.canonical_repository import (
+    find_identity_binding,
+    find_presence,
+    replace_assignment,
+)
 from yuki.identity.db_models import IdentityBindingModel, PresenceModel
 from yuki.identity.person_identity import current_person_id
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 async def code_for(database, account="1001"):
-    service = ClientIdentityService(database)
+    service = client_identity_service(database)
     async with database.sessions() as session:
         binding = await find_identity_binding(session, account)
     issued = await service.issue_for_operator(binding.person_id, str(uuid4()), str(uuid4()))
@@ -77,34 +81,34 @@ async def test_expired_codes_and_other_person_devices_do_not_disclose_identity(d
 
 
 @pytest.mark.parametrize("enabled", [False, True])
-async def test_account_claim_only_conflicts_with_current_presence(database, enabled):
+async def test_account_claim_requires_ending_current_yuki_ownership(database, enabled):
     service, person, issued = await code_for(database)
     async with database.immediate_session() as session:
         presence = await find_presence(session, "8001")
         assert presence is not None
         presence_id = presence.id
         presence.enabled = enabled
-    if enabled:
-        with pytest.raises(ClientError, match="precondition_failed"):
-            await service.claim_account(
-                issued["code"],
-                platform="qq",
-                account="8001",
-                display_name="Former",
-                message_id="link",
-            )
-    else:
-        claimed = await service.claim_account(
+    with pytest.raises(ClientError, match="precondition_failed"):
+        await service.claim_account(
             issued["code"], platform="qq", account="8001", display_name="Former", message_id="link"
         )
-        assert claimed["person_id"] == person and not claimed["merged"]
     async with database.sessions() as session:
         retained = await session.get(PresenceModel, presence_id)
         assert retained is not None and retained.external_account_id == "8001"
-        binding = await find_identity_binding(session, "8001")
-        assert (binding is None) is enabled
-        if binding is not None:
-            assert binding.person_id == person
+        assert retained.status == ("active" if enabled else "disabled")
+        assert await find_identity_binding(session, "8001") is None
+    async with database.immediate_session() as session:
+        retained = await session.get(PresenceModel, presence_id)
+        await replace_assignment(
+            session, retained.account, presence_id, None, now=datetime.now(UTC)
+        )
+    claimed = await service.claim_account(
+        issued["code"], platform="qq", account="8001", display_name="Former", message_id="link"
+    )
+    assert claimed["person_id"] == person and not claimed["merged"]
+    async with database.sessions() as session:
+        assert (await session.get(PresenceModel, presence_id)).status == "ended"
+        assert (await find_identity_binding(session, "8001")).person_id == person
 
 
 async def test_account_claim_merges_person_and_preserves_original_binding_and_history(database):
@@ -129,7 +133,7 @@ async def test_account_claim_merges_person_and_preserves_original_binding_and_hi
         display_name="same name",
         message_id="link-request",
     )
-    assert linked["merged"] and not linked["transferred"] and linked["person_id"] == target
+    assert linked["merged"] and linked["person_id"] == target
     async with database.sessions() as session:
         old = await session.get(IdentityBindingModel, old_binding)
         current = await find_identity_binding(session, "1001")
@@ -174,6 +178,27 @@ async def test_account_claim_merges_person_and_preserves_original_binding_and_hi
             display_name="",
             message_id="second-exchange",
         )
+
+
+@pytest.mark.parametrize("same_owner", [False, True])
+async def test_authenticated_claim_keeps_paused_person_stage_without_enabling_it(
+    database, same_owner
+):
+    service, target, issued = await code_for(database, "1001" if same_owner else "1002")
+    async with database.immediate_session() as session:
+        original = await find_identity_binding(session, "1001")
+        original.status = "disabled"
+        binding_id, source = original.id, original.person_id
+    result = await service.claim_account(
+        issued["code"], platform="qq", account="1001", display_name="Same person", message_id="link"
+    )
+    assert result["binding_id"] == binding_id and result["person_id"] == target
+    assert result["merged"] is not same_owner
+    async with database.sessions() as session:
+        current = await find_identity_binding(session, "1001")
+        assert current.id == binding_id and current.person_id == source
+        assert current.status == "disabled"
+        assert await current_person_id(session, source) == target
 
 
 async def test_same_owner_transfer_does_not_choose_one_of_multiple_presence_entries(database):

@@ -8,12 +8,13 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.canonical_ingress import fixture_ingress
+from tests.support.client_identity import client_identity_service
 from tests.support.subagents_helpers import stack
 
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
 from yuki.admin.operations.base import CommandExecutor
 from yuki.admin.operations.identity import IdentityOperations
-from yuki.client_api.identity import ClientIdentityService
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.identity import PrincipalId
 from yuki.identity.db_models import CanonicalPersonModel
@@ -126,8 +127,9 @@ def forget(database, person, entry):
         return lambda: PeopleRepository(database).delete_person_id(person)
     commands = IdentityOperations(
         CommandExecutor(database),
-        ClientIdentityService(database),
+        client_identity_service(database, fixture_ingress(database)._router),
         PeopleRepository(database, memory_rebuilds=MemoryRebuildRepository(database)),
+        router=fixture_ingress(database)._router,
     )
     principal = ControlPrincipal(
         principal_id=PrincipalId(uuid4()),

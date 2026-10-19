@@ -1,10 +1,16 @@
 """Local App effects commit through the canonical ledger transaction."""
 
-from yuki.gateway.social import TransportMessage, TransportReceipt, TransportTarget
+from yuki.gateway.social import (
+    TransportMention,
+    TransportMessage,
+    TransportReceipt,
+    TransportTarget,
+)
 
 
 class AppSocialOperations:
-    file_caption_separate = False
+    def native_mention(self, text: str, offset: int) -> TransportMention | None:
+        return None
 
     def plan_send(self, message: TransportMessage) -> tuple[TransportMessage, ...]:
         return (message,)

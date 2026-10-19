@@ -252,7 +252,7 @@ async def _identity_binding(
         select(IdentityBindingModel).where(
             IdentityBindingModel.platform == platform,
             IdentityBindingModel.external_account_id == external_id,
-            IdentityBindingModel.status != "transferred",
+            IdentityBindingModel.status != "ended",
         )
     )
     return row if isinstance(row, IdentityBindingModel) else None

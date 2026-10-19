@@ -2,15 +2,19 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, update
 from tests.support.social_identity_cases import Bot, social_env
 
 from yuki.domain.conversations import ScopeType
-from yuki.identity.canonical_repository import ensure_person, ensure_presence
-from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.identity.canonical_repository import (
+    ensure_account,
+    ensure_person,
+    ensure_presence,
+    replace_assignment,
+)
+from yuki.identity.db_models import AccountModel, CanonicalPersonModel, IdentityBindingModel
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.social.db_models import SocialOperationModel
 from yuki.social.models import OperationStatus, SocialError, SocialTarget
@@ -132,24 +136,26 @@ async def test_contacts_page_people_instead_of_accounts_and_keep_exact_ambiguity
             .values(display_name="same")
         )
         await writer.execute(
-            update(IdentityBindingModel)
-            .where(IdentityBindingModel.person_id.in_((first, last)))
-            .values(display_name="platform nickname")
-        )
-        for index in range(32):
-            writer.add(
-                IdentityBindingModel(
-                    id=str(uuid4()),
-                    person_id=first,
-                    platform="qq",
-                    external_account_id=str(918200000 + index),
-                    display_name="platform nickname",
-                    first_seen_at=now,
-                    last_seen_at=now,
-                    created_at=now,
-                    updated_at=now,
+            update(AccountModel)
+            .where(
+                AccountModel.id.in_(
+                    select(IdentityBindingModel.account_id).where(
+                        IdentityBindingModel.person_id.in_((first, last))
+                    )
                 )
             )
+            .values(display_name="platform nickname")
+        )
+        owner = await writer.get(CanonicalPersonModel, first)
+        for index in range(32):
+            account = await ensure_account(
+                writer,
+                str(918200000 + index),
+                platform="qq",
+                display_name="platform nickname",
+                now=now,
+            )
+            await replace_assignment(writer, account, None, owner, now=now)
     await EventLedgerRepository(database).append(
         bot_user_id=env.bot.self_id,
         scope_type=ScopeType.GROUP,

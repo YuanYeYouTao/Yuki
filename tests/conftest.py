@@ -180,12 +180,12 @@ def build_harness(
         turn_coordinator=turn_coordinator,
     )
     from tests.support.canonical_ingress import fixture_ingress
+    from tests.support.client_identity import client_identity_service
     from yuki.admin.audit import AdminAuditService
     from yuki.admin.config_files import ConfigFileService
     from yuki.admin.operations import AdminOperations
     from yuki.admin.permission_catalog import PermissionCatalogService
     from yuki.admin.queries import AdminQueries
-    from yuki.client_api.identity import ClientIdentityService
     from yuki.memory.claim_processor import MemoryClaimProcessor
     from yuki.memory.event_extractor import MemoryEventExtractor
     from yuki.memory.mutation.service import MemoryMutationService
@@ -234,10 +234,11 @@ def build_harness(
         database,
         plugins,
         files,
-        identities=ClientIdentityService(database),
+        identities=client_identity_service(database, fixture_ingress(database)._router),
         people=profiles,
         config=runtime_config,
         groups=groups,
+        router=fixture_ingress(database)._router,
     )
 
     async def health():
@@ -266,7 +267,8 @@ def build_harness(
         people=profiles,
         memories=memories,
         concurrency=concurrency,
-        onebot_connected=lambda: True,
+        platform_connected=lambda _platform: True,
+        model_executor=models,
         runtime_config=runtime_config,
         memory_admin=memory_admin,
         preference_admin=PreferenceAdminService(memory_mutations=memory_admin, audit=audit),
@@ -343,6 +345,8 @@ async def database(tmp_path: Path) -> Database:
     path = (tmp_path / "test.db").as_posix()
     db = Database(f"sqlite+aiosqlite:///{path}")
     await db.create_schema()
+    from datetime import UTC, datetime
+
     from yuki.identity.canonical_repository import (
         create_presence,
         ensure_person,
@@ -350,6 +354,7 @@ async def database(tmp_path: Path) -> Database:
         ensure_space,
     )
 
+    identity_since = datetime(2026, 8, 24, tzinfo=UTC)
     async with db.immediate_session() as session:
         for user_id in (
             "1001",
@@ -369,7 +374,9 @@ async def database(tmp_path: Path) -> Database:
             "1808058482",
             "1808058483",
         ):
-            person_id = await ensure_person(session, user_id, display_name=f"test-{user_id}")
+            person_id = await ensure_person(
+                session, user_id, display_name=f"test-{user_id}", now=identity_since
+            )
             if user_id == "9000":
                 from yuki.identity.db_models import CanonicalPersonModel
 
@@ -377,7 +384,7 @@ async def database(tmp_path: Path) -> Database:
                 assert person is not None
                 person.is_superuser = True
         for bot_user_id in ("7777", "8000", "8001", "9999", "99999"):
-            await ensure_presence(session, bot_user_id)
+            await ensure_presence(session, bot_user_id, now=identity_since)
         from datetime import UTC, datetime
 
         await create_presence(

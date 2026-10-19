@@ -912,16 +912,16 @@ async def test_equivalent_directory_match_reaches_the_actual_tail(database, tmp_
         "delivery": {"target": "current_group"},
     }
     for index in range(101):
-        await case.service.administer_create(
+        await case.service.create_task(
             {**requested, "goal": f"another target {index}"},
-            owner_id=case.env.person,
-            conversation_id=case.env.context.conversation_id,
+            actor=case.actor,
+            conversation_key="group:80001:20001",
             creation_source_key=f"directory:{index}",
         )
-    target = await case.service.administer_create(
+    target = await case.service.create_task(
         requested,
-        owner_id=case.env.person,
-        conversation_id=case.env.context.conversation_id,
+        actor=case.actor,
+        conversation_key="group:80001:20001",
         creation_source_key="directory:tail",
     )
     matches = await case.service.find_equivalent_directory_entries(requested, actor=case.actor)

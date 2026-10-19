@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import contains_eager
 
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -19,7 +20,7 @@ from yuki.conversation.canonical_db_models import (
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
-from yuki.conversation.legacy_entries import legacy_private_entry_matches
+from yuki.conversation.event_entry import event_entry_matches
 from yuki.gateway.models import ConnectionSnapshot
 from yuki.gateway.registry import (
     ConnectionResolution,
@@ -29,13 +30,17 @@ from yuki.gateway.registry import (
 )
 from yuki.gateway.social import PlatformSocialOperations
 from yuki.identity.db_models import (
+    AccountModel,
+    CanonicalPersonModel,
     IdentityBindingModel,
     PresenceModel,
     SpaceBindingModel,
 )
+from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.person_identity import (
+    current_person_enabled_condition,
     current_person_id,
-    person_enabled_condition,
+    current_person_ids,
     person_family_condition,
     same_person_id,
 )
@@ -200,7 +205,9 @@ class PresenceRouter:
                 raise RouteSendError("route_changed")
         if target_kind == "person" and prepared.binding_id:
             assert isinstance(binding, IdentityBindingModel)
-            if not await session.scalar(select(person_enabled_condition(binding.person_id))):
+            if not await session.scalar(
+                select(current_person_enabled_condition(binding.person_id))
+            ):
                 raise RouteSendError("route_changed")
         if prepared.kind in {"person", "space"}:
             route = (
@@ -225,7 +232,7 @@ class PresenceRouter:
                 raise RouteSendError("route_changed")
         if prepared.kind == "conversation":
             conversation = await session.get(CanonicalConversationModel, prepared.conversation_id)
-            legacy_entry = False
+            original_entry = False
             if (
                 conversation is not None
                 and target_kind == "person"
@@ -233,7 +240,7 @@ class PresenceRouter:
             ):
                 original_binding = await session.get(IdentityBindingModel, prepared.binding_id)
                 if original_binding is not None:
-                    legacy_entry = await legacy_private_entry_matches(
+                    original_entry = await event_entry_matches(
                         session, conversation, original_binding, presence, prepared.source_event_id
                     )
             if (
@@ -252,7 +259,7 @@ class PresenceRouter:
                         or (
                             conversation.entry_presence_id is not None
                             and conversation.entry_presence_id != prepared.presence_id
-                            and not legacy_entry
+                            and not original_entry
                         )
                     )
                 )
@@ -380,7 +387,7 @@ class PresenceRouter:
                     and presence_id != entry_presence_id
                 ):
                     old_presence = await session.get(PresenceModel, presence_id)
-                    if old_presence is not None and await legacy_private_entry_matches(
+                    if old_presence is not None and await event_entry_matches(
                         session, conversation, binding, old_presence, source_event_id
                     ):
                         entry_presence_id = presence_id
@@ -515,7 +522,9 @@ class PresenceRouter:
             presence = await session.get(PresenceModel, route.presence_id)
             if binding is None or presence is None or binding.status != "active":
                 raise RouteSendError("none")
-            if not await session.scalar(select(person_enabled_condition(binding.person_id))):
+            if not await session.scalar(
+                select(current_person_enabled_condition(binding.person_id))
+            ):
                 raise RouteSendError("paused")
             if (
                 not await same_person_id(session, binding.person_id, person_id)
@@ -539,6 +548,50 @@ class PresenceRouter:
                 kind="person",
                 sender_account_id=presence.external_account_id,
             )
+
+    async def resolve_send_for_space_binding(
+        self, space_id: str, space_binding_id: str, preferred_presence_id: str | None = None
+    ) -> ResolvedSend:
+        """Use the requested physical entry; a prepared receipt never changes routes."""
+        async with self._database.sessions() as session:
+            binding = await session.get(SpaceBindingModel, space_binding_id)
+            if binding is None or binding.space_id != space_id or binding.status != "active":
+                raise RouteSendError("binding_unavailable")
+            if preferred_presence_id is None:
+                route = await session.get(SpaceActiveRouteModel, space_id)
+                if route is not None and route.space_binding_id == binding.id:
+                    if route.paused:
+                        raise RouteSendError("paused")
+                    preferred_presence_id = route.presence_id
+                else:
+                    ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
+                    if ingest is not None and not ingest.paused:
+                        preferred_presence_id = ingest.ingest_presence_id
+            presence = (
+                await session.get(PresenceModel, preferred_presence_id)
+                if preferred_presence_id
+                else None
+            )
+        if preferred_presence_id is None:
+            candidates = await self.accessible_group_connections(
+                space_id, binding_id=space_binding_id
+            )
+            if len(candidates) != 1:
+                raise RouteSendError("ambiguous" if candidates else "binding_unavailable")
+            resolved = candidates[0]
+        else:
+            if presence is None or not presence.enabled or presence.platform != binding.platform:
+                raise RouteSendError("original_presence_unavailable")
+            resolved = self._presence_connection(presence)
+            require_capability(resolved.connection, "send_group")
+        return replace(
+            resolved,
+            kind="space_binding",
+            binding_id=binding.id,
+            external_target_id=binding.external_space_id,
+            platform=binding.platform,
+            route_generation=0,
+        )
 
     async def resolve_send_for_space(self, space_id: str) -> ResolvedSend:
         async with self._database.sessions() as session:
@@ -727,31 +780,52 @@ class PresenceRouter:
             await self._provision_ingest_route(str(binding_id), event_presence_id=None)
         return person_count, space_count
 
-    async def _person_candidates(self, person_id: str) -> list[RouteCandidate]:
-        async with self._database.sessions() as session:
-            bindings = list(
-                await session.scalars(
-                    select(IdentityBindingModel).where(
-                        person_family_condition(IdentityBindingModel.person_id, person_id),
-                        person_enabled_condition(IdentityBindingModel.person_id),
-                    )
+    async def _person_candidates(
+        self, person_id: str, *, session: AsyncSession | None = None
+    ) -> list[RouteCandidate]:
+        if session is None:
+            async with self._database.sessions() as reader:
+                return await self._person_candidates(person_id, session=reader)
+        bindings = list(
+            await session.scalars(
+                select(IdentityBindingModel)
+                .join(AccountModel)
+                .options(contains_eager(IdentityBindingModel.account))
+                .where(
+                    person_family_condition(IdentityBindingModel.person_id, person_id),
+                    current_person_enabled_condition(IdentityBindingModel.person_id),
+                    IdentityBindingModel.status == "active",
                 )
             )
-            presences = list(await session.scalars(select(PresenceModel)))
+        )
+        platforms = {binding.platform for binding in bindings}
+        presences = (
+            list(
+                await session.scalars(
+                    select(PresenceModel)
+                    .join(AccountModel)
+                    .options(contains_eager(PresenceModel.account))
+                    .where(PresenceModel.status == "active", AccountModel.platform.in_(platforms))
+                )
+            )
+            if platforms
+            else []
+        )
+        by_platform: dict[str, list[PresenceModel]] = {}
+        for presence in presences:
+            try:
+                resolution = self._registry.resolve_active(presence.id)
+                require_capability(resolution, "send_private")
+            except RegistryClosed:
+                continue
+            if (
+                resolution.snapshot.platform == presence.platform
+                and resolution.snapshot.external_account_id == presence.external_account_id
+            ):
+                by_platform.setdefault(presence.platform, []).append(presence)
         found: list[RouteCandidate] = []
         for binding in bindings:
-            if binding.status != "active":
-                continue
-            for presence in presences:
-                if not presence.enabled:
-                    continue
-                if presence.platform != binding.platform:
-                    continue
-                try:
-                    resolution = self._registry.resolve_active(presence.id)
-                    require_capability(resolution, "send_private")
-                except RegistryClosed:
-                    continue
+            for presence in by_platform.get(binding.platform, ()):
                 found.append(
                     RouteCandidate(
                         presence_id=presence.id,
@@ -761,6 +835,74 @@ class PresenceRouter:
                     )
                 )
         return found
+
+    async def prepare_person_merge_routes(
+        self, session: AsyncSession, source_person_id: str, target_person_id: str
+    ) -> Callable[[], None]:
+        """Select existing live pins before the identity writer changes the family."""
+        roots = await current_person_ids(session, (source_person_id, target_person_id))
+        if source_person_id not in roots or target_person_id not in roots:
+            raise CanonicalIdentityError("missing_canonical_owner")
+        source_id, target_id = roots[source_person_id], roots[target_person_id]
+        if source_id == target_id:
+            return lambda: None
+        routes = {
+            row.person_id: row
+            for row in await session.scalars(
+                select(PersonActiveRouteModel).where(
+                    PersonActiveRouteModel.person_id.in_((source_id, target_id))
+                )
+            )
+        }
+        source, target = routes.get(source_id), routes.get(target_id)
+        source_candidates = await self._person_candidates(source_id, session=session)
+        target_candidates = await self._person_candidates(target_id, session=session)
+        available = {
+            (item.binding_id, item.presence_id) for item in (*source_candidates, *target_candidates)
+        }
+        target_person = await session.get(CanonicalPersonModel, target_id)
+        keep_target = target is not None and (
+            target.paused or ((target.identity_binding_id, target.presence_id) in available)
+        )
+        inherit_source = (
+            source is not None
+            and not source.paused
+            and target_person is not None
+            and target_person.enabled
+            and ((source.identity_binding_id, source.presence_id) in available)
+        )
+        now = datetime.now(UTC)
+
+        def apply() -> None:
+            if not keep_target:
+                if inherit_source:
+                    assert source is not None
+                    if target is None:
+                        session.add(
+                            PersonActiveRouteModel(
+                                person_id=target_id,
+                                identity_binding_id=source.identity_binding_id,
+                                presence_id=source.presence_id,
+                                route_generation=1,
+                                paused=False,
+                                revision=1,
+                                created_at=now,
+                                updated_at=now,
+                            )
+                        )
+                    else:
+                        target.identity_binding_id = source.identity_binding_id
+                        target.presence_id = source.presence_id
+                        target.paused = False
+                        target.route_generation += 1
+                        target.revision += 1
+                        target.updated_at = now
+                elif target is not None:
+                    session.sync_session.delete(target)
+            if source is not None:
+                session.sync_session.delete(source)
+
+        return apply
 
     async def _space_candidates(
         self,
@@ -811,21 +953,6 @@ class PresenceRouter:
                     )
                 )
         return found
-
-    async def _person_pin_healthy(self, route: PersonActiveRouteModel) -> bool:
-        async with self._database.sessions() as session:
-            binding = await session.get(IdentityBindingModel, route.identity_binding_id)
-            presence = await session.get(PresenceModel, route.presence_id)
-        if binding is None or presence is None or binding.status != "active":
-            return False
-        if not presence.enabled:
-            return False
-        try:
-            resolution = self._registry.resolve_active(presence.id)
-            require_capability(resolution, "send_private")
-        except RegistryClosed:
-            return False
-        return True
 
     async def _space_pin_healthy(
         self,
@@ -1002,7 +1129,11 @@ class PresenceRouter:
             return "conflict"
         if observed.paused and not commanded:
             return "paused"
-        if not commanded and existing is not None and await self._person_pin_healthy(existing):
+        if not commanded and any(
+            item.binding_id == observed.identity_binding_id
+            and item.presence_id == observed.presence_id
+            for item in unique
+        ):
             return "unchanged"
         await self._await_cas_hold()
         return await self._write_person_transition(

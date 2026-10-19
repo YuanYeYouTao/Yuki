@@ -1,6 +1,7 @@
 """Local event metadata shares the original receipt and SQLite transaction."""
 
 import asyncio
+import json
 from dataclasses import replace
 
 import pytest
@@ -19,12 +20,13 @@ from yuki.identity.canonical_repository import (
     set_identity_failpoint,
 )
 from yuki.identity.db_models import (
+    AccountNameObservationModel,
+    AccountSpaceProfileModel,
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     SpaceBindingModel,
 )
-from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel, MembershipModel, PersonAliasModel
 
@@ -81,13 +83,53 @@ async def observation(database, person_id, space_id):
         group = await session.scalar(
             select(SpaceBindingModel).where(SpaceBindingModel.space_id == space_id)
         )
+        account_names = (
+            await session.execute(
+                select(
+                    AccountNameObservationModel.space_binding_id,
+                    AccountNameObservationModel.name,
+                    AccountNameObservationModel.first_seen_at,
+                    AccountNameObservationModel.last_seen_at,
+                    AccountNameObservationModel.assignment_id,
+                )
+                .where(
+                    AccountNameObservationModel.assignment_id.in_(
+                        select(IdentityBindingModel.id).where(
+                            IdentityBindingModel.person_id == person_id
+                        )
+                    )
+                )
+                .order_by(AccountNameObservationModel.id)
+            )
+        ).all()
+        account_profiles = (
+            await session.execute(
+                select(
+                    AccountSpaceProfileModel.account_id,
+                    AccountSpaceProfileModel.display_name,
+                    AccountSpaceProfileModel.first_seen_at,
+                    AccountSpaceProfileModel.last_seen_at,
+                )
+                .where(
+                    AccountSpaceProfileModel.account_id.in_(
+                        select(IdentityBindingModel.account_id).where(
+                            IdentityBindingModel.person_id == person_id
+                        )
+                    ),
+                    AccountSpaceProfileModel.space_binding_id == group.id,
+                )
+                .order_by(AccountSpaceProfileModel.account_id)
+            )
+        ).all()
         return {
             "person": (person.display_name, person.revision),
             "accounts": accounts,
-            "membership": (membership.group_card, membership.first_seen_at, membership.last_seen_at)
+            "membership": (membership.first_seen_at, membership.last_seen_at)
             if membership
             else None,
             "aliases": aliases,
+            "account_names": account_names,
+            "account_profiles": account_profiles,
             "space": (space.name, space.revision),
             "group": (group.display_name, group.last_seen_at, group.revision),
         }
@@ -106,8 +148,14 @@ async def test_first_message_fills_empty_person_name_without_following_platform_
     state = await observation(database, person_id, first.space_id)
     assert state["person"][0] == "First name"
     assert state["accounts"][0][0] == "Renamed account"
-    assert {row[1] for row in state["aliases"]} == {"First name", "Renamed account", "Event card"}
-    assert state["membership"][0] == "Event card"
+    assert not state["aliases"]
+    assert {row[1] for row in state["account_names"]} == {
+        "First name",
+        "Renamed account",
+        "Event card",
+    }
+    assert state["membership"] is not None
+    assert state["account_profiles"][0][1] == "Event card"
     assert state["space"][0] == state["group"][0] == "Event group title"
     async with database.sessions() as session:
         row = await session.get(ChatEventModel, original.event.id)
@@ -195,7 +243,9 @@ async def test_concurrent_original_receipt_only_applies_winners_names(
     winner = next(result.event for result in results if result.created)
     state = await observation(database, incoming.person_id, incoming.space_id)
     assert state["accounts"][0][0] == winner.sender_nickname
-    assert {row[1] for row in state["aliases"]} == {winner.sender_nickname, "Event card"}
+    assert not state["aliases"]
+    assert {row[1] for row in state["account_names"]} == {winner.sender_nickname, "Event card"}
+    assert state["account_profiles"][0][1] == "Event card"
 
 
 async def pause_observation(monkeypatch):
@@ -241,7 +291,9 @@ async def test_merge_during_read_reprepares_current_name_but_keeps_original_acto
         assert row.ingress_presence_id == incoming.presence_id
     state = await observation(database, incoming.person_id, incoming.space_id)
     assert state["accounts"][0][0] == "Event nickname"
-    assert state["membership"][0] == "Event card"
+    assert state["membership"] is not None
+    assert state["account_profiles"][0][1] == "Event card"
+    assert {row[1] for row in state["account_names"]} == {"Event nickname", "Event card"}
 
 
 async def test_transfer_during_read_cannot_write_late_observation_to_new_person(
@@ -254,14 +306,31 @@ async def test_transfer_during_read_cannot_write_late_observation_to_new_person(
     try:
         await asyncio.wait_for(entered.wait(), 10)
         transferred = await transfer_account(database, "1001")
+        current = await observation(database, incoming.person_id, incoming.space_id)
+        async with database.sessions() as session:
+            new_person_name = (
+                await session.get(CanonicalPersonModel, transferred["person_id"])
+            ).display_name
     finally:
         release.set()
-    with pytest.raises(CanonicalIdentityError) as failure:
-        await asyncio.wait_for(pending, 10)
-    assert failure.value.category == "canonical_owner_mismatch"
+    result = await asyncio.wait_for(pending, 10)
+    assert result.created
     async with database.sessions() as session:
-        assert not list(await session.scalars(select(ChatEventModel)))
-        assert not list(await session.scalars(select(CanonicalEventReceiptModel)))
+        events = list(await session.scalars(select(ChatEventModel)))
+        assert len(events) == 1
+        row = events[0]
+        assert row.id == result.event.id
+        assert row.author_person_id == incoming.person_id != transferred["person_id"]
+        assert row.canonical_conversation_id == incoming.conversation_id
+        assert row.ingress_presence_id == incoming.presence_id
+        context = next(
+            part["data"] for part in json.loads(row.segments_json) if part["type"] == "yuki_context"
+        )
+        assert context["source_assignment_id"] == incoming.author_assignment_id
+        receipts = list(await session.scalars(select(CanonicalEventReceiptModel)))
+        assert len(receipts) == 1
+        assert receipts[0].canonical_event_id == row.canonical_event_id
+        assert receipts[0].ingress_presence_id == incoming.presence_id
         assert not list(
             await session.scalars(
                 select(PersonAliasModel).where(
@@ -269,11 +338,26 @@ async def test_transfer_during_read_cannot_write_late_observation_to_new_person(
                 )
             )
         )
-        assert await session.get(MembershipModel, (incoming.person_id, incoming.space_id)) is None
+        assert (
+            await session.get(MembershipModel, (incoming.person_id, incoming.space_id)) is not None
+        )
         assert (
             await session.get(MembershipModel, (transferred["person_id"], incoming.space_id))
             is None
         )
+        assert (await find_identity_binding(session, "1001")).person_id == transferred["person_id"]
+        assert (
+            await session.get(CanonicalPersonModel, transferred["person_id"])
+        ).display_name == new_person_name
+    state = await observation(database, incoming.person_id, incoming.space_id)
+    assert state["accounts"][0][0] == current["accounts"][0][0]
+    assert {row[1] for row in state["account_names"]} == {"Event nickname", "Event card"}
+    assert {row[4] for row in state["account_names"]} == {incoming.author_assignment_id}
+    assert all(row[1] == "" for row in state["account_profiles"])
+    async with other_writer_and_read_only(database):
+        duplicate = await uow.append_inbound(incoming.message, incoming)
+    assert not duplicate.created and duplicate.event.id == result.event.id
+    assert await observation(database, incoming.person_id, incoming.space_id) == state
 
 
 @pytest.mark.parametrize("failure", ["after_receipt_claim", "after_canonical_append"])
@@ -331,7 +415,17 @@ async def test_person_observation_reads_precede_first_database_write(database, i
             and sql.startswith("select")
             and any(
                 f"from {table}" in sql
-                for table in ("persons", "identity_bindings", "memberships", "person_aliases")
+                for table in (
+                    "persons",
+                    "account_assignments",
+                    "accounts",
+                    "memberships",
+                    "person_aliases",
+                    "account_name_observations",
+                    "account_space_profiles",
+                    "space_bindings",
+                    "spaces",
+                )
             )
         ):
             late_reads.append(statement)

@@ -12,6 +12,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    ForeignKey,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -101,7 +102,7 @@ def _install_triggers(
         connection.execute(text(statement))
 
 
-_PARENT_ROUTE_GUARD_MARKER = "trg_identity_bindings_route_consistency_update"
+_PARENT_ROUTE_GUARD_MARKER = "trg_account_assignments_identity_immutable"
 
 
 def _install_parent_route_guards_if_ready(connection: Connection) -> None:
@@ -140,7 +141,7 @@ class CanonicalConversationModel(Base):
         ),
         ForeignKeyConstraint(
             ["identity_binding_id"],
-            ["identity_bindings.id"],
+            ["account_assignments.id"],
             name="fk_canonical_conversations_binding",
             ondelete="RESTRICT",
         ),
@@ -152,7 +153,7 @@ class CanonicalConversationModel(Base):
         ),
         ForeignKeyConstraint(
             ["entry_presence_id"],
-            ["presences.id"],
+            ["account_assignments.id"],
             name="fk_conversations_entry_presence",
             ondelete="RESTRICT",
         ),
@@ -353,13 +354,13 @@ class PersonActiveRouteModel(Base):
         ),
         ForeignKeyConstraint(
             ["identity_binding_id"],
-            ["identity_bindings.id"],
+            ["account_assignments.id"],
             name="fk_person_active_routes_binding",
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
             ["presence_id"],
-            ["presences.id"],
+            ["account_assignments.id"],
             name="fk_person_active_routes_presence",
             ondelete="RESTRICT",
         ),
@@ -416,7 +417,7 @@ class SpaceBindingIngestRouteModel(Base):
         ),
         ForeignKeyConstraint(
             ["ingest_presence_id"],
-            ["presences.id"],
+            ["account_assignments.id"],
             name="fk_space_binding_ingest_routes_presence",
             ondelete="RESTRICT",
         ),
@@ -478,7 +479,7 @@ class SpaceActiveRouteModel(Base):
         ),
         ForeignKeyConstraint(
             ["presence_id"],
-            ["presences.id"],
+            ["account_assignments.id"],
             name="fk_space_active_routes_presence",
             ondelete="RESTRICT",
         ),
@@ -656,19 +657,20 @@ class ControlCommandReceiptModel(Base):
 
 
 class CanonicalEventReceiptModel(Base):
-    """OneBot transport dedupe receipt. Secret-free; not a generic event bus."""
+    """Original transport receipt, stable across ownership stages."""
 
     __tablename__ = "canonical_event_receipts"
     __table_args__ = (
         UniqueConstraint(
-            "ingress_presence_id",
+            "ingress_account_id",
+            "transport_namespace",
             "event_type",
             "platform_message_id",
             name="uq_canonical_event_receipts_transport",
         ),
         ForeignKeyConstraint(
             ["ingress_presence_id"],
-            ["presences.id"],
+            ["account_assignments.id"],
             name="fk_canonical_event_receipts_ingress_presence",
             ondelete="RESTRICT",
         ),
@@ -692,9 +694,29 @@ class CanonicalEventReceiptModel(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ingress_account_id: Mapped[str] = mapped_column(
+        ForeignKey("accounts.id", ondelete="RESTRICT"), nullable=False
+    )
+    transport_namespace: Mapped[str] = mapped_column(String, nullable=False)
     ingress_presence_id: Mapped[str] = mapped_column(String(36), nullable=False)
     event_type: Mapped[str] = mapped_column(String(64), nullable=False)
     platform_message_id: Mapped[str] = mapped_column(String(128), nullable=False)
     canonical_event_id: Mapped[str] = mapped_column(String(36), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+@event.listens_for(Base.metadata, "after_create")
+def _install_assignment_roles(metadata: object, connection: Connection, **kwargs: object) -> None:
+    """Fresh complete schemas enforce the same typed references as upgrades."""
+    from yuki.conversation.canonical_schema import ASSIGNMENT_ROLE_TRIGGER_SQL
+
+    present = set(
+        connection.execute(text("SELECT name FROM sqlite_master WHERE type='table'")).scalars()
+    )
+    for statement in ASSIGNMENT_ROLE_TRIGGER_SQL:
+        table = statement.split(" ON ", 1)[1].split()[0]
+        if table in present and "account_assignments" in present:
+            connection.execute(
+                text(statement.replace("CREATE TRIGGER ", "CREATE TRIGGER IF NOT EXISTS ", 1))
+            )

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Annotated, cast
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from yuki.domain.conversations import ScopeType
+from yuki.domain.identity import ConversationId, PersonId, PresenceId, SpaceId
 from yuki.memory.enums import (
     MemoryRebuildExpiredClaimPolicy,
     MemoryRebuildRunStatus,
@@ -20,10 +22,12 @@ class _Model(BaseModel):
 
 class MemoryRebuildSelection(_Model):
     all_events: bool = False
-    bot_user_ids: tuple[str, ...] = ()
+    presence_ids: tuple[str, ...] = ()
     scope_types: tuple[ScopeType, ...] = ()
-    sender_user_ids: tuple[str, ...] = ()
-    group_ids: tuple[str, ...] = ()
+    person_ids: tuple[str, ...] = ()
+    space_ids: tuple[str, ...] = ()
+    conversation_ids: tuple[str, ...] = ()
+    event_ids: tuple[Annotated[int, Field(gt=0)], ...] | None = None
     after: datetime | None = None
     before: datetime | None = None
     minimum_event_id: int | None = Field(default=None, gt=0)
@@ -33,17 +37,20 @@ class MemoryRebuildSelection(_Model):
     third_party_mode: MemoryRebuildThirdPartyMode = MemoryRebuildThirdPartyMode.DISABLED
     expired_claim_policy: MemoryRebuildExpiredClaimPolicy = MemoryRebuildExpiredClaimPolicy.SKIP
 
-    @field_validator("bot_user_ids", "sender_user_ids", "group_ids", mode="before")
+    @field_validator("presence_ids", "person_ids", "space_ids", "conversation_ids", mode="before")
     @classmethod
-    def _canonical_ids(cls, value: object) -> tuple[str, ...]:
+    def _canonical_ids(cls, value: object, info: ValidationInfo) -> tuple[str, ...]:
         if value is None:
             return ()
         if not isinstance(value, list | tuple | set | frozenset):
             raise ValueError("identity filters must be arrays")
-        normalized = tuple(sorted({str(item).strip() for item in value if str(item).strip()}))
-        if any(not str(item).strip() for item in value):
-            raise ValueError("identity filters cannot contain blanks")
-        return normalized
+        identity_type = {
+            "presence_ids": PresenceId,
+            "person_ids": PersonId,
+            "space_ids": SpaceId,
+            "conversation_ids": ConversationId,
+        }[cast(str, info.field_name)]
+        return tuple(sorted({identity_type.parse(item).text for item in value}))
 
     @field_validator("scope_types", mode="before")
     @classmethod
@@ -65,16 +72,17 @@ class MemoryRebuildSelection(_Model):
     @model_validator(mode="after")
     def _bounded(self) -> MemoryRebuildSelection:
         bounds = (
-            self.bot_user_ids,
+            self.presence_ids,
             self.scope_types,
-            self.sender_user_ids,
-            self.group_ids,
+            self.person_ids,
+            self.space_ids,
+            self.conversation_ids,
             self.after,
             self.before,
             self.minimum_event_id,
             self.maximum_event_id,
         )
-        if not self.all_events and not any(bounds):
+        if not self.all_events and self.event_ids is None and not any(bounds):
             raise ValueError("all_events=false requires at least one range criterion")
         if self.after and self.before and self.after > self.before:
             raise ValueError("after must not be later than before")

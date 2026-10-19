@@ -43,7 +43,8 @@ async def runtime_health(app: ApplicationContainer) -> list[dict[str, Any]]:
 
     async with app.database.sessions() as session:
         presences = list(await session.scalars(select(PresenceModel)))
-    for platform in ("qq", "app", "acp"):
+    platforms = set(app.gateway_providers.platforms) | {presence.platform for presence in presences}
+    for platform in sorted(platforms):
         configured = [presence for presence in presences if presence.platform == platform]
         enabled_ids = {presence.id for presence in configured if presence.enabled}
         connected = bool(
@@ -52,18 +53,12 @@ async def runtime_health(app: ApplicationContainer) -> list[dict[str, Any]]:
         rows.append(
             {
                 "name": platform,
-                "enabled": bool(enabled_ids) if configured else None,
+                "enabled": bool(enabled_ids),
                 "running": connected,
                 "healthy": connected if enabled_ids else None,
                 "checked_at": checked_at,
             }
         )
-    telegram = (
-        await app.telegram_gateway.health()
-        if app.telegram_gateway is not None
-        else {"enabled": False, "running": False, "healthy": None}
-    )
-    rows.append({"name": "telegram", **telegram, "checked_at": checked_at})
     completion = await app.sandbox_completions.health()
     rows.append(
         {
@@ -148,6 +143,7 @@ def build_admin_api(app: ApplicationContainer) -> AdminApi:
             people=app.people,
             config=app.runtime_config,
             groups=app.groups,
+            router=app.presence_router,
         ),
         app.client_identity,
         AdminQueries(app.database, app.plugin_manager, files, lambda: runtime_health(app)),

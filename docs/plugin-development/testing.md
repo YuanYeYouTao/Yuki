@@ -43,7 +43,7 @@ await ctx.storage.set("state", "count", 1)
 ```
 
 `person_id` / `space_id` 是业务与配置作用域的内部 ID。`sender_user_id` / `group_id`
-在 `CurrentMessage` 中仅记录原传输出处，不能用作 API 5.0 的人物或群选择参数。
+在 `CurrentMessage` 中仅记录原传输出处，不能用作 API 6.0 的人物或群选择参数。
 
 可用 Fake 覆盖 Message、People、Group、Memory、Agent、AgentSession、Web、HTTP、Vision、Media、Notification、Automation、OneBot、Config、Secrets、Storage、Scheduler 和 EventBus。
 

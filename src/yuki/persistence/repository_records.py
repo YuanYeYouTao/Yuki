@@ -9,7 +9,7 @@ from typing import Any
 from yuki.domain.audio import transcript_context
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.identity import AuthorKind
-from yuki.domain.messages import MessageMention, sanitize_display_name
+from yuki.domain.messages import sanitize_display_name
 
 
 def event_author_is_yuki(*, author_kind: str | None) -> bool:
@@ -57,8 +57,6 @@ class EventRecord:
     visual_summary: str
     segments: tuple[dict[str, Any], ...]
     occurred_at: datetime
-    projected_content: str | None = None
-    projected_mentions: tuple[MessageMention, ...] = ()
     platform: str = ""
     thread_id: str | None = None
     audio_transcript: str = ""
@@ -85,6 +83,7 @@ class EventRecord:
     author_kind: str | None = None
     author_person_id: str | None = None
     author_presence_id: str | None = None
+    author_account_id: str | None = None
     ingress_presence_id: str | None = None
     suppression_status: str | None = None
     caused_by_event_id: int | None = None

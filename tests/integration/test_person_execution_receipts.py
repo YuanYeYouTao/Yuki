@@ -11,10 +11,10 @@ from sqlalchemy import select, update
 from tests.integration.test_native_social_delivery import native_env as native_env
 from tests.integration.test_native_social_delivery import sends
 from tests.support.automation_unified_delivery_helpers import setup_run
+from tests.support.client_identity import client_identity_service
 from tests.support.social_identity_cases import social_env
 
 from yuki.automation.models import RunStatus
-from yuki.client_api.identity import ClientIdentityService
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.hydrate import require_primary_alias_for_conversation
 from yuki.domain.conversations import ConversationScope
@@ -102,7 +102,7 @@ async def test_sdk_image_replay_does_not_read_expired_original_bytes(
         plugin_id=plugin,
         name=plugin,
         version="1",
-        plugin_api="5.0",
+        plugin_api="6.0",
         yuki_requires="*",
         manifest_hash="original-media-manifest",
         entrypoint="plugin:register",
@@ -304,7 +304,7 @@ async def test_onebot_original_receipt_precedes_all_upstream_lifecycle_gates(
                 await writer.execute(
                     update(PresenceModel)
                     .where(PresenceModel.id == env.presence)
-                    .values(enabled=False)
+                    .values(status="disabled")
                 )
         before = len(env.bot.calls)
         with host.bind(source):
@@ -352,7 +352,7 @@ async def test_onebot_group_send_uses_original_person_after_account_transfer(dat
     source = await invocation(
         database, plugin, event, platform="qq", space_id=env.space, gateway=Gateway()
     )
-    await ClientIdentityService(database).transfer_for_operator(
+    await client_identity_service(database).transfer_for_operator(
         binding.id, other, str(uuid4()), str(uuid4())
     )
     env.bot.calls.clear()
@@ -387,7 +387,7 @@ async def test_accepted_group_automation_runs_without_a_representative_account(
     database, tmp_path, accounts
 ):
     case = await setup_run(database, tmp_path, mode="silent")
-    identity = ClientIdentityService(database)
+    identity = client_identity_service(database)
     if accounts == "multiple":
         code = await identity.issue_for_operator(case.env.person, str(uuid4()), str(uuid4()))
         await identity.claim_account(

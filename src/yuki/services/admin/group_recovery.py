@@ -346,7 +346,7 @@ class GroupRecoveryService:
             select(IdentityBindingModel).where(
                 IdentityBindingModel.platform == platform,
                 IdentityBindingModel.external_account_id == audit.user_id,
-                IdentityBindingModel.status != "transferred",
+                IdentityBindingModel.status != "ended",
             )
         )
         yuki = await session.scalar(

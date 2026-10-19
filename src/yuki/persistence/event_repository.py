@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -9,10 +10,12 @@ from typing import Any, cast
 
 from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.hydrate import conversation_for_scope
 from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.memory.eligibility import MemoryEventEligibilityPolicy
 from yuki.memory.rebuild.models import (
     MemoryRebuildPlanStatistics,
@@ -93,16 +96,41 @@ class EventLedgerRepository:
         eligible_only: bool,
     ) -> tuple[Any, ...]:
         conditions: list[Any] = [ChatEventModel.id <= snapshot_max_event_id]
-        if selection.bot_user_ids:
-            conditions.append(ChatEventModel.bot_user_id.in_(selection.bot_user_ids))
+        if selection.event_ids is not None:
+            selected_events = func.json_each(json.dumps(selection.event_ids)).table_valued("value")
+            conditions.append(ChatEventModel.id.in_(select(selected_events.c.value)))
+        if selection.presence_ids:
+            conditions.append(ChatEventModel.ingress_presence_id.in_(selection.presence_ids))
         if selection.scope_types:
             conditions.append(
                 ChatEventModel.scope_type.in_(tuple(scope.value for scope in selection.scope_types))
             )
-        if selection.sender_user_ids:
-            conditions.append(ChatEventModel.sender_user_id.in_(selection.sender_user_ids))
-        if selection.group_ids:
-            conditions.append(ChatEventModel.group_id.in_(selection.group_ids))
+        if selection.person_ids:
+            selected = aliased(CanonicalPersonModel)
+            family = aliased(CanonicalPersonModel)
+            conditions.append(
+                ChatEventModel.author_person_id.in_(
+                    select(family.id).where(
+                        func.coalesce(family.merged_into_person_id, family.id).in_(
+                            select(
+                                func.coalesce(selected.merged_into_person_id, selected.id)
+                            ).where(selected.id.in_(selection.person_ids))
+                        )
+                    )
+                )
+            )
+        if selection.space_ids:
+            conditions.append(
+                ChatEventModel.canonical_conversation_id.in_(
+                    select(CanonicalConversationModel.id).where(
+                        CanonicalConversationModel.space_id.in_(selection.space_ids)
+                    )
+                )
+            )
+        if selection.conversation_ids:
+            conditions.append(
+                ChatEventModel.canonical_conversation_id.in_(selection.conversation_ids)
+            )
         if selection.after is not None:
             conditions.append(ChatEventModel.occurred_at >= selection.after)
         if selection.before is not None:

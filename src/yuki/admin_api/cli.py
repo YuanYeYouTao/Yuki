@@ -84,7 +84,7 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     _mutation(attached)
     shown = binding.add_parser("show")
     shown.add_argument("id")
-    for action in ("enable", "disable"):
+    for action in ("enable", "disable", "unbind"):
         state = binding.add_parser(action)
         state.add_argument("id")
         _mutation(state)
@@ -96,6 +96,19 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     _listing(presence.add_parser("list"))
     shown = presence.add_parser("show")
     shown.add_argument("id")
+    registered = presence.add_parser("register")
+    registered.add_argument("--platform", required=True)
+    registered.add_argument("--account", required=True)
+    registered.add_argument("--expected-assignment")
+    registered.add_argument("--display-name", default="")
+    _mutation(registered)
+    transferred = presence.add_parser("transfer")
+    transferred.add_argument("id")
+    transferred.add_argument("--to-person", required=True)
+    _mutation(transferred)
+    retired = presence.add_parser("unregister")
+    retired.add_argument("id")
+    _mutation(retired)
     for action in ("enable", "disable", "ingest"):
         state = presence.add_parser(action)
         state.add_argument("id")
@@ -200,6 +213,25 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
                 data = await mutate(
                     client, "persons", 0, request_id=args.request_id, display_name=args.display_name
                 )
+            elif kind == "presence" and action == "register":
+                data = await mutate(
+                    client,
+                    "presences",
+                    args.revision,
+                    request_id=args.request_id,
+                    platform=args.platform,
+                    external_account_id=args.account,
+                    display_name=args.display_name,
+                    expected_assignment_id=args.expected_assignment,
+                )
+            elif kind == "presence" and action == "transfer":
+                data = await mutate(
+                    client,
+                    f"presences/{args.id}/transfer",
+                    args.revision,
+                    request_id=args.request_id,
+                    to_person=args.to_person,
+                )
             elif action in {"forget", "merge", "rename", "transfer"}:
                 values = (
                     {"to_person": args.to_person}
@@ -221,7 +253,7 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
                     external_account_id=args.account,
                     display_name=args.display_name,
                 )
-            elif kind == "presence":
+            elif kind == "presence" and action != "unregister":
                 values = (
                     {"ingest_eligible": args.state == "on"}
                     if action == "ingest"

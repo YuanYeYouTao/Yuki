@@ -26,11 +26,14 @@ class WorkAdminCommands:
         if action and action not in ADMIN_ACTIONS["work"]:
             raise ValueError(admin_usage("work"))
         if action in {"", "list"}:
-            return await queries.works(principal, state=identity or None)
+            state, _, after = identity.partition(" ")
+            return await queries.works(
+                principal, state=None if state in {"", "all"} else state, after=after
+            )
         if action == "show":
             return await queries.work(principal, identity)
         if action not in {"cancel", "resume"}:
-            raise ValueError("Work 操作：list [state]|show|cancel|resume")
+            raise ValueError("Work 操作：list [state|all] [cursor]|show|cancel|resume")
 
         async def revision() -> int:
             return int((await queries.work(principal, identity))["revision"])

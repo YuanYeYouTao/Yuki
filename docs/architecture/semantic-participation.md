@@ -34,6 +34,11 @@ Conversation/generation 保存控制器快照。新观察只以真实人类事�
 Memory 仍由主 Agent 按需查询；
 目标人物只是交流对象，不是执行主体。观测正文保留原事件中按原位置还原的 `@名字`，
 与 Main 共用入账时的目标及名称快照；不在 JEV 侧再补查资料或把其他成员改称 Yuki。
+Host 从同一原 segments 复制窄 `EventMention` 到 `ScopedEvent.mentions`，保原顺序、重复、展示名、
+位置及可证明的 Account／Assignment／Person／Presence。普通文字中的 @ 不反造原生提及。
+新 Jev 请求使用 `semantic-state-v3`：人物随原作者共用当前同人投影，Account 在该请求内只用
+中性 aN 关联，Assignment／Presence UUID 留在本地原 Snapshot；不改变参与 target 或授予权限。
+原来源修订包含提及快照，旧未知位置保未知，旧已付 Snapshot 不补查或改写。
 观测和历史读取完成后才进入短接纳事务，事务中不等待 Jev、主模型或 QQ 网关。
 启动和运行期间会主动发现当前获准的群会话代次；即使 `/ai new` 后还没有新的群消息、
 新代次尚无 selector 行，也会建立控制器并按现行配置选择 owner。只读取新代次事件，

@@ -79,32 +79,6 @@ def media_part_key(*, index: int, sha256: str) -> str:
     return f"{_MEDIA_PART_PREFIX}{index}:{sha256}"
 
 
-def legacy_media_part_key(*, index: int, handle_id: str) -> str:
-    """Pre-C3 outbox identity; compare its digest when available, otherwise its original handle."""
-
-    if index < 0 or not handle_id:
-        raise ValueError("legacy media part key is invalid")
-    return f"{_MEDIA_PART_PREFIX}{index}:{handle_id}"
-
-
-def parse_media_part_key(part_key: str) -> tuple[int, str] | None:
-    """Return ``(index, token)`` for ``media:{index}:{sha256|handle_id}``."""
-
-    if not part_key.startswith(_MEDIA_PART_PREFIX):
-        return None
-    rest = part_key[len(_MEDIA_PART_PREFIX) :]
-    index_text, separator, token = rest.partition(":")
-    if not separator or not token:
-        return None
-    try:
-        index = int(index_text)
-    except ValueError:
-        return None
-    if index < 0:
-        return None
-    return index, token
-
-
 def _ordered_media(media: tuple[MediaIdentity, ...]) -> tuple[MediaIdentity, ...]:
     return tuple(sorted(media, key=lambda item: item.index))
 
@@ -131,42 +105,5 @@ def manifest_from_request(
         ask_agent=request.ask_agent,
         resume_waiting_work=request.resume_waiting_work,
         agent_intent=request.agent_intent,
-        media=_ordered_media(media),
-    )
-
-
-def manifest_from_stored(
-    *,
-    plugin_id: str,
-    event_key: str,
-    occurred_at: datetime,
-    summary: str,
-    payload: object,
-    text: str,
-    target_type: str,
-    target_id: str,
-    external_source: str,
-    event_type: str,
-    ask_agent: bool,
-    resume_waiting_work: bool,
-    agent_intent: str,
-    media: tuple[MediaIdentity, ...],
-) -> PublicationManifest:
-    """Rebuild identity from the event row plus existing children. No writes."""
-
-    return PublicationManifest(
-        plugin_id=plugin_id,
-        event_key=event_key,
-        external_source=external_source,
-        event_type=event_type,
-        target_type=target_type,
-        target_id=target_id,
-        occurred_at=canonical_occurred_at(occurred_at),
-        payload_json=canonical_json(payload),
-        summary=summary,
-        text=text,
-        ask_agent=ask_agent,
-        resume_waiting_work=resume_waiting_work,
-        agent_intent=agent_intent,
         media=_ordered_media(media),
     )

@@ -1,41 +1,16 @@
-"""Canonical owner keys for runtime configuration."""
+"""Resolve an existing configuration Space without execution-state policy."""
 
-from __future__ import annotations
-
-from dataclasses import dataclass
-
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.services.canonical_owners import resolve_live_person_id, resolve_live_space_id
+from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.identity.errors import CanonicalIdentityError
 
 
-@dataclass(frozen=True, slots=True)
-class UserConfigScope:
-    person_id: str
-
-    @property
-    def storage_scope_id(self) -> str:
-        """Canonical storage owner retained as a call-site compatibility name."""
-
-        return self.person_id
-
-
-@dataclass(frozen=True, slots=True)
-class GroupConfigScope:
-    space_id: str
-
-    @property
-    def storage_scope_id(self) -> str:
-        """Canonical storage owner retained as a call-site compatibility name."""
-
-        return self.space_id
-
-
-async def resolve_user_config_scope(session: AsyncSession, scope_id: str) -> UserConfigScope:
-    person_id = await resolve_live_person_id(session, scope_id)
-    return UserConfigScope(person_id)
-
-
-async def resolve_group_config_scope(session: AsyncSession, scope_id: str) -> GroupConfigScope:
-    space_id = await resolve_live_space_id(session, scope_id)
-    return GroupConfigScope(space_id)
+async def resolve_space_owner(session: AsyncSession, space_id: str | None) -> str:
+    owner = await session.scalar(
+        select(CanonicalSpaceModel.id).where(CanonicalSpaceModel.id == space_id)
+    )
+    if owner is None:
+        raise CanonicalIdentityError("missing_canonical_owner")
+    return owner

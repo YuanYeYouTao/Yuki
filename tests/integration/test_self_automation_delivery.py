@@ -116,11 +116,11 @@ async def test_self_schedule_memory_uses_original_execution_receipt_and_remains_
                 {
                     "operation": "create",
                     "target": {"subject_ref": "self", "scope_type": "self"},
-                    "new_content": "我实际查询了当前群成员列表，确认了 member 的成员资料。",
+                    "new_content": "我实际查询了当前群成员列表，确认了 test-10001 的成员资料。",
                     "memory_key": "self_episode:scheduled",
                     "category": "self_episode",
                     "kind": "episode",
-                    "evidence_quote": "member",
+                    "evidence_quote": "test-10001",
                 },
             ),
             ("read_memory", None),
@@ -452,11 +452,11 @@ async def test_self_scheduled_work_memory_keeps_original_version_after_task_upda
     write = {
         "operation": "create",
         "target": {"subject_ref": "self", "scope_type": "self"},
-        "new_content": "我在原定时任务的派生工作中查询了 member 的真实成员资料。",
+        "new_content": "我在原定时任务的派生工作中查询了 test-10001 的真实成员资料。",
         "memory_key": "self_episode:original-work",
         "category": "self_episode",
         "kind": "episode",
-        "evidence_quote": "member",
+        "evidence_quote": "test-10001",
     }
     calls = (
         ("get_group_members", {}),

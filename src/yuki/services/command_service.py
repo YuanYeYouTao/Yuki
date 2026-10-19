@@ -23,6 +23,7 @@ from yuki.domain.profiles import UserProfileSnapshot
 from yuki.gateway.media import PlatformMediaGateway
 from yuki.memory.rebuild.service import MemoryRebuildService
 from yuki.memory.service import MemoryFactService
+from yuki.model_runtime.executor import ModelExecutor
 from yuki.model_runtime.repository import ModelInvocationRepository
 from yuki.persistence.repositories import PeopleRepository
 from yuki.plugin_host.command_adapter import PluginCommandAdapter
@@ -64,7 +65,8 @@ class CommandService:
         people: PeopleRepository,
         memories: MemoryFactService,
         concurrency: ConcurrencyManager,
-        onebot_connected: Callable[[], bool],
+        platform_connected: Callable[[ConversationScope], bool],
+        model_executor: ModelExecutor,
         runtime_config: RuntimeConfigService,
         memory_admin: MemoryAdminService,
         preference_admin: PreferenceAdminService,
@@ -107,7 +109,8 @@ class CommandService:
             conversation_scopes=conversation_scopes,
             people=people,
             concurrency=concurrency,
-            onebot_connected=onebot_connected,
+            platform_connected=platform_connected,
+            model_executor=model_executor,
             runtime_config=runtime_config,
             vision=vision_service,
             automation_repository=automation_repository,

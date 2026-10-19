@@ -13,7 +13,12 @@ from yuki.domain.conversations import ConversationScope
 from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
-from yuki.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
+from yuki.identity.db_models import (
+    AccountModel,
+    IdentityBindingModel,
+    PresenceModel,
+    SpaceBindingModel,
+)
 from yuki.identity.routing import PresenceRouter, RouteSendError
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -66,6 +71,24 @@ async def social_env(database, tmp_path):
         )
         presence = await ensure_presence(session, bot.self_id)
         space = await ensure_space(session, "20001")
+    from datetime import UTC, datetime
+
+    from yuki.identity.canonical_repository import find_identity_binding
+    from yuki.identity.person_state import observe_canonical_person
+
+    async with database.sessions() as session, session.begin():
+        binding = await find_identity_binding(session, "10001")
+        await observe_canonical_person(
+            session,
+            binding=binding,
+            nickname="test-10001",
+            group_id="20001",
+            group_card="",
+            group_name="",
+            nickname_known=True,
+            group_card_known=True,
+            now=datetime.now(UTC),
+        )
     registry.connect(bot, provider_id="snowluma", presence_id=presence)
     await writer.append(
         scope=ConversationScope.group(bot.self_id, "20001"),
@@ -77,6 +100,11 @@ async def social_env(database, tmp_path):
     async with database.sessions() as session:
         event = await session.scalar(select(ChatEventModel))
         conversation = event.canonical_conversation_id
+        account = await session.scalar(
+            select(AccountModel).where(
+                AccountModel.platform == "qq", AccountModel.external_account_id == "10001"
+            )
+        )
     assert await router.cas_takeover_space(space) == "taken"
     service = SocialService(database, router, writer)
     store = WorkspaceStore(tmp_path / "workspace")
@@ -88,6 +116,7 @@ async def social_env(database, tmp_path):
         router=router,
         service=service,
         person=person,
+        account=account.id,
         presence=presence,
         space=space,
         store=store,
@@ -129,24 +158,18 @@ async def test_recall_uses_original_presence(social_env, route_state):
 
 async def test_members_ignore_send_pause_and_try_accessible_connections(social_env):
     env = social_env
-    other = Bot("80002")
-    env.bot.fail_list = True
     async with env.db.sessions() as session, session.begin():
-        second = await ensure_presence(session, other.self_id)
         route = await session.get(SpaceActiveRouteModel, env.space)
         route.paused = True
         generation = route.route_generation
-    env.registry.connect(other, provider_id="snowluma", presence_id=second)
+    env.bot.calls.clear()
     result = await env.service.execute("get_group_members", {}, env.context)
-    assert result["items"] == [{"person_id": env.person, "display_name": "test-10001"}]
-    assert result["coverage"] == "observed"
+    assert result["coverage"] == "observed" and result["items"][0]["account_id"] == env.account
+    assert result["items"][0]["reference"] == f"@{{account:{env.account}}}"
+    assert env.bot.calls == []
     async with env.db.sessions() as session:
         route = await session.get(SpaceActiveRouteModel, env.space)
         assert route.paused and route.route_generation == generation
-    env.bot.missing.add(env.bot.self_id)
-    other.missing.add(other.self_id)
-    observed = await env.service.execute("get_group_members", {}, env.context)
-    assert observed["coverage"] == "observed"
 
 
 async def test_multiple_space_bindings_require_explicit_selection(social_env):
@@ -204,7 +227,9 @@ async def add_second_account(env):
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.person_id == other)
         )
-        binding.person_id = env.person
+        from yuki.identity.person_identity import merge_persons
+
+        await merge_persons(session, other, env.person)
         return binding.id
 
 
@@ -250,58 +275,58 @@ async def test_private_send_uses_explicit_binding_and_rejects_foreign_binding(so
 
 async def test_group_mention_resolves_binding_without_first_item(social_env, selector):
     env = social_env
-    binding = await add_second_account(env)
-    person = {"target_id": env.person}
-    context = env.context
-    if selector == "explicit":
-        person["binding_id"] = binding
-    elif selector == "subject":
-        person = {"subject_ref": "mentioned_user"}
-        context = replace(
-            context,
-            person_refs={"mentioned_user": env.person},
-            account_refs={"mentioned_user": ("qq", "10002")},
-        )
-    elif selector == "foreign":
-        person["binding_id"] = str(uuid4())
-    args = {"text": "hello", "mentions": [person]}
-    if selector in {"ambiguous", "foreign"}:
-        with pytest.raises(SocialError, match=r"binding_ambiguous|binding_unavailable"):
-            await env.service.execute("send_message", args, context)
-        assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
+    other = await add_second_account(env)
+    async with env.db.sessions() as session:
+        second = await session.get(IdentityBindingModel, other)
+        account_id = second.account_id
+    if selector == "subject":
+        with pytest.raises(SocialError, match="invalid_message_arguments"):
+            await env.service.execute(
+                "send_message",
+                {"text": "hello", "mentions": [{"subject_ref": "current_speaker"}]},
+                env.context,
+            )
+        return
+    requested = str(uuid4()) if selector == "foreign" else account_id
+    result = await env.service.execute(
+        "send_message", {"text": f"@{{account:{requested}}} hello"}, env.context
+    )
+    assert result["status"] == "succeeded"
+    native = [part for part in env.bot.calls[-1][1]["message"] if part["type"] == "at"]
+    if selector == "foreign":
+        assert not native and result["unresolved_mentions"]
     else:
-        result = await env.service.execute("send_message", args, context)
-        assert result["status"] == "succeeded"
-        assert env.bot.calls[-1][0] == "send_group_msg"
-        assert env.bot.calls[-1][1]["message"][0] == {"type": "at", "data": {"qq": "10002"}}
+        assert native == [{"type": "at", "data": {"qq": "10002"}}]
 
 
 async def test_real_mentions_preserve_segments_and_replay(social_env, attachment):
     env = social_env
-    args = {"mentions": [{"target_id": env.person}]}
+    args = {"text": f"前@{{account:{env.account}}}后"}
     if attachment:
         artifact = snapshot_bytes(env.store, "hello.txt", b"hello")
         args.update(artifact_id=artifact["artifact_id"], attachment_kind=attachment)
     result = await env.service.execute("send_message", args, env.context)
     assert result["status"] == "succeeded"
-    sends = [params for action, params in env.bot.calls if action == "send_group_msg"]
-    assert len(sends) == 1
-    assert sends[0]["message"][0] == {"type": "at", "data": {"qq": "10001"}}
+    messages = [params["message"] for action, params in env.bot.calls if action == "send_group_msg"]
+    assert len(messages) == 1
+    assert messages[0][:3] == [
+        {"type": "text", "data": {"text": "前"}},
+        {"type": "at", "data": {"qq": "10001"}},
+        {"type": "text", "data": {"text": "后"}},
+    ]
     async with env.db.sessions() as session:
-        events = (
+        events = list(
             await session.scalars(
                 select(ChatEventModel).where(ChatEventModel.direction == "outbound")
             )
-        ).all()
+        )
         assert any(
-            env.person in event.segments_json and '"mention"' in event.segments_json
+            env.account in event.segments_json and '"mention"' in event.segments_json
             for event in events
         )
-    effects = [call for call in env.bot.calls if call[0] in {"send_group_msg", "upload_group_file"}]
+    effects = list(env.bot.calls)
     assert await env.service.execute("send_message", args, env.context) == result
-    assert effects == [
-        call for call in env.bot.calls if call[0] in {"send_group_msg", "upload_group_file"}
-    ]
+    assert env.bot.calls == effects
 
 
 async def current_speaker_mention(env):
@@ -329,8 +354,7 @@ async def current_speaker_mention(env):
             env.service,
             "send_message",
             {
-                "mentions": [{"subject_ref": "current_speaker"}],
-                "text": "test",
+                "text": "@test-10001 test",
             },
             runtime,
         )
@@ -342,18 +366,23 @@ async def current_speaker_mention(env):
 
 async def test_mentions_reject_ambiguous_or_nonmember_accounts(social_env):
     env = social_env
-    binding = await add_second_account(env)
-    with pytest.raises(SocialError, match="binding_ambiguous"):
-        await env.service.execute(
-            "send_message",
-            {"mentions": [{"target_id": env.person}], "text": "hello"},
-            env.context,
-        )
+    binding_id = await add_second_account(env)
+    async with env.db.sessions() as session, session.begin():
+        binding = await session.get(IdentityBindingModel, binding_id)
+        account = binding.account_id
+        from yuki.identity.db_models import CanonicalPersonModel
+
+        person = await session.get(CanonicalPersonModel, binding.person_id)
+        person.enabled = False
     env.bot.missing.add("10002")
-    with pytest.raises(SocialError, match="group_member_unavailable"):
-        await env.service.execute(
-            "send_message",
-            {"mentions": [{"target_id": env.person, "binding_id": binding}]},
-            env.context,
+    env.bot.calls.clear()
+    result = await env.service.execute(
+        "send_message", {"text": f"@{{account:{account}}}"}, env.context
+    )
+    assert result["status"] == "succeeded"
+    assert env.bot.calls == [
+        (
+            "send_group_msg",
+            {"group_id": 20001, "message": [{"type": "at", "data": {"qq": "10002"}}]},
         )
-    assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
+    ]

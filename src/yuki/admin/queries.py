@@ -20,7 +20,11 @@ from yuki.domain.identity import PrincipalId, RequestId
 from yuki.execution_trace.db_models import ExecutionTraceEntryModel
 from yuki.execution_trace.payload import decode_payload
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
-from yuki.identity.person_identity import current_person_id, person_family_condition
+from yuki.identity.person_identity import (
+    current_person_id,
+    current_person_ids,
+    person_family_condition,
+)
 from yuki.memory.dream.db_models import MemoryDreamRunModel
 from yuki.persistence.command_receipts import control_operation, run_operation
 from yuki.persistence.database import Database
@@ -100,14 +104,8 @@ class AdminQueries:
             if row is None:
                 raise fail(ProblemCode.NOT_FOUND)
             return {
-                "id": row.id,
-                "person_id": row.person_id,
+                **self._binding_view(row),
                 "current_person_id": await current_person_id(session, row.person_id),
-                "external_account_id": row.external_account_id,
-                "display_name": row.display_name,
-                "platform": row.platform,
-                "status": row.status,
-                "revision": row.revision,
             }
 
     async def plugins_list(self, principal: ControlPrincipal) -> list[dict[str, Any]]:
@@ -263,11 +261,14 @@ class AdminQueries:
     def _binding_view(row: IdentityBindingModel) -> dict[str, Any]:
         return {
             "id": row.id,
+            "account_id": row.account_id,
             "person_id": row.person_id,
             "platform": row.platform,
             "external_account_id": row.external_account_id,
             "display_name": row.display_name,
             "status": row.status,
+            "started_at": row.started_at,
+            "ended_at": row.ended_at,
             "revision": row.revision,
         }
 
@@ -321,10 +322,11 @@ class AdminQueries:
             rows = list(
                 await session.scalars(stmt.order_by(IdentityBindingModel.id).limit(limit + 1))
             )
+            roots = await current_person_ids(session, (row.person_id for row in rows[:limit]))
             items = [
                 {
                     **self._binding_view(row),
-                    "current_person_id": await current_person_id(session, row.person_id),
+                    "current_person_id": roots[row.person_id],
                 }
                 for row in rows[:limit]
             ]
@@ -334,9 +336,13 @@ class AdminQueries:
     def _presence_view(row: PresenceModel) -> dict[str, Any]:
         return {
             "id": row.id,
+            "account_id": row.account_id,
             "platform": row.platform,
             "external_account_id": row.external_account_id,
             "enabled": row.enabled,
+            "status": row.status,
+            "started_at": row.started_at,
+            "ended_at": row.ended_at,
             "ingest_eligible": row.ingest_eligible,
             "revision": row.revision,
         }

@@ -274,30 +274,6 @@ class SelfReflectionRepository:
         state.pending_since = pending_since
         state.updated_at = now
 
-    async def _reconcile_generation_boundary(
-        self,
-        session: AsyncSession,
-        state: MemorySelfReflectionStateModel,
-        *,
-        now: datetime,
-        conversation: CanonicalConversationModel | None,
-    ) -> None:
-        """Discard the no-longer-live prefix left behind by an explicit conversation reset."""
-
-        if conversation is None:
-            return
-        live_boundary = max(
-            int(conversation.starts_after_event_id),
-            int(conversation.last_generation_change_event_id),
-        )
-        if live_boundary > int(state.last_event_id):
-            await self._advance_state(
-                session,
-                state,
-                through_event_id=live_boundary,
-                now=now,
-            )
-
     async def scan_new_events(self, *, limit: int = 5000) -> int:
         """Accumulate only post-deployment events; first startup establishes a baseline."""
 
@@ -390,7 +366,7 @@ class SelfReflectionRepository:
             for row in rows:
                 if row.id not in live_ids:
                     continue
-                conversation = conversations.get(row.canonical_conversation_id)
+                conversation = conversations.get(row.canonical_conversation_id or "")
                 if (
                     not row.canonical_event_id
                     or conversation is None
@@ -507,14 +483,6 @@ class SelfReflectionRepository:
                     state.canonical_space_id.is_(None),
                 ),
             )
-            conversations = {
-                (c.person_id, c.space_id): c
-                for c in await session.scalars(
-                    select(conversation)
-                    .join(state, owner_scope)
-                    .where(state.id.in_(selected_states))
-                )
-            }
             live_run_source = (
                 select(ChatEventModel.id)
                 .join(conversation, ChatEventModel.canonical_conversation_id == conversation.id)
@@ -547,14 +515,6 @@ class SelfReflectionRepository:
                 )
             claimed: list[SelfReflectionBatch] = []
             for row in states:
-                await self._reconcile_generation_boundary(
-                    session,
-                    row,
-                    now=now,
-                    conversation=conversations.get(
-                        (row.canonical_person_id, row.canonical_space_id)
-                    ),
-                )
                 if row.pending_events <= 0:
                     continue
                 outstanding = [

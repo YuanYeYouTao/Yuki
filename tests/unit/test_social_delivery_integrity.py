@@ -185,7 +185,7 @@ async def test_historical_or_deleted_event_reference_never_reconstructs_content_
 async def test_plugin_background_media_uses_only_real_target_without_actor(database, tmp_path):
     from tests.support.background_authority import approve_background_plugin
 
-    from yuki_plugin_sdk.models import NotificationTarget
+    from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
     env = await social_env(database, tmp_path)
     assert await env.router.cas_takeover_person(env.person) in {"taken", "unchanged"}
@@ -229,25 +229,34 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
         (ConversationScope.group("80001", "20001"), "group"),
         (ConversationScope.private("80001", "10001"), "private"),
     ):
-        event = await env.service.writer.append_external(
-            scope=scope,
-            platform_message_id=f"plugin-{target_kind}",
-            source_plugin_id="test",
-            external_source="test",
-            external_event_key=f"media-{target_kind}",
-            external_event_type="notice",
-            external_payload={},
-            external_target_id=scope.group_id or scope.private_peer_user_id,
-            content="notice",
-            occurred_at=datetime.now(UTC),
+        publication = await notifications.publish(
+            plugin_id="test",
+            request=PublishNotificationRequest(
+                target=NotificationTarget(
+                    target_type=target_kind,
+                    target_id=env.space if scope.group_id else env.person,
+                    conversation_id=env.context.conversation_id
+                    if scope.group_id
+                    else private.conversation_id,
+                ),
+                event_key=f"media-{target_kind}",
+                event_type="notice",
+                payload={},
+                summary="notice",
+                occurred_at=datetime.now(UTC),
+                ask_agent=True,
+                agent_intent="Acknowledge this original publication.",
+                external_source="test",
+            ),
         )
+        source_event_id = publication.source_event_id
         async with database.sessions() as session:
-            row = await session.get(ChatEventModel, event.event.id)
+            row = await session.get(ChatEventModel, source_event_id)
             conversation_id = row.canonical_conversation_id
         runtime = SimpleNamespace(
             origin=TurnOrigin.PLUGIN_BACKGROUND,
             actor_context=None,
-            effective_trigger_event_id=event.event.id,
+            effective_trigger_event_id=source_event_id,
             effective_conversation_id=conversation_id,
             inbound=None,
             tools_closed=False,
@@ -291,7 +300,7 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
         intent = next(
             item
             for item in pending
-            if item.source["context"]["caused_by_event_id"] == event.event.id
+            if item.source["context"]["caused_by_event_id"] == source_event_id
         )
         assert intent.target.kind == ("space" if scope.group_id else "person")
         await delivery._deliver(intent)
@@ -354,7 +363,6 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
     quoted_context = replace(
         env.context,
         call_id="quoted-sequence",
-        visible_event_ids=frozenset({source_event.event.id}),
         runtime_snapshot=SimpleNamespace(
             reply=SimpleNamespace(delay_min_seconds=0, delay_max_seconds=0)
         ),

@@ -49,182 +49,120 @@ END
 """.strip(),
 )
 
-PERSON_ACTIVE_ROUTE_TRIGGERS: tuple[str, ...] = (
-    """
-CREATE TRIGGER trg_person_active_routes_consistency_insert
-BEFORE INSERT ON person_active_routes
+PERSON_ACTIVE_ROUTE_TRIGGERS: tuple[str, ...] = tuple(
+    f"""CREATE TRIGGER trg_person_active_routes_consistency_{operation.lower()}
+BEFORE {operation} ON person_active_routes
 BEGIN
-    SELECT RAISE(ABORT, 'person active route ownership or platform mismatch')
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM identity_bindings AS binding
-        JOIN presences AS presence ON presence.id = NEW.presence_id
-        JOIN persons AS owner ON owner.id = binding.person_id
-        JOIN persons AS target ON target.id = NEW.person_id
-        WHERE binding.id = NEW.identity_binding_id
-          AND COALESCE(owner.merged_into_person_id, owner.id)
-              = COALESCE(target.merged_into_person_id, target.id)
-          AND binding.platform = presence.platform
-    );
-END
-""".strip(),
-    """
-CREATE TRIGGER trg_person_active_routes_consistency_update
-BEFORE UPDATE ON person_active_routes
-BEGIN
-    SELECT RAISE(ABORT, 'person active route ownership or platform mismatch')
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM identity_bindings AS binding
-        JOIN presences AS presence ON presence.id = NEW.presence_id
-        JOIN persons AS owner ON owner.id = binding.person_id
-        JOIN persons AS target ON target.id = NEW.person_id
-        WHERE binding.id = NEW.identity_binding_id
-          AND COALESCE(owner.merged_into_person_id, owner.id)
-              = COALESCE(target.merged_into_person_id, target.id)
-          AND binding.platform = presence.platform
-    );
-END
-""".strip(),
+ SELECT RAISE(ABORT, 'person active route ownership or platform mismatch')
+ WHERE NOT EXISTS (
+  SELECT 1 FROM account_assignments binding
+  JOIN accounts ba ON ba.id=binding.account_id
+  JOIN account_assignments presence ON presence.id=NEW.presence_id AND presence.kind='yuki'
+  JOIN accounts pa ON pa.id=presence.account_id
+  JOIN persons owner ON owner.id=binding.person_id
+  JOIN persons target ON target.id=NEW.person_id
+  WHERE binding.id=NEW.identity_binding_id AND binding.kind='person'
+   AND COALESCE(owner.merged_into_person_id,owner.id)
+       =COALESCE(target.merged_into_person_id,target.id)
+   AND ba.platform=pa.platform);
+END"""
+    for operation in ("INSERT", "UPDATE")
 )
 
-SPACE_BINDING_INGEST_ROUTE_TRIGGERS: tuple[str, ...] = (
-    """
-CREATE TRIGGER trg_space_binding_ingest_routes_consistency_insert
-BEFORE INSERT ON space_binding_ingest_routes
+SPACE_BINDING_INGEST_ROUTE_TRIGGERS: tuple[str, ...] = tuple(
+    f"""CREATE TRIGGER trg_space_binding_ingest_routes_consistency_{operation.lower()}
+BEFORE {operation} ON space_binding_ingest_routes
 BEGIN
-    SELECT RAISE(ABORT, 'space binding ingest route platform mismatch')
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM space_bindings AS binding
-        JOIN presences AS presence ON presence.id = NEW.ingest_presence_id
-        WHERE binding.id = NEW.space_binding_id
-          AND binding.platform = presence.platform
-    );
-END
-""".strip(),
-    """
-CREATE TRIGGER trg_space_binding_ingest_routes_consistency_update
-BEFORE UPDATE ON space_binding_ingest_routes
-BEGIN
-    SELECT RAISE(ABORT, 'space binding ingest route platform mismatch')
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM space_bindings AS binding
-        JOIN presences AS presence ON presence.id = NEW.ingest_presence_id
-        WHERE binding.id = NEW.space_binding_id
-          AND binding.platform = presence.platform
-    );
-END
-""".strip(),
+ SELECT RAISE(ABORT, 'space binding ingest route platform mismatch')
+ WHERE NOT EXISTS (SELECT 1 FROM space_bindings binding
+  JOIN account_assignments presence ON presence.id=NEW.ingest_presence_id AND presence.kind='yuki'
+  JOIN accounts account ON account.id=presence.account_id
+  WHERE binding.id=NEW.space_binding_id AND binding.platform=account.platform);
+END"""
+    for operation in ("INSERT", "UPDATE")
 )
 
-SPACE_ACTIVE_ROUTE_TRIGGERS: tuple[str, ...] = (
-    """
-CREATE TRIGGER trg_space_active_routes_consistency_insert
-BEFORE INSERT ON space_active_routes
+SPACE_ACTIVE_ROUTE_TRIGGERS: tuple[str, ...] = tuple(
+    f"""CREATE TRIGGER trg_space_active_routes_consistency_{operation.lower()}
+BEFORE {operation} ON space_active_routes
 BEGIN
-    SELECT RAISE(ABORT, 'space active route ownership or platform mismatch')
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM space_bindings AS binding
-        JOIN presences AS presence ON presence.id = NEW.presence_id
-        WHERE binding.id = NEW.space_binding_id
-          AND binding.space_id = NEW.space_id
-          AND binding.platform = presence.platform
-    );
-END
-""".strip(),
-    """
-CREATE TRIGGER trg_space_active_routes_consistency_update
-BEFORE UPDATE ON space_active_routes
-BEGIN
-    SELECT RAISE(ABORT, 'space active route ownership or platform mismatch')
-    WHERE NOT EXISTS (
-        SELECT 1
-        FROM space_bindings AS binding
-        JOIN presences AS presence ON presence.id = NEW.presence_id
-        WHERE binding.id = NEW.space_binding_id
-          AND binding.space_id = NEW.space_id
-          AND binding.platform = presence.platform
-    );
-END
-""".strip(),
+ SELECT RAISE(ABORT, 'space active route ownership or platform mismatch')
+ WHERE NOT EXISTS (SELECT 1 FROM space_bindings binding
+  JOIN account_assignments presence ON presence.id=NEW.presence_id AND presence.kind='yuki'
+  JOIN accounts account ON account.id=presence.account_id
+  WHERE binding.id=NEW.space_binding_id AND binding.space_id=NEW.space_id
+   AND binding.platform=account.platform);
+END"""
+    for operation in ("INSERT", "UPDATE")
 )
 
 PARENT_ROUTE_GUARD_TRIGGERS: tuple[str, ...] = (
-    """
-CREATE TRIGGER trg_identity_bindings_route_consistency_update
-BEFORE UPDATE OF person_id, platform ON identity_bindings
+    """CREATE TRIGGER trg_account_assignments_identity_immutable
+BEFORE UPDATE OF id,account_id,kind,person_id ON account_assignments
 BEGIN
-    SELECT RAISE(ABORT, 'identity binding update would break person active route')
-    WHERE EXISTS (
-        SELECT 1
-        FROM person_active_routes AS route
-        JOIN presences AS presence ON presence.id = route.presence_id
-        JOIN persons AS owner ON owner.id = NEW.person_id
-        JOIN persons AS target ON target.id = route.person_id
-        WHERE route.identity_binding_id = NEW.id
-          AND (
-            COALESCE(target.merged_into_person_id, target.id)
-                IS NOT COALESCE(owner.merged_into_person_id, owner.id)
-            OR NEW.platform IS NOT presence.platform
-          )
-    );
-END
-""".strip(),
-    """
-CREATE TRIGGER trg_space_bindings_route_consistency_update
-BEFORE UPDATE OF space_id, platform ON space_bindings
+ SELECT RAISE(ABORT, 'original assignment identity is immutable')
+ WHERE NEW.id IS NOT OLD.id OR NEW.account_id IS NOT OLD.account_id
+    OR NEW.kind IS NOT OLD.kind OR NEW.person_id IS NOT OLD.person_id;
+END""",
+    """CREATE TRIGGER trg_accounts_native_identity_immutable
+BEFORE UPDATE OF id,platform,external_account_id ON accounts
 BEGIN
-    SELECT RAISE(ABORT, 'space binding update would break space routes')
-    WHERE EXISTS (
-        SELECT 1
-        FROM space_binding_ingest_routes AS route
-        JOIN presences AS presence ON presence.id = route.ingest_presence_id
-        WHERE route.space_binding_id = NEW.id
-          AND NEW.platform IS NOT presence.platform
-    )
-    OR EXISTS (
-        SELECT 1
-        FROM space_active_routes AS route
-        JOIN presences AS presence ON presence.id = route.presence_id
-        WHERE route.space_binding_id = NEW.id
-          AND (
-            route.space_id IS NOT NEW.space_id
-            OR NEW.platform IS NOT presence.platform
-          )
-    );
-END
-""".strip(),
-    """
-CREATE TRIGGER trg_presences_route_consistency_update
-BEFORE UPDATE OF platform ON presences
+ SELECT RAISE(ABORT, 'stable account identity is immutable')
+ WHERE NEW.id IS NOT OLD.id OR NEW.platform IS NOT OLD.platform
+    OR NEW.external_account_id IS NOT OLD.external_account_id;
+END""",
+    """CREATE TRIGGER trg_account_assignments_ended_immutable
+BEFORE UPDATE OF status ON account_assignments
+WHEN OLD.status='ended' AND NEW.status <> 'ended'
 BEGIN
-    SELECT RAISE(ABORT, 'presence platform update would break routes')
-    WHERE EXISTS (
-        SELECT 1
-        FROM person_active_routes AS route
-        JOIN identity_bindings AS binding ON binding.id = route.identity_binding_id
-        WHERE route.presence_id = NEW.id
-          AND binding.platform IS NOT NEW.platform
-    )
-    OR EXISTS (
-        SELECT 1
-        FROM space_binding_ingest_routes AS route
-        JOIN space_bindings AS binding ON binding.id = route.space_binding_id
-        WHERE route.ingest_presence_id = NEW.id
-          AND binding.platform IS NOT NEW.platform
-    )
-    OR EXISTS (
-        SELECT 1
-        FROM space_active_routes AS route
-        JOIN space_bindings AS binding ON binding.id = route.space_binding_id
-        WHERE route.presence_id = NEW.id
-          AND binding.platform IS NOT NEW.platform
-    );
-END
-""".strip(),
+ SELECT RAISE(ABORT, 'an ended assignment cannot be resumed');
+END""",
+    """CREATE TRIGGER trg_space_bindings_route_consistency_update
+BEFORE UPDATE OF space_id,platform ON space_bindings
+BEGIN
+ SELECT RAISE(ABORT, 'space binding update would break space routes')
+ WHERE EXISTS (SELECT 1 FROM space_binding_ingest_routes route
+  JOIN account_assignments presence ON presence.id=route.ingest_presence_id
+  JOIN accounts account ON account.id=presence.account_id
+  WHERE route.space_binding_id=NEW.id AND NEW.platform IS NOT account.platform)
+ OR EXISTS (SELECT 1 FROM space_active_routes route
+  JOIN account_assignments presence ON presence.id=route.presence_id
+  JOIN accounts account ON account.id=presence.account_id
+  WHERE route.space_binding_id=NEW.id
+    AND (route.space_id IS NOT NEW.space_id OR NEW.platform IS NOT account.platform));
+END""",
+)
+
+# These role constraints replace the types formerly enforced by two FK tables.
+ASSIGNMENT_ROLE_REFERENCES: tuple[tuple[str, str, str], ...] = (
+    ("canonical_conversations", "identity_binding_id", "person"),
+    ("canonical_conversations", "entry_presence_id", "yuki"),
+    ("person_active_routes", "identity_binding_id", "person"),
+    ("person_active_routes", "presence_id", "yuki"),
+    ("space_binding_ingest_routes", "ingest_presence_id", "yuki"),
+    ("space_active_routes", "presence_id", "yuki"),
+    ("chat_events", "author_presence_id", "yuki"),
+    ("chat_events", "ingress_presence_id", "yuki"),
+    ("canonical_event_receipts", "ingress_presence_id", "yuki"),
+    ("automations", "canonical_presence_id", "yuki"),
+    ("automation_versions", "canonical_presence_id", "yuki"),
+    ("autonomy_initiative_runs", "presence_id", "yuki"),
+    ("plugin_background_target_grants", "canonical_presence_id", "yuki"),
+    ("plugin_notification_outbox", "canonical_presence_id", "yuki"),
+    ("plugin_background_turn_jobs", "canonical_presence_id", "yuki"),
+    ("social_operation_receipts", "presence_id", "yuki"),
+)
+ASSIGNMENT_ROLE_TRIGGER_SQL: tuple[str, ...] = tuple(
+    f"""CREATE TRIGGER trg_{table}_{column}_kind_{operation.lower()}
+BEFORE {operation} ON {table}
+WHEN NEW.{column} IS NOT NULL
+BEGIN
+ SELECT RAISE(ABORT, 'assignment kind mismatch') WHERE NOT EXISTS (
+  SELECT 1 FROM account_assignments WHERE id=NEW.{column} AND kind='{kind}'
+  {"AND account_id=NEW.ingress_account_id" if table == "canonical_event_receipts" else ""});
+END"""
+    for table, column, kind in ASSIGNMENT_ROLE_REFERENCES
+    for operation in ("INSERT", "UPDATE")
 )
 
 C3_TRIGGER_SQL: tuple[str, ...] = (
@@ -235,18 +173,4 @@ C3_TRIGGER_SQL: tuple[str, ...] = (
     *SPACE_ACTIVE_ROUTE_TRIGGERS,
     *PARENT_ROUTE_GUARD_TRIGGERS,
 )
-
-C3_TRIGGER_NAMES: tuple[str, ...] = (
-    "trg_canonical_conversations_primary_alias_immutable",
-    "trg_conversation_legacy_aliases_primary_update",
-    "trg_conversation_legacy_aliases_primary_delete",
-    "trg_person_active_routes_consistency_insert",
-    "trg_person_active_routes_consistency_update",
-    "trg_space_binding_ingest_routes_consistency_insert",
-    "trg_space_binding_ingest_routes_consistency_update",
-    "trg_space_active_routes_consistency_insert",
-    "trg_space_active_routes_consistency_update",
-    "trg_identity_bindings_route_consistency_update",
-    "trg_space_bindings_route_consistency_update",
-    "trg_presences_route_consistency_update",
-)
+C3_TRIGGER_NAMES: tuple[str, ...] = tuple(sql.split()[2] for sql in C3_TRIGGER_SQL)

@@ -101,30 +101,29 @@ async def test_sequence_keeps_configured_delay_between_confirmed_parts(
     assert sends_at_sleep == [1, 2]
 
 
-async def test_sequence_layout_and_legacy_digest_use_the_same_configuration(
-    database, tmp_path, monkeypatch
-):
+async def test_sequence_layout_is_frozen_from_one_configuration(database, tmp_path, monkeypatch):
     env = await social_env(database, tmp_path)
     first = SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 1800, 20))
     changed = SimpleNamespace(reply=ReplyRuntimeConfig(0, 0, 2, 20))
     snapshots = AsyncMock(side_effect=[first, changed])
     env.service.runtime_config = SimpleNamespace(snapshot=snapshots)
     original = env.service.receipts.prepare_sequence
-    legacy = []
+    layouts = []
 
     async def prepare(**kwargs):
-        legacy.append(kwargs["legacy_payload"])
+        layouts.append(kwargs["prepared"])
         return await original(**kwargs)
 
     monkeypatch.setattr(env.service.receipts, "prepare_sequence", prepare)
     args = {"text": "first\nsecond"}
     result = await env.service.execute("send_message", args, env.context)
     assert [part["delivered_text"] for part in result["parts"]] == ["first", "second"]
-    assert legacy == [{"original": args, "chunks": ("first", "second")}]
+    assert [part["text"] for part in layouts[0]["parts"]] == ["first", "second"]
+    assert layouts[0]["message"]["text"] == args["text"]
     assert snapshots.await_count == 1
 
 
-async def test_prepared_legacy_sequence_keeps_parent_identity(database, tmp_path):
+async def test_unmigrated_old_sequence_payload_cannot_acquire_a_new_plan(database, tmp_path):
     env = await social_env(database, tmp_path)
     env.bot.calls.clear()
     context = replace(
@@ -141,16 +140,19 @@ async def test_prepared_legacy_sequence_keeps_parent_identity(database, tmp_path
         payload={"original": args, "chunks": ("first", "second")},
         planned_parts=2,
     )
-    result = await env.service.execute("send_message", args, context)
-    assert result["operation_id"] == parent.operation_id
-    assert result["status"] == "succeeded"
-    assert [part["delivered_text"] for part in result["parts"]] == ["first", "second"]
+    from yuki.social.models import SocialError
+
+    with pytest.raises(SocialError, match="idempotency_conflict"):
+        await env.service.execute("send_message", args, context)
     current = await env.service.receipts.get(parent.operation_id)
     assert current.payload_hash == payload_hash(
-        "send_message_sequence", parent.target, args, context.conversation_id
+        "send_message_sequence",
+        parent.target,
+        {"original": args, "chunks": ("first", "second")},
+        context.conversation_id,
     )
-    assert await env.service.execute("send_message", args, context) == result
-    assert [action for action, _ in env.bot.calls] == ["send_group_msg", "send_group_msg"]
+    assert current.status is OperationStatus.PREPARED
+    assert env.bot.calls == []
 
 
 async def test_cancel_after_ack_and_receipt_commit_replays_without_another_send(

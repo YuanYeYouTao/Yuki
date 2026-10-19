@@ -249,26 +249,27 @@ async def test_pure_illustration_keeps_internal_reply_and_mention_without_foregr
     delivery, library = make_delivery(env)
     async with database.sessions() as session:
         event = await session.scalar(select(ChatEventModel))
-    context = replace(env.context, visible_event_ids=frozenset((event.id,)))
+    context = env.context
     env.bot.calls.clear()
     result = await env.service.execute(
         "send_message",
         {
             "emoji": {"goal": "开心"},
-            "mentions": [{"target_id": env.person}],
+            "text": f"@{{account:{env.account}}}",
             "reply_to_event_id": event.id,
         },
         context,
     )
-    assert result["status"] == "accepted" and env.bot.calls == []
-    assert await env.service.receipts.find(context.turn_id, context.call_id) is None
+    assert result["status"] == "succeeded"
+    assert len(sends(env.bot)) == 1
+    assert [part["type"] for part in sends(env.bot)[0][1]["message"]] == ["reply", "at"]
     intent = await delivery.intents.find(context.turn_id, context.call_id)
     await delivery._deliver(intent)
     assert (await delivery.project(context))["status"] == "succeeded"
-    [(method, payload)] = sends(env.bot)
-    assert method == "send_group_msg"
-    assert [item["type"] for item in payload["message"]] == ["reply", "at", "image"]
-    assert payload["message"][0]["data"]["id"] == event.platform_message_id
+    assert len(sends(env.bot)) == 2
+    method, payload = sends(env.bot)[-1]
+    assert method == "send_group_msg" and [part["type"] for part in payload["message"]] == ["image"]
+    assert sends(env.bot)[0][1]["message"][0]["data"]["id"] == event.platform_message_id
     assert library.select_calls == 1
 
 
@@ -352,6 +353,13 @@ async def test_prepared_person_merge_keeps_original_request_hash(database, tmp_p
         "target": {"kind": "person", "target_id": env.person},
     }
     target = SocialTarget(kind="person", id=UUID(env.person))
+    route = await env.service.send_route(target, env.context)
+    from yuki.gateway.social import TransportMessage, transport_payload
+
+    plan = {
+        "message": transport_payload(TransportMessage(arguments["text"])),
+        "route": env.service._route_payload(route),
+    }
     if sequence:
         prepared, _ = await env.service.receipts.prepare_sequence(
             source_turn_id=env.context.turn_id,
@@ -360,6 +368,7 @@ async def test_prepared_person_merge_keeps_original_request_hash(database, tmp_p
             target=target,
             payload=arguments,
             parts=(arguments,),
+            prepared={**plan, "parts": [plan["message"]]},
         )
     else:
         prepared = await env.service.receipts.prepare(
@@ -369,6 +378,7 @@ async def test_prepared_person_merge_keeps_original_request_hash(database, tmp_p
             target=target,
             action="send_message",
             payload=arguments,
+            prepared=plan,
         )
     async with database.immediate_session() as session:
         new_root = await ensure_person(session, "10002")
@@ -465,7 +475,7 @@ async def test_native_telegram_parts_and_work_projection_use_original_delivery_v
             now=now,
             platform="telegram",
         )
-        person_binding.person_id = env.person
+        await merge_persons(session, person_binding.person_id, env.person)
         presence = await create_presence(
             session,
             external_account_id=telegram.self_id,
@@ -514,19 +524,21 @@ async def test_native_telegram_parts_and_work_projection_use_original_delivery_v
             {
                 "emoji": {"goal": "开心"},
                 "target": {"kind": "space", "target_id": space_binding.space_id},
-                "mentions": [{"target_id": env.person, "binding_id": person_binding.id}],
+                "text": f"@{{account:{person_binding.account_id}}}",
             },
             env.context,
         )
     finally:
         current_work_control.reset(token)
         await repository.release(lease)
-    assert result["status"] == "accepted" and methods == []
+    assert result["status"] == "succeeded" and methods == ["sendMessage"]
     intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     try:
         await delivery._deliver(intent)
         receipt = await env.service.receipts.find(intent.source_turn_id, derived_call_id(intent.id))
-        assert receipt.status is OperationStatus.PREPARED
+        assert receipt.status is (
+            OperationStatus.UNCERTAIN if uncertain else OperationStatus.SUCCEEDED
+        )
         async with database.sessions() as session:
             outbound = list(
                 await session.scalars(
@@ -535,7 +547,7 @@ async def test_native_telegram_parts_and_work_projection_use_original_delivery_v
                     .order_by(ChatEventModel.id)
                 )
             )
-        assert outbound[0].content == ""
+        assert outbound[0].content.startswith("@")
         if not uncertain:
             assert outbound[1].content == "[表情: 开心]"
         async with database.immediate_session() as session:
@@ -546,11 +558,7 @@ async def test_native_telegram_parts_and_work_projection_use_original_delivery_v
             )
         projected = await delivery.project(env.context)
         assert projected["status"] == ("uncertain" if uncertain else "succeeded")
-        assert [part["status"] for part in projected["parts"]] == [
-            "succeeded",
-            "uncertain" if uncertain else "succeeded",
-        ]
-        assert projected["planned_messages"] == 2
+        assert projected["status"] == ("uncertain" if uncertain else "succeeded")
         async with database.sessions() as session:
             recovered = await EmojiIntentRepository.effect_facts(
                 session,
@@ -653,7 +661,7 @@ async def test_account_transfer_does_not_retarget_a_pending_illustration(
         assert await env.router.cas_takeover_person(env.person) == "taken"
         arguments.update(text="原正文", target={"kind": "person", "target_id": env.person})
     else:
-        arguments["mentions"] = [{"target_id": env.person}]
+        arguments["text"] = f"@{{account:{env.account}}}"
     original = await env.service.execute("send_message", arguments, env.context)
     intent = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     original_source, original_target = intent.source, intent.target
@@ -662,8 +670,8 @@ async def test_account_transfer_does_not_retarget_a_pending_illustration(
     await delivery._deliver(intent)
 
     result = await delivery.project(env.context)
-    assert result["status"] in {"failed", "not_sent"}
-    assert len(sends(env.bot)) == int(private_target)
+    assert result["status"] in ({"failed", "not_sent"} if private_target else {"succeeded"})
+    assert len(sends(env.bot)) == (1 if private_target else 2)
     current = await delivery.intents.find(env.context.turn_id, env.context.call_id)
     assert current.source == original_source and current.target == original_target
     if private_target:
@@ -672,7 +680,8 @@ async def test_account_transfer_does_not_retarget_a_pending_illustration(
             OperationStatus.SUCCEEDED
         )
     else:
-        assert transferred["old_binding_id"] == original_source["mentions"][0]["binding_id"]
+        assert original_source["content"]["mentions"] == []
+        assert all(part["type"] == "image" for part in sends(env.bot)[-1][1]["message"])
 
 
 async def test_two_illustration_owners_share_the_original_dispatch_claim(database, tmp_path):

@@ -10,11 +10,13 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.hydrate import (
     HydratedConversation,
     binding_for_scope,
     conversation_for_owner,
     ensure_canonical_conversation,
+    require_primary_alias_for_conversation,
 )
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.identity import AuthorKind
@@ -30,7 +32,13 @@ from yuki.identity.canonical_repository import (
 )
 from yuki.identity.db_models import IdentityBindingModel, PresenceModel
 from yuki.identity.errors import CanonicalIdentityError
+from yuki.identity.event_author import EventAuthorProjection
 from yuki.identity.mentions import resolve_message_mentions
+from yuki.identity.receipt_compat import (
+    load_claimed_keeper,
+    require_claimed_event,
+    transport_receipt,
+)
 from yuki.identity.routing import PresenceRouter
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
@@ -58,6 +66,8 @@ class IngressPreAdmit:
     author_presence_id: str | None
     provider: str
     handle_external_account_id: str
+    author_account_id: str | None = None
+    author_assignment_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,13 +85,13 @@ def overlay_yuki_signals(
     message: InboundMessage,
     yuki_account_ids: frozenset[str],
 ) -> InboundMessage:
-    """Rewrite mention text and self using every same-platform Yuki Presence."""
+    """Classify native mentions and self using same-platform Yuki accounts."""
 
     projected = replace(
         message,
         yuki_account_ids=yuki_account_ids,
         mentions_bot=message.mentions_bot
-        or bool(set(message.mentioned_user_ids) & yuki_account_ids),
+        or any(mention.target_user_id in yuki_account_ids for mention in message.mentions),
     )
     is_self = projected.sender.user_id in yuki_account_ids
     if is_self == projected.is_self_message:
@@ -237,11 +247,63 @@ class CanonicalIngressResolver:
         yuki_ids = await _same_platform_yuki_accounts(session, connection.snapshot.platform)
         overlay = self._registry.project_inbound(connection, overlay, yuki_ids)
         overlay = overlay_yuki_signals(overlay, yuki_ids)
-        author_kind, author_person_id, author_presence_id = await _author_for(
+        # Transport replay is an original fact, before today's owner or names.
+        receipt = await transport_receipt(
+            session,
+            presence_id=presence_id,
+            scope=overlay.scope(),
+            event_type=overlay.event_type,
+            platform_message_id=overlay.message_id,
+        )
+        if receipt is not None:
+            original = require_claimed_event(
+                receipt, await load_claimed_keeper(session, receipt.canonical_event_id)
+            )
+            conversation = (
+                await session.get(CanonicalConversationModel, original.canonical_conversation_id)
+                if original.canonical_conversation_id
+                else None
+            )
+            original_message = replace(
+                overlay,
+                presence_id=receipt.ingress_presence_id,
+                conversation_id=original.canonical_conversation_id,
+                person_id=original.author_person_id,
+                author_kind=original.author_kind,
+                author_account_id=original.author_account_id,
+                space_id=conversation.space_id if conversation else None,
+            )
+            return IngressPreAdmit(
+                dropped=False,
+                reason="receipt_replay",
+                message=original_message,
+                yuki_account_ids=yuki_ids,
+                presence_id=receipt.ingress_presence_id,
+                connection_id=connection.snapshot.connection_id,
+                gateway_instance_id=connection.snapshot.gateway_instance_id,
+                person_id=original.author_person_id,
+                space_id=conversation.space_id if conversation else None,
+                space_binding_id=conversation.space_binding_id if conversation else None,
+                conversation_id=original.canonical_conversation_id,
+                primary_alias=(
+                    await require_primary_alias_for_conversation(session, conversation.id)
+                    if conversation
+                    else ""
+                ),
+                author_kind=original.author_kind,
+                author_person_id=original.author_person_id,
+                author_presence_id=original.author_presence_id,
+                provider=handle_provider,
+                handle_external_account_id=handle_account,
+                author_account_id=original.author_account_id,
+                author_assignment_id=conversation.identity_binding_id if conversation else None,
+            )
+        author = await _author_for(
             session,
             overlay,
             platform=presence.platform,
         )
+        author_kind, author_person_id, author_presence_id = author.as_tuple()
         space_id: str | None = None
         space_binding_id: str | None = None
         person_id: str | None = author_person_id
@@ -331,8 +393,17 @@ class CanonicalIngressResolver:
                 overlay.sender.user_id,
                 display_name=overlay.sender.nickname,
                 platform=presence.platform,
+                now=overlay.occurred_at or overlay.received_at,
             )
+            created_binding = await find_identity_binding(
+                session, overlay.sender.user_id, platform=presence.platform
+            )
+            assert created_binding is not None
+            author = replace(author, assignment_id=created_binding.id)
         author_person_id = person_id if author_kind == AuthorKind.PERSON.value else None
+        overlay = replace(
+            overlay, author_kind=author_kind, author_account_id=author.author_account_id
+        )
         if author_person_id is not None and overlay.mentions:
             mentions = tuple(
                 replace(mention, person_id=author_person_id)
@@ -348,29 +419,6 @@ class CanonicalIngressResolver:
                 ),
                 segments=snapshot_mention_segments(overlay.segments, mentions),
             )
-        mention_bindings: dict[str, str] = {}
-        if overlay.mentioned_user_ids and not overlay.mentions:
-            for account, mentioned_person in (
-                await session.execute(
-                    select(
-                        IdentityBindingModel.external_account_id, IdentityBindingModel.person_id
-                    ).where(
-                        IdentityBindingModel.platform == presence.platform,
-                        IdentityBindingModel.external_account_id.in_(overlay.mentioned_user_ids),
-                        IdentityBindingModel.status == "active",
-                    )
-                )
-            ).all():
-                mention_bindings[account] = mentioned_person
-        mentioned_people = tuple(
-            dict.fromkeys(
-                mention_bindings[account]
-                for account in overlay.mentioned_user_ids
-                if account in mention_bindings
-            )
-        )
-        if not overlay.mentions:
-            overlay = replace(overlay, mentioned_person_ids=mentioned_people)
         if author_kind != AuthorKind.PERSON.value and overlay.scope_type is ScopeType.PRIVATE:
             return IngressPreAdmit(
                 dropped=False,
@@ -390,6 +438,8 @@ class CanonicalIngressResolver:
                 author_presence_id=author_presence_id,
                 provider=handle_provider,
                 handle_external_account_id=handle_account,
+                author_account_id=author.author_account_id,
+                author_assignment_id=author.assignment_id,
             )
         hydrated = await _hydrate_for_message(
             session,
@@ -399,6 +449,7 @@ class CanonicalIngressResolver:
             ingress_bot_user_id=connection.snapshot.external_account_id,
             presence_id=presence_id,
             space_binding_id=space_binding_id,
+            author_assignment_id=author.assignment_id,
         )
         reply_to_yuki, reply_author_kind, reply_event_id = await resolve_canonical_reply(
             session,
@@ -447,6 +498,8 @@ class CanonicalIngressResolver:
             author_presence_id=author_presence_id,
             provider=handle_provider,
             handle_external_account_id=handle_account,
+            author_account_id=author.author_account_id,
+            author_assignment_id=author.assignment_id,
         )
 
 
@@ -489,6 +542,7 @@ async def resolve_canonical_reply(
         return True, kind, keepers[0].id
     if kind in {
         AuthorKind.PERSON.value,
+        AuthorKind.ACCOUNT.value,
         AuthorKind.EXTERNAL_BOT.value,
         AuthorKind.SYSTEM.value,
     }:
@@ -512,7 +566,7 @@ async def _author_for(
     message: InboundMessage,
     *,
     platform: str,
-) -> tuple[str, str | None, str | None]:
+) -> EventAuthorProjection:
     from yuki.identity.event_author import project_event_author
 
     author = await project_event_author(
@@ -520,12 +574,18 @@ async def _author_for(
         sender_user_id=message.sender.user_id,
         sender_is_bot=message.sender.is_bot,
         platform=platform,
+        occurred_at=message.occurred_at,
     )
-    return author.as_tuple()
+    return author
 
 
 async def _ensure_person_id(
-    session: AsyncSession, user_id: str, *, platform: str, display_name: str = ""
+    session: AsyncSession,
+    user_id: str,
+    *,
+    platform: str,
+    display_name: str = "",
+    now: datetime | None = None,
 ) -> str:
     account_id = external_id(user_id)
     binding = await find_identity_binding(session, account_id, platform=platform)
@@ -537,7 +597,7 @@ async def _ensure_person_id(
         session,
         external_account_id=account_id,
         display_name=display_name,
-        now=message_now(),
+        now=now or message_now(),
         platform=platform,
     )
     return created.person_id
@@ -556,6 +616,7 @@ async def _hydrate_for_message(
     ingress_bot_user_id: str,
     presence_id: str,
     space_binding_id: str | None,
+    author_assignment_id: str | None = None,
 ) -> HydratedConversation:
     if message.scope_type is ScopeType.PRIVATE:
         if person_id is None:
@@ -567,7 +628,11 @@ async def _hydrate_for_message(
             presence_id=presence_id,
             thread_id=message.thread_id,
         )
-        binding = await binding_for_scope(session, scope)
+        binding = (
+            await session.get(IdentityBindingModel, author_assignment_id)
+            if author_assignment_id is not None
+            else await binding_for_scope(session, scope)
+        )
         if binding is None or binding.person_id != person_id:
             raise CanonicalIdentityError("no_person")
         return await ensure_canonical_conversation(

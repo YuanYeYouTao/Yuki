@@ -15,6 +15,8 @@ from yuki.conversation.projection_models import PromptProjectionModel
 from yuki.conversation.projections import current_checkpoint_query
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
+from yuki.model_runtime.executor import ModelExecutor
+from yuki.model_runtime.models import ModelTask
 from yuki.persistence.repositories import PeopleRepository
 from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.vision_service import VisionService
@@ -28,7 +30,8 @@ class ConversationCommands:
         conversation_scopes: ConversationScopeRepository,
         people: PeopleRepository,
         concurrency: ConcurrencyManager,
-        onebot_connected: Callable[[], bool],
+        platform_connected: Callable[[ConversationScope], bool],
+        model_executor: ModelExecutor,
         runtime_config: RuntimeConfigService,
         vision: VisionService | None,
         automation_repository: AutomationRepository | None,
@@ -38,7 +41,8 @@ class ConversationCommands:
         self._conversation_scopes = conversation_scopes
         self._people = people
         self._concurrency = concurrency
-        self._onebot_connected = onebot_connected
+        self._platform_connected = platform_connected
+        self._models = model_executor
         self._runtime_config = runtime_config
         self._vision = vision
         self._automation_repository = automation_repository
@@ -92,8 +96,9 @@ class ConversationCommands:
         automation_last_text = automation_last_run.isoformat() if automation_last_run else "无"
         automation_next_text = automation_next_run.isoformat() if automation_next_run else "无"
         text = (
-            f"OneBot 连接：{'已连接' if self._onebot_connected() else '未连接'}\n"
-            f"模型：{self._settings.llm_model or '未配置'}\n"
+            f"{identity.platform} 连接："
+            f"{'已连接' if self._platform_connected(identity) else '未连接'}\n"
+            f"模型：{self._models.model_name(ModelTask.CHAT_AGENT)}\n"
             f"视觉功能：{'已启用' if self._settings.vision_enabled else '未启用'}\n"
             f"视觉模型：{self._settings.vision_model or '未配置'}\n"
             f"视觉请求繁忙：{'是' if vision_busy else '否'}\n"

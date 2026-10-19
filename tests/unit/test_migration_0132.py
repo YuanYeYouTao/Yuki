@@ -6,9 +6,9 @@ from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
+from tests.support.client_identity import client_identity_service
 from tests.unit.test_migration_0119 import _seed_0118
 
-from yuki.client_api.identity import ClientIdentityService
 from yuki.client_api.sessions import ClientSessions
 from yuki.persistence.database import Database
 from yuki.persistence.schema_guard import require_canonical_schema
@@ -83,7 +83,7 @@ def test_0132_preserves_original_rows_and_adds_real_acp_request_scope(tmp_path, 
         await require_canonical_schema(url)
         database = Database(url)
         try:
-            identity = ClientIdentityService(database)
+            identity = client_identity_service(database)
             code = await identity.issue_for_operator(person, str(uuid4()), str(uuid4()))
             device = await identity.pair(code["code"], "migration client")
             base = await identity.authenticate(device["token"])

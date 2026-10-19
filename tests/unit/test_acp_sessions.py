@@ -7,12 +7,12 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, text
+from tests.support.client_identity import client_identity_service
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_client_works import owner
 
 from yuki.client_api.errors import ClientError
-from yuki.client_api.identity import ClientIdentityService
 from yuki.client_api.requests import personal_command
 from yuki.client_api.sessions import ClientSessions
 from yuki.conversation.canonical_db_models import (
@@ -33,7 +33,7 @@ admin = admin_fixture
 
 
 async def paired(database, account="1001"):
-    identity = ClientIdentityService(database)
+    identity = client_identity_service(database)
     async with database.sessions() as session:
         binding = await find_identity_binding(session, account)
     code = await identity.issue_for_operator(binding.person_id, str(uuid4()), str(uuid4()))

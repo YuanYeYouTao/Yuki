@@ -9,8 +9,8 @@ plugin_state is Person-or-global: a canonical_person_id identifies the owner;
 a plugin-global row keeps it NULL. BoundStorageFacade writes global rows and
 does not isolate by Person.
 
-plugin_config_values: USER is a live Person, GROUP is a live Space, GLOBAL
-keeps both NULL. Two Bindings or SpaceBindings share one logical row.
+plugin_config_values: USER is current Person material, GROUP is Space material,
+GLOBAL keeps both NULL. Actual callers are authorized separately from owners.
 plugin_background_target_grants: creator is a live Person; target is Person
 XOR Space; optional Presence is provenance only. Publication children copy
 persisted grant/event canonical fields and never recompute from raw keys.
@@ -18,10 +18,11 @@ persisted grant/event canonical fields and never recompute from raw keys.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.identity.db_models import (
@@ -39,7 +40,6 @@ from yuki.plugin_host.db_models import (
     PluginAgentSessionModel,
     PluginBackgroundTargetGrantModel,
     PluginConfigValueModel,
-    PluginStateModel,
 )
 from yuki_plugin_sdk.errors import PluginPermissionError
 
@@ -69,73 +69,18 @@ def plugin_ownership_error(exc: CanonicalIdentityError) -> PluginOwnershipError:
     return PluginOwnershipError(STATE_MISMATCH)
 
 
-async def require_live_person(session: AsyncSession, person_id: str | None) -> str:
-    """Read a Person by canonical id only. Never consult QQ/group/bot keys."""
-
-    if not person_id:
+async def require_person_source(session: AsyncSession, person_id: str | None) -> None:
+    """Authorize the original Person without returning a replacement actor."""
+    original, root = aliased(CanonicalPersonModel), aliased(CanonicalPersonModel)
+    enabled = await session.scalar(
+        select(original.enabled & root.enabled)
+        .select_from(original)
+        .join(root, root.id == func.coalesce(original.merged_into_person_id, original.id))
+        .where(original.id == person_id)
+    )
+    if enabled is None:
         raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
-    if await session.get(PresenceModel, person_id) is not None:
-        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
-    if await session.get(CanonicalSpaceModel, person_id) is not None:
-        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
-    person = await session.get(CanonicalPersonModel, person_id)
-    if person is None:
-        raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
-    if not person.enabled:
-        raise PluginOwnershipError(CANONICAL_OWNER_DISABLED)
-    root_id = await current_person_id(session, person.id)
-    root = await session.get(CanonicalPersonModel, root_id)
-    if root is None or not root.enabled:
-        raise PluginOwnershipError(CANONICAL_OWNER_DISABLED)
-    return root_id
-
-
-async def require_live_people(session: AsyncSession, person_ids: tuple[str, ...]) -> None:
-    """Apply the same Person facts once for a state directory's distinct owners."""
-    if not person_ids:
-        return
-    presences = set(
-        await session.scalars(select(PresenceModel.id).where(PresenceModel.id.in_(person_ids)))
-    )
-    spaces = set(
-        await session.scalars(
-            select(CanonicalSpaceModel.id).where(CanonicalSpaceModel.id.in_(person_ids))
-        )
-    )
-    people = {
-        person_id: enabled
-        for person_id, enabled in (
-            await session.execute(
-                select(CanonicalPersonModel.id, CanonicalPersonModel.enabled).where(
-                    CanonicalPersonModel.id.in_(person_ids)
-                )
-            )
-        )
-    }
-    for person_id in person_ids:
-        if person_id in presences or person_id in spaces:
-            raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
-        if person_id not in people:
-            raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
-        if not people[person_id]:
-            raise PluginOwnershipError(CANONICAL_OWNER_DISABLED)
-    roots = list(
-        await session.scalars(
-            select(CanonicalPersonModel.merged_into_person_id).where(
-                CanonicalPersonModel.id.in_(person_ids),
-                CanonicalPersonModel.merged_into_person_id.is_not(None),
-            )
-        )
-    )
-    if (
-        roots
-        and await session.scalar(
-            select(CanonicalPersonModel.id)
-            .where(CanonicalPersonModel.id.in_(roots), CanonicalPersonModel.enabled.is_(False))
-            .limit(1)
-        )
-        is not None
-    ):
+    if not enabled:
         raise PluginOwnershipError(CANONICAL_OWNER_DISABLED)
 
 
@@ -144,10 +89,6 @@ async def require_live_space(session: AsyncSession, space_id: str | None) -> str
 
     if not space_id:
         raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
-    if await session.get(PresenceModel, space_id) is not None:
-        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
-    if await session.get(CanonicalPersonModel, space_id) is not None:
-        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
     space = await session.get(CanonicalSpaceModel, space_id)
     if space is None:
         raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
@@ -165,7 +106,10 @@ async def resolve_human_person_id(
     """Accept an already resolved Person; an account alias is not an owner."""
     if user_id is None:
         raise PluginOwnershipError(MISSING_CANONICAL_OWNER, message=missing_message)
-    return await require_live_person(session, user_id)
+    try:
+        return await current_person_id(session, user_id)
+    except CanonicalIdentityError as exc:
+        raise PluginOwnershipError(MISSING_CANONICAL_OWNER) from exc
 
 
 async def resolve_active_space_id(
@@ -185,14 +129,6 @@ async def resolve_state_owner(
     if not subject_user_id:
         return None
     return await resolve_human_person_id(session, subject_user_id)
-
-
-async def require_state_readable(session: AsyncSession, row: PluginStateModel) -> None:
-    """Person rows need a live owner; global rows stay unowned."""
-
-    if not row.canonical_person_id:
-        return
-    await require_live_person(session, row.canonical_person_id)
 
 
 async def resolve_session_owners(
@@ -242,13 +178,13 @@ async def require_session_readable(session: AsyncSession, row: PluginAgentSessio
     if row.scope_type == "user":
         if row.canonical_space_id:
             raise PluginOwnershipError(STATE_MISMATCH)
-        await require_live_person(session, row.canonical_owner_person_id)
+        await resolve_human_person_id(session, row.canonical_owner_person_id)
         return
     if row.scope_type != "group":
         raise PluginOwnershipError(STATE_MISMATCH)
     await require_live_space(session, row.canonical_space_id)
     if row.canonical_owner_person_id:
-        await require_live_person(session, row.canonical_owner_person_id)
+        await resolve_human_person_id(session, row.canonical_owner_person_id)
 
 
 async def actor_matches_session(
@@ -285,20 +221,10 @@ async def require_live_actor(
     actor_user_id: str | None,
     current_group_id: str | None,
 ) -> None:
-    """After identity match, inactive/disabled actor bindings fail closed."""
-
-    if row.scope_type == "user":
-        await resolve_human_person_id(
-            session,
-            actor_user_id,
-            missing_message="session owner has no Person",
-        )
-        return
+    """Authorize the actual caller, independently of the stored data owner."""
+    if row.scope_type == "user" or (row.scope_type == "group" and actor_user_id is not None):
+        await require_person_source(session, actor_user_id)
     if row.scope_type == "group":
-        if actor_user_id is not None:
-            await resolve_human_person_id(
-                session, actor_user_id, missing_message="session actor has no Person"
-            )
         await resolve_active_space_id(session, current_group_id)
 
 
@@ -317,11 +243,8 @@ async def inherit_message_sender_person(
     if sender_user_id is None and parent.canonical_owner_person_id is None:
         return None
     try:
-        sender_person = await resolve_human_person_id(
-            session,
-            sender_user_id,
-            missing_message="session sender has no Person",
-        )
+        await require_person_source(session, sender_user_id)
+        sender_person = cast(str, sender_user_id)
     except PluginOwnershipError as exc:
         # Plugin-global transcripts may include an external bot or another
         # transport actor that is intentionally not a Person.  Its raw sender
@@ -356,10 +279,6 @@ async def require_presence_provenance(session: AsyncSession, presence_id: str | 
 
     if not presence_id:
         raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
-    if await session.get(CanonicalPersonModel, presence_id) is not None:
-        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
-    if await session.get(CanonicalSpaceModel, presence_id) is not None:
-        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
     presence = await session.get(PresenceModel, presence_id)
     if presence is None:
         raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
@@ -385,13 +304,16 @@ async def resolve_config_owners(
     scope_type: str,
     scope_id: str,
 ) -> tuple[str | None, str | None]:
-    """Return the live Person/Space pair for one config scope."""
+    """Resolve current config ownership independently of actor availability."""
 
     if scope_type == "global":
         return None, None
     if scope_type == "user":
         return await resolve_human_person_id(session, scope_id), None
-    return None, await resolve_active_space_id(session, scope_id)
+    space = await session.get(CanonicalSpaceModel, scope_id)
+    if space is None:
+        raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+    return None, space.id
 
 
 async def find_config_lineage(
@@ -414,34 +336,7 @@ async def find_config_lineage(
         statement = statement.where(PluginConfigValueModel.canonical_person_id == person_id)
     elif scope_type == "group":
         statement = statement.where(PluginConfigValueModel.canonical_space_id == space_id)
-    rows = list((await session.scalars(statement)).all())
-    if scope_type == "global":
-        if any(row.canonical_person_id or row.canonical_space_id for row in rows):
-            raise PluginOwnershipError(STATE_MISMATCH)
-    if len(rows) > 1:
-        raise PluginOwnershipError(STATE_MISMATCH)
-    if not rows:
-        return None
-    return rows[0]
-
-
-async def require_config_readable(session: AsyncSession, row: PluginConfigValueModel) -> None:
-    """Canonical config: USER Person, GROUP Space, GLOBAL both NULL."""
-
-    if row.scope_type == "global":
-        if row.canonical_person_id or row.canonical_space_id:
-            raise PluginOwnershipError(STATE_MISMATCH)
-        return
-    if row.scope_type == "user":
-        if row.canonical_space_id:
-            raise PluginOwnershipError(STATE_MISMATCH)
-        await require_live_person(session, row.canonical_person_id)
-        return
-    if row.scope_type != "group":
-        raise PluginOwnershipError(STATE_MISMATCH)
-    if row.canonical_person_id:
-        raise PluginOwnershipError(STATE_MISMATCH)
-    await require_live_space(session, row.canonical_space_id)
+    return cast(PluginConfigValueModel | None, await session.scalar(statement))
 
 
 async def resolve_grant_target_owners(
@@ -450,11 +345,14 @@ async def resolve_grant_target_owners(
     target_type: str,
     target_id: str,
 ) -> tuple[str | None, str | None]:
-    """Return live Person XOR Space for a grant/publish target."""
+    """Resolve the target material, independently of execution availability."""
 
     if target_type == "private":
         return await resolve_human_person_id(session, target_id), None
-    return None, await resolve_active_space_id(session, target_id)
+    space = await session.get(CanonicalSpaceModel, target_id)
+    if space is None:
+        raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+    return None, space.id
 
 
 async def find_grant_lineage(
@@ -484,6 +382,8 @@ async def find_grant_lineage(
                 PluginBackgroundTargetGrantModel.canonical_conversation_id == conversation_id,
                 PluginBackgroundTargetGrantModel.canonical_conversation_id.is_(None),
             )
+        ).order_by(
+            (PluginBackgroundTargetGrantModel.canonical_conversation_id == conversation_id).desc()
         )
     rows = list(await session.scalars(statement.limit(2)))
     if conversation_id is not None:
@@ -508,7 +408,8 @@ async def stamp_grant_owners(
     conversation_id: str,
 ) -> None:
     """Persist the original canonical entry and grant authority."""
-    creator_id = await resolve_human_person_id(session, created_by_user_id)
+    await require_person_source(session, created_by_user_id)
+    creator_id = created_by_user_id
     person_id, space_id = await resolve_grant_target_owners(
         session, target_type=target_type, target_id=target_id
     )
@@ -521,10 +422,6 @@ async def stamp_grant_owners(
     if not person_matches or conversation.space_id != space_id:
         raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
     await require_presence_provenance(session, presence_id)
-    if row.canonical_created_by_person_id is not None and not await same_person_id(
-        session, row.canonical_created_by_person_id, creator_id
-    ):
-        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
     if row.canonical_target_person_id is not None and (
         person_id is None
         or not await same_person_id(session, row.canonical_target_person_id, person_id)
@@ -534,8 +431,8 @@ async def stamp_grant_owners(
         raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
     if row.canonical_conversation_id not in {None, conversation_id}:
         raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
-    row.canonical_created_by_person_id = row.canonical_created_by_person_id or creator_id
-    row.canonical_target_person_id = row.canonical_target_person_id or person_id
+    row.canonical_created_by_person_id = creator_id
+    row.canonical_target_person_id = person_id
     row.canonical_target_space_id = space_id
     row.canonical_presence_id = presence_id
     row.canonical_conversation_id = conversation_id
@@ -551,7 +448,7 @@ async def require_grant_readable(
             raise PluginOwnershipError(STATE_MISMATCH)
         return
 
-    await require_live_person(session, row.canonical_created_by_person_id)
+    await require_person_source(session, row.canonical_created_by_person_id)
     person_id = row.canonical_target_person_id
     space_id = row.canonical_target_space_id
     if person_id and space_id:
@@ -561,7 +458,7 @@ async def require_grant_readable(
     if row.target_type == "private":
         if space_id:
             raise PluginOwnershipError(STATE_MISMATCH)
-        await require_live_person(session, person_id)
+        await resolve_human_person_id(session, person_id)
     elif row.target_type == "group":
         if person_id:
             raise PluginOwnershipError(STATE_MISMATCH)

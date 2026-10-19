@@ -28,6 +28,7 @@ from tests.unit.test_ordinary_input_handoff import (
 from tests.unit.test_participation_ordinary_feedback import ordinary_backend
 from tests.unit.test_participation_pipeline_retirement import _relationship
 from yuki_participation.models import Snapshot
+from yuki_participation.observer import PROJECTION_REVISION
 from yuki_participation.participation import ParticipationCheckpoint
 from yuki_participation.self_report import SelfDelta, SelfReport
 
@@ -137,7 +138,7 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
             assert not main.done() and not review.done()
             frozen = snapshots[0].model_dump_json()
             assert snapshots[0].focus.ref.event_id == f"event:{b.id}"
-            assert snapshots[0].projection_revision == "semantic-state-v2"
+            assert snapshots[0].projection_revision == PROJECTION_REVISION
             assert any(hint.engage == "stay" for hint in snapshots[0].participation.units)
 
             if exit_first == "semantic":

@@ -1,12 +1,15 @@
 """Current SQL authorization and paid embedding accounting share one read path."""
 
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import delete, select
 from tests.support.user_profiles_helpers import observe_members
 from tests.unit.test_memory_partition import _owners
 from tests.unit.test_memory_retrieval import _query
 
-from yuki.identity.db_models import IdentityBindingModel
+from yuki.identity.canonical_repository import replace_assignment
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from yuki.memory.authorized_scope import AuthorizedMemoryScope
 from yuki.memory.embedding.fake import FakeEmbeddingProvider
 from yuki.memory.embedding.metrics import MemoryEmbeddingMetrics
@@ -87,7 +90,13 @@ async def test_explicit_selection_keeps_owner_and_current_sql_acl_after_embeddin
                         IdentityBindingModel.external_account_id == "1002",
                     )
                 )
-                binding.person_id = people["1003"]
+                await replace_assignment(
+                    writer,
+                    binding.account,
+                    binding.id,
+                    await writer.get(CanonicalPersonModel, people["1003"]),
+                    now=datetime.now(UTC),
+                )
                 if withdraw:
                     await writer.execute(
                         delete(MembershipModel).where(

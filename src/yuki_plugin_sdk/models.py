@@ -113,13 +113,14 @@ class CurrentMessage(CanonicalIdentityProjection):
     """Sanitized current-event projection, never a raw NoneBot event."""
 
     platform: str = ""
-    mentioned_person_ids: tuple[str, ...] = ()
+    author_kind: str | None = None
+    author_account_id: str | None = None
     message_id: str = Field(min_length=1, max_length=128)
     sender_user_id: str = Field(min_length=1, max_length=64)
     scope_type: str = Field(pattern=r"^(private|group)$")
     group_id: str | None = Field(default=None, max_length=64)
-    text: str = Field(default="", max_length=12_000)
-    mentioned_user_ids: tuple[str, ...] = Field(default=(), max_length=20)
+    text: str = ""
+    mentions: tuple[dict[str, JsonValue], ...] = ()
     received_at: datetime
 
 

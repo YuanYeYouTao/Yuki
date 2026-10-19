@@ -42,7 +42,7 @@ class SocialOperationModel(Base):
     target_kind: Mapped[str] = mapped_column(String(16), nullable=False)
     target_id: Mapped[str] = mapped_column(String(36), nullable=False)
     presence_id: Mapped[str | None] = mapped_column(
-        ForeignKey("presences.id", ondelete="RESTRICT"), nullable=True
+        ForeignKey("account_assignments.id", ondelete="RESTRICT"), nullable=True
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     platform_reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -54,6 +54,7 @@ class SocialOperationModel(Base):
     )
     # Only new split-send parents record a plan. Historical NULL is unknowable.
     planned_parts: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    prepared_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class SocialEmojiIntentModel(Base):

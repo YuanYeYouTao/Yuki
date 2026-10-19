@@ -11,7 +11,6 @@ from sqlalchemy import or_
 from sqlalchemy.sql.elements import ColumnElement
 
 from yuki.domain.conversations import ScopeType
-from yuki.domain.messages import MessageMention
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_records import EventRecord
 
@@ -65,19 +64,7 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
         ),
         {},
     )
-    projected_content = None
-    projected_mentions: tuple[MessageMention, ...] = ()
-    legacy_mentions: tuple[str, ...] = ()
-    if context.get("platform") in (None, "", "qq"):
-        # Genuine old QQ AT segments predate the stored mention snapshot.
-        from yuki.adapters.onebot.legacy_event import project_legacy_segments
-
-        projection = project_legacy_segments(segments, str(_row_value(row, "bot_user_id")))
-        if projection is not None:
-            projected_content = projection.text
-            projected_mentions = projection.ordered_mentions
-            legacy_mentions = projection.mentioned_user_ids
-    raw_mentions = context.get("mentioned_user_ids", legacy_mentions)
+    raw_mentions = context.get("mentioned_user_ids", ())
     mentioned_user_ids = (
         tuple(str(item) for item in raw_mentions if str(item))
         if isinstance(raw_mentions, list | tuple)
@@ -105,8 +92,6 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
     scope_type = _row_value(row, "scope_type")
     return EventRecord(
         id=int(_row_value(row, "id")),
-        projected_content=projected_content,
-        projected_mentions=projected_mentions,
         platform=str(context.get("platform") or ""),
         thread_id=str(context["thread_id"]) if context.get("thread_id") is not None else None,
         bot_user_id=str(_row_value(row, "bot_user_id")),
@@ -142,6 +127,7 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
         author_kind=_row_value(row, "author_kind"),
         author_person_id=_row_value(row, "author_person_id"),
         author_presence_id=_row_value(row, "author_presence_id"),
+        author_account_id=_row_value(row, "author_account_id"),
         ingress_presence_id=_row_value(row, "ingress_presence_id"),
         suppression_status=_row_value(row, "suppression_status"),
         caused_by_event_id=_row_value(row, "caused_by_event_id"),

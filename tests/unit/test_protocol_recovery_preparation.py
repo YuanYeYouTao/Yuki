@@ -71,10 +71,10 @@ async def as_child(control, original):
     return child, child.session
 
 
-@pytest.mark.parametrize("kind", ["pause", "child", "delivery"])
+@pytest.mark.parametrize("kind", ["pause", "child", "paired_native", "paired_native_root"])
 async def test_actual_journal_selects_exact_before_assembler_reads_history(database, kind):
     control, session, selected, _ = await _session(database)
-    if kind == "child":
+    if kind in {"child", "paired_native"}:
         control, session = await as_child(control, session)
     session.transcript.accept(
         ProviderContinuation(
@@ -90,9 +90,14 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
             },
         )
     )
-    if kind == "pause":
-        session.progress["provider_pause_replay"] = True
-    await session.save("delivery" if kind == "delivery" else "paired")
+    if kind != "child":
+        if kind == "pause":
+            session.progress["provider_pause_replay"] = True
+        await session.save("paired")
+    else:
+        call = ToolCall("pending", ToolFunction("workspace_read", "{}"))
+        session.transcript.append(ChatMessage("assistant", tool_calls=(call,)))
+        await session.save("response", (call,))
     assembler = ContextAssembler.__new__(ContextAssembler)
     assembler._ledger = EventLedgerRepository(database)
     assembler._scopes = SimpleNamespace(
@@ -121,9 +126,13 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
     assert protocol_recovery_preparation.get() is None
 
 
-@pytest.mark.parametrize("kind", ["paired", "contract", "legacy_guard", "source", "legacy_staging"])
+@pytest.mark.parametrize(
+    "kind", ["paired", "child", "contract", "legacy_guard", "source", "legacy_staging"]
+)
 async def test_normal_business_or_changed_contract_builds_fresh(database, kind):
     control, session, selected, _ = await _session(database)
+    if kind == "child":
+        control, session = await as_child(control, session)
     if kind == "legacy_guard":
         session.source_guard = None
     if kind == "legacy_staging":
@@ -147,7 +156,9 @@ async def test_normal_business_or_changed_contract_builds_fresh(database, kind):
 async def test_child_real_deleted_source_cannot_be_certified_by_fresh_history(database):
     control, session, selected, _ = await _session(database)
     control, session = await as_child(control, session)
-    await session.save("paired")
+    call = ToolCall("pending", ToolFunction("workspace_read", "{}"))
+    session.transcript.append(ChatMessage("assistant", tool_calls=(call,)))
+    await session.save("response", (call,))
     await _change(database, selected)
     builder = AsyncMock(return_value="must not be read")
     with pytest.raises(WorkConflict, match="work_source_changed"):
@@ -229,7 +240,7 @@ async def test_original_guard_does_not_excuse_changed_private_sources(database, 
 
 @pytest.mark.parametrize("guarded", [False, True])
 @pytest.mark.parametrize("receipt_state", ["accepted", "unknown"])
-async def test_changed_legacy_delivery_uses_current_context_without_replaying_plan(
+async def test_changed_context_uses_original_receipts_without_replaying_calls(
     database, tmp_path, monkeypatch, guarded, receipt_state
 ):
     control, session, selected, _ = await _session(database)
@@ -241,10 +252,6 @@ async def test_changed_legacy_delivery_uses_current_context_without_replaying_pl
             provider="gemini", protocol="gemini", payload={"private": "retired-signature"}
         )
     )
-    session.progress["delivery_plan"] = [
-        {"text": "already delivered old fragment", "media": []},
-        {"text": "never sent old draft", "media": []},
-    ]
     old_key = session.call_key("final-1")
     await control.repository.prepare_effect(control.lease, identity, old_key, "final")
     await control.repository.record_effect(
@@ -252,11 +259,10 @@ async def test_changed_legacy_delivery_uses_current_context_without_replaying_pl
     )
     await control.repository.checkpoint(control.lease, identity, None, models=1, messages=2)
     control.current = await control.repository.get(identity)
-    await session.save("delivery")
+    await session.save("paired")
     await _change(database, selected)
     legacy = await session.journal.load(control.lease, identity, session.contract)
     assert legacy.reason == "source_changed" and legacy.record is None
-    assert legacy.delivery_record is not None
     assert await select_protocol_recovery(control, "fixed-contract") is None
     builder = AsyncMock(return_value="current legal context")
     assert await prepare_context(builder, control, recovery_contract="fixed-contract") == (
@@ -284,7 +290,6 @@ async def test_changed_legacy_delivery_uses_current_context_without_replaying_pl
     assert "retired-signature" not in rendered
     assert "never sent old draft" not in rendered
     execute.assert_not_awaited()
-    assert control.session.recovered_delivery is None
     assert control.current["id"] == identity
     assert control.current["model_requests"] == 2 and control.current["sent_messages"] == 2
     assert control.current["state"] == "completed"
@@ -520,3 +525,57 @@ async def test_paid_current_compact_recovery_prepares_latest_public_history(
         await control.repository.release(lease)
     finally:
         current_work_control.reset(token)
+
+
+async def test_pending_receipt_settled_after_exact_selection_keeps_original_context_once(database):
+    control, session, _selected, _ = await _session(database)
+    control, session = await as_child(control, session)
+    call = ToolCall("paid-pending", ToolFunction("workspace_read", "{}"))
+    session.transcript.append(ChatMessage("assistant", tool_calls=(call,)))
+    await session.save("response", (call,))
+    chain = session.transcript.chain_id
+
+    async def prepare_exact():
+        # Another lawful observer can settle the original call after selection.
+        await invoke_tool(
+            session, call, AsyncMock(return_value='{"ok":true}'), side_effecting=False
+        )
+        return TurnTranscript(())
+
+    initial = await prepare_context(prepare_exact, control, recovery_contract="fixed-contract")
+    resumed = WorkSession(control, "fixed-contract")
+    actual = await resumed.restore(initial)
+    assert resumed.exact_recovery and resumed.uses_recovery_transcript
+    assert actual.chain_id == chain
+    assert any(message.role == "tool" for message in actual.request().messages)
+    assert not await resumed.rebase_business(TurnTranscript((ChatMessage("user", "fresh"),)))
+    fresh = TurnTranscript((ChatMessage("user", "current lawful public input"),))
+    builder = AsyncMock(return_value=fresh)
+    initial = await prepare_context(builder, control, recovery_contract="fixed-contract")
+    again = WorkSession(control, "fixed-contract")
+    actual = await again.restore(initial)
+    assert not again.exact_recovery and not again.uses_recovery_transcript
+    assert actual.chain_id == fresh.chain_id != chain
+    assert not any(
+        message.role == "tool" or message.tool_calls for message in actual.request().messages
+    )
+
+
+@pytest.mark.parametrize("state", ["accepted", "unknown", "failed"])
+async def test_settled_or_unknown_original_effect_does_not_force_child_exact_recovery(
+    database, state
+):
+    control, session, _selected, _ = await _session(database)
+    control, session = await as_child(control, session)
+    call = ToolCall("original", ToolFunction("workspace_read", "{}"))
+    session.transcript.append(ChatMessage("assistant", tool_calls=(call,)))
+    await session.save("response", (call,))
+    key = session.call_key(call.id)
+    await control.repository.prepare_effect(control.lease, control.current["id"], key, "tool")
+    await control.repository.record_effect(key, state, {"result": "original evidence"})
+    builder = AsyncMock(return_value="fresh public context")
+    assert (
+        await prepare_context(builder, control, recovery_contract="fixed-contract")
+        == "fresh public context"
+    )
+    builder.assert_awaited_once()

@@ -648,6 +648,9 @@ class MessageProcessor:
             if admitted.dropped:
                 result = await self._handle_ingress_drop(message, sender, admitted.reason)
                 return result
+            if admitted.author_kind == "account" and admitted.conversation_id is None:
+                await self._canonical_uow.record_account_fact(admitted.message, admitted)
+                return ProcessResult(False, reason="account_fact_recorded")
             result = await self._handle_admitted(
                 admitted.message,
                 sender,

@@ -7,11 +7,11 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
-from sqlalchemy import and_, case, or_, select
+from sqlalchemy import case, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, load_only
 
-from yuki.identity.person_identity import same_person_condition, same_person_id
+from yuki.identity.person_identity import current_person_ids, same_person_id
 from yuki.memory.enums import (
     MemoryAuthority,
     MemoryConflictState,
@@ -107,10 +107,10 @@ class MemoryFactService:
         try:
             if person_id is not None:
                 from yuki.identity.errors import CanonicalIdentityError
-                from yuki.services.canonical_owners import require_live_person
+                from yuki.identity.person_identity import current_person_id
 
                 try:
-                    return await require_live_person(session, person_id)
+                    return await current_person_id(session, person_id)
                 except CanonicalIdentityError:
                     return None
             return await resolve_active_person_id(session, user_id)
@@ -214,8 +214,11 @@ class MemoryFactService:
                     if left != right:
                         return False
                 elif left != right:
-                    conditions.append(same_person_condition(left, right))
-        return not conditions or bool(await session.scalar(select(and_(*conditions))))
+                    conditions.append((left, right))
+        if not conditions:
+            return True
+        roots = await current_person_ids(session, (value for pair in conditions for value in pair))
+        return all(left in roots and roots[left] == roots.get(right) for left, right in conditions)
 
     async def remember(
         self,

@@ -51,6 +51,10 @@ class MessageTaskSource:
         return InboundMessage(
             message_id=original.platform_message_id,
             source_event_id=original.id,
+            author_kind=original.author_kind,
+            author_account_id=original.author_account_id,
+            segments=original.segments,
+            occurred_at=original.occurred_at,
             event_type="message",
             scope_type=original.scope_type,
             sender=SenderIdentity(

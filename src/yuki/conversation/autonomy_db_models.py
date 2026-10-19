@@ -79,7 +79,7 @@ class InitiativeRunModel(Base):
         String(36), ForeignKey("spaces.id", ondelete="RESTRICT"), nullable=False
     )
     presence_id: Mapped[str] = mapped_column(
-        String(36), ForeignKey("presences.id", ondelete="RESTRICT"), nullable=False
+        String(36), ForeignKey("account_assignments.id", ondelete="RESTRICT"), nullable=False
     )
     target_person_id: Mapped[str | None] = mapped_column(
         String(36), ForeignKey("persons.id", ondelete="RESTRICT")

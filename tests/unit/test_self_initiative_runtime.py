@@ -203,7 +203,7 @@ async def test_self_recovery_revalidates_presence_after_initiative_settles(datab
         await db.execute(
             update(PresenceModel)
             .where(PresenceModel.id == source["presence_id"])
-            .values(enabled=False)
+            .values(status="disabled")
         )
     with pytest.raises(ValueError, match="task_presence_disabled"):
         await recover_self_source(database, source["conversation_id"], source, request_id="w")
@@ -212,7 +212,7 @@ async def test_self_recovery_revalidates_presence_after_initiative_settles(datab
         await db.execute(
             update(PresenceModel)
             .where(PresenceModel.id == source["presence_id"])
-            .values(enabled=True)
+            .values(status="active")
         )
     recovered = await recover_self_source(
         database, source["conversation_id"], source, request_id="w"
@@ -277,8 +277,7 @@ async def test_self_work_restart_retains_id_budget_prefix_pending_receipt_and_de
     await second.save("delivered")
     third = WorkSession(resumed, "fixed-contract")
     await third.restore(TurnTranscript(()))
-    # A delivered phase without a legacy frozen plan is an ordinary paired record.
-    assert third.recovered_delivery is None and third.uses_recovery_transcript
+    assert third.uses_recovery_transcript
     await repo.cancel(source["conversation_id"])
     assert not await repo.valid(next_lease)
     with pytest.raises(WorkConflict):

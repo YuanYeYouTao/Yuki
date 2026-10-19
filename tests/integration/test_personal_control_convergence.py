@@ -28,6 +28,7 @@ from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
 from yuki.gateway.providers.app.ingress import AppGateway
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
+from yuki.identity.routing import RouteSendError
 from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.runtime.work_repository import WorkRepository
@@ -149,15 +150,23 @@ async def test_disabled_local_presence_can_restart_without_blocking_other_entrie
         presence_id = presence.id
         presence.enabled = False
     await gateway.start()
-    assert presence_id not in app.gateway_registry.connected_presence_ids(platform)
+    assert presence_id in app.gateway_registry.connected_presence_ids(platform)
+    connection = app.gateway_registry.resolve_by_handle(gateway.handle).snapshot
+    with pytest.raises(RouteSendError, match="original_presence_unavailable"):
+        await app.presence_router.resolve_presence(presence_id)
     other = "acp" if platform == "app" else "app"
-    assert app.gateway_registry.connected_presence_ids(other)
+    other_ids = app.gateway_registry.connected_presence_ids(other)
+    assert other_ids
+    assert (await app.presence_router.resolve_presence(other_ids[0])).platform == other
     async with database.immediate_session() as writer:
         presence = await writer.get(PresenceModel, presence_id)
         assert presence is not None and not presence.enabled
         presence.enabled = True
     await gateway.start()
     assert presence_id in app.gateway_registry.connected_presence_ids(platform)
+    resolved = await app.presence_router.resolve_presence(presence_id)
+    assert resolved.connection.snapshot.connection_id == connection.connection_id
+    assert app.gateway_registry.connected_presence_ids(other) == other_ids
 
 
 @pytest.mark.parametrize("failure,send_first", [(False, False), (True, False), (True, True)])
@@ -560,9 +569,9 @@ async def test_disabled_platform_binding_can_transfer_without_reviving_old_owner
     async with database.sessions() as reader:
         old = await reader.get(IdentityBindingModel, original_id)
         current = await reader.get(IdentityBindingModel, result["binding_id"])
-        assert old.status == "transferred" and old.person_id == original_person
+        assert old.status == "ended" and old.person_id == original_person
         assert current.id != old.id and current.person_id == target.person_id
-        assert current.history_starts_at == current.created_at == old.updated_at
+        assert current.history_starts_at == current.created_at == old.ended_at == old.updated_at
 
 
 async def test_acp_uses_fixed_personal_tools_and_explicit_person_routing(acp_runtime, database):

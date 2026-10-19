@@ -79,14 +79,13 @@ async def test_self_mentions_recall_and_receipt_history_use_original_social_back
         "send-with-mention",
         actor.conversation_id,
         person_refs={"known_person": env.person},
-        account_refs={"known_person": ("qq", "10001")},
         space_id=env.space,
         origin=actor.origin.value,
         initiative_run_id=actor.initiative_run_id,
         presence_id=env.presence,
         actor=actor,
     )
-    arguments = {"text": "hello", "mentions": [{"subject_ref": "known_person"}]}
+    arguments = {"text": f"@{{account:{env.account}}} hello"}
     sent = await env.service.execute("send_message", arguments, context)
     assert sent["status"] == "succeeded"
     assert await env.service.execute("send_message", arguments, context) == sent

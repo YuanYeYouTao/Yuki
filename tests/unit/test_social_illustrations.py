@@ -191,7 +191,9 @@ async def test_illustration_uses_actual_target_platform_instead_of_actor_entry(
             now=now,
             platform="telegram",
         )
-        binding.person_id = env.person
+        from yuki.identity.person_identity import merge_persons
+
+        await merge_persons(session, binding.person_id, env.person)
         presence = await create_presence(
             session, external_account_id=telegram.self_id, now=now, platform="telegram"
         )
@@ -585,7 +587,7 @@ async def test_real_agent_finishes_work_without_waiting_for_illustration(
 ):
     arguments = {**ARGS, "text": text}
     if mention:
-        arguments["mentions"] = [{"subject_ref": "current_speaker"}]
+        arguments["text"] = "@test-10001"
     fixture = await case(
         database,
         tmp_path,
@@ -610,7 +612,7 @@ async def test_real_agent_finishes_work_without_waiting_for_illustration(
         result = await env.service.execute(
             invocation.call.function.name, json.loads(invocation.call.function.arguments), context
         )
-        if not text:
+        if not text and not mention:
             # Read the real crash window: admission has committed, while the
             # original Work effect still has no recorded tool result.
             token = current_result_capture.set(None)
@@ -638,11 +640,13 @@ async def test_real_agent_finishes_work_without_waiting_for_illustration(
         result = await asyncio.wait_for(run(fixture), 5)
         assert result.work_state == "completed" and len(fixture.provider.requests) == 2
         assert fixture.control.accepted_ending() == "completed"
-        assert len(sends(env)) == bool(text) and library.publish_calls == 0
+        assert len(sends(env)) == bool(text or mention) and library.publish_calls == 0
         await fixture.repository.release(fixture.control.lease)
         library.release.set()
         assert (await settle(delivery, context))["status"] == "succeeded"
-        assert len(sends(env)) == (2 if text else 1) and len(fixture.provider.requests) == 2
+        assert (
+            len(sends(env)) == (2 if text or mention else 1) and len(fixture.provider.requests) == 2
+        )
     finally:
         await delivery.close()
 
@@ -786,7 +790,9 @@ async def test_deferred_effect_keeps_real_actor_source_and_presence(database, tm
             )
         else:
             await session.execute(
-                update(PresenceModel).where(PresenceModel.id == env.presence).values(enabled=False)
+                update(PresenceModel)
+                .where(PresenceModel.id == env.presence)
+                .values(status="disabled")
             )
     await delivery.start()
     try:

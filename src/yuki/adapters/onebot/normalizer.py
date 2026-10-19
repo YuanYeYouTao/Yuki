@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any, Protocol
 
@@ -134,16 +135,24 @@ def _extract_segments(
     face_resolver: FaceNameResolver | None = None,
 ) -> MentionProjection:
     text_parts: list[str] = []
+    text_length = 0
+    seen_user_ids: set[str] = set()
     mentions_yuki = False
     attachments: list[MessageAttachment] = []
     mentioned_user_ids: list[str] = []
     ordered_mentions: list[MessageMention] = []
     resolver = face_resolver or _default_face_resolver()
+
+    def append_text(value: str) -> None:
+        nonlocal text_length
+        text_parts.append(value)
+        text_length += len(value)
+
     for segment_index, segment in enumerate(segments):
         segment_type = segment.type
         data = segment.data
         if segment_type == "text":
-            text_parts.append(str(data.get("text", "")))
+            append_text(str(data.get("text", "")))
         elif segment_type == "at":
             target = str(data.get("qq", ""))
             if target == "all":
@@ -152,13 +161,14 @@ def _extract_segments(
                 mentions_yuki = True
                 kind, marker, name = "yuki", "[提及Yuki]", str(data.get("name") or "")
             elif target.isdecimal():
-                if target not in mentioned_user_ids:
+                if target not in seen_user_ids:
+                    seen_user_ids.add(target)
                     mentioned_user_ids.append(target)
                 kind, marker, name = "member", f"[提及{target}]", str(data.get("name") or "")
             else:
                 continue
-            text_parts.append(marker)
-            end = len(sanitize_input("".join(text_parts)))
+            append_text(marker)
+            end = text_length
             ordered_mentions.append(
                 MessageMention(
                     kind=kind,
@@ -171,13 +181,13 @@ def _extract_segments(
             )
         elif segment_type == "face":
             face_id = str(data.get("id", "未知"))
-            text_parts.append(f"[QQ表情：{resolver.resolve(face_id)}]")
+            append_text(f"[QQ表情：{resolver.resolve(face_id)}]")
         elif segment_type == "reply":
             continue
         else:
             card = parse_card_segment(segment_type, data)
             if card is not None:
-                text_parts.append(card.text)
+                append_text(card.text)
             attachment = _attachment_from_segment(
                 segment,
                 segment_index=segment_index,
@@ -194,15 +204,68 @@ def _extract_segments(
                 name = (attachment.filename or "").replace("\\", "/").split("/")[-1]
                 name = sanitize_input(name)[:80].strip(" []\r\n\t")
                 suffix = f"：{name}" if name else ""
-                text_parts.append(f" [{kind}附件{len(attachments)}{suffix}] ")
+                append_text(f" [{kind}附件{len(attachments)}{suffix}] ")
             attachments.append(attachment)
+    text, ordered = _sanitize_mention_text("".join(text_parts), ordered_mentions)
     return MentionProjection(
-        text=sanitize_input("".join(text_parts)),
+        text=text,
         mentions_yuki=mentions_yuki,
         attachments=tuple(attachments),
         mentioned_user_ids=tuple(mentioned_user_ids),
-        ordered_mentions=tuple(ordered_mentions),
+        ordered_mentions=ordered,
     )
+
+
+def _sanitize_mention_text(
+    text: str, mentions: list[MessageMention]
+) -> tuple[str, tuple[MessageMention, ...]]:
+    if not mentions:
+        return sanitize_input(text), ()
+    characters: list[str] = []
+    origins: list[int] = []
+    index = 0
+    while index < len(text):
+        character = text[index]
+        origin = index
+        index += 1
+        if character == "\r":
+            if index < len(text) and text[index] == "\n":
+                index += 1
+            character = "\n"
+        if (ord(character) < 32 and character not in {"\t", "\n"}) or character == "\x7f":
+            continue
+        characters.append(character)
+        origins.append(origin)
+    normalized = "".join(characters)
+    output: list[str] = []
+    positions: list[int] = []
+    offset = 0
+    lines = normalized.splitlines(keepends=True)
+    for line_index, line in enumerate(lines):
+        body = line.splitlines()[0] if line.splitlines() else ""
+        body = body.rstrip()
+        output.extend(body)
+        positions.extend(origins[offset : offset + len(body)])
+        if line_index + 1 < len(lines):
+            output.append("\n")
+            positions.append(origins[offset + len(line) - 1])
+        offset += len(line)
+    left, right = 0, len(output)
+    while left < right and output[left].isspace():
+        left += 1
+    while right > left and output[right - 1].isspace():
+        right -= 1
+    positions = positions[left:right]
+    projected = []
+    cursor = 0
+    for item in mentions:
+        while cursor < len(positions) and positions[cursor] < item.text_start:
+            cursor += 1
+        start = cursor
+        while cursor < len(positions) and positions[cursor] < item.text_end:
+            cursor += 1
+        projected.append(replace(item, text_start=start, text_end=cursor))
+    return "".join(output[left:right]), tuple(projected)
 
 
 def _message_from_serialized_segments(
@@ -253,48 +316,23 @@ def reproject_inbound_mentions(
         if item and item.strip()
     )
     if not message.segments:
-        mentions_yuki = message.mentions_bot or any(
-            item in known_yuki for item in message.mentioned_user_ids
-        )
-        return replace(
-            message,
-            mentions_bot=mentions_yuki,
-            mentioned_user_ids=tuple(
-                item for item in message.mentioned_user_ids if item not in known_yuki
-            ),
+        return replace(message, yuki_account_ids=known_yuki)
+    current = project_serialized_segments(
+        message.segments,
+        yuki_account_ids=known_yuki,
+        source="current",
+        face_resolver=face_resolver,
+    )
+    reply = (
+        project_serialized_segments(
+            message.reply_segments,
             yuki_account_ids=known_yuki,
-        )
-    try:
-        current = project_serialized_segments(
-            message.segments,
-            yuki_account_ids=known_yuki,
-            source="current",
+            source="reply",
             face_resolver=face_resolver,
         )
-        reply = (
-            project_serialized_segments(
-                message.reply_segments,
-                yuki_account_ids=known_yuki,
-                source="reply",
-                face_resolver=face_resolver,
-            )
-            if message.reply_segments
-            else None
-        )
-    except SegmentProjectionError:
-        # Live messages are serialized by this module, so this is only a defensive
-        # compatibility path for synthetic callers and pre-3.8 records.
-        mentions_yuki = message.mentions_bot or any(
-            item in known_yuki for item in message.mentioned_user_ids
-        )
-        return replace(
-            message,
-            mentions_bot=mentions_yuki,
-            mentioned_user_ids=tuple(
-                item for item in message.mentioned_user_ids if item not in known_yuki
-            ),
-            yuki_account_ids=known_yuki,
-        )
+        if message.reply_segments
+        else None
+    )
     return replace(
         message,
         text=current.text,
@@ -430,4 +468,5 @@ def normalize_event(
             else None
         ),
         yuki_account_ids=known_yuki,
+        occurred_at=datetime.fromtimestamp(event.time, UTC) if event.time is not None else None,
     )

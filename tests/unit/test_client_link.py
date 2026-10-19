@@ -7,10 +7,10 @@ from uuid import uuid4
 
 from sqlalchemy import func, select
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.client_identity import client_identity_service
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 
 from yuki.client_api.db_models import ClientLinkCodeModel
-from yuki.client_api.identity import ClientIdentityService
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from yuki.identity.person_identity import current_person_id
@@ -20,10 +20,10 @@ from yuki.services.execution_sources import recover_source
 
 
 async def stack(database):
-    registry, _, _ = await _stack(database)
+    registry, resolver, _ = await _stack(database)
     bot = _Bot("8000")
     registry.connect(bot, provider_id="snowluma")
-    identities = ClientIdentityService(database)
+    identities = client_identity_service(database, resolver._router)
     async with database.sessions() as session:
         target = await find_identity_binding(session, "1001")
     code = await identities.issue_for_operator(target.person_id, str(uuid4()), str(uuid4()))

@@ -5,7 +5,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
+from tests.support.memory_identity import transfer_account
 from tests.support.social_identity_cases import social_env
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
@@ -13,12 +14,51 @@ from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.domain.tool_actor import ToolActor
 from yuki.identity.canonical_repository import ensure_person
-from yuki.identity.db_models import IdentityBindingModel
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.origin import TurnOrigin
 from yuki.services.agent_tools import ToolRuntime
 from yuki.social.agent_adapter import invoke_social
 from yuki.social.models import SocialError
+
+
+async def test_send_context_does_not_query_a_reply_author_for_retired_subject_shortcuts(
+    database, tmp_path, monkeypatch
+):
+    env = await social_env(database, tmp_path)
+    inbound = InboundMessage(
+        "reply-source",
+        "message",
+        ScopeType.GROUP,
+        SenderIdentity("10001"),
+        "ordinary reply",
+        bot_user_id="80001",
+        group_id="20001",
+        source_event_id=1,
+        reply_to_event_id=1,
+        person_id=env.person,
+        conversation_id=env.context.conversation_id,
+        presence_id=env.presence,
+        space_id=env.space,
+    )
+    runtime = ToolRuntime(inbound=inbound)
+    captured = AsyncMock(return_value={"status": "prepared-by-original-backend"})
+    monkeypatch.setattr(env.service, "execute", captured)
+    statements = []
+
+    def observe(_connection, _cursor, statement, _parameters, _context, _many):
+        statements.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
+    token = current_invocation.set(ToolInvocationContext(runtime, call_id="no-subject-lookup"))
+    try:
+        await invoke_social(env.service, "send_message", {"text": "reply text"}, runtime)
+    finally:
+        current_invocation.reset(token)
+        event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+    assert statements == []
+    context = captured.await_args.args[2]
+    assert context.person_refs == {"current_speaker": env.person}
+    assert context.actor.person_id == env.person and context.trigger_event_id == 1
 
 
 async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_receipt(
@@ -120,14 +160,7 @@ async def test_social_refs_use_original_person_after_external_account_transfer(
     actor = ToolActor.from_inbound(inbound)
     async with database.immediate_session() as session:
         different = await ensure_person(session, "10002")
-        binding = await session.scalar(
-            select(IdentityBindingModel).where(
-                IdentityBindingModel.platform == "qq",
-                IdentityBindingModel.external_account_id == "10001",
-                IdentityBindingModel.status == "active",
-            )
-        )
-        binding.person_id = different
+    await transfer_account(database, "10001", "10002")
     execute = AsyncMock(return_value={"source": "canonical_ledger"})
     monkeypatch.setattr(env.service, "execute", execute)
     runtime = SimpleNamespace(

@@ -1,7 +1,7 @@
 """Transport-neutral social operation contracts."""
 
 from enum import StrEnum
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -26,15 +26,6 @@ class SocialTarget(BaseModel):
     id: UUID
 
 
-class SocialMention(BaseModel):
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    target_id: UUID | None = None
-    display_name: str | None = Field(default=None, max_length=128)
-    subject_ref: str | None = None
-    binding_id: UUID | None = None
-
-
 class SocialEmoji(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -49,16 +40,10 @@ class SocialMessage(BaseModel):
     artifact_id: UUID | None = None
     attachment_kind: Literal["image", "file"] | None = None
     emoji: SocialEmoji | None = None
-    mentions: list[SocialMention] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def validate_content(self) -> "SocialMessage":
-        if (
-            not self.text.strip()
-            and self.artifact_id is None
-            and self.emoji is None
-            and not self.mentions
-        ):
+        if not self.text.strip() and self.artifact_id is None and self.emoji is None:
             raise ValueError("message_empty")
         if (self.artifact_id is None) != (self.attachment_kind is None):
             raise ValueError("attachment_kind_required")
@@ -80,3 +65,4 @@ class SocialReceipt(BaseModel):
     error_category: str | None = None
     # Local proof carried from preparation to its dispatch CAS, never model output.
     payload_hash: str | None = Field(default=None, exclude=True)
+    prepared: dict[str, Any] | None = Field(default=None, exclude=True)

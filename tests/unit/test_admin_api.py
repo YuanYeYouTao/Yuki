@@ -13,6 +13,8 @@ from fastapi import FastAPI
 from sqlalchemy import event, func, select
 from tests.conftest import make_settings
 from tests.integration.test_plugin_frozen_binding import write_plugin
+from tests.support.canonical_ingress import fixture_ingress
+from tests.support.client_identity import client_identity_service
 from tests.support.model_profiles import write_fake_profiles
 from tests.unit.test_admin_operator_access import operator_file
 
@@ -23,7 +25,6 @@ from yuki.admin.config_service import RuntimeConfigService
 from yuki.admin.operations import AdminOperations
 from yuki.admin.queries import AdminQueries
 from yuki.admin_api.http import AdminApi, attach_admin_api
-from yuki.client_api.identity import ClientIdentityService
 from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 from yuki.execution_trace.db_models import ExecutionTraceEntryModel
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
@@ -40,6 +41,7 @@ from yuki.plugin_host.extension_registry import ExtensionRegistry
 from yuki.plugin_host.loader import PluginLoader
 from yuki.plugin_host.manager import PluginManager
 from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 TOKEN = "test-admin-" + "a" * 48
 READER = "test-reader-" + "b" * 48
@@ -59,6 +61,10 @@ GRANTS = (
     "identity.binding.read",
     "identity.binding.disable",
     "identity.binding.transfer",
+    "identity.binding.unbind",
+    "identity.presence.register",
+    "identity.presence.unregister",
+    "identity.presence.transfer",
     "identity.client.pair",
     "identity.client.revoke",
     "identity.person.forget",
@@ -114,7 +120,7 @@ capabilities = ["control.health.read", "control.execution.metadata.read"]
     async def health():
         return [{"name": "fixture", "enabled": True, "running": True, "healthy": None}]
 
-    identities = ClientIdentityService(database)
+    identities = client_identity_service(database, fixture_ingress(database)._router)
     people = PeopleRepository(database, memory_rebuilds=MemoryRebuildRepository(database))
     api = AdminApi(
         ControlOperatorAccess(database, policy),
@@ -126,6 +132,7 @@ capabilities = ["control.health.read", "control.execution.metadata.read"]
             people=people,
             config=RuntimeConfigService(settings=settings, database=database),
             groups=GroupSettingsRepository(database),
+            router=fixture_ingress(database)._router,
         ),
         identities,
         AdminQueries(database, manager, files, health),
@@ -228,8 +235,8 @@ async def test_identity_creation_binding_attach_disable_and_original_replay(admi
         )
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-async def test_binding_attach_only_conflicts_with_current_presence(admin, database, enabled):
+@pytest.mark.parametrize("status", ["active", "disabled", "ended"])
+async def test_binding_attach_only_conflicts_with_current_presence(admin, database, status):
     client, *_ = admin
     person = (await client.post("/admin/v1/persons", json=command())).json()["data"]["resource_id"]
     async with database.immediate_session() as session:
@@ -240,14 +247,14 @@ async def test_binding_attach_only_conflicts_with_current_presence(admin, databa
         )
         assert presence is not None
         presence_id = presence.id
-        presence.enabled = enabled
+        presence.status = status
     response = await client.post(
         f"/admin/v1/persons/{person}/bindings",
         json=command(1, platform="qq", external_account_id="8001", display_name="Former account"),
     )
-    if enabled:
+    if status != "ended":
         assert response.status_code == 409, response.text
-        assert response.json()["problem"]["code"] == "precondition_failed"
+        assert response.json()["problem"]["code"] == "binding_ambiguous"
     else:
         assert response.status_code == 200, response.text
         binding_id = response.json()["data"]["resource_id"]
@@ -385,12 +392,12 @@ async def test_plugin_configuration_and_observation_use_registered_domain_schema
     client, _, manager, _, profiles = admin
     root = profiles.parent / "plugins" / "test.config"
     root.mkdir()
-    root.joinpath("plugin.toml").write_text("""id = "test.config"
+    root.joinpath("plugin.toml").write_text(f"""id = "test.config"
 name = "Configuration fixture"
 description = "Synthetic configuration and observation fixture"
 version = "1.0.0"
 entrypoint = "configuration:Fixture"
-plugin_api = "5.0"
+plugin_api = "{PLUGIN_API_VERSION}"
 yuki_requires = ">=3.8"
 permissions = ["plugin.config.read"]
 """)
@@ -501,6 +508,23 @@ async def test_notification_retry_preserves_original_delivery_evidence(admin, da
     await repository.publish(
         plugin_id="test.publication-idempotency",
         request=_request(ask_agent=False, agent_intent="", target=target),
+    )
+    from yuki.gateway.social import TransportMessage, transport_payload
+
+    (pending,) = await repository.unprepared_outbox()
+    await repository.prepare_outbox(
+        pending,
+        (
+            {
+                "message": transport_payload(TransportMessage(pending.text)),
+                "route": {
+                    "platform": "qq",
+                    "presence_id": presence.id,
+                    "binding_id": binding.id,
+                    "conversation_id": conversation.conversation_id,
+                },
+            },
+        ),
     )
     claimed = await repository.claim_outbox()
     assert claimed is not None

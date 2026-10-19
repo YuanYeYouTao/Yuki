@@ -16,7 +16,13 @@ from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ConversationLegacyAliasModel,
 )
-from yuki.identity.canonical_repository import IDENTITY_PLATFORM, ensure_person, ensure_space
+from yuki.identity.canonical_repository import (
+    IDENTITY_PLATFORM,
+    ensure_account,
+    ensure_person,
+    ensure_space,
+    replace_assignment,
+)
 from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -56,6 +62,17 @@ async def _canonical_message(database, message):
         reply = await ingress.uow.append_inbound(admitted_reply.message, admitted_reply)
         message = replace(
             message, reply_to_event_id=reply.event.id, reply_to_message_id=quoted.message_id
+        )
+    if message.mentioned_user_ids:
+        message = replace(
+            message,
+            segments=(
+                {"type": "text", "data": {"text": message.text}},
+                *(
+                    {"type": "at", "data": {"qq": account}}
+                    for account in message.mentioned_user_ids
+                ),
+            ),
         )
     admitted = await ingress.pre_admit(None, message)
     result = await ingress.uow.append_inbound(admitted.message, admitted)
@@ -134,20 +151,9 @@ def test_format_and_parse_only_accept_canonical_owner_ids() -> None:
 async def test_private_event_resolves_all_bindings_to_one_person(database: Database) -> None:
     async with database.sessions() as session, session.begin():
         person_id = await ensure_person(session, "1101", now=_NOW)
-        session.add(
-            IdentityBindingModel(
-                id=str(uuid4()),
-                person_id=person_id,
-                platform=IDENTITY_PLATFORM,
-                external_account_id="1102",
-                display_name="",
-                status="active",
-                revision=1,
-                first_seen_at=_NOW,
-                last_seen_at=_NOW,
-                created_at=_NOW,
-                updated_at=_NOW,
-            )
+        account = await ensure_account(session, "1102", platform=IDENTITY_PLATFORM, now=_NOW)
+        await replace_assignment(
+            session, account, None, await session.get(CanonicalPersonModel, person_id), now=_NOW
         )
     async with database.sessions() as session:
         first = await resolve_memory_partition_for_event(
@@ -201,7 +207,7 @@ async def test_space_partition_requires_enabled_active_binding(
 @pytest.mark.asyncio
 async def test_conversation_uuid_cannot_be_used_as_memory_owner(database: Database) -> None:
     person_id = str(uuid4())
-    binding_id = str(uuid4())
+    conversation_id = str(uuid4())
     alias_id = str(uuid4())
     async with database.sessions() as session, session.begin():
         await session.execute(text("PRAGMA defer_foreign_keys=ON"))
@@ -214,27 +220,17 @@ async def test_conversation_uuid_cannot_be_used_as_memory_owner(database: Databa
                 updated_at=_NOW,
             )
         )
-        session.add(
-            IdentityBindingModel(
-                id=binding_id,
-                person_id=person_id,
-                platform=IDENTITY_PLATFORM,
-                external_account_id="1103",
-                display_name="",
-                status="active",
-                revision=1,
-                first_seen_at=_NOW,
-                last_seen_at=_NOW,
-                created_at=_NOW,
-                updated_at=_NOW,
-            )
+        await session.flush()
+        account = await ensure_account(session, "1103", platform=IDENTITY_PLATFORM, now=_NOW)
+        binding = await replace_assignment(
+            session, account, None, await session.get(CanonicalPersonModel, person_id), now=_NOW
         )
         session.add(
             CanonicalConversationModel(
-                id=person_id,
+                id=conversation_id,
                 kind="private",
                 person_id=person_id,
-                identity_binding_id=binding_id,
+                identity_binding_id=binding.id,
                 space_id=None,
                 primary_alias_id=alias_id,
                 primary_marker=1,
@@ -250,7 +246,7 @@ async def test_conversation_uuid_cannot_be_used_as_memory_owner(database: Databa
         session.add(
             ConversationLegacyAliasModel(
                 id=alias_id,
-                conversation_id=person_id,
+                conversation_id=conversation_id,
                 scope_key=f"bot:8000:private:1103:{alias_id}",
                 is_primary=1,
                 created_at=_NOW,
@@ -258,11 +254,19 @@ async def test_conversation_uuid_cannot_be_used_as_memory_owner(database: Databa
             )
         )
     async with database.sessions() as session:
-        with pytest.raises(MemoryPartitionResolutionError) as exc:
-            await resolve_memory_partition_for_event(
-                session, _event(message_id="conversation-owner", peer="1103")
-            )
-    assert exc.value.reason == "conversation_uuid"
+        resolved = await resolve_memory_partition_for_event(
+            session, _event(message_id="conversation-owner", peer="1103")
+        )
+        assert resolved.person_id == person_id and resolved.person_id != conversation_id
+    from yuki.memory.repository import MemoryFactRepository
+    from yuki.memory.service import MemoryFactService
+
+    assert (
+        await MemoryFactService(MemoryFactRepository(database)).resolve_person_id(
+            person_id=conversation_id
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio
@@ -313,18 +317,15 @@ async def test_targets_share_one_canonical_person_across_mention_and_reply_bindi
             )
         )
         assert binding is not None
-        session.add(
-            IdentityBindingModel(
-                id=str(uuid4()),
-                person_id=binding.person_id,
-                platform="qq",
-                external_account_id="62999",
-                display_name="reply account",
-                first_seen_at=_NOW,
-                last_seen_at=_NOW,
-                created_at=_NOW,
-                updated_at=_NOW,
-            )
+        account = await ensure_account(
+            session, "62999", platform="qq", display_name="reply account", now=_NOW
+        )
+        await replace_assignment(
+            session,
+            account,
+            None,
+            await session.get(CanonicalPersonModel, binding.person_id),
+            now=_NOW,
         )
     message = replace(
         inbound("refs", message_id="bound-refs", group_id="2001", mentioned_user_ids=user_ids),

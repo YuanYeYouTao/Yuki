@@ -47,11 +47,11 @@ Yuki 是一个开源、自托管的社会化 AI Agent，探索数字生命如何
 
 升级步骤、兼容性变化与各项验证范围见发布说明。模型响应、工具请求与宿主资源仍会影响实际体验；版本更新不保证固定的延迟、费用或缓存命中率。
 
-**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence＋子会话、群按 SpaceBinding＋topic 隔离；人物记忆仍沿内部 Person。`yuki acp` 让外部 ACP 客户端连接服务器，每个 session 有独立 Conversation，沿原 Main、固定工具和发送回执，见[个人 API](docs/architecture/client-api.md#acp-方向-a)。Plugin API **5.0**、Main 合同 **24**、迁移 **0140**；配置及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地验证、合并和上线分别记录，正式 3.9.0 的历史说明保留如上。
+**当前开发分支：** 个人客户端与 QQ、Telegram 共用同一个运行时，平台原生传输经适配器接入。私聊按 Binding＋Presence＋子会话、群按 SpaceBinding＋topic 隔离；人物记忆仍沿内部 Person。`yuki acp` 让外部 ACP 客户端连接服务器，每个 session 有独立 Conversation，沿原 Main、固定工具和发送回执，见[个人 API](docs/architecture/client-api.md#acp-方向-a)。Plugin API **6.0**、新固定提及合同、迁移 **0141**；配置及后续平台扩展见[平台适配与升级](docs/architecture/platform-adapters.md)。本地验证、合并和上线分别记录，正式 3.9.0 的历史说明保留如上。
 
 当前源码的 Python 模块和发行包统一为 `yuki`，管理、个人客户端与 ACP 共用 `yuki` 命令，服务进程使用 `yuki-bot`；旧命令别名已删除。源码开发使用 `uv sync --all-extras` 或本地 Docker 构建。新发行镜像使用 `ghcr.io/yuanyeyoutao/yuki`，尚未据此发布新版本；下方正式 3.9.0 的下载、镜像和安装步骤继续对应其原 Release 产物。
 
-养鲲已移至独立仓库 [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game)，本仓库不再附带游戏源码或专用迁移。独立插件须适配当前 Plugin API 5.0；安装与旧存档离线升级见插件仓库。
+养鲲已移至独立仓库 [Yuki-Kun-Game](https://github.com/YuanYeYouTao/Yuki-Kun-Game)，本仓库不再附带游戏源码或专用迁移。独立插件须适配当前 Plugin API 6.0；安装与旧存档离线升级见插件仓库。
 
 会话 [Compact](docs/architecture/conversation-compact.md)（[#417](https://github.com/YuanYeYouTao/Yuki/issues/417)、[#418](https://github.com/YuanYeYouTao/Yuki/issues/418)）由当前 Main 模型统一整理公共历史或私有执行尾部。`CONTEXT_COMPACT_TRIGGER_TOKENS` 默认 `96000`，用于提前整理，不要求结果必须降到该值以下；模型硬容量沿 Profile 的明确设置，未声明时保持未知。子 Agent 共用 Main 的完整工具合同，执行按自己的真实来源与授权核验；旧独立 Rollup 和 Work/ordinary 摘要链已退役。
 
@@ -203,7 +203,7 @@ uv run pytest
 | [开发约束](docs/architecture/development-contract.md) | 事件 ID、解耦边界、固定工具、续跑和事务原则 |
 | [会话 Compact](docs/architecture/conversation-compact.md) | 长会话的历史压缩 |
 | [Memory](docs/architecture/memory-v2.md) | 记忆提取、检索和权限 |
-| [Plugin API 5.0](docs/plugin-development/index.md) | 插件开发与能力边界 |
+| [Plugin API 6.0](docs/plugin-development/index.md) | 插件开发与能力边界 |
 | [持久子 Agent](docs/architecture/persistent-subagents.md) | 任务树、父子问答、完整工具能力与恢复 |
 | [工具结果](docs/architecture/tool-results.md) | 结果预算、媒体与持久回执 |
 | [版本化发布](docs/operations/versioned-docker-release.md) | 镜像、下载包与发布流程 |

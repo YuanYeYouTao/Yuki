@@ -4,7 +4,6 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import pairwise
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -21,8 +20,13 @@ from tests.support.workspace_snapshots import snapshot_bytes
 from yuki.automation.models import TurnOrigin
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatMessage, ChatResponse, ChatTool, ToolCall, ToolFunction
-from yuki.identity.canonical_repository import ensure_person, ensure_presence
-from yuki.identity.db_models import CanonicalSpaceModel, IdentityBindingModel
+from yuki.identity.canonical_repository import (
+    ensure_account,
+    ensure_person,
+    ensure_presence,
+    replace_assignment,
+)
+from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from yuki.identity.person_identity import merge_persons
 from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel
@@ -34,6 +38,8 @@ from yuki.runtime.work_session import WorkSession
 from yuki.services.agent_runner import AgentRuntime
 from yuki.services.execution_sources import recover_source
 from yuki.services.turn_transcript import TurnTranscript
+from yuki.social.db_models import SocialOperationModel
+from yuki.social.models import SocialError
 from yuki.social.tools import social_tool_definitions
 
 DELIVERY_TOOLS = tuple(
@@ -315,20 +321,11 @@ async def test_same_person_new_account_keeps_work_scope_and_queues_new_internal_
     now = datetime.now(UTC)
     async with database.immediate_session() as session:
         original = await session.scalar(select(ChatEventModel))
-        session.add(
-            IdentityBindingModel(
-                id=str(uuid4()),
-                person_id=env.person,
-                platform="qq",
-                external_account_id="11099",
-                display_name="same person",
-                status="active",
-                revision=1,
-                first_seen_at=now,
-                last_seen_at=now,
-                created_at=now,
-                updated_at=now,
-            )
+        account = await ensure_account(
+            session, "11099", platform="qq", display_name="same person", now=now
+        )
+        await replace_assignment(
+            session, account, None, await session.get(CanonicalPersonModel, env.person), now=now
         )
     appended = await env.service.writer.append(
         scope=ConversationScope.group("80001", "20001"),
@@ -471,16 +468,18 @@ async def test_person_merge_new_work_uses_new_event_identity_without_rewriting_o
 
 
 @pytest.mark.asyncio
-async def test_retired_work_report_is_ignored_by_original_social_reader(database, tmp_path):
+async def test_retired_work_report_is_rejected_without_new_social_effect(database, tmp_path):
     env = await social_env(database, tmp_path)
+    original_calls = list(env.bot.calls)
     original = {
         "text": "原调用已发送",
         "work_report": {"kind": "retired", "reply_to_event_ids": [999999]},
     }
-    result = await env.service.execute("send_message", original, env.context)
-    assert result["status"] == "succeeded"
-    assert await env.service.execute("send_message", original, env.context) == result
-    assert len([name for name, _ in env.bot.calls if name == "send_group_msg"]) == 1
+    with pytest.raises(SocialError, match="invalid_message_arguments"):
+        await env.service.execute("send_message", original, env.context)
+    assert env.bot.calls == original_calls
+    async with database.sessions() as reader:
+        assert not list(await reader.scalars(select(SocialOperationModel)))
     schema = next(t for t in social_tool_definitions() if t.name == "send_message").parameters
     assert "work_report" not in schema["properties"]
 

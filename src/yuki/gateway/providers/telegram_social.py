@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import html
+import re
 from dataclasses import replace
 from typing import cast
 
 from yuki.gateway.providers.telegram import TelegramAPIError, TelegramClient
-from yuki.gateway.social import TransportMedia, TransportMessage, TransportReceipt, TransportTarget
+from yuki.gateway.social import (
+    TransportMedia,
+    TransportMention,
+    TransportMessage,
+    TransportReceipt,
+    TransportTarget,
+    split_transport_message,
+)
 
 
 def _media_method(media: TransportMedia) -> tuple[str, str]:
@@ -20,8 +28,19 @@ def _media_method(media: TransportMedia) -> tuple[str, str]:
     return ("sendPhoto", "photo") if media.kind == "image" else ("sendDocument", "document")
 
 
+_NATIVE_ADDRESS = re.compile(r"@[a-zA-Z0-9_]+")
+
+
 class TelegramSocialOperations:
-    file_caption_separate = False
+    def native_mention(self, text: str, offset: int) -> TransportMention | None:
+        match = _NATIVE_ADDRESS.match(text, offset)
+        return (
+            TransportMention(
+                match[0][1:], match[0][1:], offset, offset + len(match[0]), kind="address"
+            )
+            if match is not None
+            else None
+        )
 
     def plan_send(self, message: TransportMessage) -> tuple[TransportMessage, ...]:
         if (
@@ -37,22 +56,7 @@ class TelegramSocialOperations:
         # Bot API counts visible characters after entity parsing, not HTML bytes.
         # https://core.telegram.org/bots/api#sendmessage and #senddocument
         limit = 1024 if message.media is not None else 4096
-        mention_characters = sum(len(item.display_name or "成员") + 1 for item in message.mentions)
-        if message.media is not None and mention_characters > limit:
-            return (
-                replace(message, text="", mentions=()),
-                *self.plan_send(replace(message, media=None, reply_reference=None)),
-            )
-        available = limit - mention_characters
-        first = replace(message, text=message.text[:available])
-        remaining = message.text[available:]
-        return (
-            first,
-            *(
-                TransportMessage(text=remaining[index : index + 4096])
-                for index in range(0, len(remaining), 4096)
-            ),
-        )
+        return split_transport_message(message, limit, following_limit=4096)
 
     async def send(
         self, handle: object, target: TransportTarget, message: TransportMessage
@@ -66,11 +70,21 @@ class TelegramSocialOperations:
             if chat != target.external_id:
                 raise ValueError("reply_target_mismatch")
             params["reply_parameters"] = {"message_id": int(reference)}
-        text = "".join(
-            f'<a href="tg://user?id={item.external_id}">'
-            f"{html.escape(item.display_name or '成员')}</a> "
-            for item in message.mentions
-        ) + html.escape(message.text)
+        pieces: list[str] = []
+        cursor = 0
+        for mention in message.mentions:
+            pieces.append(html.escape(message.text[cursor : mention.text_start]))
+            label = html.escape(message.text[mention.text_start : mention.text_end])
+            if mention.kind == "all":
+                raise ValueError("all_mentions_unavailable")
+            pieces.append(
+                label
+                if mention.kind == "address"
+                else f'<a href="tg://user?id={mention.external_id}">{label}</a>'
+            )
+            cursor = mention.text_end
+        pieces.append(html.escape(message.text[cursor:]))
+        text = "".join(pieces)
         media = message.media
         if media is None:
             params["parse_mode"] = "HTML"
