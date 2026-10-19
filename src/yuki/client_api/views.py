@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import Integer, func, literal_column, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.client_api.errors import ClientError
@@ -55,7 +55,9 @@ def public_event(
 ) -> dict[str, Any]:
     attachments = []
     has_audio = False
-    for index, _position, kind, data in indexed_media_segments(json.loads(row.segments_json)):
+    segments = json.loads(row.segments_json)
+    payload_segments = [segment for segment in segments if segment.get("type") != "yuki_context"]
+    for index, _position, kind, data in indexed_media_segments(segments):
         has_audio = has_audio or kind in {"record", "audio"}
         item = (media or {}).get((row.id, index))
         expires = item.expires_at if item else None
@@ -115,6 +117,19 @@ def public_event(
         "origin": row.origin,
         "created_at": utc_iso(row.observed_at),
         "attachments": attachments,
+        "display_text": (
+            "".join(
+                segment["data"]["text"] for segment in payload_segments if segment["type"] == "text"
+            )
+            if binding.platform == "app"
+            and row.direction == "inbound"
+            and payload_segments
+            and all(
+                segment.get("type") in {"text", "image", "file", "record", "audio", "video"}
+                for segment in payload_segments
+            )
+            else None
+        ),
     }
     if has_audio:
         transcript = "\n\n".join(
@@ -141,7 +156,26 @@ async def public_events(
         else ()
     )
     media = {(item.source_event_id, item.attachment_index): item for item in items}
-    return [public_event(row, binding, media) for row in rows]
+    # Callers already authorized these private conversation rows. Keep links in
+    # the same original conversation and include roots only, including ended Work.
+    links: dict[int, list[str]] = {}
+    if rows:
+        trigger = literal_column(
+            "json_extract(runtime_work.source_json, '$.trigger_event_id')", type_=Integer
+        )
+        for identity, event_id in await session.execute(
+            select(work.c.id, trigger)
+            .where(
+                work.c.conversation_id.in_({row.canonical_conversation_id for row in rows}),
+                work.c.parent_work_id.is_(None),
+                trigger.in_([row.id for row in rows]),
+            )
+            .order_by(work.c.created, work.c.id)
+        ):
+            links.setdefault(event_id, []).append(identity)
+    return [
+        {**public_event(row, binding, media), "work_ids": links.get(row.id, [])} for row in rows
+    ]
 
 
 class ClientViews:

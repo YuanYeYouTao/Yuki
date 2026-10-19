@@ -352,6 +352,8 @@ class PublicEvent(BaseModel):
     origin: str
     created_at: str
     attachments: list[Attachment]
+    display_text: str | None = None
+    work_ids: list[str] = Field(default_factory=list)
     transcript: Transcript | None = None
 
 

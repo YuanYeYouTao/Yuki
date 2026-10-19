@@ -135,6 +135,13 @@ App 补充不会自动发往群里；群 Work 后续仍可能按任务内容向�
 
 ## 快照、事件与提示
 
+事件投影的 `work_ids` 仅包含同一已授权私聊中、由该原事件触发的根 Work，包括已结束的
+Work；子 Work 仍从详情读取。查询限于当前事件页，使用迁移 0143 的部分表达式索引，
+客户端不必为恢复旧消息下的工作卡而装载全部历史 Work。
+`text` 保留原账本文字；App 入站的正文与附件能从原 segments 明确分开时，另提供
+`display_text`，否则为 null。客户端展示使用 `display_text ?? text`，不按附件标记的文字
+模式删减用户自己输入的内容。原引用与回执仍以原事件和原请求为准。
+
 桌面接口 revision 3 增加角色状态、公开步骤、根 Work 历史与成果引用列表。
 `GET /home?works=active` 和 `GET /stream?works=active` 共用非终态根 Work 查询；
 省略参数仍返回原全部本人 Work。历史经 `GET /works?group=ended&origin=all|this_entry|other`

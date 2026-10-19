@@ -48,6 +48,14 @@ work = sa.Table(
     ),
     sa.Index("ix_runtime_work_scope_state", "conversation_id", "state", "updated"),
     sa.Index("ix_runtime_work_parent", "parent_work_id"),
+    sa.Index(
+        "ix_runtime_work_client_trigger",
+        "conversation_id",
+        sa.text("json_extract(source_json, '$.trigger_event_id')"),
+        "created",
+        "id",
+        sqlite_where=sa.text("parent_work_id IS NULL"),
+    ),
 )
 
 scope = sa.Table(
