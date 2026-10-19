@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService
+from yuki.client_api.links import pairing_reply, public_base_url
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage
 from yuki.gateway.models import ConnectionSnapshot
@@ -16,9 +17,14 @@ from yuki.identity.db_models import PresenceModel
 
 class ClientLinkCommands:
     def __init__(
-        self, identities: ClientIdentityService, registry: GatewayConnectionRegistry
+        self,
+        identities: ClientIdentityService,
+        registry: GatewayConnectionRegistry,
+        *,
+        public_url: str = "",
     ) -> None:
         self.identities, self.registry = identities, registry
+        self.public_url = public_base_url(public_url)
 
     def is_request(self, message: InboundMessage) -> bool:
         parts = message.text.strip().split(maxsplit=2)
@@ -93,7 +99,7 @@ class ClientLinkCommands:
 
             result = await self.identities.database.apply_snapshot_write(apply)
             if not code:
-                return f"绑定码：{result['code']}（10 分钟内有效，使用一次后失效）。"
+                return pairing_reply(str(result["code"]), self.public_url)
             if result["merged"]:
                 return "身份已合并，原入口、会话和执行记录继续保留。"
             return "账号已绑定到目标身份。"

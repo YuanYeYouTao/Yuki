@@ -35,6 +35,14 @@ docker compose logs --tail 200 bot
 
 不要提交 `.env`、`data/`、`plugins/` 中的私有数据、Provider 登录目录或任何 Cookie/token。
 
+## 桌面配对
+
+已有 QQ 或 Telegram 账号可在自己的私聊发送 `/ai link`，把回覆贴到桌面 App。
+绑定码区分大小写，十分钟内有效，只能兑换一次。不要公开这则回覆。
+部署者可设置 `CLIENT_PUBLIC_URL=https://example.com/role`，发码回覆会同时给出纯码与
+绑定链接；反向代理的路径前缀会保留。留空时只给纯码，不推测对外地址。
+桌面会先显示所连角色，再由使用者确认配对。
+
 ## QQ Provider
 
 Yuki 不再支持 NapCat，当前附带的 QQ/OneBot v11 Provider 为 SnowLuma。现有 Gateway 抽象保留，

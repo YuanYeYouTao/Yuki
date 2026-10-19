@@ -42,6 +42,9 @@ SSE 的 sync/conversation/work/activity 数据模型以 x-yuki-sse-kinds 标明�
 第一台设备可由 operator 执行 `yuki admin person create`，再执行
 `yuki admin client pair --person <id>` 取得绑定码；已有 QQ 或 Telegram 用户也可在自己的私聊
 发送 `/ai link`。码有效期十分钟，仅存 SHA-256，一次兑换。过期码沿原维护循环清理。
+配置 `CLIENT_PUBLIC_URL` 后，QQ／Telegram 私聊发码回覆也附上
+`yuki://pair?server=<URL编码的完整基底>&code=<原码>`；路径前缀保留，码不截断或改大小写。
+未配置时只显示纯码。地址来自部署配置，不采用请求 Host；桌面在配对前仍先读取 `/meta` 确认角色。
 
 | 请求 | 授权与结果 |
 | --- | --- |

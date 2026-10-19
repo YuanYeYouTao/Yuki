@@ -1,17 +1,26 @@
 """Native control commands and admitted consumers share canonical identity."""
 
+import re
 from datetime import UTC
+from html import unescape
 from math import ceil
+from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
+import httpx
+import pytest
+from fastapi import FastAPI
 from sqlalchemy import select
+from tests.conftest import MemorySender
 from tests.integration.test_telegram_runtime import drain, update
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.unit.test_app_messages import admin as admin
 from tests.unit.test_app_messages import app_env as app_env
 from tests.unit.test_app_messages import drain as drain_app
+from tests.unit.test_canonical_ingress import _message
 from tests.unit.test_client_api import bearer, pair, person_and_code
 from tests.unit.test_client_identity import code_for
+from tests.unit.test_client_link import stack
 
 from yuki.adapters.onebot.sender import OneBotSender
 from yuki.client_api.db_models import ClientLinkCodeModel
@@ -190,3 +199,70 @@ async def test_telegram_command_and_rate_reply_keep_original_entry(telegram_env,
     assert outbound[0].content.startswith("pong (")
     assert "频繁" in outbound[1].content
     assert not env.model.requests
+
+
+async def _redeem_reply(env, reply, server, target):
+    code = re.search(r"绑定码：([A-Za-z0-9_-]{32})(?![A-Za-z0-9_-])", reply).group(1)
+    assert len(code) == 32 and "10 分钟" in reply and "使用一次" in reply
+    root = FastAPI()
+    if server:
+        link = reply.split("绑定链接：", 1)[1]
+        params = parse_qs(urlsplit(link).query)
+        assert params == {"server": [server.rstrip("/")], "code": [code]}
+        root.mount(urlsplit(server).path.rstrip("/"), env.app)
+        base = params["server"][0]
+    else:
+        assert "yuki://pair" not in reply
+        root.mount("/role", env.app)
+        base = "http://test/role"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(root), base_url=base) as client:
+        meta = await client.get("client/v1/meta")
+        assert meta.status_code == 200 and meta.json()["data"]["character"]["id"]
+        paired = await pair(client, code)
+        me = await client.get("client/v1/me", headers=bearer(paired["token"]))
+        assert me.json()["data"]["person_id"] == target
+        reused = await client.post(
+            "client/v1/pair", json={"code": code, "device_label": "duplicate"}
+        )
+        assert reused.status_code == 401
+
+
+@pytest.mark.parametrize("server", ["", "https://example.com/Roles/Yuki/"])
+async def test_qq_link_reply_pairs_through_the_actual_prefixed_api_once(app_env, database, server):
+    env = app_env
+    registry, bot, identities, target, _ = await stack(database)
+    env.harness.processor._client_links = ClientLinkCommands(
+        identities, registry, public_url=server
+    )
+    sender = MemorySender()
+    sender.bot = bot
+    result = await env.harness.processor.handle(
+        _message(message_id="issue-real-code", text="/ai link"), sender
+    )
+    assert result.reason == "client_link" and len(sender.messages) == 1
+    assert not env.calls
+    await _redeem_reply(env, sender.messages[0].text, server, target)
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(ChatEventModel)))
+
+
+async def test_telegram_native_link_reply_keeps_the_exact_code_for_actual_api_pairing(
+    telegram_env, app_env, database
+):
+    env = telegram_env
+    service, target, issued = await code_for(database)
+    server = "https://example.com/roles/Telegram"
+    env.harness.processor._client_links = ClientLinkCommands(
+        service, env.gateway.registry, public_url=server
+    )
+    await env.gateway.receive(update(text=f"/ai link {issued['code']}"))
+    await drain(env)
+    await env.gateway.receive(update(2, text="/ai link"))
+    await drain(env)
+    sends = [params for method, params in env.wire if method == "sendMessage"]
+    assert len(sends) == 2 and not env.model.requests
+    # Telegram renders the existing HTML transport before the user copies it.
+    assert sends[-1]["parse_mode"] == "HTML"
+    await _redeem_reply(app_env, unescape(sends[-1]["text"]), server, target)
+    async with database.sessions() as session:
+        assert not list(await session.scalars(select(ChatEventModel)))

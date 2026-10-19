@@ -113,6 +113,7 @@ class Settings(BaseSettings):
     )
 
     admin_api_url: str = "http://127.0.0.1:8080"
+    client_public_url: str = ""
     app_host: str = "0.0.0.0"
     app_port: int = 8080
     log_level: str = "INFO"
@@ -396,6 +397,13 @@ class Settings(BaseSettings):
     default_timezone: str = "Asia/Shanghai"
     automation_poll_seconds: float = 2.0
     automation_lease_seconds: int = 120
+
+    @field_validator("client_public_url")
+    @classmethod
+    def _client_public_base_url(cls, value: str) -> str:
+        from yuki.client_api.links import public_base_url
+
+        return public_base_url(value)
 
     @field_validator("web_search_depth")
     @classmethod
