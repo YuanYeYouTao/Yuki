@@ -108,7 +108,8 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
             "省略 target 默认当前群或当前私聊；发给其他人或群时用 canonical 目标，"
             "由后端选择私聊或群聊及发送账号。结果 uncertain 时不要重发。"
             "App/ACP 主会话显式指定 person 目标时需带 binding_id；省略 target 只回复本入口。"
-            "正文在原位置写 @名字即可真实提及；同名时复制目录给出的 @{account:UUID}。",
+            "正文在原位置写 @名字即可真实提及；同名默认选择目标会话最近发言的账号。"
+            "要指定账号时复制目录给出的 @{account:UUID}。",
             {
                 "target": {
                     "type": "object",

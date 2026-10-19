@@ -726,25 +726,8 @@ class PluginNotificationRepository:
             row.lease_until = now + timedelta(seconds=lease_seconds)
             row.updated_at = now
             await session.flush()
-            from yuki.gateway.social import prepared_transport
-            from yuki.social.content import validate_mentions
-            from yuki.social.models import SocialError
-
             try:
                 await require_queued_work_readable(session, row)
-
-                assert row.prepared_json is not None
-                prepared = json.loads(row.prepared_json)
-                await validate_mentions(
-                    session,
-                    prepared_transport(prepared["message"]).mentions,
-                    prepared["route"]["platform"],
-                )
-            except SocialError as exc:
-                row.status = "failed"
-                row.last_error_category = str(exc)
-                row.lease_until = None
-                return None
             except PluginOwnershipError as exc:
                 row.status = "failed"
                 row.last_error_category = queued_work_error_category(exc, row)

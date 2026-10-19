@@ -2,27 +2,96 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import or_, select
+from sqlalchemy import text as sql
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from yuki.domain.messages import sanitize_display_name
+from yuki.domain.messages import DISPLAY_NAME_LIMIT, sanitize_display_name
 from yuki.gateway.social import PlatformSocialOperations, TransportMention, TransportMessage
-from yuki.identity.db_models import (
-    AccountAssignmentModel,
-    AccountModel,
-    AccountNameObservationModel,
-    AccountSpaceProfileModel,
-)
 
 _ACCOUNT = re.compile(r"@\{account:([^{}]+)\}")
 # Try a mail local part only at its beginning, not every suffix of a long token.
 _ADDRESS = re.compile(r"https?://\S+|(?<![\w.+-])[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}")
+_LINE_BREAKS = "\r\n\v\f\x85\u2028\u2029"
+
+# CROSS JOIN keeps each lookup driven by the request's names/IDs, not by every
+# account on a platform. All interpolated fragments below are fixed SQL here.
+_CURRENT_ASSIGNMENT = """
+LEFT JOIN account_assignments current
+ ON current.account_id = accounts.id AND current.status <> 'ended'
+"""
+_ACCOUNT_QUERY = sql(
+    """
+SELECT accounts.id, accounts.external_account_id, accounts.display_name,
+ current.id, current.person_id, current.kind
+FROM json_each(:accounts) requested
+CROSS JOIN accounts ON accounts.id = requested.value
+"""
+    + _CURRENT_ASSIGNMENT
+    + "WHERE accounts.platform = :platform"
+)
+_GROUP_ACCOUNTS = """
+EXISTS (SELECT 1 FROM account_space_profiles profile
+ WHERE profile.account_id = accounts.id AND profile.space_binding_id = :scope)
+"""
+_PRIVATE_ACCOUNTS = """
+EXISTS (SELECT 1 FROM json_each(:participants) participant
+ CROSS JOIN account_assignments original ON original.id = participant.value
+ WHERE original.account_id = accounts.id)
+"""
+_NAME_QUERY = (
+    """
+SELECT observation.name, accounts.id, accounts.external_account_id,
+ current.id, current.person_id, current.kind
+FROM json_each(:names) requested
+CROSS JOIN account_name_observations observation
+CROSS JOIN accounts ON accounts.id = observation.account_id
+"""
+    + _CURRENT_ASSIGNMENT
+    + """
+WHERE observation.name = requested.value AND {scope}
+ AND accounts.platform = :platform AND {observed}
+"""
+)
+_GROUP_NAMES = sql(
+    _NAME_QUERY.format(scope="observation.space_binding_id = :scope", observed=_GROUP_ACCOUNTS)
+    + " UNION ALL "
+    + _NAME_QUERY.format(scope="observation.space_binding_id IS NULL", observed=_GROUP_ACCOUNTS)
+)
+_PRIVATE_NAMES = sql(
+    _NAME_QUERY.format(scope="observation.space_binding_id IS NULL", observed=_PRIVATE_ACCOUNTS)
+)
+_GROUP_CONVERSATION = """
+SELECT id FROM canonical_conversations
+WHERE kind = 'space' AND space_binding_id = :scope AND thread_id IS NULL
+"""
+_PRIVATE_CONVERSATION = """
+SELECT id FROM canonical_conversations
+WHERE kind = 'private' AND thread_id IS NULL
+ AND identity_binding_id IN (SELECT value FROM json_each(:participants))
+ AND entry_presence_id IN (SELECT value FROM json_each(:participants))
+"""
+_RECENT_QUERY = """
+SELECT accounts.id
+FROM json_each(:accounts) requested
+CROSS JOIN accounts ON accounts.id = requested.value
+LEFT JOIN chat_events recent ON recent.id = (
+ SELECT id FROM chat_events
+ WHERE canonical_conversation_id = COALESCE(:conversation_id, ({conversation}))
+  AND sender_user_id = accounts.external_account_id
+  AND suppression_status = 'keeper' AND event_kind = 'message'
+ ORDER BY occurred_at DESC, id DESC LIMIT 1
+)
+ORDER BY recent.occurred_at DESC, recent.id DESC, accounts.id
+"""
+_GROUP_RECENT = sql(_RECENT_QUERY.format(conversation=_GROUP_CONVERSATION))
+_PRIVATE_RECENT = sql(_RECENT_QUERY.format(conversation=_PRIVATE_CONVERSATION))
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,7 +102,6 @@ class NameTarget:
     assignment_id: str | None = None
     person_id: str | None = None
     presence_id: str | None = None
-    ended: bool = False
 
     def mention(self, start: int, end: int) -> TransportMention:
         return TransportMention(
@@ -55,6 +123,60 @@ class PreparedContent:
     unresolved: tuple[dict[str, object], ...] = ()
 
 
+@dataclass(frozen=True, slots=True)
+class _At:
+    start: int
+    name_start: int
+    reference_end: int | None = None
+    account_id: str | None = None
+    escaped: bool = False
+
+
+def _positions(text: str) -> tuple[_At, ...]:
+    """Scan addresses, escapes and internal references once, retaining original spans."""
+    addresses = iter(_ADDRESS.finditer(text))
+    address = next(addresses, None)
+    positions: list[_At] = []
+    position = 0
+    while position < len(text):
+        at = text.find("@", position)
+        if at < 0:
+            break
+        while address is not None and address.end() <= at:
+            address = next(addresses, None)
+        if address is not None and address.start() <= at < address.end():
+            position = address.end()
+            continue
+        position = at + 1
+        if at and text[at - 1] == "\\":
+            positions.append(_At(at, position, escaped=True))
+            continue
+        reference = _ACCOUNT.match(text, at)
+        if reference is not None:
+            try:
+                account_id = str(UUID(reference[1]))
+            except ValueError:
+                account_id = None
+            positions.append(_At(at, position, reference.end(), account_id))
+            position = reference.end()
+            continue
+        while (
+            position < len(text) and text[position].isspace() and text[position] not in _LINE_BREAKS
+        ):
+            position += 1
+        positions.append(_At(at, position))
+    return tuple(positions)
+
+
+def _prefixes(text: str, positions: tuple[_At, ...]) -> set[str]:
+    tails = {
+        text[item.name_start : item.name_start + DISPLAY_NAME_LIMIT]
+        for item in positions
+        if not item.escaped and item.reference_end is None
+    }
+    return {tail[:end] for tail in tails for end in range(1, len(tail) + 1)}
+
+
 async def prepare_for_entry(
     session: AsyncSession,
     text: str,
@@ -63,226 +185,147 @@ async def prepare_for_entry(
     space_binding_id: str | None,
     participant_assignment_ids: tuple[str, ...] = (),
     operations: PlatformSocialOperations,
+    conversation_id: str | None = None,
 ) -> PreparedContent:
-    """Read only this physical entry's account facts, without contact admission."""
-    exact_ids = account_references(text)
-    natural = has_natural_mentions(text)
-    if not exact_ids and not natural:
-        return prepare_content(text)
-    exact = (
-        {
-            row.id: NameTarget(row.id, row.external_account_id, row.display_name or "未识别成员")
-            for row in await session.scalars(
-                select(AccountModel).where(
-                    AccountModel.id.in_(exact_ids), AccountModel.platform == platform
-                )
-            )
-        }
-        if exact_ids
-        else {}
-    )
-    names: list[tuple[str, NameTarget]] = []
-    if natural:
-        observed = (
-            select(AccountSpaceProfileModel.account_id).where(
-                AccountSpaceProfileModel.space_binding_id == space_binding_id
-            )
-            if space_binding_id is not None
-            else select(AccountAssignmentModel.account_id).where(
-                AccountAssignmentModel.id.in_(participant_assignment_ids)
-            )
+    """Resolve only names present in this text, within the physical entry's accounts."""
+    positions = _positions(text)
+    exact_ids = {item.account_id for item in positions if item.account_id is not None}
+    prefixes = _prefixes(text, positions)
+    if not exact_ids and not prefixes:
+        return _render_content(text, positions, {}, {}, operations.native_mention, {})
+    parameters = {
+        "platform": platform,
+        "scope": space_binding_id,
+        "participants": json.dumps(participant_assignment_ids),
+        "conversation_id": conversation_id,
+    }
+    exact: dict[str, NameTarget] = {}
+    if exact_ids:
+        rows = await session.execute(
+            _ACCOUNT_QUERY, {**parameters, "accounts": json.dumps(tuple(exact_ids))}
         )
-        rows = (
-            await session.execute(
-                select(AccountNameObservationModel, AccountModel, AccountAssignmentModel)
-                .join(AccountModel, AccountModel.id == AccountNameObservationModel.account_id)
-                .outerjoin(
-                    AccountAssignmentModel,
-                    AccountAssignmentModel.id == AccountNameObservationModel.assignment_id,
-                )
-                .where(
-                    AccountModel.id.in_(observed),
-                    AccountModel.platform == platform,
-                    or_(
-                        AccountNameObservationModel.space_binding_id.is_(None),
-                        AccountNameObservationModel.space_binding_id == space_binding_id,
-                    ),
-                )
+        for account_id, external_id, name, assignment_id, person_id, kind in rows:
+            exact[account_id] = NameTarget(
+                account_id,
+                external_id,
+                sanitize_display_name(name or "") or "未识别成员",
+                assignment_id,
+                person_id,
+                assignment_id if kind == "yuki" else None,
             )
-        ).all()
-        for observation, account, assignment in rows:
-            name = sanitize_display_name(observation.name)
+    names: list[tuple[str, NameTarget]] = []
+    if prefixes:
+        for name, account_id, external_id, assignment_id, person_id, kind in await session.execute(
+            _GROUP_NAMES if space_binding_id is not None else _PRIVATE_NAMES,
+            {**parameters, "names": json.dumps(tuple(prefixes), ensure_ascii=False)},
+        ):
             names.append(
                 (
                     name,
                     NameTarget(
-                        account.id,
-                        account.external_account_id,
+                        account_id,
+                        external_id,
                         name,
-                        assignment.id if assignment else None,
-                        assignment.person_id if assignment else None,
-                        assignment.id if assignment and assignment.kind == "yuki" else None,
-                        assignment.status == "ended" if assignment else False,
+                        assignment_id,
+                        person_id,
+                        assignment_id if kind == "yuki" else None,
                     ),
                 )
             )
-    return prepare_content(
-        text, names=names, accounts=exact, native_mention=operations.native_mention
-    )
-
-
-async def validate_mentions(
-    session: AsyncSession, mentions: tuple[TransportMention, ...], platform: str
-) -> None:
-    """A recipient is not an actor; only prepared identity facts can change."""
-    staged = {item.assignment_id: item for item in mentions if item.assignment_id is not None}
-    if not staged:
-        return
-    rows = (
-        await session.execute(
-            select(AccountAssignmentModel, AccountModel.platform)
-            .join(AccountModel, AccountModel.id == AccountAssignmentModel.account_id)
-            .where(AccountAssignmentModel.id.in_(staged))
+    matches = _name_matches(text, positions, names)
+    ambiguous_names = {name: targets for _, name, targets in matches.values() if len(targets) > 1}
+    ambiguous = {target.account_id for targets in ambiguous_names.values() for target in targets}
+    preference: dict[str, int] = {}
+    if ambiguous:
+        # One indexed top-1 lookup per truly ambiguous physical account, not a history scan.
+        ordered = await session.scalars(
+            _GROUP_RECENT if space_binding_id is not None else _PRIVATE_RECENT,
+            {**parameters, "accounts": json.dumps(tuple(ambiguous))},
         )
-    ).all()
-    actual = {assignment.id: (assignment, native_platform) for assignment, native_platform in rows}
-    for assignment_id, mention in staged.items():
-        found = actual.get(assignment_id)
-        if (
-            found is None
-            or found[0].status == "ended"
-            or found[0].account_id != mention.account_id
-            or found[0].person_id != mention.person_id
-            or found[1] != platform
-        ):
-            from yuki.social.models import SocialError
-
-            raise SocialError("mention_assignment_changed")
+        preference = {account_id: index for index, account_id in enumerate(ordered)}
+    return _render_content(text, positions, matches, exact, operations.native_mention, preference)
 
 
-def account_references(text: str) -> tuple[str, ...]:
-    """Only validated internal references become a batch account lookup."""
-    result: dict[str, None] = {}
-    for match in _ACCOUNT.finditer(text):
-        try:
-            result[str(UUID(match[1]))] = None
-        except ValueError:
-            continue
-    return tuple(result)
-
-
-def has_natural_mentions(text: str) -> bool:
-    without_refs = _ACCOUNT.sub("", text)
-    without_addresses = _ADDRESS.sub("", without_refs)
-    return "@" in without_addresses.replace("\\@", "")
-
-
-def prepare_content(
-    text: str,
-    *,
-    names: Iterable[tuple[str, NameTarget]] = (),
-    accounts: dict[str, NameTarget] | None = None,
-    native_mention: Callable[[str, int], TransportMention | None] | None = None,
-) -> PreparedContent:
-    """Match known prefixes locally; ambiguity preserves the spoken words."""
-    accounts = accounts or {}
-    trie: dict[Any, Any] = {}
+def _name_matches(
+    text: str, positions: tuple[_At, ...], names: Iterable[tuple[str, NameTarget]]
+) -> dict[int, tuple[int, str, tuple[NameTarget, ...]]]:
+    targets_by_name: dict[str, dict[str, NameTarget]] = {}
     for name, target in names:
-        if not name:
-            continue
+        if name:
+            targets_by_name.setdefault(name, {})[target.account_id] = target
+    trie: dict[Any, Any] = {}
+    for name, targets in targets_by_name.items():
         node = trie
         for character in name:
             node = node.setdefault(character, {})
-        node.setdefault(None, {})[(target.account_id, target.assignment_id)] = target
-    protected = iter(_ADDRESS.finditer(text))
-    address = next(protected, None)
-    pieces: list[str] = []
-    mentions: list[TransportMention] = []
-    unresolved: list[dict[str, object]] = []
-    position = length = 0
-    while position < len(text):
-        at = text.find("@", position)
-        if at < 0:
-            pieces.append(text[position:])
-            break
-        while address is not None and address.end() <= at:
-            address = next(protected, None)
-        if address is not None and address.start() <= at < address.end():
-            literal = text[position : address.end()]
-            pieces.append(literal)
-            length += len(literal)
-            position = address.end()
+        node[None] = name, tuple(targets.values())
+    matches = {}
+    consumed = 0
+    for item in positions:
+        if item.start < consumed or item.escaped or item.reference_end is not None:
             continue
-        escaped = at > position and text[at - 1] == "\\"
-        prefix = text[position : at - 1] if escaped else text[position:at]
-        pieces.append(prefix)
-        length += len(prefix)
-        if escaped:
-            pieces.append("@")
-            length += 1
-            position = at + 1
-            continue
-        explicit = _ACCOUNT.match(text, at)
-        if explicit is not None:
-            try:
-                account_id = str(UUID(explicit[1]))
-            except ValueError:
-                account_id = ""
-            explicit_target = accounts.get(account_id)
-            if explicit_target is not None:
-                label = "@" + explicit_target.display_name
-                pieces.append(label)
-                mentions.append(explicit_target.mention(length, length + len(label)))
-                length += len(label)
-            else:
-                label = explicit[0].removeprefix("@")
-                pieces.append(label)
-                length += len(label)
-                unresolved.append({"text": explicit[0], "error": "account_unavailable"})
-            position = explicit.end()
-            continue
-        node = trie
-        cursor = at + 1
-        matches: dict[tuple[str, str | None], tuple[NameTarget, int]] = {}
+        node, cursor = trie, item.name_start
         while cursor < len(text) and text[cursor] in node:
             node = node[text[cursor]]
             cursor += 1
-            for key, target in node.get(None, {}).items():
-                matches[key] = (target, cursor)
-        if matches:
-            end = max(value[1] for value in matches.values())
-            if len(matches) == 1 and not next(iter(matches.values()))[0].ended:
-                target, end = next(iter(matches.values()))
-                literal = text[at:end]
+            if None in node:
+                name, targets = node[None]
+                matches[item.start] = cursor, name, targets
+        if item.start in matches:
+            consumed = matches[item.start][0]
+    return matches
+
+
+def _render_content(
+    text: str,
+    positions: tuple[_At, ...],
+    matches: dict[int, tuple[int, str, tuple[NameTarget, ...]]],
+    accounts: dict[str, NameTarget],
+    native_mention: Callable[[str, int], TransportMention | None] | None,
+    preference: dict[str, int],
+) -> PreparedContent:
+    pieces: list[str] = []
+    mentions: list[TransportMention] = []
+    unresolved: list[dict[str, object]] = []
+    selected: dict[str, NameTarget] = {}
+    position = length = 0
+    for item in positions:
+        if item.start < position:
+            continue
+        prefix = text[position : item.start - 1 if item.escaped else item.start]
+        pieces.append(prefix)
+        length += len(prefix)
+        if item.escaped:
+            literal, position = "@", item.start + 1
+        elif item.reference_end is not None:
+            target = accounts.get(item.account_id or "")
+            if target is not None:
+                literal = "@" + target.display_name
                 mentions.append(target.mention(length, length + len(literal)))
             else:
-                literal = text[at + 1 : end]
-                unresolved.append(
-                    {
-                        "text": text[at:end],
-                        "error": "name_ambiguous" if len(matches) > 1 else "assignment_ended",
-                        "candidates": [
-                            {
-                                "account_id": target.account_id,
-                                "reference": f"@{{account:{target.account_id}}}",
-                            }
-                            for target, _ in matches.values()
-                        ],
-                    }
+                literal = text[item.start : item.reference_end]
+                unresolved.append({"text": literal, "error": "account_unavailable"})
+            position = item.reference_end
+        elif item.start in matches:
+            position, name, targets = matches[item.start]
+            target = selected.get(name)
+            if target is None:
+                target = selected[name] = min(
+                    targets,
+                    key=lambda value: (
+                        preference.get(value.account_id, len(preference)),
+                        value.account_id,
+                    ),
                 )
-            pieces.append(literal)
-            length += len(literal)
-            position = end
-            continue
-        native = native_mention(text, at) if native_mention else None
-        if native is not None:
-            literal = text[at : native.text_end]
-            pieces.append(literal)
-            mentions.append(replace(native, text_start=length, text_end=length + len(literal)))
-            length += len(literal)
-            position = native.text_end
-            continue
-        pieces.append("@")
-        length += 1
-        position = at + 1
+            literal = text[item.start : position]
+            mentions.append(target.mention(length, length + len(literal)))
+        else:
+            native = native_mention(text, item.start) if native_mention else None
+            position = native.text_end if native is not None else item.start + 1
+            literal = text[item.start : position]
+            if native is not None:
+                mentions.append(replace(native, text_start=length, text_end=length + len(literal)))
+        pieces.append(literal)
+        length += len(literal)
+    pieces.append(text[position:])
     return PreparedContent(TransportMessage("".join(pieces), tuple(mentions)), tuple(unresolved))

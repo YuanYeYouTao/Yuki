@@ -174,6 +174,7 @@ async def test_cross_platform_exact_account_uses_target_namespace(database, tmp_
             },
         )
         assert result["status"] == "succeeded"
+        assert [item["account_id"] for item in result["mentioned_accounts"]] == [selected]
         sent = [params for method, params in target.wire if method == "sendMessage"]
         assert len(sent) == 1 and f"tg://user?id={native}" in sent[0]["text"]
         assert not any(method == "send_group_msg" for method, _ in env.bot.calls)
@@ -181,7 +182,25 @@ async def test_cross_platform_exact_account_uses_target_namespace(database, tmp_
         await target.transport.aclose()
 
 
-async def test_same_person_two_account_names_are_ambiguous_not_collapsed(database, tmp_path):
+async def test_unknown_telegram_username_does_not_invent_an_internal_account(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    target = await telegram_target(env, [])
+    try:
+        result = await invoke(
+            env,
+            {
+                "target": {"kind": "space", "target_id": target.space},
+                "text": "请到 @Remote_User 看看",
+            },
+        )
+        assert result["status"] == "succeeded" and "mentioned_accounts" not in result
+        sent = [params for method, params in target.wire if method == "sendMessage"]
+        assert len(sent) == 1 and "@Remote_User" in sent[0]["text"]
+    finally:
+        await target.transport.aclose()
+
+
+async def test_same_person_two_accounts_default_to_the_recent_speaking_account(database, tmp_path):
     env = await social_env(database, tmp_path)
     other = await add_second_account(env)
     async with env.db.sessions() as session:
@@ -191,11 +210,19 @@ async def test_same_person_two_account_names_are_ambiguous_not_collapsed(databas
     await observe(env, first.id, "同名")
     await observe(env, other, "同名")
     result = await invoke(env, {"text": "@同名看看"})
-    assert result["status"] == "succeeded" and result["unresolved_mentions"]
+    assert result["status"] == "succeeded" and not result.get("unresolved_mentions")
     sent = env.bot.calls[-1][1]["message"]
-    assert sent == [{"type": "text", "data": {"text": "同名看看"}}]
-    candidates = result["unresolved_mentions"][0]["candidates"]
-    assert len(candidates) == 2
+    assert sent == [
+        {"type": "at", "data": {"qq": "10001"}},
+        {"type": "text", "data": {"text": "看看"}},
+    ]
+    assert result["mentioned_accounts"] == [
+        {
+            "account_id": env.account,
+            "display_name": "同名",
+            "reference": f"@{{account:{env.account}}}",
+        }
+    ]
 
 
 async def test_target_with_no_inbound_history_and_disabled_person_can_be_mentioned(

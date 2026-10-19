@@ -187,4 +187,5 @@ def test_full_0140_upgrade_keeps_original_ids_paid_sources_and_typed_constraints
             connection.execute(
                 "UPDATE account_assignments SET status='active' WHERE id=?", (presence,)
             )
+    command.upgrade(config, "head")
     asyncio.run(require_canonical_schema(url))

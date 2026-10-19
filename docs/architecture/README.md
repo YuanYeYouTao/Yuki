@@ -2,7 +2,9 @@
 
 开发先读[共同开发约束](development-contract.md)，再读涉及模块。以下是当前源码合同；发现源码不符合合同，记录具体缺口，不把历史设计或验收结论当成现行实现。
 
-本入口跟随当前开发分支；迁移 head 为 `0140`、Plugin API 为 `5.0`、Main 固定工具合同为 `24`、Code API 为 `yuki.codemode.api.v2`。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)，实际升级见[升级指南](../upgrade-3.9.0.md)；实现、验证、PR、合并与生产分别记录。
+本入口跟随当前开发分支；迁移 head 为 `0142`、Plugin API 为 `6.0`、Main 固定工具合同为 `25`、Code API 为 `yuki.codemode.api.v2`。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)，实际升级见[升级指南](../upgrade-3.9.0.md)；实现、验证、PR、合并与生产分别记录。
+
+提及定点查询、真实重名默认与迁移验证见[0142 修复记录](../operations/mention-resolution-0142.md)。其他 SQLite 热查询的扫描证据及尚未实施项见[10-20 只读审计](../operations/sqlite-query-scan-audit-20261020.md)。
 
 实现后[复审记录](Yuki-299与多平台解耦复审记录-2026-10-16.md)确认 11 项功能缺口、默认提示词硬编码和 TG 健康任务遗漏，已按正常行为正式回归补修；当前本地验证及交付边界见实施记录，原882项结果仅保留为历史基线。
 
@@ -28,7 +30,7 @@
 | [管理控制面](control-plane-foundation.md) | 管理主体、装配、原回执与领域服务 |
 | [管理 API](admin-api.md) | Bearer operator、管理 CLI、原回执与领域服务 |
 | [执行过程](execution-trace.md) | 实际模型请求、工具、消息与投递的限期查询 |
-| [插件架构](../plugin-development/architecture.md) | Plugin API 5.0、Host、SDK 与隔离插件会话 |
+| [插件架构](../plugin-development/architecture.md) | Plugin API 6.0、Host、SDK 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager 与交付 |
 | [Code Mode 运维](../operations/pi-codemode-operations.md) | 可选构建、隔离、原数据和切换 |
 | [独立原生搜索](../deepseek-search-bridge.md) | 独立搜索连接、三种原生协议、网页提取与升级 |

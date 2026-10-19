@@ -22,7 +22,7 @@ Provider 的 `media(handle)` 从该原生连接提供媒体适配器。附件工
 
 业务参数使用内部 Person、Space、Presence、Binding、Conversation、事件与执行 ID。平台账号和消息定位保留在原生传输及历史 provenance。平台数字相同不证明同一人物或授权；只有真正关联的 Person 共享人物事实。
 
-发送正文直接在原位置写 `@名字`，共同准备按目标入口的 Account 昵称与 Account＋SpaceBinding 名片解析。目录提供可复制的 `@{account:UUID}` 用于同名消歧；未知账号或外部 Bot 无需 Person 也能原生提及。不按人物主名选同人的另一个账号，不在入站时把普通 `@文字` 伪造成原生提及。原事件、重复位置与冻结历史不随此次发送改写。
+发送正文直接在原位置写 `@名字`，共同准备按目标入口的 Account 昵称与 Account＋SpaceBinding 名片解析，取最长命中后按 Account 去重。真同名默认选择目标 Conversation 最近真实发言的账号；目录提供可复制的 `@{account:UUID}` 用于明确指定。未知账号或外部 Bot 无需 Person 也能原生提及，无法解析的原文保留 `@`。不按人物主名选同人的另一个账号，不在入站时把普通 `@文字` 伪造成原生提及。原事件、重复位置与冻结历史不随此次发送改写。
 
 私聊以 Binding＋Presence 区分 Conversation；群以 SpaceBinding＋topic 区分 Conversation。同群切换接纳 Presence 不拆群身份。个人客户端同入口的多个设备共享会话。人物关联不合并不同入口的聊天历史。
 

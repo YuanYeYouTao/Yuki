@@ -123,6 +123,7 @@ class PlatformNotificationTransport:
                     platform=route.platform,
                     space_binding_id=route.binding_id if item.target_type == "group" else None,
                     participant_assignment_ids=(route.binding_id, route.presence_id),
+                    conversation_id=item.canonical_conversation_id,
                     operations=operations,
                 )
             message = TransportMessage(
