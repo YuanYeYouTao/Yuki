@@ -17,6 +17,7 @@ from yuki.identity.person_identity import (
     person_enabled_condition,
     person_family_condition,
 )
+from yuki.time.formatting import utc_iso
 
 
 async def is_character_owner(session: AsyncSession, person_id: str) -> bool:
@@ -48,7 +49,7 @@ def avatar_view(sha256: str | None) -> dict[str, Any] | None:
 def profile_view(row: CharacterProfileModel, *, owner: bool) -> dict[str, Any]:
     avatar = avatar_view(row.avatar_sha256)
     if avatar is not None:
-        avatar.update(revision=row.avatar_revision, updated_at=row.updated_at.isoformat())
+        avatar.update(revision=row.avatar_revision, updated_at=utc_iso(row.updated_at))
     return {
         "id": row.id,
         "slug": row.slug,
@@ -179,8 +180,8 @@ class CharacterRepository:
                 {
                     "person_id": row.person_id,
                     "granted_by_principal": row.granted_by_principal,
-                    "granted_at": row.granted_at.isoformat(),
-                    "revoked_at": row.revoked_at.isoformat() if row.revoked_at else None,
+                    "granted_at": utc_iso(row.granted_at),
+                    "revoked_at": utc_iso(row.revoked_at),
                 }
                 for row in rows
             ]

@@ -79,10 +79,16 @@ async def serve(root: Path, port: int) -> None:
     personal = FastAPI()
     attach_client_api(personal, lambda: container.client_api)
     lose_response = False
+    pause_next_me = False
+    me_blocked, resume_me = asyncio.Event(), asyncio.Event()
 
     @personal.middleware("http")
     async def failure_injection(request: Request, call_next):
-        nonlocal lose_response
+        nonlocal lose_response, pause_next_me
+        if pause_next_me and request.url.path.endswith("/client/v1/me"):
+            pause_next_me = False
+            me_blocked.set()
+            await resume_me.wait()
         response = await call_next(request)
         if lose_response and request.method == "POST" and request.url.path.endswith("/messages"):
             lose_response = False
@@ -93,6 +99,23 @@ async def serve(root: Path, port: int) -> None:
     async def lose_next_response():
         nonlocal lose_response
         lose_response = True
+        return {"ok": True}
+
+    @personal.post("/__test/pause-next-me")
+    async def pause_me():
+        nonlocal pause_next_me
+        pause_next_me = True
+        resume_me.clear()
+        me_blocked.clear()
+        return {"ok": True}
+
+    @personal.get("/__test/me-blocked")
+    async def me_is_blocked():
+        return {"blocked": me_blocked.is_set()}
+
+    @personal.post("/__test/resume-me")
+    async def release_me():
+        resume_me.set()
         return {"ok": True}
 
     @personal.get("/__test/events")
@@ -109,7 +132,9 @@ async def serve(root: Path, port: int) -> None:
     http.mount("/role/yuki", personal)
     try:
         await uvicorn.Server(
-            uvicorn.Config(http, host="127.0.0.1", port=port, log_level="critical")
+            uvicorn.Config(
+                http, host="127.0.0.1", port=port, log_level="critical", timeout_graceful_shutdown=1
+            )
         ).serve()
     finally:
         assert not await container.lifecycle._close_entries(container.lifecycle._entries)

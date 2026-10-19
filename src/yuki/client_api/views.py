@@ -29,6 +29,7 @@ from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
 from yuki.runtime.work_repository import TERMINAL
 from yuki.runtime.work_schema_v1 import work
 from yuki.social.db_models import SocialOperationModel
+from yuki.time.formatting import utc_iso
 
 
 async def personal_conversation(
@@ -88,7 +89,7 @@ def public_event(
                 else "available"
                 if item
                 else "not_readable",
-                "expires_at": expires.isoformat() if expires else None,
+                "expires_at": utc_iso(expires),
                 **{
                     key: data[key]
                     for key in (
@@ -111,7 +112,7 @@ def public_event(
         "author_kind": row.author_kind,
         "text": row.content,
         "origin": row.origin,
-        "created_at": row.observed_at.isoformat(),
+        "created_at": utc_iso(row.observed_at),
         "attachments": attachments,
     }
     if has_audio:
@@ -365,7 +366,7 @@ class ClientViews:
             "sources": [
                 {
                     "origin": span.origin,
-                    "started_at": span.started_at.isoformat(),
+                    "started_at": utc_iso(span.started_at),
                     "kind": span.family,
                 }
                 for span in live

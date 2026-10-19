@@ -20,6 +20,7 @@ from yuki.conversation.uploads import ConversationUploads, owned_upload
 from yuki.domain.messages import AttachmentKind, MessageAttachment
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
 from yuki.runtime.work_schema_v1 import effects, work
+from yuki.time.formatting import utc_iso
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
@@ -169,7 +170,7 @@ class ClientFiles:
                         "conversation_id": row["conversation_id"],
                         "work_id": row["work_id"],
                         "published_path": paths.get((row["event_id"], row["part_index"])),
-                        "created_at": row["created_at"].isoformat(),
+                        "created_at": utc_iso(row["created_at"]),
                     }
                 )
                 if len(items) == limit:

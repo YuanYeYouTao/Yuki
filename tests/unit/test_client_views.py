@@ -225,3 +225,21 @@ async def test_revoked_device_stream_ends_without_exposing_new_facts(app_env, da
         await anext(stream)
     with pytest.raises(ClientError, match="unauthenticated"):
         await views.events(principal, principal.conversation_id)
+
+
+async def test_public_dates_keep_database_utc_offset_for_native_clients(app_env, database):
+    from datetime import datetime, timedelta
+
+    env = app_env
+    device, _, principal, views = await setup_views(env, database)
+    await env.client.post(
+        "/client/v1/messages",
+        json={"request_id": str(uuid4()), "text": "timestamp source"},
+        headers=bearer(device["token"]),
+    )
+    await drain(env)
+    page = await views.events(principal, principal.conversation_id)
+    for event in page["items"]:
+        assert datetime.fromisoformat(event["created_at"]).utcoffset() == timedelta(0)
+    me = (await env.client.get("/client/v1/me", headers=bearer(device["token"]))).json()["data"]
+    assert datetime.fromisoformat(me["devices"][0]["created_at"]).utcoffset() == timedelta(0)

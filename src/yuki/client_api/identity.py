@@ -38,6 +38,7 @@ from yuki.identity.person_identity import (
 )
 from yuki.persistence.command_receipts import CommandReceiptRepository, aware
 from yuki.persistence.database import Database
+from yuki.time.formatting import utc_iso
 
 
 def secret_hash(value: str) -> str:
@@ -513,8 +514,8 @@ class ClientIdentityService:
                     {
                         "device_id": row.id,
                         "label": row.label,
-                        "created_at": row.created_at,
-                        "revoked_at": row.revoked_at,
+                        "created_at": utc_iso(row.created_at),
+                        "revoked_at": utc_iso(row.revoked_at),
                     }
                     for row in devices
                 ],
