@@ -157,10 +157,13 @@ async def serve(root: Path, port: int) -> None:
         response = await call_next(request)
         if (
             lose_response
-            and request.method == "POST"
+            and (
+                request.method == "POST"
+                or (lose_response == "character/avatar" and request.method in {"PUT", "DELETE"})
+            )
             and request.url.path.endswith(f"/{lose_response}")
         ):
-            if lose_response == "corrections":
+            if lose_response in {"corrections", "character/avatar"}:
                 hold_original_queries = True
             lose_response = ""
             return JSONResponse({"problem": {"code": "unknown"}}, status_code=503)
@@ -176,6 +179,12 @@ async def serve(root: Path, port: int) -> None:
     async def release_original_queries():
         nonlocal hold_original_queries
         hold_original_queries = False
+        return {"ok": True}
+
+    @personal.post("/__test/lose-next-avatar-response")
+    async def lose_avatar_response():
+        nonlocal lose_response
+        lose_response = "character/avatar"
         return {"ok": True}
 
     @personal.post("/__test/lose-next-memory-response")

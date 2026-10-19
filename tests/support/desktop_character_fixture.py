@@ -1,11 +1,13 @@
 """Opt-in, loopback-only data setup through the real domain services."""
 
+import io
 from uuid import uuid4
 
 from fastapi import FastAPI
+from PIL import Image, ImageDraw
 from sqlalchemy import select
 
-from yuki.character.repository import CharacterRepository
+from yuki.character.repository import CharacterRepository, profile_view
 from yuki.container import ApplicationContainer
 from yuki.domain.tool_actor import ToolActor
 from yuki.memory.enums import MemoryScopeType
@@ -32,6 +34,86 @@ async def attach_character_fixture(
         return await CharacterRepository(container.client_api.identity).set_owner(
             str(uuid4()), person, str(uuid4()), granted=False
         )
+
+    @app.post("/__test/avatar-inputs")
+    async def avatar_inputs():
+        root = container.settings.sqlite_path.parent / "avatar-inputs"
+        root.mkdir(exist_ok=True)
+        portrait = Image.new("RGB", (4000, 3000))
+        draw = ImageDraw.Draw(portrait)
+        for box, color in [
+            ((0, 0, 1999, 1499), "red"),
+            ((2000, 0, 3999, 1499), "green"),
+            ((0, 1500, 1999, 2999), "blue"),
+            ((2000, 1500, 3999, 2999), "yellow"),
+        ]:
+            draw.rectangle(box, fill=color)
+        exif = Image.Exif()
+        exif[274] = 6
+        portrait.save(root / "rotated.jpg", exif=exif, quality=95)
+        portrait.close()
+        with Image.new("RGB", (200, 200), "#e8354a") as small:
+            small.save(root / "small.png")
+        with Image.new("RGB", (6000, 4000), "#35a85c") as large:
+            large.save(root / "large-30mb.jpg", quality=90)
+        large_file = root / "large-30mb.jpg"
+        with large_file.open("ab") as stream:
+            stream.write(b"\0" * (30 * 1024 * 1024 - large_file.stat().st_size))
+        with Image.new("RGB", (8000, 6000), "#335fc4") as huge:
+            huge.save(root / "downsample.jpg", quality=90)
+        (root / "broken.png").write_bytes(b"not an image")
+        return {
+            key: str(root / name)
+            for key, name in {
+                "rotated": "rotated.jpg",
+                "small": "small.png",
+                "large": "large-30mb.jpg",
+                "downsample": "downsample.jpg",
+                "broken": "broken.png",
+            }.items()
+        }
+
+    @app.post("/__test/set-default-avatar")
+    async def set_default_avatar():
+        output = io.BytesIO()
+        with Image.new("RGB", (1024, 1024), "#7848aa") as default:
+            default.save(output, format="PNG")
+        content = output.getvalue()
+        import hashlib
+
+        async def chunks():
+            yield content
+
+        async with database.sessions() as reader:
+            row = await container.character_avatars.repository._profile(reader)
+            revision = row.avatar_revision
+        return await container.character_avatars.change(
+            str(uuid4()),
+            revision,
+            action="default",
+            sha256=hashlib.sha256(content).hexdigest(),
+            size=len(content),
+            chunks=chunks(),
+            operator_id=str(uuid4()),
+        )
+
+    @app.get("/__test/avatar-files")
+    async def avatar_files():
+        async with database.sessions() as reader:
+            row = await container.character_avatars.repository._profile(reader)
+            profile = profile_view(row, owner=True)
+        files = []
+        for path in container.character_avatars.store.root.glob("*/*.png"):
+            with Image.open(path) as image:
+                files.append(
+                    {
+                        "sha256": path.parent.name,
+                        "size": path.stem,
+                        "dimensions": image.size,
+                        "metadata": sorted(image.info),
+                    }
+                )
+        return {"profile": profile, "files": files}
 
     @app.post("/__test/character-data")
     async def character_data():
