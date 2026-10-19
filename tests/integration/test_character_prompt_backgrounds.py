@@ -14,6 +14,7 @@ from yuki.character.prompts import CharacterPrompts
 from yuki.character.repository import CharacterRepository
 from yuki.client_api.http import ClientApi, attach_client_api
 from yuki.client_api.identity import ClientIdentityService
+from yuki.config import read_prompt_documents
 from yuki.identity.canonical_repository import ensure_person
 from yuki.llm.fake import FakeLLMProvider
 
@@ -23,8 +24,15 @@ async def editor(database, settings, root):
     system, persona = root / "system_prompt.md", root / "persona.md"
     system.write_text("OLD_SYSTEM {{YUKI_PERSONA_CORE}}", encoding="utf-8")
     persona.write_text("OLD_PERSONA", encoding="utf-8")
+    previous_source = settings.resolved_bot_persona_file
+    previous_bytes = previous_source.read_bytes()
     settings.system_prompt_file, settings.bot_persona_file = system, persona
-    settings.apply_prompt_documents(settings.read_prompt_documents())
+    settings.apply_prompt_documents(
+        read_prompt_documents(
+            system, persona, system_prompt_template=settings.system_prompt_template
+        )
+    )
+    assert settings.resolved_bot_persona_file == persona
     identity = ClientIdentityService(database)
     documents = CharacterPrompts(identity, settings)
     async with database.immediate_session() as writer:
@@ -59,7 +67,11 @@ async def editor(database, settings, root):
         current = await client.get("/client/v1/character/prompts", headers=headers)
         data = current.json()["data"]
         assert all(data["active"][item["key"]] == item["revision"] for item in data["documents"])
-        yield client
+        try:
+            yield client
+        finally:
+            if previous_source != persona:
+                assert previous_source.read_bytes() == previous_bytes
 
 
 async def test_plugin_main_activation_reads_hot_pair_at_provider(database, tmp_path):
