@@ -340,6 +340,9 @@ WebSocket `/computer/display?ticket=...` 必须声明 `binary` 子协议。服�
 长剪贴簿内容按流处理并在消息边界切换权限。Manager 推送断开即关闭所有画面流，不自动交回控制权。
 撤销设备、拥有者或停用人物后关闭对应流并系统交回；遗忘在身份删除前于事务外释放。
 重启从 Manager 原 lease/person/device 检查并以确定性 release key 补送，不需要重建已删除身份。
+协助与 wait-control CLI 以原终端 run 输出交回结果。完成 outbox 至少一次投递，Bot 提交原 run
+后才 ACK；重复回执沿原 owned_run 等待只生成一次内部 work_signal，原 Work 的 ID、来源与
+累积根预算保持不变。交回说明是工具输出，不经个人 Work inputs 接口冒充发起人的回答。
 
 `GET /computer/files` 限工作区安全路径，游标绑定原目录；`files/content?path=...` 返回读取时
 快照、长度及 X-Yuki-Sha256，Cache-Control 为 no-store。这是可变文件读取，不发布 artifact。

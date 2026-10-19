@@ -290,6 +290,7 @@ def main() -> int:
     root = Path(os.environ.get("YUKI_COMPUTER_RUNTIME", "/var/lib/yuki-runtime/computer"))
     try:
         if args.command in ("help-request", "wait-control"):
+            mark("computer")
             value = wait(
                 root,
                 "help" if args.command == "help-request" else "wait_control",
