@@ -511,6 +511,7 @@ def main() -> None:
     """Run one explicit administrative subcommand."""
 
     parser = argparse.ArgumentParser(prog="yuki")
+    parser.add_argument("--version", action="version", version=f"yuki {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("init-db", help="运行 Alembic 数据库迁移")
     render_snowluma = subparsers.add_parser(

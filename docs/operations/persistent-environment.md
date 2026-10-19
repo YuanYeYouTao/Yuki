@@ -2,7 +2,7 @@
 
 [中文](persistent-environment.zh-CN.md)
 
-Yuki shares one Linux environment, `/home/yuki` and `/workspace` across people and groups. Ordinary persistent files do not expire. `short_state` remains a separate expiring hint area. Directories, files and full logs are not automatically added to context. The Bot's `./workspace:/app/workspace` stores artifacts/short state; terminal files live under the host's `/var/lib/yuki-sandbox/home/workspace`, exposed as `/workspace` through the original home mount. Explicit publication and attachment import connect these stores.
+Each long-lived character instance shares its own independent Linux environment, `/home/yuki` and `/workspace` across its people and groups. Ordinary persistent files do not expire. `short_state` remains a separate expiring hint area. Directories, files and full logs are not automatically added to context. The Bot's `./workspace:/app/workspace` stores artifacts/short state; terminal files live under the host's `/var/lib/yuki-sandbox/home/workspace`, exposed as `/workspace` through the original home mount. Explicit publication and attachment import connect these stores.
 
 ## Runtime and tools
 
@@ -143,3 +143,5 @@ RootFS snapshots may retain the original execd secret in image configuration. Ke
 `deploy/sandbox/validate_runtime.py` performs a real terminal/publication probe only against an explicitly supplied isolated socket. Deployment must separately record administrator identity, preserved installations, execd reconnect, package management, services, networks and resources. Do not send real QQ test messages or infer cache/cost from smaller declarations.
 
 The [2026-09-12 record](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/operations/persistent-environment-validation-20260912.md) is a historical deployment/restore point, not evidence that this root/network/tool contract has been deployed.
+
+Per-character Manager names and in-place installation of the pinned Yuki client are described in [client installation](../../deploy/sandbox/client-installation.md).

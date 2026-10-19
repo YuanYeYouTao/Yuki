@@ -42,6 +42,7 @@ async def main() -> None:
     parser.add_argument("--workspace", type=Path, required=True)
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--name", default="yuki-environment")
     parser.add_argument("--persistent-home", type=Path, required=True)
     parser.add_argument("--migrate-only", action="store_true")
     parser.add_argument("--network", default="yuki-sandbox-egress")
@@ -72,6 +73,7 @@ async def main() -> None:
         acp_config=args.acp_config,
         media_cache=args.media_cache,
         desktop_session=args.desktop_session,
+        name=args.name,
     )
     if args.migrate_only:
         print(json.dumps(manager.migrate_files()))

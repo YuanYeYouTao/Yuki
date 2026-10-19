@@ -7,6 +7,18 @@ WORKDIR /source/components/execd
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -o /execd ./main.go
 
+FROM ghcr.io/astral-sh/uv:0.11.31 AS uv
+FROM python:3.12-slim-bookworm AS yuki-client
+COPY --from=uv /uv /bin/uv
+ENV UV_PROJECT_ENVIRONMENT=/opt/yuki-client UV_LINK_MODE=copy UV_PYTHON_DOWNLOADS=never
+WORKDIR /build
+COPY pyproject.toml uv.lock README.md LICENSE ./
+COPY src ./src
+RUN uv sync --frozen --no-dev --no-editable
+COPY deploy/sandbox/client-manifest.py /opt/yuki-client/verify-installation.py
+ARG VCS_REF=unknown
+RUN /opt/yuki-client/bin/python /opt/yuki-client/verify-installation.py /build/uv.lock "$VCS_REF"
+
 FROM node:22-bookworm-slim AS node
 FROM python:3.12-slim-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -22,6 +34,7 @@ RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
     && ln -s /home/yuki/workspace /workspace \
     && ln -s /home/yuki/work /work && ln -s /home/yuki/inputs /inputs
 RUN pip install --no-cache-dir Pillow openpyxl pypdf agent-client-protocol==0.12.1 websockets==15.0.1
+COPY --from=yuki-client /opt/yuki-client /opt/yuki-client
 COPY --from=execd /execd /opt/opensandbox/execd
 COPY --from=execd /source/LICENSE /usr/share/licenses/opensandbox/LICENSE
 COPY src/yuki/sandbox/environment_supervisor.py /opt/yuki-runtime/supervisor.py

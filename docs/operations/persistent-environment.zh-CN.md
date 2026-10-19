@@ -2,7 +2,7 @@
 
 [English](persistent-environment.md)
 
-Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人物或群划分，普通持久文件不自动过期。`short_state` 仍是独立、有期限的短提示；目录、文件和完整执行日志不自动载入上下文。Bot 的 `./workspace:/app/workspace` 是 artifact/short_state 库；终端文件在宿主 `/var/lib/yuki-sandbox/home/workspace`，经原家目录挂载显示为环境内 `/workspace`。两者通过显式发布和附件导入衔接。
+每个长期角色实例各自共用一个独立 Linux 环境、`/home/yuki` 和 `/workspace`，不按人物或群划分，普通持久文件不自动过期。`short_state` 仍是独立、有期限的短提示；目录、文件和完整执行日志不自动载入上下文。Bot 的 `./workspace:/app/workspace` 是 artifact/short_state 库；终端文件在宿主 `/var/lib/yuki-sandbox/home/workspace`，经原家目录挂载显示为环境内 `/workspace`。两者通过显式发布和附件导入衔接。
 
 所有会话的临时媒体共用 `/inputs/media-cache`，它是 Bot 原缓存目录的同一份只读挂载，不在持久 HOME 中再复制一份。Bot 仍是唯一写入和到期清理 owner；媒体到期后由原清理器删除，普通工作文件、已收藏表情和不可变 artifact 不随它清理。Main 可直接用终端读取、复制到 `/workspace` 或表情目录自由编辑，也可用原 `workspace_inspect` / `workspace_publish` 的 `/inputs/media-cache/...` 路径选读或发布；Host 复用原安全 FD 桥，不跟随模型写的链接访问宿主文件。临时媒体的全局共享由用户明确授权，不再声称终端读取受当前 Conversation 限制。
 
@@ -141,3 +141,5 @@ rootFS 快照的镜像配置可能含原 execd secret，应作为私有运维备
 `deploy/sandbox/validate_runtime.py` 仅对显式隔离 socket 做真实终端/发布探针。部署还须记录管理员身份、原安装保留、execd 重连、包管理、服务、网络和资源行为。不发真实 QQ 测试消息，不从声明缩小推算 cache/费用。
 
 [2026-09-12 记录](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/operations/persistent-environment-validation-20260912.zh-CN.md)仅是旧部署/恢复点，不是本次 root、网络与工具合同已上线的证据。
+
+角色环境的独立名称与 Yuki CLI 原地安装见[客户端安装](../../deploy/sandbox/client-installation.md)。
