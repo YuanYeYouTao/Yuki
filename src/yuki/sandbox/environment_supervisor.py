@@ -82,6 +82,9 @@ def main() -> int:
                 if key.startswith(("EXECD_", "OPENSANDBOX_")):
                     os.environ.pop(key, None)
             os.environ["YUKI_JOB_ID"] = identity
+            for key in ("YUKI_WORK_ID", "YUKI_STEP_LABEL"):
+                os.environ.pop(key, None)
+            os.environ.update(spec.get("env", {}))
             os.chdir(spec["cwd"])
             argv = spec.get("argv") or ["/bin/bash", "-lc", spec["command"]]
             os.execvpe(argv[0], argv, os.environ)

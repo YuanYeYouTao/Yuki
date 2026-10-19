@@ -27,6 +27,7 @@ from uuid import uuid4
 from yuki.sandbox.acp_manager import ACP_KINDS, ACPResources
 from yuki.sandbox.acp_peer import read_protocol_line
 from yuki.sandbox.completions import CompletionOutbox
+from yuki.sandbox.computer_control import ComputerControl
 from yuki.sandbox.environment_tools import EXECUTION_TOOLS
 from yuki.sandbox.execd import Execd
 from yuki.sandbox.manager import TERMINAL, identifier
@@ -111,6 +112,7 @@ class PersistentManager:
         self.last_prune = 0.0
         self.last_layer_check = 0.0
         self.acp = ACPResources(self, acp_config)
+        self.computer = ComputerControl(self)
 
     async def command(self, *args: str, deadline_seconds: float = 30) -> tuple[int, bytes]:
         proc = await asyncio.create_subprocess_exec(
@@ -187,6 +189,9 @@ class PersistentManager:
             request = json.loads(raw)
             if not isinstance(request, dict):
                 raise ValueError("invalid_request")
+            if request.get("method") == "control_watch":
+                await self.computer.watch(reader, writer)
+                return
             result = await self.handle(request)
             writer.write(json.dumps(result).encode() + b"\n")
             await writer.drain()
@@ -308,6 +313,8 @@ class PersistentManager:
                 ).rowcount
             return bool(changed)
         changed = self._finish_receipt(identity, state, result)
+        if changed and state in TERMINAL:
+            self.computer.finish_run(identity)
         if changed and state in TERMINAL and not (meta and meta[0] in ACP_KINDS):
             with self.db:
                 # Hash/source receipts survive; finished executable payloads need
@@ -484,6 +491,7 @@ class PersistentManager:
                 self.queue.put_nowait(row["id"])
             else:
                 await self.reconcile(row)
+        self.computer.deliver_results()
         self.ready = True
 
     def active(self) -> list[Any]:
@@ -557,6 +565,7 @@ class PersistentManager:
             "command": args.get("command", ""),
             "tty": bool(args.get("tty")),
             "timeout_seconds": args.get("timeout_seconds", 0),
+            "env": args.get("env", {}) if kind == "terminal_exec" else {},
         }
         if kind == "acp_peer":
             spec.update(
@@ -671,6 +680,7 @@ class PersistentManager:
         if result.get("error") or result.get("status") in TERMINAL:
             return result
         if action in {"cancel", "close"}:
+            self.computer.cancel(identity)
             meta = self.db.execute(
                 "SELECT dispatched FROM environment_jobs WHERE id=?", (identity,)
             ).fetchone()
@@ -1107,6 +1117,12 @@ class PersistentManager:
         if not isinstance(method, str) or not isinstance(args, dict):
             return {"error": "invalid_arguments"}
         try:
+            if method == "control_get":
+                return self.computer.snapshot()
+            if method == "control_set":
+                return self.computer.set(request.get("request_id", ""), args)
+            if method == "control_request_get":
+                return self.computer.request_get(args.get("key", ""))
             if method == "sticker_index":
                 return await self.sticker_index(args)
             if method.startswith("acp_"):
@@ -1212,6 +1228,10 @@ class PersistentManager:
             for key, task in tuple(self.pumps.items()):
                 if task.done():
                     self.pumps.pop(key, None)
+            try:
+                self.computer.collect_requests()
+            except (OSError, ValueError, WorkspaceError):
+                LOGGER.warning("computer_wait_reconcile_pending")
             try:
                 self.acp.refresh()
             except (OSError, ValueError):

@@ -41,6 +41,14 @@ Bot/Manager reconnect observes these same files and process, without another `in
 
 ## Recovery, resources and network
 
+### Computer control and help waits
+
+Manager exposes durable leases and active terminal waits through `control_get` and `control_watch`. `control_set` commits the original command key and result in `environment_mutations`; `control_request_get` recovers that result. Return and transfer require the observed lease. Transfer atomically moves control waits to the new lease, so they finish only after the final return. Disconnecting does not release control.
+
+The Manager `help_requests` records retain each original terminal run and Host-validated Work. The environment CLI registers `help-request` and `wait-control` through runtime files. A control wait with no current human holder immediately receives the current `control_free` fact. Results commit before file delivery and are repaired after restart or command lookup; cancellation stops delivery. Runtime files use the existing checked FD bridge. Work labels reach only the owning terminal, and are cleared for ordinary chat and persistent services.
+
+### Execution recovery and resources
+
 The Manager persists the original request, launch intent and execd session identity before dispatch. After disconnect it checks the native exit record, otherwise reattaches to the original session. The durable `started` marker prevents another execution. A stopped PTY, handshake timeout or missing legacy APT heartbeat does not prove failure from age. Uncertain submission is queried by its original request, never blindly resubmitted. The Bot persists completion before acknowledging the outbox. Lost acknowledgements or repeated reads do not launch commands or reset budgets.
 
 Container ID and start time form the generation. Bot/Manager restarts retain the original container and processes. Real environment recreation records interrupted ordinary jobs while registered services follow their policy. Docker restart policy is `no`; the Manager starts the container after storage mounts. Updating the Manager does not silently delete or recreate the environment.

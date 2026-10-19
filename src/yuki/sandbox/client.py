@@ -61,6 +61,19 @@ class SandboxClient:
             )
             if prepared is not None and prepared.status == "completed" and prepared.run_id is None:
                 return cast(dict[str, Any], json.loads(prepared.completion_json or "{}"))
+            if name == "terminal_exec" and prepared is not None:
+                work_id = json.loads(prepared.source_json).get("work_id")
+                # Display provenance comes from the already validated original
+                # execution source, never a model-supplied environment variable.
+                wire_args = {**args, "env": {}}
+                if work_id:
+                    wire_args["env"] = {"YUKI_WORK_ID": work_id, "YUKI_STEP_LABEL": ""}
+                message = (
+                    json.dumps(
+                        {"method": name, "args": wire_args, "request_id": request_id}
+                    ).encode()
+                    + b"\n"
+                )
         submitted = False
         try:
             observation_wait = args.get("wait_seconds", 0) if name == "terminal_read" else 0

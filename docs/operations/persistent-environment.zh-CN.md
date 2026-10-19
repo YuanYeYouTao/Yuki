@@ -41,6 +41,14 @@ Bot/Manager 重连观察同一批文件和原进程，不再次调用 `initializ
 
 ## 恢复、资源与网络
 
+### 电脑控制与协助等待
+
+Manager 的 `control_get`／`control_watch` 返回持久控制权与尚未结束的协助等待；`control_set` 使用原命令键写入 `environment_mutations`，`control_request_get` 查原结果。`take` 优先于 Agent 输入，`return`／`transfer` 必须匹配观察到的 lease。转移会在同一事务中把纯控制等待移到新 lease，直到最后交回才结束；断线不自动交回。
+
+协助等待保存在 Manager 的 `help_requests`，归属原终端 run 和经 Host 验证的 Work。环境 CLI 的 `help-request`／`wait-control` 通过 runtime 文件登记及读取结果；已经没有人控制时，纯等待直接得到当前 `control_free` 结果，不成为活动等待。Manager 先保存结果，再投递结果文件；重启或原命令查证会补写，取消后停止投递。结果文件读写使用现有安全 FD 桥，不跟随环境可写目录中的宿主符号链接。Work 标签只注入所属终端，普通聊天和长驻服务不继承其他 Work 的标签。
+
+### 执行恢复与资源
+
 Manager 在派发前持久化原请求、执行意图和 execd 会话标识。断线后先检查原生退出记录，否则接回原会话；原 `started` 标记阻止再次执行。PTY 暂未运行、握手超时、旧安装缺 heartbeat 都不能按年龄推断失败。提交未知时查原请求，不盲目重提。Bot 持久化完成回执后才确认 outbox；丢确认或重复读取不重开命令、不重置预算。
 
 容器 ID 与启动时间共同组成环境代际。Bot/Manager 重启保留原容器和进程；实际环境重建后，旧普通任务记录真实中断，登记服务按策略恢复。容器 restart policy 为 `no`，由 Manager 在文件系统挂载后启动。升级 Manager 不会暗中删除或重建原环境。
