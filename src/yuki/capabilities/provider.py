@@ -27,6 +27,7 @@ _RESIDENT_YUKI_TOOLS = (
         {
             "find_contacts",
             "send_message",
+            "local_device",
             "get_group_members",
             "read_conversation_history",
             "read_personal_entry",
@@ -59,6 +60,7 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
     },
     "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "read_personal_entry": ("social.entry.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "local_device": ("device.local", CapabilityEffect.WRITE_STATE, CapabilityRisk.MUTATE),
     "send_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
     "get_group_members": ("social.members", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
     "read_conversation_history": (
