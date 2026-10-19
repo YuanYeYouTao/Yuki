@@ -101,6 +101,9 @@ Bot 与 sandbox Manager 的媒体读取实现须配套更新。来源、文件�
 
 ASR 沿配置的下载大小、单段时长、队列并发及整个入站准备截止时间处理音频。
 按真实附件顺序转写当前和引用语音，不固定只取三段，也不把已识别的长文字报告为无语音。
+`asr.protocol` 明确选择 `chat_completions`（默认 Qwen `input_audio`）或
+`audio_transcriptions`（`/audio/transcriptions` multipart 已转码音频、model 与纯转写 prompt，读取 `text`）；
+连接和模型沿实际配置，不按模型名猜协议，不失败改路或重试付费调用。ASR 配置重启后生效。
 Provider 响应继续受实际读取字节预算和完整性检查约束；保存及读取原转写保留全部文字和来源。
 部分失败保留已完成转写并报告真实错误，空转写仍为 no_speech。
 

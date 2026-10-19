@@ -1,11 +1,13 @@
-"""Bounded Qwen ASR calls; audio and provider errors never enter logs."""
+"""Explicit ASR wire protocols; audio and provider errors never enter logs."""
 
 from __future__ import annotations
 
 import base64
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
+
+from yuki.domain.audio import ASRProtocol
 
 
 class ASRError(RuntimeError):
@@ -20,8 +22,8 @@ class ASRProvider(Protocol):
     async def close(self) -> None: ...
 
 
-class QwenASRProvider:
-    """Qwen3-ASR uses input_audio in chat/completions, not audio/transcriptions."""
+class HTTPASRProvider:
+    """One ASR request through the configured chat or multipart transcription API."""
 
     def __init__(
         self,
@@ -29,10 +31,15 @@ class QwenASRProvider:
         base_url: str,
         api_key: str,
         model: str = "qwen3-asr-flash",
+        protocol: ASRProtocol = "chat_completions",
         timeout_seconds: float = 60,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._url = base_url.rstrip("/") + "/chat/completions"
+        endpoint = (
+            "/audio/transcriptions" if protocol == "audio_transcriptions" else "/chat/completions"
+        )
+        self._url = base_url.rstrip("/") + endpoint
+        self._protocol = protocol
         self._api_key = api_key
         self._model = model
         self._timeout = timeout_seconds
@@ -42,31 +49,40 @@ class QwenASRProvider:
     async def transcribe(self, audio: bytes) -> str:
         if not audio or len(audio) > 7_000_000:
             raise ASRError("audio_limit")
-        body = {
-            "model": self._model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
+        request: dict[str, Any]
+        if self._protocol == "audio_transcriptions":
+            request = {
+                "data": {"model": self._model, "prompt": "按音频原语言逐字转写，只输出转写文本。"},
+                "files": {"file": ("audio.mp3", audio, "audio/mpeg")},
+            }
+        else:
+            request = {
+                "json": {
+                    "model": self._model,
+                    "messages": [
                         {
-                            "type": "input_audio",
-                            "input_audio": {
-                                "data": "data:audio/mpeg;base64,"
-                                + base64.b64encode(audio).decode("ascii")
-                            },
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "input_audio",
+                                    "input_audio": {
+                                        "data": "data:audio/mpeg;base64,"
+                                        + base64.b64encode(audio).decode("ascii")
+                                    },
+                                }
+                            ],
                         }
                     ],
+                    "stream": False,
+                    "asr_options": {"enable_itn": False},
                 }
-            ],
-            "stream": False,
-            "asr_options": {"enable_itn": False},
-        }
+            }
         # No automatic retry: a lost response may already have incurred a bill.
         try:
             async with self._client.stream(
                 "POST",
                 self._url,
-                json=body,
+                **request,
                 headers={"Authorization": f"Bearer {self._api_key}"},
                 timeout=self._timeout,
             ) as response:
@@ -84,10 +100,13 @@ class QwenASRProvider:
             import json
 
             payload = json.loads(data)
-            choice = payload["choices"][0]
-            if choice.get("finish_reason") != "stop":
-                raise ASRError("incomplete_transcript")
-            result = choice["message"]["content"]
+            if self._protocol == "audio_transcriptions":
+                result = payload["text"]
+            else:
+                choice = payload["choices"][0]
+                if choice.get("finish_reason") != "stop":
+                    raise ASRError("incomplete_transcript")
+                result = choice["message"]["content"]
             if not isinstance(result, str):
                 raise ASRError("invalid_response")
             result = "".join(c for c in result if c.isprintable() or c in "\n\t").strip()

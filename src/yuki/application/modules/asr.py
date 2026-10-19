@@ -1,7 +1,7 @@
-"""Build incoming ASR using the existing Qwen credentials by default."""
+"""Build incoming ASR from its explicit protocol and complete connection."""
 
 from yuki.application.lifecycle import LifecycleRegistry
-from yuki.asr.provider import QwenASRProvider
+from yuki.asr.provider import HTTPASRProvider
 from yuki.asr.service import ASRService
 from yuki.config import Settings
 from yuki.services.media_resolver import MediaResolver
@@ -10,10 +10,11 @@ from yuki.services.media_resolver import MediaResolver
 def build_asr(settings: Settings, lifecycle: LifecycleRegistry) -> ASRService:
     base_url, api_key = settings.asr_credentials
     provider = (
-        QwenASRProvider(
+        HTTPASRProvider(
             base_url=base_url,
             api_key=api_key,
             model=settings.asr_model,
+            protocol=settings.asr_protocol,
             timeout_seconds=settings.asr_timeout_seconds,
         )
         if settings.asr_enabled and base_url and api_key

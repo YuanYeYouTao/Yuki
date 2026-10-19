@@ -4,6 +4,8 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 
+ASRProtocol = Literal["chat_completions", "audio_transcriptions"]
+
 
 @dataclass(frozen=True, slots=True)
 class AudioTranscript:

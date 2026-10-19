@@ -9,7 +9,7 @@ import pytest
 from tests.conftest import make_settings
 from tests.support.commands_and_chat_helpers import inbound
 
-from yuki.asr.provider import QwenASRProvider
+from yuki.asr.provider import HTTPASRProvider
 from yuki.asr.service import ASRService
 from yuki.domain.audio import parse_transcripts
 from yuki.domain.messages import AttachmentKind, MessageAttachment
@@ -53,7 +53,7 @@ async def test_all_voice_parts_and_long_transcripts_preserve_source(
         ),
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
-        provider = QwenASRProvider(base_url="https://asr.test/v1", api_key="fixture", client=client)
+        provider = HTTPASRProvider(base_url="https://asr.test/v1", api_key="fixture", client=client)
         service = ASRService(settings=settings.asr, provider=provider, resolver=resolver)
         result = await service.prepare(message, None)
     transcripts = parse_transcripts(result.transcript)

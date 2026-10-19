@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import AliasChoices, Field, PrivateAttr, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from yuki.domain.audio import ASRProtocol
 from yuki.domain.messages import ReasoningEffort
 from yuki.settings_domains import (
     AppSettings,
@@ -324,6 +325,7 @@ class Settings(BaseSettings):
 
     # Incoming speech recognition remains independent of outgoing media delivery.
     asr_enabled: bool = True
+    asr_protocol: ASRProtocol = "chat_completions"
     asr_base_url: str = ""
     asr_api_key: str = Field(default="", repr=False)
     asr_model: str = "qwen3-asr-flash"
