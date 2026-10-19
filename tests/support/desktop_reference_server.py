@@ -11,7 +11,7 @@ import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import httpx
 import uvicorn
@@ -23,6 +23,7 @@ from tests.integration.test_current_material_main_contract import _catalog, _pro
 from tests.support.canonical_ingress import fixture_ingress
 from tests.support.commands_and_chat_helpers import inbound
 from tests.support.model_profiles import write_fake_profiles
+from tests.support.workspace_snapshots import snapshot_bytes
 
 from yuki.asr.provider import QwenASRProvider
 from yuki.client_api.http import attach_client_api
@@ -34,6 +35,7 @@ from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
+from yuki.social.service import SocialContext
 
 
 async def serve(root: Path, port: int) -> None:
@@ -146,6 +148,58 @@ async def serve(root: Path, port: int) -> None:
         nonlocal lose_response
         lose_response = "messages"
         return {"ok": True}
+
+    @personal.post("/__test/artifacts")
+    async def send_artifacts():
+        async with database.sessions() as session:
+            original = await session.scalar(
+                select(ChatEventModel)
+                .where(
+                    ChatEventModel.author_person_id == person, ChatEventModel.direction == "inbound"
+                )
+                .order_by(ChatEventModel.id.desc())
+                .limit(1)
+            )
+        assert original is not None
+        files = [
+            ("same.md", b"# First artifact\n\nOriginal immutable content.\n"),
+            ("same.md", b"# Another artifact\n\nDifferent immutable content.\n"),
+            ("manual.pdf", pdf_document()),
+            ("unknown.custom", b"binary artifact content\x00\x01"),
+        ]
+        metadata = [
+            snapshot_bytes(
+                container.workspace_service.store,
+                name,
+                content,
+                artifact_id=str(uuid5(NAMESPACE_URL, f"{root}/{index}")),
+            )
+            for index, (name, content) in enumerate(files)
+        ]
+        delivered = []
+        for index in [0, 1, 2, 3, 0]:
+            item = metadata[index]
+            result = await container.social_service.execute(
+                "send_message",
+                {
+                    "artifact_id": item["artifact_id"],
+                    "attachment_kind": "file",
+                    "text": "成果 " + item["name"],
+                },
+                SocialContext(
+                    f"fixture:{uuid4()}",
+                    "artifact",
+                    original.canonical_conversation_id,
+                    person_refs={"current_speaker": person},
+                    trigger_event_id=original.id,
+                    reply_presence_id=container.app_gateway.registry.resolve_by_handle(
+                        container.app_gateway.handle
+                    ).snapshot.presence_id,
+                ),
+            )
+            assert result["status"] == "succeeded", result
+            delivered.append({**item, "event_id": result.get("event_id")})
+        return delivered
 
     @personal.post("/__test/work-scenario")
     async def work_scenario():
@@ -290,6 +344,31 @@ async def serve(root: Path, port: int) -> None:
         resume_asr.set()
         assert not await container.lifecycle._close_entries(container.lifecycle._entries)
         await asr_http.aclose()
+
+
+def pdf_document() -> bytes:
+    stream = b"BT /F1 14 Tf 20 180 Td (Actual artifact PDF) Tj ET"
+    objects = [
+        b"<< /Type /Catalog /Pages 2 0 R >>",
+        b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] "
+        b"/Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>",
+        b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        b"<< /Length " + str(len(stream)).encode() + b" >>\nstream\n" + stream + b"\nendstream",
+    ]
+    result, offsets = b"%PDF-1.4\n", []
+    for index, item in enumerate(objects, 1):
+        offsets.append(len(result))
+        result += str(index).encode() + b" 0 obj\n" + item + b"\nendobj\n"
+    xref = len(result)
+    result += b"xref\n0 6\n0000000000 65535 f \n"
+    result += b"".join(f"{offset:010d} 00000 n \n".encode() for offset in offsets)
+    return (
+        result
+        + b"trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n"
+        + str(xref).encode()
+        + b"\n%%EOF\n"
+    )
 
 
 if __name__ == "__main__":
