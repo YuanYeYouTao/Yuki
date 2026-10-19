@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import update
 from tests.conftest import MemorySender
+from tests.support.event_seed import seed_scoped_event
 from tests.support.semantic_participation_host_helpers import (
     _choice,
     _event_and_route,
@@ -213,7 +214,8 @@ async def test_selected_same_main_input_survives_late_participation_exit(
                 .where(CanonicalSpaceModel.id == env.space)
                 .values(autonomous_enabled=True)
             )
-        prior = await env.service.writer.append(
+        prior = await seed_scoped_event(
+            env.service.writer,
             scope=message(0, "original exchange").scope(),
             platform_message_id="prior-participation-source",
             sender_user_id="10001",
@@ -364,7 +366,8 @@ async def test_selected_same_main_input_survives_late_participation_exit(
         provider.release[2].set()
         await asyncio.wait_for(_wait_for_worker(worker, key), 10)
         assert len(provider.requests) == 2 and await _work_count(database) == sender.calls == 0
-        later = await env.service.writer.append(
+        later = await seed_scoped_event(
+            env.service.writer,
             scope=message(3, "later unselected input").scope(),
             platform_message_id="later-unselected-source",
             sender_user_id="10001",

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
+from tests.support.canonical_identity import ensure_person
 from tests.support.semantic_participation_host_helpers import (
     _event_and_route,
     _host,
@@ -17,7 +18,6 @@ from yuki_participation.models import Snapshot
 
 from yuki.conversation.initiative_sources import source_revision
 from yuki.domain.messages import MENTION_SNAPSHOT_FIELDS
-from yuki.identity.canonical_repository import ensure_person
 from yuki.identity.person_identity import merge_persons
 from yuki.services.participation_trace import TracedSemanticObserver
 

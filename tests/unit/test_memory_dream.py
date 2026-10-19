@@ -11,12 +11,13 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import OperationalError
 from tests.conftest import make_settings
+from tests.support.canonical_identity import ensure_presence
 from tests.support.correctness_wire import wire
+from tests.support.event_seed import seed_event
 from tests.support.model_executor import InjectedModelExecutor
 
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.identity.canonical_repository import ensure_presence
 from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -122,7 +123,8 @@ async def _fact_with_evidence(
     kind: MemoryKind = MemoryKind.FACT,
     scope_type: MemoryScopeType = MemoryScopeType.PERSON_GROUP,
 ) -> MemoryFact:
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=message_id,
         scope_type=ScopeType.GROUP,
@@ -243,7 +245,8 @@ async def test_candidate_provenance_includes_hidden_bot_and_cluster_preserves_or
     )
     async with database.immediate_session() as session:
         await ensure_presence(session, "88002")
-    hidden, _ = await ledger.append(
+    hidden, _ = await seed_event(
+        ledger,
         bot_user_id="88002",
         platform_message_id="hidden-other-bot",
         scope_type=ScopeType.GROUP,
@@ -804,7 +807,8 @@ async def test_recompose_is_atomic_partial_one_to_many_and_reversible(
         update={"memory_dream_evidence_per_fact": 1}
     )
     for index in range(1, evidence_count):
-        event, _ = await ledger.append(
+        event, _ = await seed_event(
+            ledger,
             bot_user_id="8000",
             platform_message_id=f"dream-recompose-evidence-{index}",
             scope_type=ScopeType.GROUP,

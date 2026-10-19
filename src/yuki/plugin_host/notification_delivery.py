@@ -10,7 +10,6 @@ from typing import Any, Protocol
 
 from yuki.automation.gateway import ProactiveGatewayError
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.domain.identity import AuthorKind
 from yuki.gateway.social import (
     TransportMedia,
     TransportMessage,
@@ -611,17 +610,13 @@ class PluginNotificationOutboxWorker:
             direction="outbound",
             content=content,
             segments=segments,
-            sender_is_bot=True,
             origin="plugin_background",
             caused_by_event_id=item.source_event_id,
+            space_binding_id=receipt.binding_id if scope is ScopeType.GROUP else None,
         )
         event = appended.event
         if event is None:
             return
-        if event.author_kind != AuthorKind.YUKI.value:
-            raise PluginPermanentDeliveryError("canonical_owner_mismatch")
-        if event.author_presence_id != receipt.presence_id:
-            raise PluginPermanentDeliveryError("canonical_owner_mismatch")
         if event.ingress_presence_id != receipt.presence_id:
             raise PluginPermanentDeliveryError("canonical_owner_mismatch")
         if (

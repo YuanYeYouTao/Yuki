@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text
 from tests.support.client_identity import client_identity_service
+from tests.support.event_seed import seed_scoped_event
 
 from yuki.client_api.db_models import ClientDeviceModel, ClientLinkCodeModel
 from yuki.client_api.errors import ClientError
@@ -115,7 +116,8 @@ async def test_account_claim_merges_person_and_preserves_original_binding_and_hi
     service, target, issued = await code_for(database, "1002")
     writer = ScopedEventLedgerUnitOfWork(database)
     old_event = (
-        await writer.append(
+        await seed_scoped_event(
+            writer,
             scope=ConversationScope.private("8000", "1001"),
             platform_message_id="old-owner",
             sender_user_id="1001",
@@ -156,7 +158,8 @@ async def test_account_claim_merges_person_and_preserves_original_binding_and_hi
             == 1
         )
     new_event = (
-        await writer.append(
+        await seed_scoped_event(
+            writer,
             scope=ConversationScope.private("8000", "1001"),
             platform_message_id="new-owner",
             sender_user_id="1001",

@@ -1615,7 +1615,6 @@ class ChatService:
                     *media_segments,
                 ),
                 reply_to_message_id=message.reply_to_message_id,
-                sender_is_bot=True,
                 origin=origin,
                 source_event_id=inbound.source_event_id,
             )

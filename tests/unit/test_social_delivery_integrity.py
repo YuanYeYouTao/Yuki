@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, select
+from tests.support.canonical_identity import ensure_presence, ensure_space
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import social_env
 from tests.support.sticker_delivery import make_delivery
 from tests.support.workspace_snapshots import snapshot_bytes
@@ -14,7 +16,6 @@ from tests.support.workspace_snapshots import snapshot_bytes
 from yuki.admin.models import ReplyRuntimeConfig
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.canonical_repository import ensure_presence, ensure_space
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.origin import TurnOrigin
 from yuki.social.agent_adapter import invoke_social
@@ -111,12 +112,12 @@ async def test_receipt_content_projection_uses_internal_event_and_checks_ownersh
         ConversationScope.group("80002", "20001"),
         ConversationScope.group("80001", "20002"),
     ):
-        unrelated = await env.service.writer.append(
+        unrelated = await seed_scoped_event(
+            env.service.writer,
             scope=scope,
             platform_message_id=f"unrelated-{scope.bot_user_id}-{scope.group_id}",
             sender_user_id=scope.bot_user_id,
             direction="outbound",
-            sender_is_bot=True,
             content="其他目标或账号",
             origin="social_tool",
             occurred_at=timestamp,
@@ -350,7 +351,8 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
         current_work_control.reset(token)
         await repo.release(lease)
 
-    source_event = await env.service.writer.append(
+    source_event = await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="123",
         sender_user_id="10001",

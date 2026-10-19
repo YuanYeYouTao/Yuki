@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.event_seed import seed_scoped_event
 from tests.support.projection import projection_record
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import social_env
@@ -407,7 +408,8 @@ async def test_recent_history_uses_configured_window_above_old_twenty_cap(databa
     env, owner, runtime = await active_work(database, tmp_path)
     scope = ConversationScope.group("80001", "20001")
     for index in range(30):
-        await env.service.writer.append(
+        await seed_scoped_event(
+            env.service.writer,
             scope=scope,
             platform_message_id=f"history-{index}",
             sender_user_id="10001",

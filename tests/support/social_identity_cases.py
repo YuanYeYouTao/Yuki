@@ -6,13 +6,14 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
+from tests.support.event_seed import seed_scoped_event
 from tests.support.workspace_snapshots import snapshot_bytes
 
 from yuki.conversation.canonical_db_models import SpaceActiveRouteModel
 from yuki.domain.conversations import ConversationScope
 from yuki.gateway.providers import builtin_provider_catalog
 from yuki.gateway.registry import GatewayConnectionRegistry
-from yuki.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
 from yuki.identity.db_models import (
     AccountModel,
     IdentityBindingModel,
@@ -90,7 +91,8 @@ async def social_env(database, tmp_path):
             now=datetime.now(UTC),
         )
     registry.connect(bot, provider_id="snowluma", presence_id=presence)
-    await writer.append(
+    await seed_scoped_event(
+        writer,
         scope=ConversationScope.group(bot.self_id, "20001"),
         platform_message_id="inbound",
         sender_user_id="10001",

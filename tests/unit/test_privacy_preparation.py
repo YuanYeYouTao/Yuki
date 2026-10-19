@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.event_seed import seed_event
 from tests.unit.test_rebuild_privacy_preparation import _selection
 from tests.unit.test_rebuild_receipt_finalization import _seed
 
@@ -34,7 +35,8 @@ async def pre_0121_binding(database):
 
 
 async def test_forget_redacts_numeric_json_and_keeps_other_person_event(database):
-    event, _ = await EventLedgerRepository(database).append(
+    event, _ = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="9999",
         platform_message_id="numeric-privacy",
         scope_type=ScopeType.GROUP,

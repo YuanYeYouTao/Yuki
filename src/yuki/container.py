@@ -510,11 +510,14 @@ class ApplicationContainer:
             people=self.people,
             memories=self.memories,
             concurrency=self.concurrency,
-            platform_connected=lambda scope: self.gateway_registry.snapshot_presence(
-                presence_id=scope.presence_id or "",
-                platform=scope.platform,
-                external_account_id=scope.bot_user_id,
-            ).health.value == "connected",
+            platform_connected=lambda scope: (
+                self.gateway_registry.snapshot_presence(
+                    presence_id=scope.presence_id or "",
+                    platform=scope.platform,
+                    external_account_id=scope.bot_user_id,
+                ).health.value
+                == "connected"
+            ),
             model_executor=self.models,
             runtime_config=self.runtime_config,
             memory_admin=self.memory_admin,

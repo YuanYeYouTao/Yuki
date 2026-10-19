@@ -8,6 +8,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select, update
 from tests.conftest import MemorySender, make_settings
+from tests.support.event_seed import seed_event
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
@@ -731,7 +732,8 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         if not observed:
             observed = True
             assert current_work_control.get() is None
-            await case.chat._ledger.append(
+            await seed_event(
+                case.chat._ledger,
                 bot_user_id="80001",
                 platform_message_id="derived-automation-observation",
                 scope_type=ScopeType.GROUP,

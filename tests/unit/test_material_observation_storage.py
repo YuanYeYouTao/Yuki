@@ -20,6 +20,8 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import Column, DateTime, Integer, String, Text, select, text
 from sqlalchemy.orm import declarative_base
+from tests.support.canonical_identity import ensure_space
+from tests.support.event_seed import seed_scoped_event
 from tests.support.legacy_conversation_seed import frozen_social_env
 from tests.support.social_identity_cases import social_env
 
@@ -36,7 +38,6 @@ from yuki.conversation.projection_chunks_schema import PROJECTION_TRIGGERS_CURRE
 from yuki.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
 from yuki.conversation.projection_models import PromptProjectionChunkModel, PromptProjectionModel
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.canonical_repository import ensure_space
 from yuki.persistence.database import Database
 from yuki.persistence.models import (
     ChatEventModel,
@@ -831,7 +832,8 @@ async def _trigger_sources(database, tmp_path, privacy_update):
             await writer.execute(
                 text("INSERT INTO execution_trace_state(id,privacy_generation) VALUES(1,0)")
             )
-    await ledger.append(
+    await seed_scoped_event(
+        ledger,
         scope=ConversationScope.group(env.bot.self_id, "20002"),
         platform_message_id="unrelated-trigger-owner",
         sender_user_id="10001",

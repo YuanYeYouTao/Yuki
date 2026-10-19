@@ -3,6 +3,7 @@
 from datetime import UTC, datetime
 
 from sqlalchemy import select
+from tests.support.event_seed import seed_scoped_event
 
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
@@ -71,7 +72,8 @@ async def test_four_bindings_keep_identity_but_separate_prompts_and_generation(d
     repository = ConversationScopeRepository(database)
     events = []
     for index, scope in enumerate(scopes):
-        event = await writer.append(
+        event = await seed_scoped_event(
+            writer,
             scope=scope,
             platform_message_id=f"in-{index}",
             sender_user_id=scope.private_peer_user_id,
@@ -110,7 +112,8 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
     _, _, scopes = await entries(database)
     first, second = scopes[:2]
     writer = ScopedEventLedgerUnitOfWork(database)
-    original = await writer.append(
+    original = await seed_scoped_event(
+        writer,
         scope=first,
         platform_message_id="old",
         sender_user_id="1001",
@@ -130,7 +133,8 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
     expected = []
     for index in range(3):
         for direction in ("inbound", "outbound"):
-            event = await writer.append(
+            event = await seed_scoped_event(
+                writer,
                 scope=second,
                 platform_message_id=f"new-{index}-{direction}",
                 sender_user_id="second-qq" if direction == "inbound" else "8000",
@@ -174,7 +178,8 @@ async def test_person_erasure_removes_all_private_binding_conversations(database
     writer = ScopedEventLedgerUnitOfWork(database)
     ids = []
     for index, scope in enumerate(scopes):
-        event = await writer.append(
+        event = await seed_scoped_event(
+            writer,
             scope=scope,
             platform_message_id=f"erase-{index}",
             direction="inbound",

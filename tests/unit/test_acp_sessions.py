@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select, text
 from tests.support.client_identity import client_identity_service
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_client_works import owner
@@ -92,7 +93,8 @@ async def test_acp_threads_keep_events_and_generation_separate_from_app(database
             thread_id=principal.thread_id,
         )
         scopes.append(scope)
-        event = await writer.append(
+        event = await seed_scoped_event(
+            writer,
             scope=scope,
             platform_message_id=principal.message_key(request_id),
             sender_user_id=principal.external_account_id,
@@ -263,7 +265,8 @@ async def test_acp_history_does_not_replay_unconfirmed_raw_outbound(app_env, dat
         thread_id=principal.thread_id,
     )
     writer = ScopedEventLedgerUnitOfWork(database)
-    inbound = await writer.append(
+    inbound = await seed_scoped_event(
+        writer,
         scope=scope,
         platform_message_id="real-user",
         sender_user_id=principal.external_account_id,

@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.event_seed import seed_event
 from yuki_participation.models import Choice, Observation
 from yuki_participation.rubric import CRITERIA, REVISION
 
@@ -77,7 +78,8 @@ class Observer:
 
 
 async def _event_and_route(database, ledger, *, group="2001", content="Yuki也来说说吧"):
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=str(uuid4()),
         scope_type=ScopeType.GROUP,

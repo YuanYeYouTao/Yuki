@@ -8,7 +8,9 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_person
 from tests.support.commands_and_chat_helpers import inbound
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import add_second_account, social_env
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
@@ -18,7 +20,6 @@ from yuki.identity.canonical_repository import (
     create_person_binding,
     create_presence,
     create_space_binding,
-    ensure_person,
 )
 from yuki.identity.db_models import AccountModel, CanonicalPersonModel, IdentityBindingModel
 from yuki.persistence.models import ChatEventModel
@@ -29,7 +30,8 @@ from yuki.social.models import SocialError
 
 async def invoke(env, arguments, *, account="10001"):
     if account != "10001":
-        await env.service.writer.append(
+        await seed_scoped_event(
+            env.service.writer,
             scope=ConversationScope.group(env.bot.self_id, "20001"),
             platform_message_id="second-account-input",
             sender_user_id=account,

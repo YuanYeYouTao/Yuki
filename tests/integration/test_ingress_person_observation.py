@@ -6,6 +6,7 @@ from dataclasses import replace
 
 import pytest
 from sqlalchemy import event, select
+from tests.support.canonical_identity import ensure_person, ensure_presence
 from tests.support.memory_identity import transfer_account
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
@@ -13,12 +14,7 @@ from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
 from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
 from yuki.domain.messages import SenderIdentity
 from yuki.identity import canonical_uow
-from yuki.identity.canonical_repository import (
-    ensure_person,
-    ensure_presence,
-    find_identity_binding,
-    set_identity_failpoint,
-)
+from yuki.identity.canonical_repository import find_identity_binding, set_identity_failpoint
 from yuki.identity.db_models import (
     AccountNameObservationModel,
     AccountSpaceProfileModel,

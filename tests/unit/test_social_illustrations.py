@@ -13,6 +13,7 @@ import pytest
 from sqlalchemy import delete, select, update
 from sqlalchemy.exc import OperationalError
 from tests.support.agent_backend import StubAgentBackend
+from tests.support.canonical_identity import ensure_person
 from tests.support.social_identity_cases import add_second_account, social_env
 from tests.support.sticker_delivery import DirectoryBridge, make_delivery, settle
 from tests.support.work_runner_helpers import case, run, tool
@@ -24,7 +25,7 @@ from yuki.domain.tool_actor import ToolActor
 from yuki.emoji.delivery import EmojiDeliveryService
 from yuki.emoji.library import EmojiLibrary
 from yuki.gateway.providers.telegram import TelegramClient
-from yuki.identity.canonical_repository import create_person_binding, create_presence, ensure_person
+from yuki.identity.canonical_repository import create_person_binding, create_presence
 from yuki.identity.db_models import CanonicalPersonModel, PresenceModel
 from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel

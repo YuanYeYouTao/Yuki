@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_presence as ensure_v2_presence
+from tests.support.canonical_identity import ensure_space as ensure_v2_space
 from tests.support.gateway import builtin_registry
 
 from yuki.conversation.canonical_db_models import (
@@ -15,12 +17,6 @@ from yuki.conversation.canonical_db_models import (
     PersonActiveRouteModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
-)
-from yuki.identity.canonical_repository import (
-    ensure_presence as ensure_v2_presence,
-)
-from yuki.identity.canonical_repository import (
-    ensure_space as ensure_v2_space,
 )
 from yuki.identity.canonical_repository import (
     find_identity_binding,

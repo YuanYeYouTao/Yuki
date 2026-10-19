@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import event, select
+from tests.support.canonical_identity import ensure_person
+from tests.support.event_seed import seed_scoped_event
 from tests.support.memory_identity import transfer_account
 from tests.support.social_identity_cases import social_env
 
@@ -13,7 +15,6 @@ from yuki.capabilities.invocation import ToolInvocationContext, current_invocati
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.domain.tool_actor import ToolActor
-from yuki.identity.canonical_repository import ensure_person
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.origin import TurnOrigin
 from yuki.services.agent_tools import ToolRuntime
@@ -67,7 +68,8 @@ async def test_ordinary_inbound_reply_reaches_social_send_and_persists_original_
     env = await social_env(database, tmp_path)
     async with database.sessions() as session:
         original = await session.scalar(select(ChatEventModel))
-    current = await env.service.writer.append(
+    current = await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="ordinary-reply",
         sender_user_id="10001",

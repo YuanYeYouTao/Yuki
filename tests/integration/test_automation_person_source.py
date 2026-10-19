@@ -3,9 +3,9 @@
 from dataclasses import replace
 
 from tests.support.automation_unified_delivery_helpers import setup_run
+from tests.support.canonical_identity import ensure_person
 
 from yuki.automation.models import RunStatus
-from yuki.identity.canonical_repository import ensure_person
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.identity.person_identity import merge_persons
 

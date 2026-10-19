@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pytest
 from tests.conftest import build_harness, make_settings
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_group_route_recovery import stack
 
 from yuki.admin.control_resolution import ControlAccess
@@ -85,7 +86,8 @@ def inbound(person, *, user="9000", space=None):
 
 async def execute(harness, event, command, argument):
     event = replace(event, message_id=str(uuid4()), text=f"/ai {command.value} {argument}")
-    appended = await harness.ledger._writer.append(
+    appended = await seed_scoped_event(
+        harness.ledger._writer,
         scope=event.scope(),
         platform_message_id=event.message_id,
         sender_user_id=event.sender.user_id,
@@ -127,7 +129,8 @@ async def test_group_command_uses_real_person_grant_and_internal_space(database)
         assert "capability_denied" in denied.text
         assert (await app.groups.get(space)).enabled
         trusted = replace(event, person_id=operator, sender=SenderIdentity("operator-account"))
-        appended = await app.ledger._writer.append(
+        appended = await seed_scoped_event(
+            app.ledger._writer,
             scope=trusted.scope(),
             platform_message_id=trusted.message_id,
             sender_user_id=trusted.sender.user_id,

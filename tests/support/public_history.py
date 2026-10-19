@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from tests.support.event_seed import seed_scoped_event
+
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.persistence.database import Database
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
@@ -18,7 +20,7 @@ async def _append(
     actor_prefix: str = "member",
     origin: str = "user_message",
 ) -> None:
-    from yuki.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
+    from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
 
     async with uow._database.sessions() as session, session.begin():
         await ensure_presence(session, scope.bot_user_id)
@@ -31,7 +33,8 @@ async def _append(
         for index in range(start, start + count):
             await ensure_person(session, f"{actor_prefix}-{index % 2}")
     for index in range(start, start + count):
-        await uow.append(
+        await seed_scoped_event(
+            uow,
             scope=scope,
             platform_message_id=f"message-{scope.bot_user_id}-{index}",
             sender_user_id=f"{actor_prefix}-{index % 2}",
@@ -48,7 +51,7 @@ _NOW = datetime(2026, 8, 24, tzinfo=UTC)
 async def _prepare_v2_private(
     database: Database, *, bot: str = "8000", peer: str = "1001"
 ) -> ConversationScope:
-    from yuki.identity.canonical_repository import ensure_person, ensure_presence
+    from tests.support.canonical_identity import ensure_person, ensure_presence
 
     async with database.sessions() as session, session.begin():
         await ensure_presence(session, bot)

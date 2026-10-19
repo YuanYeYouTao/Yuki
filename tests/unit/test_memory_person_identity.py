@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.event_seed import seed_event, seed_scoped_event
 from tests.unit.test_dream_owner_projection import _scene
 from tests.unit.test_memory_rebuild import _admin, _service
 
@@ -41,7 +42,8 @@ async def test_forget_whole_family_preserves_original_social_receipt_and_other_p
 
     env = await social_env(database, tmp_path)
     incoming = (
-        await ScopedEventLedgerUnitOfWork(database).append(
+        await seed_scoped_event(
+            ScopedEventLedgerUnitOfWork(database),
             scope=ConversationScope.private(env.bot.self_id, "10001"),
             platform_message_id="family-private-source",
             sender_user_id="10001",
@@ -106,7 +108,8 @@ async def test_forget_cleans_sandbox_and_detaches_other_authors_event_references
 
     ledger = ScopedEventLedgerUnitOfWork(database)
     origin = (
-        await ledger.append(
+        await seed_scoped_event(
+            ledger,
             scope=ConversationScope.group("8000", "2001"),
             platform_message_id="forget-original-group",
             sender_user_id="1001",
@@ -115,7 +118,8 @@ async def test_forget_cleans_sandbox_and_detaches_other_authors_event_references
         )
     ).event
     reply = (
-        await ledger.append(
+        await seed_scoped_event(
+            ledger,
             scope=origin.scope,
             platform_message_id="other-person-reply",
             sender_user_id="1003",
@@ -125,11 +129,11 @@ async def test_forget_cleans_sandbox_and_detaches_other_authors_event_references
         )
     ).event
     caused = (
-        await ledger.append(
+        await seed_scoped_event(
+            ledger,
             scope=origin.scope,
             platform_message_id="original-causal-response",
             sender_user_id="8000",
-            sender_is_bot=True,
             direction="outbound",
             origin="system_task",
             content="公开回复",
@@ -137,7 +141,8 @@ async def test_forget_cleans_sandbox_and_detaches_other_authors_event_references
         )
     ).event
     private = (
-        await ledger.append(
+        await seed_scoped_event(
+            ledger,
             scope=ConversationScope.private("8000", "1001"),
             platform_message_id="sandbox-private-source",
             sender_user_id="1001",
@@ -201,7 +206,8 @@ async def test_current_memory_scope_reads_merged_person_and_private_self_without
         target = (await find_identity_binding(reader, "1002")).person_id
         other = (await find_identity_binding(reader, "1003")).person_id
     event = (
-        await ScopedEventLedgerUnitOfWork(database).append(
+        await seed_scoped_event(
+            ScopedEventLedgerUnitOfWork(database),
             scope=ConversationScope.private("8000", "1001"),
             platform_message_id="merge-memory-source",
             sender_user_id="1001",
@@ -336,7 +342,8 @@ async def test_rebuild_keeps_original_legacy_mention_after_account_transfer(data
     _, ledger, _, _, service = await _service(
         database, provider=provider, people=PeopleRepository(database)
     )
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=str(uuid4()),
         scope_type=ScopeType.GROUP,
@@ -413,7 +420,8 @@ async def test_new_dream_merges_same_person_original_facts_without_rewriting_sou
     originals = []
     for account in ("1001", "1002", "1003"):
         await PeopleRepository(database).observe(user_id=account, nickname=account, group_id="3001")
-        event, _ = await ledger.append(
+        event, _ = await seed_event(
+            ledger,
             bot_user_id="8000",
             platform_message_id=f"cross-owner-{account}",
             scope_type=ScopeType.GROUP,
@@ -553,7 +561,8 @@ async def test_forget_target_only_keeps_other_group_self_experience_and_tool_rec
     from yuki.persistence.models import ChatEventModel, MemoryToolReceiptModel
 
     service, facts, ledger, _processor = mutation_service(database, self_memory_enabled=True)
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="other-group-source",
         scope_type=ScopeType.GROUP,
@@ -654,7 +663,8 @@ async def test_forget_removes_initiative_receipts_with_actually_erased_source(
     for account in ("1001", "1003"):
         events.append(
             (
-                await ledger.append(
+                await seed_scoped_event(
+                    ledger,
                     scope=ConversationScope.group("8000", "3001"),
                     platform_message_id=f"erasure-source-{account}",
                     sender_user_id=account,
@@ -716,7 +726,8 @@ async def test_reflection_keeps_each_original_person_stream_after_merge(database
     for index in range(2):
         for account in ("1001", "1002"):
             event = (
-                await ledger.append(
+                await seed_scoped_event(
+                    ledger,
                     scope=ConversationScope.private("8000", account),
                     platform_message_id=f"raw-reflection-{account}-{index}",
                     sender_user_id=account,

@@ -11,7 +11,9 @@ from sqlalchemy import select, update
 from tests.integration.test_native_social_delivery import native_env as native_env
 from tests.integration.test_native_social_delivery import sends
 from tests.support.automation_unified_delivery_helpers import setup_run
+from tests.support.canonical_identity import ensure_person
 from tests.support.client_identity import client_identity_service
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import social_env
 
 from yuki.automation.models import RunStatus
@@ -21,7 +23,6 @@ from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.domain.tool_actor import ToolActor
 from yuki.gateway.providers.telegram import TelegramAPIError
-from yuki.identity.canonical_repository import ensure_person
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.people_repository import PeopleRepository
@@ -417,7 +418,8 @@ async def test_forget_during_dispatch_keeps_only_the_original_transport_fact(
     database, tmp_path, monkeypatch, sdk, confirmed
 ):
     env = await social_env(database, tmp_path)
-    appended = await env.service.writer.append(
+    appended = await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.private(env.bot.self_id, "10001"),
         platform_message_id="private-original",
         sender_user_id="10001",

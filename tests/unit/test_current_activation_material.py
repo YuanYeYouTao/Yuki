@@ -9,6 +9,8 @@ import pytest
 from sqlalchemy import select, update
 from tests.conftest import MemorySender
 from tests.support.background_authority import approve_background_plugin
+from tests.support.canonical_identity import ensure_person
+from tests.support.event_seed import seed_scoped_event
 from tests.support.projection import projection_record
 from tests.unit.test_history_dispatch_ownership import _scene
 
@@ -26,7 +28,6 @@ from yuki.domain.messages import (
     ToolFunction,
 )
 from yuki.event_prompt import ChatEventPromptRenderer
-from yuki.identity.canonical_repository import ensure_person
 from yuki.llm.fake import FakeLLMProvider
 from yuki.llm.openai_compatible import OpenAICompatibleProvider
 from yuki.persistence.models import ChatEventModel
@@ -297,7 +298,12 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
         )
         body = "通知原文  保留空白\n" * 700 + "NOTIFICATION_LAST_LINE"
         created = await env.service.writer.append_external(
-            scope=scope,
+            scope=ConversationScope.group(
+                "80001",
+                "20001",
+                presence_id=env.presence,
+                conversation_id=env.context.conversation_id,
+            ),
             platform_message_id="old-external-source",
             source_plugin_id="test.common-external",
             external_source="offline-fixture",
@@ -324,7 +330,8 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
         source_runtime = None
     else:
         body = "最初用户正文  保留\nORIGINAL_USER_LAST_LINE"
-        created = await env.service.writer.append(
+        created = await seed_scoped_event(
+            env.service.writer,
             scope=scope,
             platform_message_id="original-sandbox-user-source",
             sender_user_id="10001",

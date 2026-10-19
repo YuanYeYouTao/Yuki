@@ -268,7 +268,7 @@ class CanonicalSchemaError(RuntimeError):
 
 
 async def require_canonical_schema(database_url: str) -> None:
-    """Validate the migration head and the canonical storage boundary once."""
+    """Validate the bundled version and metadata without scanning business data."""
 
     if not database_url.startswith("sqlite+aiosqlite:///"):
         raise CanonicalSchemaError("Yuki 3.8 supports only its canonical SQLite schema")
@@ -336,9 +336,6 @@ async def require_canonical_schema(database_url: str) -> None:
                     ):
                         raise CanonicalSchemaError("database budget limits must be nullable")
 
-            foreign_key_rows = await connection.execute(text("PRAGMA foreign_key_check"))
-            if foreign_key_rows.first() is not None:
-                raise CanonicalSchemaError("database canonical foreign-key integrity check failed")
             index_name = "ix_memory_evidence_tool_receipt"
             index_rows = await connection.execute(text('PRAGMA index_list("memory_evidence")'))
             index = next((row for row in index_rows if row[1] == index_name), None)

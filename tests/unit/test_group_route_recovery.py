@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.conftest import MemorySender, make_settings
+from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
 
 from yuki.admin.control_resolution import ControlAccess
 from yuki.admin.models import ControlAuditRef
@@ -24,12 +25,7 @@ from yuki.conversation.canonical_db_models import (
 from yuki.conversation.hydrate import ensure_canonical_conversation
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
-from yuki.identity.canonical_repository import (
-    ensure_person,
-    ensure_presence,
-    ensure_space,
-    find_identity_binding,
-)
+from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,

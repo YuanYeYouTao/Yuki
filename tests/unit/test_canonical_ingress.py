@@ -8,6 +8,9 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_person
+from tests.support.canonical_identity import ensure_presence as ensure_v2_presence
+from tests.support.canonical_identity import ensure_space as ensure_v2_space
 from tests.support.gateway import builtin_registry
 from tests.support.user_profiles_helpers import observe_members
 
@@ -16,17 +19,7 @@ from yuki.domain.identity import AuthorKind
 from yuki.domain.messages import InboundMessage, MessageMention, SenderIdentity
 from yuki.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
 from yuki.gateway.registry import GatewayConnectionRegistry
-from yuki.identity.canonical_repository import (
-    ensure_person,
-    find_identity_binding,
-    set_identity_failpoint,
-)
-from yuki.identity.canonical_repository import (
-    ensure_presence as ensure_v2_presence,
-)
-from yuki.identity.canonical_repository import (
-    ensure_space as ensure_v2_space,
-)
+from yuki.identity.canonical_repository import find_identity_binding, set_identity_failpoint
 from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.identity.errors import CanonicalIdentityError

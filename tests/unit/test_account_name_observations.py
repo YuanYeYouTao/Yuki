@@ -2,10 +2,11 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import func, select
+from tests.support.canonical_identity import ensure_person, ensure_space
 
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, MessageMention, SenderIdentity
-from yuki.identity.canonical_repository import ensure_person, ensure_space, find_space_binding
+from yuki.identity.canonical_repository import find_space_binding
 from yuki.identity.db_models import AccountModel, AccountNameObservationModel, CanonicalPersonModel
 from yuki.identity.person_state import prepare_message_account_observations
 

@@ -3,6 +3,7 @@
 import json
 
 from tests.conftest import make_settings
+from tests.support.event_seed import seed_event
 
 from yuki.capabilities.results import normalize_legacy_result
 from yuki.domain.conversations import ScopeType
@@ -21,7 +22,8 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
     settings = make_settings(database.url, agent_tool_result_max_characters=2400)
     ledger = EventLedgerRepository(database)
     content = ("observatory history " * 45).strip()
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="original-memory-source",
         scope_type=ScopeType.PRIVATE,

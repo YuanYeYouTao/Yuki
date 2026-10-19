@@ -1,15 +1,9 @@
-"""Canonical Person, Space, Binding, and Presence persistence helpers.
-
-The 3.8 runtime has one identity model.  This module deliberately has no
-knowledge of the retired ``people``, ``groups``, or ``conversation_scopes``
-carriers and performs no identity-epoch branching.  The process startup gate
-is responsible for refusing a database that is not ready for this model.
-"""
+"""Account, Assignment, Person and Space persistence using their internal IDs."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Final, Literal, cast
 from uuid import uuid4
 
@@ -34,7 +28,6 @@ from yuki.identity.db_models import (
 )
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.person_identity import person_family_ids, same_person_id
-from yuki.persistence.models import ChatEventModel
 
 IDENTITY_PLATFORM: Final[str] = "qq"
 AccountRole = Literal["human", "yuki_self", "external_bot", "private_peer"]
@@ -453,137 +446,9 @@ async def create_space_binding(
         return existing
 
 
-async def ensure_person(
-    session: AsyncSession,
-    user_id: str,
-    *,
-    display_name: str = "",
-    now: datetime | None = None,
-) -> str:
-    binding = await create_person_binding(
-        session,
-        external_account_id=external_id(user_id),
-        display_name=display_name,
-        now=now or datetime.now(UTC),
-    )
-    trip("after_identity_foundation")
-    return binding.person_id
-
-
-async def ensure_presence(
-    session: AsyncSession,
-    bot_user_id: str,
-    *,
-    now: datetime | None = None,
-) -> str:
-    presence = await create_presence(
-        session, external_account_id=external_id(bot_user_id), now=now or datetime.now(UTC)
-    )
-    trip("after_identity_foundation")
-    return presence.id
-
-
-async def ensure_space(
-    session: AsyncSession,
-    group_id: str,
-    *,
-    name: str = "",
-    enabled: bool = True,
-    autonomous_enabled: bool = True,
-    require_mention: bool = True,
-    now: datetime | None = None,
-) -> str:
-    space_external_id = external_id(group_id)
-    binding = await find_space_binding(session, space_external_id)
-    if binding is None:
-        binding = await create_space_binding(
-            session,
-            external_space_id=space_external_id,
-            name=name,
-            enabled=enabled,
-            autonomous_enabled=autonomous_enabled,
-            require_mention=require_mention,
-            now=now or datetime.now(UTC),
-        )
-        trip("after_identity_foundation")
-    return binding.space_id
-
-
-async def set_person_enabled_for_account(
-    session: AsyncSession,
-    user_id: str,
-    enabled: bool,
-) -> None:
-    binding = await find_identity_binding(session, external_id(user_id))
-    if binding is None:
-        return
-    person = await session.get(CanonicalPersonModel, binding.person_id)
-    if person is None:
-        raise CanonicalIdentityError("unclassified")
-    person.enabled = enabled
-    person.updated_at = datetime.now(UTC)
-    person.revision = int(person.revision) + 1
-
-
-async def set_space_flags_for_external(
-    session: AsyncSession,
-    group_id: str,
-    *,
-    enabled: bool | None = None,
-    autonomous_enabled: bool | None = None,
-    require_mention: bool | None = None,
-) -> None:
-    binding = await find_space_binding(session, external_id(group_id))
-    if binding is None:
-        return
-    space = await session.get(CanonicalSpaceModel, binding.space_id)
-    if space is None:
-        raise CanonicalIdentityError("unclassified")
-    if enabled is not None:
-        space.enabled = enabled
-    if autonomous_enabled is not None:
-        space.autonomous_enabled = autonomous_enabled
-    if require_mention is not None:
-        space.require_mention = require_mention
-    space.updated_at = datetime.now(UTC)
-    space.revision = int(space.revision) + 1
-
-
 def assert_same_shadow(current: str | None, proven: str | None) -> None:
     if proven is not None and current is not None and current != proven:
         raise CanonicalIdentityError("canonical_owner_mismatch")
-
-
-async def apply_event_identity(
-    session: AsyncSession,
-    event: ChatEventModel,
-    *,
-    sender_is_bot: bool,
-    ingress: PresenceModel,
-) -> None:
-    """Fill canonical event author and ingress fields without legacy lookup."""
-
-    from yuki.domain.identity import AuthorKind
-    from yuki.identity.event_author import project_event_author
-
-    trip("before_event_shadow")
-    event.utterance_fingerprint = None
-    event.ingress_provider = None
-    event.ingress_gateway_instance_id = None
-    event.ingress_presence_id = ingress.id
-    author = await project_event_author(
-        session,
-        sender_user_id=event.sender_user_id,
-        sender_is_bot=sender_is_bot,
-        event_kind=event.event_kind,
-        direction=event.direction,
-        platform=ingress.platform,
-    )
-    if author.author_kind == AuthorKind.PERSON.value and author.author_person_id is None:
-        raise CanonicalIdentityError("unclassified")
-    event.author_kind = author.author_kind
-    event.author_person_id = author.author_person_id
-    event.author_presence_id = author.author_presence_id
 
 
 async def forget_person_by_id(session: AsyncSession, person_id: str) -> None:
@@ -627,15 +492,11 @@ __all__ = [
     "AccountRole",
     "active_person_id_for",
     "active_space_id_for",
-    "apply_event_identity",
     "assert_same_shadow",
     "bindings_for_person",
     "create_person_binding",
     "create_presence",
     "create_space_binding",
-    "ensure_person",
-    "ensure_presence",
-    "ensure_space",
     "external_accounts_for_person",
     "external_id",
     "find_identity_binding",
@@ -650,8 +511,6 @@ __all__ = [
     "require_person_binding",
     "require_space_binding",
     "set_identity_failpoint",
-    "set_person_enabled_for_account",
-    "set_space_flags_for_external",
     "space_id_for",
     "trip",
 ]

@@ -2582,11 +2582,13 @@ async def _send_onebot(
         )
         if receipt.status is not OperationStatus.PREPARED:
             return _delivery_result(receipt)
+        assert receipt.prepared is not None
+        entry_binding_id = receipt.prepared["binding_id"]
         gateway = await _qq_gateway(host, invocation)
         claimed = False
         if receipt.status is OperationStatus.PREPARED:
             async with ledger._database.immediate_session() as session:
-                target, current_presence = await validate_delivery_source(
+                target, current_presence, current_binding = await validate_delivery_source(
                     session,
                     source_conversation_id=invocation.conversation_id,
                     source_event_id=invocation.source_event_id,
@@ -2596,7 +2598,11 @@ async def _send_onebot(
                     group_id=outbound.group_id,
                     user_id=outbound.private_peer_user_id,
                 )
-                if target != receipt.target or current_presence != presence_id:
+                if (
+                    target != receipt.target
+                    or current_presence != presence_id
+                    or current_binding != entry_binding_id
+                ):
                     raise SocialError("plugin_send_source_mismatch")
                 claimed = await repository.claim(
                     receipt.operation_id,
@@ -2649,9 +2655,14 @@ async def _send_onebot(
                         direction="outbound",
                         content=outbound.content,
                         segments=outbound.segments,
-                        sender_is_bot=True,
                         origin=invocation.origin.value,
                         session=session,
+                        identity_binding_id=entry_binding_id
+                        if receipt.target.kind == "person"
+                        else None,
+                        space_binding_id=entry_binding_id
+                        if receipt.target.kind == "space"
+                        else None,
                     )
                     if retained
                     else None

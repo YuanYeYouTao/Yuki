@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from tests.support.canonical_identity import ensure_presence, ensure_space
+
 from yuki.conversation.autonomy_binding import (
     AutonomyBinding,
     InitiativeSource,
@@ -9,7 +11,6 @@ from yuki.conversation.autonomy_binding import (
 )
 from yuki.conversation.autonomy_repository import AutonomyRepository
 from yuki.conversation.hydrate import ensure_canonical_conversation
-from yuki.identity.canonical_repository import ensure_presence, ensure_space
 from yuki.persistence.database import Database
 
 

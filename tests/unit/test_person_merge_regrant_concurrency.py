@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import event, select
+from tests.support.canonical_identity import ensure_person
 from tests.support.client_identity import client_identity_service
 from tests.unit.test_notification_preparation_sources import prepare_fixture
 
@@ -14,7 +15,6 @@ from yuki.admin.operations.base import CommandExecutor
 from yuki.admin.operations.identity import IdentityOperations
 from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
 from yuki.domain.identity import PrincipalId
-from yuki.identity.canonical_repository import ensure_person
 from yuki.identity.person_identity import current_person_id
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.people_repository import PeopleRepository

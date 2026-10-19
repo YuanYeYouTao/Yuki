@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, select, update
+from tests.support.canonical_identity import ensure_space
 from tests.support.semantic_participation_host_helpers import _event_and_route
 from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_source_guard import _guard
@@ -13,7 +14,6 @@ from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
 from yuki.domain.messages import ChatMessage, ToolCall, ToolFunction
-from yuki.identity.canonical_repository import ensure_space
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_control import WorkControl

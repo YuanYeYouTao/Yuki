@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
+from tests.support.canonical_identity import ensure_person, ensure_presence
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 
 from yuki.conversation.canonical_db_models import (
@@ -13,8 +14,6 @@ from yuki.conversation.canonical_db_models import (
 )
 from yuki.identity.canonical_repository import (
     ensure_account,
-    ensure_person,
-    ensure_presence,
     find_identity_binding,
     replace_assignment,
 )

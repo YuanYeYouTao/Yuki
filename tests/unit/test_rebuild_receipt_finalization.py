@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import insert, select, update
+from tests.support.event_seed import seed_event
 from tests.unit.test_memory_rebuild import _admin, _service
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
@@ -45,7 +46,8 @@ async def _seed(
 ) -> _Seed:
     """Bulk staging fixture, preserving a ledger-created canonical owner/binding."""
     now = datetime.now(UTC)
-    first, _ = await EventLedgerRepository(database).append(
+    first, _ = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id=str(uuid.uuid4()),
         scope_type=ScopeType.PRIVATE,

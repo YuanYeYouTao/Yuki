@@ -5,15 +5,12 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.canonical_identity import ensure_person, ensure_presence
+from tests.support.event_seed import seed_event
 from tests.support.social_identity_cases import Bot, social_env
 
 from yuki.domain.conversations import ScopeType
-from yuki.identity.canonical_repository import (
-    ensure_account,
-    ensure_person,
-    ensure_presence,
-    replace_assignment,
-)
+from yuki.identity.canonical_repository import ensure_account, replace_assignment
 from yuki.identity.db_models import AccountModel, CanonicalPersonModel, IdentityBindingModel
 from yuki.persistence.repositories import EventLedgerRepository
 from yuki.social.db_models import SocialOperationModel
@@ -156,7 +153,8 @@ async def test_contacts_page_people_instead_of_accounts_and_keep_exact_ambiguity
                 now=now,
             )
             await replace_assignment(writer, account, None, owner, now=now)
-    await EventLedgerRepository(database).append(
+    await seed_event(
+        EventLedgerRepository(database),
         bot_user_id=env.bot.self_id,
         scope_type=ScopeType.GROUP,
         group_id="20001",

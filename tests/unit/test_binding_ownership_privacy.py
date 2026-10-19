@@ -5,6 +5,8 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_person
+from tests.support.event_seed import seed_scoped_event
 from tests.support.memory_identity import transfer_account
 from tests.support.social_identity_cases import social_env
 from tests.unit.test_client_identity import code_for
@@ -12,7 +14,7 @@ from tests.unit.test_rebuild_receipt_finalization import _seed
 
 from yuki.client_api.errors import ClientError
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.canonical_repository import ensure_person, find_identity_binding
+from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.memory.rebuild.repository import MemoryRebuildRepository
 from yuki.persistence.event_repository import EventLedgerRepository
@@ -29,7 +31,8 @@ from yuki.runtime.work_repository import WorkRepository
 
 async def append(database, message, account="1001", group=False):
     return (
-        await ScopedEventLedgerUnitOfWork(database).append(
+        await seed_scoped_event(
+            ScopedEventLedgerUnitOfWork(database),
             scope=ConversationScope.group("8000", "2001")
             if group
             else ConversationScope.private("8000", account),
@@ -208,7 +211,8 @@ async def test_live_history_uses_current_row_even_after_previous_owner_is_forgot
 
 
 async def test_forget_gate_scope_does_not_cancel_previous_owner_group_work(database):
-    await ScopedEventLedgerUnitOfWork(database).append(
+    await seed_scoped_event(
+        ScopedEventLedgerUnitOfWork(database),
         scope=ConversationScope.group("8000", "2002"),
         platform_message_id=str(uuid4()),
         sender_user_id="1001",

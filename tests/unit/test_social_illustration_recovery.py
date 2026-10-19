@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 from PIL import Image
 from sqlalchemy import select, update
+from tests.support.canonical_identity import ensure_person
 from tests.support.memory_identity import transfer_account
 from tests.support.social_identity_cases import Bot, social_env
 from tests.support.sticker_delivery import make_delivery, settle
@@ -30,7 +31,6 @@ from yuki.identity.canonical_repository import (
     create_person_binding,
     create_presence,
     create_space_binding,
-    ensure_person,
 )
 from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel

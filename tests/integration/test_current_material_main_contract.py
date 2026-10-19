@@ -10,6 +10,7 @@ from sqlalchemy import select
 from tests.conftest import MemorySender, make_settings
 from tests.integration.test_self_common_capabilities import runtime, self_actor
 from tests.support.automation_runtime_helpers import FakeClock
+from tests.support.event_seed import seed_scoped_event
 from tests.support.model_profiles import write_fake_profiles
 from tests.support.projection import projection_record
 from tests.support.social_identity_cases import social_env
@@ -658,7 +659,8 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
     from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
     scoped = ScopedEventLedgerUnitOfWork(database)
-    added = await scoped.append(
+    added = await seed_scoped_event(
+        scoped,
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="new-public-source-before-sdk",
         sender_user_id="10001",

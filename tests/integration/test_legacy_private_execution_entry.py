@@ -10,6 +10,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+from tests.support.event_seed import seed_scoped_event
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.gateway import builtin_registry
 from tests.support.runtime_execution import make_work_resumer
@@ -396,7 +397,8 @@ def test_migrated_old_b_work_finishes_without_merging_new_b_history(tmp_path, mo
                 await router.resolve_send_for_conversation(
                     conversation_id, presence_id=second_presence
                 )
-            fresh = await ScopedEventLedgerUnitOfWork(database).append(
+            fresh = await seed_scoped_event(
+                ScopedEventLedgerUnitOfWork(database),
                 scope=ConversationScope.private("testB", "0"),
                 platform_message_id="new-b",
                 sender_user_id="0",

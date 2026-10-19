@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import event, insert, select, update
 from tests.support.automation_runtime_helpers import FakeClock
 from tests.support.automation_unified_delivery_helpers import sent, setup_run
+from tests.support.canonical_identity import ensure_presence, ensure_space
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import Bot
 
@@ -20,7 +21,6 @@ from yuki.conversation.hydrate import bump_canonical_generation
 from yuki.conversation.scope import ConversationTurnSnapshot
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
-from yuki.identity.canonical_repository import ensure_presence, ensure_space
 from yuki.identity.db_models import SpaceBindingModel
 from yuki.persistence.models import AutomationModel, AutomationRunModel, AutomationVersionModel
 from yuki.runtime.origin import TurnOrigin
@@ -233,7 +233,6 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
             original["conversation_id"],
             json.loads(original["source_json"]),
             request_id=original["id"],
-
         )
     await case.repository.settle_work_occurrences()
     assert (await case.repository.run_history(case.row.id))[0].status is RunStatus.CANCELLED
@@ -349,9 +348,7 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
         )
 
         async def validate(source=source, execution_id=execution_id):
-            await recover_automation_source(
-                database, state.id, source, request_id=execution_id
-            )
+            await recover_automation_source(database, state.id, source, request_id=execution_id)
 
         operations = [("task_control", {"action": "accept", "goal": source["instruction"]})]
         if step["id"] == "sent":

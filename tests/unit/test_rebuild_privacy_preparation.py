@@ -8,9 +8,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import event, func, select, update
+from tests.support.canonical_identity import ensure_person
 from tests.unit.test_rebuild_receipt_finalization import _seed
 
-from yuki.identity.canonical_repository import ensure_person
 from yuki.memory.rebuild.models import MemoryRebuildSelection
 from yuki.memory.rebuild.repository import MemoryRebuildRepository
 from yuki.persistence.models import MemoryRebuildProposalModel, MemoryRebuildRunModel

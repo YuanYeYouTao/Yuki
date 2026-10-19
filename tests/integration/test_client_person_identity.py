@@ -10,6 +10,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from sqlalchemy import func, select
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_app_messages import drain
@@ -522,7 +523,8 @@ async def test_operator_transfer_pauses_current_root_route_without_moving_histor
         )
     from yuki.domain.conversations import ConversationScope
 
-    accepted = await env.harness.scoped_events.append(
+    accepted = await seed_scoped_event(
+        env.harness.scoped_events,
         scope=ConversationScope.private("8000", "1001"),
         platform_message_id="original-before-transfer",
         sender_user_id="1001",

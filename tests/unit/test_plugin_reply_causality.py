@@ -6,8 +6,10 @@ from datetime import UTC, datetime
 
 import pytest
 
+from yuki.conversation.hydrate import ensure_canonical_conversation
 from yuki.domain.conversations import ConversationScope
 from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.identity.canonical_repository import find_identity_binding, find_presence
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
@@ -18,6 +20,23 @@ def _writer(database: Database) -> ScopedEventLedgerUnitOfWork:
     return ScopedEventLedgerUnitOfWork(database)
 
 
+async def _scope(database: Database, peer: str) -> ConversationScope:
+    async with database.immediate_session() as writer:
+        binding = await find_identity_binding(writer, peer)
+        presence = await find_presence(writer, "8000")
+        conversation = await ensure_canonical_conversation(
+            writer,
+            kind="private",
+            primary_scope_key=ConversationScope.private("8000", peer).key,
+            person_id=binding.person_id,
+            identity_binding_id=binding.id,
+            presence_id=presence.id,
+        )
+    return ConversationScope.private(
+        "8000", peer, presence_id=presence.id, conversation_id=conversation.conversation_id
+    )
+
+
 async def _external_event(
     writer: ScopedEventLedgerUnitOfWork,
     *,
@@ -25,7 +44,7 @@ async def _external_event(
     key: str = "evt-1",
 ) -> int:
     result = await writer.append_external(
-        scope=ConversationScope.private("8000", peer),
+        scope=await _scope(writer._database, peer),
         platform_message_id=f"external:{key}",
         source_plugin_id="test.causality",
         external_source="fixture",
@@ -47,12 +66,11 @@ async def test_plugin_outbound_requires_and_projects_same_conversation_cause(
     source_event_id = await _external_event(writer)
 
     result = await writer.append(
-        scope=ConversationScope.private("8000", "1001"),
+        scope=await _scope(database, "1001"),
         platform_message_id="reply-1",
         sender_user_id="8000",
         direction="outbound",
         content="proactive reply",
-        sender_is_bot=True,
         origin="plugin_background",
         caused_by_event_id=source_event_id,
     )
@@ -67,12 +85,11 @@ async def test_plugin_outbound_without_cause_fails_closed(database: Database) ->
 
     with pytest.raises(CanonicalIdentityError) as exc:
         await writer.append(
-            scope=ConversationScope.private("8000", "1001"),
+            scope=await _scope(database, "1001"),
             platform_message_id="reply-without-cause",
             sender_user_id="8000",
             direction="outbound",
             content="orphan reply",
-            sender_is_bot=True,
             origin="plugin_background",
         )
 
@@ -86,12 +103,11 @@ async def test_plugin_outbound_rejects_cross_conversation_cause(database: Databa
 
     with pytest.raises(CanonicalIdentityError) as exc:
         await writer.append(
-            scope=ConversationScope.private("8000", "1001"),
+            scope=await _scope(database, "1001"),
             platform_message_id="reply-cross-conversation",
             sender_user_id="8000",
             direction="outbound",
             content="wrong cause",
-            sender_is_bot=True,
             origin="plugin_background",
             caused_by_event_id=source_event_id,
         )
@@ -113,12 +129,11 @@ async def test_raw_reply_hydrates_cause_metadata_after_source_is_covered(
 
     await _publish_checkpoint(database, conversation_id, source_event_id, "covered external source")
     await writer.append(
-        scope=ConversationScope.private("8000", "1001"),
+        scope=await _scope(database, "1001"),
         platform_message_id="reply-after-covered-source",
         sender_user_id="8000",
         direction="outbound",
         content="proactive after coverage",
-        sender_is_bot=True,
         origin="plugin_background",
         caused_by_event_id=source_event_id,
     )

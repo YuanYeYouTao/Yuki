@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.canonical_identity import ensure_presence, ensure_space
 from tests.support.work_session import WorkSession, invoke_tool
 
 from yuki.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
@@ -23,7 +24,6 @@ from yuki.domain.messages import (
     ToolFunction,
 )
 from yuki.domain.tool_actor import ToolActor
-from yuki.identity.canonical_repository import ensure_presence, ensure_space
 from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.errors import InvalidTurnContextError

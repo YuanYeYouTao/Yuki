@@ -5,6 +5,7 @@ import json
 import pytest
 from sqlalchemy import select
 from tests.support.automation_unified_delivery_helpers import sent, setup_run
+from tests.support.event_seed import seed_scoped_event
 
 from yuki.automation.models import RunStatus
 from yuki.domain.conversations import ConversationScope
@@ -179,7 +180,8 @@ async def test_long_private_reminder_keeps_actual_history_parts_and_original_rec
 ):
     text = "完整提醒原文：" + "A" * 13000 + "PRIVATE_BODY_TAIL"
     case = await setup_run(database, tmp_path, delivery="self_private", mode="silent", goal=text)
-    await case.env.service.writer.append(
+    await seed_scoped_event(
+        case.env.service.writer,
         scope=ConversationScope.private("80001", "10001"),
         platform_message_id="original-private-material",
         sender_user_id="10001",

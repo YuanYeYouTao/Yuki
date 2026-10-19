@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text
 from tests.conftest import make_settings
+from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.canonical_ingress import fixture_ingress
 from tests.support.user_profiles_helpers import inbound, observe_members
 
@@ -16,13 +17,7 @@ from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ConversationLegacyAliasModel,
 )
-from yuki.identity.canonical_repository import (
-    IDENTITY_PLATFORM,
-    ensure_account,
-    ensure_person,
-    ensure_space,
-    replace_assignment,
-)
+from yuki.identity.canonical_repository import IDENTITY_PLATFORM, ensure_account, replace_assignment
 from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,

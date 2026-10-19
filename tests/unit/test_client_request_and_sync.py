@@ -7,6 +7,7 @@ import httpx
 import pytest
 from sqlalchemy import func, select
 from tests.integration.test_client_continuation import live
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_app_messages import drain
@@ -122,7 +123,8 @@ async def test_unreadable_old_request_does_not_block_home_other_requests_or_watc
     env = app_env
     device, _ = await owner(env, database)
     original = await seeded(env, database, group=True, state="waiting_user")
-    await env.harness.scoped_events.append(
+    await seed_scoped_event(
+        env.harness.scoped_events,
         scope=ConversationScope.group("8000", "2001"),
         platform_message_id=str(uuid4()),
         sender_user_id="1002",

@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from pydantic import BaseModel, ConfigDict
 from tests.conftest import make_settings
+from tests.support.canonical_identity import ensure_person
 from tests.support.client_identity import client_identity_service
 from tests.unit.test_memory_mutation import _context, _event, _service
 
@@ -20,7 +21,6 @@ from yuki.identity.authority import person_is_superuser
 from yuki.identity.bootstrap import bootstrap_settings_identity
 from yuki.identity.canonical_repository import (
     create_person_binding,
-    ensure_person,
     find_identity_binding,
     forget_person_by_id,
 )

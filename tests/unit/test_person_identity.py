@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select, text
 from tests.conftest import make_settings
+from tests.support.canonical_identity import ensure_person
 from tests.unit.test_runtime_config_read_snapshot import _override, _owners
 
 from yuki.admin.config_service import RuntimeConfigService
@@ -16,7 +17,6 @@ from yuki.conversation.canonical_db_models import PersonActiveRouteModel
 from yuki.domain.memory_config import MemoryConfigScope
 from yuki.identity.canonical_repository import (
     create_person_binding,
-    ensure_person,
     find_identity_binding,
     find_presence,
     replace_assignment,

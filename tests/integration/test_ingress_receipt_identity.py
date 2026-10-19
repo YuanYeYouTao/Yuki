@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_presence
 from tests.support.client_identity import client_identity_service
 from tests.support.user_profiles_helpers import observe_members
 from tests.unit.test_canonical_ingress import _Bot, _stack
@@ -14,7 +15,7 @@ from tests.unit.test_normalizer import group_event, private_event
 from yuki.adapters.onebot.normalizer import normalize_event
 from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
 from yuki.conversation.hydrate import ensure_canonical_conversation
-from yuki.identity.canonical_repository import ensure_presence, find_identity_binding
+from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import AccountSpaceProfileModel
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.receipt_compat import occurred_at_token

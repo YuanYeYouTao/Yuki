@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_app_messages import drain
@@ -329,7 +330,8 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
             session, account, None, await session.get(CanonicalPersonModel, person), now=now
         )
     event = (
-        await env.harness.scoped_events.append(
+        await seed_scoped_event(
+            env.harness.scoped_events,
             scope=ConversationScope.private(
                 "telegram-test-bot",
                 "telegram-test-account",

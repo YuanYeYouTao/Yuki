@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_person, ensure_presence
 from tests.support.client_identity import client_identity_service
 from tests.support.gateway import builtin_registry
 
@@ -15,7 +16,7 @@ from yuki.admin.operations.identity import IdentityOperations
 from yuki.client_api.errors import ClientError
 from yuki.conversation.canonical_db_models import PersonActiveRouteModel
 from yuki.domain.identity import PrincipalId
-from yuki.identity.canonical_repository import ensure_person, ensure_presence, find_identity_binding
+from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel, PresenceModel
 from yuki.identity.routing import PresenceRouter
 from yuki.persistence.people_repository import PeopleRepository

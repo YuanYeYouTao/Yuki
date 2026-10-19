@@ -11,7 +11,9 @@ from tests.conftest import build_harness, make_settings
 
 # P10: explicit Invocation fixture contract; existing assertions are retained.
 from tests.support.agent_backend import StubAgentBackend
+from tests.support.canonical_identity import ensure_person, ensure_presence
 from tests.support.commands_and_chat_helpers import inbound
+from tests.support.event_seed import seed_scoped_event
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
 from tests.support.work_runner_helpers import case, run, tool
@@ -20,12 +22,7 @@ from tests.support.workspace_snapshots import snapshot_bytes
 from yuki.automation.models import TurnOrigin
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatMessage, ChatResponse, ChatTool, ToolCall, ToolFunction
-from yuki.identity.canonical_repository import (
-    ensure_account,
-    ensure_person,
-    ensure_presence,
-    replace_assignment,
-)
+from yuki.identity.canonical_repository import ensure_account, replace_assignment
 from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from yuki.identity.person_identity import merge_persons
 from yuki.llm.fake import FakeLLMProvider
@@ -106,7 +103,8 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
     old = await repo.accept(lease, source_key="original", source=source, goal="draw a banana")
     await repo.checkpoint(lease, old["id"], None, messages=16)
     await repo.release(lease)
-    await env.service.writer.append(
+    await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="new-request",
         sender_user_id="10001",
@@ -213,7 +211,8 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
             assert before["tools"] == after["tools"]
         assert captured[2][sequence][: len(captured[1][sequence])] == captured[1][sequence]
         # An explicit later resend is a new intent, even for the same artifact bytes.
-        await env.service.writer.append(
+        await seed_scoped_event(
+            env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
             platform_message_id="resend-request",
             sender_user_id="10001",
@@ -327,7 +326,8 @@ async def test_same_person_new_account_keeps_work_scope_and_queues_new_internal_
         await replace_assignment(
             session, account, None, await session.get(CanonicalPersonModel, env.person), now=now
         )
-    appended = await env.service.writer.append(
+    appended = await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="other-binding-new-request",
         sender_user_id="11099",
@@ -416,7 +416,8 @@ async def test_person_merge_new_work_uses_new_event_identity_without_rewriting_o
         current = await ensure_person(writer, "10002", display_name="merged person")
         await merge_persons(writer, env.person, current)
         new_presence = await ensure_presence(writer, "80002")
-    appended = await env.service.writer.append(
+    appended = await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.group("80002", "20001"),
         platform_message_id="new-independent-after-merge",
         sender_user_id="10002",

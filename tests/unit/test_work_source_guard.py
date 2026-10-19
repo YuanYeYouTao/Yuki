@@ -7,6 +7,8 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import delete, select, update
 from sqlalchemy import event as sql_event
+from tests.support.canonical_identity import ensure_space
+from tests.support.event_seed import seed_event
 from tests.support.semantic_participation_host_helpers import _event_and_route
 
 from yuki.conversation.canonical_db_models import (
@@ -16,7 +18,7 @@ from yuki.conversation.projection_chunks_schema import EVENT_METADATA_COLUMNS_CU
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatImage, ChatMessage
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
-from yuki.identity.canonical_repository import ensure_account, ensure_space
+from yuki.identity.canonical_repository import ensure_account
 from yuki.persistence.event_repository import ConversationReadVersion, EventLedgerRepository
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_repository import WorkConflict, WorkRepository
@@ -386,7 +388,8 @@ async def test_shared_attachment_pixels_do_not_import_other_conversation_history
     output = io.BytesIO()
     Image.new("RGB", (8, 8), "green").save(output, "PNG")
     ledger = EventLedgerRepository(database)
-    old_image, _ = await ledger.append(
+    old_image, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="shared-pixels",
         scope_type=ScopeType.GROUP,

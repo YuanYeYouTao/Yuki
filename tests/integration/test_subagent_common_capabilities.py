@@ -296,9 +296,9 @@ async def test_plugin_background_child_reuses_original_job_authority_after_resta
     database, tmp_path
 ):
     from tests.conftest import build_harness, make_settings
+    from tests.support.canonical_identity import ensure_presence
     from tests.unit.test_external_event_runtime_fences import _seed_job
 
-    from yuki.identity.canonical_repository import ensure_presence
     from yuki.llm.fake import FakeLLMProvider
     from yuki.plugin_host.db_models import (
         PluginBackgroundTurnJobModel,

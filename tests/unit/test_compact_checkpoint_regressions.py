@@ -1,13 +1,14 @@
 """Final review regressions for paid compact, checkpoint ownership and recovery."""
 
 import pytest
+from tests.support.canonical_identity import ensure_space
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import social_env
 
 from yuki.conversation.frozen_fragments import FrozenFragments
 from yuki.conversation.projections import PromptProjectionRepository
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.canonical_repository import ensure_space
 from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
@@ -26,7 +27,8 @@ async def test_public_compact_checkpoint_survives_projection_cache_eviction(
     for index, scope in enumerate(scopes[1:], start=1):
         async with database.sessions() as session, session.begin():
             await ensure_space(session, scope.group_id)
-        await writer.append(
+        await seed_scoped_event(
+            writer,
             scope=scope,
             platform_message_id=f"cache-{index}",
             sender_user_id="10001",
@@ -505,7 +507,8 @@ async def test_status_does_not_report_source_invalidated_checkpoint(database, tm
         database, make_settings(database.url), FakeLLMProvider(lambda request: "not called")
     )
     scope = ConversationScope.group("9999", "2001")
-    await harness.scoped_events.append(
+    await seed_scoped_event(
+        harness.scoped_events,
         scope=scope,
         platform_message_id="source-for-status",
         sender_user_id="9000",
@@ -606,7 +609,8 @@ async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
         await publication(writer)
     async with database.sessions() as writer, writer.begin():
         await ensure_space(writer, "20002")
-    await ScopedEventLedgerUnitOfWork(database).append(
+    await seed_scoped_event(
+        ScopedEventLedgerUnitOfWork(database),
         scope=ConversationScope.group("80001", "20002"),
         platform_message_id="eviction-other",
         sender_user_id="10001",

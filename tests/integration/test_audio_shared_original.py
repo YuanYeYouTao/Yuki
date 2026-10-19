@@ -14,6 +14,7 @@ from tests.conftest import make_settings
 from tests.integration import test_telegram_runtime as native
 from tests.integration.test_telegram_event_edits import media_reader  # noqa: F401
 from tests.integration.test_telegram_runtime import telegram_env  # noqa: F401
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import social_env
 
 from yuki.asr.service import ASRService
@@ -58,7 +59,8 @@ async def test_audio_original_cache_and_real_asr_transcode_share_one_download(
     )
     segment = {"type": kind, "data": {"file": locator, "name": "voice.wav"}}
     event = (
-        await env.service.writer.append(
+        await seed_scoped_event(
+            env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
             platform_message_id="audio-shared",
             sender_user_id="10001",

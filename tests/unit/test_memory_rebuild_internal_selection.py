@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 from sqlalchemy import select
+from tests.support.event_seed import seed_scoped_event
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ConversationScope
@@ -58,7 +59,8 @@ async def test_rebuild_internal_filters_keep_platforms_and_merged_person_facts(d
                 platform=platform,
             )
             people.append(binding.person_id)
-        appended = await writer.append(
+        appended = await seed_scoped_event(
+            writer,
             scope=ConversationScope.group(
                 "80001", "20001", platform=platform, presence_id=presence.id
             ),

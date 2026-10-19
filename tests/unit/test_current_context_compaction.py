@@ -3,6 +3,7 @@
 from dataclasses import replace
 
 import pytest
+from tests.support.event_seed import seed_scoped_event
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
 from yuki.domain.messages import (
@@ -158,7 +159,8 @@ async def _append_public(database, text):
     from yuki.domain.conversations import ConversationScope
     from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
-    return await ScopedEventLedgerUnitOfWork(database).append(
+    return await seed_scoped_event(
+        ScopedEventLedgerUnitOfWork(database),
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="new-public-event",
         sender_user_id="10001",
@@ -438,7 +440,8 @@ async def test_manual_compact_uses_public_main_and_existing_authority(
         if group_id
         else ConversationScope.private("9999", user_id)
     )
-    await harness.scoped_events.append(
+    await seed_scoped_event(
+        harness.scoped_events,
         scope=scope,
         platform_message_id="prior-public",
         sender_user_id=user_id,

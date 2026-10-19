@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import update
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_admin_api import admin as admin_fixture
 from tests.unit.test_app_messages import app_env as app_fixture
 from tests.unit.test_app_messages import drain
@@ -50,7 +51,8 @@ async def test_snapshot_and_keysets_read_only_own_private_entries(app_env, datab
     for index in range(5):
         event_ids.append(
             (
-                await env.harness.scoped_events.append(
+                await seed_scoped_event(
+                    env.harness.scoped_events,
                     scope=ConversationScope.private("8000", "1001"),
                     platform_message_id=str(uuid4()),
                     sender_user_id="1001",

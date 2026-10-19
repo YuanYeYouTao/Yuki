@@ -2,6 +2,7 @@
 
 import pytest
 from sqlalchemy import event
+from tests.support.event_seed import seed_scoped_event
 from tests.support.public_history import _prepare_v2_private, _publish_checkpoint
 
 from yuki.conversation.canonical_db_models import (
@@ -17,7 +18,8 @@ from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 async def _source(database):
     scope = await _prepare_v2_private(database)
     uow = ScopedEventLedgerUnitOfWork(database)
-    result = await uow.append(
+    result = await seed_scoped_event(
+        uow,
         scope=scope,
         platform_message_id="derived-source",
         sender_user_id="1001",
@@ -95,7 +97,8 @@ async def test_late_audio_rechecks_original_source_before_commit(database, chang
         if preparations == 1 or (change == "append_many" and preparations <= 5):
             if change in {"append", "append_many"}:
                 # A separate real writer remains free while source work is prepared.
-                await uow.append(
+                await seed_scoped_event(
+                    uow,
                     scope=scope,
                     platform_message_id=f"new-source-{preparations}",
                     sender_user_id="1001",

@@ -347,12 +347,8 @@ async def database(tmp_path: Path) -> Database:
     await db.create_schema()
     from datetime import UTC, datetime
 
-    from yuki.identity.canonical_repository import (
-        create_presence,
-        ensure_person,
-        ensure_presence,
-        ensure_space,
-    )
+    from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
+    from yuki.identity.canonical_repository import create_presence
 
     identity_since = datetime(2026, 8, 24, tzinfo=UTC)
     async with db.immediate_session() as session:

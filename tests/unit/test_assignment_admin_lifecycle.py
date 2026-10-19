@@ -75,12 +75,9 @@ async def test_pause_unbind_reuse_and_explicit_registration_are_distinct(admin, 
 
 async def test_binding_directory_projects_current_people_in_batches(admin, database):
     from sqlalchemy import event
+    from tests.support.canonical_identity import ensure_person
 
-    from yuki.identity.canonical_repository import (
-        ensure_person,
-        find_identity_binding,
-        replace_assignment,
-    )
+    from yuki.identity.canonical_repository import find_identity_binding, replace_assignment
     from yuki.identity.person_identity import merge_persons
 
     client, *_ = admin

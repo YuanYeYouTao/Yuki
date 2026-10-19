@@ -1453,7 +1453,6 @@ class SocialService:
                             direction="outbound",
                             content=content,
                             segments=ledger_segments if ledger_segments is not None else (),
-                            sender_is_bot=True,
                             origin=context.origin,
                             caused_by_event_id=context.caused_by_event_id,
                             source_event_id=context.trigger_event_id or context.caused_by_event_id,
@@ -1465,6 +1464,7 @@ class SocialService:
                             identity_binding_id=route.binding_id
                             if target.kind == "person"
                             else None,
+                            space_binding_id=route.binding_id if target.kind == "space" else None,
                         )
                     completed = await self.receipts.finish(
                         operation_id,

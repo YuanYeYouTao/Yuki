@@ -11,6 +11,7 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from tests.conftest import MemorySender
+from tests.support.canonical_identity import ensure_person
 from tests.unit.test_auto_reply_merge import (
     VOICE_REQUIREMENT,
     _admissions,
@@ -32,7 +33,6 @@ from yuki.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from yuki.identity.canonical_repository import ensure_person
 from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from yuki.llm.fake import FakeLLMProvider
 from yuki.memory.runtime.turn_session import TurnMemorySession

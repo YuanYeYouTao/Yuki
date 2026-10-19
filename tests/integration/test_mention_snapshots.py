@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 from nonebot.adapters.onebot.v11 import Message, MessageSegment
 from sqlalchemy import event, select
+from tests.support.canonical_identity import ensure_presence
 from tests.support.memory_identity import transfer_account
 from tests.support.user_profiles_helpers import observe_members
 from tests.unit.test_canonical_ingress import _Bot, _stack
@@ -17,11 +18,7 @@ from yuki.conversation.media_index import prepare_event_media
 from yuki.domain.messages import MessageMention
 from yuki.gateway.providers.telegram_ingress import normalize_message
 from yuki.identity import ingress
-from yuki.identity.canonical_repository import (
-    ensure_presence,
-    find_identity_binding,
-    find_space_binding,
-)
+from yuki.identity.canonical_repository import find_identity_binding, find_space_binding
 from yuki.identity.db_models import AccountSpaceProfileModel, CanonicalPersonModel, PresenceModel
 from yuki.persistence.models import ChatEventModel
 from yuki.services.processor import _input_content

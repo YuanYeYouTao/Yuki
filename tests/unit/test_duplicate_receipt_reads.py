@@ -8,17 +8,14 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import event, update
+from tests.support.canonical_identity import ensure_person, ensure_presence
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
 
 from yuki.conversation.canonical_db_models import SpaceBindingIngestRouteModel
 from yuki.conversation.hydrate import ensure_canonical_conversation
 from yuki.identity import canonical_uow
-from yuki.identity.canonical_repository import (
-    ensure_person,
-    ensure_presence,
-    find_identity_binding,
-)
+from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.social.db_models import SocialOperationModel
 from yuki.social.models import OperationStatus, SocialError, SocialTarget
