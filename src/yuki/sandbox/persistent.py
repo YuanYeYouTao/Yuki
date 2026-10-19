@@ -29,6 +29,7 @@ from yuki.sandbox.acp_peer import read_protocol_line
 from yuki.sandbox.completions import CompletionOutbox
 from yuki.sandbox.computer_control import ComputerControl
 from yuki.sandbox.computer_runtime import ComputerRuntime
+from yuki.sandbox.computer_transport import ComputerTransport
 from yuki.sandbox.environment_tools import EXECUTION_TOOLS
 from yuki.sandbox.execd import Execd
 from yuki.sandbox.manager import TERMINAL, identifier
@@ -117,6 +118,7 @@ class PersistentManager:
         self.acp = ACPResources(self, acp_config)
         self.computer = ComputerControl(self)
         self.desktop = ComputerRuntime(self)
+        self.computer_transport = ComputerTransport(self)
         if "start_key" not in {
             row[1] for row in self.db.execute("PRAGMA table_info(environment_services)")
         }:
@@ -199,13 +201,19 @@ class PersistentManager:
             request = json.loads(raw)
             if not isinstance(request, dict):
                 raise ValueError("invalid_request")
+            if request.get("method") == "display_stream":
+                await self.computer_transport.display_stream(reader, writer)
+                return
+            if request.get("method") == "files_read":
+                await self.computer_transport.files_read(request["args"]["path"], writer)
+                return
             if request.get("method") == "control_watch":
                 await self.computer.watch(reader, writer)
                 return
             result = await self.handle(request)
             writer.write(json.dumps(result).encode() + b"\n")
             await writer.drain()
-        except (ValueError, OSError, TimeoutError):
+        except (ValueError, OSError, TimeoutError, WorkspaceError):
             writer.write(b'{"error":"invalid_request"}\n')
         finally:
             writer.close()
@@ -1047,6 +1055,7 @@ class PersistentManager:
     def environment_status(self) -> dict[str, Any]:
         return {
             "ready": self.ready,
+            "generation": self.container_id or None,
             "home": "/home/yuki",
             "workspace": "/workspace",
             "media_cache": {
@@ -1198,6 +1207,8 @@ class PersistentManager:
         if not isinstance(method, str) or not isinstance(args, dict):
             return {"error": "invalid_arguments"}
         try:
+            if method == "files_list":
+                return await asyncio.to_thread(self.computer_transport.files_list, args)
             if method in {"display_status", "display_wake", "display_sleep", "tabs_list"}:
                 return await self.desktop.handle(method, args, request.get("request_id", ""))
             if method == "control_get":

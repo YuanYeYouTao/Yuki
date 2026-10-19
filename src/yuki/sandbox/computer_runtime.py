@@ -72,7 +72,11 @@ class ComputerRuntime:
             saved = json.loads(row["result"])
             if not saved.get("pending"):
                 return cast(dict[str, Any], saved)
-        else:
+        if method == "display_sleep" and not args.get("confirm_active_work_tabs"):
+            control = self.manager.computer.control()
+            if control["holder"] == "agent":
+                return {"error": "precondition_failed", "control": control}
+        if row is None:
             with self.manager.db:
                 self.manager.db.execute(
                     "INSERT INTO environment_mutations VALUES (?,?,?)",

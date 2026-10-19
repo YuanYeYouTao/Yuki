@@ -105,7 +105,8 @@ class MainAgentContract:
                         # 19: lifecycle decisions settle after the original tool round.
                         # 24: optional illustrations are accepted separately from text delivery.
                         # 25: same-entry historical references retain their exact event identity.
-                        "version": 25,
+                        # 26: persistent computer control and original-run assistance guidance.
+                        "version": 26,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

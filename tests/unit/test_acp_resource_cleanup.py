@@ -105,6 +105,9 @@ class CleanupClient:
         self.database, self.callback, self.fail = database, callback, fail
         self.calls = []
 
+    async def release_computer_for_people(self, person_ids, reason):
+        return {"control": {"holder": "none"}}
+
     async def close_peers_for_requests(self, requests, operation_id, *, purge):
         self.calls.append((tuple(requests), operation_id, purge))
         # A second connection can acquire the writer while the external ACK waits.

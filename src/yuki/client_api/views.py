@@ -8,7 +8,7 @@ import json
 import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from sqlalchemy import Integer, func, literal_column, or_, select, text
@@ -46,6 +46,10 @@ async def personal_conversation(
     if row is None:
         raise ClientError("not_found")
     return row
+
+
+if TYPE_CHECKING:
+    from yuki.client_api.computer import ClientComputer
 
 
 def public_event(
@@ -184,8 +188,11 @@ class ClientViews:
         identity: ClientIdentityService,
         works: ClientWorks,
         traces: TraceRecorder | None = None,
+        *,
+        computer: ClientComputer | None = None,
     ) -> None:
         self.identity, self.works, self.traces = identity, works, traces
+        self.computer = computer
         self.database = identity.database
         self._character_revision = 0
         self._character_facts: dict[str, str] = {}
@@ -231,7 +238,9 @@ class ClientViews:
             "help_requested": None,
         }
         manager = self.database.sandbox_client
-        if manager:
+        if self.computer:
+            environment = await self.computer.environment(current)
+        elif manager:
             status = await manager.execute("environment_status", {}, request_id=str(uuid4()))
             if "error" not in status and type(status.get("ready")) is bool:
                 environment["state"] = "running" if status.get("ready") else "stopped"
@@ -447,6 +456,8 @@ class ClientViews:
                 ],
             }
         result["character_revision"] = (await self.character_status(principal))["revision"]
+        if self.computer and principal.is_owner:
+            result["computer_revision"] = self.computer.revision
         return result
 
     async def stream(
@@ -454,6 +465,8 @@ class ClientViews:
     ) -> AsyncIterator[str]:
         queue = self.database.commit_hints.subscribe(details=True)
         sequence = 0
+        if self.computer:
+            self.computer.device_connection(principal.device_id, 1)
 
         def frame(kind: str, data: Any) -> str:
             nonlocal sequence
@@ -517,6 +530,8 @@ class ClientViews:
                 current = await self.sync(principal, active=active)
                 if current["character_revision"] != previous["character_revision"]:
                     yield frame("character", {"revision": current["character_revision"]})
+                if current.get("computer_revision") != previous.get("computer_revision"):
+                    yield frame("computer", {"revision": current.get("computer_revision", 0)})
                 for category, key, event_kind in (
                     ("conversations", "conversation_id", "conversation"),
                     ("works", "work_id", "work"),
@@ -533,3 +548,5 @@ class ClientViews:
             return
         finally:
             self.database.commit_hints.unsubscribe(queue)
+            if self.computer:
+                self.computer.device_connection(principal.device_id, -1)

@@ -41,6 +41,16 @@ _CORE_START = (
 )
 
 _CORE_END = (
+    "【角色电脑】\n"
+    "持久环境中使用 terminal_exec 调用 yuki-computer；先用 --help 查询实际子命令。"
+    "browser open/snapshot/click/type/press/scroll/close 操作原 Work 的分页面，"
+    "input 操作桌面；截图和只读 snapshot 不取得输入控制权。"
+    "控制被人接手时，输入返回 control_held（退出码 75）；不要反复抢输入或杀进程。"
+    "只需等待交回用 yuki-computer wait-control；确实需要真人处理画面时用 "
+    "yuki-computer help-request --note 说明，再以原 run 登记 task_control(wait) 等待。"
+    "run 结束后读取原结果并重新观察画面，沿原 Work 与累计预算继续；"
+    "交回说明只是参考，不是工作发起人的回答，也不构成新授权。"
+    "没有自动休眠；不因无人观看停止仍在工作的浏览器。\n\n"
     "【进度与委派】\n"
     "交互式任务按需设置 reporting=interactive；用户要求安静、SELF 自主工作和后台维护用 quiet，"
     "不为证明在工作而通报。独立且值得并行的子问题用 subagent_start，给出目标、必要资料与产物要求，"

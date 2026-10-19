@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import and_, func, or_, select, text, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +36,9 @@ from yuki.runtime.work_management import WorkManagementError, manage_work
 from yuki.runtime.work_repository import TERMINAL, WorkLease, WorkRepository
 from yuki.runtime.work_schema_v1 import effects, inputs, work
 from yuki.runtime.work_tree import budget_root_id
+
+if TYPE_CHECKING:
+    from yuki.client_api.computer import ClientComputer
 
 
 def work_access(person_id: str) -> Any:
@@ -140,9 +143,14 @@ async def input_result(
 
 class ClientWorks:
     def __init__(
-        self, identity: ClientIdentityService, gateway: AppGateway | Mapping[str, AppGateway]
+        self,
+        identity: ClientIdentityService,
+        gateway: AppGateway | Mapping[str, AppGateway],
+        *,
+        computer: ClientComputer | None = None,
     ) -> None:
         self.identity = identity
+        self.computer = computer
         self.gateways = dict(gateway) if isinstance(gateway, Mapping) else {"app": gateway}
         self.database = identity.database
         self.repository = WorkRepository(self.database)
@@ -248,8 +256,10 @@ class ClientWorks:
             "reason": row["reason"],
             "step_count": count,
             "steps_token": token,
-            "help_requested": False,
-            "wait": await wait_view(session, row["id"]),
+            "help_requested": self.computer.help_for(row["id"]) if self.computer else False,
+            "wait": await wait_view(
+                session, row["id"], self.computer.run_kind if self.computer else None
+            ),
             "source": origin,
             "result_delivery": origin,
             "waiting_kind": "user"
@@ -334,7 +344,9 @@ class ClientWorks:
                     }
                     for item in children
                 ],
-                "wait": await wait_view(session, identity),
+                "wait": await wait_view(
+                    session, identity, self.computer.run_kind if self.computer else None
+                ),
                 "steps_token": token,
                 "work_revision": row["revision"],
             }

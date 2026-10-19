@@ -111,6 +111,12 @@ async def serve(root: Path, port: int) -> None:
     await container.app_gateway.start()
     await container._freeze_main_manifest()
     await container.work_scheduler.start()
+    computer = None
+    if os.environ.get("YUKI_DESKTOP_COMPUTER_FIXTURE") == "1":
+        from tests.support.desktop_computer_fixture import DesktopComputerFixture
+
+        computer = DesktopComputerFixture(root, container)
+        await computer.start(person)
     identity = container.client_api.identity
     code = await identity.issue_for_operator(person, str(uuid4()), str(uuid4()))
     base = f"http://127.0.0.1:{port}/role/yuki"
@@ -119,6 +125,8 @@ async def serve(root: Path, port: int) -> None:
     os.chmod(ready, 0o600)
     personal = FastAPI()
     attach_client_api(personal, lambda: container.client_api)
+    if computer:
+        computer.attach(personal)
     lose_response = ""
     uploaded_requests = []
     pause_next_me = False
@@ -342,6 +350,8 @@ async def serve(root: Path, port: int) -> None:
         ).serve()
     finally:
         resume_asr.set()
+        if computer:
+            await computer.close()
         assert not await container.lifecycle._close_entries(container.lifecycle._entries)
         await asr_http.aclose()
 

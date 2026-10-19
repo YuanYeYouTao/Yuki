@@ -8,6 +8,7 @@ import math
 import os
 import secrets
 import tempfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -183,7 +184,9 @@ async def step_position(
     raise ClientError("validation_error")
 
 
-async def wait_view(session: AsyncSession, identity: str) -> dict[str, Any] | None:
+async def wait_view(
+    session: AsyncSession, identity: str, run_kind: Callable[[str, str], str | None] | None = None
+) -> dict[str, Any] | None:
     row = (
         (
             await session.execute(
@@ -211,7 +214,7 @@ async def wait_view(session: AsyncSession, identity: str) -> dict[str, Any] | No
                 )
             )
             names = set(tools)
-            summary["run_kind"] = (
+            summary["run_kind"] = (run_kind(item["run_id"], identity) if run_kind else None) or (
                 "terminal"
                 if "terminal_exec" in names
                 else "acp"

@@ -606,8 +606,18 @@ class ApplicationContainer:
                 TelegramClient(settings.telegram_bot_token.get_secret_value()),
                 poll_interval=settings.telegram_poll_interval_seconds,
             )
-        client_works = ClientWorks(self.client_api.identity, client_gateways)
-        client_views = ClientViews(self.client_api.identity, client_works, self.models.traces)
+        from yuki.client_api.computer import ClientComputer
+
+        self.client_computer = ClientComputer(self.client_api.identity, self.sandbox_client)
+        client_works = ClientWorks(
+            self.client_api.identity, client_gateways, computer=self.client_computer
+        )
+        client_views = ClientViews(
+            self.client_api.identity,
+            client_works,
+            self.models.traces,
+            computer=self.client_computer,
+        )
         client_files = ClientFiles(
             ConversationUploads(self.client_api.identity, self.conversation_media),
             client_views,
@@ -622,6 +632,7 @@ class ApplicationContainer:
             client_views,
             client_files,
             client_prompts,
+            self.client_computer,
         )
         self.semantic_participation.set_promoter(
             partial(self.processor.promote_committed_event, reason="semantic_invitation")
@@ -804,6 +815,9 @@ class ApplicationContainer:
         return self.gateway_registry.has_any_active(platform="qq")
 
     def _register_lifecycle(self) -> None:
+        self.lifecycle.register(
+            "client_computer", start=self.client_computer.start, close=self.client_computer.close
+        )
         self.lifecycle.register(
             "control_recovery",
             start=self.admin_api.commands.executor.receipts.recover_interrupted_controls,

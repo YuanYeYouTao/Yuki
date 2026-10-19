@@ -782,7 +782,10 @@ class PeopleRepository:
             return None
         async with self._database.sessions() as reader:
             prepared = await self.prepare_person_forget(person_id, session=reader, marker=marker)
-        if prepared is None or not prepared.resource_cleanup.has_peers:
+        if prepared is None:
+            return None
+        await client.release_computer_for_people(prepared.person_ids, "person_forgotten")
+        if not prepared.resource_cleanup.has_peers:
             return None
         receipts = await client.close_peers_for_requests(
             prepared.sandbox_request_ids, operation_id, purge=True

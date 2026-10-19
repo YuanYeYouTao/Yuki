@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from contextlib import asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from yuki.domain.messages import ChatTool
 from yuki.sandbox.environment_tools import (
@@ -30,6 +32,29 @@ class SandboxClient:
     def __init__(self, socket: Path, *, tasks: SandboxTaskRepository | None = None) -> None:
         self.socket = socket
         self.tasks = tasks
+        self.before_computer_person_forget: Callable[[tuple[str, ...]], Awaitable[None]] | None = (
+            None
+        )
+
+    @asynccontextmanager
+    async def stream(
+        self, method: str, args: dict[str, Any]
+    ) -> AsyncIterator[tuple[dict[str, Any], asyncio.StreamReader, asyncio.StreamWriter]]:
+        if method not in {"display_stream", "files_read", "control_watch"}:
+            raise ValueError("unknown_stream_method")
+        reader, writer = await asyncio.open_unix_connection(str(self.socket))
+        try:
+            writer.write(json.dumps({"method": method, "args": args}).encode() + b"\n")
+            await writer.drain()
+            from yuki.sandbox.acp_peer import read_protocol_line
+
+            header = json.loads(await read_protocol_line(reader))
+            if not isinstance(header, dict) or header.get("error"):
+                raise ValueError("sandbox_stream_unavailable")
+            yield header, reader, writer
+        finally:
+            writer.close()
+            await writer.wait_closed()
 
     async def execute(
         self,
@@ -195,6 +220,32 @@ class SandboxClient:
         if receipts is not None and control is not None and control.current is not None:
             if json.loads(row.source_json).get("work_id") == control.current["id"]:
                 receipts.staged[row.request_id] = self.tasks
+
+    async def release_computer_for_people(
+        self, person_ids: tuple[str, ...], reason: str
+    ) -> dict[str, Any]:
+        from yuki.sandbox.computer_keys import release_key
+
+        if self.before_computer_person_forget:
+            await self.before_computer_person_forget(person_ids)
+        snapshot = await self.execute("control_get", {}, request_id=str(uuid4()))
+        control = snapshot.get("control", {})
+        if control.get("holder") != "human" or control.get("person_id") not in person_ids:
+            return snapshot
+        key = release_key(control["lease_id"])
+        saved = await self.execute("control_request_get", {"key": key}, request_id=key)
+        if saved.get("error") != "unknown_request":
+            return saved
+        return await self.execute(
+            "control_set",
+            {
+                "action": "return",
+                "lease_id": control["lease_id"],
+                "actor": {"system": True},
+                "reason": reason,
+            },
+            request_id=key,
+        )
 
     async def close_peers_for_requests(
         self, request_ids: Iterable[str], operation_id: str, *, purge: bool = True

@@ -6,10 +6,12 @@ from typing import Annotated, Any, Literal
 from urllib.parse import quote
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request
+from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request, WebSocket
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
+from starlette.background import BackgroundTask
 
+from yuki.client_api.computer import ClientComputer
 from yuki.client_api.errors import ClientError
 from yuki.client_api.files import ClientFiles
 from yuki.client_api.http_errors import install_identity_errors
@@ -23,7 +25,12 @@ from yuki.client_api.models import (
     CharacterHint,
     CharacterProfile,
     CharacterStatus,
+    ComputerFiles,
+    ComputerHint,
+    ComputerResult,
+    ComputerView,
     DeviceRevocation,
+    DisplayTicket,
     Entry,
     Envelope,
     EventsPage,
@@ -60,6 +67,7 @@ class ClientApi:
     views: ClientViews | None = None
     files: ClientFiles | None = None
     prompts: ClientPrompts | None = None
+    computer: ClientComputer | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -102,6 +110,20 @@ class CharacterBody(PersonalRequest):
 class ProactiveRouteBody(PersonalRequest):
     expected_revision: int = Field(strict=True, ge=0)
     binding_id: UUID4
+
+
+class ComputerRequest(PersonalRequest):
+    request_id: UUID4 = Field(...)
+
+
+class ComputerControlBody(ComputerRequest):
+    action: Literal["take", "return", "transfer"]
+    lease_id: UUID4 | None = None
+    note: str | None = None
+
+
+class ComputerSleepBody(ComputerRequest):
+    confirm_active_work_tabs: bool = Field(default=False, strict=True)
 
 
 def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
@@ -413,6 +435,114 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             )
         }
 
+    def computer() -> ClientComputer:
+        service = resolve().computer
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
+    @router.get(
+        "/computer", response_model=Envelope[ComputerView], response_model_exclude_unset=True
+    )
+    async def get_computer(actor: Actor) -> Any:
+        return {"data": await computer().get(actor)}
+
+    @router.post(
+        "/computer/control",
+        response_model=Envelope[ComputerResult],
+        response_model_exclude_unset=True,
+    )
+    async def control_computer(body: ComputerControlBody, actor: Actor) -> Any:
+        payload = {"lease_id": str(body.lease_id) if body.lease_id else None, "note": body.note}
+        return {"data": await computer().command(actor, str(body.request_id), body.action, payload)}
+
+    @router.post(
+        "/computer/wake", response_model=Envelope[ComputerResult], response_model_exclude_unset=True
+    )
+    async def wake_computer(body: ComputerRequest, actor: Actor) -> Any:
+        return {"data": await computer().command(actor, str(body.request_id), "wake", {})}
+
+    @router.post(
+        "/computer/sleep",
+        response_model=Envelope[ComputerResult],
+        response_model_exclude_unset=True,
+    )
+    async def sleep_computer(body: ComputerSleepBody, actor: Actor) -> Any:
+        return {
+            "data": await computer().command(
+                actor,
+                str(body.request_id),
+                "sleep",
+                {"confirm_active_work_tabs": body.confirm_active_work_tabs},
+            )
+        }
+
+    @router.post("/computer/display-tickets", response_model=Envelope[DisplayTicket])
+    async def display_ticket(actor: Actor, request: Request) -> Any:
+        return {"data": await computer().ticket(actor, request.scope.get("root_path", ""))}
+
+    @router.websocket("/computer/display")
+    async def display(socket: WebSocket, ticket: str = "") -> None:
+        if resolve().computer is None:
+            await socket.close(code=1012)
+            return
+        await computer().display(socket, ticket)
+
+    @router.get("/computer/files", response_model=Envelope[ComputerFiles])
+    async def computer_files(
+        actor: Actor,
+        path: str = "",
+        cursor: str | None = None,
+        limit: int = Query(50, ge=1, le=100),
+    ) -> Any:
+        from yuki.client_api.work_projection import cursor as encode_cursor
+        from yuki.client_api.work_projection import decode_cursor
+
+        after = None
+        if cursor:
+            value = decode_cursor(cursor)
+            if (
+                not isinstance(value, list)
+                or len(value) != 2
+                or value[0] != path
+                or not isinstance(value[1], str)
+            ):
+                raise ClientError("validation_error")
+            after = value[1]
+        result = await computer().files(actor, path, after, limit)
+        result["next_cursor"] = (
+            encode_cursor([path, result.pop("next_after")]) if result.get("next_after") else None
+        )
+        result.pop("next_after", None)
+        return {"data": result}
+
+    @router.get(
+        "/computer/files/content",
+        responses={
+            200: {
+                "content": {"application/octet-stream": {}},
+                "headers": {
+                    "X-Yuki-Sha256": {"schema": {"type": "string"}},
+                    "Content-Length": {"schema": {"type": "integer"}},
+                },
+            }
+        },
+    )
+    async def computer_file_content(actor: Actor, path: str) -> StreamingResponse:
+        metadata, body, close = await computer().content(actor, path)
+        return StreamingResponse(
+            body,
+            background=BackgroundTask(close),
+            media_type="application/octet-stream",
+            headers={
+                "X-Yuki-Sha256": metadata["sha256"],
+                "Content-Length": str(metadata["size"]),
+                "Content-Disposition": "attachment; filename*=UTF-8''"
+                + quote(metadata["name"], safe=""),
+                "Cache-Control": "no-store",
+            },
+        )
+
     install_identity_errors(app)
     app.include_router(router)
     original_openapi = app.openapi
@@ -426,6 +556,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             WorkHint,
             Activity,
             CharacterHint,
+            ComputerHint,
             WorkStepsHint,
             ArtifactsHint,
         ):
@@ -438,8 +569,16 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
             "work": "#/components/schemas/WorkHint",
             "activity": "#/components/schemas/Activity",
             "character": "#/components/schemas/CharacterHint",
+            "computer": "#/components/schemas/ComputerHint",
             "work_steps": "#/components/schemas/WorkStepsHint",
             "artifacts": "#/components/schemas/ArtifactsHint",
+        }
+        schema["x-yuki-websockets"] = {
+            "/client/v1/computer/display": {
+                "subprotocol": "binary",
+                "ticket": "single-use-device-bound-60s",
+                "protocol": "RFB 3.8",
+            }
         }
         return schema
 

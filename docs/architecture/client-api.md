@@ -318,3 +318,28 @@ App/ACP 共用个人工具视图（Main 合同23）、原 Work 普通回答匹�
 Person 的管理员资格直接保存于人物，但个人设备正文仍不解析 `/ai admin` 或插件直达命令。真正管理走既有 operator/平台命令入口。鉴权不再写设备 last_used_at；GET/事件读取与初始 SSE sync 的调用链为只读，仍即时核当前撤销、人物启停与入口归属。
 
 ACP 用户回答等待问题时，经原 ordinary admission 进入同一 Work；第二请求投影、live 输出与取消均关联该原 Work 及其子树。原请求结束与 Work 是否完成独立。已知失败重放仍能展示先前已确认输出，沿原 UUID 查证，不重新购买模型请求。
+
+
+## 角色电脑（仅角色拥有者）
+
+`GET /computer` 读取 Manager 当前环境、显示、控制租约、协助等待和浏览器分页。
+human 控制视图的 `device_online` 来自当前真实 SSE／画面连接，连接结束更新提示，不以最后访问时间猜测。
+`tabs_available=false` 表示无法查询 CDP，不等于没有分页；只有原 Work 的持久 target 归属记录
+能证明分页所有权。普通本人状态只返回控制者类别与是否有协助请求，不返回拥有者资料。
+`computer` SSE 是重读提示；`revision` 仅在当前 Bot 进程内递增，重连先同步完整事实。
+
+`POST /computer/wake`、`sleep`、`control` 使用固定原请求 UUID，沿个人原 namespace 保存
+回执。控制动作是 `take`、`transfer`、`return`；后两者必须带观察到的 lease_id。
+Bot 先短事务登记，再于事务外查询原 Manager key／执行，最后短事务结算；同号异内容拒绝。
+Manager 已接纳的原效果按原结果恢复；尚未接纳时重新检查原设备与拥有者权限。
+`GET /requests/{id}` 可查原回执。休眠若涉及已证明的活动 Work 分页，需明确确认。
+
+`POST /computer/display-tickets` 返回绑定本设备的一次性 60 秒 ticket 与保留部署前缀的 ws_path。
+WebSocket `/computer/display?ticket=...` 必须声明 `binary` 子协议。服务端逐 RFB 消息过滤输入，
+只有当前持有设备可操作；观看仍可协商与读取。控制转移、交回或连接结束补送已按下键与鼠标的放开事件，
+长剪贴簿内容按流处理并在消息边界切换权限。Manager 推送断开即关闭所有画面流，不自动交回控制权。
+撤销设备、拥有者或停用人物后关闭对应流并系统交回；遗忘在身份删除前于事务外释放。
+重启从 Manager 原 lease/person/device 检查并以确定性 release key 补送，不需要重建已删除身份。
+
+`GET /computer/files` 限工作区安全路径，游标绑定原目录；`files/content?path=...` 返回读取时
+快照、长度及 X-Yuki-Sha256，Cache-Control 为 no-store。这是可变文件读取，不发布 artifact。
