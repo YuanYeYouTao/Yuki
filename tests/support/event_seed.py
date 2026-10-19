@@ -85,13 +85,13 @@ async def seed_scoped_event(
                 and "identity_binding_id" not in fields
             ):
                 binding = await find_identity_binding(
-                    reader, scope.private_peer_user_id or sender_user_id, platform=scope.platform
+                    reader, scope.private_peer_user_id or sender_user_id, platform=presence.platform
                 )
                 assert binding is not None, "seed the original private peer Assignment first"
                 fields = {**fields, "identity_binding_id": binding.id}
             if scope.scope_type is ScopeType.GROUP and "space_binding_id" not in fields:
                 space = await find_space_binding(
-                    reader, scope.group_id or "", platform=scope.platform
+                    reader, scope.group_id or "", platform=presence.platform
                 )
                 assert space is not None, "seed the original SpaceBinding first"
                 fields = {**fields, "space_binding_id": space.id}
@@ -117,16 +117,16 @@ async def seed_scoped_event(
             else await find_presence(active, scope.bot_user_id, platform=scope.platform)
         )
         assert presence is not None, "seed the original receiving Presence first"
-        binding = await find_identity_binding(active, sender_user_id, platform=scope.platform)
+        binding = await find_identity_binding(active, sender_user_id, platform=presence.platform)
         peer = (
             await find_identity_binding(
-                active, scope.private_peer_user_id or sender_user_id, platform=scope.platform
+                active, scope.private_peer_user_id or sender_user_id, platform=presence.platform
             )
             if scope.scope_type is ScopeType.PRIVATE
             else None
         )
         space = (
-            await find_space_binding(active, scope.group_id or "", platform=scope.platform)
+            await find_space_binding(active, scope.group_id or "", platform=presence.platform)
             if scope.scope_type is ScopeType.GROUP
             else None
         )
