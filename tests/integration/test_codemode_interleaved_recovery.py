@@ -24,7 +24,7 @@ MARK = "CHILD_NOTE_BEFORE_PARENT_SETTLEMENT"
 ORD = "ORDINARY_INTERLEAVED_PUBLIC_MARKER"
 OTHER = "OTHER_WORK_OBSERVED_MARKER"
 
-pytestmark = requires_worker
+pytestmark = [requires_worker, pytest.mark.native_worker]
 
 
 @pytest.mark.parametrize("pause", ["pending", "settled"])

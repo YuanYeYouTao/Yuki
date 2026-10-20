@@ -1,0 +1,243 @@
+"""Known plugin results outlive optional audit failures; dispatch failures do not."""
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
+from tests.support.social_identity_cases import social_env
+
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.identity.db_models import CanonicalPersonModel
+from yuki.persistence.models import ChatEventModel
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.plugin_host.audit import PluginAuditService
+from yuki.plugin_host.capability_adapter import PluginCapabilityAdapter
+from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices, PluginInvocation
+from yuki.plugin_host.repository import PluginAuditRepository, PluginInstallationRepository
+from yuki.runtime.origin import TurnOrigin
+from yuki.services.agent_tools import ToolRuntime
+from yuki_plugin_sdk.api import PLUGIN_API_VERSION
+from yuki_plugin_sdk.errors import PluginPermissionError
+from yuki_plugin_sdk.models import RetryPolicy, RiskClass, StrictModel
+from yuki_plugin_sdk.permissions import PluginPermission
+from yuki_plugin_sdk.registrar import ToolMetadata, ToolRegistration
+from yuki_plugin_sdk.results import ToolResult
+
+
+class Arguments(StrictModel):
+    pass
+
+
+@pytest.fixture
+async def plugin_tool(database):
+    plugin = "test.known-audit"
+    installations = PluginInstallationRepository(database)
+    await installations.upsert_discovered(
+        plugin_id=plugin,
+        name="Known result",
+        version="1",
+        plugin_api=PLUGIN_API_VERSION,
+        yuki_requires=">=3",
+        manifest_hash="a" * 64,
+        entrypoint="plugin:Plugin",
+        requested_permissions=(PluginPermission.TOOL_REGISTER.value,),
+    )
+    await installations.approve(plugin)
+    await installations.set_enabled(plugin, enabled=True)
+    return plugin, installations
+
+
+def adapter(plugin_tool, risk, handler, audit):
+    plugin, installations = plugin_tool
+    registry = ExtensionRegistry()
+    registry.registrar(plugin, (PluginPermission.TOOL_REGISTER,)).register_tool(
+        ToolRegistration(
+            ToolMetadata(
+                name="effect",
+                description="Return the original effect result",
+                risk=risk,
+                retry_policy=RetryPolicy.TRANSIENT_ONCE,
+            ),
+            Arguments,
+            ToolResult,
+            handler,
+        )
+    )
+    name = registry.list(kind=ExtensionKind.TOOL)[0].model_name
+    return PluginCapabilityAdapter(
+        registry=registry, installations=installations, audit=audit
+    ), name
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=(AssertionError, OSError),
+    reason=(
+        "F02: known result must survive audit failure; "
+        "docs/operations/backend-five-pass-audit-20261020.md"
+    ),
+)
+@pytest.mark.parametrize("risk", [RiskClass.READ, RiskClass.MUTATE])
+@pytest.mark.parametrize("continuous", [False, True])
+async def test_known_result_does_not_retry_or_become_unknown(plugin_tool, risk, continuous):
+    handler = AsyncMock(
+        return_value=ToolResult(
+            data={"receipt": "original"}, mutation_committed=risk == RiskClass.MUTATE
+        )
+    )
+    audit = SimpleNamespace(
+        record=AsyncMock(
+            side_effect=OSError("audit offline") if continuous else [OSError("audit offline"), None]
+        )
+    )
+    tool, name = adapter(plugin_tool, risk, handler, audit)
+    result = await tool.execute(name, "{}", ToolRuntime(inbound=None))
+    handler.assert_awaited_once()
+    assert result.ok and result.data == {"receipt": "original"}
+    assert result.mutation_committed is (risk == RiskClass.MUTATE)
+    assert not result.uncertain
+
+
+async def test_actual_mutating_dispatch_failure_is_not_retried(plugin_tool):
+    handler = AsyncMock(side_effect=OSError("transport confirmation lost"))
+    audit = SimpleNamespace(record=AsyncMock())
+    tool, name = adapter(plugin_tool, RiskClass.MUTATE, handler, audit)
+    result = await tool.execute(name, "{}", ToolRuntime(inbound=None))
+    handler.assert_awaited_once()
+    assert not result.ok and result.uncertain
+    assert result.error_code == "plugin_effect_unknown"
+
+
+async def test_revoked_installation_does_not_dispatch(plugin_tool):
+    handler = AsyncMock(return_value=ToolResult(data={"receipt": "must not run"}))
+    tool, name = adapter(
+        plugin_tool, RiskClass.MUTATE, handler, SimpleNamespace(record=AsyncMock())
+    )
+    plugin, installations = plugin_tool
+    await installations.set_enabled(plugin, enabled=False)
+    result = await tool.execute(name, "{}", ToolRuntime(inbound=None))
+    handler.assert_not_awaited()
+    assert not result.ok and result.error_code == "plugin_tool_denied"
+
+
+async def test_known_result_with_available_audit(plugin_tool):
+    handler = AsyncMock(
+        return_value=ToolResult(data={"receipt": "original"}, mutation_committed=True)
+    )
+    tool, name = adapter(
+        plugin_tool, RiskClass.MUTATE, handler, SimpleNamespace(record=AsyncMock())
+    )
+    result = await tool.execute(name, "{}", ToolRuntime(inbound=None))
+    handler.assert_awaited_once()
+    assert result.ok and result.data == {"receipt": "original"} and result.mutation_committed
+
+
+@pytest.fixture
+async def onebot_call(database, tmp_path):
+    scene = await social_env(database, tmp_path)
+    plugin = "test.onebot-audit"
+    installations = PluginInstallationRepository(database)
+    await installations.upsert_discovered(
+        plugin_id=plugin,
+        name="OneBot audit",
+        version="1",
+        plugin_api=PLUGIN_API_VERSION,
+        yuki_requires=">=3",
+        manifest_hash="d" * 64,
+        entrypoint="plugin:Plugin",
+        requested_permissions=(PluginPermission.ONEBOT_MUTATE.value,),
+    )
+    await installations.approve(plugin)
+    await installations.set_enabled(plugin, enabled=True)
+    async with database.immediate_session() as session:
+        event = await session.scalar(
+            select(ChatEventModel).where(ChatEventModel.direction == "inbound")
+        )
+        (await session.get(CanonicalPersonModel, event.author_person_id)).is_superuser = True
+    gateway = SimpleNamespace(call_api=AsyncMock(return_value={"status": "ok", "changed": True}))
+    inbound = InboundMessage(
+        message_id=event.platform_message_id,
+        event_type="message",
+        scope_type=event.scope_type,
+        sender=SenderIdentity(event.sender_user_id),
+        text=event.content,
+        bot_user_id=event.bot_user_id,
+        group_id=event.group_id,
+        source_event_id=event.id,
+        person_id=event.author_person_id,
+        conversation_id=event.canonical_conversation_id,
+        presence_id=event.ingress_presence_id,
+        space_id=scene.space,
+        platform="qq",
+    )
+    invocation = PluginInvocation(
+        plugin_id=plugin,
+        origin=TurnOrigin.USER_MESSAGE,
+        actor_user_id=event.sender_user_id,
+        bot_user_id=event.bot_user_id,
+        inbound=inbound,
+        gateway=gateway,
+    )
+    host = HostPluginContext(
+        plugin_id=plugin,
+        approved_permissions=(PluginPermission.ONEBOT_MUTATE,),
+        services=PluginFacadeServices(
+            ledger=EventLedgerRepository(database),
+            audit=PluginAuditService(PluginAuditRepository(database)),
+        ),
+    )
+    yield SimpleNamespace(host=host, invocation=invocation, gateway=gateway, event=event)
+    await host.close_host_resources()
+
+
+@pytest.mark.parametrize(
+    "audit_offline",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=IntegrityError,
+                reason=(
+                    "F02: original OneBot ACK must survive audit persistence failure; "
+                    "docs/operations/backend-five-pass-audit-20261020.md"
+                ),
+            ),
+        ),
+    ],
+)
+async def test_onebot_known_ack_returns_original_result(database, onebot_call, audit_offline):
+    env = onebot_call
+    if audit_offline:
+        async with database.immediate_session() as session:
+            await session.execute(
+                text(
+                    "CREATE TRIGGER offline_audit_failure BEFORE INSERT ON plugin_audit_events "
+                    "BEGIN SELECT RAISE(ABORT, 'offline-audit'); END"
+                )
+            )
+    try:
+        with env.host.bind(env.invocation):
+            result = await env.host.onebot.call_mutating_action(
+                "set_group_whole_ban", {"group_id": env.event.group_id, "enable": True}
+            )
+    finally:
+        env.gateway.call_api.assert_awaited_once_with(
+            "set_group_whole_ban", {"group_id": env.event.group_id, "enable": True}
+        )
+    assert result.ok and result.data == {"result": {"status": "ok", "changed": True}}
+
+
+async def test_onebot_mutation_requires_real_administrator(database, onebot_call):
+    env = onebot_call
+    async with database.immediate_session() as session:
+        (await session.get(CanonicalPersonModel, env.event.author_person_id)).is_superuser = False
+    with env.host.bind(env.invocation), pytest.raises(PluginPermissionError, match="administrator"):
+        await env.host.onebot.call_mutating_action(
+            "set_group_whole_ban", {"group_id": env.event.group_id, "enable": True}
+        )
+    env.gateway.call_api.assert_not_awaited()

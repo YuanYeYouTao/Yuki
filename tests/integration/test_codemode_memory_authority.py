@@ -3,6 +3,7 @@
 import json
 from dataclasses import asdict
 
+import pytest
 from sqlalchemy import select
 from tests.support.codemode_cases import build_host, requires_worker, run_code
 from tests.unit.test_memory_mutation import _context, _service
@@ -12,7 +13,7 @@ from yuki.memory.mutation.models import MemoryMutationRequest
 from yuki.runtime.work_activation import current_work_control
 from yuki.runtime.work_schema_v1 import effects
 
-pytestmark = requires_worker
+pytestmark = [requires_worker, pytest.mark.native_worker]
 
 
 def claim(content, key):

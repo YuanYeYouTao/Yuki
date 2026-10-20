@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from tests.conftest import build_harness, make_settings
 from tests.support.codemode_cases import effect_rows, environment, outer_call, requires_worker
 
@@ -303,6 +304,7 @@ async def test_approved_hot_upgrade_does_not_replace_frozen_binding():
     await run()
 
 
+@pytest.mark.native_worker
 @requires_worker
 async def test_hot_upgrade_refusal_keeps_native_child_and_work_receipt():
     await run(native_child=True)

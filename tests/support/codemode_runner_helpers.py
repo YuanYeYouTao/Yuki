@@ -7,7 +7,7 @@ from tests.conftest import build_harness, make_settings
 
 # P10: explicit Invocation fixture contract; existing assertions are retained.
 from tests.support.agent_backend import StubAgentBackend
-from tests.support.codemode_cases import BINARY, TOOLS, requires_worker, worker
+from tests.support.codemode_cases import BINARY, TOOLS, worker
 from tests.support.social_identity_cases import social_env
 
 from yuki.automation.models import TurnOrigin
@@ -19,7 +19,6 @@ from yuki.runtime.work_repository import WorkRepository
 from yuki.services.agent_runner import AgentRuntime
 from yuki.tool_results.access import ArtifactAccess
 
-pytestmark = requires_worker
 FIXED_TOOLS = tuple(
     sorted(
         {tool.name: tool for tool in (*work_control_tools(), *TOOLS)}.values(),

@@ -19,7 +19,7 @@ from yuki.runtime.protocol_store import ProtocolStore
 from yuki.runtime.work_repository import WorkRepository
 from yuki.tool_results.artifacts import ToolArtifactRepository
 
-pytestmark = requires_worker
+pytestmark = [requires_worker, pytest.mark.native_worker]
 
 
 def snapshot(source: Path, destination: Path):

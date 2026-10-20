@@ -28,7 +28,7 @@ from yuki.model_runtime.routes import ModelRouter
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_journal import WorkJournal, decode_transcript
 
-pytestmark = requires_worker
+pytestmark = [requires_worker, pytest.mark.native_worker]
 
 DIALECTS = [
     ("openai_compatible", "chat_completions"),

@@ -19,7 +19,9 @@ from yuki.runtime.subagent_tools import subagent_tools
 from yuki.runtime.work_control import WorkControl, work_control_tools
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("action", ["complete", "wait", "need_input", "ask", "handoff"])
 async def test_original_program_control_and_tail_survive_runner_segment_writer(
     database, tmp_path, monkeypatch, native, action

@@ -19,10 +19,10 @@ async def test_public_compact_checkpoint_survives_projection_cache_eviction(
     database, tmp_path, maximum_views, byte_budget
 ):
     await social_env(database, tmp_path)
-    scopes = [
-        ConversationScope.group("80001", str(20001 + index))
-        for index in range(2 * maximum_views + 1)
-    ]
+    # Each empty [] projection uses two bytes: three exceed the four-byte budget.
+    # Without a byte budget, retain the full default-128 view eviction exercise.
+    view_count = 3 if byte_budget is not None else 2 * maximum_views + 1
+    scopes = [ConversationScope.group("80001", str(20001 + index)) for index in range(view_count)]
     writer = ScopedEventLedgerUnitOfWork(database)
     for index, scope in enumerate(scopes[1:], start=1):
         async with database.sessions() as session, session.begin():
@@ -67,20 +67,10 @@ async def test_public_compact_checkpoint_survives_projection_cache_eviction(
         async with database.immediate_session() as session:
             await publication(session)
         snapshot = await ConversationScopeRepository(database).load_prompt_snapshot(owner)
-        if index in {0, maximum_views, 2 * maximum_views}:
-            print(
-                {
-                    "maximum_views": maximum_views,
-                    "stage": index,
-                    "checkpoint": snapshot.checkpoint_text,
-                    "coverage": snapshot.effective_coverage,
-                    "raw_event_ids": [e.id for e in snapshot.raw_events],
-                }
-            )
+    owner_version, owner_events = await ledger.read_scope_context(owner, limit=100)
+    assert await projections.invalidation_reason(owner_version.conversation_id) == "capacity"
     assert snapshot.checkpoint_text == "Paid public checkpoint"
-    assert snapshot.effective_coverage == max(
-        event.id for event in (await ledger.read_scope_context(owner, limit=100))[1]
-    )
+    assert snapshot.effective_coverage == max(event.id for event in owner_events)
     assert not snapshot.raw_events
 
 

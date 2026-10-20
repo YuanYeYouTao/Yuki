@@ -91,4 +91,5 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
     "qwen_embedding_integration: opt-in test against the real DashScope embedding API",
+    "native_worker: real pinned Monty worker/binding; executed by the native CI job",
 ]

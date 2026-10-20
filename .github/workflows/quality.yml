@@ -18,8 +18,8 @@ jobs:
           version: "0.11.31"
           enable-cache: true
       - run: uv sync --frozen --all-extras --python 3.12
-      - run: uv run ruff check .
-      - run: uv run mypy src
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync mypy src
 
   tests:
     runs-on: ubuntu-latest
@@ -36,4 +36,54 @@ jobs:
       - run: uv sync --frozen --all-extras --python 3.12
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: ffmpeg -version && ffprobe -version
-      - run: uv run pytest tests/${{ matrix.suite }} -q
+      - name: Test direct runtime and offline contracts
+        run: >-
+          uv run --no-sync pytest tests/${{ matrix.suite }} -q -m "not native_worker"
+          --strict-markers --junitxml=test-results/${{ matrix.suite }}.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tests-${{ matrix.suite }}
+          path: test-results/*.xml
+          retention-days: 7
+
+  native:
+    name: Native CodeMode
+    runs-on: ubuntu-24.04
+    env:
+      YUKI_MONTY_BINARY: /opt/yuki-monty/monty
+      YUKI_MONTY_LAUNCHER: /opt/yuki-monty/monty-isolated
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.31"
+          enable-cache: true
+      - run: uv sync --frozen --all-extras --python 3.12
+      - run: sudo apt-get update && sudo apt-get install -y bubblewrap apparmor-utils ffmpeg
+      - name: Build the pinned native distribution
+        run: |
+          rustup toolchain install 1.96.0 --profile minimal
+          bash scripts/build_monty_distribution.sh "$PWD/.cache/monty-ci" "$PWD/.venv/bin/python" build
+          wheel=$(python -c 'import json; print(json.load(open(".cache/monty-ci/artifacts.json"))["binding"]["filename"])')
+          uv pip install --python .venv/bin/python --no-deps ".cache/monty-ci/wheels/$wheel"
+          sudo install -d -o root -g root -m 755 /opt/yuki-monty
+          sudo install -o root -g root -m 755 .cache/monty-ci/monty/target/release/monty /opt/yuki-monty/monty
+          sudo install -o root -g root -m 755 .cache/monty-ci/monty-isolated /opt/yuki-monty/monty-isolated
+      - name: Load the existing launcher isolation policy on the disposable runner
+        run: sudo apparmor_parser -r deploy/security/yuki-bot-codemode.apparmor
+      - name: Verify actual native execution and isolation
+        run: |
+          mkdir -p test-results
+          aa-exec -p yuki-bot-codemode -- .venv/bin/python scripts/verify_monty_isolation.py \
+            --output test-results/monty-isolation.json
+      - name: Test native execution, original receipts and recovery
+        run: >-
+          aa-exec -p yuki-bot-codemode -- .venv/bin/python -m pytest tests -q
+          -m native_worker --strict-markers --junitxml=test-results/native.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tests-native
+          path: test-results/
+          retention-days: 7

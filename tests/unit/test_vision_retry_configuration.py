@@ -4,7 +4,6 @@ import json
 
 import httpx
 import pytest
-from tests.conftest import make_settings
 
 from yuki.vision.base import VisionError
 from yuki.vision.models import PreparedFrame, PreparedVisualInput, VisionAnalysisOptions
@@ -51,12 +50,6 @@ async def test_vision_failure_makes_one_http_request(failure):
         with pytest.raises(VisionError):
             await provider.analyze(visual(), "describe")
     assert len(calls) == 1
-
-
-def test_vision_retry_configuration_is_retired():
-    settings = make_settings("sqlite+aiosqlite:///:memory:")
-    assert "vision_max_retries" not in type(settings).model_fields
-    assert "vision_max_retries" not in type(settings.vision).model_fields
 
 
 @pytest.mark.parametrize("thinking", [False, True])

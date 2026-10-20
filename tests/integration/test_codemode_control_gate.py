@@ -16,7 +16,7 @@ from tests.support.codemode_cases import (
 
 from yuki.codemode.driver import CodeModeDriver
 
-pytestmark = requires_worker
+pytestmark = [requires_worker, pytest.mark.native_worker]
 
 CRASH_CHILD = r"""
 import asyncio, json, os, sys

@@ -6,7 +6,9 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 
+import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +27,8 @@ from yuki.conversation.canonical_db_models import (
 from yuki.conversation.hydrate import ensure_canonical_conversation
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
-from yuki.identity.canonical_repository import find_identity_binding
+from yuki.gateway.providers.telegram import TelegramClient
+from yuki.identity.canonical_repository import create_presence, find_identity_binding
 from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
@@ -759,3 +762,94 @@ async def test_recovery_with_attachment_uses_the_same_authorized_route(database)
     after = await state(database, space, binding)
     assert after[1:3] == (False, False)
     await app.close()
+
+
+@pytest.mark.parametrize(
+    "disconnect_unrelated",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.xfail(
+                strict=True,
+                raises=RouteSendError,
+                reason=(
+                    "Audit P04: unrelated disconnect invalidates QQ recovery; "
+                    "docs/operations/backend-five-pass-audit-20261020.md"
+                ),
+            ),
+        ),
+    ],
+)
+async def test_group_recovery_depends_only_on_its_actual_platform_connection(
+    database, disconnect_unrelated
+):
+    app, bot, presence, space, binding = await stack(database)
+    entered, release = asyncio.Event(), asyncio.Event()
+    pending = None
+    try:
+        async with database.immediate_session() as session:
+            unrelated = await create_presence(
+                session, external_account_id="980077", platform="telegram", now=datetime.now(UTC)
+            )
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200))
+        ) as http:
+            telegram = TelegramClient("local-fixture", client=http)
+            telegram.self_id = "980077"
+            app.gateway_registry.connect(telegram, provider_id="telegram", presence_id=unrelated.id)
+            await pause(database, space, binding)
+            before = await state(database, space, binding)
+            original = bot.call_api
+
+            async def blocked(action, **kwargs):
+                entered.set()
+                await release.wait()
+                return await original(action, **kwargs)
+
+            bot.call_api = blocked
+            access = ControlAccess(database)
+            principal = await access.recovery_principal("9000", platform="qq")
+            context = access.context(
+                principal, await access.recovery_space_target("2001", platform="qq")
+            )
+            audit = ControlAuditRef(
+                user_id="9000",
+                bot_user_id="8000",
+                trigger_message_id="route-recovery",
+                conversation_key="bot:8000:group:2001",
+            )
+            connection = app.gateway_registry.resolve_active(presence).snapshot.connection_id
+            service = GroupRecoveryService(database, app.gateway_registry, app.presence_router)
+            pending = asyncio.create_task(
+                service.enable(
+                    context,
+                    presence_id=presence,
+                    connection_id=connection,
+                    audit=audit,
+                    event_type="message:group:normal",
+                )
+            )
+            await asyncio.wait_for(entered.wait(), 3)
+            if disconnect_unrelated:
+                app.gateway_registry.disconnect(telegram)
+            release.set()
+            assert await asyncio.wait_for(pending, 5)
+            after = await state(database, space, binding)
+            assert after[1:3] == (False, False)
+            assert after[3:5] == before[3:5]
+            assert after[7:] == before[7:]
+            async with database.sessions() as session:
+                assert (
+                    await session.scalar(
+                        select(func.count()).select_from(ControlCommandReceiptModel)
+                    )
+                    == 1
+                )
+                assert await session.scalar(select(func.count()).select_from(ChatEventModel)) == 0
+            app.gateway_registry.disconnect(telegram)
+    finally:
+        release.set()
+        if pending is not None:
+            await asyncio.gather(pending, return_exceptions=True)
+        await app.close()

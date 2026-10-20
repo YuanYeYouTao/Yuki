@@ -121,7 +121,9 @@ class FakeEngine:
         return FakeRun(self.arguments, self.calls)
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize(
     "action,ending",
     [
@@ -274,7 +276,9 @@ async def test_pending_owned_execution_allows_code_wait_condition(database, tmp_
     assert json.loads(child.receipt)["ok"] is True, "Code Mode must retain direct wait semantics"
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize(
     "action,state", [("cancel", "cancelled"), ("fail", "failed"), ("resume", "queued")]
 )
@@ -315,7 +319,9 @@ async def test_control_of_other_target_keeps_current_program(
         assert body["result"] == [True, 42]
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("action,ending", [("cancel", "cancelled"), ("fail", "failed")])
 async def test_real_current_revocation_after_completion_proposal_stops_tail(
     database, tmp_path, native, action, ending
@@ -342,7 +348,9 @@ async def test_real_current_revocation_after_completion_proposal_stops_tail(
     assert tools == root == 0
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 async def test_completion_proposal_survives_segment_yield_until_original_tail_settles(
     database, tmp_path, native
 ):
@@ -390,7 +398,9 @@ async def test_completion_proposal_survives_segment_yield_until_original_tail_se
     assert tools == root == 2 and restored.controls == []
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("action", ["cancel", "fail"])
 async def test_revoked_original_work_settles_pending_program_without_reopening_vm(
     database, tmp_path, native, action
@@ -422,7 +432,9 @@ async def test_revoked_original_work_settles_pending_program_without_reopening_v
     assert tools == root == 1
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("interrupt", [None, "receipt_crash", "segment_yield"])
 async def test_child_question_preserves_original_program_and_wait_on_restore(
     database, tmp_path, monkeypatch, native, interrupt
@@ -557,7 +569,9 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     assert control.current["state"] == "waiting_user"
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("crash", [False, True])
 @pytest.mark.parametrize("error", ["capability_not_allowed", "capability_no_longer_authorized"])
 async def test_single_tool_refusal_keeps_valid_tail_on_run_and_restore(
@@ -724,7 +738,9 @@ async def test_original_code_stop_and_changed_api_never_reopen_program(
     assert env.domain.log == []
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("unavailable", ["worker", "api", "backend"])
 async def test_runner_restores_original_program_with_unavailable_current_code_contract(
     database, tmp_path, native, unavailable
@@ -801,7 +817,9 @@ async def test_runner_restores_original_program_with_unavailable_current_code_co
     assert backend is None or backend.log == []
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("revoked", ["generation", "lease"])
 async def test_actual_execution_source_revocation_stops_new_program_effects(
     database, tmp_path, native, revoked
