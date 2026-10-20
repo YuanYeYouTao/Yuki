@@ -67,6 +67,7 @@ class AppSender:
                 person_refs={"current_speaker": self.binding.person_id},
                 reply_presence_id=self.presence_id,
                 trigger_event_id=self.event_id,
+                origin="system_task",
                 caused_by_event_id=self.event_id,
             ),
         )

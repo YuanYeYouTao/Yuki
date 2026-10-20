@@ -182,6 +182,10 @@ conversation、work、activity、character、computer、executor、work_steps、
 提示队列溢出会结束该订阅，包括被丢弃的是最后一条提示的情况。新连接重新登记与核对，
 客户端在重连／回前台时用持久事件 ID 和 Work revision 补读。撤销／遗忘使后续读取与流失效。
 
+确定性的入站反馈（例如超过实例 `MAX_INPUT_CHARACTERS` 设置）沿原入站事件写回同一
+App/ACP 会话，使用 system_task 因果来源；不购买模型请求。原请求可查到 ended 和实际
+outcome，反馈事件仍由 result_event_ids 列出；同号重放不产生第二条说明。
+
 ## 上传与原文件下载
 
 事件附件保留真实 attachment_index、size/file_size 和原缓存期限；语音从原事件的结构化转写序列取当前语音文字，保留完整内容，不把 JSON 编码或引用语音当成这则语音的转写。

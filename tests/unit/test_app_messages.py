@@ -569,3 +569,54 @@ async def test_app_text_does_not_execute_platform_control_commands(app_env, data
         )
         assert conversation.generation == 1
     assert len(env.calls) == 2
+
+
+async def test_app_overlong_feedback_is_in_original_ledger_and_request_result(app_env, database):
+    from tests.unit.test_client_works import owner
+
+    env = app_env
+    device, _ = await owner(env, database)
+    request = {
+        "request_id": str(uuid4()),
+        "text": "長" * (env.harness.settings.max_input_characters + 1),
+    }
+    response = await env.client.post(
+        "/client/v1/messages", json=request, headers=bearer(device["token"])
+    )
+    assert response.status_code == 200
+    original = response.json()["data"]
+    await drain(env)
+    async with database.sessions() as session:
+        outbound = list(
+            await session.scalars(
+                select(ChatEventModel).where(ChatEventModel.direction == "outbound")
+            )
+        )
+    assert len(outbound) == 1
+    feedback = outbound[0]
+    assert "消息过长" in feedback.content
+    assert feedback.canonical_conversation_id == original["conversation_id"]
+    assert feedback.caused_by_event_id == original["event_id"]
+    assert feedback.origin == "system_task"
+    assert not env.calls
+    queried = (
+        await env.client.get(
+            f"/client/v1/requests/{request['request_id']}", headers=bearer(device["token"])
+        )
+    ).json()["data"]
+    assert queried["event_id"] == original["event_id"]
+    assert queried["turn"] == {"state": "ended", "outcome": "input_too_long"}
+    assert feedback.id in queried["result_event_ids"]
+    repeated = await env.client.post(
+        "/client/v1/messages", json=request, headers=bearer(device["token"])
+    )
+    assert repeated.status_code == 200 and repeated.json()["data"]["replay"]
+    await drain(env)
+    async with database.sessions() as session:
+        assert (
+            await session.scalar(
+                select(func.count(ChatEventModel.id)).where(ChatEventModel.direction == "outbound")
+            )
+            == 1
+        )
+    assert not env.calls
