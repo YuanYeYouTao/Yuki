@@ -1,5 +1,6 @@
 """Personal inputs retain original Work identity and commit all three facts together."""
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -214,6 +215,101 @@ async def test_waiting_resume_retains_session_budget_and_honors_busy_original_le
                 select(journal.c.payload_json).where(journal.c.work_id == current["id"])
             )
         ).scalar_one() == '{"session":"original-session"}'
+
+
+@pytest.mark.parametrize("group", [False, True])
+async def test_concurrent_devices_append_two_answers_to_one_original_wait(app_env, database, group):
+    env = app_env
+    first, person = await owner(env, database)
+    issued = await env.identity.issue_for_device(
+        await env.identity.authenticate(first["token"]), str(uuid4())
+    )
+    second = await pair(env.client, issued["code"])
+    devices = [first, second]
+    original = await seeded(env, database, state="waiting_user", group=group)
+    requests = [
+        {"request_id": str(uuid4()), "text": "first device answer"},
+        {"request_id": str(uuid4()), "text": "second device answer"},
+    ]
+    route = f"/client/v1/works/{original.row['id']}/inputs"
+    responses = await asyncio.gather(
+        *(
+            env.client.post(route, json=body, headers=bearer(device["token"]))
+            for body, device in zip(requests, devices, strict=True)
+        )
+    )
+    assert any(response.status_code == 200 for response in responses)
+    for index, (response, body, device) in enumerate(
+        zip(responses, requests, devices, strict=True)
+    ):
+        if response.status_code == 503:
+            # The other device may still hold the original resume lease. Confirm nonacceptance
+            # before retrying the same request, as the desktop outbox does after recovery.
+            assert response.json()["problem"]["code"] == "unavailable"
+            absent = await env.client.get(
+                f"/client/v1/requests/{body['request_id']}", headers=bearer(device["token"])
+            )
+            assert absent.status_code == 200 and absent.json()["data"] == {"found": False}
+            response = await env.client.post(route, json=body, headers=bearer(device["token"]))
+            responses[index] = response
+        assert response.status_code == 200, response.text
+    results = [response.json()["data"] for response in responses]
+    assert len({item["input_id"] for item in results}) == 2
+    assert len({item["event_id"] for item in results}) == 2
+    async with database.sessions() as session:
+        rows = (await session.execute(select(inputs).order_by(inputs.c.id))).mappings().all()
+        assert len(rows) == 2
+        assert [row["event_id"] for row in rows] == sorted(item["event_id"] for item in results)
+        assert {row["id"] for row in rows} == {item["input_id"] for item in results}
+        for row in rows:
+            assert row["work_id"] == original.row["id"] and row["ready"]
+            assert row["conversation_id"] == original.row["conversation_id"]
+            event = await session.get(ChatEventModel, row["event_id"])
+            assert event.author_person_id == person and event.origin == "work_input"
+        assert {json.loads(row["payload_json"])["text"] for row in rows} == {
+            body["text"] for body in requests
+        }
+        assert await session.scalar(select(func.count(work.c.id))) == 1
+        assert await session.scalar(select(func.count(ChatEventModel.id))) == 3
+        assert (
+            await session.execute(
+                select(budgets.c.models, budgets.c.tools).where(
+                    budgets.c.root_id == original.row["id"]
+                )
+            )
+        ).one() == (3, 2)
+        assert (
+            await session.execute(
+                select(journal.c.payload_json).where(journal.c.work_id == original.row["id"])
+            )
+        ).scalar_one() == '{"session":"original-session"}'
+    current = await original.repository.get(original.row["id"])
+    assert current["state"] == "queued"
+    for key in (
+        "id",
+        "conversation_id",
+        "generation",
+        "source_json",
+        "model_requests",
+        "tool_calls",
+    ):
+        assert current[key] == original.row[key]
+    projections = await asyncio.gather(
+        *(
+            env.client.get(route.removesuffix("/inputs"), headers=bearer(d["token"]))
+            for d in devices
+        )
+    )
+    assert all(response.status_code == 200 for response in projections)
+    assert projections[0].json()["data"] == projections[1].json()["data"]
+    for body, result, device in zip(requests, results, reversed(devices), strict=True):
+        replay = await env.client.post(route, json=body, headers=bearer(device["token"]))
+        assert replay.status_code == 200
+        assert replay.json()["data"] == {**result, "replay": True}
+    async with database.sessions() as session:
+        assert await session.scalar(select(func.count(inputs.c.id))) == 2
+        assert await session.scalar(select(func.count(ChatEventModel.id))) == 3
+    assert not env.calls and not env.gateway.tasks
 
 
 async def test_other_person_cannot_read_input_or_cancel_group_work(app_env, database):
