@@ -70,7 +70,7 @@ class RunAgentSessionRequest(StrictModel):
 class AgentSession(StrictModel):
     session_id: UUID
     name: str
-    status: active | closed
+    status: active | closed | expired | blocked
     persistence: ephemeral | durable
     context_profile: none | current_user | current_group
     created_at: datetime

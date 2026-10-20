@@ -520,19 +520,20 @@ class TurnExecution:
         self.state.control = self.runtime.work_control
         self.state.boundary = None
         if (
-            request_index > 0
+            (
+                request_index > 0
+                or (
+                    self.state.control is not None
+                    and self.state.control.session is not None
+                    and self.state.control.session.uses_recovery_transcript
+                )
+            )
             and self.runtime.observation_boundary is not None
             and not self.state.provider_pause_replay
             and not (
                 self.state.control is not None
                 and self.state.control.current is not None
-                and (
-                    self.state.control.lease.work_id
-                    or (
-                        self.state.control.session
-                        and self.state.control.session.uses_recovery_transcript
-                    )
-                )
+                and self.state.control.lease.work_id
             )
         ):
             known = self.state.observed_event_ids | (

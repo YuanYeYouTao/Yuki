@@ -595,7 +595,7 @@ async def test_new_group_registration_rejects_untrusted_or_unproven_requests(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["connection", "presence_revision", "existing_owner"])
+@pytest.mark.parametrize("change", ["connection", "presence_disabled", "existing_owner"])
 async def test_new_group_registration_race_never_creates_or_replaces_owner(
     database: Database, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
@@ -612,10 +612,10 @@ async def test_new_group_registration_race_never_creates_or_replaces_owner(
             )
         else:
             async with database.immediate_session() as session:
-                if change == "presence_revision":
+                if change == "presence_disabled":
                     row = await session.get(PresenceModel, presence)
                     assert row is not None
-                    row.revision += 1
+                    row.status = "disabled"
                 else:
                     space_id = await ensure_space(session, NEW_GROUP)
                     space = await session.get(CanonicalSpaceModel, space_id)
@@ -836,4 +836,118 @@ async def test_group_recovery_depends_only_on_its_actual_platform_connection(
         release.set()
         if pending is not None:
             await asyncio.gather(pending, return_exceptions=True)
+        await app.close()
+
+
+@pytest.mark.parametrize("change", ["connect", "disconnect", "revision", "selected_revision"])
+async def test_group_recovery_ignores_changes_outside_selected_entry_facts(
+    database, monkeypatch, change
+):
+    app, _bot, presence, space, binding = await stack(database)
+    unrelated = Bot("8001", groups=frozenset({"900099"}))
+    try:
+        async with database.immediate_session() as session:
+            unrelated_id = await ensure_presence(session, "8001")
+        if change != "connect":
+            app.gateway_registry.connect(
+                unrelated, provider_id="snowluma", presence_id=unrelated_id
+            )
+        await pause(database, space, binding)
+        before = await state(database, space, binding)
+        original = app.presence_router.group_recovery_candidate
+
+        async def change_unrelated_after_selection(binding_id):
+            candidate = await original(binding_id)
+            assert candidate.presence_id == presence
+            if change == "connect":
+                app.gateway_registry.connect(
+                    unrelated, provider_id="snowluma", presence_id=unrelated_id
+                )
+            elif change == "disconnect":
+                app.gateway_registry.disconnect(unrelated)
+            else:
+                async with database.immediate_session() as session:
+                    row = await session.get(
+                        PresenceModel, presence if change == "selected_revision" else unrelated_id
+                    )
+                    row.revision += 1
+            # This account is not a member of the target group. Repeating the
+            # actual selection proves its change did not alter the candidate.
+            assert await original(binding_id) == candidate
+            return candidate
+
+        monkeypatch.setattr(
+            app.presence_router, "group_recovery_candidate", change_unrelated_after_selection
+        )
+        access = ControlAccess(database)
+        principal = await access.recovery_principal("9000", platform="qq")
+        context = access.context(
+            principal, await access.recovery_space_target("2001", platform="qq")
+        )
+        audit = ControlAuditRef(
+            user_id="9000",
+            bot_user_id="8000",
+            trigger_message_id="unrelated-change",
+            conversation_key="bot:8000:group:2001",
+        )
+        connection = app.gateway_registry.resolve_active(presence).snapshot.connection_id
+        service = GroupRecoveryService(database, app.gateway_registry, app.presence_router)
+        assert await service.enable(
+            context,
+            presence_id=presence,
+            connection_id=connection,
+            audit=audit,
+            event_type="message:group:normal",
+        )
+        after = await state(database, space, binding)
+        assert after[1:3] == (False, False)
+        assert after[3:5] == before[3:5]
+        assert after[7:] == before[7:]
+        async with database.sessions() as session:
+            assert (
+                await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel))
+                == 1
+            )
+            assert (
+                await session.scalar(select(func.count()).select_from(AdminOperationEventModel))
+                == 1
+            )
+            assert await session.scalar(select(func.count()).select_from(ChatEventModel)) == 0
+    finally:
+        await app.close()
+
+
+@pytest.mark.parametrize("change", ["disabled", "ended", "ingest"])
+async def test_group_recovery_rechecks_selected_presence_facts(database, monkeypatch, change):
+    app, bot, presence, space, binding = await stack(database)
+    try:
+        await pause(database, space, binding)
+        before = await state(database, space, binding)
+        original = app.presence_router.group_recovery_candidate
+
+        async def revoke_selected_after_selection(binding_id):
+            candidate = await original(binding_id)
+            async with database.immediate_session() as session:
+                row = await session.get(PresenceModel, presence)
+                if change == "ingest":
+                    row.ingest_eligible = False
+                else:
+                    row.status = change
+            return candidate
+
+        monkeypatch.setattr(
+            app.presence_router, "group_recovery_candidate", revoke_selected_after_selection
+        )
+        await app.processor.handle(message(), Sender(bot))
+        assert await state(database, space, binding) == before
+        async with database.sessions() as session:
+            assert (
+                await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel))
+                == 0
+            )
+            assert (
+                await session.scalar(select(func.count()).select_from(AdminOperationEventModel))
+                == 0
+            )
+    finally:
         await app.close()

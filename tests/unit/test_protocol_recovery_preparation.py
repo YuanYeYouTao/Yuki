@@ -17,6 +17,8 @@ from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_journal_source_retry import _change, _session
 
 from yuki.conversation.observation_models import ContextObservationModel
+from yuki.conversation.projections import PromptProjectionRepository
+from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import (
     ChatMessage,
@@ -72,7 +74,10 @@ async def as_child(control, original):
 
 
 @pytest.mark.parametrize("kind", ["pause", "child", "paired_native", "paired_native_root"])
-async def test_actual_journal_selects_exact_before_assembler_reads_history(database, kind):
+@pytest.mark.parametrize("read_history", [False, True])
+async def test_actual_journal_selects_exact_before_assembler_reads_history(
+    database, kind, read_history
+):
     control, session, selected, _ = await _session(database)
     if kind in {"child", "paired_native"}:
         control, session = await as_child(control, session)
@@ -99,6 +104,7 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
         session.transcript.append(ChatMessage("assistant", tool_calls=(call,)))
         await session.save("response", (call,))
     assembler = ContextAssembler.__new__(ContextAssembler)
+    assembler._settings = make_settings(database.url)
     assembler._ledger = EventLedgerRepository(database)
     assembler._scopes = SimpleNamespace(
         load_prompt_snapshot=AsyncMock(side_effect=AssertionError("fresh history must not be read"))
@@ -110,12 +116,14 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
             identity=scope,
             content="new",
             metadata={},
-            read_history=True,
+            read_history=read_history,
             runtime=None,
         )
 
     result = await prepare_context(builder, control, recovery_contract="fixed-contract")
     assert result.recovery_protocol
+    assert result.projection_scope == ("main" if read_history else "")
+    assert (result.load_history is not None) is read_history
     assert result.read_version == session.source_guard.version
     assert result.read_version.visible_event_ids == session.source_guard.version.visible_event_ids
     assert result.history_messages == () and result.metadata_payload == {}
@@ -124,6 +132,42 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(datab
     loaded = await session.journal.load(control.lease, control.current["id"], "fixed-contract")
     assert "original-signature" in loaded.record["payload_json"]
     assert protocol_recovery_preparation.get() is None
+
+
+async def test_recovery_cache_miss_reads_original_internal_conversation_from_raw_scope(database):
+    control, session, selected, unselected = await _session(database)
+    original = session.source_guard.version
+    assert original.conversation_id == selected.canonical_conversation_id
+    assert original.scope.conversation_id is None
+    assert original.scope.key.startswith("bot:")
+    session.progress["provider_pause_replay"] = True
+    await session.save("paired")
+    projections = PromptProjectionRepository(database)
+    assert await projections.read(original.conversation_id) is None
+    assembler = ContextAssembler(
+        settings=make_settings(database.url),
+        ledger=EventLedgerRepository(database),
+        conversation_scopes=ConversationScopeRepository(database, projections=projections),
+    )
+    # Caller metadata is not the original recovery identity. There is deliberately
+    # no current platform entry for these native IDs.
+    current_entry = ConversationScope.group("different-current-bot", "different-current-group")
+
+    async def builder():
+        return await assembler.assemble_plugin(
+            identity=current_entry, content="resume", metadata={}, read_history=True, runtime=None
+        )
+
+    recovered = await prepare_context(builder, control, recovery_contract=session.contract)
+    assert recovered.recovery_protocol
+    prepared = await recovered.load_history(unselected.id)
+    assert prepared.read_version.conversation_id == original.conversation_id
+    assert prepared.read_version.scope.conversation_id == original.conversation_id
+    assert prepared.read_version.scope.key == f"conversation:{original.conversation_id}"
+    body = "\n".join(message.content or "" for message in prepared.history_messages)
+    assert selected.content in body and unselected.content in body
+    # A current public read does not modify the original paid read identity.
+    assert session.source_guard.version.scope == original.scope
 
 
 @pytest.mark.parametrize(

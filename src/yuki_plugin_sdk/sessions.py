@@ -26,6 +26,8 @@ class SessionContextProfile(StrEnum):
 class SessionStatus(StrEnum):
     ACTIVE = "active"
     CLOSED = "closed"
+    EXPIRED = "expired"
+    BLOCKED = "blocked"
 
 
 class CreateAgentSessionRequest(StrictModel):

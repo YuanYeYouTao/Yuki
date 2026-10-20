@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.automation.models import TurnOrigin
@@ -246,7 +247,6 @@ class PluginAgentSessionService:
             record = await self._repository.get(
                 plugin_id=authority.plugin_id,
                 session_id=session_id,
-                include_expired=True,
             )
             if record is None:
                 raise PluginSessionNotFoundError("plugin Agent session is unavailable")
@@ -269,7 +269,11 @@ class PluginAgentSessionService:
             actor_user_id=authority.actor_user_id,
             current_group_id=authority.current_group_id,
         )
-        if record is None or record.status != "active":
+        if (
+            record is None
+            or record.status != "active"
+            or (record.expires_at is not None and record.expires_at <= datetime.now(UTC))
+        ):
             raise PluginSessionNotFoundError("plugin Agent session is unavailable")
         if (
             record.persistence == "ephemeral"

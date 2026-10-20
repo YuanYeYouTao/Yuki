@@ -41,7 +41,7 @@ _FORBIDDEN_METADATA_KEYS = (
 
 
 class PluginSessionUnavailableError(RuntimeError):
-    """The opaque session does not exist, is closed, expired, or belongs elsewhere."""
+    """The opaque session or its original material owner is unavailable."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,21 +147,11 @@ class PluginAgentSessionRepository:
         *,
         plugin_id: str,
         session_id: str,
-        include_expired: bool = False,
-        now: datetime | None = None,
     ) -> PluginAgentSessionRecord | None:
         statement = select(PluginAgentSessionModel).where(
             PluginAgentSessionModel.plugin_id == plugin_id,
             PluginAgentSessionModel.session_id == session_id,
         )
-        if not include_expired:
-            timestamp = _aware_utc(now or datetime.now(UTC))
-            statement = statement.where(
-                or_(
-                    PluginAgentSessionModel.expires_at.is_(None),
-                    PluginAgentSessionModel.expires_at > timestamp,
-                )
-            )
         async with self._database.sessions() as session:
             row = await session.scalar(statement)
             if row is None:
@@ -176,10 +166,8 @@ class PluginAgentSessionRepository:
         session_id: str,
         actor_user_id: str | None,
         current_group_id: str | None,
-        include_expired: bool = False,
-        now: datetime | None = None,
     ) -> PluginAgentSessionRecord | None:
-        """Load one session and authorize the Host actor.
+        """Read original material for its matching Host actor.
 
         Unbound or different actors get not-found. Only a matching actor
         sees PluginOwnershipError from the persisted row itself.
@@ -189,14 +177,6 @@ class PluginAgentSessionRepository:
             PluginAgentSessionModel.plugin_id == plugin_id,
             PluginAgentSessionModel.session_id == session_id,
         )
-        if not include_expired:
-            timestamp = _aware_utc(now or datetime.now(UTC))
-            statement = statement.where(
-                or_(
-                    PluginAgentSessionModel.expires_at.is_(None),
-                    PluginAgentSessionModel.expires_at > timestamp,
-                )
-            )
         async with self._database.sessions() as session:
             row = await session.scalar(statement)
             if row is None:
@@ -222,7 +202,7 @@ class PluginAgentSessionRepository:
         metadata: Mapping[str, object] | None = None,
         now: datetime | None = None,
     ) -> PluginAgentMessageRecord:
-        """Atomically allocate a transcript sequence and append one visible message."""
+        """Append admitted material; expiration cannot revoke a completed response."""
 
         if role not in _SESSION_ROLES:
             raise ValueError("role must be user, assistant, or tool")
@@ -255,18 +235,11 @@ class PluginAgentSessionRepository:
                 .where(
                     PluginAgentSessionModel.plugin_id == plugin_id,
                     PluginAgentSessionModel.session_id == session_id,
-                    PluginAgentSessionModel.status == "active",
-                    or_(
-                        PluginAgentSessionModel.expires_at.is_(None),
-                        PluginAgentSessionModel.expires_at > timestamp,
-                    ),
                 )
                 .values(**values)
                 .returning(PluginAgentSessionModel.next_sequence)
             )
-            next_sequence = result.scalar_one_or_none()
-            if next_sequence is None:
-                raise PluginSessionUnavailableError("plugin Agent session is unavailable")
+            next_sequence = result.scalar_one()
             row = PluginAgentMessageModel(
                 session_id=session_id,
                 sequence=int(next_sequence) - 1,

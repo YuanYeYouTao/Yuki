@@ -20,6 +20,7 @@ from yuki.conversation.ordinary_admission import (
     OrdinaryAdmissionRepository,
 )
 from yuki.conversation.projections import (
+    SUMMARY_RENDERER_VERSION,
     ProjectionCapacityError,
     ProjectionConflict,
     PromptProjectionRepository,
@@ -46,7 +47,7 @@ from yuki.services.context_boundary import (
 )
 from yuki.services.context_compaction import PublicCompactContext
 from yuki.services.durable_invocations import DurableInvocations
-from yuki.services.history_projection import prepare_history
+from yuki.services.history_projection import PreparedHistory, prepare_history
 from yuki.services.processing_status import ProcessingStatusService
 from yuki.services.prompt_composer import PromptComposer, PromptComposition
 from yuki.services.turn_transcript import (
@@ -126,8 +127,6 @@ class MainAgentTurnService:
                     short_state=state,
                 )
 
-            if getattr(context, "recovery_protocol", False):
-                return compose_context(context)
             if (
                 self._projections is None
                 or contract is None
@@ -153,11 +152,21 @@ class MainAgentTurnService:
                 else None
             )
             view_key = conversation_id
-            prepared = await prepare_history(
-                self._projections,
-                context,
-                view_key=view_key,
-                context_key=_hash([version.conversation_id, version.generation]),
+            context_key = _hash([version.conversation_id, version.generation])
+            prepared = (
+                PreparedHistory(
+                    repository,
+                    view_key,
+                    context_key,
+                    context,
+                    FrozenFragments.load([]),
+                    None,
+                    None,
+                )
+                if context.recovery_protocol
+                else await prepare_history(
+                    repository, context, view_key=view_key, context_key=context_key
+                )
             )
             composition = compose_context(prepared.context)
             assert composition.read_version is not None
@@ -373,15 +382,23 @@ class MainAgentTurnService:
                     business_inputs: bool = False,
                     inputs: tuple[OrdinaryContextInput, ...] = ordinary_candidates,
                 ) -> PreparedContextBoundary:
-                    nonlocal committed, observation_watermark
+                    nonlocal committed, observation_watermark, prepared
                     from yuki.services.turn_coordinator import HistorySourceChangedError
 
                     if not await ledger.read_version_matches(current_version):
                         raise HistorySourceChangedError(current_version)
-                    previous = prepared.committed
-                    if previous is None:
-                        raise ValueError("chat boundary requires an initial dispatched projection")
-                    old = previous.fragments
+                    previous = prepared.committed or await repository.read(view_key)
+                    if previous is None and context.load_history is not None:
+                        # A recyclable view is not the source of public knowledge.
+                        # Reuse canonical preparation without replacing paid input.
+                        prepared = await prepare_history(
+                            repository,
+                            await context.load_history(max(selected_event_ids)),
+                            view_key=view_key,
+                            context_key=context_key,
+                        )
+                        previous = prepared.previous
+                    old = previous.fragments if previous is not None else prepared.fragments
                     selected = old.extend_history(delta, delta)
                     control = current_work_control.get()
                     if (
@@ -409,7 +426,7 @@ class MainAgentTurnService:
                             valid = await selected_guard.check(
                                 control,
                                 database=repository.database,
-                                event_ids=selected.event_ids,
+                                event_ids=rendered_event_ids,
                             )
                             if control is not None and control.session is not None:
                                 selected_revision = control.session.source_revision
@@ -426,7 +443,7 @@ class MainAgentTurnService:
                         selected_guard is not None
                         and await repository.invalidation_reason(view_key) == "source_changed"
                     )
-                    already_published = selected == old and not rebuild
+                    already_published = previous is not None and selected == old and not rebuild
                     projection_publication = await repository.prepare_commit(
                         view_key=view_key,
                         conversation_id=conversation_id,
@@ -435,13 +452,31 @@ class MainAgentTurnService:
                         starts_after_event_id=current_version.starts_after_event_id,
                         context_key=prepared.context_key,
                         fragments=selected,
-                        expected_epoch=None if rebuild else previous.epoch_id,
-                        expected_revision=0 if rebuild else previous.revision,
-                        rebuild_reason="source_changed" if rebuild else None,
-                        selected_summary_text=previous.selected_summary_text,
-                        selected_summary_coverage=previous.selected_summary_coverage,
-                        selected_summary_kind=previous.selected_summary_kind,
-                        selected_summary_renderer=previous.selected_summary_renderer,
+                        expected_epoch=previous.epoch_id
+                        if previous is not None and not rebuild
+                        else None,
+                        expected_revision=previous.revision
+                        if previous is not None and not rebuild
+                        else 0,
+                        rebuild_reason=(
+                            "source_changed"
+                            if rebuild
+                            else (await repository.invalidation_reason(view_key) or "bootstrap")
+                            if previous is None
+                            else None
+                        ),
+                        selected_summary_text=previous.selected_summary_text
+                        if previous
+                        else prepared.context.checkpoint_text or None,
+                        selected_summary_coverage=previous.selected_summary_coverage
+                        if previous
+                        else prepared.context.prompt_effective_coverage,
+                        selected_summary_kind=previous.selected_summary_kind
+                        if previous
+                        else prepared.context.metrics.checkpoint_kind,
+                        selected_summary_renderer=previous.selected_summary_renderer
+                        if previous
+                        else SUMMARY_RENDERER_VERSION,
                         previous_snapshot=previous,
                         write=not already_published,
                     )
@@ -523,6 +558,11 @@ class MainAgentTurnService:
                     prepare_boundary,
                     ordinary_candidates,
                 )
+
+            if context.recovery_protocol:
+                # The saved request owns its prefix and protocol. Only a later
+                # dispatch appends newly authorized public fragments at its tail.
+                return replace(composition, observation_boundary=observation_boundary)
 
             async def adopt_compact(
                 summary: str, coverage: int, retained: FrozenFragments

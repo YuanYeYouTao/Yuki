@@ -87,6 +87,18 @@ jobs:
         run: >-
           aa-exec -p yuki-bot-codemode -- .venv/bin/python -m pytest tests -q
           -m native_worker --strict-markers --junitxml=test-results/native.xml
+      - name: Save the exact native distribution for isolated replay
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: monty-native-distribution
+          path: |
+            .cache/monty-ci/artifacts.json
+            .cache/monty-ci/wheels/*.whl
+            .cache/monty-ci/monty/target/release/monty
+            .cache/monty-ci/monty-isolated
+          include-hidden-files: true
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: always()
         with:

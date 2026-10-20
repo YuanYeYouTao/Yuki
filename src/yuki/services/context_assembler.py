@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence, Set
+from collections.abc import Awaitable, Callable, Sequence, Set
 from dataclasses import dataclass, replace
 from datetime import UTC
 from typing import TYPE_CHECKING, Any
@@ -73,6 +73,7 @@ class AssembledContext:
     history_bot_display_name: str = "Yuki"
     history_timezone: str = "Asia/Shanghai"
     recovery_protocol: bool = False
+    load_history: Callable[[int], Awaitable[AssembledContext]] | None = None
     projection_snapshot: ProjectionSnapshot | None = None
     history_incremental: bool = False
     prepared_fragments: FrozenFragments | None = None
@@ -132,18 +133,33 @@ class ContextAssembler:
             visible_event_ids=frozenset(original.visible_event_ids),
             read_version=original,
             recovery_protocol=True,
+            projection_scope="main",
+            load_history=lambda through: self._assemble_activation(
+                identity=replace(
+                    original.scope,
+                    conversation_id=original.conversation_id,
+                    key=f"conversation:{original.conversation_id}",
+                ),
+                turn=turn,
+                content="",
+                before_event_id=through + 1,
+            ),
+            history_bot_display_name=self._settings.bot_display_name,
+            history_timezone=self._settings.default_timezone,
         )
 
     async def _assemble_activation(
         self,
         *,
         identity: ConversationScope,
-        turn: ConversationTurnSnapshot,
+        turn: ConversationTurnSnapshot | None,
         content: str,
-        runtime: RuntimeConfigSnapshot,
+        before_event_id: int | None = None,
     ) -> AssembledContext:
         """Prepare the common history for a real execution without a chat event."""
-        snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
+        snapshot = await self._load_history_snapshot(
+            identity, turn=turn, before_event_id=before_event_id
+        )
         context = self._prepared_context(
             snapshot,
             identity=identity,
@@ -249,7 +265,11 @@ class ContextAssembler:
         scope = identity
         recovery = await self._protocol_recovery_context(scope)
         if recovery is not None:
-            return recovery
+            return (
+                recovery
+                if read_history
+                else replace(recovery, projection_scope="", load_history=None)
+            )
         metadata = {**metadata, "platform": scope.platform}
         if read_history:
             loaded = await self._scopes.prepare_prompt_snapshot(
@@ -313,9 +333,7 @@ class ContextAssembler:
                 runtime=runtime,
             )
         if inbound is None and profile is None:
-            return await self._assemble_activation(
-                identity=identity, turn=turn, content=content, runtime=runtime
-            )
+            return await self._assemble_activation(identity=identity, turn=turn, content=content)
         if inbound is None or profile is None:
             raise ConversationCoverageError("message turn requires a real inbound actor")
         if turn.trigger_event_id is None:
@@ -460,7 +478,7 @@ class ContextAssembler:
         self,
         scope: ConversationScope,
         *,
-        turn: ConversationTurnSnapshot,
+        turn: ConversationTurnSnapshot | None,
         before_event_id: int | None,
         trigger_event_id: int | None = None,
     ) -> _HistoryPromptWindow:
@@ -472,7 +490,7 @@ class ContextAssembler:
             timezone=self._settings.default_timezone,
             trigger_event_id=trigger_event_id,
         )
-        if not turn_matches_hydrated_scope(
+        if turn is not None and not turn_matches_hydrated_scope(
             turn,
             conversation_id=loaded.scope.id,
             generation=loaded.scope.generation,
