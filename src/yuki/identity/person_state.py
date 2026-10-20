@@ -7,12 +7,13 @@ as database ownership keys in this module.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.domain.messages import InboundMessage, sanitize_display_name
@@ -110,16 +111,6 @@ async def prepare_message_account_observations(
         if space_binding_id
         else {}
     )
-    observations = {
-        (row.account_id, row.assignment_id, row.space_binding_id, row.name): row
-        for row in await session.scalars(
-            select(AccountNameObservationModel).where(
-                AccountNameObservationModel.account_id.in_(ids),
-                AccountNameObservationModel.space_binding_id.is_(None)
-                | (AccountNameObservationModel.space_binding_id == space_binding_id),
-            )
-        )
-    }
     moment = message.occurred_at or now
     values: list[tuple[str, str | None, str | None, str, str]] = []
     sender_stage_id = sender_stage.id if sender_stage else None
@@ -196,6 +187,34 @@ async def prepare_message_account_observations(
         name = sanitize_display_name(name)
         if name:
             prepared[(account_id, stage_id, scope, name)] = kind
+    observations = {
+        (row.account_id, row.assignment_id, row.space_binding_id, row.name): row
+        for row in (
+            await session.scalars(
+                select(AccountNameObservationModel).from_statement(
+                    text(
+                        "SELECT observed.* FROM json_each(:keys) AS wanted "
+                        "CROSS JOIN account_name_observations AS observed "
+                        "WHERE observed.account_id=json_extract(wanted.value,'$[0]') "
+                        "AND coalesce(observed.assignment_id,'')=json_extract(wanted.value,'$[1]') "
+                        "AND coalesce(observed.space_binding_id,'')="
+                        "json_extract(wanted.value,'$[2]') "
+                        "AND observed.name=json_extract(wanted.value,'$[3]')"
+                    )
+                ),
+                {
+                    "keys": json.dumps(
+                        [
+                            (account_id, stage_id or "", scope or "", name)
+                            for account_id, stage_id, scope, name in prepared
+                        ]
+                    )
+                },
+            )
+            if prepared
+            else ()
+        )
+    }
 
     def apply() -> None:
         session.add_all(new_accounts)

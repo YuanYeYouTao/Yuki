@@ -623,8 +623,6 @@ class PermissionCatalogService:
         level = PermissionLevel.SUPERUSER if actor_is_superuser else PermissionLevel.USER
         normalized_category = category.strip().casefold() if category else None
         normalized_query = query.strip().casefold() if query else None
-        if normalized_query is not None and len(normalized_query) > 64:
-            raise ValueError("capability query must not exceed 64 characters")
         capabilities = tuple(
             descriptor
             for descriptor in self._descriptors

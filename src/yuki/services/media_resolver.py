@@ -9,8 +9,8 @@ import hashlib
 import inspect
 import ipaddress
 import socket
-from collections.abc import Awaitable, Callable, Sequence
-from contextlib import aclosing, nullcontext
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from contextlib import aclosing, asynccontextmanager, nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import SplitResult, urljoin, urlsplit, urlunsplit
@@ -44,6 +44,23 @@ async def _media_io[T](function: Callable[..., T], *args: object) -> T:
     if cancelled is not None:
         raise cancelled
     return task.result()
+
+
+@asynccontextmanager
+async def _media_directory(prefix: str) -> AsyncIterator[Path]:
+    """Create and release decoder originals off-loop, including cancelled creation."""
+    owner: TemporaryDirectory[str] | None = None
+
+    def create() -> str:
+        nonlocal owner
+        owner = TemporaryDirectory(prefix=prefix)
+        return owner.name
+
+    try:
+        yield Path(await _media_io(create))
+    finally:
+        if owner is not None:
+            await _media_io(owner.cleanup)
 
 
 class PreparedAttachment:

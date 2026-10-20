@@ -85,14 +85,6 @@ async def plugin_session(database):
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=PluginOwnershipError,
-    reason=(
-        "F04: paused Space must not hide session material/DTO; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 @pytest.mark.parametrize("reader", ["history", "record"])
 async def test_paused_space_keeps_original_session_material(plugin_session, reader):
     env = plugin_session
@@ -119,14 +111,6 @@ async def test_paused_space_keeps_original_session_material(plugin_session, read
         assert record.canonical_space_id == env.space and record.turn_count == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "F04: already returned model output must be saved after Space pause; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 async def test_pause_after_model_response_keeps_paid_assistant(
     database, plugin_session, monkeypatch
 ):
@@ -139,12 +123,8 @@ async def test_pause_after_model_response_keeps_paid_assistant(
         return result
 
     monkeypatch.setattr(env.provider, "complete", pause_after_response)
-    try:
-        await env.facade.run(env.request)
-    except PluginOwnershipError:
-        # Inspect the independently persisted known result, even if the later
-        # return/read gate is still broken. This case does not freeze that error.
-        pass
+    result = await env.facade.run(env.request)
+    assert result.text == "known complete output" and result.model_requests == 1
     async with database.sessions() as session:
         messages = tuple(
             await session.scalars(
@@ -160,14 +140,6 @@ async def test_pause_after_model_response_keeps_paid_assistant(
     ]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=PluginOwnershipError,
-    reason=(
-        "F04: persisted known result must return after Space pause; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 async def test_pause_after_assistant_commit_keeps_public_run_result(plugin_session, monkeypatch):
     env = plugin_session
     append = env.repository.append_message

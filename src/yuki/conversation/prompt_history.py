@@ -277,13 +277,11 @@ class PromptHistorySource:
         references: EventPromptReferences,
         through_event_id: int,
         current_event_id: int | None,
-        yuki_account_ids: frozenset[str],
     ) -> tuple[tuple[EventFragment, ...], tuple[EventFragment, ...]]:
         renderer = ChatEventPromptRenderer(
             references=references,
             bot_display_name=self._bot_display_name,
             timezone=self._timezone,
-            yuki_account_ids=yuki_account_ids,
         )
         fresh = {row.id: row for row in rows if row.id != current_event_id}
         overrides = self._excluded_groups(current_event_id, through_event_id)

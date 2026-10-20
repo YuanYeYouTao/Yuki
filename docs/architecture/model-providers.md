@@ -169,6 +169,10 @@ Gemini 3 各型号支持的 thinkingLevel 可能不同，不支持的档位由�
 Claude 思考开启时不支持强制调用特定工具，适配为 auto；结构化任务仍由现有 Runner
 严格检查恰好一个 emit_result 及 schema，不增加隐藏模型调用。
 
+Gemini 组装一次请求时转换一次基础历史，并在该 payload 内按原 call ID 索引工具调用，
+将工具回执接回原生名称、ID 和签名。索引不跨请求保存，不重新解释已付 continuation，
+不改变 opaque parts、回执顺序或模型实际收到的历史字节。
+
 `headers` 支持 OpenRouter 的站点标识、Anthropic beta 等非鉴权 Header；不能覆盖认证字段，
 不能放换行或把密钥写入 TOML。`api_key_env` 是密钥引用；可读取进程环境变量，或由管理 API
 将 operator 输入的 API Key 保存在模型文件同目录的私有 `model_profiles.secrets.json` 中。

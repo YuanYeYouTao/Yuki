@@ -93,21 +93,7 @@ class AutomationService:
             timezone=self._time.default_timezone,
             current_group_id=provenance.current_group_id,
         )
-        expected = task.model_dump(mode="json", exclude={"name"}, exclude_none=True)
-        matched: list[AutomationDirectoryEntry] = []
-        offset = 0
-        while rows := await self._repository.list_directory(
-            statuses=(AutomationStatus.ACTIVE, AutomationStatus.PAUSED),
-            offset=offset,
-            include_script=True,
-        ):
-            for entry in rows:
-                record = cast(AutomationRecord, entry.record)
-                actual = {key: value for key, value in record.script.items() if key != "name"}
-                if record.max_runs == max_runs and actual == expected:
-                    matched.append(entry)
-            offset += len(rows)
-        return tuple(matched)
+        return await self._repository.find_equivalent_directory_entries(task, max_runs=max_runs)
 
     async def record_creation_failure(
         self,

@@ -129,7 +129,6 @@ async def test_real_foreground_delta_preserves_full_render_bytes_and_dispatch(
             # discarding adopted bytes. Keep that oracle only in this test.
             renderer = ChatEventPromptRenderer(
                 raw.raw_events,
-                yuki_account_ids=message.yuki_account_ids,
                 bot_display_name=harness.settings.bot_display_name,
                 timezone=harness.settings.default_timezone,
             )

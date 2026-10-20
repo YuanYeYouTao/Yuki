@@ -1,5 +1,6 @@
 """Independent HTTP batches retain successful vectors and their original claims."""
 
+import asyncio
 import json
 from collections import Counter
 from datetime import UTC, datetime
@@ -95,14 +96,6 @@ async def embedding_batches(database):
         await provider.close()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "F03: successful HTTP batch must be committed independently; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 async def test_successful_http_batch_survives_other_batch_failure(database, embedding_batches):
     env = embedding_batches
     # A processing unit may already be one protocol-sized batch. Stop at the
@@ -123,14 +116,6 @@ async def test_successful_http_batch_survives_other_batch_failure(database, embe
     assert all(row.content_hash == by_fact[row.fact_id].content_hash for row in vectors)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "F03: retry must not repurchase successful HTTP batch; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 async def test_retry_only_reissues_failed_documents(database, embedding_batches):
     env = embedding_batches
     for _ in range(3):
@@ -159,3 +144,31 @@ async def test_protocol_sized_claim_keeps_success_and_retries_only_failed_docume
     paid = Counter(text for batch in env.requested for text in batch)
     assert paid.pop(env.failed[0]) == 2
     assert set(paid.values()) == {1}
+
+
+async def test_protocol_sized_claim_drains_ready_batches_without_waiting_for_poll(
+    database, embedding_batches, monkeypatch
+):
+    env = embedding_batches
+    env.failed.append("disable simulated failure in this successful drain")
+    env.worker._interval_seconds = 3600
+    finished = asyncio.Event()
+    embed = env.provider.embed_documents
+
+    async def completed(texts):
+        result = await embed(texts)
+        if sum(len(batch) for batch in env.requested) == env.count:
+            env.worker._stop.set()
+            finished.set()
+        return result
+
+    monkeypatch.setattr(env.provider, "embed_documents", completed)
+    await env.worker.start()
+    try:
+        async with asyncio.timeout(5):
+            await finished.wait()
+    finally:
+        await env.worker.close()
+    async with database.sessions() as reader:
+        assert len(tuple(await reader.scalars(select(MemoryEmbeddingModel)))) == env.count
+    assert [len(batch) for batch in env.requested] == [env.provider.capabilities.max_batch_size, 1]

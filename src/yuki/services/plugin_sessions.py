@@ -9,6 +9,7 @@ from yuki.automation.models import TurnOrigin
 from yuki.domain.messages import ChatMessage
 from yuki.model_runtime.executor import ModelExecutor
 from yuki.model_runtime.models import ModelTask
+from yuki.plugin_host.ownership import require_live_actor
 from yuki.plugin_host.session_repository import (
     PluginAgentMessageRecord,
     PluginAgentSessionRecord,
@@ -47,7 +48,6 @@ class PluginSessionRunResult:
 
     session: PluginAgentSessionRecord
     text: str
-    tool_calls_used: int
     model_requests: int
 
 
@@ -87,18 +87,12 @@ class PluginAgentSessionService:
         instructions: str,
         persistence: str,
         context_profile: str,
-        allowed_capabilities: tuple[str, ...],
     ) -> PluginAgentSessionRecord:
         self._require_session_permission(authority)
         self._validate_context_profile(authority, context_profile)
         runtime = await self._runtime_config.snapshot(
             user_id=authority.actor_user_id,
             group_id=authority.current_group_id,
-        )
-        effective_capabilities = self._effective_capabilities(
-            authority,
-            declared=allowed_capabilities,
-            requested=None,
         )
         scope_type = (
             "group"
@@ -118,7 +112,6 @@ class PluginAgentSessionService:
             instructions=instructions,
             persistence=persistence,
             context_profile=context_profile,
-            allowed_capabilities=effective_capabilities,
         )
         if persistence == "ephemeral":
             self._ephemeral_session_ids.add(record.session_id)
@@ -130,8 +123,6 @@ class PluginAgentSessionService:
         *,
         session_id: str,
         user_input: str,
-        allowed_capabilities: tuple[str, ...] | None,
-        max_tool_calls: int | None,
         max_model_requests: int | None,
     ) -> PluginSessionRunResult:
         self._require_session_permission(authority)
@@ -141,6 +132,13 @@ class PluginAgentSessionService:
         conversation_key = self.conversation_key(authority.plugin_id, session_id)
         async with self._concurrency.conversation(conversation_key):
             session = await self._get_authorized(authority, session_id)
+            async with self._repository._database.sessions() as reader:
+                await require_live_actor(
+                    reader,
+                    scope_type=session.scope_type,
+                    actor_user_id=authority.actor_user_id,
+                    current_group_id=authority.current_group_id,
+                )
             self._validate_context_profile(authority, session.context_profile)
             runtime = await self._runtime_config.snapshot(
                 user_id=authority.actor_user_id,
@@ -148,11 +146,6 @@ class PluginAgentSessionService:
             )
             if session.model:
                 runtime = replace(runtime, llm=replace(runtime.llm, model=session.model))
-            effective_capabilities = self._effective_capabilities(
-                authority,
-                declared=session.allowed_capabilities,
-                requested=allowed_capabilities,
-            )
             await self._repository.append_message(
                 plugin_id=authority.plugin_id,
                 session_id=session_id,
@@ -166,13 +159,8 @@ class PluginAgentSessionService:
                 limit=self._max_history_messages,
             )
             messages = self._compose_messages(authority, session, history)
-            # Tools deliberately remain unavailable in the current Plugin API
-            # session runtime.  Capability intersections are still persisted
-            # and passed through AgentRuntime for a future reviewed backend.
             # Isolated plugin Agent sessions have no Conversation column; never
             # fabricate one. Forward a Host-stamped id only when actually present.
-            _ = max_tool_calls
-            persisted_conversation_id = getattr(session, "canonical_conversation_id", None)
             from yuki.runtime.work_activation import current_work_control
 
             parent = current_work_control.get()
@@ -196,16 +184,14 @@ class PluginAgentSessionService:
                     bot_user_id=self._bot_user_id,
                     gateway=None,
                     runtime_config=runtime,
-                    allowed_capabilities=frozenset(effective_capabilities),
+                    allowed_capabilities=frozenset(),
                     max_tool_calls=0,
                     before_model_request=reserve_parent_request,
                     max_model_requests=min(
                         max(1, max_model_requests or runtime.agent.max_model_requests),
                         max(1, runtime.agent.max_model_requests),
                     ),
-                    canonical_conversation_id=(
-                        persisted_conversation_id or authority.conversation_id
-                    ),
+                    canonical_conversation_id=authority.conversation_id,
                 ),
                 tools=None,
             )
@@ -216,11 +202,14 @@ class PluginAgentSessionService:
                 role="assistant",
                 content=visible_text,
             )
-            updated = await self._get_authorized(authority, session_id)
+            updated = await self._repository.get(
+                plugin_id=authority.plugin_id, session_id=session_id
+            )
+            if updated is None:
+                raise PluginSessionNotFoundError("plugin Agent session is unavailable")
             return PluginSessionRunResult(
                 session=updated,
                 text=visible_text,
-                tool_calls_used=result.tool_calls_used,
                 model_requests=result.model_requests,
             )
 
@@ -317,21 +306,6 @@ class PluginAgentSessionService:
                 )
             return
         raise ValueError("unsupported plugin Agent context profile")
-
-    @staticmethod
-    def _effective_capabilities(
-        authority: PluginSessionAuthority,
-        *,
-        declared: tuple[str, ...],
-        requested: tuple[str, ...] | None,
-    ) -> tuple[str, ...]:
-        approved = authority.approved_permissions
-        result = set(declared) & approved
-        if requested is not None:
-            result &= set(requested)
-        # Session lifecycle permission is not a callable Agent capability.
-        result.discard(_AGENT_SESSION_PERMISSION)
-        return tuple(sorted(result))
 
     def _compose_messages(
         self,

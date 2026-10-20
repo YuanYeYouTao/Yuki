@@ -618,14 +618,6 @@ def test_cli_loads_only_standard_http_environment(tmp_path, monkeypatch):
     assert cli.run_acp_command(argparse.Namespace()) == 0
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "Audit P03: empty ACP delta must not refetch history; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 async def test_empty_result_delta_does_not_refetch_unrelated_tail(tmp_path):
     backend, peer = Backend(), Peer()
     backend.auto_end = False

@@ -2,7 +2,7 @@
 
 下列签名来自 `yuki_plugin_sdk.context`；所有方法都可能因权限、作用域、当前轮安全策略或功能关闭而拒绝。
 
-API 6.0 的普通 `user_id` / `group_id` / `target_id` 是内部 Person / Space ID；通知目标还可指定原 `conversation_id`。独立 QQ 扩展中的外部参数保留其明确传输语义，不能回流成业务所有者。
+API 7.0 的普通 `user_id` / `group_id` / `target_id` 是内部 Person / Space ID；通知目标还可指定原 `conversation_id`。独立 QQ 扩展中的外部参数保留其明确传输语义，不能回流成业务所有者。
 
 ## Message
 
@@ -45,12 +45,12 @@ memory.delete(memory_id) -> PluginResult
 
 ```
 
-`memory.search()` 在 Plugin API 6.0 内部复用主程序的 `MemoryRetriever`：插件作用域校验先确定
+`memory.search()` 在 Plugin API 7.0 内部复用主程序的 `MemoryRetriever`：插件作用域校验先确定
 真实人物或群，随后 FTS 与可选 Embedding 都只在该 SQL 硬过滤范围内召回，并由确定性 RRF
 融合。插件不能选择 Provider/profile、获取原始向量、提交 FTS 语法、通过关键词改变
 `subject_id`，也不会在无匹配时回退加载全部事实。返回记录只包含有界的
 `retrieval_reason`；`list_person()` / `list_group()` 仍用于确定性列表。Embedding 关闭或故障时
-自动保持词法行为；当前 Plugin API 版本由 SDK 的 `PLUGIN_API_VERSION` 定义，为 `6.0`。
+自动保持词法行为；当前 Plugin API 版本由 SDK 的 `PLUGIN_API_VERSION` 定义，为 `7.0`。
 
 返回记录的 `user_id` / `subject_user_id` 表示内部 Person，`group_id` 表示内部 Space；
 不适用的主体字段为 `None`。这些值可以直接交回同一授权范围的 `list_person()`、
@@ -61,7 +61,7 @@ memory.delete(memory_id) -> PluginResult
 superseded，不原地改写旧正文；`memory.delete()` 会以
 `plugin_explicit_invalidation` 将事实标记为 invalidated，不物理删除事实、证据或状态历史。
 插件不能设置 authority、status、conflict_state、supersedes_id，也不能跨人物/群合并或解决
-冲突。这些写入语义保留在当前 Plugin API 6.0 中，不代表 Host 兼容旧 1.x 插件。
+冲突。这些写入语义保留在当前 Plugin API 7.0 中，不代表 Host 兼容旧 1.x 插件。
 
 Yuki 3.0.0 对 MemoryFacade 做了正式 contract freeze：稳定方法为 `list_person`、`list_group`、
 `search`、`add`、`update`、`delete`。插件不能访问原始向量、历史 rebuild、质量 fixture、全局

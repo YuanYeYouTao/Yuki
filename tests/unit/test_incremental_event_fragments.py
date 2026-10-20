@@ -128,7 +128,7 @@ def test_reference_capture_keeps_original_rendering_and_excludes_later_events():
     owner = EventPromptIndex((foreign, old, quoted))
     captured = owner.capture(through_event_id=5)
     renderer = ChatEventPromptRenderer(
-        references=captured, yuki_account_ids=frozenset({"explicit-only"})
+        references=captured
     )
     original = renderer.render_reference_event(quoted)
     assert "原名/person:person-1" in original and "@原名 @Yuki" in original

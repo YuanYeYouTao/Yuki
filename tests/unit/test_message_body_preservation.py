@@ -11,11 +11,6 @@ from yuki.persistence.repository_records import EventRecord
 from yuki.services.renderer import sanitize_model_output
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="F01: legacy marker stripping; docs/operations/backend-five-pass-audit-20261020.md",
-)
 @pytest.mark.parametrize(
     "body",
     ["#473 修复说明", "明天 [12:34] 见", "```python\n#123 is a comment\nx = 1\n```"],
@@ -24,14 +19,6 @@ def test_output_preserves_issue_references_times_and_code(body):
     assert sanitize_model_output(body) == body
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "F01: canonical history rewrites bodies; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 @pytest.mark.parametrize("body", ["#473 修复说明", "明天 [12:34] 见"])
 def test_history_preserves_body_inside_its_structured_event_envelope(body):
     row = EventRecord(

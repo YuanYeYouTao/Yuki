@@ -29,17 +29,7 @@ from yuki.workspace.store import WorkspaceStore
     "change",
     [
         "none",
-        pytest.param(
-            "reset",
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason=(
-                    "F12: context reset drops admitted sticker collection; "
-                    "docs/operations/backend-five-pass-audit-20261020.md"
-                ),
-            ),
-        ),
+        "reset",
         "edit",
         "forget",
     ],

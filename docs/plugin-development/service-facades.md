@@ -18,7 +18,7 @@
 | `onebot` | 按读/发送/修改分类的 OneBot 接口 |
 | `events` | 发布类型化通知事件 |
 
-API 6.0 的普通 user_id/group_id/target_id 参数分别表示内部 Person/Space，不接受平台裸号；`CurrentMessage` 的 sender_user_id/group_id/message_id 仍只是原传输出处。需要选择 topic 或多 Bot 私聊入口时使用原 Conversation ID。
+API 7.0 的普通 user_id/group_id/target_id 参数分别表示内部 Person/Space，不接受平台裸号；`CurrentMessage` 的 sender_user_id/group_id/message_id 仍只是原传输出处。需要选择 topic 或多 Bot 私聊入口时使用原 Conversation ID。
 
 完整签名见 [Facade API Reference](api-reference/facades.md)。每次调用仍会检查当前批准权限；持有一个 Python 属性不等于拥有调用权限。
 
@@ -57,7 +57,7 @@ USER配置只读取当前根人物的有效行，原来源冲突行不作为unse
 
 Memory V2 的写入仍统一经过 Host `MemoryFactService`。插件 update 创建修正版本，delete 只做显式
 失效；插件不能直接访问 Repository、指定事实状态/authority、物理删除审计记录或绕过当前真实
-调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 6.0。
+调用作用域。冲突审计与管理员 merge/resolve 不属于 Plugin API 7.0。
 Memory 记录中的 `user_id` / `subject_user_id` 和 `group_id` 同样是内部 Person / Space，
 可在原授权范围继续作为查询参数；它们不是平台账号或群号。
 
@@ -82,7 +82,6 @@ campaign = await ctx.agent_sessions.create(
         ),
         persistence=SessionPersistence.DURABLE,
         context_profile=SessionContextProfile.CURRENT_GROUP,
-        allowed_capabilities=(),
     )
 )
 
@@ -106,7 +105,7 @@ await ctx.messages.send_text(turn.text)
 - 在原配置的历史消息查询范围内保留完整正文，模型返回的可见正文完整保存并返回。
   Host 与 Repository 不再额外压到 500/10000 条；SDK 输入合同只在 SDK 验证，Host 仍拒绝空白输入。
   不按固定字符数截取消息后缀或输出；完整请求仍由原模型容量检查负责，初始历史超容量时明确失败。
-- `allowed_capabilities` 仍取批准交集；当前 v1 初始运行层可以把工具集收窄为 `none`。
+- 独立会话只调用模型，不加载工具；`max_model_requests` 沿实际请求预算生效。
 - `reset()` 只清空该会话历史；`close()` 关闭后不能继续运行。
 - 会话 UUID 是不透明标识，不能用来跨插件或跨真实场景访问。
 
@@ -129,7 +128,7 @@ await ctx.messages.send_text(turn.text)
 
 `agent.run` 不再接受可选工具名名单，也不写入 `source.allowed_tools`。历史 source、boundary、hash 和回执保原件；恢复按原 Conversation、插件与执行 ID 找回原 Work，不因工具改名重建、重发或重置预算。不会维护旧名到 action/view 的授权表。普通用户仍只能读获准人物和会话；目录、查询和媒体输入不改变固定声明。
 
-联网继续分别核 `web.search` 和 `web.read`；聊天记录与联系人沿 `message.history.read`，并保持原 Conversation 的读取范围；App 插件不能借 `read_personal_entry` 扩读其他私聊，普通 App Main 的本人跨入口显式读取不受影响。群成员沿 `group.members.read`。自动化使用现有 `automation.read/manage_self`；可信当前时间属于通用只读能力，不要求自动化批准。普通发送沿现有 `message.private.send/group.send`，附件沿 `message.media.send`；撤回自己消息复用当前会话的原发送批准并由原平台回执执行，再由原 Social 主体、目标、来源与回执执行；真实撤权后不派发新消息。每次记忆搜索与事实/证据读取按当前 Host 的 `memory.person.read/group.read` 批准投影调用范围；证据仍仅本人且需人物读取范围，入场旧快照不保留已撤销批准。并行读取各用本次执行副本，不改原来源或上下文证明。记忆持久修改沿现有 `memory.write`，`invalidate` 沿现有 SDK delete 的 `memory.delete`；后续仍核原 SELF/人物主体、事件和证据。宿主管理与其他真实业务授权仍在原领域执行处处理，工作环境批准不替代这些事实。独立 PluginSession 的 `allowed_capabilities` 合同不变。
+联网继续分别核 `web.search` 和 `web.read`；聊天记录与联系人沿 `message.history.read`，并保持原 Conversation 的读取范围；App 插件不能借 `read_personal_entry` 扩读其他私聊，普通 App Main 的本人跨入口显式读取不受影响。群成员沿 `group.members.read`。自动化使用现有 `automation.read/manage_self`；可信当前时间属于通用只读能力，不要求自动化批准。普通发送沿现有 `message.private.send/group.send`，附件沿 `message.media.send`；撤回自己消息复用当前会话的原发送批准并由原平台回执执行，再由原 Social 主体、目标、来源与回执执行；真实撤权后不派发新消息。每次记忆搜索与事实/证据读取按当前 Host 的 `memory.person.read/group.read` 批准投影调用范围；证据仍仅本人且需人物读取范围，入场旧快照不保留已撤销批准。并行读取各用本次执行副本，不改原来源或上下文证明。记忆持久修改沿现有 `memory.write`，`invalidate` 沿现有 SDK delete 的 `memory.delete`；后续仍核原 SELF/人物主体、事件和证据。宿主管理与其他真实业务授权仍在原领域执行处处理，工作环境批准不替代这些事实。独立 PluginSession 保持无工具的连续模型会话。
 
 主 Agent 的 function 工具清单固定；原生工具按真实批准权限、显式配置和协议能力决定
 是否提交。原生工具由 Provider 执行，不能声称本地执行围栏逐次拦截，也不能为统一声明

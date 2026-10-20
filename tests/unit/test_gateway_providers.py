@@ -324,3 +324,11 @@ def test_gateway_doctor_does_not_require_runtime_settings(
     administrative_cli.main()
 
     assert json.loads(capsys.readouterr().out)["provider_id"] == "snowluma"
+
+
+@pytest.mark.parametrize("provider", ["telegram", "app", "acp"])
+def test_onebot_doctor_declares_only_the_onebot_provider(monkeypatch, provider):
+    monkeypatch.setattr("sys.argv", ["yuki", "gateway", "doctor", "--provider", provider])
+    with pytest.raises(SystemExit) as failure:
+        administrative_cli.main()
+    assert failure.value.code == 2

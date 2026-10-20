@@ -20,6 +20,13 @@ children = sa.Table(
     sa.Column("archived_at", sa.Float),
 )
 
+sa.Index(
+    "ix_runtime_subagents_unarchived",
+    children.c.lease_until,
+    children.c.work_id,
+    sqlite_where=children.c.archived_at.is_(None),
+)
+
 media = sa.Table(
     "runtime_work_media",
     work.metadata,

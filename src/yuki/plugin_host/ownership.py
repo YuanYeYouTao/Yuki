@@ -182,7 +182,11 @@ async def require_session_readable(session: AsyncSession, row: PluginAgentSessio
         return
     if row.scope_type != "group":
         raise PluginOwnershipError(STATE_MISMATCH)
-    await require_live_space(session, row.canonical_space_id)
+    if (
+        row.canonical_space_id is None
+        or await session.get(CanonicalSpaceModel, row.canonical_space_id) is None
+    ):
+        raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
     if row.canonical_owner_person_id:
         await resolve_human_person_id(session, row.canonical_owner_person_id)
 
@@ -216,15 +220,15 @@ async def actor_matches_session(
 
 async def require_live_actor(
     session: AsyncSession,
-    row: PluginAgentSessionModel,
     *,
+    scope_type: str,
     actor_user_id: str | None,
     current_group_id: str | None,
 ) -> None:
     """Authorize the actual caller, independently of the stored data owner."""
-    if row.scope_type == "user" or (row.scope_type == "group" and actor_user_id is not None):
+    if scope_type == "user" or (scope_type == "group" and actor_user_id is not None):
         await require_person_source(session, actor_user_id)
-    if row.scope_type == "group":
+    if scope_type == "group":
         await resolve_active_space_id(session, current_group_id)
 
 

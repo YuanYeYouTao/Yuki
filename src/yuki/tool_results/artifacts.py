@@ -653,7 +653,11 @@ def _read_text_artifact(
 ) -> dict[str, object]:
     start = offset
     if query:
-        found = content.casefold().find(query.casefold(), offset)
+        # Only the searched suffix is folded; offsets and returned pages always
+        # belong to the original text, including characters that expand on folding.
+        suffix = content[offset:]
+        folded_query = query.casefold()
+        found = suffix.casefold().find(folded_query)
         if found < 0:
             return {
                 "handle": handle_id,
@@ -664,7 +668,12 @@ def _read_text_artifact(
                 "content": "",
                 "query_matched": False,
             }
-        start = found
+        folded_offset = 0
+        for index, character in enumerate(suffix, offset):
+            folded_offset += len(character.casefold())
+            if folded_offset > found:
+                start = index
+                break
 
     def page(length: int) -> dict[str, object]:
         end = min(len(content), start + length)

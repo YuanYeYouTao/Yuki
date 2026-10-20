@@ -141,7 +141,7 @@ class AppGateway:
         attachments: tuple[MessageAttachment, ...] = (),
         *,
         thread_id: str | None = None,
-        conversation_id: str | None = None,
+        conversation_id: str,
     ) -> InboundMessage:
         from yuki.client_api.identity import request_message_key
 
@@ -149,7 +149,7 @@ class AppGateway:
             message_id=request_message_key(
                 binding.external_account_id,
                 request_id,
-                conversation_id=(conversation_id or thread_id) if self.platform == "acp" else None,
+                conversation_id=conversation_id if self.platform == "acp" else None,
             ),
             event_type=f"message:{self.platform}",
             platform=self.platform,
@@ -164,6 +164,8 @@ class AppGateway:
             segments=segments,
             attachments=attachments,
             thread_id=thread_id,
+            person_id=binding.person_id,
+            conversation_id=conversation_id,
         )
 
     async def receive(

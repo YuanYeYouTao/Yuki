@@ -111,3 +111,24 @@ async def test_shipped_operator_template_loads_only_current_explicit_grants(data
 def _shipped_operator_template():
     path = Path(__file__).resolve().parents[2] / "config/control-operators.example.toml"
     return path, tomllib.loads(path.read_text(encoding="utf-8"))["operators"]
+
+
+async def test_all_explicit_operator_declarations_can_authenticate(database, tmp_path, monkeypatch):
+    identities = [str(uuid4()) for _ in range(65)]
+    path = tmp_path / "many-operators.toml"
+    path.write_text(
+        "\n".join(
+            f'[[operators]]\nprincipal_id="{identity}"\n'
+            f'token_env="YUKI_AUDIT_OPERATOR_{index}"\ncapabilities=["control.plugin.read"]'
+            for index, identity in enumerate(identities)
+        ),
+        encoding="utf-8",
+    )
+    secret = "last-explicit-operator-" + "x" * 32
+    monkeypatch.setenv("YUKI_AUDIT_OPERATOR_64", secret)
+    principal = await ControlOperatorAccess(database, path).authenticate(
+        secret, source=PrincipalSource.CLI
+    )
+    assert principal.principal_id.text == identities[-1]
+    assert principal.allows("control.plugin.read")
+    assert not principal.allows("control.plugin.mutate")

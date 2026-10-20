@@ -764,23 +764,7 @@ async def test_recovery_with_attachment_uses_the_same_authorized_route(database)
     await app.close()
 
 
-@pytest.mark.parametrize(
-    "disconnect_unrelated",
-    [
-        False,
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=RouteSendError,
-                reason=(
-                    "Audit P04: unrelated disconnect invalidates QQ recovery; "
-                    "docs/operations/backend-five-pass-audit-20261020.md"
-                ),
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("disconnect_unrelated", [False, True])
 async def test_group_recovery_depends_only_on_its_actual_platform_connection(
     database, disconnect_unrelated
 ):

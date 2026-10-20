@@ -12,8 +12,7 @@ import time
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
-import pytest
-from sqlalchemy import insert, select
+from sqlalchemy import insert, select, update
 from tests.support.social_identity_cases import social_env
 from tests.support.sqlite_cost import capture_reads, read_vm_steps
 
@@ -21,9 +20,10 @@ from yuki.conversation.hydrate import ensure_canonical_conversation
 from yuki.identity.canonical_repository import find_space_binding
 from yuki.runtime.subagent_repository import SubagentRepository
 from yuki.runtime.subagent_schema import children
+from yuki.runtime.work_recovery_schema import recovery
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_scheduler import WorkScheduler
-from yuki.runtime.work_schema_v1 import work
+from yuki.runtime.work_schema_v1 import scope, work
 from yuki.runtime.work_wait import WorkWaitRepository
 
 
@@ -43,13 +43,6 @@ def task(identity, *, conversation="scope", parent=None, state="completed", at=1
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "P05: scheduler reads all ready scopes; docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 async def test_scheduler_selection_cost_is_bounded_by_available_scopes(
     database, tmp_path, monkeypatch
 ):
@@ -99,14 +92,121 @@ async def test_scheduler_selection_cost_is_bounded_by_available_scopes(
     assert costs[1] <= costs[0] * 4, costs
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "P06: one owned run expands all siblings; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
+async def test_scheduler_does_not_load_a_selected_scopes_entire_backlog(
+    database, tmp_path, monkeypatch
+):
+    environment = await social_env(database, tmp_path)
+    repository = WorkRepository(database)
+    monkeypatch.setattr(repository, "repair_abandoned_inputs", AsyncMock())
+    monkeypatch.setattr(
+        "yuki.automation.repository.AutomationRepository.settle_work_occurrences", AsyncMock()
+    )
+    resume = AsyncMock()
+    scheduler = WorkScheduler(repository, resume, chat_admission_enabled=True)
+    scheduler._last_reclaim = time.monotonic()
+    conversation = environment.context.conversation_id
+    previous, costs = 0, []
+    for size in (16, 640):
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                insert(work),
+                [
+                    task(f"backlog-{i}", conversation=conversation, state="queued", at=i + 1)
+                    for i in range(previous, size)
+                ]
+                + [
+                    task(f"terminal-{i}", conversation=conversation, at=0)
+                    for i in range(previous, size)
+                ],
+            )
+        resume.reset_mock()
+        with capture_reads(database) as queries:
+            await asyncio.gather(*(await scheduler.dispatch_once()))
+        costs.append(read_vm_steps(database, queries))
+        assert [call.args[0]["id"] for call in resume.call_args_list] == ["backlog-0"]
+        previous = size
+    assert costs[1] <= costs[0] * 4, costs
+
+
+async def test_scheduler_cursor_wraps_past_leased_and_deferred_scopes(
+    database, tmp_path, monkeypatch
+):
+    environment = await social_env(database, tmp_path)
+    repository = WorkRepository(database)
+    monkeypatch.setattr(repository, "repair_abandoned_inputs", AsyncMock())
+    monkeypatch.setattr(
+        "yuki.automation.repository.AutomationRepository.settle_work_occurrences", AsyncMock()
+    )
+    resumed = []
+
+    async def resume(item):
+        resumed.append(item["id"])
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                update(work).where(work.c.id == item["id"]).values(state="completed")
+            )
+
+    scheduler = WorkScheduler(repository, resume, chat_admission_enabled=True)
+    scheduler._last_reclaim = time.monotonic()
+    assert await scheduler.dispatch_once() == []
+    async with database.immediate_session() as writer:
+        binding = await find_space_binding(writer, "20001")
+        conversations = sorted(
+            [
+                (
+                    await ensure_canonical_conversation(
+                        writer,
+                        kind="space",
+                        space_id=environment.space,
+                        space_binding_id=binding.id,
+                        primary_scope_key=f"cursor-thread:{i}",
+                        thread_id=f"cursor-{i}",
+                    )
+                ).conversation_id
+                for i in range(10)
+            ]
+        )
+        await writer.execute(
+            insert(work),
+            [
+                task(f"cursor-{i}", conversation=identity, state="queued")
+                for i, identity in enumerate(conversations)
+            ],
+        )
+        await writer.execute(
+            insert(scope).values(
+                conversation_id=conversations[0],
+                generation=1,
+                owner="real-owner",
+                lease_until=time.time() + 3600,
+            )
+        )
+        await writer.execute(
+            insert(recovery).values(
+                work_id="cursor-1",
+                activation_id="original-activation",
+                not_before=time.time() + 3600,
+                updated=1,
+            )
+        )
+    for _ in range(2):
+        await asyncio.gather(*(await scheduler.dispatch_once()))
+    assert sorted(resumed) == [f"cursor-{i}" for i in range(2, 10)]
+    assert await scheduler.dispatch_once() == []
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(scope)
+            .where(scope.c.conversation_id == conversations[0])
+            .values(owner=None, lease_until=0)
+        )
+        await writer.execute(
+            update(recovery).where(recovery.c.work_id == "cursor-1").values(not_before=0)
+        )
+    await asyncio.gather(*(await scheduler.dispatch_once()))
+    assert sorted(resumed) == [f"cursor-{i}" for i in range(10)]
+    assert await scheduler.dispatch_once() == []
+
+
 async def test_one_owned_run_does_not_scan_unrelated_siblings(database, tmp_path):
     environment = await social_env(database, tmp_path)
     conversation = environment.context.conversation_id
@@ -148,14 +248,6 @@ async def test_one_owned_run_does_not_scan_unrelated_siblings(database, tmp_path
     assert costs[1] <= costs[0] * 4, costs
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "P11: empty maintenance revisits archived trees; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 async def test_empty_child_maintenance_ignores_already_archived_history(database, tmp_path):
     environment = await social_env(database, tmp_path)
     conversation = environment.context.conversation_id

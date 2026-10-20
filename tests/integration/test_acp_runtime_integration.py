@@ -2,13 +2,14 @@
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi import FastAPI
-from sqlalchemy import select
+from sqlalchemy import func, select
 from tests.integration.test_current_material_main_contract import _deployment
 from tests.unit.test_admin_operator_access import operator_file
 from tests.unit.test_client_api import bearer
@@ -19,6 +20,7 @@ from yuki.client_api.http import attach_client_api
 from yuki.client_sdk import Outbox, PersonalClient
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.canonical_repository import replace_assignment
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel
@@ -573,3 +575,63 @@ async def test_cancel_rechecks_work_committed_before_the_original_main_returns(
     finally:
         release_keep.set()
         release_accept.set()
+
+
+@pytest.mark.parametrize("replacement", ["unbound", "other_person", "yuki"])
+async def test_original_acp_credentials_do_not_create_a_new_author_after_assignment_ends(
+    acp_runtime, database, replacement
+):
+    env = acp_runtime
+    env.provider._responder = lambda _: "Private completed result"
+    session = await new_session(env)
+    headers = selected(env, session)
+    request = {"request_id": str(uuid4()), "text": "original authenticated ACP input"}
+    admitted = await env.http.post("/client/v1/messages", headers=headers, json=request)
+    assert admitted.status_code == 200, admitted.text
+    original = await settled(env, session, request["request_id"])
+    async with database.immediate_session() as writer:
+        binding = await writer.get(IdentityBindingModel, session["binding_id"])
+        old_person = binding.person_id
+        new_owner = None
+        if replacement == "other_person":
+            new_owner = await writer.scalar(
+                select(CanonicalPersonModel).where(CanonicalPersonModel.id != old_person)
+            )
+            assert new_owner is not None
+        elif replacement == "yuki":
+            new_owner = "yuki"
+        await replace_assignment(
+            writer, binding.account, binding.id, new_owner, now=datetime.now(UTC)
+        )
+    async with database.sessions() as reader:
+        before_people = await reader.scalar(select(func.count()).select_from(CanonicalPersonModel))
+        event = await reader.get(ChatEventModel, original["event_id"])
+        original_fact = (event.author_person_id, event.canonical_conversation_id, event.content)
+    calls = len(env.provider.requests)
+    replay = await env.http.post("/client/v1/messages", headers=headers, json=request)
+    assert replay.status_code == 200 and replay.json()["data"]["replay"]
+    assert replay.json()["data"]["event_id"] == original["event_id"]
+    response = await env.http.post(
+        "/client/v1/messages",
+        headers=headers,
+        json={"request_id": str(uuid4()), "text": "new input after ownership ended"},
+    )
+    assert response.status_code == 401, response.text
+    assert len(env.provider.requests) == calls
+    async with database.sessions() as reader:
+        assert (
+            await reader.scalar(select(func.count()).select_from(CanonicalPersonModel))
+            == before_people
+        )
+        assert not await reader.scalar(
+            select(ChatEventModel.id).where(
+                ChatEventModel.content == "new input after ownership ended"
+            )
+        )
+        event = await reader.get(ChatEventModel, original["event_id"])
+        assert (
+            event.author_person_id,
+            event.canonical_conversation_id,
+            event.content,
+        ) == original_fact
+        assert event.author_person_id == old_person

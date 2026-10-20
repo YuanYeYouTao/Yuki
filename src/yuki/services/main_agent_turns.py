@@ -352,7 +352,6 @@ class MainAgentTurnService:
                     rows,
                     bot_display_name=context.history_bot_display_name,
                     timezone=context.history_timezone,
-                    yuki_account_ids=context.history_yuki_account_ids,
                 )
                 # Individual event fragments preserve arrival order when directed
                 # inputs and ordinary group observations interleave.

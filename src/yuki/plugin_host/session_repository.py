@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -21,8 +21,6 @@ from yuki.plugin_host.db_models import (
 from yuki.plugin_host.ownership import (
     actor_matches_session,
     inherit_message_sender_person,
-    require_live_actor,
-    require_live_space,
     require_session_readable,
     resolve_human_person_id,
     resolve_session_owners,
@@ -58,7 +56,6 @@ class PluginAgentSessionRecord:
     instructions: str
     persistence: str
     context_profile: str
-    allowed_capabilities: tuple[str, ...]
     status: str
     next_sequence: int
     turn_count: int
@@ -101,7 +98,6 @@ class PluginAgentSessionRepository:
         instructions: str = "Continue this isolated plugin session.",
         persistence: str = "durable",
         context_profile: str = "none",
-        allowed_capabilities: Iterable[str] = (),
         expires_at: datetime | None = None,
         now: datetime | None = None,
     ) -> PluginAgentSessionRecord:
@@ -115,7 +111,6 @@ class PluginAgentSessionRepository:
             raise ValueError("persistence must be ephemeral or durable")
         if context_profile not in {"none", "current_user", "current_group"}:
             raise ValueError("unsupported plugin Agent context profile")
-        capabilities = _capabilities(allowed_capabilities)
         async with self._database.immediate_session() as session:
             person_id, space_id = await resolve_session_owners(
                 session,
@@ -132,9 +127,6 @@ class PluginAgentSessionRepository:
                 instructions=instructions,
                 persistence=persistence,
                 context_profile=context_profile,
-                allowed_capabilities_json=json.dumps(
-                    capabilities, ensure_ascii=False, separators=(",", ":")
-                ),
                 status="active",
                 next_sequence=1,
                 turn_count=0,
@@ -217,12 +209,6 @@ class PluginAgentSessionRepository:
             ):
                 return None
             await require_session_readable(session, row)
-            await require_live_actor(
-                session,
-                row,
-                actor_user_id=actor_user_id,
-                current_group_id=current_group_id,
-            )
             return await _session_record(session, row)
 
     async def append_message(
@@ -454,7 +440,7 @@ async def _session_record(
     elif row.scope_type == "group":
         if row.canonical_owner_person_id:
             owner_user_id = await resolve_human_person_id(session, row.canonical_owner_person_id)
-        scope_id = await require_live_space(session, row.canonical_space_id)
+        scope_id = cast(str, row.canonical_space_id)
     return PluginAgentSessionRecord(
         session_id=row.session_id,
         plugin_id=row.plugin_id,
@@ -466,7 +452,6 @@ async def _session_record(
         instructions=row.instructions,
         persistence=row.persistence,
         context_profile=row.context_profile,
-        allowed_capabilities=_decode_capabilities(row.allowed_capabilities_json),
         status=row.status,
         next_sequence=row.next_sequence,
         turn_count=row.turn_count,
@@ -516,23 +501,6 @@ def _validate_instructions(value: str) -> str:
     if not normalized or len(normalized) > 8_000:
         raise ValueError("instructions must contain 1 to 8000 characters")
     return normalized
-
-
-def _capabilities(values: Iterable[str]) -> tuple[str, ...]:
-    normalized = {str(value).strip() for value in values if str(value).strip()}
-    if any(len(value) > 128 for value in normalized) or len(normalized) > 64:
-        raise ValueError("allowed capabilities exceed the session schema limits")
-    return tuple(sorted(normalized))
-
-
-def _decode_capabilities(value: str) -> tuple[str, ...]:
-    try:
-        decoded = json.loads(value)
-    except json.JSONDecodeError:
-        return ()
-    if not isinstance(decoded, list):
-        return ()
-    return _capabilities(str(item) for item in decoded)
 
 
 def _safe_metadata(value: object, *, key: str = "") -> object:

@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 from sqlalchemy import event, func, select
 from sqlalchemy.exc import IntegrityError
 
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
+from yuki.plugin_host import media_artifacts as media_artifacts_module
 from yuki.plugin_host import notification_repository as notification_repository_module
 from yuki.plugin_host.db_models import (
     PluginBackgroundTurnJobModel,
@@ -237,6 +241,163 @@ async def _prepare_text_delivery(repository):
 async def _count(database: Database, model: type[Any]) -> int:
     async with database.sessions() as session:
         return int(await session.scalar(select(func.count()).select_from(model)) or 0)
+
+
+@pytest.mark.parametrize("change", ["expiry", "hash"])
+async def test_first_publication_rechecks_original_media_in_its_writer(
+    database, monkeypatch, change
+):
+    repository = await _install(database)
+    await _add_artifact(database, handle_id="original-media", digest="a" * 64)
+    request = _request(media_handles=("original-media",))
+    prepared, continue_publish = asyncio.Event(), asyncio.Event()
+    original_writer = database.immediate_session
+
+    @asynccontextmanager
+    async def after_preparation():
+        prepared.set()
+        await continue_publish.wait()
+        async with original_writer() as writer:
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", after_preparation)
+    publishing = asyncio.create_task(repository.publish(plugin_id=_PLUGIN_ID, request=request))
+    try:
+        async with asyncio.timeout(5):
+            await prepared.wait()
+        async with original_writer() as writer:
+            row = await writer.get(PluginMediaArtifactModel, "original-media")
+            if change == "expiry":
+                row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            else:
+                row.sha256 = "b" * 64
+        continue_publish.set()
+        with pytest.raises(PluginPermissionError, match=r"expired|changed"):
+            await publishing
+    finally:
+        continue_publish.set()
+        await asyncio.gather(publishing, return_exceptions=True)
+    assert await _state(database) == ((), (), ())
+
+
+@pytest.mark.parametrize("change", ["expiry", "hash", "removed"])
+async def test_concurrent_original_publication_reads_winner_before_current_media(
+    database, monkeypatch, change
+):
+    repository = await _install(database)
+    await _add_artifact(database, handle_id="original-media", digest="a" * 64)
+    request = _request(media_handles=("original-media",))
+    prepared, continue_publish = asyncio.Event(), asyncio.Event()
+    original_writer = database.immediate_session
+    delayed = None
+
+    @asynccontextmanager
+    async def delay_one_publisher():
+        if asyncio.current_task() is delayed:
+            prepared.set()
+            await continue_publish.wait()
+        async with original_writer() as writer:
+            yield writer
+
+    monkeypatch.setattr(database, "immediate_session", delay_one_publisher)
+    delayed = asyncio.create_task(repository.publish(plugin_id=_PLUGIN_ID, request=request))
+    try:
+        async with asyncio.timeout(5):
+            await prepared.wait()
+        original = await repository.publish(plugin_id=_PLUGIN_ID, request=request)
+        before = await _state(database)
+        async with original_writer() as writer:
+            row = await writer.get(PluginMediaArtifactModel, "original-media")
+            if change == "removed":
+                await writer.delete(row)
+            elif change == "expiry":
+                row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            else:
+                row.sha256 = "b" * 64
+        continue_publish.set()
+        repeated = await delayed
+    finally:
+        continue_publish.set()
+        await asyncio.gather(delayed, return_exceptions=True)
+    assert repeated.notification_id == original.notification_id
+    assert repeated.source_event_id == original.source_event_id
+    assert repeated.deduplicated and not repeated.event_created
+    assert not repeated.delivery_enqueued and not repeated.agent_turn_enqueued
+    assert await _state(database) == before
+
+
+async def test_cleanup_keeps_media_accepted_by_the_original_inflight_publication(
+    database, tmp_path, monkeypatch
+):
+    repository = await _install(database)
+    clock = datetime.now(UTC)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock
+
+    monkeypatch.setattr(notification_repository_module, "datetime", Clock)
+    monkeypatch.setattr(media_artifacts_module, "datetime", Clock)
+    store = PluginMediaArtifactStore(database, tmp_path / "plugin-originals")
+    image = io.BytesIO()
+    Image.new("RGB", (4, 4), "blue").save(image, "PNG")
+    handle = await store.create(
+        plugin_id=_PLUGIN_ID,
+        data=image.getvalue(),
+        content_type="image/png",
+        filename="original.png",
+        ttl_seconds=60,
+        storage_mb=1,
+    )
+    original = await store.resolve(plugin_id=_PLUGIN_ID, handle_id=handle.handle_id)
+    checked, continue_publish, cleanup_waiting = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    resolve_media = notification_repository_module._resolve_request_media
+    original_writer = database.immediate_session
+    calls = 0
+    cleanup_task = None
+
+    async def validated(*args, **kwargs):
+        nonlocal calls
+        result = await resolve_media(*args, **kwargs)
+        calls += 1
+        if calls == 2:
+            checked.set()
+            await continue_publish.wait()
+        return result
+
+    @asynccontextmanager
+    async def observe_writer():
+        if asyncio.current_task() is cleanup_task:
+            cleanup_waiting.set()
+        async with original_writer() as writer:
+            yield writer
+
+    monkeypatch.setattr(notification_repository_module, "_resolve_request_media", validated)
+    monkeypatch.setattr(database, "immediate_session", observe_writer)
+    publishing = asyncio.create_task(
+        repository.publish(
+            plugin_id=_PLUGIN_ID, request=_request(media_handles=(handle.handle_id,))
+        )
+    )
+    try:
+        async with asyncio.timeout(5):
+            await checked.wait()
+            clock += timedelta(seconds=61)
+            cleanup_task = asyncio.create_task(store.cleanup())
+            await cleanup_waiting.wait()
+            continue_publish.set()
+            receipt = await publishing
+            assert await cleanup_task == 0
+        assert receipt.event_created and receipt.delivery_enqueued
+        assert original.local_path.read_bytes() == image.getvalue()
+        async with database.sessions() as reader:
+            assert await reader.get(PluginMediaArtifactModel, handle.handle_id) is not None
+    finally:
+        continue_publish.set()
+        await asyncio.gather(
+            publishing, *([cleanup_task] if cleanup_task else []), return_exceptions=True
+        )
 
 
 @pytest.mark.asyncio
@@ -873,7 +1034,6 @@ async def test_unique_event_key_is_unchanged(database: Database) -> None:
         request=_request(event_key="other-key"),
     )
     event_ids, _parts, _intents = await _state(database)
-    assert PLUGIN_API_VERSION == "6.0"
     assert second.deduplicated is True
     assert second.source_event_id == first.source_event_id
     assert other_target.source_event_id != first.source_event_id

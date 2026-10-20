@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import os
 import re
 import stat
@@ -12,7 +13,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy.sql.elements import ColumnElement
 
 from yuki.persistence.database import Database
 from yuki.plugin_host.db_models import (
@@ -21,6 +23,8 @@ from yuki.plugin_host.db_models import (
 )
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.models import MediaArtifactHandle
+
+logger = logging.getLogger(__name__)
 
 _ALLOWED_MIME = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
 _SAFE_FILENAME = re.compile(r"[^A-Za-z0-9._-]+")
@@ -149,26 +153,73 @@ class PluginMediaArtifactStore:
 
     async def cleanup(self) -> int:
         now = datetime.now(UTC)
-        async with self._database.sessions() as session, session.begin():
+
+        def eligible(timestamp: datetime) -> tuple[ColumnElement[bool], ColumnElement[bool]]:
+            return (
+                PluginMediaArtifactModel.expires_at <= timestamp,
+                ~PluginMediaArtifactModel.handle_id.in_(
+                    select(PluginNotificationOutboxModel.media_handle_id).where(
+                        PluginNotificationOutboxModel.media_handle_id.is_not(None),
+                        PluginNotificationOutboxModel.status.in_(("pending", "processing")),
+                    )
+                ),
+            )
+
+        async with self._database.sessions() as reader:
+            candidates = tuple(
+                await reader.scalars(
+                    select(PluginMediaArtifactModel.handle_id)
+                    .where(*eligible(now))
+                    .order_by(
+                        PluginMediaArtifactModel.expires_at, PluginMediaArtifactModel.handle_id
+                    )
+                    .limit(128)
+                )
+            )
+        if not candidates:
+            return 0
+        # Serialize the final reference check with publication admission. Future
+        # publications must still validate an unexpired handle in their writer.
+        async with self._database.immediate_session() as writer:
             rows = (
-                await session.scalars(
-                    select(PluginMediaArtifactModel).where(
-                        PluginMediaArtifactModel.expires_at <= now,
-                        ~PluginMediaArtifactModel.handle_id.in_(
-                            select(PluginNotificationOutboxModel.media_handle_id).where(
-                                PluginNotificationOutboxModel.media_handle_id.is_not(None),
-                                PluginNotificationOutboxModel.status.in_(("pending", "processing")),
-                            )
-                        ),
+                await writer.execute(
+                    select(
+                        PluginMediaArtifactModel.handle_id,
+                        PluginMediaArtifactModel.storage_path,
+                        PluginMediaArtifactModel.expires_at,
+                        PluginMediaArtifactModel.sha256,
+                    ).where(
+                        PluginMediaArtifactModel.handle_id.in_(candidates),
+                        *eligible(datetime.now(UTC)),
                     )
                 )
             ).all()
-            paths = [Path(row.storage_path) for row in rows]
-            for row in rows:
-                await session.delete(row)
-        for path in paths:
-            await asyncio.to_thread(path.unlink, missing_ok=True)
-        return len(paths)
+        removed = []
+        for row in rows:
+            try:
+                await asyncio.to_thread(Path(row.storage_path).unlink, missing_ok=True)
+            except OSError as exc:
+                logger.warning("plugin_media_cleanup_failed category=%s", type(exc).__name__)
+            else:
+                removed.append(
+                    and_(
+                        PluginMediaArtifactModel.handle_id == row.handle_id,
+                        PluginMediaArtifactModel.storage_path == row.storage_path,
+                        PluginMediaArtifactModel.expires_at == row.expires_at,
+                        PluginMediaArtifactModel.sha256 == row.sha256,
+                    )
+                )
+        if not removed:
+            return 0
+        async with self._database.immediate_session() as writer:
+            deleted = tuple(
+                await writer.scalars(
+                    delete(PluginMediaArtifactModel)
+                    .where(or_(*removed), *eligible(datetime.now(UTC)))
+                    .returning(PluginMediaArtifactModel.handle_id)
+                )
+            )
+        return len(deleted)
 
 
 def _matches_mime(data: bytes, mime: str) -> bool:

@@ -861,14 +861,17 @@ class HostPluginContext:
         audit = self._services.audit
         if audit is None:
             return
-        await audit.record(
-            plugin_id=self._plugin_id,
-            actor_user_id=invocation.actor_user_id,
-            operation=operation,
-            permission=permission.value,
-            success=success,
-            error_category=error_category,
-        )
+        try:
+            await audit.record(
+                plugin_id=self._plugin_id,
+                actor_user_id=invocation.actor_user_id,
+                operation=operation,
+                permission=permission.value,
+                success=success,
+                error_category=error_category,
+            )
+        except Exception as exc:
+            self._logger.warning("plugin_audit_failed category=%s", type(exc).__name__)
 
     async def _run_audited(
         self,
@@ -891,18 +894,13 @@ class HostPluginContext:
                 error_category=_facade_error_category(exc),
             )
             raise
-        try:
-            await self._audit(
-                invocation,
-                operation=operation,
-                permission=permission,
-                success=result.ok,
-                error_category=_result_error_category(result),
-            )
-        except Exception as exc:
-            if not isinstance(result, _HostSocialResult):
-                raise
-            self._logger.warning("plugin_send_audit_failed category=%s", type(exc).__name__)
+        await self._audit(
+            invocation,
+            operation=operation,
+            permission=permission,
+            success=result.ok,
+            error_category=_result_error_category(result),
+        )
         return result
 
 

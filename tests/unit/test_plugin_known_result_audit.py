@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select, text
-from sqlalchemy.exc import IntegrityError
 from tests.support.social_identity_cases import social_env
 
 from yuki.domain.messages import InboundMessage, SenderIdentity
@@ -72,14 +71,6 @@ def adapter(plugin_tool, risk, handler, audit):
     ), name
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=(AssertionError, OSError),
-    reason=(
-        "F02: known result must survive audit failure; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 @pytest.mark.parametrize("risk", [RiskClass.READ, RiskClass.MUTATE])
 @pytest.mark.parametrize("continuous", [False, True])
 async def test_known_result_does_not_retry_or_become_unknown(plugin_tool, risk, continuous):
@@ -193,23 +184,7 @@ async def onebot_call(database, tmp_path):
     await host.close_host_resources()
 
 
-@pytest.mark.parametrize(
-    "audit_offline",
-    [
-        False,
-        pytest.param(
-            True,
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=IntegrityError,
-                reason=(
-                    "F02: original OneBot ACK must survive audit persistence failure; "
-                    "docs/operations/backend-five-pass-audit-20261020.md"
-                ),
-            ),
-        ),
-    ],
-)
+@pytest.mark.parametrize("audit_offline", [False, True])
 async def test_onebot_known_ack_returns_original_result(database, onebot_call, audit_offline):
     env = onebot_call
     if audit_offline:

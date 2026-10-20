@@ -5,14 +5,6 @@ import pytest
 from yuki.tool_results.artifacts import ToolArtifactRepository
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "F07: casefold offsets are not original-text offsets; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 @pytest.mark.parametrize("prefix", ["ßx", "İx", "ﬃx"], ids=["sharp-s", "dotted-i", "ligature"])
 async def test_search_after_casefold_expansion_preserves_original_coordinates(
     database, tmp_path, prefix
@@ -36,9 +28,16 @@ async def test_search_after_casefold_expansion_preserves_original_coordinates(
         ("中xTARGETend", "target", 0, 2, "TARGET"),
         ("Straße!", "STRASSE", 0, 0, "Straße"),
         ("first TARGET last TARGET", "target", 10, 18, "TARGET"),
+        ("ßTARGETxTARGETend", "target", 8, 8, "TARGET"),
         ("ßxTARGETend", "", 2, 2, "TARGET"),
     ],
-    ids=["chinese-prefix", "expanded-match", "original-offset", "plain-page"],
+    ids=[
+        "chinese-prefix",
+        "expanded-match",
+        "original-offset",
+        "expanded-before-offset",
+        "plain-page",
+    ],
 )
 async def test_text_search_and_paging_keep_original_bytes(
     database, tmp_path, original, query, offset, expected_start, expected

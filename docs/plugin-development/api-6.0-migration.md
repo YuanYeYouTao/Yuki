@@ -1,5 +1,7 @@
 # Plugin API 6.0 迁移
 
+> 本页保留 6.0 的历史变更；当前合同见 [Plugin API 7.0](api-7.0-migration.md)。
+
 Host 只加载精确声明 `plugin_api = "6.0"` 的插件。产品版本与 Plugin API 分别演进；本次升级不提供 5.0 在线兼容对象或旧工具执行器。
 
 6.0 将当前消息提及统一为 `CurrentMessage.mentions` 原快照，每项保留 `kind`、`display_name`、原文位置、可证明的内部 Account／Assignment／Person／Presence 和原传输出处。它替代 `mentioned_user_ids`／`mentioned_person_ids`；需要此能力时声明 `message.current.mentions.v2`。未知账号或外部 Bot 可以没有 Person，插件不能从原生数字猜人物，也不能把普通 `@文字` 造为收到的原生提及。

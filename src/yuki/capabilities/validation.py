@@ -3,20 +3,19 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError, ValidationError
 from jsonschema.validators import validator_for
+from referencing import Registry
 
 from yuki.capabilities.catalog import UnifiedToolCatalogEntry
 
 TOOL_INPUT_VALIDATION_FAILED = "tool_input_validation_failed"
 UNDECLARED_TOOL = "undeclared_tool"
 SCHEMA_QUARANTINED = "capability_schema_quarantined"
-_REMOTE_REF = re.compile(r"^https?://", re.IGNORECASE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,12 +44,11 @@ class JsonSchemaCapabilityValidator:
         quarantined: list[str] = []
         for entry in entries:
             capability_id = entry.descriptor.model_name
-            schema = _with_lifted_defs(entry.descriptor.input_schema)
+            schema = entry.descriptor.input_schema
             try:
-                _assert_safe_schema(schema)
                 validator_cls = validator_for(schema, default=Draft202012Validator)
                 validator_cls.check_schema(schema)
-                self._validators[capability_id] = validator_cls(schema)
+                self._validators[capability_id] = validator_cls(schema, registry=Registry())
                 self._quarantined.discard(capability_id)
             except (SchemaError, ValueError):
                 self._quarantined.add(capability_id)
@@ -151,63 +149,3 @@ def _validation_detail(error: ValidationError, *, depth: int = 0) -> str:
     else:
         requirement = "must satisfy the declared constraint"
     return f"{location}: {category}; {requirement}"[:1024]
-
-
-def _assert_safe_schema(schema: dict[str, object]) -> None:
-    ref = schema.get("$ref")
-    if isinstance(ref, str) and _REMOTE_REF.match(ref):
-        raise ValueError("remote $ref is not allowed")
-    if "$ref" in schema and isinstance(ref, str) and ref.startswith("#"):
-        pass
-    elif "$ref" in schema:
-        raise ValueError("unsupported $ref")
-    for key in ("items", "additionalProperties", "contains", "propertyNames", "not"):
-        nested = schema.get(key)
-        if isinstance(nested, dict):
-            _assert_safe_schema(nested)
-    for key in ("allOf", "anyOf", "oneOf", "prefixItems"):
-        nested = schema.get(key)
-        if isinstance(nested, list):
-            for item in nested:
-                if isinstance(item, dict):
-                    _assert_safe_schema(item)
-    properties = schema.get("properties")
-    if isinstance(properties, dict):
-        for item in properties.values():
-            if isinstance(item, dict):
-                _assert_safe_schema(item)
-    defs = schema.get("$defs") or schema.get("definitions")
-    if isinstance(defs, dict):
-        for item in defs.values():
-            if isinstance(item, dict):
-                _assert_safe_schema(item)
-
-
-def _with_lifted_defs(schema: dict[str, object]) -> dict[str, object]:
-    """Copy nested ``$defs`` to the schema root so local ``#/$defs/...`` refs resolve."""
-
-    lifted = dict(schema)
-    collected: dict[str, object] = {}
-
-    def walk(node: object) -> None:
-        if isinstance(node, dict):
-            nested = node.get("$defs") or node.get("definitions")
-            if isinstance(nested, dict):
-                for key, value in nested.items():
-                    collected.setdefault(str(key), value)
-            for value in node.values():
-                walk(value)
-            return
-        if isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(lifted)
-    if not collected:
-        return lifted
-    existing = lifted.get("$defs")
-    merged = dict(existing) if isinstance(existing, dict) else {}
-    for key, value in collected.items():
-        merged.setdefault(key, value)
-    lifted["$defs"] = merged
-    return lifted

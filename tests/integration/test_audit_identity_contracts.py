@@ -35,16 +35,6 @@ from yuki.social.agent_adapter import invoke_social
 from yuki.social.models import SocialError
 from yuki.social.service import SocialContext
 
-REPORT = "docs/operations/backend-five-pass-audit-20261020.md"
-
-
-def unresolved(issue):
-    return pytest.mark.xfail(
-        strict=True,
-        raises=SocialError if issue == "F09" else AssertionError,
-        reason=f"Audit {issue}: target contract unresolved; {REPORT}",
-    )
-
 
 def bearer(token):
     return {"Authorization": f"Bearer {token}"}
@@ -94,7 +84,7 @@ async def admit_mention(database, message):
     return native, admitted, recorded.event
 
 
-@pytest.mark.parametrize("paused", [False, pytest.param(True, marks=unresolved("F06"))])
+@pytest.mark.parametrize("paused", [False, True])
 async def test_edit_person_references_follow_the_native_snapshot_even_when_target_paused(
     database, paused
 ):
@@ -120,7 +110,6 @@ async def test_edit_person_references_follow_the_native_snapshot_even_when_targe
     assert current.mentioned_person_ids == (target,)
 
 
-@unresolved("F06")
 async def test_edit_does_not_invent_a_person_relation_from_an_unlocated_account_list(database):
     native, admitted, original = await admit_mention(database, Message("plain @card-1002"))
     assert not original.mentioned_person_ids and not admitted.message.mentions
@@ -136,9 +125,7 @@ async def test_edit_does_not_invent_a_person_relation_from_an_unlocated_account_
     assert current.mentioned_person_ids == ()
 
 
-@pytest.mark.parametrize(
-    "change", ["active", "disabled", pytest.param("unbound", marks=unresolved("F08"))]
-)
+@pytest.mark.parametrize("change", ["active", "disabled", "unbound"])
 async def test_authenticated_device_never_silently_changes_new_message_person(
     app_env, database, change
 ):
@@ -209,7 +196,7 @@ async def test_authenticated_device_never_silently_changes_new_message_person(
         assert response.status_code == 401 and not new
 
 
-@pytest.mark.parametrize("paused", [False, pytest.param(True, marks=unresolved("F09"))])
+@pytest.mark.parametrize("paused", [False, True])
 @pytest.mark.parametrize("selector", ["operation", "conversation"])
 async def test_reading_a_successful_receipt_is_independent_of_space_send_qualification(
     database, tmp_path, paused, selector
@@ -247,7 +234,7 @@ async def test_other_source_cannot_read_a_successful_operation_receipt(database,
         )
 
 
-@pytest.mark.parametrize("disabled", [False, pytest.param(True, marks=unresolved("F09"))])
+@pytest.mark.parametrize("disabled", [False, True])
 async def test_delegated_history_reads_person_material_without_send_availability(
     database, tmp_path, disabled
 ):
@@ -323,7 +310,6 @@ async def test_delegated_history_scope_is_still_required(database, tmp_path):
         current_invocation.reset(token)
 
 
-@unresolved("F09")
 async def test_paired_empty_app_history_does_not_require_an_inbound_message(app_env, database):
     device, person = await paired_owner(app_env, database)
     principal = await app_env.identity.authenticate(device["token"])

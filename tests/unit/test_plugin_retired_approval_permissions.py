@@ -15,6 +15,7 @@ from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
 from yuki.plugin_host.loader import PluginLoader
 from yuki.plugin_host.manager import PluginManager
 from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 from yuki_plugin_sdk.permissions import PluginPermission
 
 
@@ -75,7 +76,7 @@ def test_old_api_or_retired_permission_is_rejected_during_discovery(tmp_path, ch
     manifest = root / "plugin.toml"
     text = manifest.read_text()
     if change == "old_api":
-        text = text.replace('plugin_api = "6.0"', 'plugin_api = "3.4"')
+        text = text.replace(f'plugin_api = "{PLUGIN_API_VERSION}"', 'plugin_api = "3.4"')
     else:
         permission = "runtime.config.read" if change == "retired_read" else "runtime.config.write"
         text = text.replace('permissions = ["tool.register"]', f'permissions = ["{permission}"]')

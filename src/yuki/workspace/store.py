@@ -247,7 +247,6 @@ class WorkspaceStore:
             if expected_version is not None and digest.hexdigest() != expected_version:
                 raise WorkspaceError("version_conflict")
             with self._transaction() as db:
-                self._prune_metadata(db)
                 if db.execute("SELECT 1 FROM artifacts WHERE id=?", (identity,)).fetchone():
                     existing = self._row(db, identity)
                     if (

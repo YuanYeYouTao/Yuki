@@ -37,6 +37,7 @@ from yuki.plugin_host.repository import PluginInstallationRepository
 from yuki.runtime.origin import TurnOrigin
 from yuki.services.admin.memory_admin import MemoryAdminService
 from yuki.services.agent_tools import ToolRuntime
+from yuki_plugin_sdk import PLUGIN_API_VERSION
 from yuki_plugin_sdk.models import PermissionLevel, RiskClass
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import ToolMetadata, ToolRegistration
@@ -328,7 +329,7 @@ async def test_queued_privileged_plugin_rechecks_person_after_scope_wait(databas
         plugin_id="authority.plugin",
         name="Authority",
         version="1.0",
-        plugin_api="6.0",
+        plugin_api=PLUGIN_API_VERSION,
         yuki_requires=">=3.8",
         manifest_hash="a" * 64,
         entrypoint="plugin:Plugin",

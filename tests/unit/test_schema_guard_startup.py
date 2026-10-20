@@ -68,6 +68,24 @@ def test_startup_does_not_scan_business_foreign_keys(schema_path):
     [
         ("UPDATE alembic_version SET version_num='0140'", "migration head is unsupported"),
         ("DROP TABLE accounts", "canonical schema is incomplete"),
+        ("DROP TABLE chat_event_artifact_refs", "canonical schema is incomplete"),
+        ("DROP INDEX ix_runtime_work_ready_scope", "Work query index is missing or changed"),
+        (
+            "DROP INDEX ix_runtime_effects_domain_ref",
+            "effect domain reference index is missing or changed",
+        ),
+        (
+            "DROP INDEX ix_memory_facts_status_valid_until_id",
+            "memory expiration index is missing or changed",
+        ),
+        (
+            "DROP INDEX ix_prompt_projections_active_updated",
+            "active projection index is missing or changed",
+        ),
+        (
+            "DROP TRIGGER chat_events_artifact_refs_ai",
+            "projection invalidation trigger is missing or changed",
+        ),
         (
             "DROP INDEX ix_chat_events_social_source_author",
             "social source index is missing or changed",

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, func, literal_column, or_, select, text, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.admin.authority.json_types import JsonValue
@@ -26,8 +26,12 @@ from yuki.runtime.work_management import WorkManagementError, manage_work
 from yuki.runtime.work_recovery_schema import deliveries
 from yuki.runtime.work_repository import TERMINAL, WorkLease, WorkRepository
 from yuki.runtime.work_schema_v1 import effects, inputs, work
-from yuki.runtime.work_tree import budget_root_id
 from yuki.social.db_models import SocialOperationModel
+
+
+def _values(values: Iterable[Any]) -> Any:
+    requested = func.json_each(json.dumps(tuple(dict.fromkeys(values)))).table_valued("value")
+    return select(requested.c.value)
 
 
 def work_access(person_id: str) -> Any:
@@ -123,134 +127,224 @@ class ClientWorks:
         self.database = identity.database
         self.repository = WorkRepository(self.database)
 
-    async def _public(self, session: AsyncSession, row: dict[str, Any]) -> dict[str, Any]:
-        conversation = await session.get(CanonicalConversationModel, row["conversation_id"])
-        assert conversation is not None
-        source = json.loads(row["source_json"])
-        presence = (
-            await session.get(PresenceModel, source.get("presence_id"))
-            if source.get("presence_id")
-            else None
-        )
-        binding: IdentityBindingModel | SpaceBindingModel | None = (
-            await session.get(IdentityBindingModel, conversation.identity_binding_id)
-            if conversation.identity_binding_id
-            else None
-        )
-        if conversation.kind == "space":
-            trigger = (
-                await session.get(ChatEventModel, source.get("trigger_event_id"))
-                if source.get("trigger_event_id")
-                else None
-            )
-            binding = None
-            if (
-                presence is not None
-                and trigger is not None
-                and trigger.canonical_conversation_id == conversation.id
-            ):
-                binding = await session.scalar(
-                    select(SpaceBindingModel).where(
-                        SpaceBindingModel.space_id == conversation.space_id,
-                        SpaceBindingModel.platform == presence.platform,
-                        SpaceBindingModel.external_space_id == trigger.group_id,
+    async def public_many(
+        self, session: AsyncSession, rows: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        ids = tuple(row["id"] for row in rows)
+        sources = {row["id"]: json.loads(row["source_json"]) for row in rows}
+        conversations = {
+            row.id: row
+            for row in await session.scalars(
+                select(CanonicalConversationModel).where(
+                    CanonicalConversationModel.id.in_(
+                        _values(row["conversation_id"] for row in rows)
                     )
                 )
-        origin = {
-            "conversation_id": conversation.id,
-            "kind": conversation.kind,
-            "binding_id": binding.id if binding else None,
-            "platform": presence.platform if presence else (binding.platform if binding else None),
-            "display_name": binding.display_name if binding else "",
-            "space_id": conversation.space_id,
+            )
         }
-        root = await budget_root_id(session, row["id"])
-        budget = (
-            (await session.execute(select(budgets).where(budgets.c.root_id == root)))
-            .mappings()
-            .first()
+        presences = {
+            row.id: row
+            for row in await session.scalars(
+                select(PresenceModel).where(
+                    PresenceModel.id.in_(
+                        _values(
+                            source["presence_id"]
+                            for source in sources.values()
+                            if source.get("presence_id")
+                        )
+                    )
+                )
+            )
+        }
+        bindings = {
+            row.id: row
+            for row in await session.scalars(
+                select(IdentityBindingModel).where(
+                    IdentityBindingModel.id.in_(
+                        _values(
+                            row.identity_binding_id
+                            for row in conversations.values()
+                            if row.identity_binding_id
+                        )
+                    )
+                )
+            )
+        }
+        triggers = {
+            row.id: row
+            for row in await session.scalars(
+                select(ChatEventModel).where(
+                    ChatEventModel.id.in_(
+                        _values(
+                            source["trigger_event_id"]
+                            for source in sources.values()
+                            if source.get("trigger_event_id")
+                        )
+                    )
+                )
+            )
+        }
+        space_bindings: dict[tuple[str | None, str, str | None], SpaceBindingModel] = {
+            (row.space_id, row.platform, row.external_space_id): row
+            for row in await session.scalars(
+                select(SpaceBindingModel).where(
+                    SpaceBindingModel.space_id.in_(
+                        _values(row.space_id for row in conversations.values() if row.space_id)
+                    )
+                )
+            )
+        }
+        lineage = (
+            select(work.c.id.label("origin"), work.c.id, work.c.parent_work_id)
+            .where(work.c.id.in_(_values(ids)))
+            .cte("client_work_ancestors", recursive=True)
         )
-        events = list(
-            await session.scalars(
-                select(ChatEventModel)
-                .join(SocialOperationModel, SocialOperationModel.event_id == ChatEventModel.id)
+        parent = work.alias("client_parent")
+        lineage = lineage.union_all(
+            select(lineage.c.origin, parent.c.id, parent.c.parent_work_id).join(
+                parent, parent.c.id == lineage.c.parent_work_id
+            )
+        )
+        roots = {
+            str(row[0]): str(row[1])
+            for row in (
+                await session.execute(
+                    select(lineage.c.origin, lineage.c.id).where(lineage.c.parent_work_id.is_(None))
+                )
+            ).all()
+        }
+        root_budgets = {
+            row["root_id"]: row
+            for row in (
+                await session.execute(
+                    select(budgets).where(budgets.c.root_id.in_(_values(roots.values())))
+                )
+            ).mappings()
+        }
+        children = {
+            str(row[0]): int(row[1])
+            for row in (
+                await session.execute(
+                    select(work.c.parent_work_id, func.count())
+                    .where(work.c.parent_work_id.in_(_values(ids)))
+                    .group_by(work.c.parent_work_id)
+                )
+            ).all()
+        }
+        domain = func.json_extract(
+            effects.c.receipt_json, literal_column("'$.invocation.original_domain_ref'")
+        )
+        links = union(
+            select(deliveries.c.work_id, deliveries.c.id.label("operation_id")).where(
+                deliveries.c.work_id.in_(_values(ids))
+            ),
+            select(effects.c.work_id, func.substr(domain, 8).label("operation_id")).where(
+                effects.c.work_id.in_(_values(ids)), domain.like("social:%")
+            ),
+        ).subquery("client_work_social")
+        result_rows = (
+            await session.execute(
+                select(links.c.work_id, ChatEventModel)
+                .join(SocialOperationModel, SocialOperationModel.id == links.c.operation_id)
+                .join(ChatEventModel, ChatEventModel.id == SocialOperationModel.event_id)
                 .where(
                     SocialOperationModel.status == "succeeded",
                     ChatEventModel.direction == "outbound",
                     ChatEventModel.author_kind == "yuki",
                     ChatEventModel.suppression_status == "keeper",
-                    or_(
-                        select(deliveries.c.id)
-                        .where(
-                            deliveries.c.work_id == row["id"],
-                            deliveries.c.id == SocialOperationModel.id,
-                        )
-                        .exists(),
-                        select(effects.c.effect_key)
-                        .where(
-                            effects.c.work_id == row["id"],
-                            func.json_extract(
-                                effects.c.receipt_json, "$.invocation.original_domain_ref"
-                            )
-                            == "social:" + SocialOperationModel.id,
-                        )
-                        .exists(),
-                    ),
                 )
                 .order_by(ChatEventModel.id)
             )
-        )
-        results = []
-        for event in events:
-            artifacts = [
-                segment["data"]
-                for segment in json.loads(event.segments_json)
-                if isinstance(segment.get("data"), dict) and segment["data"].get("artifact_id")
-            ]
-            results.append(
+        ).all()
+        results: dict[str, dict[int, dict[str, Any]]] = {}
+        for work_id, event in result_rows:
+            results.setdefault(work_id, {})[event.id] = {
+                "event_id": event.id,
+                "conversation_id": event.canonical_conversation_id,
+                "text": event.content,
+                "artifacts": [
+                    part["data"]
+                    for part in json.loads(event.segments_json)
+                    if isinstance(part.get("data"), dict) and part["data"].get("artifact_id")
+                ],
+            }
+        projections = []
+        for row in rows:
+            conversation = conversations[row["conversation_id"]]
+            source = sources[row["id"]]
+            presence = presences.get(source.get("presence_id"))
+            binding: IdentityBindingModel | SpaceBindingModel | None = (
+                bindings.get(conversation.identity_binding_id)
+                if conversation.identity_binding_id
+                else None
+            )
+            if conversation.kind == "space":
+                trigger = triggers.get(source.get("trigger_event_id"))
+                binding = (
+                    space_bindings.get((conversation.space_id, presence.platform, trigger.group_id))
+                    if presence is not None
+                    and trigger is not None
+                    and trigger.canonical_conversation_id == conversation.id
+                    else None
+                )
+            origin = {
+                "conversation_id": conversation.id,
+                "kind": conversation.kind,
+                "binding_id": binding.id if binding else None,
+                "platform": presence.platform
+                if presence
+                else binding.platform
+                if binding
+                else None,
+                "display_name": binding.display_name if binding else "",
+                "space_id": conversation.space_id,
+            }
+            root = roots[row["id"]]
+            budget = root_budgets.get(root)
+            delivered = list(results.get(row["id"], {}).values())
+            projections.append(
                 {
-                    "event_id": event.id,
-                    "conversation_id": event.canonical_conversation_id,
-                    "text": event.content,
-                    "artifacts": artifacts,
+                    "work_id": row["id"],
+                    "conversation_id": row["conversation_id"],
+                    "generation": row["generation"],
+                    "state": row["state"],
+                    "revision": row["revision"],
+                    "goal": row["goal"][:240],
+                    "source": origin,
+                    "result_delivery": origin,
+                    "waiting_kind": "user"
+                    if row["state"] == "waiting_user"
+                    else "external"
+                    if row["state"] == "waiting_external"
+                    else None,
+                    "waiting_question": delivered[-1]
+                    if row["state"] == "waiting_user" and delivered
+                    else None,
+                    "child_count": children.get(row["id"], 0),
+                    "budget": {
+                        "root_id": root,
+                        "models": budget["models"] if budget else row["model_requests"],
+                        "model_limit": budget["model_limit"] if budget else None,
+                        "tools": budget["tools"] if budget else row["tool_calls"],
+                        "tool_limit": budget["tool_limit"] if budget else None,
+                    },
+                    "results": delivered,
+                    "updated_at": row["updated"],
                 }
             )
-        return {
-            "work_id": row["id"],
-            "conversation_id": row["conversation_id"],
-            "generation": row["generation"],
-            "state": row["state"],
-            "revision": row["revision"],
-            "goal": row["goal"][:240],
-            "source": origin,
-            "result_delivery": origin,
-            "waiting_kind": "user"
-            if row["state"] == "waiting_user"
-            else "external"
-            if row["state"] == "waiting_external"
-            else None,
-            "waiting_question": results[-1] if row["state"] == "waiting_user" and results else None,
-            "child_count": await session.scalar(
-                select(func.count()).select_from(work).where(work.c.parent_work_id == row["id"])
-            ),
-            "budget": {
-                "root_id": root,
-                "models": budget["models"] if budget else row["model_requests"],
-                "model_limit": budget["model_limit"] if budget else None,
-                "tools": budget["tools"] if budget else row["tool_calls"],
-                "tool_limit": budget["tool_limit"] if budget else None,
-            },
-            "results": results,
-            "updated_at": row["updated"],
-        }
+        return projections
 
     async def get(self, principal: ClientPrincipal, identity: str) -> dict[str, Any]:
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
-            return await self._public(
-                session, await personal_work(session, principal.person_id, identity)
-            )
+            return (
+                await self.public_many(
+                    session, [await personal_work(session, principal.person_id, identity)]
+                )
+            )[0]
 
     async def _record(
         self,
@@ -336,7 +430,7 @@ class ClientWorks:
                         {"type": "text", "data": {"text": body}},
                         {"type": "work_input", "data": {"work_id": identity}},
                     ),
-                    conversation_id=principal.request_conversation_id,
+                    conversation_id=principal.conversation_id,
                     thread_id=principal.thread_id,
                 )
                 admitted = await gateway.processor._canonical_ingress.pre_admit(

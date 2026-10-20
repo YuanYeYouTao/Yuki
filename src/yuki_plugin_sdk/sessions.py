@@ -7,9 +7,9 @@ from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
-from pydantic import Field, field_validator
+from pydantic import Field
 
-from yuki_plugin_sdk.models import JsonValue, StrictModel
+from yuki_plugin_sdk.models import StrictModel
 
 
 class SessionPersistence(StrEnum):
@@ -33,30 +33,12 @@ class CreateAgentSessionRequest(StrictModel):
     instructions: str = Field(min_length=1, max_length=8_000)
     persistence: SessionPersistence = SessionPersistence.DURABLE
     context_profile: SessionContextProfile = SessionContextProfile.NONE
-    allowed_capabilities: tuple[str, ...] = Field(default=(), max_length=64)
-    metadata: dict[str, JsonValue] = Field(default_factory=dict)
-
-    @field_validator("allowed_capabilities")
-    @classmethod
-    def _unique_capabilities(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(set(value)) != len(value):
-            raise ValueError("allowed_capabilities cannot contain duplicates")
-        return value
 
 
 class RunAgentSessionRequest(StrictModel):
     session_id: UUID
     user_input: str = Field(min_length=1, max_length=12_000)
-    allowed_capabilities: tuple[str, ...] | None = Field(default=None, max_length=64)
-    max_tool_calls: int | None = Field(default=None, ge=0, le=64)
     max_model_requests: int | None = Field(default=None, ge=1, le=64)
-
-    @field_validator("allowed_capabilities")
-    @classmethod
-    def _unique_capabilities(cls, value: tuple[str, ...] | None) -> tuple[str, ...] | None:
-        if value is not None and len(set(value)) != len(value):
-            raise ValueError("allowed_capabilities cannot contain duplicates")
-        return value
 
 
 class AgentSession(StrictModel):
@@ -73,7 +55,6 @@ class AgentSession(StrictModel):
 class AgentSessionRunResult(StrictModel):
     session: AgentSession
     text: str
-    tool_calls_used: int = Field(default=0, ge=0)
     model_requests: int = Field(default=1, ge=1)
 
 

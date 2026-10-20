@@ -2,7 +2,6 @@
 
 from dataclasses import replace
 
-import pytest
 from sqlalchemy import insert, select
 from tests.support.automation_unified_delivery_helpers import setup_run
 from tests.support.canonical_identity import ensure_person
@@ -14,14 +13,6 @@ from yuki.persistence.models import AutomationModel, ChatEventModel
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "P10: equivalent directory traversal must avoid repeated deep OFFSET work; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 async def test_no_match_directory_read_work_grows_with_candidate_count(database, tmp_path):
     case = await setup_run(database, tmp_path, mode="silent")
     async with database.sessions() as session:

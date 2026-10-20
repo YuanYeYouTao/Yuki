@@ -4,20 +4,11 @@ import sqlite3
 from contextlib import closing
 from uuid import uuid4
 
-import pytest
 from tests.support.workspace_snapshots import snapshot_bytes
 
 from yuki.workspace.store import WorkspaceStore
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "P07: publish scans retired TTL metadata; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 def test_publication_work_does_not_scale_with_permanent_history(tmp_path, monkeypatch):
     store = WorkspaceStore(tmp_path / "artifacts")
     original = snapshot_bytes(store, "original.txt", b"original bytes")

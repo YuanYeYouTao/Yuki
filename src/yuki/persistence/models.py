@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Connection,
     DateTime,
     Float,
     ForeignKey,
@@ -14,13 +15,16 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     String,
+    Table,
     Text,
     UniqueConstraint,
+    event,
     text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from yuki.identity.sql_constraints import uuid4_text36_sql
+from yuki.persistence.artifact_refs import ARTIFACT_REFERENCE_TRIGGERS
 
 
 class Base(DeclarativeBase):
@@ -294,6 +298,26 @@ class ChatEventModel(Base):
     )
 
 
+class ChatEventArtifactRefModel(Base):
+    """An original event's artifact/version pairs, with no copied authority or owner."""
+
+    __tablename__ = "chat_event_artifact_refs"
+    __table_args__ = (
+        Index("ix_chat_event_artifact_refs_artifact_version", "artifact_id", "version", "event_id"),
+    )
+    event_id: Mapped[int] = mapped_column(
+        ForeignKey("chat_events.id", ondelete="CASCADE"), primary_key=True
+    )
+    artifact_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    version: Mapped[str] = mapped_column(Text, primary_key=True)
+
+
+@event.listens_for(ChatEventArtifactRefModel.__table__, "after_create")
+def _install_artifact_references(_table: Table, connection: Connection, **_kwargs: object) -> None:
+    for statement in ARTIFACT_REFERENCE_TRIGGERS.values():
+        connection.exec_driver_sql(statement)
+
+
 class CanonicalGenerationResetModel(Base):
     """Idempotent offline administrator reset of one canonical conversation."""
 
@@ -473,6 +497,7 @@ class MemoryFactModel(Base):
             "updated_at",
         ),
         Index("ix_memory_facts_canonical_subject_person_id", "canonical_subject_person_id"),
+        Index("ix_memory_facts_status_valid_until_id", "status", "valid_until", "id"),
         Index("ix_memory_facts_canonical_subject_space_id", "canonical_subject_space_id"),
         Index(
             "ix_memory_facts_canonical_visibility_person_id",
@@ -964,6 +989,7 @@ class MemorySelfReflectionRunModel(Base):
             name="ck_self_reflection_run_status",
         ),
         Index("ix_memory_self_reflection_runs_slot", "scheduled_slot", "status"),
+        Index("ix_memory_self_reflection_runs_retry_next", "retry_state", "next_attempt_at"),
         Index("ix_memory_self_reflection_runs_canonical_person_id", "canonical_person_id"),
         Index("ix_memory_self_reflection_runs_canonical_space_id", "canonical_space_id"),
         Index(
@@ -1025,6 +1051,16 @@ class MemorySelfReflectionRunModel(Base):
 
 class MemorySelfReflectionCycleModel(Base):
     __tablename__ = "memory_self_reflection_cycles"
+    __table_args__ = (
+        Index("ix_memory_self_reflection_cycles_status_created", "status", "created_at"),
+        Index(
+            "ix_memory_self_reflection_cycles_delivery",
+            "trigger",
+            "delivery_state",
+            "status",
+            "created_at",
+        ),
+    )
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     source_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
     trigger: Mapped[str] = mapped_column(String(16), nullable=False)

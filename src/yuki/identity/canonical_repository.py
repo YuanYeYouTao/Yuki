@@ -213,48 +213,6 @@ async def find_space_binding(
     )
 
 
-async def require_person_binding(
-    session: AsyncSession,
-    user_id: str,
-    *,
-    allow_disabled: bool = False,
-) -> IdentityBindingModel:
-    """Resolve one active QQ Binding and its live canonical Person."""
-
-    binding = await find_identity_binding(session, external_id(user_id))
-    if binding is None:
-        raise CanonicalIdentityError("unclassified")
-    if binding.status != "active":
-        raise CanonicalIdentityError("canonical_owner_disabled")
-    person = await session.get(CanonicalPersonModel, binding.person_id)
-    if person is None:
-        raise CanonicalIdentityError("unclassified")
-    if not person.enabled and not allow_disabled:
-        raise CanonicalIdentityError("canonical_owner_disabled")
-    return binding
-
-
-async def require_space_binding(
-    session: AsyncSession,
-    group_id: str,
-    *,
-    allow_disabled: bool = False,
-) -> SpaceBindingModel:
-    """Resolve one active QQ group Binding and its live canonical Space."""
-
-    binding = await find_space_binding(session, external_id(group_id))
-    if binding is None:
-        raise CanonicalIdentityError("no_space_binding")
-    if binding.status != "active":
-        raise CanonicalIdentityError("canonical_owner_disabled")
-    space = await session.get(CanonicalSpaceModel, binding.space_id)
-    if space is None:
-        raise CanonicalIdentityError("unclassified")
-    if not space.enabled and not allow_disabled:
-        raise CanonicalIdentityError("canonical_owner_disabled")
-    return binding
-
-
 async def bindings_for_person(
     session: AsyncSession,
     person_id: str,
@@ -267,76 +225,6 @@ async def bindings_for_person(
         )
     )
     return tuple(rows)
-
-
-def representative_external_account_id(
-    bindings: tuple[IdentityBindingModel, ...],
-) -> str:
-    """Return the deterministic transport-facing account for one Person."""
-
-    active = tuple(binding for binding in bindings if binding.status == "active")
-    if not active:
-        raise CanonicalIdentityError("unclassified")
-    return min(active, key=lambda item: (item.external_account_id, item.id)).external_account_id
-
-
-async def external_accounts_for_person(
-    session: AsyncSession,
-    person_id: str,
-) -> tuple[str, ...]:
-    """Return immutable message-provenance identifiers for one Person."""
-
-    return tuple(
-        dict.fromkeys(
-            binding.external_account_id for binding in await bindings_for_person(session, person_id)
-        )
-    )
-
-
-async def person_id_for(session: AsyncSession, user_id: str | None) -> str | None:
-    external = optional_external_id(user_id)
-    if external is None:
-        return None
-    binding = await find_identity_binding(session, external)
-    return None if binding is None else binding.person_id
-
-
-async def space_id_for(session: AsyncSession, group_id: str | None) -> str | None:
-    external = optional_external_id(group_id)
-    if external is None:
-        return None
-    binding = await find_space_binding(session, external)
-    return None if binding is None else binding.space_id
-
-
-async def active_person_id_for(session: AsyncSession, user_id: str | None) -> str | None:
-    external = optional_external_id(user_id)
-    if external is None:
-        return None
-    binding = await find_identity_binding(session, external)
-    if binding is None or binding.status != "active":
-        return None
-    person = await session.get(CanonicalPersonModel, binding.person_id)
-    return person.id if person is not None and person.enabled else None
-
-
-async def active_space_id_for(session: AsyncSession, group_id: str | None) -> str | None:
-    external = optional_external_id(group_id)
-    if external is None:
-        return None
-    binding = await find_space_binding(session, external)
-    if binding is None or binding.status != "active":
-        return None
-    space = await session.get(CanonicalSpaceModel, binding.space_id)
-    return space.id if space is not None and space.enabled else None
-
-
-async def presence_id_for(session: AsyncSession, bot_user_id: str | None) -> str | None:
-    external = optional_external_id(bot_user_id)
-    if external is None:
-        return None
-    presence = await find_presence(session, external)
-    return None if presence is None else presence.id
 
 
 async def create_person_binding(
@@ -490,14 +378,11 @@ async def forget_person_by_id(session: AsyncSession, person_id: str) -> None:
 
 __all__ = [
     "AccountRole",
-    "active_person_id_for",
-    "active_space_id_for",
     "assert_same_shadow",
     "bindings_for_person",
     "create_person_binding",
     "create_presence",
     "create_space_binding",
-    "external_accounts_for_person",
     "external_id",
     "find_identity_binding",
     "find_presence",
@@ -505,12 +390,6 @@ __all__ = [
     "forget_person_by_id",
     "new_identity_id",
     "optional_external_id",
-    "person_id_for",
-    "presence_id_for",
-    "representative_external_account_id",
-    "require_person_binding",
-    "require_space_binding",
     "set_identity_failpoint",
-    "space_id_for",
     "trip",
 ]

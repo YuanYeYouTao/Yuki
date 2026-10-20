@@ -13,6 +13,7 @@ from sqlalchemy.pool import NullPool
 from yuki.conversation.projection_chunks_schema import (
     PROJECTION_TRIGGERS_CURRENT,
 )
+from yuki.persistence.artifact_refs import ARTIFACT_REFERENCE_TRIGGERS
 
 
 def canonical_schema_revision(root: Path | None = None) -> str:
@@ -44,6 +45,7 @@ def _normalized_input_repair_index_sql(sql: str) -> str:
 
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "chat_event_artifact_refs": frozenset({"event_id", "artifact_id", "version"}),
     "canonical_event_receipts": frozenset(
         {"ingress_account_id", "transport_namespace", "ingress_presence_id"}
     ),
@@ -296,6 +298,7 @@ async def require_canonical_schema(database_url: str) -> None:
                     f"{expected_revision}"
                 )
 
+            from yuki.runtime.effect_schema import INVOCATION_INDEXES
             from yuki.runtime.work_query_schema import query_index_sql
 
             for index_name, expected_sql in query_index_sql().items():
@@ -316,6 +319,21 @@ async def require_canonical_schema(database_url: str) -> None:
                     != "".join(expected_sql.replace('"', "").split())
                 ):
                     raise CanonicalSchemaError("database Work query index is missing or changed")
+
+            reference_sql = await connection.scalar(
+                text("SELECT sql FROM sqlite_master WHERE type='index' AND name=:name"),
+                {"name": "ix_runtime_effects_domain_ref"},
+            )
+            if reference_sql is None or _normalized_input_repair_index_sql(reference_sql) != (
+                _normalized_input_repair_index_sql(
+                    INVOCATION_INDEXES["ix_runtime_effects_domain_ref"].replace(
+                        "IF NOT EXISTS ", ""
+                    )
+                )
+            ):
+                raise CanonicalSchemaError(
+                    "database effect domain reference index is missing or changed"
+                )
 
             forbidden = sorted(tables & _FORBIDDEN_TABLES)
             if forbidden:
@@ -359,6 +377,48 @@ async def require_canonical_schema(database_url: str) -> None:
                     "database memory receipt reference index is missing or changed"
                 )
             for index_name, table, index_columns, error_category in (
+                (
+                    "ix_plugin_background_turn_unbound_due",
+                    "plugin_background_turn_jobs",
+                    ("status", "work_id", "next_attempt_at"),
+                    "plugin unbound job",
+                ),
+                (
+                    "ix_plugin_background_turn_expired_lease",
+                    "plugin_background_turn_jobs",
+                    ("status", "lease_until", "next_attempt_at"),
+                    "plugin expired lease",
+                ),
+                (
+                    "ix_chat_event_artifact_refs_artifact_version",
+                    "chat_event_artifact_refs",
+                    ("artifact_id", "version", "event_id"),
+                    "artifact source",
+                ),
+                (
+                    "ix_memory_facts_status_valid_until_id",
+                    "memory_facts",
+                    ("status", "valid_until", "id"),
+                    "memory expiration",
+                ),
+                (
+                    "ix_memory_self_reflection_cycles_status_created",
+                    "memory_self_reflection_cycles",
+                    ("status", "created_at"),
+                    "reflection cycle",
+                ),
+                (
+                    "ix_memory_self_reflection_runs_retry_next",
+                    "memory_self_reflection_runs",
+                    ("retry_state", "next_attempt_at"),
+                    "reflection retry",
+                ),
+                (
+                    "ix_memory_self_reflection_cycles_delivery",
+                    "memory_self_reflection_cycles",
+                    ("trigger", "delivery_state", "status", "created_at"),
+                    "reflection delivery",
+                ),
                 (
                     "ix_account_names_name_scope_account",
                     "account_name_observations",
@@ -485,22 +545,38 @@ async def require_canonical_schema(database_url: str) -> None:
                 != _normalized_input_repair_index_sql(INPUT_REPAIR_INDEX_SQL)
             ):
                 raise CanonicalSchemaError("database abandoned input index is missing or changed")
-            for index_name, index_columns, predicate, category in (
+            for index_name, table, index_columns, predicate, category in (
                 (
                     "ix_chat_events_social_source_author",
+                    "chat_events",
                     ("author_person_id", "id"),
                     "direction = 'inbound' AND author_kind = 'person'",
                     "social source",
                 ),
                 (
                     "ix_chat_events_conversation_message_sender_time",
+                    "chat_events",
                     ("canonical_conversation_id", "sender_user_id", "occurred_at", "id"),
                     "suppression_status = 'keeper' AND event_kind = 'message'",
                     "mention activity",
                 ),
+                (
+                    "ix_prompt_projections_active_updated",
+                    "prompt_projections",
+                    ("updated_at", "view_key", "byte_size"),
+                    "invalidated_reason IS NULL",
+                    "active projection",
+                ),
+                (
+                    "ix_runtime_subagents_unarchived",
+                    "runtime_subagents",
+                    ("lease_until", "work_id"),
+                    "archived_at IS NULL",
+                    "subagent archive candidate",
+                ),
             ):
                 expected_sql = (
-                    f"CREATE INDEX {index_name} ON chat_events ({', '.join(index_columns)}) "
+                    f"CREATE INDEX {index_name} ON {table} ({', '.join(index_columns)}) "
                     f"WHERE {predicate}"
                 )
                 found = (
@@ -512,9 +588,7 @@ async def require_canonical_schema(database_url: str) -> None:
                 shape = next(
                     (
                         row
-                        for row in await connection.execute(
-                            text('PRAGMA index_list("chat_events")')
-                        )
+                        for row in await connection.execute(text(f'PRAGMA index_list("{table}")'))
                         if row[1] == index_name
                     ),
                     None,
@@ -527,7 +601,7 @@ async def require_canonical_schema(database_url: str) -> None:
                 if (
                     found is None
                     or found[0] != "index"
-                    or found[1] != "chat_events"
+                    or found[1] != table
                     or found[2] is None
                     or shape is None
                     or shape[2] != 0
@@ -552,6 +626,7 @@ async def require_canonical_schema(database_url: str) -> None:
 
             for name, expected in {
                 **PROJECTION_TRIGGERS_CURRENT,
+                **ARTIFACT_REFERENCE_TRIGGERS,
                 **protocol_triggers,
                 **_identity_triggers(),
             }.items():

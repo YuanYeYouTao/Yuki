@@ -1,4 +1,4 @@
-"""Host-owned SQLAlchemy models for Plugin API 5.0."""
+"""Host-owned SQLAlchemy models for the current Plugin API."""
 
 from __future__ import annotations
 
@@ -233,7 +233,6 @@ class PluginAgentSessionModel(Base):
     instructions: Mapped[str] = mapped_column(Text, nullable=False)
     persistence: Mapped[str] = mapped_column(String(16), nullable=False, default="durable")
     context_profile: Mapped[str] = mapped_column(String(32), nullable=False, default="none")
-    allowed_capabilities_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
     next_sequence: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     turn_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -550,6 +549,18 @@ class PluginBackgroundTurnJobModel(Base):
         ),
         CheckConstraint("attempts >= 0 AND max_attempts >= 1", name="ck_plugin_turn_attempts"),
         Index("ix_plugin_background_turn_due", "status", "next_attempt_at"),
+        Index(
+            "ix_plugin_background_turn_unbound_due",
+            "status",
+            "work_id",
+            "next_attempt_at",
+        ),
+        Index(
+            "ix_plugin_background_turn_expired_lease",
+            "status",
+            "lease_until",
+            "next_attempt_at",
+        ),
         Index("ix_plugin_background_turn_plugin", "plugin_id", "status"),
         Index(
             "ix_plugin_background_turn_jobs_canonical_target_person_id",

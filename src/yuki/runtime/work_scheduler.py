@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text
 
 from yuki.persistence.sqlite_diagnostics import TimingSummary
 from yuki.runtime.subagent_schema import children
@@ -40,6 +40,7 @@ class WorkScheduler:
         self._resume = resume
         # One task per conversation scope; it resumes that scope's selected items in order.
         self._in_flight: dict[str, asyncio.Task[None]] = {}
+        self._selection_cursor: str | None = None
         self._accepting = True
         self._chat_admission_enabled = chat_admission_enabled
         self._waits = WorkWaitRepository(repository)
@@ -262,7 +263,7 @@ class WorkScheduler:
                     )
                     .outerjoin(recovery, recovery.c.work_id == work.c.id)
                     .where(
-                        work.c.state.in_(("queued", "running")),
+                        text("(runtime_work.state IN ('queued', 'running')) = 1"),
                         or_(
                             func.json_extract(work.c.source_json, "$.owner").in_(
                                 ("plugin_invocation", "automation", "plugin_background")
@@ -279,22 +280,46 @@ class WorkScheduler:
                             recovery.c.not_before <= time.time(),
                         ),
                     )
-                    .order_by(work.c.updated)
+                    .order_by(work.c.updated, work.c.id)
                 )
-                scopes: dict[str, None] = {}
-                metadata = await session.execute(query.with_only_columns(work.c.conversation_id))
-                for (conversation_id,) in metadata:
-                    if conversation_id in scopes or len(scopes) < capacity:
-                        scopes.setdefault(conversation_id, None)
-                rows = (
-                    (
-                        (await session.execute(query.where(work.c.conversation_id.in_(scopes))))
-                        .mappings()
-                        .all()
+                rows = []
+                visited: set[str] = set()
+                for _ in range(capacity):
+                    # Seek the next distinct scope, jumping over its entire ready
+                    # backlog. The cursor is traversal progress, not Work state.
+                    scopes = select(work.c.conversation_id).where(
+                        text("(runtime_work.state IN ('queued', 'running')) = 1")
                     )
-                    if scopes
-                    else []
-                )
+                    if self._selection_cursor is not None:
+                        scopes = scopes.where(work.c.conversation_id > self._selection_cursor)
+                    identity = await session.scalar(
+                        scopes.order_by(work.c.conversation_id).limit(1)
+                    )
+                    if identity is None and self._selection_cursor is not None:
+                        self._selection_cursor = None
+                        identity = await session.scalar(
+                            select(work.c.conversation_id)
+                            .where(text("(runtime_work.state IN ('queued', 'running')) = 1"))
+                            .order_by(work.c.conversation_id)
+                            .limit(1)
+                        )
+                    if identity is None or identity in visited:
+                        break
+                    self._selection_cursor = identity
+                    visited.add(identity)
+                    if identity in self._in_flight:
+                        continue
+                    row = (
+                        (
+                            await session.execute(
+                                query.where(work.c.conversation_id == identity).limit(1)
+                            )
+                        )
+                        .mappings()
+                        .first()
+                    )
+                    if row is not None:
+                        rows.append(row)
         batches: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
             batches.setdefault(row["conversation_id"], []).append(dict(row))

@@ -769,17 +769,16 @@ class PluginManager:
         task: asyncio.Task[None],
     ) -> None:
         managed = self._running.get(plugin_id)
-        if managed is not None:
-            current = managed.background_tasks.get(registration.metadata.name)
-            if current is task:
-                managed.background_tasks.pop(registration.metadata.name, None)
+        if managed is None or managed.background_tasks.get(registration.metadata.name) is not task:
+            return
+        managed.background_tasks.pop(registration.metadata.name)
         if task.cancelled():
             return
         error = task.exception()
         if error is None:
             return
         maintenance = asyncio.create_task(
-            self._handle_background_failure(plugin_id, registration, type(error).__name__),
+            self._handle_background_failure(plugin_id, managed, registration, type(error).__name__),
             name=f"yuki-plugin-maintenance:{plugin_id}:{registration.metadata.name}",
         )
         self._maintenance_tasks.add(maintenance)
@@ -788,6 +787,7 @@ class PluginManager:
     async def _handle_background_failure(
         self,
         plugin_id: str,
+        managed: _ManagedPlugin,
         registration: BackgroundServiceRegistration,
         error_category: str,
     ) -> None:
@@ -797,32 +797,11 @@ class PluginManager:
             registration.metadata.name,
             error_category,
         )
-        record = await self._installations.record_failure(
-            plugin_id,
-            error_category=error_category,
-            disable_threshold=self._failure_disable_threshold,
-        )
         async with self._lock:
-            if plugin_id not in self._running:
+            if self._running.get(plugin_id) is not managed:
                 return
-            if (
-                record is not None
-                and record.enabled
-                and registration.metadata.restart_policy is RestartPolicy.ON_FAILURE
-                and self._active
-            ):
+            if registration.metadata.restart_policy is RestartPolicy.ON_FAILURE and self._active:
                 self._start_background_task(plugin_id, registration)
-                return
-            await self._stop_one_unlocked(
-                plugin_id,
-                final_status=None,
-                record_stop_failure=False,
-            )
-            await self._installations.set_status(
-                plugin_id,
-                status="failed",
-                error_category=error_category,
-            )
 
     def _event_registrations(self, plugin_id: str) -> tuple[EventHookRegistration, ...]:
         result: list[EventHookRegistration] = []

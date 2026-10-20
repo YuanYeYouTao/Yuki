@@ -144,54 +144,44 @@ class GeminiProvider(JSONHTTPProvider):
             )
         return {"role": "model" if message.role == "assistant" else "user", "parts": parts}
 
-    def _result(self, item: FunctionCallOutput, history: list[dict[str, Any]]) -> dict[str, Any]:
-        for message in reversed(history):
-            ids = iter(message.get("_call_ids", ()))
-            for part in message.get("parts", ()):
-                call = part.get("functionCall")
-                if not isinstance(call, dict):
-                    continue
+    @staticmethod
+    def _index_calls(message: dict[str, Any], calls: dict[str, dict[str, Any]]) -> None:
+        ids = iter(message.get("_call_ids", ()))
+        current: dict[str, dict[str, Any]] = {}
+        for part in message.get("parts", ()):
+            call = part.get("functionCall")
+            if isinstance(call, dict):
                 local_id = next(ids, call.get("id"))
-                if local_id != item.call_id:
-                    continue
-                result: dict[str, Any] = {
-                    "name": call["name"],
-                    "response": {
-                        "error" if tool_result_failed(item.output) else "output": item.output
-                    },
-                }
-                if call.get("id"):
-                    result["id"] = call["id"]
-                return {"role": "user", "parts": [{"functionResponse": result}]}
-        raise LLMInvalidRequestError("Gemini tool receipt has no matching call")
+                if isinstance(local_id, str):
+                    current.setdefault(local_id, call)
+        # Like the original reverse history lookup: latest message wins, while
+        # the first matching call within that message retains its native fields.
+        calls.update(current)
 
-    def _tail(self, request: ChatRequest) -> list[dict[str, Any]]:
+    def _result(self, item: FunctionCallOutput, calls: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        call = calls.get(item.call_id)
+        if call is None:
+            raise LLMInvalidRequestError("Gemini tool receipt has no matching call")
+        result: dict[str, Any] = {
+            "name": call["name"],
+            "response": {"error" if tool_result_failed(item.output) else "output": item.output},
+        }
+        if call.get("id"):
+            result["id"] = call["id"]
+        return {"role": "user", "parts": [{"functionResponse": result}]}
+
+    def _tail(self, request: ChatRequest, calls: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         tail = checkpoint_items(request, self.protocol)
-        history: list[dict[str, Any]] = []
-        for message in request.messages:
-            if message.role in {"system", "developer"} and not history:
-                continue
-            if message.role == "tool":
-                history.append(
-                    self._result(
-                        FunctionCallOutput(
-                            call_id=message.tool_call_id or "",
-                            output=message.content or "",
-                        ),
-                        history,
-                    )
-                )
-            else:
-                history.append(self._message(message))
-        history.extend(tail)
+        for message in tail:
+            self._index_calls(message, calls)
         for item in ordered_delta(request):
             wire = (
-                self._result(item, history)
+                self._result(item, calls)
                 if isinstance(item, FunctionCallOutput)
                 else self._message(item)
             )
             tail.append(wire)
-            history.append(wire)
+            self._index_calls(wire, calls)
         return tail
 
     def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
@@ -199,6 +189,7 @@ class GeminiProvider(JSONHTTPProvider):
             raise LLMUnsupportedFeatureError("unsupported Gemini native tool")
         system: list[dict[str, Any]] = []
         contents: list[dict[str, Any]] = []
+        calls: dict[str, dict[str, Any]] = {}
         for message in request.messages:
             if message.role in {"system", "developer"} and not contents:
                 system.append({"text": message.content or ""})
@@ -209,12 +200,14 @@ class GeminiProvider(JSONHTTPProvider):
                             call_id=message.tool_call_id or "",
                             output=message.content or "",
                         ),
-                        contents,
+                        calls,
                     )
                 )
             else:
-                contents.append(self._message(message))
-        contents.extend(self._tail(request))
+                wire = self._message(message)
+                contents.append(wire)
+                self._index_calls(wire, calls)
+        contents.extend(self._tail(request, calls))
         # Parallel receipts belong to one user turn, in the original call order.
         combined: list[dict[str, Any]] = []
         for item in contents:
@@ -325,7 +318,11 @@ class GeminiProvider(JSONHTTPProvider):
         call_ids: list[str] = []
         native_events: list[NativeToolEvent] = []
         search_queries: dict[str, str] = {}
-        tail = self._tail(request)
+        prior_calls: dict[str, dict[str, Any]] = {}
+        for message in request.messages:
+            if message.tool_calls:
+                self._index_calls(self._message(message), prior_calls)
+        tail = self._tail(request, prior_calls)
         seed = hashlib.sha256(response.content + str(len(tail)).encode()).hexdigest()[:20]
         for index, part in enumerate(content["parts"]):
             if not isinstance(part, dict):

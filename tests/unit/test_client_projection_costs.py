@@ -25,17 +25,8 @@ from yuki.identity.canonical_repository import (
 from yuki.identity.db_models import CanonicalPersonModel
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_repository import WorkRepository
-from yuki.runtime.work_schema_v1 import work
-
-REPORT = "docs/operations/backend-five-pass-audit-20261020.md"
-
-
-def unresolved(issue):
-    return pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason=f"Audit {issue}: projection expansion unresolved; {REPORT}",
-    )
+from yuki.runtime.work_schema_v1 import effects, work
+from yuki.social.db_models import SocialOperationModel
 
 
 async def principal_for(env, database):
@@ -93,8 +84,8 @@ async def completed_work_template(env, database):
 @pytest.mark.parametrize(
     "operation",
     [
-        pytest.param("artifact", marks=unresolved("P01")),
-        pytest.param("home", marks=unresolved("P02")),
+        "artifact",
+        "home",
     ],
 )
 async def test_personal_reads_do_not_hydrate_every_unrelated_work(app_env, database, operation):
@@ -135,7 +126,6 @@ async def test_personal_reads_do_not_hydrate_every_unrelated_work(app_env, datab
     assert costs[1] - costs[0] < sizes[1] - sizes[0], (sizes, costs)
 
 
-@unresolved("P01")
 async def test_exact_artifact_authorization_does_not_scan_unrelated_private_history(
     app_env, database
 ):
@@ -205,7 +195,6 @@ async def test_exact_artifact_authorization_does_not_scan_unrelated_private_hist
     assert costs[1] < costs[0] * 2, (sizes, costs)
 
 
-@unresolved("P02")
 async def test_sync_batches_activity_for_the_same_persons_entries(app_env, database):
     env = app_env
     principal = await principal_for(env, database)
@@ -234,3 +223,90 @@ async def test_sync_batches_activity_for_the_same_persons_entries(app_env, datab
         costs.append(len(reads))
         previous = size
     assert costs[1] - costs[0] < sizes[1] - sizes[0], (sizes, costs)
+
+
+async def test_work_artifact_authorization_uses_its_original_effect_reference(app_env, database):
+    env = app_env
+    principal = await principal_for(env, database)
+    original = await completed_work_template(env, database)
+    artifact = snapshot_bytes(env.store, "work-original.txt", b"original Work artifact")
+    event = (
+        await seed_scoped_event(
+            env.harness.scoped_events,
+            scope=ConversationScope.group("8000", "2001"),
+            platform_message_id=str(uuid4()),
+            sender_user_id="8000",
+            direction="outbound",
+            content="confirmed original file",
+            segments=(
+                {
+                    "type": "file",
+                    "data": {"artifact_id": artifact["artifact_id"], "version": artifact["sha256"]},
+                },
+            ),
+        )
+    ).event
+    operation = str(uuid4())
+    now = datetime.now(UTC)
+    async with database.immediate_session() as writer:
+        writer.add(
+            SocialOperationModel(
+                id=operation,
+                source_turn_id=str(uuid4()),
+                tool_call_id=str(uuid4()),
+                source_conversation_id=event.canonical_conversation_id,
+                action="send_message",
+                payload_hash="a" * 64,
+                target_kind="space",
+                target_id=event.canonical_conversation_id,
+                presence_id=event.ingress_presence_id,
+                status="succeeded",
+                event_id=event.id,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await writer.execute(
+            insert(effects).values(
+                effect_key=str(uuid4()),
+                work_id=original["id"],
+                kind="social",
+                state="accepted",
+                receipt_json=json.dumps(
+                    {"invocation": {"original_domain_ref": f"social:{operation}"}}
+                ),
+                created=1.0,
+                updated=1.0,
+            )
+        )
+    sizes, costs, previous = (8, 512), [], 0
+    for size in sizes:
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                insert(effects),
+                [
+                    dict(
+                        effect_key=str(uuid4()),
+                        work_id=original["id"],
+                        kind="social",
+                        state="accepted",
+                        receipt_json=json.dumps(
+                            {"invocation": {"original_domain_ref": "social:" + str(uuid4())}}
+                        ),
+                        created=1.0,
+                        updated=1.0,
+                    )
+                    for _ in range(size - previous)
+                ],
+            )
+        with capture_reads(database) as reads:
+            metadata, body = await env.files.artifact(
+                principal, artifact["artifact_id"], artifact["sha256"]
+            )
+        assert (
+            metadata["artifact_id"] == artifact["artifact_id"] and body == b"original Work artifact"
+        )
+        costs.append(read_vm_steps(database, reads))
+        previous = size
+    assert costs[1] < costs[0] * 2, (sizes, costs)
+    assert not env.calls

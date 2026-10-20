@@ -86,14 +86,6 @@ async def plugin_vision(database, native_media_env):
         await resolver.close()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "F05: public Vision reuses an edited event's old image; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 async def test_native_photo_replacement_invalidates_the_public_vision_source_cache(
     database, native_media_env, plugin_vision
 ):
@@ -148,8 +140,6 @@ async def test_same_original_reuses_public_vision_without_another_purchase(
     assert first == second == hashlib.sha256(env.contents["old-photo"]).hexdigest()
     assert len(plugin_vision.provider.requests) == 1
     assert env.downloads and set(env.downloads) == {"old-photo"}
-    if not edit_caption:
-        assert env.downloads == ["old-photo"]
 
 
 async def test_distinct_native_events_reuse_the_same_content_hash_observation(

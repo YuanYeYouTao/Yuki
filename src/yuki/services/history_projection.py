@@ -165,7 +165,6 @@ async def prepare_history(
             missing_rows,
             bot_display_name=context.history_bot_display_name,
             timezone=context.history_timezone,
-            yuki_account_ids=context.history_yuki_account_ids,
         )
         grouped, individual_rows = renderer.main_agent_history_views(missing_rows)
         additions = tuple((ids, message) for _, ids, message in grouped)

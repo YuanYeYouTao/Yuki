@@ -21,7 +21,7 @@ from yuki.config import Settings
 from yuki.deployment_setup import add_setup_parser, run_setup_command
 from yuki.domain.messages import ChatMessage, ChatTool
 from yuki.gateway.compatibility import provider_doctor_payload
-from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.providers.snowluma import SNOWLUMA_PROVIDER_ID
 from yuki.http_environment import load_http_environment
 from yuki.memory.quality.audit import MemoryProductionQualityAudit
 from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
@@ -526,7 +526,7 @@ def main() -> None:
     )
     gateway_doctor.add_argument(
         "--provider",
-        choices=builtin_provider_catalog().provider_ids,
+        choices=(SNOWLUMA_PROVIDER_ID,),
         required=True,
     )
     add_setup_parser(subparsers)

@@ -6,14 +6,13 @@ import asyncio
 import hashlib
 from dataclasses import replace
 from datetime import UTC, datetime
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any
 
 from yuki.admin.models import VisionRuntimeConfig
 from yuki.capabilities.media import PreparedMediaData
 from yuki.domain.messages import ChatImage
 from yuki.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
+from yuki.services.media_resolver import _media_directory, _media_io
 from yuki.services.native_media import MAX_IMAGE_BYTES, NativeMediaPreparer, native_sticker_facts
 from yuki.services.video_frames import is_video_header
 from yuki.services.vision_service import VisionProcessingError
@@ -82,9 +81,9 @@ class WorkspaceInspector:
                     )
             try:
                 if is_video_header(data):
-                    with TemporaryDirectory(prefix="yuki-workspace-video-") as directory:
-                        path = Path(directory) / "input.mp4"
-                        await asyncio.to_thread(path.write_bytes, data)
+                    async with _media_directory("yuki-workspace-video-") as directory:
+                        path = directory / "input.mp4"
+                        await _media_io(path.write_bytes, data)
                         images = await self.preparer.prepare_video(
                             path, source="workspace", runtime=runtime
                         )

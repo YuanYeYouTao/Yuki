@@ -13,7 +13,7 @@ import pytest
 from PIL import Image
 
 from yuki.asr import audio
-from yuki.services import video_frames
+from yuki.services import media_resolver, video_frames
 from yuki.vision.models import DownloadedMedia
 
 
@@ -82,14 +82,6 @@ async def test_local_media_decoding_preserves_original_output_and_protocol(local
         assert Path(args[-1]).is_absolute()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "P08: blocking ASR/frame file IO runs on the shared loop; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 @pytest.mark.parametrize(
     ("kind", "method", "filename"),
     [
@@ -130,3 +122,49 @@ async def test_blocked_media_file_allows_loop_callback_before_io_finishes(
     monkeypatch.setattr(Path, method, blocked_file)
     await local_decoder.decode(kind)
     assert observed_order and all(observed_order)
+
+
+@pytest.mark.parametrize("blocked_stage", ["directory", "input-write"])
+async def test_cancelled_audio_releases_its_directory_after_the_file_owner_finishes(
+    monkeypatch, local_decoder, blocked_stage
+):
+    loop = asyncio.get_running_loop()
+    entered, released = asyncio.Event(), threading.Event()
+    directories = []
+    temporary = media_resolver.TemporaryDirectory
+    write = Path.write_bytes
+
+    def hold():
+        loop.call_soon_threadsafe(entered.set)
+        assert released.wait(5)
+
+    def create(*args, **kwargs):
+        directory = temporary(*args, **kwargs)
+        directories.append(Path(directory.name))
+        if blocked_stage == "directory":
+            hold()
+        return directory
+
+    def write_input(path, content):
+        if path.name == "input.audio":
+            hold()
+        return write(path, content)
+
+    monkeypatch.setattr(media_resolver, "TemporaryDirectory", create)
+    if blocked_stage == "input-write":
+        monkeypatch.setattr(Path, "write_bytes", write_input)
+    task = asyncio.create_task(local_decoder.decode("asr"))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert directories and all(path.is_dir() for path in directories)
+    finally:
+        released.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert all(not path.exists() for path in directories)
+    assert not local_decoder.commands

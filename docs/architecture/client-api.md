@@ -31,6 +31,7 @@ App 的原 Person namespace，`binding_id` 和 `conversation_id` 是实际入口
 来源 Person 显式禁用或设备撤销不会因归并到启用的 Person 而复活。
 仅停用 App Binding 不撤销设备／人物身份：资料、原回执和内部 Work 管理继续可用；
 新的普通 App 消息、Work inputs 仍由所选实际入站检查停用状态，新配对也须有可用入口。
+App／ACP 新入站携带原认证 Binding 的 Person 与实际 Conversation，在普通接纳处核对原阶段、账号和入口；不从今日账号重新创建或选择人物。
 原 input 回执可重放；新补充可显式选择本人另一个合法 App 入口，接续原 Work，保持原来源与预算。
 设备 token 只存哈希；码、token 和密钥不写聊天账本、Main、Memory 或命令回执。
 配对响应丢失时原码已使用，重新签发码；未领取的设备可从设备列表撤销。
@@ -107,6 +108,7 @@ App 补充不会自动发往群里；群 Work 后续仍可能按任务内容向�
 ## 快照、事件与提示
 
 `GET /home` 在同一读快照返回 main、其他入口 entries、本人 Work 与 snapshot_at。
+Work 的来源、预算、子任务数和原投递结果按这批 Work 一起读取；同步中的入口活动也批量投影，不逐项水合辅助资料。
 `GET /conversations/{id}/events?after=&before=&limit=` 以内部事件 ID 分页，最多 50 条，
 只读当前本人归并集合的原私聊账本；不同原入口各自保留，群记录与无关人物的会话均为 not_found。公开事件只含正文、方向、
 作者类别、入口与附件引用，不返回运行提示、路径或网关凭据。
@@ -115,7 +117,7 @@ App 补充不会自动发往群里；群 Work 后续仍可能按任务内容向�
 只报告 executing 或 insufficient，不以历史开始记录推断仍在执行；不返回提示与工具参数。
 `GET /stream` 是 SSE：登记订阅后先发 sync（各入口游标与 Work revision），随后发送
 conversation、work、activity 变化提示。事实仍须经对应 GET 读取。Last-Event-ID 不作为
-持久事实游标；每次重连都重新 sync。15 秒静默时发送 keepalive 注释。
+持久事实游标；每次重连都重新 sync。同一轮已排队的唤醒合成一次最新快照，不重复扫描中间状态。15 秒静默时发送 keepalive 注释。
 
 原数据库 session 的 after_commit 只唤醒进程内订阅，不执行 I/O；回滚无提示。
 提示队列溢出会结束该订阅，包括被丢弃的是最后一条提示的情况。新连接重新登记与核对，
@@ -139,7 +141,7 @@ kind 为 file、image、video 或 record。服务器流式写设备／请求暂�
 `GET /artifacts/{id}?version=<sha256>` 只读取本人可见出站或本人 Work 结果引用的那个
 不可变 artifact 和内容版本。App 本地 Social 投递和 QQ artifact 投递都将真实摘要写入
 原出站事件；不因工作文件后来变更而改读新版本。无引用、他人引用、版本不符或来源删除
-均为 not_found。文件读取在数据库写事务外，读取前后复核个人授权。
+均为 not_found。账本触发器从原 segments 提取 event／artifact／version 引用；插入、编辑和删除同步维护这份索引，不复制人物或授权。下载只按原 artifact 与版本定点检查原出站及 Work 回执，不扫描无关历史或构建整个 Work 页面。文件读取在数据库写事务外，读取前后复核个人授权。
 
 ## Python 参考客户端与 CLI
 

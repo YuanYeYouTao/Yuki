@@ -57,17 +57,10 @@ def resource_retrievals(monkeypatch):
     return calls
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "F10: unvisited schema positions retrieve remote resources; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 @pytest.mark.parametrize(
     ("schema", "payload"),
     [
+        ({"$ref": REMOTE}, {}),
         ({"patternProperties": {"^a$": {"$ref": REMOTE}}}, {"a": 1}),
         ({"dependentSchemas": {"a": {"$ref": REMOTE}}}, {"a": 1}),
         ({"if": {"$ref": REMOTE}}, {}),
@@ -75,7 +68,7 @@ def resource_retrievals(monkeypatch):
         ({"if": False, "else": {"$ref": REMOTE}}, {}),
         ({"unevaluatedProperties": {"$ref": REMOTE}}, {"a": {}}),
     ],
-    ids=["pattern-properties", "dependent-schema", "if", "then", "else", "unevaluated"],
+    ids=["root", "pattern-properties", "dependent-schema", "if", "then", "else", "unevaluated"],
 )
 def test_every_schema_resource_position_rejects_remote_retrieval(
     schema, payload, resource_retrievals
@@ -87,14 +80,6 @@ def test_every_schema_resource_position_rejects_remote_retrieval(
     assert result.ok is False
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "F10: ordinary examples.$defs is lifted into schema resources; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 def test_defs_inside_an_example_is_data_not_a_schema_resource(resource_retrievals):
     schema = {"type": "object", "examples": [{"$defs": {"N": {"$ref": REMOTE}}}]}
     validator = JsonSchemaCapabilityValidator()
@@ -124,4 +109,26 @@ def test_local_defs_are_resolved_and_still_enforce_the_declared_type(resource_re
     assert validator.admit((capability_entry(schema),)) == ()
     assert validator.validate("resource_probe", '{"count":3}').ok
     assert not validator.validate("resource_probe", '{"count":"three"}').ok
+    assert resource_retrievals == []
+
+
+def test_nested_schema_resources_keep_their_own_defs_scope(resource_retrievals):
+    schema = {
+        "type": "object",
+        "$defs": {"Value": {"type": "string"}},
+        "properties": {
+            "item": {
+                "$id": "urn:local:inner",
+                "type": "object",
+                "$defs": {"Value": {"type": "integer"}},
+                "properties": {"value": {"$ref": "#/$defs/Value"}},
+            },
+            "root_value": {"$ref": "#/$defs/Value"},
+        },
+    }
+    validator = JsonSchemaCapabilityValidator()
+    assert validator.admit((capability_entry(schema),)) == ()
+    assert validator.validate("resource_probe", '{"item":{"value":1},"root_value":"a"}').ok
+    assert not validator.validate("resource_probe", '{"item":{"value":"a"}}').ok
+    assert not validator.validate("resource_probe", '{"root_value":1}').ok
     assert resource_retrievals == []

@@ -1,8 +1,10 @@
 """Transient unlink failure retains a route to finish deleting plugin temporaries."""
 
+import asyncio
 import io
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -57,14 +59,6 @@ async def expire(database, handle_id):
         row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "F11: cleanup must recover after transient unlink failure; "
-        "docs/operations/backend-five-pass-audit-20261020.md"
-    ),
-)
 async def test_next_cleanup_finishes_original_file_after_unlink_failure(
     database, plugin_media, monkeypatch
 ):
@@ -81,10 +75,7 @@ async def test_next_cleanup_finishes_original_file_after_unlink_failure(
         return unlink(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "unlink", fail_once)
-    try:
-        await env.store.cleanup()
-    except OSError:
-        pass
+    assert await env.store.cleanup() == 0
     assert failed
     await env.store.cleanup()
     assert not env.path.exists()
@@ -99,6 +90,48 @@ async def test_expired_unreferenced_media_is_removed(database, plugin_media):
     assert not env.path.exists()
     async with database.sessions() as session:
         assert await session.get(PluginMediaArtifactModel, env.handle.handle_id) is None
+
+
+async def test_cancelled_cleanup_keeps_the_original_path_for_the_next_pass(
+    database, plugin_media, monkeypatch
+):
+    env = plugin_media
+    await expire(database, env.handle.handle_id)
+    unlink = Path.unlink
+    started, finished = asyncio.Event(), asyncio.Event()
+    release = Event()
+    loop = asyncio.get_running_loop()
+
+    def held_unlink(path, *args, **kwargs):
+        if path != env.path:
+            return unlink(path, *args, **kwargs)
+        loop.call_soon_threadsafe(started.set)
+        try:
+            assert release.wait(5), "test must release its filesystem barrier"
+            return unlink(path, *args, **kwargs)
+        finally:
+            loop.call_soon_threadsafe(finished.set)
+
+    monkeypatch.setattr(Path, "unlink", held_unlink)
+    cleaning = asyncio.create_task(env.store.cleanup())
+    try:
+        async with asyncio.timeout(5):
+            await started.wait()
+        cleaning.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cleaning
+        async with database.sessions() as reader:
+            row = await reader.get(PluginMediaArtifactModel, env.handle.handle_id)
+            assert row is not None and Path(row.storage_path) == env.path
+    finally:
+        release.set()
+        async with asyncio.timeout(5):
+            await finished.wait()
+        await asyncio.gather(cleaning, return_exceptions=True)
+    assert await env.store.cleanup() == 1
+    assert not env.path.exists()
+    async with database.sessions() as reader:
+        assert await reader.get(PluginMediaArtifactModel, env.handle.handle_id) is None
 
 
 @pytest.mark.parametrize("status", ["pending", "processing"])

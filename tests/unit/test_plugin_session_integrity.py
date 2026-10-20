@@ -17,6 +17,7 @@ from yuki.plugin_host.session_repository import PluginAgentSessionRepository
 from yuki.runtime.work_repository import WorkCapacityError
 from yuki.services.concurrency import ConcurrencyManager
 from yuki.services.plugin_sessions import PluginAgentSessionService, PluginSessionAuthority
+from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 from yuki_plugin_sdk.sessions import CreateAgentSessionRequest, RunAgentSessionRequest
 
 
@@ -30,7 +31,7 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
         plugin_id=plugin_id,
         name="Integrity",
         version="1.0.0",
-        plugin_api="6.0",
+        plugin_api=PLUGIN_API_VERSION,
         yuki_requires=">=3.0.0,<4.0",
         manifest_hash="ab" * 32,
         entrypoint="plugin:Integrity",
@@ -121,8 +122,6 @@ async def test_private_session_keeps_long_history_and_complete_sdk_result(
             replace(authority, actor_user_id="99999"),
             session_id=str(session.session_id),
             user_input="read another person's story",
-            allowed_capabilities=None,
-            max_tool_calls=None,
             max_model_requests=None,
         )
 
@@ -137,7 +136,7 @@ async def test_actorless_session_keeps_real_group_or_plugin_scope(database, tmp_
         plugin_id=plugin_id,
         name="Actorless",
         version="1.0.0",
-        plugin_api="6.0",
+        plugin_api=PLUGIN_API_VERSION,
         yuki_requires=">=3.0.0",
         manifest_hash="a" * 64,
         entrypoint="fixture:Plugin",

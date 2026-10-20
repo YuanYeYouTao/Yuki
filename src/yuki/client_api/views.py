@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import or_, select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.client_api.errors import ClientError
@@ -145,7 +145,7 @@ class ClientViews:
                 "entries": [
                     item for item in entries if item["conversation_id"] != principal.conversation_id
                 ],
-                "works": [await self.works._public(session, dict(row)) for row in rows],
+                "works": await self.works.public_many(session, [dict(row) for row in rows]),
                 "snapshot_at": datetime.now(UTC).isoformat(),
             }
 
@@ -206,45 +206,61 @@ class ClientViews:
         async with self.database.sessions() as session:
             principal = await self.identity.require_principal(session, principal)
             await personal_conversation(session, principal.person_id, identity)
-            return await self._activity(session, identity)
+            return (await self._activities(session, (identity,)))[0]
 
-    async def _activity(self, session: AsyncSession, identity: str) -> dict[str, Any]:
-        live = self.traces.live_spans(identity) if self.traces else ()
+    async def _activities(
+        self, session: AsyncSession, identities: tuple[str, ...]
+    ) -> list[dict[str, Any]]:
+        requested = func.json_each(json.dumps(identities)).table_valued("value").alias("entries")
         latest = (
-            await session.execute(
-                select(ExecutionTraceEntryModel.id, ExecutionTraceEntryModel.kind)
-                .where(
-                    ExecutionTraceEntryModel.conversation_id == identity,
-                    ExecutionTraceEntryModel.expires_at > datetime.now(UTC),
-                )
-                .order_by(ExecutionTraceEntryModel.id.desc())
-                .limit(1)
+            select(ExecutionTraceEntryModel.id)
+            .where(
+                ExecutionTraceEntryModel.conversation_id == requested.c.value,
+                ExecutionTraceEntryModel.expires_at > datetime.now(UTC),
             )
-        ).first()
-        kind = latest.kind if latest else ""
-        category = (
-            "model"
-            if kind.startswith(("provider_", "model_"))
-            else "tool"
-            if kind.startswith("tool_")
-            else "delivery"
-            if kind.startswith("delivery_")
-            else "turn"
+            .order_by(ExecutionTraceEntryModel.id.desc())
+            .limit(1)
+            .correlate(requested)
+            .scalar_subquery()
         )
-        return {
-            "conversation_id": identity,
-            "evidence": "executing" if live else "insufficient",
-            "sources": [
+        rows = (
+            await session.execute(
+                select(
+                    requested.c.value, ExecutionTraceEntryModel.id, ExecutionTraceEntryModel.kind
+                )
+                .select_from(requested)
+                .outerjoin(ExecutionTraceEntryModel, ExecutionTraceEntryModel.id == latest)
+            )
+        ).all()
+        result = []
+        for identity, revision, kind in rows:
+            live = self.traces.live_spans(identity) if self.traces else ()
+            category = (
+                "model"
+                if kind and kind.startswith(("provider_", "model_"))
+                else "tool"
+                if kind and kind.startswith("tool_")
+                else "delivery"
+                if kind and kind.startswith("delivery_")
+                else "turn"
+            )
+            result.append(
                 {
-                    "origin": span.origin,
-                    "started_at": span.started_at.isoformat(),
-                    "kind": span.family,
+                    "conversation_id": identity,
+                    "evidence": "executing" if live else "insufficient",
+                    "sources": [
+                        {
+                            "origin": span.origin,
+                            "started_at": span.started_at.isoformat(),
+                            "kind": span.family,
+                        }
+                        for span in live
+                    ],
+                    "step_kind": category if live else None,
+                    "revision": revision or 0,
                 }
-                for span in live
-            ],
-            "step_kind": category if live else None,
-            "revision": latest.id if latest else 0,
-        }
+            )
+        return result
 
     async def sync(self, principal: ClientPrincipal) -> dict[str, Any]:
         async with self.database.sessions() as session:
@@ -264,9 +280,9 @@ class ClientViews:
             return {
                 "conversations": entries,
                 "works": [{"work_id": row.id, "revision": row.revision} for row in rows],
-                "activity": [
-                    await self._activity(session, item["conversation_id"]) for item in entries
-                ],
+                "activity": await self._activities(
+                    session, tuple(item["conversation_id"] for item in entries)
+                ),
             }
 
     async def stream(self, principal: ClientPrincipal) -> AsyncIterator[str]:
@@ -291,6 +307,9 @@ class ClientViews:
                     continue
                 if not available:
                     break
+                while not queue.empty():
+                    if not queue.get_nowait():
+                        return
                 current = await self.sync(principal)
                 for category, key, event_kind in (
                     ("conversations", "conversation_id", "conversation"),

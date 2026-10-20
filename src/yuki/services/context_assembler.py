@@ -72,7 +72,6 @@ class AssembledContext:
     projection_scope: str = ""
     history_bot_display_name: str = "Yuki"
     history_timezone: str = "Asia/Shanghai"
-    history_yuki_account_ids: frozenset[str] = frozenset()
     recovery_protocol: bool = False
     projection_snapshot: ProjectionSnapshot | None = None
     history_incremental: bool = False
@@ -153,7 +152,6 @@ class ContextAssembler:
                 "scene": "群聊" if identity.scope_type is ScopeType.GROUP else "私聊",
                 "platform": identity.platform,
             },
-            yuki_account_ids=frozenset({identity.bot_user_id}),
             current_override=ChatMessage("user", content),
             projection_scope="main",
         )
@@ -172,7 +170,6 @@ class ContextAssembler:
         identity: ConversationScope,
         content: str,
         metadata: dict[str, Any],
-        yuki_account_ids: frozenset[str],
         current_event: EventRecord | None = None,
         current_override: ChatMessage | None = None,
         projection_scope: str = "",
@@ -190,7 +187,6 @@ class ContextAssembler:
             references=references,
             through_event_id=references._through,
             current_event_id=current_id,
-            yuki_account_ids=yuki_account_ids,
         )
         frozen = snapshot.frozen_prefix
         if frozen is None:
@@ -200,7 +196,6 @@ class ContextAssembler:
             references=references,
             bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
-            yuki_account_ids=yuki_account_ids,
         )
         current = current_override or (
             renderer.reference_message(
@@ -236,7 +231,6 @@ class ContextAssembler:
             projection_scope=projection_scope,
             history_bot_display_name=self._settings.bot_display_name,
             history_timezone=self._settings.default_timezone,
-            history_yuki_account_ids=yuki_account_ids,
             projection_snapshot=snapshot.projection,
             history_incremental=True,
             prepared_fragments=prepared,
@@ -269,7 +263,6 @@ class ContextAssembler:
                 identity=identity,
                 content=content,
                 metadata=metadata,
-                yuki_account_ids=frozenset(),
                 current_override=ChatMessage("user", content),
                 projection_scope="main",
             )
@@ -344,7 +337,6 @@ class ContextAssembler:
                 "scene": "群聊" if inbound.group_id else "私聊",
                 "platform": inbound.platform,
             },
-            yuki_account_ids=inbound.yuki_account_ids,
             current_event=current,
         )
         await self._validate_history_source(snapshot, current)
@@ -391,7 +383,6 @@ class ContextAssembler:
                 "scene": "群聊" if event.group_id else "私聊",
                 "platform": event.platform or identity.platform,
             },
-            yuki_account_ids=frozenset({event.bot_user_id}),
             current_override=self._external_wakeup_message(event, trigger),
             projection_scope="main",
         )

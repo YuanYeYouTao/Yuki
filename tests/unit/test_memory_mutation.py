@@ -21,7 +21,7 @@ from yuki.automation.models import TurnOrigin
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.domain.tool_actor import ToolActor
-from yuki.identity.canonical_repository import active_space_id_for
+from yuki.identity.canonical_repository import find_space_binding
 from yuki.identity.db_models import CanonicalSpaceModel
 from yuki.memory.audit import MemoryAuditService
 from yuki.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
@@ -337,7 +337,7 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
     )
     now = datetime.now(UTC)
     async with database.sessions() as session, session.begin():
-        canonical_space_id = await active_space_id_for(session, "3001")
+        canonical_space_id = (await find_space_binding(session, "3001")).space_id
         assert canonical_space_id is not None
         receipt = MemoryToolReceiptModel(
             canonical_space_id=canonical_space_id,
@@ -1785,7 +1785,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert {row["fact_id"] for row in historical_group["data"]["memories"]} == {group_only_fact.id}
 
     async with database.sessions() as session, session.begin():
-        old_space = await active_space_id_for(session, "3001")
+        old_space = (await find_space_binding(session, "3001")).space_id
         await session.execute(
             update(CanonicalSpaceModel)
             .where(CanonicalSpaceModel.id == old_space)

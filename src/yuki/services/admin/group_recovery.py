@@ -18,10 +18,13 @@ from yuki.conversation.canonical_db_models import (
 )
 from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from yuki.identity.authority import person_is_superuser
-from yuki.identity.canonical_repository import find_space_binding, new_identity_id
+from yuki.identity.canonical_repository import (
+    find_identity_binding,
+    find_space_binding,
+    new_identity_id,
+)
 from yuki.identity.db_models import (
     CanonicalSpaceModel,
-    IdentityBindingModel,
     PresenceModel,
     SpaceBindingModel,
 )
@@ -86,15 +89,13 @@ class GroupRecoveryService:
                     "ingest": None,
                     "send": None,
                 }
-                live_ids = self._registry.connected_presence_ids(platform)
-                presences = await self._live_presences(session, live_ids)
             else:
                 if binding is None or binding.space_id != space_id:
                     raise RouteSendError("none")
                 binding_id = binding.id
                 before = await self._state(session, space_id, binding_id)
-                live_ids = ()
-                presences = list(await session.scalars(select(PresenceModel)))
+            live_ids = self._registry.connected_presence_ids(platform)
+            presences = await self._live_presences(session, live_ids)
         connections_before = self._connections(presences)
         candidate_id = (
             await self._router.unbound_group_recovery_presence(
@@ -120,13 +121,12 @@ class GroupRecoveryService:
                     is not None
                 ):
                     raise RouteSendError("conflict")
-                if live_ids != self._registry.connected_presence_ids(platform):
-                    raise RouteSendError("conflict")
-                current_presences = await self._live_presences(session, live_ids)
             else:
                 if before != await self._state(session, space_id, binding_id):
                     raise RouteSendError("conflict")
-                current_presences = list(await session.scalars(select(PresenceModel)))
+            if live_ids != self._registry.connected_presence_ids(platform):
+                raise RouteSendError("conflict")
+            current_presences = await self._live_presences(session, live_ids)
             if connections_before != self._connections(current_presences):
                 raise RouteSendError("conflict")
             connection = self._registry.resolve_active(presence_id)
@@ -251,7 +251,7 @@ class GroupRecoveryService:
             await session.flush()
             if connections_before != self._connections(current_presences):
                 raise RouteSendError("conflict")
-            if registering and live_ids != self._registry.connected_presence_ids(platform):
+            if live_ids != self._registry.connected_presence_ids(platform):
                 raise RouteSendError("conflict")
         return True
 
@@ -342,26 +342,12 @@ class GroupRecoveryService:
     async def _require_actor(
         session: AsyncSession, person_id: str, audit: ControlAuditRef, *, platform: str
     ) -> None:
-        actor = await session.scalar(
-            select(IdentityBindingModel).where(
-                IdentityBindingModel.platform == platform,
-                IdentityBindingModel.external_account_id == audit.user_id,
-                IdentityBindingModel.status != "ended",
-            )
-        )
-        yuki = await session.scalar(
-            select(PresenceModel.id).where(
-                PresenceModel.platform == platform,
-                PresenceModel.external_account_id == audit.user_id,
-                PresenceModel.enabled.is_(True),
-            )
-        )
+        actor = await find_identity_binding(session, audit.user_id, platform=platform)
         if (
             actor is None
             or actor.status != "active"
             or actor.person_id != person_id
             or not await person_is_superuser(session, person_id)
-            or yuki is not None
         ):
             raise PermissionError("invalid_control_principal")
 

@@ -285,7 +285,6 @@ def test_incremental_history_keeps_current_external_out_of_main_history() -> Non
         identity=current.scope,
         metadata={},
         content=current.content,
-        yuki_account_ids=frozenset({"8000"}),
         current_override=ContextAssembler._external_wakeup_message(current, trigger),
     )
     assert bounded.current_message.role == "user"
@@ -640,9 +639,9 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
         sender=SenderIdentity(user_id="1001"),
         text="ordinary current",
         bot_user_id="8000",
+        yuki_account_ids=frozenset({"8000"}),
         conversation_id="conv-stable",
         presence_id="presence-stable",
-        yuki_account_ids=frozenset({"8000"}),
     )
     shared = {
         "conversation_key": "canonical:conv-stable:generation:1",

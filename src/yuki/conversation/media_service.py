@@ -23,7 +23,6 @@ from sqlalchemy import and_, func, or_, select, text, tuple_, update
 
 from yuki.admin.models import VisionRuntimeConfig
 from yuki.capabilities.media import PreparedMediaData
-from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.media_index import indexed_media_segments
 from yuki.domain.messages import AttachmentKind, ChatImage, InboundMessage, MessageAttachment
 from yuki.gateway.media import MediaKind, PlatformMediaFile, PlatformMediaGateway
@@ -414,10 +413,6 @@ class ConversationMediaService:
                     ConversationMediaItemModel,
                     ConversationMediaItemModel.source_event_id == ChatEventModel.id,
                 )
-                .join(
-                    CanonicalConversationModel,
-                    CanonicalConversationModel.id == ConversationMediaItemModel.conversation_id,
-                )
                 .where(
                     ChatEventModel.id == event_id,
                     ConversationMediaItemModel.segment_index == segment_index,
@@ -426,8 +421,6 @@ class ConversationMediaService:
                     == ConversationMediaItemModel.conversation_id,
                     ChatEventModel.direction == "inbound",
                     ChatEventModel.suppression_status == "keeper",
-                    ConversationMediaItemModel.generation == CanonicalConversationModel.generation,
-                    ChatEventModel.id > CanonicalConversationModel.starts_after_event_id,
                 )
             )
         return segments is not None and json.loads(segments) == json.loads(source_segments)
