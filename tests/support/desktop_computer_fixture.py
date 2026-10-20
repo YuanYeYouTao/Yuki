@@ -1,11 +1,16 @@
 """Linux display substitute; identity, API, Unix Manager and RFB filter stay real."""
 
 import asyncio
+import json
+import os
+import signal
 import struct
 import tempfile
 import zlib
 from pathlib import Path
 from uuid import uuid4
+
+from tests.support.native_computer_manager import NativeManager
 
 from yuki.character.repository import CharacterRepository
 from yuki.sandbox.persistent import PersistentManager
@@ -13,22 +18,29 @@ from yuki.workspace.store import WorkspaceStore
 
 
 class DesktopComputerFixture:
-    def __init__(self, root, container):
+    def __init__(self, root, container, *, native_work=False):
         self.container = container
         self.short = tempfile.TemporaryDirectory(prefix="yc-display-", dir="/tmp")
         socket = Path(self.short.name) / "m.sock"
         container.sandbox_client.socket = socket
         home = root / "computer-home"
         home.mkdir(exist_ok=True)
-        self.manager = PersistentManager(
-            root / "computer-manager",
-            WorkspaceStore(root / "computer-artifacts"),
-            "fixture-display",
-            "egress",
-            "",
-            home,
-            testing=True,
-        )
+        self.native_work = native_work
+        self.worker = None
+        if native_work:
+            native_root = root / "native-computer"
+            native_root.mkdir(exist_ok=True)
+            self.manager = NativeManager(native_root)
+        else:
+            self.manager = PersistentManager(
+                root / "computer-manager",
+                WorkspaceStore(root / "computer-artifacts"),
+                "fixture-display",
+                "egress",
+                "",
+                home,
+                testing=True,
+            )
         self.manager.ready = True
         self.manager.files.root.mkdir(parents=True, exist_ok=True)
         (self.manager.files.root / "current.txt").write_text("Current workspace bytes.")
@@ -65,15 +77,42 @@ class DesktopComputerFixture:
         self.server = await asyncio.start_unix_server(
             self.manager.serve, str(self.container.sandbox_client.socket)
         )
+        if self.native_work:
+            for row in self.manager.active():
+                if not row["dispatched"]:
+                    self.manager.queue.put_nowait(row["id"])
+            self.worker = asyncio.create_task(self.manager.worker())
+            await self.container.sandbox_completions.start()
         await self.container.client_api.computer.start()
 
     async def close(self):
+        if self.native_work:
+            await self.container.sandbox_completions.close()
         await self.container.client_api.computer.close()
         if self.server:
             self.server.close()
             await self.server.wait_closed()
         for writer in self.writers:
             writer.close()
+        if self.worker:
+            self.worker.cancel()
+            await asyncio.gather(self.worker, return_exceptions=True)
+            # Only process groups recorded by this fixture's real Supervisor.
+            for state in self.manager.runtime_root.glob("*/state/status.json"):
+                value = json.loads(state.read_text())
+                if value["status"] == "running":
+                    for field in ("pid", "supervisor_pid"):
+                        try:
+                            if field == "pid":
+                                os.killpg(value[field], signal.SIGKILL)
+                            else:
+                                os.kill(value[field], signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+            for process in self.manager.processes:
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
         await self.manager.close()
         self.short.cleanup()
 

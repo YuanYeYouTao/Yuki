@@ -7,6 +7,7 @@ All state lives in the explicit temporary directory; no deployed configuration i
 import asyncio
 import json
 import os
+import shlex
 import sys
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -36,6 +37,8 @@ from yuki.llm.fake import FakeLLMProvider
 from yuki.model_runtime.pool import ModelClientPool
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
+from yuki.runtime.work_schema_v1 import inputs, work
+from yuki.sandbox.db_models import SandboxTaskRunModel
 from yuki.social.service import SocialContext
 
 
@@ -115,8 +118,66 @@ async def serve(root: Path, port: int) -> None:
     )
 
     work_script = []
+    computer_work = None
+    return_note = "畫面處理完成，請沿原工作接續。"
 
     def respond(request):
+        if computer_work is not None:
+            computer_work["phase"] += 1
+            phase = computer_work["phase"]
+            if phase == 1:
+                name, arguments = "task_control", {"action": "accept", "goal": "原電腦協助工作"}
+            elif phase == 2:
+                cli = Path(__file__).parents[2] / "src/yuki/sandbox/yuki_computer.py"
+                command = [
+                    sys.executable,
+                    "-I",
+                    str(cli),
+                    "help-request",
+                    "--note",
+                    "請協助原工作的畫面步驟",
+                ]
+                name, arguments = (
+                    "terminal_exec",
+                    {"command": shlex.join(command), "cwd": str(root)},
+                )
+            elif phase == 3:
+                computer_work["run_id"] = computer.manager.db.execute(
+                    "SELECT id FROM environment_jobs WHERE kind='terminal_exec'"
+                ).fetchone()[0]
+                name, arguments = (
+                    "task_control",
+                    {
+                        "action": "wait",
+                        "conditions": [{"kind": "owned_run", "run_id": computer_work["run_id"]}],
+                    },
+                )
+            elif phase == 4:
+                name, arguments = "terminal_read", {"run_id": computer_work["run_id"]}
+            elif phase == 5:
+                assert request.messages[-1].role == "tool" and return_note in str(
+                    request.messages[-1].content
+                )
+                name, arguments = (
+                    "send_message",
+                    {
+                        "artifact_id": computer_work["artifact"]["artifact_id"],
+                        "attachment_kind": "file",
+                        "text": "原電腦工作成果",
+                    },
+                )
+            elif phase == 6:
+                name, arguments = (
+                    "task_control",
+                    {"action": "complete", "result": "已讀原交回回執並交付原版本成果"},
+                )
+            else:
+                raise AssertionError(f"Unexpected original computer model phase: {phase}")
+            return ChatResponse(
+                content="",
+                latency_seconds=0,
+                tool_calls=(ToolCall(str(uuid4()), ToolFunction(name, json.dumps(arguments))),),
+            )
         if work_script:
             name, arguments = work_script.pop(0)
             return ChatResponse(
@@ -146,7 +207,11 @@ async def serve(root: Path, port: int) -> None:
     if os.environ.get("YUKI_DESKTOP_COMPUTER_FIXTURE") == "1":
         from tests.support.desktop_computer_fixture import DesktopComputerFixture
 
-        computer = DesktopComputerFixture(root, container)
+        computer = DesktopComputerFixture(
+            root,
+            container,
+            native_work=os.environ.get("YUKI_DESKTOP_COMPUTER_WORK_FIXTURE") == "1",
+        )
         await computer.start(person)
     identity = container.client_api.identity
     code = await identity.issue_for_operator(person, str(uuid4()), str(uuid4()))
@@ -318,6 +383,54 @@ async def serve(root: Path, port: int) -> None:
             ("task_control", {"action": "complete", "result": "original work finished"}),
         ]
         return {"ok": True}
+
+    @personal.post("/__test/computer-work-scenario")
+    async def computer_work_scenario():
+        nonlocal computer_work
+        assert computer is not None and computer.native_work
+        artifact = await asyncio.to_thread(
+            snapshot_bytes,
+            container.workspace_service.store,
+            "原電腦成果.md",
+            b"# Original computer artifact\n\nDelivered after the original return receipt.\n",
+        )
+        computer_work = {"phase": 0, "run_id": None, "artifact": artifact}
+        return artifact
+
+    @personal.get("/__test/computer-work-facts")
+    async def computer_work_facts():
+        assert computer is not None and computer.native_work
+        async with database.sessions() as session:
+            mailbox = [
+                dict(row)
+                for row in (await session.execute(select(inputs).order_by(inputs.c.id))).mappings()
+            ]
+            work_ids = list((await session.execute(select(work.c.id))).scalars())
+            runs = [
+                {
+                    "run_id": run.run_id,
+                    "status": run.status,
+                    "completion": json.loads(run.completion_json) if run.completion_json else None,
+                }
+                for run in (await session.scalars(select(SandboxTaskRunModel))).all()
+            ]
+        return {
+            "phase": computer_work["phase"] if computer_work else None,
+            "run_id": computer_work["run_id"] if computer_work else None,
+            "work_ids": work_ids,
+            "inputs": mailbox,
+            "runs": runs,
+            "manager_jobs": [
+                {"run_id": row["id"], "status": computer.manager.get(row["id"])["status"]}
+                for row in computer.manager.db.execute(
+                    "SELECT id FROM environment_jobs WHERE kind='terminal_exec'"
+                )
+            ],
+            "waits": [
+                dict(row) for row in computer.manager.db.execute("SELECT * FROM help_requests")
+            ],
+            "control": computer.manager.computer.control(),
+        }
 
     @personal.post("/__test/lose-next-work-response/{action}")
     async def lose_work_response(action: str):
