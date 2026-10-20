@@ -12,10 +12,10 @@ from yuki.admin.models import VisionRuntimeConfig
 from yuki.capabilities.media import PreparedMediaData
 from yuki.domain.messages import ChatImage
 from yuki.services.image_preprocessor import ImagePreprocessingError, ImagePreprocessor
-from yuki.services.media_resolver import _media_directory, _media_io
 from yuki.services.native_media import MAX_IMAGE_BYTES, NativeMediaPreparer, native_sticker_facts
 from yuki.services.video_frames import is_video_header
 from yuki.services.vision_service import VisionProcessingError
+from yuki.vision.models import DownloadedMedia
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
@@ -81,12 +81,16 @@ class WorkspaceInspector:
                     )
             try:
                 if is_video_header(data):
-                    async with _media_directory("yuki-workspace-video-") as directory:
-                        path = directory / "input.mp4"
-                        await _media_io(path.write_bytes, data)
-                        images = await self.preparer.prepare_video(
-                            path, source="workspace", runtime=runtime
-                        )
+                    images = await self.preparer.prepare_video(
+                        DownloadedMedia(
+                            content=data,
+                            content_type=None,
+                            content_hash=digest,
+                            byte_size=len(data),
+                        ),
+                        source="workspace",
+                        runtime=runtime,
+                    )
                     mode = "video_frames"
                 else:
                     images = await asyncio.to_thread(

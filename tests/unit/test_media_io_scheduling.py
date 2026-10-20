@@ -14,7 +14,10 @@ from PIL import Image
 
 from yuki.asr import audio
 from yuki.services import media_resolver, video_frames
+from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.vision.models import DownloadedMedia
+from yuki.workspace.inspect import WorkspaceInspector
+from yuki.workspace.store import WorkspaceStore
 
 
 @pytest.fixture
@@ -80,6 +83,29 @@ async def test_local_media_decoding_preserves_original_output_and_protocol(local
     for args in local_decoder.commands:
         assert args[args.index("-protocol_whitelist") + 1] == "file"
         assert Path(args[-1]).is_absolute()
+
+
+async def test_workspace_video_uses_the_decoder_original_and_frame_owner(tmp_path, local_decoder):
+    content = b"\x00\x00\x00\x18ftypmp42" + b"original workspace video"
+    version = hashlib.sha256(content).hexdigest()
+    inspector = WorkspaceInspector(WorkspaceStore(tmp_path / "artifacts"), ImagePreprocessor())
+    result = await inspector(
+        None,
+        "View the selected video.",
+        file_metadata={"path": "/workspace/original.mp4", "version": version},
+        data=content,
+    )
+    original = Path(local_decoder.commands[0][-1])
+    frame = Path(local_decoder.commands[1][-1])
+    assert original.parent == frame.parent
+    assert not original.parent.exists()
+    assert result["mode"] == "video_frames" and result["sha256"] == version
+    assert len(result.images) == result["sampled_frames"] == 2
+    assert [image.video_timestamp_seconds for image in result.images] == [0, 0]
+    for image in result.images:
+        assert image.source == "workspace"
+        assert image.workspace_path == "/workspace/original.mp4"
+        assert image.version == version
 
 
 @pytest.mark.parametrize(

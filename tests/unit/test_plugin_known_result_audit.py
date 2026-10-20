@@ -1,5 +1,6 @@
 """Known plugin results outlive optional audit failures; dispatch failures do not."""
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -67,23 +68,18 @@ def adapter(plugin_tool, risk, handler, audit):
     )
     name = registry.list(kind=ExtensionKind.TOOL)[0].model_name
     return PluginCapabilityAdapter(
-        registry=registry, installations=installations, audit=audit
+        registry=registry, installations=installations, audit=PluginAuditService(audit)
     ), name
 
 
 @pytest.mark.parametrize("risk", [RiskClass.READ, RiskClass.MUTATE])
-@pytest.mark.parametrize("continuous", [False, True])
-async def test_known_result_does_not_retry_or_become_unknown(plugin_tool, risk, continuous):
+async def test_known_result_does_not_retry_or_become_unknown(plugin_tool, risk):
     handler = AsyncMock(
         return_value=ToolResult(
             data={"receipt": "original"}, mutation_committed=risk == RiskClass.MUTATE
         )
     )
-    audit = SimpleNamespace(
-        record=AsyncMock(
-            side_effect=OSError("audit offline") if continuous else [OSError("audit offline"), None]
-        )
-    )
+    audit = SimpleNamespace(record=AsyncMock(side_effect=OSError("audit offline")))
     tool, name = adapter(plugin_tool, risk, handler, audit)
     result = await tool.execute(name, "{}", ToolRuntime(inbound=None))
     handler.assert_awaited_once()
@@ -124,6 +120,20 @@ async def test_known_result_with_available_audit(plugin_tool):
     result = await tool.execute(name, "{}", ToolRuntime(inbound=None))
     handler.assert_awaited_once()
     assert result.ok and result.data == {"receipt": "original"} and result.mutation_committed
+
+
+async def test_optional_audit_does_not_swallow_cancellation():
+    audit = PluginAuditService(
+        SimpleNamespace(record=AsyncMock(side_effect=asyncio.CancelledError))
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await audit.record(
+            plugin_id="test.cancelled-audit",
+            actor_user_id=None,
+            operation="original",
+            permission=None,
+            success=True,
+        )
 
 
 @pytest.fixture

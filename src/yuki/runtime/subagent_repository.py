@@ -23,7 +23,7 @@ from yuki.runtime.work_repository import (
     encode_json,
 )
 from yuki.runtime.work_schema_v1 import effects, inputs, journal, work
-from yuki.runtime.work_tree import descendants, rooted_tree
+from yuki.runtime.work_tree import ancestors, descendants, rooted_tree
 from yuki.runtime.work_wait_schema import waits
 from yuki.sandbox.resource_cleanup import ResourceCleanupPreparation
 
@@ -191,53 +191,34 @@ class SubagentRepository:
         cutoff = now - 7 * 86400
 
         def expired_query(root_ids: list[str] | None = None) -> Select[Any]:
-            if root_ids is not None:
-                root_query = select(work.c.id).where(
-                    work.c.id.in_(root_ids), work.c.parent_work_id.is_(None)
-                )
-            else:
-                lineage = (
-                    select(
-                        children.c.work_id.label("id"),
-                        select(work.c.parent_work_id)
-                        .where(work.c.id == children.c.work_id)
-                        .scalar_subquery()
-                        .label("parent_work_id"),
-                    )
-                    .where(
-                        children.c.archived_at.is_(None),
-                        children.c.lease_until <= now,
-                        select(work.c.id)
-                        .where(work.c.id == children.c.work_id, work.c.state.in_(TERMINAL))
-                        .exists(),
-                    )
-                    .cte("archive_ancestors", recursive=True)
-                )
-                parent = work.alias("archive_parent")
-                lineage = lineage.union(
-                    select(parent.c.id, parent.c.parent_work_id).join(
-                        lineage, parent.c.id == lineage.c.parent_work_id
-                    )
-                )
-                root_query = select(lineage.c.id).where(lineage.c.parent_work_id.is_(None))
-            roots = root_query.subquery()
-            tree = (
-                select(roots.c.id.label("work_id"), roots.c.id.label("root_id"))
+            root = work.alias("archive_root")
+            lineage = ancestors(children.c.work_id, include_self=True).order_by(None).subquery()
+            root_query = select(
+                select(lineage.c.id)
                 .where(
-                    select(work.c.id)
-                    .where(
-                        work.c.id == roots.c.id,
-                        work.c.state.in_(TERMINAL),
-                        work.c.updated < cutoff,
-                    )
+                    select(root.c.id)
+                    .where(root.c.id == lineage.c.id, root.c.parent_work_id.is_(None))
                     .exists()
                 )
-                .cte("archive_tree", recursive=True)
+                .correlate(children)
+                .scalar_subquery()
+                .label("id")
+            ).where(children.c.archived_at.is_(None), children.c.lease_until <= now)
+            roots = (
+                root_query.distinct().subquery()
+                if root_ids is None
+                else select(work.c.id).where(work.c.id.in_(root_ids)).subquery()
             )
-            child = work.alias("archive_child")
-            tree = tree.union_all(
-                select(child.c.id, tree.c.root_id).join(
-                    tree, child.c.parent_work_id == tree.c.work_id
+            tree = rooted_tree(
+                select(roots.c.id).where(
+                    select(root.c.id)
+                    .where(
+                        root.c.id == roots.c.id,
+                        root.c.parent_work_id.is_(None),
+                        root.c.state.in_(TERMINAL),
+                        root.c.updated < cutoff,
+                    )
+                    .exists()
                 )
             )
             retained = tree.alias("retained_tree")
@@ -268,7 +249,7 @@ class SubagentRepository:
         async def roots_for_archive(
             session: AsyncSession, expired: list[str], root_ids: list[str]
         ) -> list[str]:
-            tree = rooted_tree(work.c.id.in_(root_ids))
+            tree = rooted_tree(select(work.c.id).where(work.c.id.in_(root_ids)))
             return list(
                 await session.scalars(
                     select(tree.c.root_id)

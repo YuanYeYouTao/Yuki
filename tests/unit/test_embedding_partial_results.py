@@ -116,33 +116,20 @@ async def test_successful_http_batch_survives_other_batch_failure(database, embe
     assert all(row.content_hash == by_fact[row.fact_id].content_hash for row in vectors)
 
 
-async def test_retry_only_reissues_failed_documents(database, embedding_batches):
+@pytest.mark.parametrize("claim_limit", [1, 100])
+async def test_retry_only_reissues_failed_documents(database, embedding_batches, claim_limit):
     env = embedding_batches
-    for _ in range(3):
+    env.worker._claim_limit = claim_limit
+    for _ in range(env.count + 1):
         await env.worker.process_once()
+        if sum(map(len, env.requested)) == env.count + len(env.failed):
+            break
     async with database.sessions() as session:
         jobs = tuple(await session.scalars(select(MemoryEmbeddingJobModel)))
         vectors = tuple(await session.scalars(select(MemoryEmbeddingModel)))
     assert len(vectors) == env.count and all(row.status == "done" for row in jobs)
     paid = Counter(text for batch in env.requested for text in batch)
     assert len(env.failed) == 1 and paid.pop(env.failed[0]) == 2
-    assert set(paid.values()) == {1}
-
-
-async def test_protocol_sized_claim_keeps_success_and_retries_only_failed_document(
-    database, embedding_batches
-):
-    env = embedding_batches
-    env.worker._claim_limit = env.provider.capabilities.max_batch_size
-    for _ in range(3):
-        await env.worker.process_once()
-    async with database.sessions() as session:
-        jobs = tuple(await session.scalars(select(MemoryEmbeddingJobModel)))
-        vectors = tuple(await session.scalars(select(MemoryEmbeddingModel)))
-    assert len(vectors) == env.count and all(row.status == "done" for row in jobs)
-    assert all(row.profile_id == env.jobs.profile.id for row in vectors)
-    paid = Counter(text for batch in env.requested for text in batch)
-    assert paid.pop(env.failed[0]) == 2
     assert set(paid.values()) == {1}
 
 

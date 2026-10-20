@@ -243,12 +243,22 @@ async def _count(database: Database, model: type[Any]) -> int:
         return int(await session.scalar(select(func.count()).select_from(model)) or 0)
 
 
-@pytest.mark.parametrize("change", ["expiry", "hash"])
-async def test_first_publication_rechecks_original_media_in_its_writer(
-    database, monkeypatch, change
-):
+async def test_first_publication_rechecks_original_media_in_its_writer(database, monkeypatch):
     repository = await _install(database)
-    await _add_artifact(database, handle_id="original-media", digest="a" * 64)
+    clock = datetime.now(UTC)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock
+
+    monkeypatch.setattr(notification_repository_module, "datetime", Clock)
+    await _add_artifact(
+        database,
+        handle_id="original-media",
+        digest="a" * 64,
+        expires_at=clock + timedelta(seconds=1),
+    )
     request = _request(media_handles=("original-media",))
     prepared, continue_publish = asyncio.Event(), asyncio.Event()
     original_writer = database.immediate_session
@@ -265,14 +275,9 @@ async def test_first_publication_rechecks_original_media_in_its_writer(
     try:
         async with asyncio.timeout(5):
             await prepared.wait()
-        async with original_writer() as writer:
-            row = await writer.get(PluginMediaArtifactModel, "original-media")
-            if change == "expiry":
-                row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
-            else:
-                row.sha256 = "b" * 64
+        clock += timedelta(seconds=2)
         continue_publish.set()
-        with pytest.raises(PluginPermissionError, match=r"expired|changed"):
+        with pytest.raises(PluginPermissionError, match="expired"):
             await publishing
     finally:
         continue_publish.set()

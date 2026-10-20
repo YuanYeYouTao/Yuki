@@ -18,9 +18,7 @@ from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 
 @pytest.mark.parametrize("restart", ["NEVER", "ON_FAILURE"])
-async def test_one_runner_failure_keeps_other_runner_and_tools(
-    database, tmp_path, monkeypatch, restart
-):
+async def test_one_runner_failure_keeps_other_runner_and_tools(database, tmp_path, restart):
     plugin = "test.runner-isolation"
     root = tmp_path / "plugins"
     directory = root / plugin
@@ -104,25 +102,17 @@ class Fixture:
         ),
         failure_disable_threshold=1,
     )
-    settled = asyncio.Event()
-    handle_failure = manager._handle_background_failure
-
-    async def handled(*args):
-        try:
-            await handle_failure(*args)
-        finally:
-            settled.set()
-
-    monkeypatch.setattr(manager, "_handle_background_failure", handled)
     await manager.start()
     try:
         await manager.approve(plugin, actor_user_id="9000")
         await manager.enable(plugin, actor_user_id="9000")
         instance = manager._running[plugin].loaded.instance
+        failed_task = manager._running[plugin].background_tasks["bad"]
         async with asyncio.timeout(5):
             await instance.other_started.wait()
             instance.fail.set()
-            await settled.wait()
+            with pytest.raises(RuntimeError, match="one independent runner failed"):
+                await failed_task
             if restart == "ON_FAILURE":
                 await instance.restarted.wait()
         assert manager.running_plugin_ids == (plugin,)

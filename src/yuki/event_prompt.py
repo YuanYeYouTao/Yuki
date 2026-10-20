@@ -15,7 +15,6 @@ from yuki.time.formatting import local_datetime, local_iso, stored_utc
 
 _MAIN_HISTORY_GROUP_SPAN = timedelta(minutes=5)
 
-_MEDIA_DESCRIPTION = re.compile(r"\[(?:表情|语音)：[\s\S]*\]")
 _CAUSAL_TOKEN_UNSAFE = re.compile(r"[^\w.:-]+", re.UNICODE)
 
 
@@ -163,6 +162,7 @@ class EventPromptReferences:
                 base = self._index._rows.get(row.id)
                 if row.id <= self._through and (base is None or base[0] >= self._cutoff):
                     yield row
+
 
 @dataclass(frozen=True, slots=True, eq=False)
 class _ReferenceIds(Set[int]):
@@ -443,15 +443,7 @@ class ChatEventPromptRenderer:
                         label = "、".join(tag for tag in tags if isinstance(tag, str))
                         parts.append(f"[表情: {label}]" if label else "[表情]")
             return marked("\n".join(parts).strip())
-        if (
-            row.direction == "outbound"
-            and row.content.startswith("[语音：")
-            and "发送了一条语音，声线：" in row.content
-        ):
-            return marked("")
         base = row.content.strip()
-        if row.direction == "outbound" and _MEDIA_DESCRIPTION.fullmatch(base):
-            return marked("")
         if row.audio_transcript:
             from yuki.domain.audio import transcript_context
 

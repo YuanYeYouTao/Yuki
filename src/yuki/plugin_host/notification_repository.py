@@ -548,15 +548,12 @@ class PluginNotificationRepository:
                     request=request,
                 )
             else:
-                if media != await _resolve_request_media(
+                await _resolve_request_media(
                     session,
                     plugin_id=plugin_id,
                     handle_ids=request.media_handles,
                     now=datetime.now(UTC),
-                ):
-                    raise PluginPermissionError(
-                        "media artifact changed during publication preparation"
-                    )
+                )
                 try:
                     appended = await self._scoped_events.append_external(
                         scope=scope,

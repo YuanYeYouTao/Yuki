@@ -172,26 +172,16 @@ class ClientWorks:
                 )
             )
         }
-        triggers = {
+        space_bindings: dict[str | None, SpaceBindingModel] = {
             row.id: row
             for row in await session.scalars(
-                select(ChatEventModel).where(
-                    ChatEventModel.id.in_(
-                        _values(
-                            source["trigger_event_id"]
-                            for source in sources.values()
-                            if source.get("trigger_event_id")
-                        )
-                    )
-                )
-            )
-        }
-        space_bindings: dict[tuple[str | None, str, str | None], SpaceBindingModel] = {
-            (row.space_id, row.platform, row.external_space_id): row
-            for row in await session.scalars(
                 select(SpaceBindingModel).where(
-                    SpaceBindingModel.space_id.in_(
-                        _values(row.space_id for row in conversations.values() if row.space_id)
+                    SpaceBindingModel.id.in_(
+                        _values(
+                            row.space_binding_id
+                            for row in conversations.values()
+                            if row.space_binding_id
+                        )
                     )
                 )
             )
@@ -281,14 +271,7 @@ class ClientWorks:
                 else None
             )
             if conversation.kind == "space":
-                trigger = triggers.get(source.get("trigger_event_id"))
-                binding = (
-                    space_bindings.get((conversation.space_id, presence.platform, trigger.group_id))
-                    if presence is not None
-                    and trigger is not None
-                    and trigger.canonical_conversation_id == conversation.id
-                    else None
-                )
+                binding = space_bindings.get(conversation.space_binding_id)
             origin = {
                 "conversation_id": conversation.id,
                 "kind": conversation.kind,

@@ -13,8 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import String, and_, delete, func, or_, select, type_coerce
-from sqlalchemy.sql.elements import ColumnElement
+from sqlalchemy import delete, func, select
 
 from yuki.persistence.database import Database
 from yuki.plugin_host.db_models import (
@@ -143,33 +142,27 @@ class PluginMediaArtifactStore:
     async def read_owned(
         self, *, plugin_id: str, handle_id: str
     ) -> tuple[ResolvedMediaArtifact, bytes]:
-        """Read one explicitly returned owned handle, bounded and version checked."""
+        """Read owned original bytes and verify their stored digest."""
         resolved = await self.resolve(plugin_id=plugin_id, handle_id=handle_id)
         data = await asyncio.to_thread(_read_verified, resolved)
-        current = await self.resolve(plugin_id=plugin_id, handle_id=handle_id)
-        if current != resolved:
-            raise PluginPermissionError("media artifact changed during reading")
         return resolved, data
 
     async def cleanup(self) -> int:
         now = datetime.now(UTC)
-
-        def eligible(timestamp: datetime) -> tuple[ColumnElement[bool], ColumnElement[bool]]:
-            return (
-                PluginMediaArtifactModel.expires_at <= timestamp,
-                ~PluginMediaArtifactModel.handle_id.in_(
-                    select(PluginNotificationOutboxModel.media_handle_id).where(
-                        PluginNotificationOutboxModel.media_handle_id.is_not(None),
-                        PluginNotificationOutboxModel.status.in_(("pending", "processing")),
-                    )
-                ),
-            )
-
+        eligible = (
+            PluginMediaArtifactModel.expires_at <= now,
+            ~PluginMediaArtifactModel.handle_id.in_(
+                select(PluginNotificationOutboxModel.media_handle_id).where(
+                    PluginNotificationOutboxModel.media_handle_id.is_not(None),
+                    PluginNotificationOutboxModel.status.in_(("pending", "processing")),
+                )
+            ),
+        )
         async with self._database.sessions() as reader:
             candidates = tuple(
                 await reader.scalars(
                     select(PluginMediaArtifactModel.handle_id)
-                    .where(*eligible(now))
+                    .where(*eligible)
                     .order_by(
                         PluginMediaArtifactModel.expires_at, PluginMediaArtifactModel.handle_id
                     )
@@ -178,24 +171,16 @@ class PluginMediaArtifactStore:
             )
         if not candidates:
             return 0
-        # Serialize the final reference check with publication admission. Future
-        # publications must still validate an unexpired handle in their writer.
-        # Preserve the stored expiry text: DateTime roundtrips normalize older
-        # timestamp spellings and cannot prove that exact row is unchanged.
+        # A publication may have admitted this original handle before expiry
+        # and still be committing its outbox. Read its pending reference only
+        # after that writer settles, before unlinking outside the transaction.
         async with self._database.immediate_session() as writer:
             rows = (
                 await writer.execute(
                     select(
                         PluginMediaArtifactModel.handle_id,
                         PluginMediaArtifactModel.storage_path,
-                        type_coerce(PluginMediaArtifactModel.expires_at, String).label(
-                            "stored_expiry"
-                        ),
-                        PluginMediaArtifactModel.sha256,
-                    ).where(
-                        PluginMediaArtifactModel.handle_id.in_(candidates),
-                        *eligible(datetime.now(UTC)),
-                    )
+                    ).where(PluginMediaArtifactModel.handle_id.in_(candidates), *eligible)
                 )
             ).all()
         removed = []
@@ -205,22 +190,14 @@ class PluginMediaArtifactStore:
             except OSError as exc:
                 logger.warning("plugin_media_cleanup_failed category=%s", type(exc).__name__)
             else:
-                removed.append(
-                    and_(
-                        PluginMediaArtifactModel.handle_id == row.handle_id,
-                        PluginMediaArtifactModel.storage_path == row.storage_path,
-                        type_coerce(PluginMediaArtifactModel.expires_at, String)
-                        == row.stored_expiry,
-                        PluginMediaArtifactModel.sha256 == row.sha256,
-                    )
-                )
+                removed.append(row.handle_id)
         if not removed:
             return 0
         async with self._database.immediate_session() as writer:
             deleted = tuple(
                 await writer.scalars(
                     delete(PluginMediaArtifactModel)
-                    .where(or_(*removed), *eligible(datetime.now(UTC)))
+                    .where(PluginMediaArtifactModel.handle_id.in_(removed))
                     .returning(PluginMediaArtifactModel.handle_id)
                 )
             )

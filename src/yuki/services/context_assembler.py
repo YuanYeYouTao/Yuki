@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Callable, Sequence, Set
+from collections.abc import Sequence, Set
 from dataclasses import dataclass, replace
 from datetime import UTC
 from typing import TYPE_CHECKING, Any
@@ -72,8 +72,6 @@ class AssembledContext:
     projection_scope: str = ""
     history_bot_display_name: str = "Yuki"
     history_timezone: str = "Asia/Shanghai"
-    recovery_protocol: bool = False
-    load_history: Callable[[int], Awaitable[AssembledContext]] | None = None
     projection_snapshot: ProjectionSnapshot | None = None
     history_incremental: bool = False
     prepared_fragments: FrozenFragments | None = None
@@ -112,54 +110,15 @@ class ContextAssembler:
         self._ledger = ledger
         self._scopes = conversation_scopes
 
-    async def _protocol_recovery_context(
-        self,
-        identity: ConversationScope,
-        turn: ConversationTurnSnapshot | None = None,
-    ) -> AssembledContext | None:
-        from yuki.runtime.context_preparation import protocol_recovery_preparation
-
-        recovery = protocol_recovery_preparation.get()
-        if recovery is None:
-            return None
-        if turn is not None:
-            await self._ensure_turn_generation(identity, turn)
-        original = recovery.guard.version
-        return AssembledContext(
-            metadata_payload={},
-            history_messages=(),
-            current_message=ChatMessage(role="user", content=""),
-            metrics=ContextMetrics(0, 0, 0, 0, False),
-            visible_event_ids=frozenset(original.visible_event_ids),
-            read_version=original,
-            recovery_protocol=True,
-            projection_scope="main",
-            load_history=lambda through: self._assemble_activation(
-                identity=replace(
-                    original.scope,
-                    conversation_id=original.conversation_id,
-                    key=f"conversation:{original.conversation_id}",
-                ),
-                turn=turn,
-                content="",
-                before_event_id=through + 1,
-            ),
-            history_bot_display_name=self._settings.bot_display_name,
-            history_timezone=self._settings.default_timezone,
-        )
-
     async def _assemble_activation(
         self,
         *,
         identity: ConversationScope,
-        turn: ConversationTurnSnapshot | None,
+        turn: ConversationTurnSnapshot,
         content: str,
-        before_event_id: int | None = None,
     ) -> AssembledContext:
         """Prepare the common history for a real execution without a chat event."""
-        snapshot = await self._load_history_snapshot(
-            identity, turn=turn, before_event_id=before_event_id
-        )
+        snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
         context = self._prepared_context(
             snapshot,
             identity=identity,
@@ -262,13 +221,16 @@ class ContextAssembler:
         runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
         """Use the canonical checkpoint/raw-tail projection within the plugin read grant."""
+        from yuki.runtime.context_preparation import protocol_recovery_preparation
+
+        recovery = protocol_recovery_preparation.get()
         scope = identity
-        recovery = await self._protocol_recovery_context(scope)
         if recovery is not None:
-            return (
-                recovery
-                if read_history
-                else replace(recovery, projection_scope="", load_history=None)
+            original = recovery.guard.version
+            scope = replace(
+                original.scope,
+                conversation_id=original.conversation_id,
+                key=f"conversation:{original.conversation_id}",
             )
         metadata = {**metadata, "platform": scope.platform}
         if read_history:
@@ -315,10 +277,6 @@ class ContextAssembler:
         | None = None,
     ) -> AssembledContext:
         """Build one bounded snapshot without persisting model-only metadata."""
-
-        recovery = await self._protocol_recovery_context(identity, turn)
-        if recovery is not None:
-            return recovery
 
         if external_trigger is not None or external_event is not None:
             if inbound is not None or profile is not None:
@@ -478,7 +436,7 @@ class ContextAssembler:
         self,
         scope: ConversationScope,
         *,
-        turn: ConversationTurnSnapshot | None,
+        turn: ConversationTurnSnapshot,
         before_event_id: int | None,
         trigger_event_id: int | None = None,
     ) -> _HistoryPromptWindow:
@@ -490,7 +448,7 @@ class ContextAssembler:
             timezone=self._settings.default_timezone,
             trigger_event_id=trigger_event_id,
         )
-        if turn is not None and not turn_matches_hydrated_scope(
+        if not turn_matches_hydrated_scope(
             turn,
             conversation_id=loaded.scope.id,
             generation=loaded.scope.generation,

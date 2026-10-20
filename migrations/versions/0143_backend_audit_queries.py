@@ -12,7 +12,7 @@ branch_labels = None
 depends_on = None
 
 _REFERENCES = (
-    "SELECT DISTINCT {event_id}, json_extract(part.value, '$.data.artifact_id'), "
+    "SELECT {event_id}, json_extract(part.value, '$.data.artifact_id'), "
     "json_extract(part.value, '$.data.version') FROM json_each({segments}) AS part "
     "WHERE part.type='object' AND json_type(part.value, '$.data')='object' "
     "AND json_type(part.value, '$.data.artifact_id')='text' "
@@ -81,7 +81,7 @@ def upgrade() -> None:
     # No owner, current account or current delivery eligibility is copied.
     op.execute(
         "INSERT OR IGNORE INTO chat_event_artifact_refs(event_id,artifact_id,version) "
-        "SELECT DISTINCT event.id, json_extract(part.value, '$.data.artifact_id'), "
+        "SELECT event.id, json_extract(part.value, '$.data.artifact_id'), "
         "json_extract(part.value, '$.data.version') "
         "FROM chat_events AS event, json_each(event.segments_json) AS part "
         "WHERE part.type='object' AND json_type(part.value, '$.data')='object' "

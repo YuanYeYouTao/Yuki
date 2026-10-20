@@ -18,14 +18,14 @@
 | F08 | 已认证App设备保原人物 | A | 已修/定向已验；公开App解绑链与原来源组合31 passed |
 | F09 | 历史读取不套新发送资格 | A | 已修/定向已验；Social原回执/委托/原source组合31 passed |
 | F10 | schema本地资源解析及普通数据边界 | C | 已修/定向已验；schema/实际目录28 passed及nested local resource回归，删除枚举和任意defs提升 |
-| F11 | 插件临时媒体删除保恢复线索 | B | 已修/定向已验；unlink失败保恢复线索，首次接纳expiry/hash同writer复核，cleanup/publication屏障及原receipt已验；旧expiry三种合法原串CAS反例先红后绿，原0128不改fixture及邻近68 passed |
+| F11 | 插件临时媒体删除保恢复线索 | B | 已修/定向已验；删除不可变字段CAS及读取完成后的第二TTL门槛。首次接纳核真实存在/owner/期限；cleanup按原pending引用串行后在writer外unlink，失败保记录。71项媒体/通知/runner组合通过，原0128及合法旧时间格式保留 |
 | F12 | 重置上下文不取消原表情收藏 | C | 已修/定向已验；真实TG与shared 21 passed（Linux），edit/forget保留 |
 | F13 | 精确私有恢复仍接纳新公共输入 | A | 已修/定向已验；真实native的7红以Host原入口同样复现，最终51 passed/8 native deselected，保16种协议/缓存对照、摘要与后续普通激活、晚到事件、原内部会话及无历史读取资格；最终native待本PR CI |
 | P01 | 附件定点授权 | A | 已修/定向已验；event引用与effect原domain_ref定点查找，含真实Work/effect引用与8→512增长9 passed；0143回填/guard已验 |
 | P02 | 入口/Work视图批读 | A | 已修/定向已验；Home/同步批读，含原SSE/文件/Work/Person 90 passed |
 | P03 | ACP空增量不拉尾页 | A | 已修/定向已验；ACP空增量不查尾，真实App/ACP/历史组合92 passed |
 | P04 | 群恢复只依赖实际平台和候选 | A | 已修/定向已验；群恢复移除无关SELF门槛，真实入口/历史组合92 passed |
-| P05 | 调度器有界选择会话head | 主审 / C | 已修/定向已验；会话keyset轮转、原最早eligible单项；积压/lease/recovery/环绕及邻近Linux66 passed |
+| P05 | 调度器按空闲名额选择会话head | 主审 / C | 已修/定向已验；删除把capacity当候选检查次数的门槛，沿会话keyset轮转至填满名额或一圈结束；7个在跑/1空槽且前方候选deferred的反例先红后绿 |
 | P06 | 定点run沿父链确认归属 | 主审 | 已修/定向已验；定点规模及sandbox/多owner/原settlement/实际恢复邻近118 passed |
 | P07 | 工作区发布移出历史TTL维护 | C | 已修/定向已验；规模/I/O组合6 passed，维护沿原startup/60秒owner |
 | P08 | ASR/视频阻塞文件I/O退出Host loop | C | 已修/定向已验；I/O/ASR 26 passed，新增取消清理回归 |
@@ -91,3 +91,20 @@ F04的paid结果跨自然TTL被过滤旧残留已补齐；D12同时删除群恢�
 追加交叉审查已完成root索引门槛删除、B Session资料/执行分界及C群恢复的双视角复核。上下文首版cache miss仅delta冷建会丢公共基线的风险在提交前被指出并返修；还须验证公共摘要/连续历史、下一普通激活、晚到事件选择范围及插件原历史授权，不能以当前ORD出现代替最终验收。
 
 追加两轮终审完成：B/C分别复核最终root、Session、群恢复与公共接续源码；第一轮发现并返修空cache基线、公共晚到选择范围及无历史授权入口，第二轮将Work依赖收窄为实际rendered事件，并修原内部Conversation与scope key同步。raw-scope真实反例先红，最终51 passed/8 native deselected。最终源码无剩余静态阻断；真实native90仍以修后CI为准，不用模拟通过替代。
+
+## 用户追问后的三轮删除复审
+
+用户指出代码量与禁止防御性编程的约束不符，合并和部署暂缓。这次从 `df2bd8da` 实际新增代码重新审，不用通过测试或产品代码净减少证明设计合理。
+
+`df2bd8da` 的 CI 已完成：unit 3120、integration 732、真实 Native CodeMode 90，全部通过且零 skip；它们仅是删改前的基线，不能作为下面新源码的通过记录。
+
+第一轮实际删除：
+
+- F13 的第二套公共准备：`recovery_protocol` 标记、`load_history` 回调、空 PreparedHistory、冷缓存重备、元数据 None 分支及额外恢复 return。恢复沿正常 canonical prepare，原已付协议仍由原 WorkSession 恢复；未派发不发布公共历史。宽组89项通过，真实 Main.compose 的未派发9项通过；两组有重叠。
+- F11 的不可变四字段 CAS、时间串补丁、读取完成后第二次期限拒绝；D01 已无异步工作的维护任务、集合及停止壳；F02 两个 caller 的重复审计失败处理；P10 中间匹配ID列表和第二次SQL。
+- P05 把空槽数当候选检查上限及末尾重复分组/截断；P08 外层重复临时目录。P11 复用现有 Work 树查询，不保留两套递归。
+- F01 未拔干净的旧媒体正文猜测。两条普通文字先真实失败，删除后正文/提及/原身份/增量片段52项通过。
+- artifact 引用热触发器及0143回填的重复 DISTINCT；原 INSERT OR IGNORE 与三列主键已经去重。重复原引用、编辑、删除、冻结迁移及启动合同11项通过。0143内容因此变化，旧生产副本演练只对应旧文件 SHA，不冒称新文件已在生产演练。
+- 更新现行文档中已经删除的独立插件会话工具能力交集，以及调度候选检查上限。
+
+第二轮换区交叉审查进行中；第三轮终审待完成。每项继续以实际来源、必要授权与原回执证明保留理由，不为行数删除真实并发串行点，也不保留没有当前写入口的假想变化检查。

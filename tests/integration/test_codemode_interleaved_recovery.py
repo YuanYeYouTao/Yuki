@@ -21,6 +21,7 @@ from yuki.conversation.projection_models import PromptProjectionModel
 from yuki.conversation.projections import PromptProjectionRepository
 from yuki.domain.messages import ChatResponse
 from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import effects, work
 from yuki.services.main_agent_turns import _hash
@@ -219,29 +220,26 @@ async def test_pending_code_interleave(
             )
         injected = []
         if evict_projection and kind == "responses" and pause == "pending":
-            original_loader = chat._context_assembler._assemble_activation
+            original_delta = EventLedgerRepository.read_scope_delta
 
-            async def append_after_selection(**kwargs):
-                if kwargs.get("before_event_id") is not None and not injected:
+            async def append_after_selection(ledger, *args, **kwargs):
+                version, rows = await original_delta(ledger, *args, **kwargs)
+                if rows and not injected:
                     event, created = await seed_event(
                         harness.ledger,
                         bot_user_id=inbound.bot_user_id,
                         group_id=inbound.group_id,
                         scope_type=inbound.scope_type,
                         sender_user_id=inbound.sender.user_id,
-                        platform_message_id="late-during-history-preparation",
+                        platform_message_id="late-after-boundary-selection",
                         direction="inbound",
                         content=LATE,
                     )
-                    assert created and event.id >= kwargs["before_event_id"]
+                    assert created and event.id > max(row.id for row in rows)
                     injected.append(event.id)
-                candidate = await original_loader(**kwargs)
-                assert LATE not in "\n".join(m.content or "" for m in candidate.history_messages)
-                return candidate
+                return version, rows
 
-            monkeypatch.setattr(
-                chat._context_assembler, "_assemble_activation", append_after_selection
-            )
+            monkeypatch.setattr(EventLedgerRepository, "read_scope_delta", append_after_selection)
         await database.close()
         error = await resumer.resume(await repository.get(first_id))
         assert error is None, error

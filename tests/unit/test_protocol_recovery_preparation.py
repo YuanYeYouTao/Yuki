@@ -3,12 +3,11 @@
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from tests.conftest import build_harness, make_settings
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.semantic_participation_host_helpers import _event_and_route
@@ -16,7 +15,7 @@ from tests.support.work_compaction_capacity_helpers import _grow, _runtime
 from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_journal_source_retry import _change, _session
 
-from yuki.conversation.observation_models import ContextObservationModel
+from yuki.conversation.observation_models import ContextObservationModel, ContextSelectionModel
 from yuki.conversation.projections import PromptProjectionRepository
 from yuki.conversation.scope_repository import ConversationScopeRepository
 from yuki.domain.conversations import ConversationScope
@@ -75,8 +74,8 @@ async def as_child(control, original):
 
 @pytest.mark.parametrize("kind", ["pause", "child", "paired_native", "paired_native_root"])
 @pytest.mark.parametrize("read_history", [False, True])
-async def test_actual_journal_selects_exact_before_assembler_reads_history(
-    database, kind, read_history
+async def test_public_preparation_does_not_publish_or_replace_original_paid_sources(
+    database, tmp_path, kind, read_history
 ):
     control, session, selected, _ = await _session(database)
     if kind in {"child", "paired_native"}:
@@ -103,13 +102,14 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(
         call = ToolCall("pending", ToolFunction("workspace_read", "{}"))
         session.transcript.append(ChatMessage("assistant", tool_calls=(call,)))
         await session.save("response", (call,))
-    assembler = ContextAssembler.__new__(ContextAssembler)
-    assembler._settings = make_settings(database.url)
-    assembler._ledger = EventLedgerRepository(database)
-    assembler._scopes = SimpleNamespace(
-        load_prompt_snapshot=AsyncMock(side_effect=AssertionError("fresh history must not be read"))
+    projections = PromptProjectionRepository(database)
+    assembler = ContextAssembler(
+        settings=make_settings(database.url),
+        ledger=EventLedgerRepository(database),
+        conversation_scopes=ConversationScopeRepository(database, projections=projections),
     )
     scope = ConversationScope.group(selected.bot_user_id, selected.group_id)
+    original = session.source_guard.snapshot()
 
     async def builder():
         return await assembler.assemble_plugin(
@@ -120,15 +120,28 @@ async def test_actual_journal_selects_exact_before_assembler_reads_history(
             runtime=None,
         )
 
-    result = await prepare_context(builder, control, recovery_contract="fixed-contract")
-    assert result.recovery_protocol
+    harness = build_harness(database, make_settings(database.url, runtime_work_enabled=True))
+    chat = harness.processor._chat
+    chat.runtime.runner.main_contract = MainAgentContract(
+        chat, ShortState(WorkspaceStore(tmp_path / "main"))
+    )
+    token = current_work_control.set(control)
+    try:
+        result = await prepare_context(builder, control, recovery_contract="fixed-contract")
+        composition = await chat.runtime.main_turns.compose(
+            inbound=None, context=result, runtime=await chat._runtime_config.snapshot()
+        )
+    finally:
+        current_work_control.reset(token)
+    assert (composition.observation_boundary is not None) is read_history
     assert result.projection_scope == ("main" if read_history else "")
-    assert (result.load_history is not None) is read_history
-    assert result.read_version == session.source_guard.version
-    assert result.read_version.visible_event_ids == session.source_guard.version.visible_event_ids
-    assert result.history_messages == () and result.metadata_payload == {}
-    assert result.current_message.content == ""
-    assembler._scopes.load_prompt_snapshot.assert_not_awaited()
+    assert bool(result.history_messages) is read_history
+    assert result.current_message.content == "new"
+    assert result.read_version.conversation_id == control.lease.conversation_id
+    assert session.source_guard.snapshot() == original
+    assert await projections.read(control.lease.conversation_id) is None
+    async with database.sessions() as reader:
+        assert await reader.scalar(select(func.count()).select_from(ContextSelectionModel)) == 0
     loaded = await session.journal.load(control.lease, control.current["id"], "fixed-contract")
     assert "original-signature" in loaded.record["payload_json"]
     assert protocol_recovery_preparation.get() is None
@@ -158,9 +171,7 @@ async def test_recovery_cache_miss_reads_original_internal_conversation_from_raw
             identity=current_entry, content="resume", metadata={}, read_history=True, runtime=None
         )
 
-    recovered = await prepare_context(builder, control, recovery_contract=session.contract)
-    assert recovered.recovery_protocol
-    prepared = await recovered.load_history(unselected.id)
+    prepared = await prepare_context(builder, control, recovery_contract=session.contract)
     assert prepared.read_version.conversation_id == original.conversation_id
     assert prepared.read_version.scope.conversation_id == original.conversation_id
     assert prepared.read_version.scope.key == f"conversation:{original.conversation_id}"
@@ -529,7 +540,6 @@ async def test_paid_current_compact_recovery_prepares_latest_public_history(
         resumed.current = await control.repository.get(control.current["id"])
         current_work_control.set(resumed)
         context = await prepare_context(assemble, resumed, recovery_contract=session.contract)
-        assert not context.recovery_protocol
         assert ambient_text in "\n".join(
             message.content or "" for message in context.history_messages
         )

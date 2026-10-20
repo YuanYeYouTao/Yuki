@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from sqlalchemy import func, or_, select, text
+from sqlalchemy import RowMapping, func, or_, select, text
 
 from yuki.persistence.sqlite_diagnostics import TimingSummary
 from yuki.runtime.subagent_schema import children
@@ -273,7 +273,6 @@ class WorkScheduler:
                             ),
                         ),
                         work.c.id.not_in(select(children.c.work_id)),
-                        work.c.conversation_id.not_in(tuple(self._in_flight)),
                         or_(scope.c.owner.is_(None), scope.c.lease_until <= time.time()),
                         or_(
                             recovery.c.work_id.is_(None),
@@ -282,33 +281,32 @@ class WorkScheduler:
                     )
                     .order_by(work.c.updated, work.c.id)
                 )
-                rows = []
+                rows: list[RowMapping] = []
                 visited: set[str] = set()
-                for _ in range(capacity):
+                while len(rows) < capacity:
                     # Seek the next distinct scope, jumping over its entire ready
                     # backlog. The cursor is traversal progress, not Work state.
-                    scopes = select(work.c.conversation_id).where(
-                        text("(runtime_work.state IN ('queued', 'running')) = 1")
+                    scopes = (
+                        select(work.c.conversation_id)
+                        .where(
+                            text("(runtime_work.state IN ('queued', 'running')) = 1"),
+                            work.c.conversation_id.not_in(tuple(self._in_flight)),
+                        )
+                        .order_by(work.c.conversation_id)
+                        .limit(1)
                     )
-                    if self._selection_cursor is not None:
-                        scopes = scopes.where(work.c.conversation_id > self._selection_cursor)
                     identity = await session.scalar(
-                        scopes.order_by(work.c.conversation_id).limit(1)
+                        scopes.where(work.c.conversation_id > self._selection_cursor)
+                        if self._selection_cursor is not None
+                        else scopes
                     )
                     if identity is None and self._selection_cursor is not None:
                         self._selection_cursor = None
-                        identity = await session.scalar(
-                            select(work.c.conversation_id)
-                            .where(text("(runtime_work.state IN ('queued', 'running')) = 1"))
-                            .order_by(work.c.conversation_id)
-                            .limit(1)
-                        )
+                        identity = await session.scalar(scopes)
                     if identity is None or identity in visited:
                         break
                     self._selection_cursor = identity
                     visited.add(identity)
-                    if identity in self._in_flight:
-                        continue
                     row = (
                         (
                             await session.execute(
@@ -320,30 +318,27 @@ class WorkScheduler:
                     )
                     if row is not None:
                         rows.append(row)
-        batches: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            batches.setdefault(row["conversation_id"], []).append(dict(row))
         started: list[asyncio.Task[None]] = []
-        for conversation_id, items in list(batches.items())[:capacity]:
+        for row in rows:
+            conversation_id = row["conversation_id"]
             task = asyncio.create_task(
-                self._run_scope(conversation_id, items), name=f"runtime-work:{conversation_id}"
+                self._run_scope(conversation_id, dict(row)), name=f"runtime-work:{conversation_id}"
             )
             self._in_flight[conversation_id] = task
             started.append(task)
         return started
 
-    async def _run_scope(self, conversation_id: str, items: list[dict[str, Any]]) -> None:
+    async def _run_scope(self, conversation_id: str, item: dict[str, Any]) -> None:
         try:
-            for item in items:
-                try:
-                    with self._timed("resume"):
-                        category = await self._resume(item)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    category = type(exc).__name__
-                    logger.warning("work_resume_failed category=%s", category)
-                # Health reflects only this run's own outcome.
-                self._last_error = category
+            try:
+                with self._timed("resume"):
+                    category = await self._resume(item)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                category = type(exc).__name__
+                logger.warning("work_resume_failed category=%s", category)
+            # Health reflects only this run's own outcome.
+            self._last_error = category
         finally:
             self._in_flight.pop(conversation_id, None)

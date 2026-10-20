@@ -316,36 +316,31 @@ class AutomationRepository:
     async def find_equivalent_directory_entries(
         self, task: TaskSpec, *, max_runs: int | None
     ) -> tuple[AutomationDirectoryEntry, ...]:
-        """Compare each current plan once; load creator details only for matches."""
+        """Stream each current plan once and return matching directory entries."""
 
         expected = task.model_dump(mode="json", exclude={"name"}, exclude_none=True)
-        query = select(AutomationModel.id, AutomationModel.script_json).where(
-            AutomationModel.status.in_(
-                (AutomationStatus.ACTIVE.value, AutomationStatus.PAUSED.value)
-            ),
-            AutomationModel.max_runs == max_runs,
+        query = (
+            _directory_statement(include_script=True)
+            .where(
+                AutomationModel.status.in_(
+                    (AutomationStatus.ACTIVE.value, AutomationStatus.PAUSED.value)
+                ),
+                AutomationModel.max_runs == max_runs,
+            )
+            .order_by(
+                AutomationModel.next_run_at.is_(None),
+                AutomationModel.next_run_at,
+                AutomationModel.id,
+            )
         )
         async with self._database.sessions() as session:
             matches = []
             async for row in await session.stream(query.execution_options(yield_per=128)):
-                actual = json.loads(row.script_json)
+                actual = json.loads(row[0].script_json)
                 actual.pop("name", None)
                 if actual == expected:
-                    matches.append(row.id)
-            if not matches:
-                return ()
-            rows = (
-                await session.execute(
-                    _directory_statement(include_script=True)
-                    .where(AutomationModel.id.in_(matches))
-                    .order_by(
-                        AutomationModel.next_run_at.is_(None),
-                        AutomationModel.next_run_at,
-                        AutomationModel.id,
-                    )
-                )
-            ).all()
-            return tuple(_automation_directory_entry(row, include_script=True) for row in rows)
+                    matches.append(_automation_directory_entry(row, include_script=True))
+            return tuple(matches)
 
     async def list_current_for_creator(
         self,

@@ -31,11 +31,10 @@ def _lineage(work_id: str | SQLColumnExpression[str | None]) -> Any:
     )
 
 
-def rooted_tree(*root_conditions: SQLColumnExpression[bool]) -> Any:
-    tree = (
-        select(work.c.id.label("work_id"), work.c.id.label("root_id"))
-        .where(work.c.parent_work_id.is_(None), *root_conditions)
-        .cte("work_roots", recursive=True)
+def rooted_tree(root_ids: Select[Any]) -> Any:
+    roots = root_ids.subquery()
+    tree = select(roots.c.id.label("work_id"), roots.c.id.label("root_id")).cte(
+        "work_roots", recursive=True
     )
     child = work.alias("rooted_child")
     return tree.union_all(

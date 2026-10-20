@@ -424,7 +424,7 @@ async def _read_facts(
     task_ids = tuple(task["id"] for task in tasks)
     from yuki.runtime.work_tree import rooted_tree
 
-    tree = rooted_tree()
+    tree = rooted_tree(select(work.c.id).where(work.c.parent_work_id.is_(None)))
     charged = (
         (
             await session.execute(

@@ -3,7 +3,7 @@
 from typing import Final
 
 ARTIFACT_REFERENCE_SELECT: Final = (
-    "SELECT DISTINCT {event_id}, json_extract(part.value, '$.data.artifact_id'), "
+    "SELECT {event_id}, json_extract(part.value, '$.data.artifact_id'), "
     "json_extract(part.value, '$.data.version') FROM json_each({segments}) AS part "
     "WHERE part.type='object' AND json_type(part.value, '$.data')='object' "
     "AND json_type(part.value, '$.data.artifact_id')='text' "

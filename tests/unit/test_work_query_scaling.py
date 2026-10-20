@@ -207,6 +207,93 @@ async def test_scheduler_cursor_wraps_past_leased_and_deferred_scopes(
     assert await scheduler.dispatch_once() == []
 
 
+async def test_scheduler_fills_last_slot_past_busy_and_deferred_scopes(
+    database, tmp_path, monkeypatch
+):
+    environment = await social_env(database, tmp_path)
+    repository = WorkRepository(database)
+    monkeypatch.setattr(repository, "repair_abandoned_inputs", AsyncMock())
+    monkeypatch.setattr(
+        "yuki.automation.repository.AutomationRepository.settle_work_occurrences", AsyncMock()
+    )
+    release = asyncio.Event()
+    entered = {f"busy-{i}": asyncio.Event() for i in range(7)}
+    resumed = []
+
+    async def resume(item):
+        resumed.append(item["id"])
+        if item["id"] in entered:
+            entered[item["id"]].set()
+            await release.wait()
+        else:
+            async with database.immediate_session() as writer:
+                await writer.execute(
+                    update(work).where(work.c.id == item["id"]).values(state="completed")
+                )
+
+    scheduler = WorkScheduler(repository, resume, chat_admission_enabled=True)
+    scheduler._last_reclaim = time.monotonic()
+    active = []
+    started = []
+    try:
+        async with database.immediate_session() as writer:
+            binding = await find_space_binding(writer, "20001")
+            identities = sorted(
+                [
+                    (
+                        await ensure_canonical_conversation(
+                            writer,
+                            kind="space",
+                            space_id=environment.space,
+                            space_binding_id=binding.id,
+                            primary_scope_key=f"last-slot:{i}",
+                            thread_id=f"last-slot-{i}",
+                        )
+                    ).conversation_id
+                    for i in range(9)
+                ]
+            )
+            await writer.execute(
+                insert(work),
+                [
+                    task(f"busy-{i}", conversation=identity, state="queued")
+                    for i, identity in enumerate(identities[:7])
+                ],
+            )
+        active = await scheduler.dispatch_once()
+        async with asyncio.timeout(5):
+            await asyncio.gather(*(event.wait() for event in entered.values()))
+        assert len(active) == len(scheduler._in_flight) == 7
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                insert(work),
+                [
+                    task("deferred-last-slot", conversation=identities[7], state="queued"),
+                    task("ready-last-slot", conversation=identities[8], state="queued"),
+                ],
+            )
+            await writer.execute(
+                insert(recovery).values(
+                    work_id="deferred-last-slot",
+                    activation_id="original-activation",
+                    not_before=time.time() + 3600,
+                    updated=1,
+                )
+            )
+        started = await scheduler.dispatch_once()
+        assert len(started) == 1
+        await asyncio.gather(*started)
+        assert resumed == [*(f"busy-{i}" for i in range(7)), "ready-last-slot"]
+        async with database.sessions() as reader:
+            state = await reader.scalar(
+                select(work.c.state).where(work.c.id == "deferred-last-slot")
+            )
+            assert state == "queued"
+    finally:
+        release.set()
+        await asyncio.gather(*active, *started, return_exceptions=True)
+
+
 async def test_one_owned_run_does_not_scan_unrelated_siblings(database, tmp_path):
     environment = await social_env(database, tmp_path)
     conversation = environment.context.conversation_id

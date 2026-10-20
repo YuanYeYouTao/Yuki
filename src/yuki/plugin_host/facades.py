@@ -861,17 +861,14 @@ class HostPluginContext:
         audit = self._services.audit
         if audit is None:
             return
-        try:
-            await audit.record(
-                plugin_id=self._plugin_id,
-                actor_user_id=invocation.actor_user_id,
-                operation=operation,
-                permission=permission.value,
-                success=success,
-                error_category=error_category,
-            )
-        except Exception as exc:
-            self._logger.warning("plugin_audit_failed category=%s", type(exc).__name__)
+        await audit.record(
+            plugin_id=self._plugin_id,
+            actor_user_id=invocation.actor_user_id,
+            operation=operation,
+            permission=permission.value,
+            success=success,
+            error_category=error_category,
+        )
 
     async def _run_audited(
         self,

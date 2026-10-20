@@ -323,6 +323,14 @@ class TurnExecution:
                 if await session.rebase_business(TurnTranscript(self.initial_messages)):
                     assert session.transcript is not None
                     self.state.transcript = session.transcript
+            session = self.runtime.work_control.session
+            if session.uses_recovery_transcript:
+                assert session.source_guard is not None
+                observed = set(session.source_guard.version.visible_event_ids) | set(
+                    session.event_ids
+                )
+                session.public_event_ids = observed
+                self.state.observed_event_ids = set(observed)
             self.state.provider_pause_replay = bool(
                 self.runtime.work_control.session.progress.get("provider_pause_replay", False)
             )

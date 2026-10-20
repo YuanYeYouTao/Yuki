@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import marshal
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -32,8 +31,6 @@ from yuki_plugin_sdk.namespace import default_plugin_namespace
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.registrar import ToolRegistration
 from yuki_plugin_sdk.results import PluginResult
-
-logger = logging.getLogger(__name__)
 
 
 class InvocationScope(Protocol):
@@ -347,17 +344,14 @@ class PluginCapabilityAdapter:
     ) -> None:
         if self._audit is None:
             return
-        try:
-            await self._audit.record(
-                plugin_id=item.plugin_id,
-                actor_user_id=runtime.actor_user_id,
-                operation=item.canonical_name,
-                permission="tool.register",
-                success=success,
-                error_category=error_category,
-            )
-        except Exception as exc:
-            logger.warning("plugin_tool_audit_failed category=%s", type(exc).__name__)
+        await self._audit.record(
+            plugin_id=item.plugin_id,
+            actor_user_id=runtime.actor_user_id,
+            operation=item.canonical_name,
+            permission="tool.register",
+            success=success,
+            error_category=error_category,
+        )
 
 
 def _validated_result(value: object, output_model: type[BaseModel]) -> PluginResult:

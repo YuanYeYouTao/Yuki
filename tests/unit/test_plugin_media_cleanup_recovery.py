@@ -199,3 +199,44 @@ async def test_foreign_plugin_cannot_read_original_media(plugin_media):
     with pytest.raises(PluginPermissionError, match="foreign"):
         await env.store.read_owned(plugin_id="another.plugin", handle_id=env.handle.handle_id)
     assert env.path.read_bytes() == env.content
+
+
+async def test_completed_owned_read_survives_natural_expiry(plugin_media, monkeypatch):
+    import yuki.plugin_host.media_artifacts as media_module
+
+    env = plugin_media
+    clock = SimpleNamespace(now=datetime.now(UTC))
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock.now if tz is not None else clock.now.replace(tzinfo=None)
+
+    monkeypatch.setattr(media_module, "datetime", Clock)
+    read = media_module._read_verified
+    complete = asyncio.Event()
+    release = Event()
+    loop = asyncio.get_running_loop()
+
+    def read_then_wait(artifact):
+        data = read(artifact)
+        loop.call_soon_threadsafe(complete.set)
+        assert release.wait(5), "test must release its completed read"
+        return data
+
+    monkeypatch.setattr(media_module, "_read_verified", read_then_wait)
+    reading = asyncio.create_task(
+        env.store.read_owned(plugin_id=env.plugin, handle_id=env.handle.handle_id)
+    )
+    try:
+        async with asyncio.timeout(5):
+            await complete.wait()
+        clock.now = env.handle.expires_at + timedelta(seconds=1)
+        release.set()
+        original, data = await reading
+        assert original.handle_id == env.handle.handle_id and data == env.content
+        with pytest.raises(PluginPermissionError, match="expired"):
+            await env.store.resolve(plugin_id=env.plugin, handle_id=env.handle.handle_id)
+    finally:
+        release.set()
+        await asyncio.gather(reading, return_exceptions=True)
