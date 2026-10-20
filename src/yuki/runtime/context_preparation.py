@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
-from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,11 +22,6 @@ if TYPE_CHECKING:
 class ProtocolRecoveryPreparation:
     snapshot: JournalSnapshot
     guard: WorkSourceGuard
-
-
-protocol_recovery_preparation: ContextVar[ProtocolRecoveryPreparation | None] = ContextVar(
-    "protocol_recovery_preparation", default=None
-)
 
 
 async def select_protocol_recovery(
@@ -119,8 +113,4 @@ async def prepare_context[T](
     recovery = await select_protocol_recovery(control, recovery_contract)
     if control is not None:
         control.protocol_recovery_preparation = recovery
-    recovery_token = protocol_recovery_preparation.set(recovery)
-    try:
-        return await builder()
-    finally:
-        protocol_recovery_preparation.reset(recovery_token)
+    return await builder()

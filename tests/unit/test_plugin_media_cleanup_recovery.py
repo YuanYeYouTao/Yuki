@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from PIL import Image
-from sqlalchemy import select, text
+from sqlalchemy import insert, select, text
 from tests.support.social_identity_cases import social_env
 
 from yuki.plugin_host.db_models import PluginMediaArtifactModel, PluginNotificationOutboxModel
@@ -90,6 +90,47 @@ async def test_expired_unreferenced_media_is_removed(database, plugin_media):
     assert not env.path.exists()
     async with database.sessions() as session:
         assert await session.get(PluginMediaArtifactModel, env.handle.handle_id) is None
+
+
+async def test_unlink_failures_do_not_hide_later_expired_originals(
+    database, plugin_media, monkeypatch
+):
+    env = plugin_media
+    table = PluginMediaArtifactModel.__table__
+    async with database.sessions() as reader:
+        original = dict((await reader.execute(select(table))).mappings().one())
+    rows, blocked = [], set()
+    for index in range(129):
+        path = env.path.parent / f"original-{index}.png"
+        path.write_bytes(env.content)
+        rows.append(
+            {
+                **original,
+                "handle_id": f"original-{index}",
+                "storage_path": str(path),
+                "expires_at": datetime.now(UTC) - timedelta(seconds=200 - index),
+            }
+        )
+        if index < 128:
+            blocked.add(path)
+    async with database.immediate_session() as writer:
+        await writer.execute(insert(table), rows)
+    unlink = Path.unlink
+
+    def busy(path, *args, **kwargs):
+        if path in blocked:
+            raise OSError("original file remains busy")
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", busy)
+    assert await env.store.cleanup() == 1
+    assert await env.store.cleanup() == 0
+    available = env.path.parent / "original-128.png"
+    assert not await asyncio.to_thread(available.exists)
+    assert all(path.exists() for path in blocked) and env.path.exists()
+    async with database.sessions() as reader:
+        remaining = set(await reader.scalars(select(PluginMediaArtifactModel.handle_id)))
+    assert remaining == {env.handle.handle_id, *(row["handle_id"] for row in rows[:-1])}
 
 
 @pytest.mark.parametrize(

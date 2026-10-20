@@ -221,9 +221,10 @@ class ContextAssembler:
         runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
         """Use the canonical checkpoint/raw-tail projection within the plugin read grant."""
-        from yuki.runtime.context_preparation import protocol_recovery_preparation
+        from yuki.runtime.work_activation import current_work_control
 
-        recovery = protocol_recovery_preparation.get()
+        control = current_work_control.get()
+        recovery = control.protocol_recovery_preparation if control is not None else None
         scope = identity
         if recovery is not None:
             original = recovery.guard.version

@@ -160,14 +160,7 @@ class PluginMediaArtifactStore:
         )
         async with self._database.sessions() as reader:
             candidates = tuple(
-                await reader.scalars(
-                    select(PluginMediaArtifactModel.handle_id)
-                    .where(*eligible)
-                    .order_by(
-                        PluginMediaArtifactModel.expires_at, PluginMediaArtifactModel.handle_id
-                    )
-                    .limit(128)
-                )
+                await reader.scalars(select(PluginMediaArtifactModel.handle_id).where(*eligible))
             )
         if not candidates:
             return 0

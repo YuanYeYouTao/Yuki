@@ -11,7 +11,6 @@ from typing import Any, cast
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.persistence.database import Database
 from yuki.plugin_host.db_models import (
@@ -22,7 +21,6 @@ from yuki.plugin_host.ownership import (
     actor_matches_session,
     inherit_message_sender_person,
     require_session_readable,
-    resolve_human_person_id,
     resolve_session_owners,
 )
 
@@ -137,7 +135,7 @@ class PluginAgentSessionRepository:
                 canonical_owner_person_id=person_id,
                 canonical_space_id=space_id,
             )
-            record = await _session_record(session, row)
+            record = _session_record(row, person_id)
             session.add(row)
             await session.flush()
             return record
@@ -156,8 +154,8 @@ class PluginAgentSessionRepository:
             row = await session.scalar(statement)
             if row is None:
                 return None
-            await require_session_readable(session, row)
-            return await _session_record(session, row)
+            owner = await require_session_readable(session, row)
+            return _session_record(row, owner)
 
     async def get_for_actor(
         self,
@@ -188,8 +186,8 @@ class PluginAgentSessionRepository:
                 current_group_id=current_group_id,
             ):
                 return None
-            await require_session_readable(session, row)
-            return await _session_record(session, row)
+            owner = await require_session_readable(session, row)
+            return _session_record(row, owner)
 
     async def append_message(
         self,
@@ -331,8 +329,8 @@ class PluginAgentSessionRepository:
             )
             if row is None:
                 return None
-            await require_session_readable(session, row)
-            record = await _session_record(session, row)
+            owner = await require_session_readable(session, row)
+            record = _session_record(row, owner)
             await session.execute(
                 delete(PluginAgentMessageModel).where(
                     PluginAgentMessageModel.session_id == session_id
@@ -401,18 +399,14 @@ class PluginAgentSessionRepository:
             return int(cast(CursorResult[Any], result).rowcount or 0)
 
 
-async def _session_record(
-    session: AsyncSession,
+def _session_record(
     row: PluginAgentSessionModel,
+    owner_user_id: str | None,
 ) -> PluginAgentSessionRecord:
-    owner_user_id: str | None = None
     scope_id = ""
     if row.scope_type == "user":
-        owner_user_id = await resolve_human_person_id(session, row.canonical_owner_person_id)
-        scope_id = owner_user_id
+        scope_id = cast(str, owner_user_id)
     elif row.scope_type == "group":
-        if row.canonical_owner_person_id:
-            owner_user_id = await resolve_human_person_id(session, row.canonical_owner_person_id)
         scope_id = cast(str, row.canonical_space_id)
     return PluginAgentSessionRecord(
         session_id=row.session_id,

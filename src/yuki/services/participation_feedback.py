@@ -366,6 +366,7 @@ async def _read_facts(
                     work.c.model_requests,
                     work.c.conversation_id,
                     work.c.generation,
+                    work.c.parent_work_id,
                 ).where(work.c.source_key.in_(f"initiative:{run.run_id}" for run in runs))
             )
         )
@@ -421,10 +422,10 @@ async def _read_facts(
             .order_by(InitiativeFeedbackModel.sequence)
         )
     )
-    task_ids = tuple(task["id"] for task in tasks)
+    task_ids = tuple(task["id"] for task in tasks if task["parent_work_id"] is None)
     from yuki.runtime.work_tree import rooted_tree
 
-    tree = rooted_tree(select(work.c.id).where(work.c.parent_work_id.is_(None)))
+    tree = rooted_tree(select(work.c.id).where(work.c.id.in_(task_ids)))
     charged = (
         (
             await session.execute(
@@ -435,8 +436,9 @@ async def _read_facts(
                     work.c.conversation_id,
                     work.c.generation,
                 )
-                .join(work, work.c.id == tree.c.work_id)
-                .where(tree.c.root_id.in_(task_ids), tree.c.work_id != tree.c.root_id)
+                # Keep the selected tree as driver instead of scanning all Work.
+                .outerjoin(work, work.c.id == tree.c.work_id)
+                .where(tree.c.work_id != tree.c.root_id)
             )
         )
         .mappings()

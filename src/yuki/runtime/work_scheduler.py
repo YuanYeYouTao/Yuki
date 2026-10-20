@@ -257,10 +257,6 @@ class WorkScheduler:
                         work.c.revision,
                         work.c.state,
                     )
-                    .outerjoin(
-                        scope,
-                        scope.c.conversation_id == work.c.conversation_id,
-                    )
                     .outerjoin(recovery, recovery.c.work_id == work.c.id)
                     .where(
                         text("(runtime_work.state IN ('queued', 'running')) = 1"),
@@ -273,7 +269,6 @@ class WorkScheduler:
                             ),
                         ),
                         work.c.id.not_in(select(children.c.work_id)),
-                        or_(scope.c.owner.is_(None), scope.c.lease_until <= time.time()),
                         or_(
                             recovery.c.work_id.is_(None),
                             recovery.c.not_before <= time.time(),
@@ -282,42 +277,61 @@ class WorkScheduler:
                     .order_by(work.c.updated, work.c.id)
                 )
                 rows: list[RowMapping] = []
-                visited: set[str] = set()
-                while len(rows) < capacity:
-                    # Seek the next distinct scope, jumping over its entire ready
-                    # backlog. The cursor is traversal progress, not Work state.
-                    scopes = (
-                        select(work.c.conversation_id)
-                        .where(
-                            text("(runtime_work.state IN ('queued', 'running')) = 1"),
-                            work.c.conversation_id.not_in(tuple(self._in_flight)),
+                cursor = self._selection_cursor
+                for wrap in (False, True) if cursor is not None else (False,):
+                    # Each min seek jumps over a scope's whole ready backlog.
+                    # The two ranges retain round-robin order without per-scope IO.
+                    minimum = select(
+                        func.min(work.c.conversation_id).label("conversation_id")
+                    ).where(
+                        text("(runtime_work.state IN ('queued', 'running')) = 1"),
+                        work.c.conversation_id.not_in(tuple(self._in_flight)),
+                    )
+                    if cursor is not None:
+                        minimum = minimum.where(
+                            work.c.conversation_id <= cursor
+                            if wrap
+                            else work.c.conversation_id > cursor
                         )
-                        .order_by(work.c.conversation_id)
+                    scopes = minimum.cte("ready_scopes", recursive=True)
+                    scopes = scopes.union_all(
+                        select(
+                            minimum.where(work.c.conversation_id > scopes.c.conversation_id)
+                            .correlate(scopes)
+                            .scalar_subquery()
+                        ).where(scopes.c.conversation_id.is_not(None))
+                    )
+                    head = (
+                        query.with_only_columns(work.c.id)
+                        .where(
+                            work.c.conversation_id == scopes.c.conversation_id,
+                            or_(scope.c.owner.is_(None), scope.c.lease_until <= time.time()),
+                        )
+                        .correlate(scopes, scope)
                         .limit(1)
+                        .scalar_subquery()
                     )
-                    identity = await session.scalar(
-                        scopes.where(work.c.conversation_id > self._selection_cursor)
-                        if self._selection_cursor is not None
-                        else scopes
-                    )
-                    if identity is None and self._selection_cursor is not None:
-                        self._selection_cursor = None
-                        identity = await session.scalar(scopes)
-                    if identity is None or identity in visited:
-                        break
-                    self._selection_cursor = identity
-                    visited.add(identity)
-                    row = (
+                    rows.extend(
                         (
                             await session.execute(
-                                query.where(work.c.conversation_id == identity).limit(1)
+                                select(*query.selected_columns)
+                                .select_from(
+                                    scopes.outerjoin(
+                                        scope,
+                                        scope.c.conversation_id == scopes.c.conversation_id,
+                                    ).outerjoin(work, work.c.id == head)
+                                )
+                                .where(head.is_not(None))
+                                .limit(capacity - len(rows))
                             )
                         )
                         .mappings()
-                        .first()
+                        .all()
                     )
-                    if row is not None:
-                        rows.append(row)
+                    if len(rows) == capacity:
+                        break
+                if rows:
+                    self._selection_cursor = rows[-1]["conversation_id"]
         started: list[asyncio.Task[None]] = []
         for row in rows:
             conversation_id = row["conversation_id"]

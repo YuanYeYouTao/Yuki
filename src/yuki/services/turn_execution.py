@@ -324,8 +324,7 @@ class TurnExecution:
                     assert session.transcript is not None
                     self.state.transcript = session.transcript
             session = self.runtime.work_control.session
-            if session.uses_recovery_transcript:
-                assert session.source_guard is not None
+            if session.exact_recovery and session.source_guard is not None:
                 observed = set(session.source_guard.version.visible_event_ids) | set(
                     session.event_ids
                 )

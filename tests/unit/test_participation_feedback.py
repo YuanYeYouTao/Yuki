@@ -14,6 +14,7 @@ import pytest
 from sqlalchemy import event, func, select, update
 from sqlalchemy.exc import OperationalError
 from tests.support.autonomy_repository_helpers import _accept, _enable, _scene
+from tests.support.sqlite_cost import capture_reads, read_vm_steps
 from yuki_participation.controller import Controller
 from yuki_participation.models import CandidateKind, Proposal, Scope, SourceRef, Support
 
@@ -540,6 +541,19 @@ async def test_worker_and_root_model_charges_are_paged_without_summing_budget_tw
             )
         )
         await session.execute(budgets.insert().values(root_id=task["id"], models=120, tools=0))
+    costs = []
+    for size in (16, 640):
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                work.insert(),
+                [{**task, "id": str(uuid4()), "source_key": str(uuid4())} for _ in range(size)],
+            )
+        with capture_reads(database) as queries:
+            async with database.sessions() as reader:
+                facts = await participation_feedback._read_facts(service, (run.run_id,), reader)
+        assert len(facts[0].model_refs) == 120
+        costs.append(read_vm_steps(database, queries))
+    assert costs[1] <= costs[0] * 4, costs
     await reconcile_page(service, (run,))
     assert len(item.controller.state.effects) == 120
     assert (

@@ -72,14 +72,19 @@ def adapter(plugin_tool, risk, handler, audit):
     ), name
 
 
-@pytest.mark.parametrize("risk", [RiskClass.READ, RiskClass.MUTATE])
-async def test_known_result_does_not_retry_or_become_unknown(plugin_tool, risk):
+@pytest.mark.parametrize(
+    ("risk", "audit_offline"),
+    [(RiskClass.READ, True), (RiskClass.MUTATE, True), (RiskClass.MUTATE, False)],
+)
+async def test_known_result_does_not_retry_or_become_unknown(plugin_tool, risk, audit_offline):
     handler = AsyncMock(
         return_value=ToolResult(
             data={"receipt": "original"}, mutation_committed=risk == RiskClass.MUTATE
         )
     )
-    audit = SimpleNamespace(record=AsyncMock(side_effect=OSError("audit offline")))
+    audit = SimpleNamespace(
+        record=AsyncMock(side_effect=OSError("audit offline") if audit_offline else None)
+    )
     tool, name = adapter(plugin_tool, risk, handler, audit)
     result = await tool.execute(name, "{}", ToolRuntime(inbound=None))
     handler.assert_awaited_once()
@@ -108,18 +113,6 @@ async def test_revoked_installation_does_not_dispatch(plugin_tool):
     result = await tool.execute(name, "{}", ToolRuntime(inbound=None))
     handler.assert_not_awaited()
     assert not result.ok and result.error_code == "plugin_tool_denied"
-
-
-async def test_known_result_with_available_audit(plugin_tool):
-    handler = AsyncMock(
-        return_value=ToolResult(data={"receipt": "original"}, mutation_committed=True)
-    )
-    tool, name = adapter(
-        plugin_tool, RiskClass.MUTATE, handler, SimpleNamespace(record=AsyncMock())
-    )
-    result = await tool.execute(name, "{}", ToolRuntime(inbound=None))
-    handler.assert_awaited_once()
-    assert result.ok and result.data == {"receipt": "original"} and result.mutation_committed
 
 
 async def test_optional_audit_does_not_swallow_cancellation():

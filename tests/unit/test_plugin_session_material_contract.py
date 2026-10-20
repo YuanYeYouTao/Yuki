@@ -95,8 +95,7 @@ async def plugin_session(database):
     )
 
 
-@pytest.mark.parametrize("reader", ["history", "record"])
-async def test_paused_space_keeps_original_session_material(plugin_session, reader):
+async def test_paused_space_keeps_original_session_material(plugin_session):
     env = plugin_session
     await env.repository.append_message(
         plugin_id=env.plugin,
@@ -106,19 +105,15 @@ async def test_paused_space_keeps_original_session_material(plugin_session, read
         metadata={"chapter": 2},
     )
     await env.pause()
-    if reader == "history":
-        messages = await env.repository.list_messages(
-            plugin_id=env.plugin, session_id=str(env.created.session_id)
-        )
-        assert [(row.role, row.content, row.metadata) for row in messages] == [
-            ("assistant", "original persisted output", {"chapter": 2})
-        ]
-    else:
-        record = await env.repository.get(
-            plugin_id=env.plugin, session_id=str(env.created.session_id)
-        )
-        assert record.session_id == str(env.created.session_id)
-        assert record.canonical_space_id == env.space and record.turn_count == 1
+    messages = await env.repository.list_messages(
+        plugin_id=env.plugin, session_id=str(env.created.session_id)
+    )
+    assert [(row.role, row.content, row.metadata) for row in messages] == [
+        ("assistant", "original persisted output", {"chapter": 2})
+    ]
+    record = await env.repository.get(plugin_id=env.plugin, session_id=str(env.created.session_id))
+    assert record.session_id == str(env.created.session_id)
+    assert record.canonical_space_id == env.space and record.turn_count == 1
 
 
 async def test_pause_after_model_response_keeps_paid_assistant(

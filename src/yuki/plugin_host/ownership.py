@@ -143,19 +143,11 @@ async def resolve_session_owners(
     if scope_type == "plugin":
         return None, None
     if scope_type == "user":
-        user_owner = await resolve_human_person_id(
-            session,
-            owner_user_id or scope_id,
-            missing_message="session owner has no Person",
-        )
-        scoped = await resolve_human_person_id(
+        return await resolve_human_person_id(
             session,
             scope_id,
             missing_message="session owner has no Person",
-        )
-        if user_owner != scoped:
-            raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
-        return user_owner, None
+        ), None
     if scope_type != "group":
         raise PluginOwnershipError(STATE_MISMATCH)
     group_owner: str | None = None
@@ -168,18 +160,19 @@ async def resolve_session_owners(
     return group_owner, await resolve_active_space_id(session, scope_id)
 
 
-async def require_session_readable(session: AsyncSession, row: PluginAgentSessionModel) -> None:
-    """Read session ownership from canonical Person/Space columns only."""
+async def require_session_readable(
+    session: AsyncSession, row: PluginAgentSessionModel
+) -> str | None:
+    """Read material ownership and return the current Person for its projection."""
 
     if row.scope_type == "plugin":
         if row.canonical_owner_person_id or row.canonical_space_id:
             raise PluginOwnershipError(STATE_MISMATCH)
-        return
+        return None
     if row.scope_type == "user":
         if row.canonical_space_id:
             raise PluginOwnershipError(STATE_MISMATCH)
-        await resolve_human_person_id(session, row.canonical_owner_person_id)
-        return
+        return await resolve_human_person_id(session, row.canonical_owner_person_id)
     if row.scope_type != "group":
         raise PluginOwnershipError(STATE_MISMATCH)
     if (
@@ -188,7 +181,8 @@ async def require_session_readable(session: AsyncSession, row: PluginAgentSessio
     ):
         raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
     if row.canonical_owner_person_id:
-        await resolve_human_person_id(session, row.canonical_owner_person_id)
+        return await resolve_human_person_id(session, row.canonical_owner_person_id)
+    return None
 
 
 async def actor_matches_session(
@@ -243,7 +237,6 @@ async def inherit_message_sender_person(
 
     if role != "user":
         return None
-    await require_session_readable(session, parent)
     if sender_user_id is None and parent.canonical_owner_person_id is None:
         return None
     try:

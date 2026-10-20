@@ -34,7 +34,6 @@ from yuki.persistence.event_repository import EventLedgerRepository
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.context_preparation import (
     prepare_context,
-    protocol_recovery_preparation,
     select_protocol_recovery,
 )
 from yuki.runtime.subagent_repository import SubagentRepository
@@ -144,7 +143,7 @@ async def test_public_preparation_does_not_publish_or_replace_original_paid_sour
         assert await reader.scalar(select(func.count()).select_from(ContextSelectionModel)) == 0
     loaded = await session.journal.load(control.lease, control.current["id"], "fixed-contract")
     assert "original-signature" in loaded.record["payload_json"]
-    assert protocol_recovery_preparation.get() is None
+    assert control.protocol_recovery_preparation.guard.snapshot() == original
 
 
 async def test_recovery_cache_miss_reads_original_internal_conversation_from_raw_scope(database):
@@ -171,7 +170,11 @@ async def test_recovery_cache_miss_reads_original_internal_conversation_from_raw
             identity=current_entry, content="resume", metadata={}, read_history=True, runtime=None
         )
 
-    prepared = await prepare_context(builder, control, recovery_contract=session.contract)
+    token = current_work_control.set(control)
+    try:
+        prepared = await prepare_context(builder, control, recovery_contract=session.contract)
+    finally:
+        current_work_control.reset(token)
     assert prepared.read_version.conversation_id == original.conversation_id
     assert prepared.read_version.scope.conversation_id == original.conversation_id
     assert prepared.read_version.scope.key == f"conversation:{original.conversation_id}"
@@ -205,7 +208,7 @@ async def test_normal_business_or_changed_contract_builds_fresh(database, kind):
         == "fresh-context"
     )
     builder.assert_awaited_once()
-    assert protocol_recovery_preparation.get() is None
+    assert control.protocol_recovery_preparation is None
 
 
 async def test_child_real_deleted_source_cannot_be_certified_by_fresh_history(database):
@@ -219,7 +222,7 @@ async def test_child_real_deleted_source_cannot_be_certified_by_fresh_history(da
     with pytest.raises(WorkConflict, match="work_source_changed"):
         await prepare_context(builder, control, recovery_contract="fixed-contract")
     builder.assert_not_awaited()
-    assert protocol_recovery_preparation.get() is None
+    assert control.protocol_recovery_preparation is None
 
 
 async def test_unobserved_edit_preserves_actual_private_pause_across_reopen(database):
