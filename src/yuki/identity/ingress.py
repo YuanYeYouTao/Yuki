@@ -21,6 +21,7 @@ from yuki.conversation.hydrate import (
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.identity import AuthorKind
 from yuki.domain.messages import InboundMessage, snapshot_mention_segments
+from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.gateway.models import ConnectionSnapshot
 from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from yuki.identity.canonical_repository import (
@@ -34,6 +35,7 @@ from yuki.identity.db_models import IdentityBindingModel, PresenceModel
 from yuki.identity.errors import CanonicalIdentityError
 from yuki.identity.event_author import EventAuthorProjection
 from yuki.identity.mentions import resolve_message_mentions
+from yuki.identity.person_identity import person_enabled_condition
 from yuki.identity.receipt_compat import (
     load_claimed_keeper,
     require_claimed_event,
@@ -298,11 +300,39 @@ class CanonicalIngressResolver:
                 author_account_id=original.author_account_id,
                 author_assignment_id=conversation.identity_binding_id if conversation else None,
             )
-        author = await _author_for(
-            session,
-            overlay,
-            platform=presence.platform,
-        )
+        if presence.platform in LOCAL_CLIENT_PLATFORMS:
+            conversation = (
+                await session.get(CanonicalConversationModel, overlay.conversation_id)
+                if overlay.conversation_id is not None
+                else None
+            )
+            client_binding = (
+                await session.get(IdentityBindingModel, conversation.identity_binding_id)
+                if conversation is not None and conversation.identity_binding_id
+                else None
+            )
+            if (
+                client_binding is None
+                or client_binding.status != "active"
+                or client_binding.person_id != overlay.person_id
+                or client_binding.platform != presence.platform
+                or client_binding.external_account_id != overlay.sender.user_id
+                or conversation is None
+                or conversation.entry_presence_id != presence_id
+                or conversation.thread_id != overlay.thread_id
+                or not await session.scalar(
+                    select(person_enabled_condition(client_binding.person_id))
+                )
+            ):
+                return _drop("private_not_allowed", overlay)
+            author = EventAuthorProjection(
+                AuthorKind.PERSON.value,
+                client_binding.person_id,
+                None,
+                assignment_id=client_binding.id,
+            )
+        else:
+            author = await _author_for(session, overlay, platform=presence.platform)
         author_kind, author_person_id, author_presence_id = author.as_tuple()
         space_id: str | None = None
         space_binding_id: str | None = None

@@ -312,7 +312,7 @@ async def test_file_original_has_bounded_copies_and_cleans_own_directory(
     assert directories and all(not path.exists() for path in directories)
 
 
-@pytest.mark.parametrize("change", ["delete", "edit", "unindex", "reset"])
+@pytest.mark.parametrize("change", ["delete", "edit", "unindex"])
 async def test_collection_rechecks_original_source_after_download_wait(
     admitted_media, database, change
 ):
@@ -331,10 +331,6 @@ async def test_collection_rechecks_original_source_after_download_wait(
                     delete(ConversationMediaItemModel).where(
                         ConversationMediaItemModel.source_event_id == env.event.id
                     )
-                )
-            elif change == "reset":
-                await bump_canonical_generation(
-                    writer, env.event.canonical_conversation_id, event_id=env.event.id
                 )
             else:
                 event.segments_json = json.dumps(

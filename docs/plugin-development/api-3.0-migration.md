@@ -1,9 +1,9 @@
 # Plugin API 3.0 历史迁移
 
-> 本页保留该版本的历史变更；当前开发和部署只使用 [Plugin API 6.0](api-6.0-migration.md)。
+> 本页保留该版本的历史变更；当前开发和部署只使用 [Plugin API 7.0](api-7.0-migration.md)。
 本文记录历史迁移；当前已退役的表情 API 见 [5.0 迁移](api-5.0-migration.md)。
 
-> 本文记录 3.0 的接口变化；当前 Host 只接受精确的 6.0。完成下述步骤后继续 [API 3.1 历史迁移](api-3.1-migration.md)、[API 3.2 历史迁移](api-3.2-migration.md)、[API 3.3 迁移](api-3.3-migration.md)和 [API 3.4 迁移](api-3.4-migration.md)，最后按 [API 6.0 迁移](api-6.0-migration.md)更新声明与实际代码。
+> 本文记录 3.0 的接口变化；当前 Host 只接受精确的 7.0。完成下述步骤后继续 [API 3.1 历史迁移](api-3.1-migration.md)、[API 3.2 历史迁移](api-3.2-migration.md)、[API 3.3 迁移](api-3.3-migration.md)和 [API 3.4 迁移](api-3.4-migration.md)，最后按 [API 7.0 迁移](api-7.0-migration.md)更新声明与实际代码。
 
 Plugin API 3.0 删除了把媒体效果排入“下一条自动回复”的隐式状态：
 

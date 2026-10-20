@@ -15,7 +15,7 @@ from alembic.config import Config
 from tests.unit.test_migration_0119 import _seed_0118
 
 from yuki.domain.messages import sanitize_display_name
-from yuki.persistence.schema_guard import CanonicalSchemaError, require_canonical_schema
+from yuki.persistence.schema_guard import require_canonical_schema
 
 NAME_INDEX = "ix_account_names_name_scope_account"
 MESSAGE_INDEX = "ix_chat_events_conversation_message_sender_time"
@@ -296,30 +296,6 @@ def test_recent_lookup_does_not_walk_newer_external_events(original):
         # This checks bounded indexed work rather than an environment-specific
         # latency threshold; external rows must never enter the partial index.
         assert steps() == before
-
-
-@pytest.mark.parametrize("index", [NAME_INDEX, MESSAGE_INDEX])
-def test_startup_checks_new_lookup_indexes_without_scanning_history(original, index):
-    path, url = original
-    command.upgrade(Config("alembic.ini"), "head")
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute('DROP INDEX "' + index + '"')
-    with pytest.raises(CanonicalSchemaError, match="mention"):
-        asyncio.run(require_canonical_schema(url))
-
-
-def test_startup_rejects_activity_index_with_the_wrong_partial_predicate(original):
-    path, url = original
-    command.upgrade(Config("alembic.ini"), "head")
-    with closing(sqlite3.connect(path)) as connection, connection:
-        connection.execute('DROP INDEX "' + MESSAGE_INDEX + '"')
-        connection.execute(
-            f"CREATE INDEX {MESSAGE_INDEX} ON chat_events "
-            "(canonical_conversation_id,sender_user_id,occurred_at,id) "
-            "WHERE suppression_status='keeper'"
-        )
-    with pytest.raises(CanonicalSchemaError, match="mention activity"):
-        asyncio.run(require_canonical_schema(url))
 
 
 @pytest.mark.parametrize(

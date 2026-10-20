@@ -91,6 +91,10 @@ MEMORY_HYBRID_RRF_K=60
 与 failed 任务保留原领取和尝试记录；可恢复失败按配置间隔重新领取原任务，不按次数封口。
 显式 rebuild 也不会夺取相同内容的在飞请求。
 
+每次领取不超过当前 Provider 声明的一次 HTTP 批容量；一批返回后立即按原 claim 保存，
+下一批失败不会撤销已经保存的向量。领取满批时继续排空就绪任务，不等待普通轮询间隔；
+失败批次仍沿原任务、尝试次数和重试时间恢复。
+
 完成按 128 条页一次读取任务、一次读取事实小列，hash 在锁外计算；短 writer 复核原 claim 的
 updated_at 和 attempts，仅成功 CAS 的结果批量 upsert 向量。late complete/fail/skip 都必须携带
 原 claim。输入在准备后变化时只将该原领取返回 pending，下一次重新读取，不写旧向量。

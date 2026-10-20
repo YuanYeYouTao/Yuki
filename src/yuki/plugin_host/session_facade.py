@@ -54,7 +54,6 @@ class BoundAgentSessionFacade:
             instructions=request.instructions,
             persistence=request.persistence.value,
             context_profile=request.context_profile.value,
-            allowed_capabilities=request.allowed_capabilities,
         )
         return _sdk_session(record)
 
@@ -63,14 +62,11 @@ class BoundAgentSessionFacade:
             self._authority,
             session_id=str(request.session_id),
             user_input=request.user_input,
-            allowed_capabilities=request.allowed_capabilities,
-            max_tool_calls=request.max_tool_calls,
             max_model_requests=request.max_model_requests,
         )
         return AgentSessionRunResult(
             session=_sdk_session(result.session),
             text=result.text,
-            tool_calls_used=result.tool_calls_used,
             model_requests=result.model_requests,
         )
 

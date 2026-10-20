@@ -55,36 +55,6 @@ class MediaAnalysisRepository:
             )
         return self._record(row) if row is not None else None
 
-    async def find_for_event(
-        self,
-        source_event_id: int,
-        segment_index: int,
-        *,
-        analysis_mode: str,
-        question_hash: str,
-        provider: str,
-        model: str,
-        prompt_version: str,
-        now: datetime | None = None,
-    ) -> MediaAnalysisRecord | None:
-        """Find an unexpired observation attached to one exact ledger segment."""
-
-        timestamp = now or datetime.now(UTC)
-        async with self._database.sessions() as session:
-            row = await session.scalar(
-                select(MediaAnalysisModel).where(
-                    MediaAnalysisModel.source_event_id == source_event_id,
-                    MediaAnalysisModel.segment_index == segment_index,
-                    MediaAnalysisModel.analysis_mode == analysis_mode,
-                    MediaAnalysisModel.question_hash == question_hash,
-                    MediaAnalysisModel.provider == provider,
-                    MediaAnalysisModel.model == model,
-                    MediaAnalysisModel.prompt_version == prompt_version,
-                    MediaAnalysisModel.expires_at > timestamp,
-                )
-            )
-        return self._record(row) if row is not None else None
-
     async def save(
         self,
         *,

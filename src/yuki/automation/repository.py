@@ -313,6 +313,35 @@ class AutomationRepository:
             return None
         return _automation_directory_entry(row)
 
+    async def find_equivalent_directory_entries(
+        self, task: TaskSpec, *, max_runs: int | None
+    ) -> tuple[AutomationDirectoryEntry, ...]:
+        """Stream each current plan once and return matching directory entries."""
+
+        expected = task.model_dump(mode="json", exclude={"name"}, exclude_none=True)
+        query = (
+            _directory_statement(include_script=True)
+            .where(
+                AutomationModel.status.in_(
+                    (AutomationStatus.ACTIVE.value, AutomationStatus.PAUSED.value)
+                ),
+                AutomationModel.max_runs == max_runs,
+            )
+            .order_by(
+                AutomationModel.next_run_at.is_(None),
+                AutomationModel.next_run_at,
+                AutomationModel.id,
+            )
+        )
+        async with self._database.sessions() as session:
+            matches = []
+            async for row in await session.stream(query.execution_options(yield_per=128)):
+                actual = json.loads(row[0].script_json)
+                actual.pop("name", None)
+                if actual == expected:
+                    matches.append(_automation_directory_entry(row, include_script=True))
+            return tuple(matches)
+
     async def list_current_for_creator(
         self,
         creator_person_id: str,

@@ -134,9 +134,7 @@ class WorkSession:
                 if source is None or source.generation != control.lease.generation:
                     raise WorkConflict("work_source_generation_changed")
                 self.source_revision = source.prompt_source_revision
-        from yuki.runtime.context_preparation import protocol_recovery_preparation
-
-        recovery = control.protocol_recovery_preparation or protocol_recovery_preparation.get()
+        recovery = control.protocol_recovery_preparation
         control.protocol_recovery_preparation = None
         self.exact_recovery = False
         if (

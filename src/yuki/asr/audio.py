@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from yuki.asr.provider import ASRError
+from yuki.services.media_resolver import _media_directory, _media_io
 
 _FORMATS = "wav,mp3,flac,ogg,amr,aac,mov,matroska,webm,aiff"
 
@@ -34,10 +33,10 @@ async def _run(*args: str) -> bytes:
 
 async def prepare_audio(content: bytes, *, max_duration_seconds: int) -> bytes:
     """Transcode to mono MP3; QQ SILK is converted by get_record before this step."""
-    with TemporaryDirectory(prefix="yuki-asr-") as directory:
-        source = Path(directory) / "input.audio"
-        output = Path(directory) / "output.mp3"
-        source.write_bytes(content)
+    async with _media_directory("yuki-asr-") as directory:
+        source = directory / "input.audio"
+        output = directory / "output.mp3"
+        await _media_io(source.write_bytes, content)
         input_options = (
             "-v",
             "error",
@@ -100,6 +99,10 @@ async def prepare_audio(content: bytes, *, max_duration_seconds: int) -> bytes:
             "7000000",
             str(output),
         )
-        if not output.is_file() or not 0 < output.stat().st_size < 7_000_000:
-            raise ASRError("audio_limit")
-        return output.read_bytes()
+
+        def read_output() -> bytes:
+            if not output.is_file() or not 0 < output.stat().st_size < 7_000_000:
+                raise ASRError("audio_limit")
+            return output.read_bytes()
+
+        return await _media_io(read_output)

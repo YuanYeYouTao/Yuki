@@ -28,6 +28,7 @@ from yuki.plugin_host.notification_delivery import (
 from yuki.plugin_host.notification_repository import PluginNotificationRepository
 from yuki.plugin_host.repository import PluginInstallationRepository
 from yuki.services.effect_gate import ConversationEffectGate
+from yuki_plugin_sdk import PLUGIN_API_VERSION
 from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
 
@@ -37,7 +38,7 @@ async def install(database):
         plugin_id="native-notification",
         name="Fixture",
         version="1.0",
-        plugin_api="6.0",
+        plugin_api=PLUGIN_API_VERSION,
         yuki_requires=">=3",
         entrypoint="fixture:Plugin",
         requested_permissions=(),

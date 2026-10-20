@@ -7,19 +7,6 @@ import re
 from yuki.llm.base import LLMEmptyResponseError
 
 _CONTROL_CHARACTERS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-_INTERNAL_HISTORY_MARKER = re.compile(
-    r"\[(?:(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]) )?"
-    r"(?:[01]\d|2[0-3]):[0-5]\d(?: QQ [1-9]\d{4,19})?\]\s*"
-)
-_EVENT_IDENTITY_MARKER = re.compile(
-    r"\[发送者:[^\]\r\n]{1,128}\|QQ:[^|\]\r\n]{1,64}"
-    r"(?:\|消息:[^|\]\r\n]{1,128})?(?:\|时间:[^|\]\r\n]{1,128})?"
-    r"(?:\|回复:[^|\]\r\n]{1,256})?(?:\|提及:[^\]\r\n]{1,512})?\]\s*"
-)
-_MAIN_AGENT_IDENTITY_MARKER = re.compile(
-    r"\[[^\]\r\n]{1,128}\|QQ:[1-9]\d{4,19}\][ \t]*(?:\n[ \t]*)?"
-)
-_MAIN_AGENT_EVENT_PREFIX = re.compile(r"(?m)^[ \t]*#\d{1,19}(?:\|[^>\r\n]{1,768})?>?[ \t]*")
 _SENTENCE_BOUNDARY = re.compile(r"(?<=[。！？!?；;])")
 
 
@@ -31,27 +18,12 @@ def sanitize_input(text: str) -> str:
     return "\n".join(line.rstrip() for line in normalized.splitlines()).strip()
 
 
-def strip_internal_history_markers(text: str) -> str:
-    """Remove model-only annotations from generated or persisted chat text."""
-
-    cleaned = _INTERNAL_HISTORY_MARKER.sub("", text)
-    cleaned = _EVENT_IDENTITY_MARKER.sub("", cleaned)
-    cleaned = _MAIN_AGENT_IDENTITY_MARKER.sub("", cleaned)
-    return _MAIN_AGENT_EVENT_PREFIX.sub("", cleaned)
-
-
 def sanitize_model_output(text: str, *, max_characters: int | None = None) -> str:
-    """Remove only control characters and internal prompt envelopes."""
+    """Remove the actual state tail and control characters, preserving body text."""
     from yuki_participation.self_report import extract_tail
 
     text, _ = extract_tail(text)
     cleaned = sanitize_input(text)
-    if not cleaned:
-        raise LLMEmptyResponseError("model returned empty content")
-    # Identity envelopes belong only to model input. Treat an echoed envelope as
-    # an internal annotation wherever it appears, never as ordinary QQ text.
-    cleaned = strip_internal_history_markers(cleaned)
-    cleaned = cleaned.strip()
     if not cleaned:
         raise LLMEmptyResponseError("model returned empty content")
     return cleaned[:max_characters]

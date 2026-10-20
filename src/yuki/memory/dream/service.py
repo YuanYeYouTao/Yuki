@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -538,6 +539,17 @@ class DreamService:
         incremental: bool,
     ) -> tuple[tuple[tuple[DreamCandidate, ...], ...], tuple[DreamCandidate, ...]]:
         checkpoints = await self._repository.checkpoint_map() if incremental else {}
+        return await asyncio.to_thread(
+            self._cluster_candidates, loaded, checkpoints=checkpoints, incremental=incremental
+        )
+
+    def _cluster_candidates(
+        self,
+        loaded: DreamCandidateLoad,
+        *,
+        checkpoints: dict[int, str],
+        incremental: bool,
+    ) -> tuple[tuple[tuple[DreamCandidate, ...], ...], tuple[DreamCandidate, ...]]:
         changed = {
             item.fact.id
             for item in loaded.candidates
@@ -550,12 +562,17 @@ class DreamService:
         clustered_ids: set[int] = set()
         for partition in sorted(partitions, key=repr):
             rows = sorted(partitions[partition], key=lambda item: item.fact.id)
+            if incremental and not any(item.fact.id in changed for item in rows):
+                continue
             by_id = {item.fact.id: item for item in rows}
+            vectors = {item.fact.id: self._codec.normalize(item.vector) for item in rows}
             similarities: dict[tuple[int, int], float] = {}
             degrees = dict.fromkeys(by_id, 0)
             for index, left in enumerate(rows):
                 for right in rows[index + 1 :]:
-                    similarity = self._codec.dot(left.vector, right.vector)
+                    similarity = self._codec.dot_normalized(
+                        vectors[left.fact.id], vectors[right.fact.id]
+                    )
                     similarities[(left.fact.id, right.fact.id)] = similarity
                     if similarity >= self._settings.memory_dream_similarity_threshold:
                         degrees[left.fact.id] += 1

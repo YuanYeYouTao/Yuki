@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import count
@@ -334,17 +336,8 @@ def _identity_write_settings_isolation() -> Iterator[None]:
         reset_identity_write_settings()
 
 
-@pytest_asyncio.fixture
-async def database(tmp_path: Path) -> Database:
-    from yuki.identity.write_settings import (
-        IdentityWriteSettings,
-        configure_identity_write_settings,
-        reset_identity_write_settings,
-    )
-
-    path = (tmp_path / "test.db").as_posix()
-    db = Database(f"sqlite+aiosqlite:///{path}")
-    await db.create_schema()
+async def _seed_database(db: Database) -> None:
+    """The original fixed identity seed, applied to a real newly created schema."""
     from datetime import UTC, datetime
 
     from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
@@ -406,6 +399,43 @@ async def database(tmp_path: Path) -> Database:
                 name=f"test-{group_id}",
                 require_mention=True,
             )
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def _database_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    from yuki.identity.write_settings import (
+        IdentityWriteSettings,
+        configure_identity_write_settings,
+        reset_identity_write_settings,
+    )
+
+    path = tmp_path_factory.mktemp("database-template") / "template.db"
+    db = Database(f"sqlite+aiosqlite:///{path.as_posix()}")
+    reset_identity_write_settings()
+    configure_identity_write_settings(IdentityWriteSettings())
+    try:
+        await db.create_schema()
+        await _seed_database(db)
+        async with db.engine.connect() as connection:
+            await connection.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        await db.close()
+        reset_identity_write_settings()
+    path.chmod(0o444)
+    return path
+
+
+@pytest_asyncio.fixture
+async def database(tmp_path: Path, _database_template: Path) -> Database:
+    from yuki.identity.write_settings import (
+        IdentityWriteSettings,
+        configure_identity_write_settings,
+        reset_identity_write_settings,
+    )
+
+    path = tmp_path / "test.db"
+    await asyncio.to_thread(shutil.copyfile, _database_template, path)
+    db = Database(f"sqlite+aiosqlite:///{path.as_posix()}")
     reset_identity_write_settings()
     configure_identity_write_settings(IdentityWriteSettings())
     try:

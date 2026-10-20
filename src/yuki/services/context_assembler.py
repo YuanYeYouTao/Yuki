@@ -72,8 +72,6 @@ class AssembledContext:
     projection_scope: str = ""
     history_bot_display_name: str = "Yuki"
     history_timezone: str = "Asia/Shanghai"
-    history_yuki_account_ids: frozenset[str] = frozenset()
-    recovery_protocol: bool = False
     projection_snapshot: ProjectionSnapshot | None = None
     history_incremental: bool = False
     prepared_fragments: FrozenFragments | None = None
@@ -112,36 +110,12 @@ class ContextAssembler:
         self._ledger = ledger
         self._scopes = conversation_scopes
 
-    async def _protocol_recovery_context(
-        self,
-        identity: ConversationScope,
-        turn: ConversationTurnSnapshot | None = None,
-    ) -> AssembledContext | None:
-        from yuki.runtime.context_preparation import protocol_recovery_preparation
-
-        recovery = protocol_recovery_preparation.get()
-        if recovery is None:
-            return None
-        if turn is not None:
-            await self._ensure_turn_generation(identity, turn)
-        original = recovery.guard.version
-        return AssembledContext(
-            metadata_payload={},
-            history_messages=(),
-            current_message=ChatMessage(role="user", content=""),
-            metrics=ContextMetrics(0, 0, 0, 0, False),
-            visible_event_ids=frozenset(original.visible_event_ids),
-            read_version=original,
-            recovery_protocol=True,
-        )
-
     async def _assemble_activation(
         self,
         *,
         identity: ConversationScope,
         turn: ConversationTurnSnapshot,
         content: str,
-        runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
         """Prepare the common history for a real execution without a chat event."""
         snapshot = await self._load_history_snapshot(identity, turn=turn, before_event_id=None)
@@ -153,7 +127,6 @@ class ContextAssembler:
                 "scene": "群聊" if identity.scope_type is ScopeType.GROUP else "私聊",
                 "platform": identity.platform,
             },
-            yuki_account_ids=frozenset({identity.bot_user_id}),
             current_override=ChatMessage("user", content),
             projection_scope="main",
         )
@@ -172,7 +145,6 @@ class ContextAssembler:
         identity: ConversationScope,
         content: str,
         metadata: dict[str, Any],
-        yuki_account_ids: frozenset[str],
         current_event: EventRecord | None = None,
         current_override: ChatMessage | None = None,
         projection_scope: str = "",
@@ -190,7 +162,6 @@ class ContextAssembler:
             references=references,
             through_event_id=references._through,
             current_event_id=current_id,
-            yuki_account_ids=yuki_account_ids,
         )
         frozen = snapshot.frozen_prefix
         if frozen is None:
@@ -200,7 +171,6 @@ class ContextAssembler:
             references=references,
             bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
-            yuki_account_ids=yuki_account_ids,
         )
         current = current_override or (
             renderer.reference_message(
@@ -236,7 +206,6 @@ class ContextAssembler:
             projection_scope=projection_scope,
             history_bot_display_name=self._settings.bot_display_name,
             history_timezone=self._settings.default_timezone,
-            history_yuki_account_ids=yuki_account_ids,
             projection_snapshot=snapshot.projection,
             history_incremental=True,
             prepared_fragments=prepared,
@@ -252,10 +221,18 @@ class ContextAssembler:
         runtime: RuntimeConfigSnapshot,
     ) -> AssembledContext:
         """Use the canonical checkpoint/raw-tail projection within the plugin read grant."""
+        from yuki.runtime.work_activation import current_work_control
+
+        control = current_work_control.get()
+        recovery = control.protocol_recovery_preparation if control is not None else None
         scope = identity
-        recovery = await self._protocol_recovery_context(scope)
         if recovery is not None:
-            return recovery
+            original = recovery.guard.version
+            scope = replace(
+                original.scope,
+                conversation_id=original.conversation_id,
+                key=f"conversation:{original.conversation_id}",
+            )
         metadata = {**metadata, "platform": scope.platform}
         if read_history:
             loaded = await self._scopes.prepare_prompt_snapshot(
@@ -269,7 +246,6 @@ class ContextAssembler:
                 identity=identity,
                 content=content,
                 metadata=metadata,
-                yuki_account_ids=frozenset(),
                 current_override=ChatMessage("user", content),
                 projection_scope="main",
             )
@@ -303,10 +279,6 @@ class ContextAssembler:
     ) -> AssembledContext:
         """Build one bounded snapshot without persisting model-only metadata."""
 
-        recovery = await self._protocol_recovery_context(identity, turn)
-        if recovery is not None:
-            return recovery
-
         if external_trigger is not None or external_event is not None:
             if inbound is not None or profile is not None:
                 raise ConversationCoverageError("external wakeup must not invent a message actor")
@@ -320,9 +292,7 @@ class ContextAssembler:
                 runtime=runtime,
             )
         if inbound is None and profile is None:
-            return await self._assemble_activation(
-                identity=identity, turn=turn, content=content, runtime=runtime
-            )
+            return await self._assemble_activation(identity=identity, turn=turn, content=content)
         if inbound is None or profile is None:
             raise ConversationCoverageError("message turn requires a real inbound actor")
         if turn.trigger_event_id is None:
@@ -344,7 +314,6 @@ class ContextAssembler:
                 "scene": "群聊" if inbound.group_id else "私聊",
                 "platform": inbound.platform,
             },
-            yuki_account_ids=inbound.yuki_account_ids,
             current_event=current,
         )
         await self._validate_history_source(snapshot, current)
@@ -391,7 +360,6 @@ class ContextAssembler:
                 "scene": "群聊" if event.group_id else "私聊",
                 "platform": event.platform or identity.platform,
             },
-            yuki_account_ids=frozenset({event.bot_user_id}),
             current_override=self._external_wakeup_message(event, trigger),
             projection_scope="main",
         )

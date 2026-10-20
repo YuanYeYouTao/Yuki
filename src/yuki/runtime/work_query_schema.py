@@ -22,6 +22,7 @@ QUERY_INDEX_NAMES = (
     "ix_runtime_work_query_scope_updated",
     "ix_runtime_work_query_updated",
     "ix_runtime_work_query_state_updated",
+    "ix_runtime_work_ready_scope",
 )
 
 INPUT_REPAIR_INDEX_NAME = "ix_runtime_work_inputs_abandoned"
@@ -62,6 +63,15 @@ Index(
 )
 
 Index("ix_runtime_work_query_updated", work.c.updated.desc(), work.c.id.desc())
+
+Index(
+    "ix_runtime_work_ready_scope",
+    literal_column("(state IN ('queued', 'running'))"),
+    work.c.conversation_id,
+    work.c.updated,
+    work.c.id,
+    sqlite_where=text("(state IN ('queued', 'running')) = 1"),
+)
 
 Index(
     "ix_runtime_work_query_state_updated",

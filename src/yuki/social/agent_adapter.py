@@ -129,7 +129,7 @@ async def invoke_social(
             return await service.execute(name, arguments, context)
         selected = dict(arguments)
         if any(selected.get(key) for key in ("target_id", "subject_ref", "display_name")):
-            target = await service.target(kind, selected, context)
+            target = await service.target(kind, selected, context, validate=False)
             if str(target.id) != target_id:
                 async with service.database.sessions() as session:
                     if kind != "person" or not await same_person_id(

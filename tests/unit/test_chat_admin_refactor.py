@@ -34,6 +34,21 @@ def test_retired_emoji_pool_is_not_offered_as_management_capability():
     assert not capabilities
 
 
+def test_permission_directory_accepts_the_complete_search_text():
+    from tests.conftest import make_settings
+
+    from yuki.admin.permission_catalog import PermissionCatalogService
+
+    report = PermissionCatalogService(
+        settings=make_settings("sqlite+aiosqlite://")
+    ).report_for_message(
+        message("/ai capabilities"),
+        query="an ordinary complete directory search " * 4,
+        actor_is_superuser=True,
+    )
+    assert report.capabilities == ()
+
+
 def test_chat_renders_nested_original_receipt_as_json():
     from yuki.admin.authority.commands import ControlResult
     from yuki.services.commands.admin import render_result

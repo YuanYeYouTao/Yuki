@@ -207,7 +207,6 @@ class PluginManager:
         self._available: dict[str, _AvailablePlugin] = {}
         self._definitions: dict[str, _PluginDefinition] = {}
         self._running: dict[str, _ManagedPlugin] = {}
-        self._maintenance_tasks: set[asyncio.Task[None]] = set()
         self._active = False
         self._lock = asyncio.Lock()
 
@@ -256,12 +255,6 @@ class PluginManager:
                 record = await self._installations.get(plugin_id)
                 final_status = "approved" if record is not None and record.enabled else "disabled"
                 await self._stop_one_unlocked(plugin_id, final_status=final_status)
-            maintenance = tuple(self._maintenance_tasks)
-            self._maintenance_tasks.clear()
-            for task in maintenance:
-                task.cancel()
-            if maintenance:
-                await asyncio.gather(*maintenance, return_exceptions=True)
             for plugin_id in tuple(self._definitions):
                 self._discard_definition(plugin_id)
 
@@ -769,60 +762,22 @@ class PluginManager:
         task: asyncio.Task[None],
     ) -> None:
         managed = self._running.get(plugin_id)
-        if managed is not None:
-            current = managed.background_tasks.get(registration.metadata.name)
-            if current is task:
-                managed.background_tasks.pop(registration.metadata.name, None)
+        if managed is None or managed.background_tasks.get(registration.metadata.name) is not task:
+            return
+        managed.background_tasks.pop(registration.metadata.name)
         if task.cancelled():
             return
         error = task.exception()
         if error is None:
             return
-        maintenance = asyncio.create_task(
-            self._handle_background_failure(plugin_id, registration, type(error).__name__),
-            name=f"yuki-plugin-maintenance:{plugin_id}:{registration.metadata.name}",
-        )
-        self._maintenance_tasks.add(maintenance)
-        maintenance.add_done_callback(self._maintenance_tasks.discard)
-
-    async def _handle_background_failure(
-        self,
-        plugin_id: str,
-        registration: BackgroundServiceRegistration,
-        error_category: str,
-    ) -> None:
         logger.warning(
             "plugin_background_failed plugin_id=%s service=%s error_category=%s",
             plugin_id,
             registration.metadata.name,
-            error_category,
+            type(error).__name__,
         )
-        record = await self._installations.record_failure(
-            plugin_id,
-            error_category=error_category,
-            disable_threshold=self._failure_disable_threshold,
-        )
-        async with self._lock:
-            if plugin_id not in self._running:
-                return
-            if (
-                record is not None
-                and record.enabled
-                and registration.metadata.restart_policy is RestartPolicy.ON_FAILURE
-                and self._active
-            ):
-                self._start_background_task(plugin_id, registration)
-                return
-            await self._stop_one_unlocked(
-                plugin_id,
-                final_status=None,
-                record_stop_failure=False,
-            )
-            await self._installations.set_status(
-                plugin_id,
-                status="failed",
-                error_category=error_category,
-            )
+        if registration.metadata.restart_policy is RestartPolicy.ON_FAILURE and self._active:
+            self._start_background_task(plugin_id, registration)
 
     def _event_registrations(self, plugin_id: str) -> tuple[EventHookRegistration, ...]:
         result: list[EventHookRegistration] = []

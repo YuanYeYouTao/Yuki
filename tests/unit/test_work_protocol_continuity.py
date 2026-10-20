@@ -1172,10 +1172,33 @@ async def test_retired_compaction_anchor_does_not_block_original_recovery(
 
 
 @pytest.mark.asyncio
-async def test_worker_without_legacy_anchor_resumes_original_task(database, tmp_path, monkeypatch):
+@pytest.mark.parametrize("native", [False, True])
+async def test_worker_without_legacy_anchor_resumes_original_task(
+    database, tmp_path, monkeypatch, native
+):
     control = await _control(database, tmp_path, worker=True)
     first = WorkSession(control, "same")
     transcript = await first.restore(TurnTranscript((ChatMessage("user", "historical input"),)))
+    continuation = ProviderContinuation(
+        "gemini",
+        "gemini",
+        (
+            {
+                "role": "model",
+                "parts": [
+                    {
+                        "functionCall": {"id": "original-call", "name": "read", "args": {}},
+                        "thoughtSignature": "original-paid-signature",
+                    }
+                ],
+            },
+        ),
+    )
+    if native:
+        transcript.accept(continuation)
+        transcript.append_result("original-call", '{"ok":true,"result":"original finding"}')
+    original_chain = transcript.chain_id
+    assert first.source_guard is None  # Private worker has no public chat read set.
     await first.save("paired")
     resumed = WorkSession(control, "same")
     restored = await resumed.restore(
@@ -1204,6 +1227,13 @@ async def test_worker_without_legacy_anchor_resumes_original_task(database, tmp_
         ),
     )
     assert result.text == "valid internal final" and len(provider.requests) == 1
+    assert control.session.transcript.chain_id == original_chain
+    if native:
+        request = provider.requests[0]
+        assert request.continuation == continuation
+        assert [(item.call_id, item.output) for item in request.continuation_items] == [
+            ("original-call", '{"ok":true,"result":"original finding"}')
+        ]
     assert control.accepted_ending() == "completed"
     assert "context_compaction" not in control.session.progress
     await control.repository.release(control.lease)

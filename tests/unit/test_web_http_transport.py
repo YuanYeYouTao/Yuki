@@ -391,7 +391,9 @@ async def test_anonymous_client_does_not_share_cookies_between_hosts_on_the_same
 
 
 async def test_capacity_wait_times_out_and_client_close_does_not_admit_queued_connections(network):
-    client = create_web_http_client(timeout_seconds=0.05)
+    client = create_web_http_client(timeout_seconds=1)
+    # Only capacity waiting is under test; local socket setup keeps its normal timeout.
+    client.timeout = httpx.Timeout(1, pool=0.05)
     responses = []
     try:
         for _ in range(10):
@@ -402,12 +404,13 @@ async def test_capacity_wait_times_out_and_client_close_does_not_admit_queued_co
             )
         with pytest.raises(httpx.PoolTimeout):
             await client.send(_request(network, tls=False, ip="127.0.0.1"))
-        client.timeout = httpx.Timeout(1)
+        # Closing is a separate contract: a pool timer must not race resource cleanup.
+        client.timeout = httpx.Timeout(1, pool=None)
         queued = asyncio.create_task(client.send(_request(network, tls=False, ip="127.0.0.1")))
         await asyncio.sleep(0)
         await client.aclose()
         with pytest.raises(httpx.RequestError, match="closed"):
-            await queued
+            await asyncio.wait_for(queued, timeout=10)  # Watchdog for queued rejection.
         assert len(network.requests) == 10
     finally:
         await client.aclose()

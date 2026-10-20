@@ -59,22 +59,18 @@ class CreateAgentSessionRequest(StrictModel):
     instructions: str  # 1..8000
     persistence: ephemeral | durable = durable
     context_profile: none | current_user | current_group = none
-    allowed_capabilities: tuple[str, ...] = ()  # <=64, 不重复
-    metadata: dict[str, JsonValue] = {}
 
 
 class RunAgentSessionRequest(StrictModel):
     session_id: UUID
     user_input: str  # 1..12000
-    allowed_capabilities: tuple[str, ...] | None
-    max_tool_calls: int | None  # 0..64
     max_model_requests: int | None  # 1..64
 
 
 class AgentSession(StrictModel):
     session_id: UUID
     name: str
-    status: active | closed
+    status: active | closed | expired | blocked
     persistence: ephemeral | durable
     context_profile: none | current_user | current_group
     created_at: datetime
@@ -85,7 +81,6 @@ class AgentSession(StrictModel):
 class AgentSessionRunResult(StrictModel):
     session: AgentSession
     text: str
-    tool_calls_used: int = 0
     model_requests: int = 1
 ```
 

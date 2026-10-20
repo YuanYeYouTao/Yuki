@@ -278,20 +278,6 @@ class ScopedEventLedgerUnitOfWork:
                 prepared_segments = snapshot_mention_segments(
                     prepared_message.segments, prepared_message.mentions
                 )
-                mentions_query = (
-                    select(
-                        IdentityBindingModel.external_account_id,
-                        IdentityBindingModel.person_id,
-                        IdentityBindingModel.revision,
-                    )
-                    .where(
-                        IdentityBindingModel.platform == presence.platform,
-                        IdentityBindingModel.external_account_id.in_(message.mentioned_user_ids),
-                        IdentityBindingModel.status == "active",
-                    )
-                    .order_by(IdentityBindingModel.external_account_id)
-                )
-                mention_facts = tuple((await reader.execute(mentions_query)).all())
                 original_at = original.occurred_at.replace(tzinfo=UTC).timestamp()
             # Parse/prepare outside the SQLite writer, preserving Host identity metadata.
             decoded = json.loads(source_segments)
@@ -302,14 +288,11 @@ class ScopedEventLedgerUnitOfWork:
                 int(context.get("platform_update_id", -1)),
             ) >= (edited_at.timestamp(), revision):
                 return
-            mentions = {account: person for account, person, _revision in mention_facts}
             context.update(
                 mentioned_user_ids=list(message.mentioned_user_ids),
                 mentioned_person_ids=list(
                     dict.fromkeys(
-                        mentions[account]
-                        for account in message.mentioned_user_ids
-                        if account in mentions
+                        item.person_id for item in prepared_message.mentions if item.person_id
                     )
                 ),
                 reply_sender_user_id=message.reply_sender_user_id,
@@ -345,9 +328,7 @@ class ScopedEventLedgerUnitOfWork:
                     if conversation_id
                     else None
                 )
-                if (conversation is not None and conversation.generation != generation) or tuple(
-                    (await session.execute(mentions_query)).all()
-                ) != mention_facts:
+                if conversation is not None and conversation.generation != generation:
                     continue
                 current_media = {
                     item.attachment_index: item

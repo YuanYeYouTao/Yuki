@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from contextlib import AsyncExitStack
 from typing import Any, cast
 
@@ -94,10 +95,14 @@ class PluginBackgroundTurnWorker:
         }
 
     async def _run(self) -> None:
+        last_reconcile = float("-inf")
         while not self._stop.is_set():
             self._wake.clear()
             job = None
             try:
+                if time.monotonic() - last_reconcile >= 60:
+                    await self._repository.reconcile_terminal_turns()
+                    last_reconcile = time.monotonic()
                 job = await self._repository.claim_turn()
                 if job is not None:
                     await self._execute(job)

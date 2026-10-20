@@ -528,7 +528,9 @@ async def test_same_person_event_without_mailbox_proof_is_not_a_work_input(app_e
         from yuki.identity.db_models import IdentityBindingModel
 
         binding = await session.get(IdentityBindingModel, principal.binding_id)
-    message = env.gateway.message(binding, str(uuid4()), "ordinary App message", ())
+    message = env.gateway.message(
+        binding, str(uuid4()), "ordinary App message", (), conversation_id=principal.conversation_id
+    )
     admitted = await env.gateway.processor._canonical_ingress.pre_admit(env.gateway.handle, message)
     event = (
         await env.gateway.processor._canonical_uow.append_inbound(admitted.message, admitted)

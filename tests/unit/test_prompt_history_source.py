@@ -72,7 +72,6 @@ def test_incremental_groups_match_full_raw_with_current_holes_and_partial_overla
             references=source.capture(rows[-1].id),
             through_event_id=rows[-1].id,
             current_event_id=current_id,
-            yuki_account_ids=frozenset(),
         )
         assert (
             frozen.extend_history(groups, singles).items
@@ -91,7 +90,6 @@ def test_failed_candidate_keeps_pending_until_original_committed_head():
         references=captured,
         through_event_id=4,
         current_event_id=4,
-        yuki_account_ids=frozenset(),
     )
     candidate = frozen.extend_history(groups, singles)
     # Mere rendering and a later append never promote an unsubmitted candidate.
@@ -128,7 +126,6 @@ def test_tail_current_dense_group_visits_only_fresh_body(monkeypatch):
         references=source.capture(1002),
         through_event_id=1002,
         current_event_id=1002,
-        yuki_account_ids=frozenset(),
     )
     assert visited == [1001]
     assert groups == singles and groups[0][0] == (1001,)
@@ -152,7 +149,6 @@ def test_unsubmitted_non_tail_current_does_not_replace_the_full_raw_group_index(
         references=earlier,
         through_event_id=3,
         current_event_id=2,
-        yuki_account_ids=frozenset(),
     )
     assert [ids for ids, _ in groups] == [(1, 3)]
     # That candidate never dispatches. The next preparation excludes D, rather
@@ -164,7 +160,6 @@ def test_unsubmitted_non_tail_current_does_not_replace_the_full_raw_group_index(
         references=source.capture(4),
         through_event_id=4,
         current_event_id=4,
-        yuki_account_ids=frozenset(),
     )
     assert [ids for ids, _ in later] == [(1,), (2,), (3,)]
     assert frozen.extend_history(later, singles).items == _original((*rows, added), frozen, 4).items
@@ -176,7 +171,6 @@ def test_unsubmitted_non_tail_current_does_not_replace_the_full_raw_group_index(
             references=earlier,
             through_event_id=3,
             current_event_id=2,
-            yuki_account_ids=frozenset(),
         )[0]
         == groups
     )

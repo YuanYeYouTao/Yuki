@@ -16,7 +16,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from sqlalchemy import and_, func, literal, select, text, tuple_, update
+from sqlalchemy import func, literal, select, text, tuple_, update
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -890,7 +890,8 @@ class WorkWaitRepository:
     async def _observe_page(
         cls, session: AsyncSession, bindings: Any, now: float
     ) -> list[tuple[Any, tuple[list[dict[str, Any]], str] | None]]:
-        """Expand each owning subtree once for this page's requested runs."""
+        """Locate requested runs and verify ownership along their actual parent chain."""
+        from yuki.runtime.work_tree import ancestors
         from yuki.sandbox.db_models import SandboxTaskRunModel
 
         conditions = {row["id"]: json.loads(row["conditions_json"]) for row in bindings}
@@ -912,17 +913,6 @@ class WorkWaitRepository:
                 func.json_extract(records.c.value, "$.owner").label("owner_id"),
                 func.json_extract(records.c.value, "$.run").label("run_id"),
             ).cte("requested_runs")
-            tree = (
-                select(work.c.id.label("work_id"), work.c.id.label("owner_id"))
-                .where(work.c.id.in_(select(requested.c.owner_id)))
-                .cte("owned_tree", recursive=True)
-            )
-            child = work.alias("owned_child")
-            tree = tree.union_all(
-                select(child.c.id, tree.c.owner_id).join(
-                    tree, child.c.parent_work_id == tree.c.work_id
-                )
-            )
             owned_work = (
                 select(
                     requested.c.owner_id,
@@ -931,9 +921,8 @@ class WorkWaitRepository:
                     literal(None).label("completion_json"),
                     literal(False).label("sandbox"),
                 )
-                .select_from(requested.join(tree, tree.c.owner_id == requested.c.owner_id))
-                .join(work, work.c.id == tree.c.work_id)
-                .where(work.c.id == requested.c.run_id, tree.c.work_id != tree.c.owner_id)
+                .select_from(requested.join(work, work.c.id == requested.c.run_id))
+                .where(requested.c.owner_id.in_(ancestors(requested.c.run_id)))
             )
             owned_sandbox = select(
                 requested.c.owner_id,
@@ -944,13 +933,13 @@ class WorkWaitRepository:
             ).select_from(
                 requested.join(
                     SandboxTaskRunModel, SandboxTaskRunModel.run_id == requested.c.run_id
-                ).join(
-                    tree,
-                    and_(
-                        tree.c.owner_id == requested.c.owner_id,
-                        tree.c.work_id
-                        == func.json_extract(SandboxTaskRunModel.source_json, "$.work_id"),
-                    ),
+                )
+            ).where(
+                requested.c.owner_id.in_(
+                    ancestors(
+                        func.json_extract(SandboxTaskRunModel.source_json, "$.work_id"),
+                        include_self=True,
+                    )
                 )
             )
             rows = (await session.execute(owned_work.union_all(owned_sandbox))).all()

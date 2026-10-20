@@ -10,7 +10,6 @@ from tests.unit.test_sticker_library import LocalDirectoryBridge, picture
 from yuki.container import ApplicationContainer
 from yuki.health import build_health_payload
 from yuki.social.tools import social_tool_definitions
-from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 
 @pytest.mark.parametrize("code_enabled", [False, True])
@@ -48,7 +47,6 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
     monkeypatch.setattr(app.sandbox_client, "execute", manager_read_or_file)
     try:
         await app.start()
-        assert PLUGIN_API_VERSION == "6.0"
         assert app.social_service.emoji_delivery is app.emoji_delivery
         assert app.emoji_library.source_valid == app.conversation_media.source_current
         assert not hasattr(app.workspace_service, "stickers")

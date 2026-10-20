@@ -7,11 +7,10 @@ import json
 import math
 from fractions import Fraction
 from pathlib import Path
-from tempfile import TemporaryDirectory
 
 from yuki.domain.messages import ChatImage
 from yuki.services.media_process import MediaProcessError, run_media_process
-from yuki.services.media_resolver import _media_io
+from yuki.services.media_resolver import _media_directory, _media_io
 from yuki.services.vision_service import VisionProcessingError
 from yuki.vision.models import DownloadedMedia
 
@@ -40,7 +39,7 @@ async def sample_video(
         return ()
     if max_duration_seconds <= 0 or sample_interval_seconds <= 0:
         raise ValueError("video sampling settings must be positive")
-    with TemporaryDirectory(prefix="yuki-video-") as directory:
+    async with _media_directory("yuki-video-") as directory:
         if isinstance(media, Path):
             path = media  # Caller owns this temporary download, never a model-supplied path.
         else:
@@ -127,14 +126,17 @@ async def sample_video(
                 "2097152",
                 str(output),
             )
-            if not output.is_file() or not 0 < output.stat().st_size <= 2097152:
-                raise VisionProcessingError("invalid_video", "视频抽帧失败")
             frames.append(
                 ChatImage(
-                    data_url="data:image/jpeg;base64,"
-                    + base64.b64encode(output.read_bytes()).decode(),
+                    data_url=await _media_io(_frame_data, output),
                     source=source,
                     video_timestamp_seconds=position,
                 )
             )
         return tuple(frames)
+
+
+def _frame_data(output: Path) -> str:
+    if not output.is_file() or not 0 < output.stat().st_size <= 2097152:
+        raise VisionProcessingError("invalid_video", "视频抽帧失败")
+    return "data:image/jpeg;base64," + base64.b64encode(output.read_bytes()).decode()

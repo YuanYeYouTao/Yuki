@@ -48,6 +48,7 @@ class MemoryEmbeddingWorker:
             if self._task is None:
                 await self._jobs.recover_interrupted()
                 await self._jobs.reconcile()
+                self._wake.set()
                 self._task = asyncio.create_task(self._run(), name="memory-embedding-worker")
 
     async def close(self) -> None:
@@ -80,9 +81,12 @@ class MemoryEmbeddingWorker:
                 )
 
     async def process_once(self) -> int:
-        jobs = await self._jobs.claim(limit=self._claim_limit)
+        batch_size = min(self._claim_limit, self._provider.capabilities.max_batch_size)
+        jobs = await self._jobs.claim(limit=batch_size)
         if not jobs:
             return 0
+        if len(jobs) == batch_size:
+            self._wake.set()
         facts = await self._jobs.load_active_facts(jobs)
         valid_jobs = []
         skipped = []

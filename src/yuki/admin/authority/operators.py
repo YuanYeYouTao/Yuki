@@ -9,7 +9,7 @@ import re
 import tomllib
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
 from yuki.admin.authority.problems import ControlQueryError, Problem, ProblemCode
@@ -49,7 +49,7 @@ class OperatorDeclaration(BaseModel):
 
 class _OperatorFile(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    operators: tuple[OperatorDeclaration, ...] = Field(default=(), max_length=64)
+    operators: tuple[OperatorDeclaration, ...] = ()
 
 
 class ControlOperatorAccess:

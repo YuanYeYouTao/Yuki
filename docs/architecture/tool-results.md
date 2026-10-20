@@ -36,6 +36,7 @@ Artifact 存储沿配置计量；结构读取不再叠加固定文件大小、�
 省略 `operation` 时保持旧的文本读取行为，继续支持 `offset`、`limit` 和 `query`。非 JSON Artifact
 使用结构化操作时会返回 `artifact_not_json`，并明确提示改用文本模式。Handle 由数据库映射文件并在
 保留期后清理。
+文本 query 不区分大小写；命中、offset 和 next_offset 均按原文 Unicode 字符定位，大小写折叠产生的扩展不改变原文坐标或内容。
 
 ## 存储与来源
 

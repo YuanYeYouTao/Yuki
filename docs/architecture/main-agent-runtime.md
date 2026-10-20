@@ -440,6 +440,8 @@ Executor 不在同一物理 attempt 前重复调用它。原 Work source guard �
 临时 projection 准备以同一 guard 的 fork/adopt 保持 stage/rollback，journal 冷恢复重新证明来源。
 这些读取准备不取代派发、journal/publication writer 和效果边界的真实授权与 CAS。
 
+根 Work 的精确协议恢复保留原私有前缀、签名和工具配对；原调用配对后，在下一次真实模型派发前沿同一公共观察边界追加该 Conversation 的新片段。可回收投影缺失时按原内部 Conversation 准备公共历史与摘要，不以空基线代替，也不改写已付输入。原 Work 只增加本次实际交给模型的事件依赖，共享投影中别轮新增的片段不成为它的来源门槛。插件原本未获历史读取时，恢复也不装载公共观察入口。
+
 普通私聊的新用户输入可抢占尚未接纳 Work、尚未开始本地效果且尚未派发原生工具的旧轮。
 入口在 Coordinator guard 内捕获原 token 登记的 task，推进输入版本后只取消该原 task，
 并在 guard 外等待它真正退出；不得延迟按 conversation key 重新找当前请求来取消。
@@ -584,6 +586,10 @@ WorkScheduler 沿原循环尝试 repair_inputs/reclaim/protocol_cleanup，再选
 维护错误记录原类别，不阻断正常 queued Work 的选择。SubagentScheduler 同样将维护和
 取消查询错误与 worker 选择分开。之后按会话 scope 有界派发 resume（最多 8 个并发，
 同 scope 不重复）；health、phase_timings 和慢阶段日志反映实际结果，等待驱动仍独立。
+Work 选择沿仅含 queued/running 的索引按 Conversation 游标轮转，逐个读取该 scope 最早符合
+原来源、租约与恢复时间的 Work，直到填满空闲名额或完成一圈。空页环绕；忙碌或尚未到期
+的 scope 只推进遍历游标，不消耗空闲执行名额，不一次加载整个 scope 的积压。
+跨 scope 使用轮转公平性，scope 内仍按 updated、内部 Work ID 排序；游标只存在调度器内存中。
 
 尚未接纳工作的普通聊天，Provider、配置、空响应、容量、校验和内部异常保留原日志、
 ProcessResult 原失败原因及 TURN_CLOSED，不因异常自动向 QQ 插入固定报错。

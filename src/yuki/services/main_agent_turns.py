@@ -126,8 +126,6 @@ class MainAgentTurnService:
                     short_state=state,
                 )
 
-            if getattr(context, "recovery_protocol", False):
-                return compose_context(context)
             if (
                 self._projections is None
                 or contract is None
@@ -153,15 +151,14 @@ class MainAgentTurnService:
                 else None
             )
             view_key = conversation_id
+            context_key = _hash([version.conversation_id, version.generation])
             prepared = await prepare_history(
-                self._projections,
-                context,
-                view_key=view_key,
-                context_key=_hash([version.conversation_id, version.generation]),
+                repository, context, view_key=view_key, context_key=context_key
             )
             composition = compose_context(prepared.context)
             assert composition.read_version is not None
-            ordinary_source_guard = WorkSourceGuard(composition.read_version)
+            version = composition.read_version
+            ordinary_source_guard = WorkSourceGuard(version)
             fragments = (
                 prepared.fragments.append_current(context.current_event_id, context.current_message)
                 if context.current_event_id is not None
@@ -169,10 +166,12 @@ class MainAgentTurnService:
                 else prepared.fragments
             )
             projection_closed = False
+            control = current_work_control.get()
+            recovery = control.protocol_recovery_preparation if control is not None else None
+            observed = recovery.guard.version if recovery is not None else version
             observation_watermark = max(
-                version.starts_after_event_id,
-                max(version.visible_event_ids, default=0),
-                context.current_event_id or 0,
+                observed.starts_after_event_id,
+                max(observed.visible_event_ids, default=0),
             )
 
             async def commit_projection() -> None:
@@ -352,7 +351,6 @@ class MainAgentTurnService:
                     rows,
                     bot_display_name=context.history_bot_display_name,
                     timezone=context.history_timezone,
-                    yuki_account_ids=context.history_yuki_account_ids,
                 )
                 # Individual event fragments preserve arrival order when directed
                 # inputs and ordinary group observations interleave.
@@ -379,10 +377,19 @@ class MainAgentTurnService:
 
                     if not await ledger.read_version_matches(current_version):
                         raise HistorySourceChangedError(current_version)
-                    previous = prepared.committed
-                    if previous is None:
-                        raise ValueError("chat boundary requires an initial dispatched projection")
-                    old = previous.fragments
+                    previous = prepared.committed or prepared.previous
+                    old = (
+                        previous.fragments
+                        if previous is not None
+                        else FrozenFragments.load(
+                            await repository.selected(
+                                view_key=view_key,
+                                conversation_id=conversation_id,
+                                generation=current_version.generation,
+                                visible_event_ids=known,
+                            )
+                        )
+                    )
                     selected = old.extend_history(delta, delta)
                     control = current_work_control.get()
                     if (
@@ -410,7 +417,7 @@ class MainAgentTurnService:
                             valid = await selected_guard.check(
                                 control,
                                 database=repository.database,
-                                event_ids=selected.event_ids,
+                                event_ids=rendered_event_ids,
                             )
                             if control is not None and control.session is not None:
                                 selected_revision = control.session.source_revision
@@ -423,29 +430,8 @@ class MainAgentTurnService:
                                 control.session.source_revision = original_revision
                         if not valid:
                             raise HistorySourceChangedError(guard.version)
-                    rebuild = (
-                        selected_guard is not None
-                        and await repository.invalidation_reason(view_key) == "source_changed"
-                    )
-                    already_published = selected == old and not rebuild
-                    projection_publication = await repository.prepare_commit(
-                        view_key=view_key,
-                        conversation_id=conversation_id,
-                        generation=current_version.generation,
-                        expected_source_revision=current_version.prompt_source_revision,
-                        starts_after_event_id=current_version.starts_after_event_id,
-                        context_key=prepared.context_key,
-                        fragments=selected,
-                        expected_epoch=None if rebuild else previous.epoch_id,
-                        expected_revision=0 if rebuild else previous.revision,
-                        rebuild_reason="source_changed" if rebuild else None,
-                        selected_summary_text=previous.selected_summary_text,
-                        selected_summary_coverage=previous.selected_summary_coverage,
-                        selected_summary_kind=previous.selected_summary_kind,
-                        selected_summary_renderer=previous.selected_summary_renderer,
-                        previous_snapshot=previous,
-                        write=not already_published,
-                    )
+                    prepared.context = replace(prepared.context, read_version=current_version)
+                    projection_publication = await prepared.prepare_commit(selected)
                     original_guard = guard.fork() if guard is not None else None
                     snapshot = None
 

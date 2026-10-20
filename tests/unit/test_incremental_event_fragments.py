@@ -89,7 +89,7 @@ def test_linear_groups_match_original_bytes_across_mixed_boundaries():
         assert renderer.main_agent_history_views(rows) == _original_grouping(renderer, rows)
 
 
-def test_dense_group_builds_only_one_final_group_message(monkeypatch):
+def test_dense_group_copy_volume_stays_proportional_to_its_output(monkeypatch):
     rows = tuple(_event(i, datetime(2026, 10, 18, tzinfo=UTC), "正文") for i in range(1, 1001))
     renderer = ChatEventPromptRenderer(rows)
     original = ChatMessage
@@ -105,10 +105,11 @@ def test_dense_group_builds_only_one_final_group_message(monkeypatch):
     grouped, individual = renderer.main_agent_history_views(rows)
     assert len(grouped) == 1 and len(individual) == len(rows)
     assert grouped[0][1] == tuple(row.id for row in rows)
-    assert len(merged) == 1
+    # Reject quadratic rebuilding without requiring a particular constructor count.
+    assert sum(len(message.content) for message in merged) <= 4 * len(grouped[0][2].content)
 
 
-def test_reference_capture_keeps_historical_accounts_and_original_predecessors():
+def test_reference_capture_keeps_original_rendering_and_excludes_later_events():
     at = datetime(2026, 10, 18, tzinfo=UTC)
     old = replace(
         _event(2, at), sender_user_id="1002", sender_group_card="原名", bot_user_id="old-bot"
@@ -127,7 +128,7 @@ def test_reference_capture_keeps_historical_accounts_and_original_predecessors()
     owner = EventPromptIndex((foreign, old, quoted))
     captured = owner.capture(through_event_id=5)
     renderer = ChatEventPromptRenderer(
-        references=captured, yuki_account_ids=frozenset({"explicit-only"})
+        references=captured
     )
     original = renderer.render_reference_event(quoted)
     assert "原名/person:person-1" in original and "@原名 @Yuki" in original
@@ -136,7 +137,6 @@ def test_reference_capture_keeps_historical_accounts_and_original_predecessors()
     assert captured.get(3) is None and captured.get(8) is None
     assert set(captured.event_ids) == {2, 4, 5}
     assert len(captured.event_ids) == 3
-    assert "explicit-only" not in captured.yuki_account_ids
     overlay = owner.capture(
         through_event_id=5, extra_events=(replace(old, id=3, sender_group_card="晚补旧洞"),)
     )
@@ -145,7 +145,7 @@ def test_reference_capture_keeps_historical_accounts_and_original_predecessors()
     assert renderer.render_reference_event(quoted) == original
 
 
-def test_duplicate_reference_ids_keep_last_metadata_and_all_inferred_bot_accounts():
+def test_duplicate_reference_ids_keep_last_metadata_and_original_mention_snapshots():
     first = replace(
         _event(1, datetime(2026, 10, 18, tzinfo=UTC)), bot_user_id="old-bot", sender_group_card="旧"
     )

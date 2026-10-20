@@ -41,7 +41,7 @@ class Plugin:
 ## 超时与失败
 
 - Hook 超时/异常：记录该 Hook 失败，聊天继续。
-- 后台服务失败：按声明的 `RestartPolicy` 和 Host 失败阈值处理。
+- 后台服务失败：只结束或按 `RestartPolicy` 重启出错的 runner，不停止其他服务或撤销插件工具。
 - 插件启动失败：仅禁用该插件。
 - 持久用户计划：必须使用 Automation，而不是后台 Task。
 

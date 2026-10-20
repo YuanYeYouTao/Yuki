@@ -24,12 +24,22 @@ async def approve_background_plugin(database, *, plugin_id, bot_user_id, group_i
     notifications = PluginNotificationRepository(database)
     from yuki.conversation.hydrate import conversation_for_scope
     from yuki.domain.conversations import ConversationScope
-    from yuki.identity.canonical_repository import person_id_for, presence_id_for, space_id_for
+    from yuki.identity.canonical_repository import (
+        find_identity_binding,
+        find_presence,
+        find_space_binding,
+    )
 
     async with database.sessions() as session:
-        person = await person_id_for(session, creator_user_id)
-        space = await space_id_for(session, group_id)
-        presence = await presence_id_for(session, bot_user_id)
+        creator = await find_identity_binding(session, creator_user_id)
+        assert creator is not None
+        person = creator.person_id
+        binding = await find_space_binding(session, group_id)
+        assert binding is not None
+        space = binding.space_id
+        bot = await find_presence(session, bot_user_id)
+        assert bot is not None
+        presence = bot.id
         conversation = await conversation_for_scope(
             session, ConversationScope.group(bot_user_id, group_id)
         )

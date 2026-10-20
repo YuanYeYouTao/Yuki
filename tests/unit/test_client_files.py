@@ -281,7 +281,10 @@ async def test_local_audio_uses_original_asr_and_does_not_store_bytes(
 
     async with database.sessions() as session:
         binding = await session.get(IdentityBindingModel, principal.binding_id)
-    message = env.gateway.message(binding, str(uuid4()), "voice", segments, attachments)
+    message = env.gateway.message(
+        binding, str(uuid4()), "voice", segments, attachments,
+        conversation_id=principal.conversation_id,
+    )
     result = await service.prepare(message, None)
     assert provider.transcribe.await_args.args == (b"normalized",)
     assert "recognized original voice" in result.transcript and not result.error

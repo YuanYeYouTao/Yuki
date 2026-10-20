@@ -11,7 +11,7 @@ from dataclasses import replace as dataclass_replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import and_, func, or_, select, text, update
+from sqlalchemy import DateTime, and_, bindparam, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.conversation.canonical_db_models import (
@@ -473,7 +473,6 @@ class PluginNotificationRepository:
                 scope_type=identity.scope_type.value,
                 conversation_id=identity.conversation_id,
             )
-            existing_id = existing.id if existing is not None else None
             if existing is not None:
                 return await _existing_event_receipt(
                     preparation,
@@ -530,7 +529,15 @@ class PluginNotificationRepository:
             notification_id = _notification_id(
                 plugin_id, request.event_key, target.target_type, scope.conversation_id or ""
             )
-            existing = await session.get(ChatEventModel, existing_id) if existing_id else None
+            # Another publisher may have committed the same original request
+            # after preparation. Its receipt takes precedence over current TTL.
+            existing = await _load_existing_external_event(
+                session,
+                plugin_id=plugin_id,
+                event_key=request.event_key,
+                scope_type=scope.scope_type.value,
+                conversation_id=scope.conversation_id,
+            )
             if existing is not None:
                 notification_id = str(_publication_data(existing)["notification_id"])
                 receipt = await _existing_event_receipt(
@@ -541,6 +548,12 @@ class PluginNotificationRepository:
                     request=request,
                 )
             else:
+                await _resolve_request_media(
+                    session,
+                    plugin_id=plugin_id,
+                    handle_ids=request.media_handles,
+                    now=datetime.now(UTC),
+                )
                 try:
                     appended = await self._scoped_events.append_external(
                         scope=scope,
@@ -818,17 +831,13 @@ class PluginNotificationRepository:
     ) -> BackgroundTurnJobRecord | None:
         """Claim one runnable Job; a Job bound to a paused Work stays parked.
 
-        Discovery and the writer recheck use the same Work JOIN. A Job linked to
-        a suspended/waiting Work is not claimed and spends no attempt; an
-        expired processing lease is reconciled once back to pending/terminal.
+        Discovery seeks unbound Jobs, runnable Work and expired leases separately.
+        The original Work/attempt is rechecked in the claim writer. A Job linked
+        to a suspended/waiting Work stays parked without spending an attempt.
         """
         now = datetime.now(UTC)
         async with self._database.sessions() as discovery:
-            candidate_id = await discovery.scalar(
-                _claim_select(PluginBackgroundTurnJobModel.id, now=now)
-                .order_by(PluginBackgroundTurnJobModel.created_at, PluginBackgroundTurnJobModel.id)
-                .limit(1)
-            )
+            candidate_id = await discovery.scalar(_claim_candidate(now))
         if candidate_id is None:
             return None
         async with self._database.immediate_session() as session:
@@ -905,6 +914,30 @@ class PluginNotificationRepository:
                 await _retire_turn(session, row, status="cancelled", category=category, now=now)
                 return None
             return _turn_record(row, generation=generation)
+
+    async def reconcile_terminal_turns(self) -> None:
+        """Settle original terminal/missing Work results outside the hot poll."""
+        job = PluginBackgroundTurnJobModel
+        conditions = (
+            job.status.in_(("pending", "processing")),
+            job.work_id.is_not(None),
+            or_(work.c.id.is_(None), work.c.state.in_(tuple(TERMINAL))),
+        )
+        async with self._database.sessions() as reader:
+            identities = list(
+                await reader.scalars(
+                    select(job.id).outerjoin(work, work.c.id == job.work_id).where(*conditions)
+                )
+            )
+        for identity in identities:
+            async with self._database.immediate_session() as writer:
+                row = await writer.scalar(
+                    select(job)
+                    .outerjoin(work, work.c.id == job.work_id)
+                    .where(job.id == identity, *conditions)
+                )
+                if row is not None:
+                    await _close_with_terminal_work(writer, row, now=datetime.now(UTC))
 
     async def validate_turn_attempt(
         self,
@@ -1407,6 +1440,35 @@ def _claim_select(*columns: Any, now: datetime) -> Any:
     )
 
 
+def _claim_candidate(now: datetime) -> Any:
+    """Each queue has an indexed driver; paused Jobs are not polling candidates."""
+    # SQLite CROSS JOIN fixes the driver to the indexed runnable Work set;
+    # an ordinary JOIN may otherwise drive from the entire paused Job pool.
+    return text(
+        """
+        SELECT id FROM (
+            SELECT id, created_at FROM plugin_background_turn_jobs
+            WHERE status = 'pending' AND work_id IS NULL AND next_attempt_at <= :now
+            UNION ALL
+            SELECT j.id, j.created_at FROM runtime_work AS w
+            CROSS JOIN plugin_background_turn_jobs AS j ON j.work_id = w.id
+            LEFT JOIN runtime_work_recovery AS r ON r.work_id = w.id
+            LEFT JOIN runtime_work_scopes AS s ON s.conversation_id = w.conversation_id
+            WHERE w.state IN ('queued', 'running')
+              AND j.status = 'pending' AND j.next_attempt_at <= :now
+              AND (s.conversation_id IS NULL OR s.lease_until <= :timestamp)
+              AND (w.state = 'running' OR r.work_id IS NULL OR r.not_before <= :timestamp)
+            UNION ALL
+            SELECT id, created_at FROM plugin_background_turn_jobs
+            WHERE status = 'processing' AND lease_until < :now AND next_attempt_at <= :now
+        ) ORDER BY created_at, id LIMIT 1
+        """
+    ).bindparams(
+        bindparam("now", now, type_=DateTime(timezone=True)),
+        bindparam("timestamp", now.timestamp()),
+    )
+
+
 async def _linked_work_usage(session: AsyncSession, row: PluginBackgroundTurnJobModel) -> Any:
     if row.work_id is None:
         return None
@@ -1760,6 +1822,8 @@ async def _resolve_request_media(
     handle_ids: tuple[str, ...],
     now: datetime,
 ) -> tuple[tuple[int, str, str], ...]:
+    if not handle_ids:
+        return ()
     artifacts = {
         row.handle_id: row
         for row in await session.scalars(
@@ -1814,28 +1878,40 @@ async def _existing_event_receipt(
     _require_system_external(event)
     stored = publication_manifest(event)
     original_handles = _publication_data(event)["media_handles"]
-    artifacts = {
-        row.handle_id: row
-        for row in await session.scalars(
-            select(PluginMediaArtifactModel).where(
-                PluginMediaArtifactModel.handle_id.in_(set(request.media_handles))
-            )
+    original_media = {item.index: item for item in stored.media}
+    replacements = {
+        handle_id
+        for index, handle_id in enumerate(request.media_handles)
+        if not (
+            index < len(original_handles)
+            and original_handles[index] == handle_id
+            and index in original_media
         )
     }
-    original_media = {item.index: item for item in stored.media}
+    artifacts = {}
+    if replacements:
+        artifacts = {
+            row.handle_id: row
+            for row in await session.scalars(
+                select(PluginMediaArtifactModel).where(
+                    PluginMediaArtifactModel.handle_id.in_(replacements)
+                )
+            )
+        }
     media = []
     for index, handle_id in enumerate(request.media_handles):
-        artifact = artifacts.get(handle_id)
-        if artifact is not None:
-            if artifact.plugin_id != plugin_id or not is_sha256_digest(artifact.sha256):
-                raise PluginPermissionError("media handle is invalid or foreign")
-            media.append(MediaIdentity(index=index, sha256=artifact.sha256))
-        elif (
+        if (
             index < len(original_handles)
             and original_handles[index] == handle_id
             and index in original_media
         ):
+            # The accepted original handle/position proves its original bytes;
+            # current temporary storage cannot invalidate that old receipt.
             media.append(original_media[index])
+        elif (artifact := artifacts.get(handle_id)) is not None:
+            if artifact.plugin_id != plugin_id or not is_sha256_digest(artifact.sha256):
+                raise PluginPermissionError("media handle is invalid or foreign")
+            media.append(MediaIdentity(index=index, sha256=artifact.sha256))
         else:
             raise PluginPermissionError("media handle has no original publication proof")
     incoming = dataclass_replace(

@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import func, literal_column, or_, select, text, union_all
 
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientPrincipal
@@ -16,8 +15,10 @@ from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.conversation.uploads import ConversationUploads, owned_upload
 from yuki.domain.messages import AttachmentKind, MessageAttachment
 from yuki.identity.person_identity import person_family_condition
-from yuki.persistence.models import ChatEventModel
-from yuki.runtime.work_schema_v1 import work
+from yuki.persistence.models import ChatEventArtifactRefModel, ChatEventModel
+from yuki.runtime.work_recovery_schema import deliveries
+from yuki.runtime.work_schema_v1 import effects, work
+from yuki.social.db_models import SocialOperationModel
 from yuki.workspace.store import WorkspaceError, WorkspaceStore
 
 
@@ -63,52 +64,69 @@ class ClientFiles:
         async with self.identity.database.sessions() as session:
             await session.execute(text("BEGIN"))
             principal = await self.identity.require_principal(session, principal)
-            # The exact artifact and content version must occur together in a visible outbound.
-            rows = await session.scalars(
-                select(ChatEventModel.segments_json)
-                .join(
-                    CanonicalConversationModel,
-                    CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
-                )
+            exact_events = select(ChatEventArtifactRefModel.event_id).where(
+                ChatEventArtifactRefModel.artifact_id == identity,
+                ChatEventArtifactRefModel.version == version,
+            )
+            original_social = (
+                select(SocialOperationModel.id)
                 .where(
+                    SocialOperationModel.event_id == ChatEventModel.id,
+                    SocialOperationModel.status == "succeeded",
+                )
+                .correlate(ChatEventModel)
+            )
+            linked_works = union_all(
+                select(deliveries.c.work_id).where(deliveries.c.id.in_(original_social)),
+                select(effects.c.work_id).where(
+                    func.json_extract(
+                        effects.c.receipt_json,
+                        literal_column("'$.invocation.original_domain_ref'"),
+                    ).in_(
+                        select("social:" + SocialOperationModel.id)
+                        .where(
+                            SocialOperationModel.event_id == ChatEventModel.id,
+                            SocialOperationModel.status == "succeeded",
+                        )
+                        .correlate(ChatEventModel)
+                    )
+                ),
+            )
+            private_visible = (
+                select(CanonicalConversationModel.id)
+                .where(
+                    CanonicalConversationModel.id == ChatEventModel.canonical_conversation_id,
                     CanonicalConversationModel.kind == "private",
                     person_family_condition(
                         CanonicalConversationModel.person_id, principal.person_id
                     ),
-                    ChatEventModel.direction == "outbound",
-                    ChatEventModel.author_kind == "yuki",
-                    ChatEventModel.suppression_status == "keeper",
                 )
+                .exists()
             )
-            for body in rows:
-                if any(
-                    part.get("data", {}).get("artifact_id") == identity
-                    and part["data"].get("version") == version
-                    for part in json.loads(body)
-                ):
-                    return
-            works = (
-                (
-                    await session.execute(
-                        select(work)
-                        .join(
-                            CanonicalConversationModel,
-                            CanonicalConversationModel.id == work.c.conversation_id,
-                        )
-                        .where(work_access(principal.person_id))
+            work_visible = (
+                select(work.c.id)
+                .join(
+                    CanonicalConversationModel,
+                    CanonicalConversationModel.id == work.c.conversation_id,
+                )
+                .where(work.c.id.in_(linked_works), work_access(principal.person_id))
+                .exists()
+            )
+            if (
+                await session.scalar(
+                    select(ChatEventModel.id)
+                    .where(
+                        ChatEventModel.id.in_(exact_events),
+                        ChatEventModel.direction == "outbound",
+                        ChatEventModel.author_kind == "yuki",
+                        ChatEventModel.suppression_status == "keeper",
+                        or_(private_visible, work_visible),
                     )
+                    .limit(1)
                 )
-                .mappings()
-                .all()
-            )
-            for row in works:
-                projection = await self.views.works._public(session, dict(row))
-                if any(
-                    artifact.get("artifact_id") == identity and artifact.get("version") == version
-                    for event in projection["results"]
-                    for artifact in event["artifacts"]
-                ):
-                    return
+                is not None
+            ):
+                return
         raise ClientError("not_found")
 
     async def artifact(

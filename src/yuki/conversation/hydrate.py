@@ -17,7 +17,8 @@ from yuki.conversation.canonical_db_models import (
 )
 from yuki.conversation.scope_models import ConversationScopeState
 from yuki.domain.conversations import ConversationScope, ScopeType
-from yuki.identity.db_models import IdentityBindingModel, PresenceModel
+from yuki.identity.canonical_repository import find_identity_binding, find_presence
+from yuki.identity.db_models import IdentityBindingModel
 from yuki.identity.errors import CanonicalIdentityError
 
 
@@ -75,17 +76,10 @@ async def binding_for_scope(
     session: AsyncSession, scope: ConversationScope
 ) -> IdentityBindingModel | None:
     """Resolve the account in its ingress Presence's platform, never an old alias."""
-    platform = scope.platform
-    return cast(
-        IdentityBindingModel | None,
-        await session.scalar(
-            select(IdentityBindingModel).where(
-                IdentityBindingModel.platform == platform,
-                IdentityBindingModel.external_account_id == scope.private_peer_user_id,
-                IdentityBindingModel.status == "active",
-            )
-        ),
+    binding = await find_identity_binding(
+        session, scope.private_peer_user_id or "", platform=scope.platform
     )
+    return binding if binding is not None and binding.status == "active" else None
 
 
 async def conversation_for_binding(
@@ -114,12 +108,8 @@ async def conversation_for_scope(
         binding = await binding_for_scope(session, scope)
         presence_id = scope.presence_id
         if presence_id is None:
-            presence_id = await session.scalar(
-                select(PresenceModel.id).where(
-                    PresenceModel.platform == scope.platform,
-                    PresenceModel.external_account_id == scope.bot_user_id,
-                )
-            )
+            presence = await find_presence(session, scope.bot_user_id, platform=scope.platform)
+            presence_id = presence.id if presence is not None else None
         return (
             await conversation_for_binding(
                 session, binding.id, presence_id=presence_id, thread_id=scope.thread_id

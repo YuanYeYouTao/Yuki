@@ -162,7 +162,8 @@ async def append_history(env, database, principal, texts):
     rows = []
     for text in texts:
         message = env.gateway.message(
-            binding, str(uuid4()), text, ({"type": "text", "data": {"text": text}},)
+            binding, str(uuid4()), text, ({"type": "text", "data": {"text": text}},),
+            conversation_id=principal.conversation_id,
         )
         admitted = await env.gateway.processor._canonical_ingress.pre_admit(
             env.gateway.handle, message

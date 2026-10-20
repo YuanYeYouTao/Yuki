@@ -5,7 +5,7 @@
 当前应用与数据库基线统一见 [README](../../README.md)。
 跨模块开发遵循 [共同架构约束](development-contract.md)。
 
-普通启动只核数据库版本、表列、索引及触发器合同，不扫描全库业务数据。
+普通启动只核数据库版本、表列及维护真实事实的触发器，不扫描全库业务数据。加速索引由迁移建立并在查询测试中验证，缺少加速索引不阻止正常启动。
 全库外键完整性在冻结迁移或显式离线审核中校验；正常连接继续启用 SQLite 外键写约束。
 
 ## 永久主体与身份
@@ -214,7 +214,7 @@ PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真�
 Person 按原永久身份与当前同人关系核权限，纯内部工作无需当前账号或发送路由。发送由共同 Social 按明确目标和当前路由处理，
 触发群与 Presence 不构成额外的发送目标菜单。路由暂停只控制实际发送，不阻止内部 Main 工作。
 
-Plugin API 当前为 `6.0`，Host 只加载 API 与已批准 manifest 精确匹配的插件。兼容键仍使用 primary
+Plugin API 当前为 `7.0`，Host 只加载 API 与已批准 manifest 精确匹配的插件。兼容键仍使用 primary
 `conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
 插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。
 

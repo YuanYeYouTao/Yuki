@@ -29,7 +29,7 @@ registrar.register_event_hook(
 
 需要 `event.subscribe`。
 
-当前准入、自主拒绝和回合结束使用 `turn.admitted`、`turn.rejected`、`turn.autonomous_declined`、`turn.closed`；回复发送通知使用 `reply.sent`。当前 API 不声明没有 Host 发布点的事件，完整清单见 [Event Catalog](api-reference/events.md)，升级方式见 [API 6.0 迁移](api-6.0-migration.md)。通知只携带各发布点明确提供的元数据。
+当前准入、自主拒绝和回合结束使用 `turn.admitted`、`turn.rejected`、`turn.autonomous_declined`、`turn.closed`；回复发送通知使用 `reply.sent`。当前 API 不声明没有 Host 发布点的事件，完整清单见 [Event Catalog](api-reference/events.md)，升级方式见 [API 7.0 迁移](api-7.0-migration.md)。通知只携带各发布点明确提供的元数据。
 
 ## 执行语义
 

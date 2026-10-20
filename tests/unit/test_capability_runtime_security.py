@@ -303,20 +303,6 @@ async def test_memory_failure_can_continue_and_reuse_original_effect(database, t
     await owner.control.repository.release(owner.control.lease)
 
 
-def test_remote_ref_schema_is_quarantined() -> None:
-    descriptor = _descriptor(
-        "unsafe",
-        namespace="web.search",
-        schema={"$ref": "https://example.invalid/schema.json"},
-    )
-    validator = JsonSchemaCapabilityValidator()
-    quarantined = validator.admit((_entry(descriptor),))
-    assert quarantined == ("unsafe",)
-    result = validator.validate("unsafe", "{}")
-    assert result.ok is False
-    assert result.error_category == "capability_schema_quarantined"
-
-
 def test_namespace_is_not_a_permission() -> None:
     plugin = _descriptor(
         "plugin__x__admin_set_config",

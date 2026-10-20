@@ -19,7 +19,9 @@ async def test_worker_recovers_claim_and_admission_failures() -> None:
 
 async def _check_worker_recovers_claim_and_admission_failures(fail_claim):
     job = SimpleNamespace(id=7, attempts=1)
-    repository = SimpleNamespace(claim_turn=AsyncMock(), fail_turn=AsyncMock())
+    repository = SimpleNamespace(
+        claim_turn=AsyncMock(), fail_turn=AsyncMock(), reconcile_terminal_turns=AsyncMock()
+    )
     worker = PluginBackgroundTurnWorker(
         repository=repository,
         ledger=None,

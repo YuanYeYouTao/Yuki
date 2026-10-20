@@ -2150,10 +2150,14 @@ class WorkRepository:
                         .where(
                             effects.c.work_id == identity,
                             func.json_extract(
-                                effects.c.receipt_json, "$.invocation.parent_effect_key"
+                                effects.c.receipt_json,
+                                literal_column("'$.invocation.parent_effect_key'"),
                             )
                             == parent_key,
-                            func.json_extract(effects.c.receipt_json, "$.invocation.version") == 1,
+                            func.json_extract(
+                                effects.c.receipt_json, literal_column("'$.invocation.version'")
+                            )
+                            == literal_column("1"),
                         )
                         .order_by(effects.c.effect_key)
                     )

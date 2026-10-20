@@ -9,7 +9,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import RowMapping, func, or_, select, text
 
 from yuki.persistence.sqlite_diagnostics import TimingSummary
 from yuki.runtime.subagent_schema import children
@@ -40,6 +40,7 @@ class WorkScheduler:
         self._resume = resume
         # One task per conversation scope; it resumes that scope's selected items in order.
         self._in_flight: dict[str, asyncio.Task[None]] = {}
+        self._selection_cursor: str | None = None
         self._accepting = True
         self._chat_admission_enabled = chat_admission_enabled
         self._waits = WorkWaitRepository(repository)
@@ -256,13 +257,9 @@ class WorkScheduler:
                         work.c.revision,
                         work.c.state,
                     )
-                    .outerjoin(
-                        scope,
-                        scope.c.conversation_id == work.c.conversation_id,
-                    )
                     .outerjoin(recovery, recovery.c.work_id == work.c.id)
                     .where(
-                        work.c.state.in_(("queued", "running")),
+                        text("(runtime_work.state IN ('queued', 'running')) = 1"),
                         or_(
                             func.json_extract(work.c.source_json, "$.owner").in_(
                                 ("plugin_invocation", "automation", "plugin_background")
@@ -272,53 +269,90 @@ class WorkScheduler:
                             ),
                         ),
                         work.c.id.not_in(select(children.c.work_id)),
-                        work.c.conversation_id.not_in(tuple(self._in_flight)),
-                        or_(scope.c.owner.is_(None), scope.c.lease_until <= time.time()),
                         or_(
                             recovery.c.work_id.is_(None),
                             recovery.c.not_before <= time.time(),
                         ),
                     )
-                    .order_by(work.c.updated)
+                    .order_by(work.c.updated, work.c.id)
                 )
-                scopes: dict[str, None] = {}
-                metadata = await session.execute(query.with_only_columns(work.c.conversation_id))
-                for (conversation_id,) in metadata:
-                    if conversation_id in scopes or len(scopes) < capacity:
-                        scopes.setdefault(conversation_id, None)
-                rows = (
-                    (
-                        (await session.execute(query.where(work.c.conversation_id.in_(scopes))))
+                rows: list[RowMapping] = []
+                cursor = self._selection_cursor
+                for wrap in (False, True) if cursor is not None else (False,):
+                    # Each min seek jumps over a scope's whole ready backlog.
+                    # The two ranges retain round-robin order without per-scope IO.
+                    minimum = select(
+                        func.min(work.c.conversation_id).label("conversation_id")
+                    ).where(
+                        text("(runtime_work.state IN ('queued', 'running')) = 1"),
+                        work.c.conversation_id.not_in(tuple(self._in_flight)),
+                    )
+                    if cursor is not None:
+                        minimum = minimum.where(
+                            work.c.conversation_id <= cursor
+                            if wrap
+                            else work.c.conversation_id > cursor
+                        )
+                    scopes = minimum.cte("ready_scopes", recursive=True)
+                    scopes = scopes.union_all(
+                        select(
+                            minimum.where(work.c.conversation_id > scopes.c.conversation_id)
+                            .correlate(scopes)
+                            .scalar_subquery()
+                        ).where(scopes.c.conversation_id.is_not(None))
+                    )
+                    head = (
+                        query.with_only_columns(work.c.id)
+                        .where(
+                            work.c.conversation_id == scopes.c.conversation_id,
+                            or_(scope.c.owner.is_(None), scope.c.lease_until <= time.time()),
+                        )
+                        .correlate(scopes, scope)
+                        .limit(1)
+                        .scalar_subquery()
+                    )
+                    rows.extend(
+                        (
+                            await session.execute(
+                                select(*query.selected_columns)
+                                .select_from(
+                                    scopes.outerjoin(
+                                        scope,
+                                        scope.c.conversation_id == scopes.c.conversation_id,
+                                    ).outerjoin(work, work.c.id == head)
+                                )
+                                .where(head.is_not(None))
+                                .limit(capacity - len(rows))
+                            )
+                        )
                         .mappings()
                         .all()
                     )
-                    if scopes
-                    else []
-                )
-        batches: dict[str, list[dict[str, Any]]] = {}
-        for row in rows:
-            batches.setdefault(row["conversation_id"], []).append(dict(row))
+                    if len(rows) == capacity:
+                        break
+                if rows:
+                    self._selection_cursor = rows[-1]["conversation_id"]
         started: list[asyncio.Task[None]] = []
-        for conversation_id, items in list(batches.items())[:capacity]:
+        for row in rows:
+            conversation_id = row["conversation_id"]
             task = asyncio.create_task(
-                self._run_scope(conversation_id, items), name=f"runtime-work:{conversation_id}"
+                self._run_scope(conversation_id, dict(row)), name=f"runtime-work:{conversation_id}"
             )
             self._in_flight[conversation_id] = task
             started.append(task)
         return started
 
-    async def _run_scope(self, conversation_id: str, items: list[dict[str, Any]]) -> None:
+    async def _run_scope(self, conversation_id: str, item: dict[str, Any]) -> None:
         try:
-            for item in items:
-                try:
-                    with self._timed("resume"):
-                        category = await self._resume(item)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    category = type(exc).__name__
-                    logger.warning("work_resume_failed category=%s", category)
-                # Health reflects only this run's own outcome.
-                self._last_error = category
+            try:
+                with self._timed("resume"):
+                    category = await self._resume(item)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                category = type(exc).__name__
+                logger.warning("work_resume_failed category=%s", category)
+            # Health reflects only this run's own outcome.
+            self._last_error = category
         finally:
             self._in_flight.pop(conversation_id, None)

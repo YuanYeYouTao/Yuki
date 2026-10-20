@@ -7,15 +7,13 @@ from yuki.admin.authority.command_types import CommandOperation, project_replaye
 from yuki.admin.config_registry import ConfigRegistry
 from yuki.admin.config_service import RuntimeConfigService
 from yuki.services.commands.help import ADMIN_ACTIONS, ADMIN_HELP
-from yuki_plugin_sdk.api import DEFAULT_FEATURES, PLUGIN_API_VERSION, is_api_compatible
+from yuki_plugin_sdk.api import DEFAULT_FEATURES
 from yuki_plugin_sdk.events import EventName
 from yuki_plugin_sdk.permissions import PluginPermission
 from yuki_plugin_sdk.testing.fake_context import FakePluginContext
 
 
 def test_retired_pool_is_absent_from_current_plugin_and_command_contract():
-    assert PLUGIN_API_VERSION == "6.0"
-    assert is_api_compatible("6.0") and not is_api_compatible("5.0")
     assert "emoji" not in ADMIN_ACTIONS and "/ai admin emoji" not in ADMIN_HELP
     assert not any(value.startswith("emoji.") for value in DEFAULT_FEATURES)
     assert not any(value.value.startswith("emoji.") for value in PluginPermission)

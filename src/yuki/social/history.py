@@ -50,7 +50,7 @@ async def read_history(
         elif not conversation_id:
             if any(args.get(key) for key in ("target_id", "display_name", "subject_ref", "kind")):
                 kind = args.get("kind", "space" if context.space_id else "person")
-                target = await service.target(kind, args, context)
+                target = await service.target(kind, args, context, validate=False)
                 query = select(CanonicalConversationModel).where(
                     person_family_condition(CanonicalConversationModel.person_id, str(target.id))
                     if kind == "person"
@@ -87,6 +87,7 @@ async def read_history(
             "person" if conversation.kind == "private" else "space",
             {"target_id": conversation.person_id or conversation.space_id},
             context,
+            validate=False,
         )
         # A delegated read contract is a real grant, independent of route/connection.
         from yuki.capabilities.invocation import current_invocation

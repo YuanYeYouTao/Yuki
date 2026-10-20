@@ -3,6 +3,9 @@
 from sqlalchemy import Connection
 
 INVOCATION_INDEXES = {
+    "ix_runtime_effects_domain_ref": "CREATE INDEX IF NOT EXISTS ix_runtime_effects_domain_ref "
+    "ON runtime_work_effects (json_extract(receipt_json, '$.invocation.original_domain_ref'), "
+    "work_id)",
     "ix_runtime_effects_parent": "CREATE INDEX IF NOT EXISTS ix_runtime_effects_parent "
     "ON runtime_work_effects (work_id, "
     "json_extract(receipt_json, '$.invocation.parent_effect_key'), effect_key) "

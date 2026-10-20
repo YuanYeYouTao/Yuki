@@ -5,8 +5,10 @@ import json
 import pytest
 from pydantic import BaseModel
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_space
 
 from yuki.identity.canonical_repository import find_identity_binding
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.identity.person_identity import merge_persons
 from yuki.plugin_host.configuration_service import PluginConfigurationService
 from yuki.plugin_host.db_models import PluginConfigValueModel
@@ -17,6 +19,7 @@ from yuki.plugin_host.repository import (
     PluginStateRepository,
 )
 from yuki.plugin_host.session_repository import PluginAgentSessionRepository
+from yuki_plugin_sdk import PLUGIN_API_VERSION
 
 
 async def setup(database):
@@ -25,7 +28,7 @@ async def setup(database):
         plugin_id=plugin,
         name=plugin,
         version="1",
-        plugin_api="6.0",
+        plugin_api=PLUGIN_API_VERSION,
         yuki_requires="*",
         manifest_hash="original-plugin-manifest",
         entrypoint="plugin:register",
@@ -152,28 +155,43 @@ async def test_person_owned_plugin_cas_accepts_same_human_without_rewriting_glob
         )
 
 
-async def test_original_plugin_session_accepts_current_same_human_but_not_foreign_actor(database):
+@pytest.mark.parametrize("scope_type", ["user", "group"])
+async def test_original_plugin_session_accepts_current_same_human_but_not_foreign_actor(
+    database, scope_type
+):
     plugin, source, target, foreign = await setup(database)
+    async with database.immediate_session() as writer:
+        scope = await ensure_space(writer, "2001") if scope_type == "group" else source
     sessions = PluginAgentSessionRepository(database)
     original = await sessions.create(
-        plugin_id=plugin, owner_user_id=source, scope_type="user", scope_id=source
+        plugin_id=plugin, owner_user_id=source, scope_type=scope_type, scope_id=scope
+    )
+    message = await sessions.append_message(
+        plugin_id=plugin,
+        session_id=original.session_id,
+        role="user",
+        content="original person input",
+        sender_user_id=source,
     )
     async with database.immediate_session() as writer:
         await merge_persons(writer, source, target)
+        (await writer.get(CanonicalPersonModel, source)).enabled = False
     current = await sessions.get_for_actor(
         plugin_id=plugin,
         session_id=original.session_id,
         actor_user_id=target,
-        current_group_id=None,
+        current_group_id=scope if scope_type == "group" else None,
     )
     assert current.session_id == original.session_id
     assert current.owner_user_id == target and current.canonical_owner_person_id == source
+    assert current.scope_id == (target if scope_type == "user" else scope)
+    assert await sessions.get(plugin_id=plugin, session_id=original.session_id) == current
     assert (
         await sessions.get_for_actor(
             plugin_id=plugin,
             session_id=original.session_id,
             actor_user_id=foreign,
-            current_group_id=None,
+            current_group_id=scope if scope_type == "group" else None,
         )
         is None
     )
@@ -185,3 +203,6 @@ async def test_original_plugin_session_accepts_current_same_human_but_not_foreig
         sender_user_id=target,
     )
     assert appended.canonical_sender_person_id == target
+    before, after = await sessions.list_messages(plugin_id=plugin, session_id=original.session_id)
+    assert before.id == message.id and before.canonical_sender_person_id == source
+    assert before.content == message.content and after.id == appended.id

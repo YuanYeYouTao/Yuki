@@ -13,7 +13,7 @@ from tests.support.model_executor import InjectedModelExecutor
 
 from yuki.domain.conversations import ScopeType
 from yuki.domain.messages import ChatRequest, ChatResponse
-from yuki.identity.canonical_repository import active_person_id_for
+from yuki.identity.canonical_repository import find_identity_binding
 from yuki.llm.base import LLMProvider, LLMUnavailableError
 from yuki.memory.enums import (
     MemoryRebuildCommitStatus,
@@ -84,7 +84,7 @@ class _ExtractionProvider(LLMProvider):
 
 async def _admin(database):
     async with database.sessions() as session:
-        person_id = await active_person_id_for(session, "9000")
+        person_id = (await find_identity_binding(session, "9000")).person_id
         assert person_id is not None
         return person_id
 

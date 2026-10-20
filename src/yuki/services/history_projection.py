@@ -41,6 +41,14 @@ class PreparedHistory:
         if version is None or version.conversation_id is None:
             raise ValueError("projection requires a canonical read version")
         previous = self.committed or self.previous
+        reason = None if self.committed is not None else self.reason
+        if previous is not None and previous.source_revision != version.prompt_source_revision:
+            previous = await self.repository.read(self.view_key)
+            reason = (
+                None
+                if previous is not None
+                else await self.repository.invalidation_reason(self.view_key) or "bootstrap"
+            )
         return await self.repository.prepare_commit(
             view_key=self.view_key,
             conversation_id=version.conversation_id,
@@ -51,7 +59,7 @@ class PreparedHistory:
             fragments=fragments,
             expected_epoch=previous.epoch_id if previous else None,
             expected_revision=previous.revision if previous else 0,
-            rebuild_reason=None if self.committed is not None else self.reason,
+            rebuild_reason=reason,
             selected_summary_text=self.context.checkpoint_text,
             selected_summary_coverage=self.context.prompt_effective_coverage,
             selected_summary_kind=self.context.metrics.checkpoint_kind,
@@ -165,7 +173,6 @@ async def prepare_history(
             missing_rows,
             bot_display_name=context.history_bot_display_name,
             timezone=context.history_timezone,
-            yuki_account_ids=context.history_yuki_account_ids,
         )
         grouped, individual_rows = renderer.main_agent_history_views(missing_rows)
         additions = tuple((ids, message) for _, ids, message in grouped)

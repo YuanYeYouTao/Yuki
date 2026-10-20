@@ -11,16 +11,10 @@ from datetime import date, datetime, timedelta
 
 from yuki.domain.messages import ChatMessage, sanitize_display_name
 from yuki.persistence.repository_records import EventRecord
-from yuki.services.renderer import strip_internal_history_markers
 from yuki.time.formatting import local_datetime, local_iso, stored_utc
 
 _MAIN_HISTORY_GROUP_SPAN = timedelta(minutes=5)
 
-_LEGACY_HISTORY_PREFIX = re.compile(
-    r"^\[(?:(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]) )?"
-    r"(?:[01]\d|2[0-3]):[0-5]\d(?: QQ [1-9]\d{4,19})?\]\s*"
-)
-_MEDIA_DESCRIPTION = re.compile(r"\[(?:表情|语音)：[\s\S]*\]")
 _CAUSAL_TOKEN_UNSAFE = re.compile(r"[^\w.:-]+", re.UNICODE)
 
 
@@ -66,31 +60,9 @@ class EventPromptIndex:
         self._rows: dict[int, tuple[int, EventRecord]] = {}
         self._ordered: list[EventRecord] = []
         self._sorted_ids: list[int] = []
-        self._senders: dict[tuple[str, str | None, str], tuple[list[int], list[EventRecord]]] = {}
-        self._accounts: dict[str, list[tuple[int, int]]] = {}
         self._maximum_id = 0
         self._nested_bytes = 0
-        rows = tuple(events)
-        latest = {row.id: row for row in rows}
-        self.extend(latest.values())
-        # The original reference table infers accounts from every input row,
-        # while duplicate IDs keep their last metadata representation.
-        for row in rows:
-            if row is not latest[row.id]:
-                self._record_accounts(row, self._rows[row.id][0])
-
-    def _record_accounts(self, row: EventRecord, ordinal: int) -> None:
-        for account in {row.bot_user_id, row.sender_user_id if row.author_is_yuki() else ""}:
-            if account:
-                sources = self._accounts.get(account)
-                if sources is None:
-                    sources = []
-                    self._accounts[account] = sources
-                    self._nested_bytes += sys.getsizeof(sources)
-                before = sys.getsizeof(sources)
-                entry = ordinal, row.id
-                sources.append(entry)
-                self._nested_bytes += sys.getsizeof(sources) - before + sys.getsizeof(entry)
+        self.extend({row.id: row for row in events}.values())
 
     @property
     def estimated_bytes(self) -> int:
@@ -103,8 +75,6 @@ class EventPromptIndex:
                 self._rows,
                 self._ordered,
                 self._sorted_ids,
-                self._senders,
-                self._accounts,
             )
         )
 
@@ -112,7 +82,7 @@ class EventPromptIndex:
         """Add new metadata. Normal warm callers append IDs above their captured H.
 
         Older missing dependencies belong in capture(extra_events=...), so they
-        do not shift the shared predecessor sequence on the warm path.
+        do not change already captured references on the warm path.
         """
         for row in sorted(events, key=lambda event: event.id):
             if row.id in self._rows:
@@ -124,19 +94,6 @@ class EventPromptIndex:
             self._ordered.append(row)
             self._sorted_ids.insert(bisect_right(self._sorted_ids, row.id), row.id)
             self._maximum_id = max(self._maximum_id, row.id)
-            key = row.platform, row.canonical_conversation_id, row.sender_user_id
-            sender = self._senders.get(key)
-            if sender is None:
-                sender = [], []
-                self._senders[key] = sender
-                self._nested_bytes += sum(sys.getsizeof(value) for value in (key, sender, *sender))
-            ids, rows = sender
-            before = sys.getsizeof(ids) + sys.getsizeof(rows)
-            position = bisect_right(ids, row.id)
-            ids.insert(position, row.id)
-            rows.insert(position, row)
-            self._nested_bytes += sys.getsizeof(ids) + sys.getsizeof(rows) - before
-            self._record_accounts(row, ordinal)
 
     def capture(
         self,
@@ -145,18 +102,12 @@ class EventPromptIndex:
         extra_events: Iterable[EventRecord] = (),
     ) -> EventPromptReferences:
         through = self._maximum_id if through_event_id is None else through_event_id
-        accounts = frozenset(
-            account
-            for account, sources in self._accounts.items()
-            if any(event_id <= through for _, event_id in sources)
-        )
         base = EventPromptReferences(
             self,
             len(self._ordered),
             through,
             bisect_right(self._sorted_ids, through),
             None,
-            accounts,
         )
         return base.with_events(extra_events)
 
@@ -170,7 +121,6 @@ class EventPromptReferences:
     _through: int
     _base_count: int
     _extra: EventPromptIndex | None
-    yuki_account_ids: frozenset[str]
 
     def get(self, event_id: int) -> EventRecord | None:
         if event_id > self._through:
@@ -192,18 +142,12 @@ class EventPromptReferences:
             return self
         previous = self._extra._ordered if self._extra is not None else ()
         overlay = EventPromptIndex((*previous, *additions))
-        extra_accounts = frozenset(
-            account
-            for account, sources in overlay._accounts.items()
-            if any(event_id <= self._through for _, event_id in sources)
-        )
         return EventPromptReferences(
             self._index,
             self._cutoff,
             self._through,
             self._base_count,
             overlay,
-            self.yuki_account_ids | extra_accounts,
         )
 
     def iter_events(self) -> Iterator[EventRecord]:
@@ -218,37 +162,6 @@ class EventPromptReferences:
                 base = self._index._rows.get(row.id)
                 if row.id <= self._through and (base is None or base[0] >= self._cutoff):
                     yield row
-
-    @staticmethod
-    def _previous(
-        index: EventPromptIndex,
-        cutoff: int,
-        limit: int,
-        user_id: str,
-        row: EventRecord,
-        replaced: EventPromptIndex | None = None,
-    ) -> EventRecord | None:
-        ids, rows = index._senders.get(
-            (row.platform, row.canonical_conversation_id, user_id), ([], [])
-        )
-        position = bisect_right(ids, limit) - 1
-        while position >= 0:
-            candidate = rows[position]
-            if index._rows[candidate.id][0] < cutoff and (
-                replaced is None or candidate.id not in replaced._rows
-            ):
-                return candidate
-            position -= 1
-        return None
-
-    def previous(self, user_id: str, row: EventRecord) -> EventRecord | None:
-        limit = min(row.id, self._through)
-        previous = self._previous(self._index, self._cutoff, limit, user_id, row, self._extra)
-        if self._extra is not None:
-            extra = self._previous(self._extra, len(self._extra._ordered), limit, user_id, row)
-            if extra is not None and (previous is None or extra.id >= previous.id):
-                previous = extra
-        return previous
 
 
 @dataclass(frozen=True, slots=True, eq=False)
@@ -285,7 +198,6 @@ class ChatEventPromptRenderer:
         *,
         bot_display_name: str = "Yuki",
         timezone: str = "Asia/Shanghai",
-        yuki_account_ids: frozenset[str] = frozenset(),
         references: EventPromptReferences | None = None,
     ) -> None:
         self._bot_display_name = bot_display_name
@@ -295,7 +207,6 @@ class ChatEventPromptRenderer:
             if references is None
             else references.with_events(events)
         )
-        self._yuki_account_ids = yuki_account_ids | self._references.yuki_account_ids
 
     def message(
         self,
@@ -435,7 +346,6 @@ class ChatEventPromptRenderer:
             row,
             current_event_id,
             current_content,
-            yuki_account_ids=self._yuki_account_ids,
         )
         if not content:
             return ""
@@ -461,7 +371,6 @@ class ChatEventPromptRenderer:
             row,
             current_event_id,
             current_content,
-            yuki_account_ids=self._yuki_account_ids,
         )
         if not content:
             return ""
@@ -501,8 +410,6 @@ class ChatEventPromptRenderer:
         row: EventRecord,
         current_event_id: int | None,
         current_content: str,
-        *,
-        yuki_account_ids: frozenset[str] = frozenset(),
     ) -> str:
         """Return clean visible event content without internal transport markers."""
 
@@ -536,16 +443,7 @@ class ChatEventPromptRenderer:
                         label = "、".join(tag for tag in tags if isinstance(tag, str))
                         parts.append(f"[表情: {label}]" if label else "[表情]")
             return marked("\n".join(parts).strip())
-        if (
-            row.direction == "outbound"
-            and row.content.startswith("[语音：")
-            and "发送了一条语音，声线：" in row.content
-        ):
-            return marked("")
-        base = _LEGACY_HISTORY_PREFIX.sub("", row.content, count=1)
-        base = strip_internal_history_markers(base).strip()
-        if row.direction == "outbound" and _MEDIA_DESCRIPTION.fullmatch(base):
-            return marked("")
+        base = row.content.strip()
         if row.audio_transcript:
             from yuki.domain.audio import transcript_context
 

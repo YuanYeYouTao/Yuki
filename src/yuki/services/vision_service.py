@@ -269,34 +269,6 @@ class VisionService:
             if normalized_question
             else ""
         )
-        first_segment = references[0].segment_index or 0
-        if source_event_id is not None:
-            cached_by_event = await self._analyses.find_for_event(
-                source_event_id,
-                first_segment,
-                analysis_mode=cache_mode,
-                question_hash=question_hash,
-                provider=self.provider_name,
-                model=self.model_name,
-                prompt_version=cache_prompt_version,
-            )
-            if cached_by_event is not None:
-                observation = _cached_observation(cached_by_event.observation_json)
-            else:
-                observation = None
-            if observation is not None and cached_by_event is not None:
-                self._log_result(
-                    conversation_key=conversation_key,
-                    image_count=len(references),
-                    total_bytes=0,
-                    frame_count=0,
-                    content_hash=cached_by_event.content_hash,
-                    cache_hit=True,
-                    success=True,
-                    started=time.perf_counter(),
-                )
-                return observation
-
         started = time.perf_counter()
         prepared: list[PreparedVisualInput] = []
         prepared_references: list[MediaReference] = []

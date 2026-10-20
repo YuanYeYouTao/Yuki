@@ -4,6 +4,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
+import pytest
+
 from yuki.domain.conversations import ScopeType
 from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.persistence.repository_records import EventRecord
@@ -110,3 +112,27 @@ def test_account_author_is_displayed_without_a_fabricated_person():
     text = ChatEventPromptRenderer((event,)).render_reference_event(event)
     assert f"account:{account_id}" in text and "person:" not in text
     assert text.endswith(">hello")
+
+
+@pytest.mark.parametrize(
+    "content", ["[表情：这只是普通正文]", "[语音：示例发送了一条语音，声线：名字]"]
+)
+def test_outbound_text_is_not_hidden_by_media_like_wording(content: str) -> None:
+    event = EventRecord(
+        id=1,
+        bot_user_id="yuki",
+        platform_message_id="plain-text",
+        platform="qq",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="yuki",
+        direction="outbound",
+        content=content,
+        visual_summary="",
+        segments=({"type": "text", "data": {"text": content}},),
+        occurred_at=datetime.now(UTC),
+    )
+    renderer = ChatEventPromptRenderer((event,))
+
+    assert renderer.render_event(event).endswith(content)
+    assert renderer.render_reference_event(event).endswith(content)
+    assert renderer.main_agent_history((event,))[0][2].content.endswith(content)

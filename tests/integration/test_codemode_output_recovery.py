@@ -136,7 +136,9 @@ async def recreate(env, outer):
 
 
 @pytest.mark.parametrize("interrupt", ["segment_yield", "cancel_after_receipt"])
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 async def test_stdout_survives_real_journal_recovery(
     database, tmp_path, monkeypatch, interrupt, native
 ):
@@ -200,7 +202,9 @@ async def test_same_stdout_survives_without_yield(database, tmp_path):
     assert body["stdout_truncated"] is False
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 async def test_truncated_stdout_survives_two_real_journal_restores(database, tmp_path, native):
     from dataclasses import replace
 

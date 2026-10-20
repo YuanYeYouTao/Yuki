@@ -2,7 +2,18 @@
 
 from datetime import datetime
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Integer, String, Text, event, inspect
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    event,
+    inspect,
+    text,
+)
 from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.schema import MetaData
@@ -15,6 +26,13 @@ class PromptProjectionModel(Base):
     __tablename__ = "prompt_projections"
     __table_args__ = (
         CheckConstraint("revision >= 1 AND byte_size >= 2", name="ck_prompt_projection_size"),
+        Index(
+            "ix_prompt_projections_active_updated",
+            "updated_at",
+            "view_key",
+            "byte_size",
+            sqlite_where=text("invalidated_reason IS NULL"),
+        ),
     )
 
     view_key: Mapped[str] = mapped_column(String(64), primary_key=True)

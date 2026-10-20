@@ -23,7 +23,7 @@ from yuki.runtime.work_repository import (
     encode_json,
 )
 from yuki.runtime.work_schema_v1 import effects, inputs, journal, work
-from yuki.runtime.work_tree import descendants, rooted_tree
+from yuki.runtime.work_tree import ancestors, descendants, rooted_tree
 from yuki.runtime.work_wait_schema import waits
 from yuki.sandbox.resource_cleanup import ResourceCleanupPreparation
 
@@ -161,19 +161,22 @@ class SubagentRepository:
         async with self.database.sessions() as session:
             missed = list(
                 await session.scalars(
-                    select(children.c.work_id)
-                    .join(work, work.c.id == children.c.work_id)
-                    .join(
-                        CanonicalConversationModel,
-                        CanonicalConversationModel.id == work.c.conversation_id,
-                    )
-                    .where(
-                        work.c.generation == CanonicalConversationModel.generation,
-                        work.c.state.in_(
-                            ("completed", "failed", "cancelled", "suspended", "waiting_user")
-                        ),
-                        children.c.notified_revision < work.c.revision,
+                    select(children.c.work_id).where(
                         children.c.archived_at.is_(None),
+                        select(work.c.id)
+                        .join(
+                            CanonicalConversationModel,
+                            CanonicalConversationModel.id == work.c.conversation_id,
+                        )
+                        .where(
+                            work.c.id == children.c.work_id,
+                            work.c.generation == CanonicalConversationModel.generation,
+                            work.c.state.in_(
+                                ("completed", "failed", "cancelled", "suspended", "waiting_user")
+                            ),
+                            children.c.notified_revision < work.c.revision,
+                        )
+                        .exists(),
                     )
                 )
             )
@@ -188,27 +191,56 @@ class SubagentRepository:
         cutoff = now - 7 * 86400
 
         def expired_query(root_ids: list[str] | None = None) -> Select[Any]:
-            conditions = [work.c.state.in_(TERMINAL), work.c.updated < cutoff]
-            if root_ids is not None:
-                conditions.append(work.c.id.in_(root_ids))
-            tree = rooted_tree(*conditions)
             root = work.alias("archive_root")
+            lineage = ancestors(children.c.work_id, include_self=True).order_by(None).subquery()
+            root_query = select(
+                select(lineage.c.id)
+                .where(
+                    select(root.c.id)
+                    .where(root.c.id == lineage.c.id, root.c.parent_work_id.is_(None))
+                    .exists()
+                )
+                .correlate(children)
+                .scalar_subquery()
+                .label("id")
+            ).where(children.c.archived_at.is_(None), children.c.lease_until <= now)
+            roots = (
+                root_query.distinct().subquery()
+                if root_ids is None
+                else select(work.c.id).where(work.c.id.in_(root_ids)).subquery()
+            )
+            tree = rooted_tree(
+                select(roots.c.id).where(
+                    select(root.c.id)
+                    .where(
+                        root.c.id == roots.c.id,
+                        root.c.parent_work_id.is_(None),
+                        root.c.state.in_(TERMINAL),
+                        root.c.updated < cutoff,
+                    )
+                    .exists()
+                )
+            )
             retained = tree.alias("retained_tree")
             return (
-                select(children.c.work_id, tree.c.root_id)
-                .join(work, work.c.id == children.c.work_id)
-                .join(tree, tree.c.work_id == work.c.id)
-                .join(root, root.c.id == tree.c.root_id)
+                select(tree.c.work_id, tree.c.root_id)
                 .where(
-                    children.c.archived_at.is_(None),
-                    children.c.lease_until <= now,
-                    work.c.state.in_(TERMINAL),
-                    root.c.state.in_(TERMINAL),
-                    root.c.updated < cutoff,
+                    select(children.c.work_id)
+                    .where(
+                        children.c.work_id == tree.c.work_id,
+                        children.c.archived_at.is_(None),
+                        children.c.lease_until <= now,
+                    )
+                    .exists(),
+                    select(work.c.id)
+                    .where(work.c.id == tree.c.work_id, work.c.state.in_(TERMINAL))
+                    .exists(),
                     tree.c.root_id.not_in(
-                        select(retained.c.root_id)
-                        .join(work, work.c.id == retained.c.work_id)
-                        .where(work.c.state.not_in(TERMINAL))
+                        select(retained.c.root_id).where(
+                            select(work.c.id)
+                            .where(work.c.id == retained.c.work_id, work.c.state.not_in(TERMINAL))
+                            .exists()
+                        )
                     ),
                 )
                 .limit(16)
@@ -217,12 +249,13 @@ class SubagentRepository:
         async def roots_for_archive(
             session: AsyncSession, expired: list[str], root_ids: list[str]
         ) -> list[str]:
-            tree = rooted_tree(work.c.id.in_(root_ids))
+            tree = rooted_tree(select(work.c.id).where(work.c.id.in_(root_ids)))
             return list(
                 await session.scalars(
-                    select(work.c.id).where(
-                        work.c.id.in_(select(tree.c.root_id).where(tree.c.work_id.in_(expired))),
-                        work.c.id.not_in(
+                    select(tree.c.root_id)
+                    .where(
+                        tree.c.work_id.in_(expired),
+                        tree.c.root_id.not_in(
                             select(tree.c.root_id)
                             .join(children, children.c.work_id == tree.c.work_id)
                             .where(
@@ -230,9 +263,15 @@ class SubagentRepository:
                                 children.c.work_id.not_in(expired),
                             )
                         ),
-                        work.c.state.in_(TERMINAL),
-                        work.c.updated < cutoff,
+                        select(work.c.id)
+                        .where(
+                            work.c.id == tree.c.root_id,
+                            work.c.state.in_(TERMINAL),
+                            work.c.updated < cutoff,
+                        )
+                        .exists(),
                     )
+                    .distinct()
                 )
             )
 
@@ -255,10 +294,13 @@ class SubagentRepository:
                 resources.request_ids, f"work-archive:{','.join(original_ids)}", purge=True
             )
         async with self.database.immediate_session() as session:
+            prepared_query = expired_query(root_ids)
             expired = list(
                 await session.scalars(
-                    expired_query(root_ids).where(
-                        children.c.work_id.in_([identity for identity, _ in candidates])
+                    prepared_query.where(
+                        prepared_query.selected_columns.work_id.in_(
+                            [identity for identity, _ in candidates]
+                        )
                     )
                 )
             )

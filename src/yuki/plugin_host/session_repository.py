@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Iterable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.engine import CursorResult
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.persistence.database import Database
 from yuki.plugin_host.db_models import (
@@ -21,10 +20,7 @@ from yuki.plugin_host.db_models import (
 from yuki.plugin_host.ownership import (
     actor_matches_session,
     inherit_message_sender_person,
-    require_live_actor,
-    require_live_space,
     require_session_readable,
-    resolve_human_person_id,
     resolve_session_owners,
 )
 
@@ -43,7 +39,7 @@ _FORBIDDEN_METADATA_KEYS = (
 
 
 class PluginSessionUnavailableError(RuntimeError):
-    """The opaque session does not exist, is closed, expired, or belongs elsewhere."""
+    """The opaque session or its original material owner is unavailable."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +54,6 @@ class PluginAgentSessionRecord:
     instructions: str
     persistence: str
     context_profile: str
-    allowed_capabilities: tuple[str, ...]
     status: str
     next_sequence: int
     turn_count: int
@@ -101,7 +96,6 @@ class PluginAgentSessionRepository:
         instructions: str = "Continue this isolated plugin session.",
         persistence: str = "durable",
         context_profile: str = "none",
-        allowed_capabilities: Iterable[str] = (),
         expires_at: datetime | None = None,
         now: datetime | None = None,
     ) -> PluginAgentSessionRecord:
@@ -115,7 +109,6 @@ class PluginAgentSessionRepository:
             raise ValueError("persistence must be ephemeral or durable")
         if context_profile not in {"none", "current_user", "current_group"}:
             raise ValueError("unsupported plugin Agent context profile")
-        capabilities = _capabilities(allowed_capabilities)
         async with self._database.immediate_session() as session:
             person_id, space_id = await resolve_session_owners(
                 session,
@@ -132,9 +125,6 @@ class PluginAgentSessionRepository:
                 instructions=instructions,
                 persistence=persistence,
                 context_profile=context_profile,
-                allowed_capabilities_json=json.dumps(
-                    capabilities, ensure_ascii=False, separators=(",", ":")
-                ),
                 status="active",
                 next_sequence=1,
                 turn_count=0,
@@ -145,7 +135,7 @@ class PluginAgentSessionRepository:
                 canonical_owner_person_id=person_id,
                 canonical_space_id=space_id,
             )
-            record = await _session_record(session, row)
+            record = _session_record(row, person_id)
             session.add(row)
             await session.flush()
             return record
@@ -155,27 +145,17 @@ class PluginAgentSessionRepository:
         *,
         plugin_id: str,
         session_id: str,
-        include_expired: bool = False,
-        now: datetime | None = None,
     ) -> PluginAgentSessionRecord | None:
         statement = select(PluginAgentSessionModel).where(
             PluginAgentSessionModel.plugin_id == plugin_id,
             PluginAgentSessionModel.session_id == session_id,
         )
-        if not include_expired:
-            timestamp = _aware_utc(now or datetime.now(UTC))
-            statement = statement.where(
-                or_(
-                    PluginAgentSessionModel.expires_at.is_(None),
-                    PluginAgentSessionModel.expires_at > timestamp,
-                )
-            )
         async with self._database.sessions() as session:
             row = await session.scalar(statement)
             if row is None:
                 return None
-            await require_session_readable(session, row)
-            return await _session_record(session, row)
+            owner = await require_session_readable(session, row)
+            return _session_record(row, owner)
 
     async def get_for_actor(
         self,
@@ -184,10 +164,8 @@ class PluginAgentSessionRepository:
         session_id: str,
         actor_user_id: str | None,
         current_group_id: str | None,
-        include_expired: bool = False,
-        now: datetime | None = None,
     ) -> PluginAgentSessionRecord | None:
-        """Load one session and authorize the Host actor.
+        """Read original material for its matching Host actor.
 
         Unbound or different actors get not-found. Only a matching actor
         sees PluginOwnershipError from the persisted row itself.
@@ -197,14 +175,6 @@ class PluginAgentSessionRepository:
             PluginAgentSessionModel.plugin_id == plugin_id,
             PluginAgentSessionModel.session_id == session_id,
         )
-        if not include_expired:
-            timestamp = _aware_utc(now or datetime.now(UTC))
-            statement = statement.where(
-                or_(
-                    PluginAgentSessionModel.expires_at.is_(None),
-                    PluginAgentSessionModel.expires_at > timestamp,
-                )
-            )
         async with self._database.sessions() as session:
             row = await session.scalar(statement)
             if row is None:
@@ -216,14 +186,8 @@ class PluginAgentSessionRepository:
                 current_group_id=current_group_id,
             ):
                 return None
-            await require_session_readable(session, row)
-            await require_live_actor(
-                session,
-                row,
-                actor_user_id=actor_user_id,
-                current_group_id=current_group_id,
-            )
-            return await _session_record(session, row)
+            owner = await require_session_readable(session, row)
+            return _session_record(row, owner)
 
     async def append_message(
         self,
@@ -236,7 +200,7 @@ class PluginAgentSessionRepository:
         metadata: Mapping[str, object] | None = None,
         now: datetime | None = None,
     ) -> PluginAgentMessageRecord:
-        """Atomically allocate a transcript sequence and append one visible message."""
+        """Append admitted material; expiration cannot revoke a completed response."""
 
         if role not in _SESSION_ROLES:
             raise ValueError("role must be user, assistant, or tool")
@@ -269,18 +233,11 @@ class PluginAgentSessionRepository:
                 .where(
                     PluginAgentSessionModel.plugin_id == plugin_id,
                     PluginAgentSessionModel.session_id == session_id,
-                    PluginAgentSessionModel.status == "active",
-                    or_(
-                        PluginAgentSessionModel.expires_at.is_(None),
-                        PluginAgentSessionModel.expires_at > timestamp,
-                    ),
                 )
                 .values(**values)
                 .returning(PluginAgentSessionModel.next_sequence)
             )
-            next_sequence = result.scalar_one_or_none()
-            if next_sequence is None:
-                raise PluginSessionUnavailableError("plugin Agent session is unavailable")
+            next_sequence = result.scalar_one()
             row = PluginAgentMessageModel(
                 session_id=session_id,
                 sequence=int(next_sequence) - 1,
@@ -372,8 +329,8 @@ class PluginAgentSessionRepository:
             )
             if row is None:
                 return None
-            await require_session_readable(session, row)
-            record = await _session_record(session, row)
+            owner = await require_session_readable(session, row)
+            record = _session_record(row, owner)
             await session.execute(
                 delete(PluginAgentMessageModel).where(
                     PluginAgentMessageModel.session_id == session_id
@@ -442,19 +399,15 @@ class PluginAgentSessionRepository:
             return int(cast(CursorResult[Any], result).rowcount or 0)
 
 
-async def _session_record(
-    session: AsyncSession,
+def _session_record(
     row: PluginAgentSessionModel,
+    owner_user_id: str | None,
 ) -> PluginAgentSessionRecord:
-    owner_user_id: str | None = None
     scope_id = ""
     if row.scope_type == "user":
-        owner_user_id = await resolve_human_person_id(session, row.canonical_owner_person_id)
-        scope_id = owner_user_id
+        scope_id = cast(str, owner_user_id)
     elif row.scope_type == "group":
-        if row.canonical_owner_person_id:
-            owner_user_id = await resolve_human_person_id(session, row.canonical_owner_person_id)
-        scope_id = await require_live_space(session, row.canonical_space_id)
+        scope_id = cast(str, row.canonical_space_id)
     return PluginAgentSessionRecord(
         session_id=row.session_id,
         plugin_id=row.plugin_id,
@@ -466,7 +419,6 @@ async def _session_record(
         instructions=row.instructions,
         persistence=row.persistence,
         context_profile=row.context_profile,
-        allowed_capabilities=_decode_capabilities(row.allowed_capabilities_json),
         status=row.status,
         next_sequence=row.next_sequence,
         turn_count=row.turn_count,
@@ -516,23 +468,6 @@ def _validate_instructions(value: str) -> str:
     if not normalized or len(normalized) > 8_000:
         raise ValueError("instructions must contain 1 to 8000 characters")
     return normalized
-
-
-def _capabilities(values: Iterable[str]) -> tuple[str, ...]:
-    normalized = {str(value).strip() for value in values if str(value).strip()}
-    if any(len(value) > 128 for value in normalized) or len(normalized) > 64:
-        raise ValueError("allowed capabilities exceed the session schema limits")
-    return tuple(sorted(normalized))
-
-
-def _decode_capabilities(value: str) -> tuple[str, ...]:
-    try:
-        decoded = json.loads(value)
-    except json.JSONDecodeError:
-        return ()
-    if not isinstance(decoded, list):
-        return ()
-    return _capabilities(str(item) for item in decoded)
 
 
 def _safe_metadata(value: object, *, key: str = "") -> object:

@@ -15,7 +15,7 @@ from tests.support.codemode_cases import (
 from yuki.codemode.driver import CodeModeDriver
 from yuki.runtime.work_budget_schema import budgets
 
-pytestmark = requires_worker
+pytestmark = [requires_worker, pytest.mark.native_worker]
 
 
 async def test_filtered_summary_omits_child_bodies_but_keeps_original_receipts(database, tmp_path):

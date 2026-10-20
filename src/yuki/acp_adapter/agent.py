@@ -295,11 +295,12 @@ class YukiAgent:
                 raise RequestError(
                     -32001, "Yuki turn outcome unknown", {"request_id": active.request_id}
                 )
-            wanted = set(result["result_event_ids"])
-            async for event in self._events(client, session_id, result["event_id"]):
-                if event["direction"] == "outbound" and event["event_id"] in wanted - sent:
-                    await self._event_update(client, session_id, event)
-                    sent.add(event["event_id"])
+            pending = set(result["result_event_ids"]) - sent
+            if pending:
+                async for event in self._events(client, session_id, result["event_id"]):
+                    if event["direction"] == "outbound" and event["event_id"] in pending:
+                        await self._event_update(client, session_id, event)
+                        sent.add(event["event_id"])
             turn, work = result["turn"], result["work"]
             if turn["state"] == "unknown":
                 raise RequestError(

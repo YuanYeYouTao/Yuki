@@ -799,16 +799,21 @@ class PresenceRouter:
             )
         )
         platforms = {binding.platform for binding in bindings}
+        connected_ids = {
+            identity
+            for platform in platforms
+            for identity in self._registry.connected_presence_ids(platform)
+        }
         presences = (
             list(
                 await session.scalars(
                     select(PresenceModel)
                     .join(AccountModel)
                     .options(contains_eager(PresenceModel.account))
-                    .where(PresenceModel.status == "active", AccountModel.platform.in_(platforms))
+                    .where(PresenceModel.status == "active", PresenceModel.id.in_(connected_ids))
                 )
             )
-            if platforms
+            if connected_ids
             else []
         )
         by_platform: dict[str, list[PresenceModel]] = {}
@@ -913,17 +918,30 @@ class PresenceRouter:
         async with self._database.sessions() as session:
             bindings = list(
                 await session.scalars(
-                    select(SpaceBindingModel).where(SpaceBindingModel.space_id == space_id)
+                    select(SpaceBindingModel).where(
+                        SpaceBindingModel.space_id == space_id, SpaceBindingModel.status == "active"
+                    )
                 )
             )
-            presences = list(await session.scalars(select(PresenceModel)))
+            identities = {
+                identity
+                for binding in bindings
+                for identity in self._registry.connected_presence_ids(binding.platform)
+            }
+            presences = (
+                list(
+                    await session.scalars(
+                        select(PresenceModel).where(
+                            PresenceModel.id.in_(identities), PresenceModel.status == "active"
+                        )
+                    )
+                )
+                if identities
+                else []
+            )
         found: list[RouteCandidate] = []
         for binding in bindings:
-            if binding.status != "active":
-                continue
             for presence in presences:
-                if not presence.enabled:
-                    continue
                 if ingest and not presence.ingest_eligible:
                     continue
                 if presence.platform != binding.platform:

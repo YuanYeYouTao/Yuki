@@ -63,14 +63,30 @@ def test_startup_does_not_scan_business_foreign_keys(schema_path):
     )
 
 
+def test_missing_acceleration_indexes_do_not_block_startup(schema_path):
+    with sqlite3.connect(schema_path) as connection:
+        tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        indexes = [
+            row[1]
+            for (table,) in tables
+            for row in connection.execute('PRAGMA index_list("' + table.replace('"', '""') + '")')
+            if not row[2]
+        ]
+        assert indexes
+        for name in indexes:
+            connection.execute('DROP INDEX "' + name.replace('"', '""') + '"')
+    asyncio.run(require_canonical_schema(f"sqlite+aiosqlite:///{schema_path}"))
+
+
 @pytest.mark.parametrize(
     ("change", "message"),
     [
         ("UPDATE alembic_version SET version_num='0140'", "migration head is unsupported"),
         ("DROP TABLE accounts", "canonical schema is incomplete"),
+        ("DROP TABLE chat_event_artifact_refs", "canonical schema is incomplete"),
         (
-            "DROP INDEX ix_chat_events_social_source_author",
-            "social source index is missing or changed",
+            "DROP TRIGGER chat_events_artifact_refs_ai",
+            "projection invalidation trigger is missing or changed",
         ),
         (
             "DROP TRIGGER " + next(iter(PROJECTION_TRIGGERS_CURRENT)),

@@ -891,18 +891,13 @@ class HostPluginContext:
                 error_category=_facade_error_category(exc),
             )
             raise
-        try:
-            await self._audit(
-                invocation,
-                operation=operation,
-                permission=permission,
-                success=result.ok,
-                error_category=_result_error_category(result),
-            )
-        except Exception as exc:
-            if not isinstance(result, _HostSocialResult):
-                raise
-            self._logger.warning("plugin_send_audit_failed category=%s", type(exc).__name__)
+        await self._audit(
+            invocation,
+            operation=operation,
+            permission=permission,
+            success=result.ok,
+            error_category=_result_error_category(result),
+        )
         return result
 
 

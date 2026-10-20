@@ -594,6 +594,6 @@ class FakeAgentSessionFacade:
         session = self.sessions.get(session_id)
         if session is None:
             raise ValueError("unknown plugin AI session")
-        if session.status is SessionStatus.CLOSED:
-            raise ValueError("plugin AI session is closed")
+        if session.status is not SessionStatus.ACTIVE:
+            raise ValueError(f"plugin AI session is {session.status.value}")
         return session

@@ -16,12 +16,15 @@ from yuki.conversation.canonical_db_models import (
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
-from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
+from yuki.gateway.registry import GatewayConnectionRegistry
 from yuki.identity.authority import person_is_superuser
-from yuki.identity.canonical_repository import find_space_binding, new_identity_id
+from yuki.identity.canonical_repository import (
+    find_identity_binding,
+    find_space_binding,
+    new_identity_id,
+)
 from yuki.identity.db_models import (
     CanonicalSpaceModel,
-    IdentityBindingModel,
     PresenceModel,
     SpaceBindingModel,
 )
@@ -86,16 +89,11 @@ class GroupRecoveryService:
                     "ingest": None,
                     "send": None,
                 }
-                live_ids = self._registry.connected_presence_ids(platform)
-                presences = await self._live_presences(session, live_ids)
             else:
                 if binding is None or binding.space_id != space_id:
                     raise RouteSendError("none")
                 binding_id = binding.id
                 before = await self._state(session, space_id, binding_id)
-                live_ids = ()
-                presences = list(await session.scalars(select(PresenceModel)))
-        connections_before = self._connections(presences)
         candidate_id = (
             await self._router.unbound_group_recovery_presence(
                 target.storage_group_id, platform=platform
@@ -120,20 +118,24 @@ class GroupRecoveryService:
                     is not None
                 ):
                     raise RouteSendError("conflict")
-                if live_ids != self._registry.connected_presence_ids(platform):
-                    raise RouteSendError("conflict")
-                current_presences = await self._live_presences(session, live_ids)
             else:
                 if before != await self._state(session, space_id, binding_id):
                     raise RouteSendError("conflict")
-                current_presences = list(await session.scalars(select(PresenceModel)))
-            if connections_before != self._connections(current_presences):
+            current_presence = await session.get(PresenceModel, presence_id)
+            if (
+                current_presence is None
+                or not current_presence.enabled
+                or not current_presence.ingest_eligible
+                or current_presence.account_id != presence.account_id
+                or current_presence.platform != platform
+                or current_presence.external_account_id != audit.bot_user_id
+            ):
                 raise RouteSendError("conflict")
             connection = self._registry.resolve_active(presence_id)
             if (
                 connection.snapshot.connection_id != connection_id
-                or connection.snapshot.platform != presence.platform
-                or connection.snapshot.external_account_id != presence.external_account_id
+                or connection.snapshot.platform != current_presence.platform
+                or connection.snapshot.external_account_id != current_presence.external_account_id
             ):
                 raise RouteSendError("conflict")
             now = datetime.now(UTC)
@@ -249,26 +251,9 @@ class GroupRecoveryService:
                 )
             )
             await session.flush()
-            if connections_before != self._connections(current_presences):
-                raise RouteSendError("conflict")
-            if registering and live_ids != self._registry.connected_presence_ids(platform):
+            if self._registry.resolve_active(presence_id).snapshot.connection_id != connection_id:
                 raise RouteSendError("conflict")
         return True
-
-    @staticmethod
-    async def _live_presences(
-        session: AsyncSession, identities: tuple[str, ...]
-    ) -> list[PresenceModel]:
-        if not identities:
-            return []
-        return list(
-            await session.scalars(
-                select(PresenceModel)
-                .where(PresenceModel.id.in_(identities))
-                .order_by(PresenceModel.id)
-                .limit(len(identities))
-            )
-        )
 
     @staticmethod
     def _payload_hash(
@@ -342,26 +327,12 @@ class GroupRecoveryService:
     async def _require_actor(
         session: AsyncSession, person_id: str, audit: ControlAuditRef, *, platform: str
     ) -> None:
-        actor = await session.scalar(
-            select(IdentityBindingModel).where(
-                IdentityBindingModel.platform == platform,
-                IdentityBindingModel.external_account_id == audit.user_id,
-                IdentityBindingModel.status != "ended",
-            )
-        )
-        yuki = await session.scalar(
-            select(PresenceModel.id).where(
-                PresenceModel.platform == platform,
-                PresenceModel.external_account_id == audit.user_id,
-                PresenceModel.enabled.is_(True),
-            )
-        )
+        actor = await find_identity_binding(session, audit.user_id, platform=platform)
         if (
             actor is None
             or actor.status != "active"
             or actor.person_id != person_id
             or not await person_is_superuser(session, person_id)
-            or yuki is not None
         ):
             raise PermissionError("invalid_control_principal")
 
@@ -406,24 +377,3 @@ class GroupRecoveryService:
                 route.paused,
             ],
         }
-
-    def _connections(self, presences: list[PresenceModel]) -> list[tuple[object, ...]]:
-        result: list[tuple[object, ...]] = []
-        for presence in sorted(presences, key=lambda row: row.id):
-            try:
-                connection = self._registry.resolve_active(presence.id).snapshot
-                token = connection.connection_id
-            except RegistryClosed as exc:
-                token = exc.category
-            result.append(
-                (
-                    presence.id,
-                    presence.revision,
-                    presence.enabled,
-                    presence.ingest_eligible,
-                    presence.platform,
-                    presence.external_account_id,
-                    token,
-                )
-            )
-        return result
