@@ -70,13 +70,14 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
             {"text": "#62052>真实正文"},
             context,
         )
-        assert result["status"] == "succeeded" and result["delivered_text"] == "真实正文"
+        # Marker-looking ordinary text is the original send payload, not framing.
+        assert result["status"] == "succeeded" and result["delivered_text"] == "#62052>真实正文"
         assert result["delivered_text_available"] is True
         async with database.sessions() as session:
             stored = await session.get(SocialOperationModel, result["operation_id"])
             assert stored.event_id == result["event_id"]
             event = await session.get(ChatEventModel, stored.event_id)
-            assert event.content == "真实正文"
+            assert event.content == "#62052>真实正文"
         count = gateway.await_count
         assert (
             await env.service.execute("send_message", {"text": "#62052>真实正文"}, context)
@@ -277,7 +278,7 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
             try:
                 result = await invoke_social(env.service, "send_message", args, runtime)
                 assert result["status"] == "succeeded"
-                assert result["delivered_text"] == "Yuki已收到"
+                assert result["delivered_text"] == "#62052>Yuki已收到"
                 assert env.bot.calls[-1][0] == f"send_{target_kind}_msg"
                 count = len(env.bot.calls)
                 assert await invoke_social(env.service, "send_message", args, runtime) == result

@@ -10,17 +10,17 @@
 | --- | --- | --- | --- |
 | F01 | 原正文保留 | 主审 | 已修/定向已验；正文/提及/人物/增量上下文31 passed，删除旧猜测正则与调用 |
 | F02 | 已知插件结果与辅助audit分开 | B | 已修/定向已验；与F03/P09及原claim组合30 passed，实际结果不被audit重试推翻 |
-| F03 | Embedding部分成功不重复购买 | B | 已修/定向已验；与F02/P09组合30 passed，按实际Provider批量claim；继续核唤醒吞吐 |
+| F03 | Embedding部分成功不重复购买 | B | 已修/定向已验；与F02/P09组合30 passed，按实际Provider批量claim；interval3600仍连续排空批次，成功批不重购 |
 | F04 | 旧插件资料及已返回结果不套新run资格 | B | 已修/定向已验；三处资料gate已收，含长历史/人物合并15 passed，新run原资格保留 |
 | F05 | Vision按实际原件复用 | C | 已修/定向已验；与F07组合12 passed（Windows），hash复用保留 |
-| F06 | 编辑提及复用原生快照 | A | 已修/定向已验；与F08/F09/P01组合31 passed，P02两项当时仍红另记 |
+| F06 | 编辑提及复用原生快照 | A | 已修/定向已验；与F08/F09/P01最终原App/ACP/编辑/历史组92 passed；旧中间态红例已补修转绿 |
 | F07 | Unicode搜索与分页原文坐标 | C | 已修/定向已验；与F05组合12 passed（Windows），原文span与next_offset保留 |
 | F08 | 已认证App设备保原人物 | A | 已修/定向已验；公开App解绑链与原来源组合31 passed |
 | F09 | 历史读取不套新发送资格 | A | 已修/定向已验；Social原回执/委托/原source组合31 passed |
 | F10 | schema本地资源解析及普通数据边界 | C | 已修/定向已验；schema/实际目录28 passed及nested local resource回归，删除枚举和任意defs提升 |
-| F11 | 插件临时媒体删除保恢复线索 | B | 已修/定向已验；unlink失败保恢复线索，首次接纳expiry/hash同writer复核，cleanup/publication屏障3 passed |
+| F11 | 插件临时媒体删除保恢复线索 | B | 已修/定向已验；unlink失败保恢复线索，首次接纳expiry/hash同writer复核，cleanup/publication屏障及原receipt已验；旧expiry三种合法原串CAS反例先红后绿，原0128不改fixture及邻近68 passed |
 | F12 | 重置上下文不取消原表情收藏 | C | 已修/定向已验；真实TG与shared 21 passed（Linux），edit/forget保留 |
-| P01 | 附件定点授权 | A | 已修/定向已验；event引用与effect原domain_ref定点查找，组合31 passed；0143升级回填待主审验 |
+| P01 | 附件定点授权 | A | 已修/定向已验；event引用与effect原domain_ref定点查找，含真实Work/effect引用与8→512增长9 passed；0143回填/guard已验 |
 | P02 | 入口/Work视图批读 | A | 已修/定向已验；Home/同步批读，含原SSE/文件/Work/Person 90 passed |
 | P03 | ACP空增量不拉尾页 | A | 已修/定向已验；ACP空增量不查尾，真实App/ACP/历史组合92 passed |
 | P04 | 群恢复只依赖实际平台和候选 | A | 已修/定向已验；群恢复移除无关SELF门槛，真实入口/历史组合92 passed |
@@ -68,7 +68,13 @@
 | 迁移 | 0143冻结；artifact refs原件回填与触发器、实际索引、Session死列删除；非空Session/消息/原人物/Work/回执保留及guard组合14 passed |
 | 定向回归 | 原51个strict xfail已全部移除并转真实回归；各分区实际Linux/Windows定向通过，Ruff全仓绿、Linux632源Mypy绿；不把重叠组累加为独立总数 |
 | 第一轮终审 | 已完成；A审root/C、B审A/C、C审B、主审核迁移/事实/索引/消费者；发现并补修F11并发重复发布原回执优先，新增3条barrier先红后绿 |
-| 第二轮终审 | 进行中；分别复核F11/调度恢复、迁移/API7/原数据、测试CI/正文/媒体/Schema及文档；合并前收最终结论 |
-| PR / CI / main | 尚未创建PR；无其他待合PR（开工时） |
-| 镜像 / 升级 / Bot替换 | 尚未执行；保其他服务与原数据 |
+| 第二轮终审 | 已完成；C复核F11修复/调度恢复，B复核冻结迁移/API7/原数据，A复核CI/正文/媒体/Schema及3处当前fixture；无剩余阻断。D08前后渲染25430B逐字相等，F01正文恢复为明确有意变化 |
+| PR / CI / main | 主仓PR #487；6d62c544集成716 passed零skip、checks绿；完整unit发现3项：两条旧正文strip断言已按F01纠正，旧expiry原串CAS实际缺口已修。Native完成编译但被runner的可写/opt阻止，workflow已按原合同修正，重跑中。两个独立插件已过CI合并 |
+| 镜像 / 升级 / Bot替换 | 精确6d62c544 direct镜像已在本地预构建；线上2.54GB一致备份integrity ok/FK0，0143仅在独立副本演练中；未替换Bot |
 | 线上验证 / 清理 | 尚未执行；上线后核自然流量及实际引用，再清旧备份、部署临时文件、废镜像和可重建缓存 |
+
+## CI 补修
+
+- 原生任务实际构建了固定 worker/binding/launcher，AppArmor与原namespace/IPC/parent-death验证已运行，最后Host配置检查拒绝runner的可写 `/opt`。同一官方runner镜像配置明确设为0777；仅在CI将该祖先改root:root/0755并输出前后stat，运行时检查与隔离不变。离线真实UID权限反例先拒绝、修后通过；90项原生执行仍以新CI为准。
+- 首次完整unit为3102 passed、3 failed。两条旧Social测试仍要求删普通 `#62052>` 正文，现保留原不确定ACK/原事件/不重发断言，只纠正正文期望（正文/原Social组16 passed）。另一条冻结0128回归揭露旧expiry读取为datetime再绑定后格式改变；最终删除CAS改为保原stored string，不改到期资格、不重写数据。新增三种旧格式先3红，原0128原fixture及清理/发布回执组68 passed。
+- API7的3处当前fixture改用公开版本常量，原48项通过；历史迁移版本原文保留。

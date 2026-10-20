@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from PIL import Image
-from sqlalchemy import select
+from sqlalchemy import select, text
 from tests.support.social_identity_cases import social_env
 
 from yuki.plugin_host.db_models import PluginMediaArtifactModel, PluginNotificationOutboxModel
@@ -90,6 +90,25 @@ async def test_expired_unreferenced_media_is_removed(database, plugin_media):
     assert not env.path.exists()
     async with database.sessions() as session:
         assert await session.get(PluginMediaArtifactModel, env.handle.handle_id) is None
+
+
+@pytest.mark.parametrize(
+    "stored_expiry",
+    ["2026-01-01 00:00:00", "2026-01-01T00:00:00", "2026-01-01 00:00:00.12"],
+)
+async def test_cleanup_settles_the_exact_original_stored_timestamp(
+    database, plugin_media, stored_expiry
+):
+    env = plugin_media
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            text("UPDATE plugin_media_artifacts SET expires_at=:expiry WHERE handle_id=:handle"),
+            {"expiry": stored_expiry, "handle": env.handle.handle_id},
+        )
+    assert await env.store.cleanup() == 1
+    assert not env.path.exists()
+    async with database.sessions() as reader:
+        assert await reader.get(PluginMediaArtifactModel, env.handle.handle_id) is None
 
 
 async def test_cancelled_cleanup_keeps_the_original_path_for_the_next_pass(

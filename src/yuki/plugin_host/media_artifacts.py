@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import and_, delete, func, or_, select
+from sqlalchemy import String, and_, delete, func, or_, select, type_coerce
 from sqlalchemy.sql.elements import ColumnElement
 
 from yuki.persistence.database import Database
@@ -180,13 +180,17 @@ class PluginMediaArtifactStore:
             return 0
         # Serialize the final reference check with publication admission. Future
         # publications must still validate an unexpired handle in their writer.
+        # Preserve the stored expiry text: DateTime roundtrips normalize older
+        # timestamp spellings and cannot prove that exact row is unchanged.
         async with self._database.immediate_session() as writer:
             rows = (
                 await writer.execute(
                     select(
                         PluginMediaArtifactModel.handle_id,
                         PluginMediaArtifactModel.storage_path,
-                        PluginMediaArtifactModel.expires_at,
+                        type_coerce(PluginMediaArtifactModel.expires_at, String).label(
+                            "stored_expiry"
+                        ),
                         PluginMediaArtifactModel.sha256,
                     ).where(
                         PluginMediaArtifactModel.handle_id.in_(candidates),
@@ -205,7 +209,8 @@ class PluginMediaArtifactStore:
                     and_(
                         PluginMediaArtifactModel.handle_id == row.handle_id,
                         PluginMediaArtifactModel.storage_path == row.storage_path,
-                        PluginMediaArtifactModel.expires_at == row.expires_at,
+                        type_coerce(PluginMediaArtifactModel.expires_at, String)
+                        == row.stored_expiry,
                         PluginMediaArtifactModel.sha256 == row.sha256,
                     )
                 )

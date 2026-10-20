@@ -67,9 +67,15 @@ jobs:
           bash scripts/build_monty_distribution.sh "$PWD/.cache/monty-ci" "$PWD/.venv/bin/python" build
           wheel=$(python -c 'import json; print(json.load(open(".cache/monty-ci/artifacts.json"))["binding"]["filename"])')
           uv pip install --python .venv/bin/python --no-deps ".cache/monty-ci/wheels/$wheel"
+          # Hosted runner images make /opt writable. The real worker contract
+          # requires its complete path, including this ancestor, to be immutable.
+          stat -c '%a %u:%g %n' / /opt /usr /usr/bin /usr/bin/bwrap
+          sudo chown root:root /opt
+          sudo chmod 755 /opt
           sudo install -d -o root -g root -m 755 /opt/yuki-monty
           sudo install -o root -g root -m 755 .cache/monty-ci/monty/target/release/monty /opt/yuki-monty/monty
           sudo install -o root -g root -m 755 .cache/monty-ci/monty-isolated /opt/yuki-monty/monty-isolated
+          stat -c '%a %u:%g %n' /opt /opt/yuki-monty /opt/yuki-monty/monty /opt/yuki-monty/monty-isolated
       - name: Load the existing launcher isolation policy on the disposable runner
         run: sudo apparmor_parser -r deploy/security/yuki-bot-codemode.apparmor
       - name: Verify actual native execution and isolation
