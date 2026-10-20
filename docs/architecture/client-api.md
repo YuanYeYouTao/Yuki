@@ -174,7 +174,8 @@ SSE 增加 character、work_steps、artifacts 提示；先提交后提示，回�
 `GET /activity?conversation_id=` 读取实际进入的本进程执行 span 与诊断类别，
 只报告 executing 或 insufficient，不以历史开始记录推断仍在执行；不返回提示与工具参数。
 `GET /stream` 是 SSE：登记订阅后先发 sync（各入口游标与 Work revision），随后发送
-conversation、work、activity 变化提示。事实仍须经对应 GET 读取。Last-Event-ID 不作为
+conversation、work、activity、character、computer、executor、work_steps、artifacts 变化提示；
+各类提示先核当前本人可读范围。事实仍须经对应 GET 读取。Last-Event-ID 不作为
 持久事实游标；每次重连都重新 sync。15 秒静默时发送 keepalive 注释。
 
 原数据库 session 的 after_commit 只唤醒进程内订阅，不执行 I/O；回滚无提示。
@@ -251,7 +252,9 @@ normalized payload])，JSON 按键排序、默认 ASCII 转义、无多余空白
 结果事件 ID 只取原 Social 来源和本人可读出站，不从平台消息号重建关联。
 
 watch 每次连接先消费 sync，再用公开 GET／事件 keyset 重建本人全部入口与 Work 快照；
-提示不作为事实。结束、超时或 unavailable 会重连，即使丢的是最终提示也会重新核对。
+提示不作为事实。Python 参考客户端保留既有 sync／conversation／work／activity 消费，
+忽略未知提示种类和新增字段；新提示不会使旧客户端把提示正文写成事实。结束、超时或 unavailable
+会重连，即使丢的是最终提示也会重新核对。
 历史删除或变化会重读投影；身份／权限错误停止并交给调用者处理。上传保留文件摘要，
 重传前检查本地原件，下载核对收到字节的原版本摘要。
 
@@ -321,7 +324,7 @@ Yuki 已退役 MCP，本轮只接受空 `mcpServers`，非空显式返回不支�
 
 ## 控制面重构后的个人入口
 
-App/ACP 共用个人工具视图（Main 合同23）、原 Work 普通回答匹配与显式 Binding 路由；每个 ACP Conversation 独立。按 Binding 读取个人入口遇到多个 Conversation 时返回真实候选，调用者使用已有 conversation_id 明确选择，不任意读取首条。
+App/ACP 共用个人工具视图（Main 合同29）、原 Work 普通回答匹配与显式 Binding 路由；每个 ACP Conversation 独立。按 Binding 读取个人入口遇到多个 Conversation 时返回真实候选，调用者使用已有 conversation_id 明确选择，不任意读取首条。
 
 Person 的管理员资格直接保存于人物，但个人设备正文仍不解析 `/ai admin` 或插件直达命令。真正管理走既有 operator/平台命令入口。鉴权不再写设备 last_used_at；GET/事件读取与初始 SSE sync 的调用链为只读，仍即时核当前撤销、人物启停与入口归属。
 

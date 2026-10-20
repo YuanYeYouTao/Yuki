@@ -1,6 +1,8 @@
 """Personal request ownership and snapshot convergence use original server facts."""
 
 import asyncio
+import json
+from contextlib import aclosing
 from uuid import uuid4
 
 import httpx
@@ -229,3 +231,52 @@ async def test_history_source_change_reloads_and_removes_stale_content(app_env, 
         (rows[0].event.id, "corrected")
     ]
     assert not env.calls
+
+
+async def test_reference_watch_ignores_future_hints_and_fields_then_reconnects_to_real_sync(
+    app_env, database, tmp_path, monkeypatch
+):
+    from yuki.client_api.views import ClientViews
+
+    env = app_env
+    device, _ = await owner(env, database)
+    original = ClientViews.stream
+    connections = 0
+
+    async def future_stream(self, principal, *, active=False):
+        nonlocal connections
+        connections += 1
+        # The only protocol fixture is the newer server's additional hint/fields.
+        # Identity, sync, snapshots and request recovery remain the real backend.
+        yield (
+            'event: future_contract_hint\n'
+            'data: {"main":{"conversation_id":"hint-is-not-a-fact"},"future":[1,2]}\n\n'
+        )
+        async with aclosing(original(self, principal, active=active)) as stream:
+            async for frame in stream:
+                lines = frame.splitlines()
+                for index, line in enumerate(lines):
+                    if line.startswith("data: "):
+                        data = json.loads(line[6:])
+                        data["future_sync_field"] = {"version": 99}
+                        lines[index] = "data: " + json.dumps(data)
+                yield "\n".join(lines) + "\n\n"
+                break  # Bounded connection tests the ordinary reconnect path.
+
+    monkeypatch.setattr(ClientViews, "stream", future_stream)
+    async with live(env.app) as url:
+        client = PersonalClient(url, device["token"], Outbox(tmp_path / "watch.sqlite"))
+        try:
+            expected = await client.refresh()
+            watch = client.watch(reconnect_delay=0)
+            try:
+                for _ in range(2):
+                    snapshot = await asyncio.wait_for(anext(watch), 5)
+                    assert snapshot["main"] == expected["main"]
+                    assert snapshot["main"]["conversation_id"] != "hint-is-not-a-fact"
+                # Unknown hints did not yield a snapshot; each real sync did.
+                assert connections == 2
+            finally:
+                await watch.aclose()
+        finally:
+            await client.close()

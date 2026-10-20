@@ -294,7 +294,7 @@ SocialOperation 的 source_conversation_id 仍是原主会话。文件说明沿�
 
 ## 精简后的领域入口
 
-Main 合同28保持每项固定名称、schema和顺序；direct为平台30/个人入口31项，Code完整32/33项、直调27/28项，批准插件另计。数量是本次实际装配结果，不是运行准入条件。
+Main 合同29保持每项固定名称、schema和顺序，并包含 `local_device` 的固定工具声明。平台与 App/ACP 入口沿各自冻结视图；direct／Code Mode 的实际工具数由装配结果与健康检查报告，批准插件另计，不作为运行准入条件。本机执行器始终核验原 Person、来源及当前授权，工具出现在目录中不代表可执行。
 
 - `terminal_exec/read/control` 共用原Manager/run/回执。control的input发送原样text；read的wait_seconds只观察，默认不等待，原终态completion与游标同时保留。环境默认无强制期限，显式期限按事实执行。
 - `external_agent(action=list/prompt/get/respond/cancel/close)` 通过 ACP 使用运维配置的 Agent。只有 prompt 在已接纳的原 Work 中登记新执行；peer 是可续用的原会话资源，run 是单次 prompt。查询、权限回答、取消和关闭可管理当前来源有权访问的原资源，不要求另接纳 Work。模型只见 agent_id 目录与原资源 ID，不接收启动命令或凭据。权限请求沿原 Work 私有输入提交后才确认协议游标，回答仍核原来源当前授权；外部输出是待核对材料，最终聊天交付继续走 Social。
