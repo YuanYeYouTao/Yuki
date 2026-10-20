@@ -1,7 +1,10 @@
 """Use a separately operated real Manager; never substitute its display or runtime."""
 
 import asyncio
+import json
+import socket
 import sqlite3
+import struct
 from pathlib import Path
 from uuid import uuid4
 
@@ -48,6 +51,31 @@ class DesktopExternalComputer:
             db.row_factory = sqlite3.Row
             return [dict(row) for row in db.execute(query)]
 
+    async def manager_facts(self):
+        # Observe the actual Linux peer process; a marker file cannot prove a restart.
+        from yuki.sandbox.acp_peer import read_protocol_line
+
+        reader, writer = await asyncio.open_unix_connection(
+            str(self.container.sandbox_client.socket)
+        )
+        try:
+            peer = writer.get_extra_info("socket")
+            pid, _uid, _gid = struct.unpack(
+                "3i", peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+            )
+            writer.write(
+                json.dumps(
+                    {"method": "environment_status", "args": {}, "request_id": str(uuid4())}
+                ).encode()
+                + b"\n"
+            )
+            await writer.drain()
+            status = json.loads(await read_protocol_line(reader))
+            return {"manager_pid": pid, "environment_generation": status.get("generation")}
+        finally:
+            writer.close()
+            await writer.wait_closed()
+
     async def work_facts(self):
         jobs, waits = await asyncio.gather(
             asyncio.to_thread(
@@ -71,6 +99,7 @@ class DesktopExternalComputer:
             ],
             "waits": waits,
             "control": snapshot["control"],
+            **await self.manager_facts(),
         }
 
     def attach(self, app):

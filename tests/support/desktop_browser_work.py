@@ -1,7 +1,11 @@
 """Controlled real-browser work: observe actual input before handing control back."""
 
+import json
+import os
 import subprocess
+import sys
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -44,8 +48,19 @@ def main():
                 ["yuki-computer", "browser", "open", url, "--tab", "desktop-integration"],
                 check=True,
             )
+            print("computer-work-ready", flush=True)
+            control_wait = "wait-control" in sys.argv[1:]
+            if control_wait:
+                control = (
+                    Path(os.environ.get("YUKI_COMPUTER_RUNTIME", "/var/lib/yuki-runtime/computer"))
+                    / "control.json"
+                )
+                while json.loads(control.read_text()).get("holder") != "human":
+                    time.sleep(0.1)
             subprocess.run(
-                ["yuki-computer", "help-request", "--note", "請協助原工作的畫面步驟"],
+                ["yuki-computer", "wait-control"]
+                if control_wait
+                else ["yuki-computer", "help-request", "--note", "請協助原工作的畫面步驟"],
                 check=True,
             )
             subprocess.run(

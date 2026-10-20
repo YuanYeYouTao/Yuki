@@ -45,6 +45,8 @@ Bot/Manager 重连观察同一批文件和原进程，不再次调用 `initializ
 
 Manager 的 `control_get`／`control_watch` 返回持久控制权与尚未结束的协助等待；`control_set` 使用原命令键写入 `environment_mutations`，`control_request_get` 查原结果。`take` 优先于 Agent 输入，`return`／`transfer` 必须匹配观察到的 lease。转移会在同一事务中把纯控制等待移到新 lease，直到最后交回才结束；断线不自动交回。
 
+Manager 收到 SIGTERM 后先关闭监听及活动 RPC、RFB、control-watch 连接处理，再等待 Unix server 关闭。角色容器、Supervisor 进程与持久 lease 保留，客户端重连重启后的 Manager。尚未读完的入站请求同样结束，不能阻住停止流程。
+
 协助等待保存在 Manager 的 `help_requests`，归属原终端 run 和经 Host 验证的 Work。环境 CLI 的 `help-request`／`wait-control` 通过 runtime 文件登记及读取结果；已经没有人控制时，纯等待直接得到当前 `control_free` 结果，不成为活动等待。Manager 先保存结果，再投递结果文件；重启或原命令查证会补写，取消后停止投递。结果文件读写使用现有安全 FD 桥，不跟随环境可写目录中的宿主符号链接。Work 标签只注入所属终端，普通聊天和长驻服务不继承其他 Work 的标签。
 
 ### 执行恢复与资源

@@ -87,7 +87,18 @@ async def main() -> None:
     serve_unix = getattr(asyncio, "start_unix_server", None)
     if serve_unix is None:
         raise RuntimeError("unix_socket_required")
-    server = await serve_unix(manager.serve, str(args.socket), limit=262144)
+    clients: set[asyncio.Task[None]] = set()
+
+    async def serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        client = asyncio.current_task()
+        assert client is not None
+        clients.add(client)
+        try:
+            await manager.serve(reader, writer)
+        finally:
+            clients.discard(client)
+
+    server = await serve_unix(serve, str(args.socket), limit=262144)
     args.socket.chmod(0o660)
     worker = asyncio.create_task(manager.worker())
     task = asyncio.current_task()
@@ -95,11 +106,18 @@ async def main() -> None:
     worker.add_done_callback(lambda completed: task.cancel() if not completed.cancelled() else None)
     asyncio.get_running_loop().add_signal_handler(signal.SIGTERM, task.cancel)
     try:
-        async with server:
-            await server.serve_forever()
+        # Python 3.12 serve_forever waits for clients before propagating cancellation.
+        # Stop the handlers first so live RFB/control-watch streams can disconnect.
+        await asyncio.Future[None]()
     except asyncio.CancelledError:
         pass
     finally:
+        server.close()
+        pending = tuple(clients)
+        for client in pending:
+            client.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        await server.wait_closed()
         failure = worker.exception() if worker.done() and not worker.cancelled() else None
         worker.cancel()
         await asyncio.gather(worker, return_exceptions=True)

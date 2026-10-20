@@ -45,6 +45,8 @@ Bot/Manager reconnect observes these same files and process, without another `in
 
 Manager exposes durable leases and active terminal waits through `control_get` and `control_watch`. `control_set` commits the original command key and result in `environment_mutations`; `control_request_get` recovers that result. Return and transfer require the observed lease. Transfer atomically moves control waits to the new lease, so they finish only after the final return. Disconnecting does not release control.
 
+On SIGTERM, Manager closes its listener and active RPC, RFB and control-watch handlers before waiting for the Unix server to close. The role container, Supervisor processes and durable leases remain alive; clients reconnect to the restarted Manager. This order also applies to incomplete incoming requests, which must not hold shutdown open.
+
 The Manager `help_requests` records retain each original terminal run and Host-validated Work. The environment CLI registers `help-request` and `wait-control` through runtime files. A control wait with no current human holder immediately receives the current `control_free` fact. Results commit before file delivery and are repaired after restart or command lookup; cancellation stops delivery. Runtime files use the existing checked FD bridge. Work labels reach only the owning terminal, and are cleared for ordinary chat and persistent services.
 
 ### Execution recovery and resources

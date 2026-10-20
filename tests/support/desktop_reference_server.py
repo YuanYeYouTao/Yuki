@@ -146,7 +146,10 @@ async def serve(root: Path, port: int) -> None:
                 if getattr(computer, "external", False):
                     # Both the wait and file creation execute inside the real environment.
                     program = Path(__file__).with_name("desktop_browser_work.py").read_text()
-                    shell = shlex.join(["python", "-u", "-c", program])
+                    shell = shlex.join(
+                        ["python", "-u", "-c", program]
+                        + (["wait-control"] if computer_work["wait_control"] else [])
+                    )
                     cwd = "/workspace"
                 else:
                     shell, cwd = shlex.join(command), str(root)
@@ -417,9 +420,10 @@ async def serve(root: Path, port: int) -> None:
         return {"ok": True}
 
     @personal.post("/__test/computer-work-scenario")
-    async def computer_work_scenario(goal: str = "原電腦協助工作"):
+    async def computer_work_scenario(goal: str = "原電腦協助工作", wait_control: bool = False):
         nonlocal computer_work
         assert computer is not None and computer.native_work
+        assert not wait_control or getattr(computer, "external", False)
         artifact = (
             None
             if getattr(computer, "external", False)
@@ -430,7 +434,13 @@ async def serve(root: Path, port: int) -> None:
                 b"# Original computer artifact\n\nDelivered after the original return receipt.\n",
             )
         )
-        computer_work = {"phase": 0, "run_id": None, "artifact": artifact, "goal": goal}
+        computer_work = {
+            "phase": 0,
+            "run_id": None,
+            "artifact": artifact,
+            "goal": goal,
+            "wait_control": wait_control,
+        }
         return artifact
 
     @personal.get("/__test/computer-work-facts")
