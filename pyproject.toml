@@ -1,6 +1,6 @@
 [project]
 name = "yuki"
-version = "3.9.0"
+version = "4.0.0"
 description = "具有持续身份、长期记忆与自主参与能力的多平台开源 AI Agent"
 readme = "README.md"
 license = "AGPL-3.0-only"

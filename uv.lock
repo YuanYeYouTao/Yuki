@@ -1060,7 +1060,7 @@ wheels = [
 
 [[package]]
 name = "yuki"
-version = "3.9.0"
+version = "4.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "agent-client-protocol" },

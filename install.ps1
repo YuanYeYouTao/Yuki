@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = "",
-    [string]$Version = "3.9.0"
+    [string]$Version = "4.0.0"
 )
 
 $ErrorActionPreference = "Stop"

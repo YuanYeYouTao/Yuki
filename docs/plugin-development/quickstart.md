@@ -19,7 +19,7 @@ version = "0.1.0"
 description = "最小 Hello 插件"
 entrypoint = "hello_plugin:HelloPlugin"
 plugin_api = "7.0"
-yuki_requires = ">=3.9.0,<4.0"
+yuki_requires = ">=4.0.0,<5.0"
 permissions = ["command.register"]
 
 [limits]

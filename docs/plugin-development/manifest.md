@@ -11,7 +11,7 @@ version = "0.1.0"
 description = "天气查询和提醒插件"
 entrypoint = "weather_plugin:WeatherPlugin"
 plugin_api = "7.0"
-yuki_requires = ">=3.9.0,<4.0"
+yuki_requires = ">=4.0.0,<5.0"
 
 permissions = [
   "message.current.read",
@@ -39,7 +39,7 @@ storage_mb = 50
 | `description` | 1–1000 字符 |
 | `entrypoint` | `module.path:Symbol`，模块必须位于插件根目录内 |
 | `plugin_api` | `MAJOR.MINOR`；当前为 `7.0`，其它版本拒绝加载 |
-| `yuki_requires` | PEP 440 Specifier，例如 `>=3.9.0,<4.0` |
+| `yuki_requires` | PEP 440 Specifier，例如 `>=4.0.0,<5.0` |
 | `permissions` | 去重后的已知权限列表；未知值拒绝加载 |
 
 保留命名空间包括 `yuki`、`core` 和 `system`，也不能使用这些前缀冒充核心插件。

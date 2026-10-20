@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-VERSION="3.9.0"
+VERSION="4.0.0"
 INSTALL_DIR=""
 REPOSITORY="YuanYeYouTao/Yuki"
 # This source installer targets the matching future Yuki release artifacts.

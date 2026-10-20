@@ -1,5 +1,33 @@
 # 更新日志
 
+## 4.0.0 — 开发基线 / Development baseline
+
+从正式 `v3.9.0` 到产品截点 `d7d14bc7`（PR #487）的 **37 个已合并 PR**，按功能整理在 [4.0.0 发布说明](docs/releases/v4.0.0.md)（[English](docs/releases/v4.0.0.en.md)）；[完整 PR 台账](docs/releases/v4.0.0-prs.md)保留每项贡献者和合并提交。迁移步骤见 [4.0 升级指南](docs/upgrade-4.0.0.md)。
+
+- QQ、Telegram、个人客户端与 ACP 共用后端。设备配对、附件、事件流和原 Work 接续进入个人 API；[Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) 在组织仓库独立维护。旧管理 WebUI 退役，管理入口转向 CLI 与 `/ai admin`。
+- 人物、平台账号和归属阶段分开；新增同人合并与账号转移，人物主名、账号昵称、群名片各认自己的来源。管理员资格属于 Person，旧消息、工作与发送记录保留当时归属。
+- 普通文件与包操作收拢到持久终端，保留交互输入、后台任务和原执行查询。Work 输入接纳、任务收尾、子 Agent、Main Compact 与协议恢复继续沿共同执行链处理。
+- 入站媒体按索引读取；共享表情目录替代旧分类采用链，文字与后台配图分别发送和记录。搜索与网页读取解耦，补齐标准代理配置。
+- 清理上下文准备、人物与提及查询、可丢诊断和 SQLite 热查询，修复回执恢复、平台身份和当前会话处理中的问题。
+- Plugin API 升至 **7.0**，主工具 manifest 为 **25**，数据库 head 为 **0143**。Python 包统一为 `yuki`，命令为 `yuki` / `yuki-bot`；养鲲与 GitHub 监控迁至独立插件仓库。随包示例和订阅监控同步当前版本声明及 API。
+- 公布两套本地全量 benchmark：SWE-bench Lite **216/300，72.00%**；Terminal-Bench 2.0 **66/89，74.16%**。SWE 输入缓存命中率 **97.47%**；TB 已记录用量为 **98.32%**，完整 84 题为 **98.26%**。固定评测源码为 `313b6b9b`，详情和逐题结果见[报告](docs/benchmarks/2026-10-20-yuki-flash-1017/README.md)。
+
+本次准备更新源码、文档和报告；正式下载仍为 3.9.0，未发布 4.0 镜像。
+
+### English
+
+This baseline covers **37 merged PRs** from the formal `v3.9.0` tag through `d7d14bc7` (PR #487). The [release notes](docs/releases/v4.0.0.en.md) explain the features and fixes; the [PR ledger](docs/releases/v4.0.0-prs.md) lists contributors and merge commits.
+
+- QQ, Telegram, personal clients and ACP share the backend. Personal devices can pair, send attachments, receive events and continue existing Work. [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) is maintained separately. Administration moves from the retired WebUI to the CLI and `/ai admin`.
+- People, accounts and ownership periods are separate, with explicit person merges and account transfers. Names, nicknames and group cards keep their own sources. Superuser status belongs to Person, while historical messages, work and deliveries retain their original ownership.
+- Persistent terminals handle everyday files, projects and dependencies. Interactive input, background execution, Work input, settlement, subagents and Main Compact use the shared execution path and original records.
+- Incoming media is read on demand. A shared sticker directory replaces the old classification/adoption pipeline; text and background sticker delivery have separate receipts. Search and webpage reading are separated, with standard proxy support.
+- Context preparation, person and mention queries, optional diagnostics and SQLite hot queries receive cleanup and fixes, alongside receipt recovery and platform identity handling.
+- Compatibility moves to **Plugin API 7.0**, main manifest **25** and database head **0143**. The package is `yuki`; commands are `yuki` and `yuki-bot`. The Kun game and GitHub monitor live in separate repositories. Bundled examples and subscription monitoring use current version and API declarations.
+- Local full evaluations report **72.00%** on SWE-bench Lite and **74.16%** on Terminal-Bench 2.0. SWE input cache hits are **97.47%**; TB observed usage is **98.32%**, or **98.26%** across its 84 fully accounted tasks. Evaluation revision: `313b6b9b`. See the [report](docs/benchmarks/2026-10-20-yuki-flash-1017/SUMMARY.en.md).
+
+This preparation updates source, documentation and reports. The stable download remains 3.9.0; no 4.0 image is published.
+
 ## 3.9.0 - 2026-10-15
 
 从 `v3.8.4` 到产品截点 `030917b1`（PR #437）的 **257 个已合并 PR**、逐项贡献者与升级说明见 [3.9.0 发布说明](docs/releases/v3.9.0.md)。[下载 3.9.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0) · [升级指南](docs/upgrade-3.9.0.md)。

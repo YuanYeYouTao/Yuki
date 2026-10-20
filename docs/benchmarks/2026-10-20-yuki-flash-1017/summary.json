@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "title": "Yuki native agent evaluation with DeepSeek Flash 1017",
+  "run_label": "2026-10-20",
+  "final_report_snapshot": "2026-10-20T17:25:47.491791+00:00",
+  "tested_yuki_revision": "313b6b9bdf07d411751db13b0a35f8f634f0035b",
+  "tested_revision_url": "https://github.com/YuanYeYouTao/Yuki/commit/313b6b9bdf07d411751db13b0a35f8f634f0035b",
+  "release_relation": "Measured before 4.0.0; not a rerun of the 4.0.0 tag.",
+  "model": {
+    "provider": "DeepSeek",
+    "release_label": "Flash 1017",
+    "api_alias": "deepseek-flash",
+    "thinking_enabled": true,
+    "reasoning_effort": "high",
+    "request_max_output_tokens": 393216,
+    "http_timeout_seconds": null,
+    "max_model_requests": null,
+    "max_tool_calls": null
+  },
+  "agent": {
+    "implementation": "Yuki native Main/Work/tool runtime",
+    "code_mode": false,
+    "subagents": false,
+    "web_tool_mode": "disabled",
+    "task_container_network": "bridge",
+    "compact_trigger_tokens": 1048576,
+    "configuration_fingerprint": "10b49541e2641e045a2dd32c403bb81f040d43d00559a884e7acfa53044a0cb0"
+  },
+  "environment": {
+    "host_cpu": "Intel Core i9-13900H",
+    "physical_memory": "32 GB",
+    "platform": "Windows host, WSL2 Linux, Docker task containers",
+    "gpu_used": false,
+    "swe_task_concurrency": [
+      2,
+      4
+    ],
+    "terminal_task_concurrency": [
+      1,
+      2
+    ]
+  },
+  "datasets": {
+    "swe_bench_lite": {
+      "dataset": "SWE-bench/SWE-bench_Lite",
+      "split": "test",
+      "revision": "b0dde1093fe417d83b7184254edf8199c1f0dff5",
+      "harness": "swebench==5.0.2",
+      "grading_run_id": "yuki-lite-test-full-capacity-20261020",
+      "attempts_per_instance": 1,
+      "tasks": 300,
+      "passed": 216,
+      "pass_rate": 0.72,
+      "usage_complete_tasks": 300,
+      "usage_unverified_tasks": [],
+      "all_observed_known_fields": {
+        "scope": "complete",
+        "token_and_request_sums": {
+          "input_tokens": 463412887,
+          "output_tokens": 5537393,
+          "cached_input_tokens": 451694208,
+          "total_tokens": 468950280,
+          "physical_request_count": 8290
+        },
+        "derived_uncached_input_tokens": 11718679,
+        "weighted_cache_hit_rate": 0.9747122289242681,
+        "model_invocation_rows": 8290,
+        "input_token_known_rows": 8290,
+        "input_token_observed_rows": 8290
+      },
+      "complete_tasks_only": {
+        "tasks": 300,
+        "token_and_request_sums": {
+          "input_tokens": 463412887,
+          "output_tokens": 5537393,
+          "cached_input_tokens": 451694208,
+          "total_tokens": 468950280,
+          "physical_request_count": 8290
+        },
+        "weighted_cache_hit_rate": 0.9747122289242681,
+        "mean_cumulative_total_tokens_per_task": 1563167.6,
+        "median_cumulative_total_tokens_per_task": 905123.5
+      },
+      "native_work_wall_seconds": {
+        "mean": 296.58013880491256,
+        "median": 176.03750002384186,
+        "definition": "Native Work wall time, including tool waits; excludes image preparation and official grading. Not batch elapsed time."
+      }
+    },
+    "terminal_bench": {
+      "dataset": "terminal-bench@2.0",
+      "tasks_git_revision": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+      "harness": "harbor==0.1.44",
+      "job_name": "terminal-bench-2.0-20261020",
+      "attempts_per_task": 1,
+      "timeout_multiplier": 1.0,
+      "official_agent_verifier_limits_preserved": true,
+      "reward_counts": {
+        "one": 66,
+        "zero": 22,
+        "null": 1
+      },
+      "agent_timeout_count": 17,
+      "timeout_reward1_count": 6,
+      "tasks": 89,
+      "passed": 66,
+      "pass_rate": 0.7415730337078652,
+      "usage_complete_tasks": 84,
+      "usage_unverified_tasks": [
+        "adaptive-rejection-sampler",
+        "largest-eigenval",
+        "sam-cell-seg",
+        "torch-tensor-parallelism",
+        "video-processing"
+      ],
+      "all_observed_known_fields": {
+        "scope": "known_subset_only",
+        "token_and_request_sums": {
+          "input_tokens": 207694348,
+          "output_tokens": 2629959,
+          "cached_input_tokens": 204195584,
+          "total_tokens": 210324307,
+          "physical_request_count": 3092
+        },
+        "derived_uncached_input_tokens": 3498764,
+        "weighted_cache_hit_rate": 0.983154264746771,
+        "model_invocation_rows": 3094,
+        "input_token_known_rows": 3092,
+        "input_token_observed_rows": 3094
+      },
+      "complete_tasks_only": {
+        "tasks": 84,
+        "token_and_request_sums": {
+          "input_tokens": 183840675,
+          "output_tokens": 2241022,
+          "cached_input_tokens": 180637952,
+          "total_tokens": 186081697,
+          "physical_request_count": 2796
+        },
+        "weighted_cache_hit_rate": 0.9825788117890668,
+        "mean_cumulative_total_tokens_per_task": 2215258.2976190476,
+        "median_cumulative_total_tokens_per_task": 921331.0
+      },
+      "native_work_wall_seconds": {
+        "mean": 601.503835785255,
+        "median": 320.6478147506714,
+        "definition": "Native Work wall time, including tool waits; excludes image preparation and official grading. Not batch elapsed time."
+      }
+    }
+  },
+  "failure_primary_counts": {
+    "swe_bench_lite": {
+      "f2p_only": 68,
+      "unparseable_test_result": 1,
+      "f2p_and_p2p": 7,
+      "p2p_only": 8
+    },
+    "terminal_bench": {
+      "artifact_contract_mismatch": 8,
+      "unfinished_at_official_timeout": 5,
+      "verification_environment_blocked": 8,
+      "no_completed_verifier_evidence": 1,
+      "native_runtime_failure": 1
+    }
+  },
+  "definitions": {
+    "cache_hit_rate": "sum(cached_input_tokens) / sum(input_tokens) on the same jointly known records; not the mean of task-level percentages.",
+    "tokens": "Cumulative provider usage across requests, including repeatedly supplied conversation context; not unique text volume.",
+    "unknown_usage": "Null and incomplete coverage remain unknown. Count mismatches are not proof that an unrecorded request was dispatched or billed.",
+    "score": "Retained official harness rewards/resolved labels. Timeout and native status do not overwrite reward."
+  },
+  "limits": [
+    "One formal attempt per task; no repeated-seed stability estimate.",
+    "No same-model comparison against another agent.",
+    "No official leaderboard submission or ATIF review claimed.",
+    "Terminal-Bench2.0 is the measured version; later2.1 task fixes do not change these scores.",
+    "No provider invoice or price estimate included."
+  ],
+  "files": {
+    "swe_tasks": "swe-bench-lite.tasks.json",
+    "terminal_tasks": "terminal-bench.tasks.json",
+    "swe_failures": "failures.swe-bench-lite.json",
+    "terminal_failures": "failures.terminal-bench.json",
+    "timeout_passes": "timeout-passes.json",
+    "provenance": "provenance.json"
+  }
+}

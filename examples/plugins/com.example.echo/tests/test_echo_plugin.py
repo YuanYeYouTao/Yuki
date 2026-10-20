@@ -99,12 +99,14 @@ async def test_echo_extensions_use_fake_context_without_network() -> None:
         sender_user_id="10001",
         scope_type="group",
         group_id="20001",
+        person_id="person-1",
+        space_id="space-1",
         text="echo hello",
         received_at=datetime.now(UTC),
     )
     await context.config.set("prefix", "Global", scope_type="global")
-    await context.config.set("prefix", "User", scope_type="user", scope_id="10001")
-    await context.config.set("prefix", "Group", scope_type="group", scope_id="20001")
+    await context.config.set("prefix", "User", scope_type="user", scope_id="person-1")
+    await context.config.set("prefix", "Group", scope_type="group", scope_id="space-1")
     await plugin.start(context)
 
     tool = registrar.tools[0]

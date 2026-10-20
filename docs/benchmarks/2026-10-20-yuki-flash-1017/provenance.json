@@ -1,0 +1,39 @@
+{
+  "measured_source_revision": "313b6b9bdf07d411751db13b0a35f8f634f0035b",
+  "source_revision_url": "https://github.com/YuanYeYouTao/Yuki/commit/313b6b9bdf07d411751db13b0a35f8f634f0035b",
+  "source_code_role": "Historical evaluation revision. Benchmark adapters are not included in the4.0.0 release report package.",
+  "source_snapshot_time": "2026-10-20T17:25:47.491791+00:00",
+  "official_receipt_extracts": [
+    "evidence/swe-official.json",
+    "evidence/terminal-official.json"
+  ],
+  "native_usage_extracts": [
+    "swe-bench-lite.tasks.json",
+    "terminal-bench.tasks.json"
+  ],
+  "relative_source_prefix": "local-source/ refers to the maintainer's retained original benchmark directory, without an absolute host path.",
+  "excluded": [
+    "API keys and private configuration files",
+    "user/person/conversation identities",
+    "task problem statements",
+    "gold patches or answers",
+    "full verifier tests",
+    "submitted patches",
+    "full model or tool trajectories",
+    "databases",
+    "container images",
+    "historical leaderboard scraping and price scenarios"
+  ],
+  "formal_scope": {
+    "swe": "Only swe-lite-test-full-capacity/tasks canonical300, excluding smoke and earlier infrastructure-failed attempts.",
+    "terminal": "Only the89 retained official trial results in terminal-bench-2.0-20261020; calibration and zero-native preparation archives excluded."
+  },
+  "official_references": {
+    "terminal_bench_2_repository": "https://github.com/laude-institute/terminal-bench-2/tree/69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+    "harbor_version": "https://pypi.org/project/harbor/0.1.44/",
+    "swe_dataset": "https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite/tree/b0dde1093fe417d83b7184254edf8199c1f0dff5",
+    "swe_harness": "https://pypi.org/project/swebench/5.0.2/",
+    "swe_lite_description": "https://www.swebench.com/lite.html",
+    "terminal_bench_2_1_version_context": "https://www.tbench.ai/news/terminal-bench-2-1"
+  }
+}
