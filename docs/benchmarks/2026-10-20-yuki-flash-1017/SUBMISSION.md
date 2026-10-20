@@ -31,20 +31,22 @@ swebench submit register ./submission -s lite --dry-run
 
 ## Terminal-Bench 2.0
 
-Harbor Hub 可以上传已有 job，供浏览和分享，再按对应榜单的入口申请收录。当前 Harbor 的公开示例是：
+目前旧 [TB 2.0 官方提交仓库](https://huggingface.co/datasets/harborframework/terminal-bench-2-leaderboard) 顶部标注 **SUBMISSIONS CLOSED**，并说明正在准备新的 2.0 提交流程，已有 job 和轨迹可复用。不能继续把旧仓库 PR 当作当前开放入口。
+
+该仓库公布的旧流程要求每题至少 **5 次独立运行**，89 题共 445 个 trial。本次是完整单轮；若按旧规则补齐，可保留现有一轮再补四轮（[维护者说明](https://huggingface.co/datasets/harborframework/terminal-bench-2-leaderboard/discussions/17)）。新入口开放后是否沿用这一规则，需要以新的 2.0 说明为准。本次报告保留原单轮结果，不把 66/89 当成五轮均值。
+
+TB 2.0 的官方审核要求通过题提供 ATIF 轨迹。Yuki 原生轨迹需要按真实记录转换，并与 task、工具执行及最终 reward 对应。六道超时后验证通过的题同时保留 timeout、reward 和原时间记录，提交审核时使用完整材料。
+
+Harbor Hub 可以上传已有 job，供浏览和分享。当前 Harbor 的公开示例是：
 
 ```sh
 harbor upload <job-directory>
 ```
 
-默认上传为私有；公开提交时再选择相应共享方式。原评测固定 Harbor `0.1.44`，上传工具与旧 job 的兼容性应在独立环境核对。
+默认上传为私有；公开分享时再选择相应方式。原评测固定 Harbor `0.1.44`，上传工具与旧 job 的兼容性应在独立环境核对。Hub 的通用上传和其他版本榜单入口，不能代替 TB 2.0 的正式收录申请；本次调研尚未找到旧仓库公告之后开放新 2.0 投稿通道的官方说明。
 
-TB 2.0 的官方审核要求通过题提供 ATIF 轨迹。Yuki 原生轨迹需要按真实记录转换，并与 task、工具执行及最终 reward 对应。六道超时后验证通过的题保留两种状态与原时间记录，沿同一材料提交。
-
-旧版 2.0 当前接受新条目的入口、重复运行次数和审核流程，需要以该版本维护者的确认结果为准。上传到 Hub 与被官方榜单收录是两个步骤。若需补独立重复实验，应另存每次结果；本次单轮分数保留原样。
-
-参考：[Harbor 结果分享](https://www.harborframework.com/news/job-result-sharing)、[TB 2.0 的 ATIF 与审核要求](https://www.tbench.ai/news/leaderboard-integrity-update)、[共同时间限制](https://www.tbench.ai/news/leaderboard-integrity-and-timeouts)。
+参考：[2.0 提交仓库与重复次数](https://huggingface.co/datasets/harborframework/terminal-bench-2-leaderboard)、[Harbor 结果分享](https://docs.harborframework.com/news/job-result-sharing)、[Hub 榜单管理](https://docs.harborframework.com/harbor-hub/leaderboards)、[TB 2.0 的 ATIF 与审核要求](https://www.tbench.ai/news/leaderboard-integrity-update)、[共同时间限制](https://www.tbench.ai/news/leaderboard-integrity-and-timeouts)。
 
 ## 当前材料进度
 
-SWE Lite 已有预测、评分和原生记录，下一步是按提交格式整理公开结果仓库。TB 已有原 job 和运行记录，下一步是 ATIF 导出及旧版提交口径核对。本次 4.0.0 文档 PR 不执行榜单上传、外部提交或新增模型运行。
+SWE Lite 已有预测、评分和原生记录，下一步是按提交格式整理公开结果仓库。TB 已有原 job 和运行记录，下一步是 ATIF 导出，以及等待或确认新的 2.0 投稿入口和重复运行要求。本次 4.0.0 文档 PR 不执行榜单上传、外部提交或新增模型运行。
