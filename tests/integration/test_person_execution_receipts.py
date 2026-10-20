@@ -34,6 +34,7 @@ from yuki.plugin_host.repository import PluginInstallationRepository
 from yuki.runtime.origin import TurnOrigin
 from yuki.social.db_models import SocialOperationModel
 from yuki.social.models import OperationStatus, SocialError
+from yuki_plugin_sdk import PLUGIN_API_VERSION
 from yuki_plugin_sdk.errors import PluginPermissionError
 from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -103,7 +104,7 @@ async def test_sdk_image_replay_does_not_read_expired_original_bytes(
         plugin_id=plugin,
         name=plugin,
         version="1",
-        plugin_api="6.0",
+        plugin_api=PLUGIN_API_VERSION,
         yuki_requires="*",
         manifest_hash="original-media-manifest",
         entrypoint="plugin:register",

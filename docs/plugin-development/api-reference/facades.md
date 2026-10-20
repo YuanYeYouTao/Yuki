@@ -122,10 +122,11 @@ Agent turn 由持久 Outbox 独立发送。当前通知只在其后台 turn 的 
 常规会话不自动附加旧外部事件摘要；需要历史事实时由 Agent 显式检索。Grant 的增删要求原 actor Person 的当前有效超管资格。
 
 `plugin_id + event_key + target` 只负责定位，Host 还会校验完整请求身份：`external_source`、
-`event_type`、时间、payload、summary、text、`ask_agent`、intent 与按顺序排列的媒体
-handle/SHA/expiry。完全相同的重试返回原 receipt；任一字段不同返回 `receipt_conflict`。已存在路径
-只读复用，不能给旧通知补 text、media 或 Agent job。插件必须在第一次 attempt 前确定请求；结果
-未知时只能重试字节等价请求。
+`event_type`、时间、payload、summary、text、`ask_agent`、intent 与按顺序排列的媒体 SHA。
+原位置的原 handle 使用原已接纳媒体证明；换用另一个 handle 时须证明内容 SHA 相同。媒体的当前
+有效期只约束首次接纳，过期或清理不否定原 receipt。请求内容冲突返回 `receipt_conflict`；
+已存在路径只读复用，不能给旧通知补 text、media 或 Agent job。插件必须在第一次 attempt 前
+确定请求；结果未知时沿原请求身份恢复。
 
 ## Automation
 

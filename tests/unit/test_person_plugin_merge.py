@@ -17,6 +17,7 @@ from yuki.plugin_host.repository import (
     PluginStateRepository,
 )
 from yuki.plugin_host.session_repository import PluginAgentSessionRepository
+from yuki_plugin_sdk import PLUGIN_API_VERSION
 
 
 async def setup(database):
@@ -25,7 +26,7 @@ async def setup(database):
         plugin_id=plugin,
         name=plugin,
         version="1",
-        plugin_api="6.0",
+        plugin_api=PLUGIN_API_VERSION,
         yuki_requires="*",
         manifest_hash="original-plugin-manifest",
         entrypoint="plugin:register",

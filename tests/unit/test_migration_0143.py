@@ -60,7 +60,8 @@ def test_upgrade_preserves_sources_and_backfills_exact_pairs(
         connection.execute(
             "INSERT INTO plugin_agent_sessions(session_id,plugin_id,scope_type,name,model,"
             "instructions,persistence,context_profile,allowed_capabilities_json,status,"
-            "next_sequence,turn_count,created_at,updated_at,last_active_at,canonical_owner_person_id) "
+            "next_sequence,turn_count,created_at,updated_at,last_active_at,"
+            "canonical_owner_person_id) "
             "VALUES('original-session','original-plugin','user','Original','original-model',"
             "'Continue original story','durable','none','[\"unused\"]','active',2,1,"
             "'2026-10-20','2026-10-20','2026-10-20',?)",
