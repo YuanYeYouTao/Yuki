@@ -116,6 +116,18 @@ class DesktopComputerFixture:
         await self.manager.close()
         self.short.cleanup()
 
+    async def work_facts(self):
+        return {
+            "manager_jobs": [
+                {"run_id": row["id"], "status": self.manager.get(row["id"])["status"]}
+                for row in self.manager.db.execute(
+                    "SELECT id FROM environment_jobs WHERE kind='terminal_exec'"
+                )
+            ],
+            "waits": [dict(row) for row in self.manager.db.execute("SELECT * FROM help_requests")],
+            "control": self.manager.computer.control(),
+        }
+
     async def rfb(self, reader, writer):
         self.connections += 1
         self.writers.add(writer)

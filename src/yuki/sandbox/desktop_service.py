@@ -9,9 +9,23 @@ import socket
 import subprocess
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
 from types import FrameType
 from typing import Any
+
+CDP_VERSION_URL = "http://127.0.0.1:9222/json/version"
+
+
+def browser_ready() -> bool:
+    # Chromium's loopback debugger must never go through an outbound proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(CDP_VERSION_URL, timeout=0.2) as response:
+            version = json.load(response)
+        return isinstance(version, dict) and bool(version.get("webSocketDebuggerUrl"))
+    except (OSError, ValueError):
+        return False
 
 
 def main() -> int:
@@ -73,6 +87,12 @@ def main() -> int:
             ],
         ):
             children.append(subprocess.Popen(command, env=environment))
+        while not stopped and all(child.poll() is None for child in children):
+            if browser_ready():
+                break
+            time.sleep(0.1)
+        else:
+            return 0 if stopped else 1
         root = Path(os.environ.get("YUKI_COMPUTER_RUNTIME", "/var/lib/yuki-runtime/computer"))
         root.mkdir(parents=True, exist_ok=True)
         descriptor, temporary = tempfile.mkstemp(dir=root, prefix=".desktop-status-")

@@ -100,7 +100,9 @@ python /opt/yuki-runtime/sticker_index.py --workspace /workspace search --platfo
 
 把示例资产 ID 换成真实文件名。去掉 rebuild 的 `--platform` 可整理现有各平台目录。普通文件操作不要求经过 helper；编辑后新标签的搜索生效点是 update/rebuild 完成，不用父目录 mtime 猜测。helper 不需要 Bot 数据库或管理凭据，不调用模型、发送消息或重写历史。首次索引未完成不能当无候选，JSON 和文件仍自由编辑。
 
-桌面环境镜像可在仓库根构建为 `yuki-environment:desktop-1`（`deploy/sandbox/Dockerfile.environment`），验证镜像接受 `YUKI_ENVIRONMENT_IMAGE` build arg。新镜像安装 TigerVNC、Openbox、Chromium、中文／Emoji 字体及 `yuki-computer`；`/opt/yuki-runtime/manifest.json` 记录实际包版本。桌面以原 Supervisor 的 `yuki-desktop` 服务运行，RFB 只在容器 loopback，浏览器 profile 留在 HOME。没有闲置自动停止。
+桌面环境镜像可在仓库根构建为 `yuki-environment:desktop-1`（`deploy/sandbox/Dockerfile.environment`），验证镜像接受 `YUKI_ENVIRONMENT_IMAGE` build arg。新镜像安装 TigerVNC、Openbox、Chromium、中文／Emoji 字体及 `yuki-computer`；`/opt/yuki-runtime/manifest.json` 记录实际包版本。桌面以原 Supervisor 的 `yuki-desktop` 服务运行，RFB 只在容器 loopback，浏览器 profile 留在 HOME。服务在实际 RFB 与 Chromium loopback debugger 就绪后才报告 running；启动中的 HTTP 错误或不完整 CDP 响应保持 starting，子进程退出沿原服务失败/恢复处理。没有闲置自动停止。
+
+新容器的 hostname 沿其运维配置的容器名称，避免实际重建后 Chromium 把同一持久 profile 误判为另一台电脑正在使用。现有容器不因此重建或改 hostname。旧部署已经留下跨 hostname 的 SingletonLock 时，先核对原环境/所有 Chromium 进程都已停止、HOME 没有被另一活动实例共享，再由操作者处理该过期锁；Manager 不自动删除 profile 或抢占其它电脑的锁。
 
 旧 rootFS 可显式原地安装桌面组件：
 

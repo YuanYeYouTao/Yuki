@@ -126,7 +126,13 @@ async def serve(root: Path, port: int) -> None:
             computer_work["phase"] += 1
             phase = computer_work["phase"]
             if phase == 1:
-                name, arguments = "task_control", {"action": "accept", "goal": "原電腦協助工作"}
+                name, arguments = (
+                    "task_control",
+                    {
+                        "action": "accept",
+                        "goal": computer_work["goal"],
+                    },
+                )
             elif phase == 2:
                 cli = Path(__file__).parents[2] / "src/yuki/sandbox/yuki_computer.py"
                 command = [
@@ -137,14 +143,17 @@ async def serve(root: Path, port: int) -> None:
                     "--note",
                     "請協助原工作的畫面步驟",
                 ]
-                name, arguments = (
-                    "terminal_exec",
-                    {"command": shlex.join(command), "cwd": str(root)},
-                )
+                if getattr(computer, "external", False):
+                    # Both the wait and file creation execute inside the real environment.
+                    program = Path(__file__).with_name("desktop_browser_work.py").read_text()
+                    shell = shlex.join(["python", "-u", "-c", program])
+                    cwd = "/workspace"
+                else:
+                    shell, cwd = shlex.join(command), str(root)
+                name, arguments = "terminal_exec", {"command": shell, "cwd": cwd}
             elif phase == 3:
-                computer_work["run_id"] = computer.manager.db.execute(
-                    "SELECT id FROM environment_jobs WHERE kind='terminal_exec'"
-                ).fetchone()[0]
+                receipt = json.loads(request.messages[-1].content)
+                computer_work["run_id"] = receipt["data"]["run_id"]
                 name, arguments = (
                     "task_control",
                     {
@@ -158,6 +167,22 @@ async def serve(root: Path, port: int) -> None:
                 assert request.messages[-1].role == "tool" and return_note in str(
                     request.messages[-1].content
                 )
+                if getattr(computer, "external", False):
+                    name, arguments = (
+                        "workspace_publish",
+                        {"path": "original-computer.md", "name": "原電腦成果.md"},
+                    )
+                else:
+                    name, arguments = (
+                        "send_message",
+                        {
+                            "artifact_id": computer_work["artifact"]["artifact_id"],
+                            "attachment_kind": "file",
+                            "text": "原電腦工作成果",
+                        },
+                    )
+            elif phase == 6 and getattr(computer, "external", False):
+                computer_work["artifact"] = json.loads(request.messages[-1].content)["data"]
                 name, arguments = (
                     "send_message",
                     {
@@ -166,7 +191,7 @@ async def serve(root: Path, port: int) -> None:
                         "text": "原電腦工作成果",
                     },
                 )
-            elif phase == 6:
+            elif phase == 6 or (phase == 7 and getattr(computer, "external", False)):
                 name, arguments = (
                     "task_control",
                     {"action": "complete", "result": "已讀原交回回執並交付原版本成果"},
@@ -204,7 +229,14 @@ async def serve(root: Path, port: int) -> None:
     await container._freeze_main_manifest()
     await container.work_scheduler.start()
     computer = None
-    if os.environ.get("YUKI_DESKTOP_COMPUTER_FIXTURE") == "1":
+    if external_socket := os.environ.get("YUKI_DESKTOP_MANAGER_SOCKET"):
+        from tests.support.desktop_external_computer import DesktopExternalComputer
+
+        computer = DesktopExternalComputer(
+            container, Path(external_socket), Path(os.environ["YUKI_DESKTOP_MANAGER_ROOT"])
+        )
+        await computer.start(person)
+    elif os.environ.get("YUKI_DESKTOP_COMPUTER_FIXTURE") == "1":
         from tests.support.desktop_computer_fixture import DesktopComputerFixture
 
         computer = DesktopComputerFixture(
@@ -385,16 +417,20 @@ async def serve(root: Path, port: int) -> None:
         return {"ok": True}
 
     @personal.post("/__test/computer-work-scenario")
-    async def computer_work_scenario():
+    async def computer_work_scenario(goal: str = "原電腦協助工作"):
         nonlocal computer_work
         assert computer is not None and computer.native_work
-        artifact = await asyncio.to_thread(
-            snapshot_bytes,
-            container.workspace_service.store,
-            "原電腦成果.md",
-            b"# Original computer artifact\n\nDelivered after the original return receipt.\n",
+        artifact = (
+            None
+            if getattr(computer, "external", False)
+            else await asyncio.to_thread(
+                snapshot_bytes,
+                container.workspace_service.store,
+                "原電腦成果.md",
+                b"# Original computer artifact\n\nDelivered after the original return receipt.\n",
+            )
         )
-        computer_work = {"phase": 0, "run_id": None, "artifact": artifact}
+        computer_work = {"phase": 0, "run_id": None, "artifact": artifact, "goal": goal}
         return artifact
 
     @personal.get("/__test/computer-work-facts")
@@ -420,16 +456,8 @@ async def serve(root: Path, port: int) -> None:
             "work_ids": work_ids,
             "inputs": mailbox,
             "runs": runs,
-            "manager_jobs": [
-                {"run_id": row["id"], "status": computer.manager.get(row["id"])["status"]}
-                for row in computer.manager.db.execute(
-                    "SELECT id FROM environment_jobs WHERE kind='terminal_exec'"
-                )
-            ],
-            "waits": [
-                dict(row) for row in computer.manager.db.execute("SELECT * FROM help_requests")
-            ],
-            "control": computer.manager.computer.control(),
+            "artifact": computer_work["artifact"] if computer_work else None,
+            **await computer.work_facts(),
         }
 
     @personal.post("/__test/lose-next-work-response/{action}")

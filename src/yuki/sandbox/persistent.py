@@ -404,6 +404,8 @@ class PersistentManager:
                 "create",
                 "--name",
                 self.name,
+                "--hostname",
+                self.name,
                 "--label",
                 LABEL,
                 "--runtime",
