@@ -335,3 +335,14 @@ CLI 的 `conversation recount-uncovered` 与旧专用摘要探针退役；实际
 Bot 原 `conversation-media-cache` 同份目录需只读挂进共享环境 `/inputs/media-cache`，各会话的 Agent 均可直接读取或复制，聊天历史仍按各自 Conversation。Manager 显式设置 `YUKI_MANAGER_MEDIA_CACHE` 到 Bot 实际缓存宿主路径；既有容器不会自动新增挂载。保全 HOME/runtime、jobs、服务和完整 rootFS 后，通过原私有 checkpoint 明确替换一次环境，加挂同一份缓存；保留原 ExecStart 和所有自定义覆盖，停止期限用 infinity 收拢真实 I/O。表情 helper 两文件也要实际安装进该 rootFS，不能仅更新 Bot 镜像或未来 Dockerfile。具体步骤见[持久环境](operations/persistent-environment.zh-CN.md)。
 
 升级前一致备份数据库与文件，在副本沿实际 revision 到 head 验证迁移和原事实，再仅替换需要的 Bot/Manager/持久环境。SnowLuma、代理与其他服务不随之重建。健康、schema、原插件批准/数据、共享只读缓存、Main终端和清理分别记录；不发送真实 QQ/TG 测试消息，不将离线 codec、SQL 性能或健康检查冒称自然流量、语义准确率或 Provider 缓存验收。回退保全升级后的新消息、文件和效果，不默认恢复旧数据库。
+
+
+## 桌面角色头像的一次性初始化
+
+角色资料迁移完成、原 Bot 提供 operator API 后，在原部署上下文用明确的原 character.id 执行
+[头像初始化命令](architecture/client-api.md#角色头像)。先以 `yuki admin character show` 查证原 ID，
+再以现有 `img/Yuki_avatar.png` 初始化默认图与当前图；新角色不执行此步骤，保持字母头像。
+`--state-file` 放在原部署的持久数据目录，随数据库和头像文件一起保留；命令可在原 UUID 下恢复，
+完成后重跑只返回 already_initialized，不覆盖之后的用户选择。已有自选图或升级中发生冲突时停止，
+不要删除状态、改 revision 或建立新 UUID 来覆盖。先在获准的副本验证，再按原发版流程执行；
+此步骤不重建人物、历史、Work 或沙箱，也不回收旧头像。

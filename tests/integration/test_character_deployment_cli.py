@@ -143,6 +143,36 @@ async def test_character_bootstrap_preserves_original_person_receipt_over_actual
             assert profile["viewer"]["is_owner"] is True
             content = (project / "bootstrap.json").read_text()
             assert code not in content and paired["token"] not in content
+            # Setup itself leaves new roles without a default image. Existing-instance
+            # upgrades are an explicit operator command, bound to the proven character.
+            assert profile["avatar"] is None and profile["default_avatar"] is None
+            from PIL import Image
+
+            source, alternate = tmp_path / "original.png", tmp_path / "selected.png"
+            Image.new("RGB", (400, 300), "blue").save(source)
+            Image.new("RGB", (300, 400), "red").save(alternate)
+            state_file = tmp_path / "avatar-upgrade.json"
+            initialize = (
+                "character",
+                "avatar",
+                "initialize-existing",
+                str(source),
+                "--state-file",
+                str(state_file),
+                "--character-id",
+                original,
+            )
+            assert product.admin(project, *initialize)["status"] == "initialized"
+            initialized = product.admin(project, "character", "show")
+            assert initialized["id"] == original and initialized["avatar_revision"] == 2
+            assert initialized["avatar"]["sha256"] == initialized["default_avatar"]["sha256"]
+            selected = product.admin(
+                project, "character", "avatar", "set", str(alternate), "--revision", "2"
+            )
+            assert product.admin(project, *initialize)["status"] == "already_initialized"
+            assert product.admin(project, "character", "show")["avatar"] == selected["avatar"]
+            assert values["YUKI_CONTROL_OPERATOR_TOKEN"] not in state_file.read_text()
+
     finally:
         process.terminate()
         await asyncio.wait_for(process.wait(), 10)

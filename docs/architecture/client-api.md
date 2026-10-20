@@ -411,7 +411,13 @@ operator 的 `POST|DELETE /admin/v1/character/avatar`、
 `yuki admin character avatar set <png>|reset|set-default <png>`；CLI 依 EXIF 方向居中裁切、
 转换 sRGB 并规范输出。可显式给 `--revision`、`--request-id`；未给 revision 只先读一次
 当前 C2，再以该版本提交，冲突不会自动覆盖。未知响应使用原请求 ID 查 operation。
-部署只准备命令，不因代码落地自动更改运行实例的头像或默认图。
+部署不会在 Bot 启动或新角色 setup 时自动更改头像。已有实例的首次升级可显式执行
+`yuki admin character avatar initialize-existing img/Yuki_avatar.png --character-id <原角色UUID> --state-file <持久目录>/avatar-upgrade.json`。
+命令核对原角色 ID，只接受头像尚未变更的实例；用原 `set-default` 与 `set` 服务各提交一次，
+以 0600 本地状态保存原 UUID、图片哈希与 CAS 基线。响应不确定时先查同 operator 的原 operation，
+再沿原请求读取回执；初始化后重跑不覆写后来的自选头像。中途发生头像修改或原图变化时停止，
+由 operator 核对后使用普通 CAS 命令处理，不自动换版本覆盖。该状态必须与原部署一同持久保存；
+不能删除状态来重复初始化。部署主机使用 POSIX 文件锁串行化此命令，凭据不进入状态文件。
 
 ## 角色提示词文件
 
