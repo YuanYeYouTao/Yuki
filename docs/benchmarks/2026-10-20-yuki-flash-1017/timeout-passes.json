@@ -1,0 +1,135 @@
+{
+  "rows": [
+    {
+      "task": "compile-compcert",
+      "official_reward": 1.0,
+      "timeout_multiplier": 1.0,
+      "official_agent_timeout_seconds": 2400.0,
+      "recorded_agent_wall_seconds_including_cancellation": 2430.156501,
+      "recorded_wall_excess_seconds": 30.156500999999935,
+      "recorded_wall_excess_percent": 1.2565208749999972,
+      "original_result_path": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/compile-compcert__4dDm6gQ/result.json",
+      "timings": {
+        "agent_execution": {
+          "started_at": "2026-10-20T05:39:33.121516Z",
+          "finished_at": "2026-10-20T06:20:03.278017Z"
+        },
+        "verifier": {
+          "started_at": "2026-10-20T06:20:03.286971Z",
+          "finished_at": "2026-10-20T06:20:30.146248Z"
+        }
+      }
+    },
+    {
+      "task": "largest-eigenval",
+      "official_reward": 1.0,
+      "timeout_multiplier": 1.0,
+      "official_agent_timeout_seconds": 900.0,
+      "recorded_agent_wall_seconds_including_cancellation": 916.814211,
+      "recorded_wall_excess_seconds": 16.814211,
+      "recorded_wall_excess_percent": 1.8682456666666667,
+      "original_result_path": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/largest-eigenval__LffTDbC/result.json",
+      "timings": {
+        "agent_execution": {
+          "started_at": "2026-10-19T21:36:31.429692Z",
+          "finished_at": "2026-10-19T21:51:48.243903Z"
+        },
+        "verifier": {
+          "started_at": "2026-10-19T21:51:48.261101Z",
+          "finished_at": "2026-10-19T21:51:56.389816Z"
+        }
+      }
+    },
+    {
+      "task": "mcmc-sampling-stan",
+      "official_reward": 1.0,
+      "timeout_multiplier": 1.0,
+      "official_agent_timeout_seconds": 1800.0,
+      "recorded_agent_wall_seconds_including_cancellation": 1811.426602,
+      "recorded_wall_excess_seconds": 11.426602000000003,
+      "recorded_wall_excess_percent": 0.6348112222222224,
+      "original_result_path": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/mcmc-sampling-stan__Q2z6Gm9/result.json",
+      "timings": {
+        "agent_execution": {
+          "started_at": "2026-10-20T13:39:41.539478Z",
+          "finished_at": "2026-10-20T14:09:52.966080Z"
+        },
+        "verifier": {
+          "started_at": "2026-10-20T14:09:52.996248Z",
+          "finished_at": "2026-10-20T14:17:20.110635Z"
+        }
+      }
+    },
+    {
+      "task": "rstan-to-pystan",
+      "official_reward": 1.0,
+      "timeout_multiplier": 1.0,
+      "official_agent_timeout_seconds": 1800.0,
+      "recorded_agent_wall_seconds_including_cancellation": 1829.128157,
+      "recorded_wall_excess_seconds": 29.1281570000001,
+      "recorded_wall_excess_percent": 1.61823094444445,
+      "original_result_path": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/rstan-to-pystan__qL7gVeZ/result.json",
+      "timings": {
+        "agent_execution": {
+          "started_at": "2026-10-20T16:46:10.384751Z",
+          "finished_at": "2026-10-20T17:16:39.512908Z"
+        },
+        "verifier": {
+          "started_at": "2026-10-20T17:16:39.560753Z",
+          "finished_at": "2026-10-20T17:17:36.920072Z"
+        }
+      }
+    },
+    {
+      "task": "torch-tensor-parallelism",
+      "official_reward": 1.0,
+      "timeout_multiplier": 1.0,
+      "official_agent_timeout_seconds": 900.0,
+      "recorded_agent_wall_seconds_including_cancellation": 915.268543,
+      "recorded_wall_excess_seconds": 15.268543000000022,
+      "recorded_wall_excess_percent": 1.6965047777777802,
+      "original_result_path": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/torch-tensor-parallelism__rAazrE3/result.json",
+      "timings": {
+        "agent_execution": {
+          "started_at": "2026-10-19T23:16:37.291744Z",
+          "finished_at": "2026-10-19T23:31:52.560287Z"
+        },
+        "verifier": {
+          "started_at": "2026-10-19T23:31:52.569241Z",
+          "finished_at": "2026-10-19T23:36:38.259290Z"
+        }
+      }
+    },
+    {
+      "task": "tune-mjcf",
+      "official_reward": 1.0,
+      "timeout_multiplier": 1.0,
+      "official_agent_timeout_seconds": 900.0,
+      "recorded_agent_wall_seconds_including_cancellation": 918.179919,
+      "recorded_wall_excess_seconds": 18.17991900000004,
+      "recorded_wall_excess_percent": 2.0199910000000045,
+      "original_result_path": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/tune-mjcf__g7wQez4/result.json",
+      "timings": {
+        "agent_execution": {
+          "started_at": "2026-10-20T10:46:49.236921Z",
+          "finished_at": "2026-10-20T11:02:07.416840Z"
+        },
+        "verifier": {
+          "started_at": "2026-10-20T11:02:07.428533Z",
+          "finished_at": "2026-10-20T11:03:04.643166Z"
+        }
+      }
+    }
+  ],
+  "summary": {
+    "count": 6,
+    "minimum_recorded_wall_excess_seconds": 11.426602000000003,
+    "maximum_recorded_wall_excess_seconds": 30.156500999999935,
+    "mean_recorded_wall_excess_seconds": 20.162322166666684
+  },
+  "interpretation": [
+    "The six original Harbor reward1 outcomes remain included in66/89, alongside AgentTimeoutError; no manual score change or identity-based exception.",
+    "timeout_multiplier=1.0. Recorded excess wall time includes cancellation/receipt drain/resource closure/export; the entire excess is not established to be pure cleanup.",
+    "Background computation or artifact-write cutoffs are not established for every case. No claim is made that every successful artifact was finalized before the nominal deadline."
+  ]
+}

@@ -3,8 +3,8 @@ name = "Subscription Monitor"
 version = "1.0.0"
 description = "Monitor public feeds and ask Yuki's main Agent to evaluate conditional notifications."
 entrypoint = "subscription_monitor:SubscriptionMonitorPlugin"
-plugin_api = "6.0"
-yuki_requires = ">=3.9.0,<4.0"
+plugin_api = "7.0"
+yuki_requires = ">=4.0.0,<5.0"
 permissions = [
   "background.worker",
   "network.http.unrestricted",

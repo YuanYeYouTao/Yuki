@@ -1,28 +1,24 @@
 # Yuki 使用与运维帮助
 
-Yuki 3.9.0 的 Alembic head 为 `0119`，Plugin API 为 `3.5`，只支持 canonical runtime。永久 Yuki、
-Person、Binding、Space、Presence 和 canonical Conversation 的关系见
-[当前架构](architecture/canonical-runtime.md)。
+本页跟随 Yuki **4.0.0 开发基线**：Alembic head 为 `0143`，Plugin API 为 `7.0`。
+人物、账号、空间与会话的关系见[当前架构](architecture/canonical-runtime.md)，
+版本迁移见 [4.0 升级指南](upgrade-4.0.0.md)。
 
 ## 安装与启动
 
-Linux：
+现成部署包使用 [3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0)，
+安装器与配置步骤见[对应版本指南](upgrade-3.9.0.md)。4.0 当前提供源码开发基线，
+从 3.9 迁移见 [4.0 指南](upgrade-4.0.0.md)。
+
+源码开发先安装 Python 3.12 和 uv：
 
 ```bash
-chmod +x install.sh
-./install.sh
+uv sync --all-extras
+uv run yuki --help
 ```
 
-Windows PowerShell：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-两个安装器默认安装 `3.9.0`，正式镜像支持 `linux/amd64` 和 `linux/arm64`；部署包见
-[3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0)。引导配置会询问主模型、
-可选 Flash/Embedding/Web/Vision、QQ Provider、Plugin 与 Automation，不再配置 Genie。
-密钥输入不回显，程序不会在线试用 API key。
+命令入口统一为 `yuki`，服务进程使用 `yuki-bot`。引导配置填写模型连接、平台和插件；
+密钥输入不回显。
 
 日常运维：
 
@@ -104,11 +100,9 @@ QQ 管理仍使用 `/ai`。当前范围见[管理 API](architecture/admin-api.md
 在 QQ 中使用 `/ai help` 与 `/ai capabilities` 查看当前可用命令和能力；实际结果以当前
 Principal、会话和运行配置为准。
 
-## Plugin API 5.0
+## Plugin API 7.0
 
-当前 Host 只接受精确声明 Plugin API `5.0` 的插件。未发布的事件、未实现的 `runtime.config.read/write` 权限、Genie 专属接口与直接模型 LLMFacade 已移除；插件自己的配置仍使用 `plugin.config.read/write`，模型任务使用 `agent.run`。插件可以使用固定 primary `conversation_key`，也可读取可选的
-person、space、conversation 和 presence ID。插件不能自报超级管理员，也不能绕过
-Control Plane、Capability 或 Gateway Registry。
+当前 Host 只接受精确声明 Plugin API `7.0` 的插件。插件使用内部 Person、Space、Conversation ID，人物提及保留原位快照；插件配置仍使用 `plugin.config.read/write`，主 Agent 任务使用 `agent.run`。独立模型会话为 `plugin.agent_session.v2`，保留连续历史和真实模型请求预算。插件的实际权限由管理员批准和当前调用来源决定。
 
 插件发布的主动事件继续以独立 `external_event` 落账，不伪装成真人聊天。插件若请求 Yuki
 点评，只会创建可靠 WakeupRequest；Worker 加载该 canonical Conversation 与普通聊天完全相同的
@@ -122,7 +116,7 @@ compact 检查点、raw history、本轮资料、Prompt compiler、工具合同�
 - [Plugin 开发索引](plugin-development/index.md)
 - [架构](plugin-development/architecture.md)
 - [权限与安全](plugin-development/security.md)
-- [从旧 Plugin API 迁移](plugin-development/api-5.0-migration.md)
+- [迁移到 Plugin API 7.0](plugin-development/api-7.0-migration.md)
 
 ## Emoji 与 Vision
 
@@ -133,11 +127,9 @@ compact 检查点、raw history、本轮资料、Prompt compiler、工具合同�
 
 ## 数据与升级
 
-当前完整迁移链至 `0119`。`0098` 退役 MCP 状态，`0099` 冻结已提交摘要表示；`0100` 关联插件后台任务的原 Work，`0101` 将旧效果结果归一为明确 outcome 并保留原正文；`0102` 移除同 memory_key 单 active 的唯一索引，同 key 的独立事实可以共存。`0103`移除旧人物评分存储；`0104`删除无消费者的检查点配额记账、投递死字段及主动轮唯一占用；`0105`统一 Work 父子树并退役旧完成门槛；`0106`保留自动化的完整指令与原 run 恢复版本；`0107`增加实际查询索引。`0108`的资料差量缓存由`0109`清退，普通运行资料只用于当前激活，公共历史保留原聊天；`0110`将定时定义转为共同 Main 任务，保留原版本、到期 run、Work、预算和效果回执；`0111`删除 Memory 回执只接受 event/initiative 的封闭检查，无真人事件的 SELF 定时执行沿原发生、版本与 execution 记账。`0112`统一同一Conversation的公共历史，退出个人/SELF时区配置及公共笔记/观察摘要，原私有执行与引用保全。`0113`删除generation/reset时清除原观察及DAG的旧触发器，新会话仍取消旧来源的新执行并清公共历史，原件保留。历史 `0048` bridge 的来源限制仍有效，不能用版本号或
-手工 stamp 跳过来源校验。`0097` 退役四张 Genie 表及固定配置键，执行前必须核原
-Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当作纯缓存。
+当前 Alembic head 为 `0143`。正式 3.9.0 的 head 为 `0119`；4.0 新增 23 个迁移节点，涉及人物与账号归属、个人设备、插件会话、表情文件库和查询索引。迁移保留原事件、Work、预算、私有协议与执行回执，逐项变化见 [4.0 升级指南](upgrade-4.0.0.md)。
 
-`0114` 将旧群暂停状态迁入共同配置；`0115` 删除无消费者的反思诊断列；`0116` 退役旧 detached continuation claim；`0117` 删除无消费者的 OneBot 诊断日志；`0118` 为等待中的 sandbox run 建索引；`0119` 将有效公共检查点迁入既有 projection，退役旧 Rollup 表、等待与配置。原事件、Work、预算、journal、私有协议和执行回执保留。
+历史 `0048` bridge 仍按数据库真实来源处理，不能通过手工 stamp 跳过。`0097` 退役 Genie 表前需保全原 Work、发送回执及被引用音频；这些材料不是可随意删除的缓存。
 
 升级前停止实际写入本次数据库与备份目录的进程，并按同一时点备份：
 
@@ -150,7 +142,7 @@ Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当�
 `0097` 与 `0102` 明确拒绝丢失事实的 downgrade，优先向前修补。换回旧镜像不会恢复已删事实；恢复历史
 快照也不能覆盖升级后新消息、文件和回执。不要手工 stamp revision 或只恢复主 DB。
 当前权限清退、旧执行核对、冷备、插件 API 更新及切换步骤见
-[3.9.0 升级指南](upgrade-3.9.0.md)。
+[4.0.0 升级指南](upgrade-4.0.0.md)。
 
 ## 故障排查
 
@@ -158,13 +150,13 @@ Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当�
 
 检查：
 
-1. Space 与 SpaceBinding 是否 enabled。
-2. SpaceBinding ingest route 是否 paused。
-3. 当前 Presence 是否为该外部群的唯一 ingest。
-4. 当前 QQ 是否仍是群成员，且 Provider 成员探针可用。
-5. 群策略是否要求 @，以及当前消息是否正确投影到 Yuki Presence。
+1. Space 是否启用，SpaceBinding 是否为 `active`。
+2. Yuki 账号的 AccountAssignment 是否为 `active`、允许 ingest，Provider 是否真实在线。
+3. 群 ingest 路由是否暂停，所指 Presence 是否与当前入站账号一致。
+4. 冷路由或恢复所需的群成员探针是否成功；已认证且同一路由的普通入站无需逐条重查。
+5. 当前群策略是否要求 @，原生提及是否指向当前 Yuki 账号。
 
-不要为“先能说话”而伪造旧 group/scope 行或随意改 Conversation generation。
+群内超级管理员可用 `/ai admin group current enable` 恢复当前群，具体行为见[身份与群接入合同](architecture/canonical-runtime.md)。按原内部编号查询路由与归属，不手工改库或复活已结束的账号阶段。
 
 ### Provider 已登录但没有连接
 
@@ -190,5 +182,4 @@ historical 0048 bridge。pre-3.8 数据库不能通过关闭检查强行启动�
 
 ## 发布与版本
 
-发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)，当前版本见
-[3.9.0 说明](releases/v3.9.0.md)，旧版本记录见 [3.8.1 说明](releases/v3.8.1.md)。正式镜像与 Release 由 tag 流水线核对版本身份及 main 祖先关系，构建后验证已发布镜像、部署包、release smoke 与匿名拉取；Quality 的源码、前端与测试结果另行核对。
+当前开发基线见 [4.0.0 说明](releases/v4.0.0.md)，正式下载版本见 [3.9.0 说明](releases/v3.9.0.md)。本次准备不发布 4.0 镜像。正式发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)：tag 流水线核对版本身份及 main 祖先关系，构建后验证镜像、部署包与 release smoke；PR 的 Quality 检查验证源码与测试。

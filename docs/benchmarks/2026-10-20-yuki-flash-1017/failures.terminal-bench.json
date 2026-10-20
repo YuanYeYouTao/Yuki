@@ -1,0 +1,1108 @@
+{
+  "classification_method": "Mutually exclusive evidence-led primary classes. No completed reward first; original native runtime failure separately; verifier bootstrap/process blockers separately; missing/unreached required artifacts at official agent timeout separately; remaining observed functional/contract mismatches. These classes are analysis labels, not corrected benchmark scores or proof of counterfactual success.",
+  "primary_category_labels_zh": {
+    "artifact_contract_mismatch": "功能或产物合同不匹配",
+    "unfinished_at_official_timeout": "官方时限内关键产物或运行未完成",
+    "verification_environment_blocked": "验证器启动或依赖环境阻断",
+    "native_runtime_failure": "原生Agent运行失败",
+    "no_completed_verifier_evidence": "没有完成的评分证据"
+  },
+  "primary_category_counts": {
+    "artifact_contract_mismatch": 8,
+    "unfinished_at_official_timeout": 5,
+    "verification_environment_blocked": 8,
+    "no_completed_verifier_evidence": 1,
+    "native_runtime_failure": 1
+  },
+  "environment_blocked_subtypes": {
+    "agent_selected_install_timeout_then_interrupted_dpkg": 4,
+    "verifier_apt_package404": 2,
+    "verifier_apt_connection_failure": 1,
+    "verifier_uvx_bus_error": 1
+  },
+  "tb_2_1_context": {
+    "official_source": "https://www.tbench.ai/news/terminal-bench-2-1",
+    "official_changed_tasks": 28,
+    "intersection_count": 13,
+    "intersection_tasks": [
+      "adaptive-rejection-sampler",
+      "caffe-cifar-10",
+      "configure-git-webserver",
+      "extract-moves-from-video",
+      "filter-js-from-html",
+      "gpt2-codegolf",
+      "hf-model-inference",
+      "install-windows-3.11",
+      "make-doom-for-mips",
+      "mteb-retrieve",
+      "sam-cell-seg",
+      "torch-pipeline-parallelism",
+      "train-fasttext"
+    ],
+    "caveat": "Later official task changes are version context only; they are not used as causal proof, score corrections, or assumed passes for this run."
+  },
+  "cases": [
+    {
+      "task_id": "adaptive-rejection-sampler",
+      "trial_id": "adaptive-rejection-sampler__Wowbxyp",
+      "official": {
+        "reward": 0.0,
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 900.0 seconds",
+        "finished_at": "2026-10-20T03:53:22.676303Z"
+      },
+      "native": {
+        "status": "cancelled",
+        "work_state": "queued",
+        "work_reason": "activation_cancelled",
+        "failure": "task_cancelled",
+        "work_model_requests": 44,
+        "model_invocations": 43,
+        "physical_request_count": 43,
+        "model_error_categories": {},
+        "usage_complete": false
+      },
+      "primary_category": "artifact_contract_mismatch",
+      "verifier_symptom": "9 tests: 8 passed; normal-sampling test failed because lower was supplied as a vector where the implementation required a scalar.",
+      "root_cause_assessment": "The produced sampling interface did not satisfy the tested call contract. Whether TB2.0 specification/test ambiguity contributed is not established.",
+      "confidence": "high symptom; medium underlying cause",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": true,
+      "test_counts": {
+        "tests": 9,
+        "passed": 8,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792468392.7888896,
+        "stop": 1792468399.5477018
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/adaptive-rejection-sampler__Wowbxyp/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/adaptive-rejection-sampler__Wowbxyp/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/adaptive-rejection-sampler__Wowbxyp/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          126,
+          141
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/adaptive-rejection-sampler__Wowbxyp/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "caffe-cifar-10",
+      "trial_id": "caffe-cifar-10__rvFZ2Kv",
+      "official": {
+        "reward": 0.0,
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 1200.0 seconds",
+        "finished_at": "2026-10-20T00:09:05.725207Z"
+      },
+      "native": {
+        "status": "cancelled",
+        "work_state": "queued",
+        "work_reason": "activation_cancelled",
+        "failure": "task_cancelled",
+        "work_model_requests": 22,
+        "model_invocations": 22,
+        "physical_request_count": 22,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "unfinished_at_official_timeout",
+      "verifier_symptom": "6 tests: 1 passed; caffe binary, trained model and training log missing; solver remained configured for GPU.",
+      "root_cause_assessment": "Build and required CPU training were not completed before the official 1200s agent deadline.",
+      "confidence": "high",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": true,
+      "test_counts": {
+        "tests": 6,
+        "passed": 1,
+        "failed": 5,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792454942.8146653,
+        "stop": 1792454942.9611013
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/caffe-cifar-10__rvFZ2Kv/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/caffe-cifar-10__rvFZ2Kv/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/caffe-cifar-10__rvFZ2Kv/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          231,
+          241,
+          263,
+          279
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/caffe-cifar-10__rvFZ2Kv/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "configure-git-webserver",
+      "trial_id": "configure-git-webserver__uxmgnQv",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-20T04:07:19.265617Z"
+      },
+      "native": {
+        "status": "completed",
+        "work_state": "completed",
+        "work_reason": "completed",
+        "failure": null,
+        "work_model_requests": 32,
+        "model_invocations": 32,
+        "physical_request_count": 32,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "artifact_contract_mismatch",
+      "verifier_symptom": "The functional deployment verifier received HTTP404; 0/1 tests passed.",
+      "root_cause_assessment": "The delivered web deployment did not serve the verifier request. The exact hook/path/service configuration defect was not isolated.",
+      "confidence": "high symptom; medium underlying cause",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": true,
+      "test_counts": {
+        "tests": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792469184.2179792,
+        "stop": 1792469237.2093234
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/configure-git-webserver__uxmgnQv/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/configure-git-webserver__uxmgnQv/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/configure-git-webserver__uxmgnQv/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          33,
+          34
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/configure-git-webserver__uxmgnQv/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "dna-assembly",
+      "trial_id": "dna-assembly__WzJmrdY",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-20T17:24:51.550105Z"
+      },
+      "native": {
+        "status": "completed",
+        "work_state": "completed",
+        "work_reason": "completed",
+        "failure": null,
+        "work_model_requests": 50,
+        "model_invocations": 50,
+        "physical_request_count": 50,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "verification_environment_blocked",
+      "verifier_symptom": "Verifier stopped before pytest: dpkg interrupted, then curl and uvx missing; no CTRF.",
+      "root_cause_assessment": "Agent's package-install command was terminated by its own 300s tool timeout (exit -15), then the verifier encountered an interrupted package-manager state. This is a strong temporal/operational chain, not proof that the DNA answer itself was wrong.",
+      "confidence": "strong chain; answer unassessed",
+      "functional_validation_reached": false,
+      "changed_in_tb_2_1": false,
+      "test_counts": null,
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/dna-assembly__WzJmrdY/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/dna-assembly__WzJmrdY/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/dna-assembly__WzJmrdY/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          6,
+          7,
+          9
+        ],
+        "ctrf": null
+      },
+      "agent_selected_package_timeout": {
+        "tool_timeout_seconds": 300,
+        "run_id": "5fe8ccd8-c9f6-5922-a88c-64f9d5632a17",
+        "package_start_at": "2026-10-20 17:10:48.801175",
+        "terminal_receipt_at": "2026-10-20 17:15:49.506856",
+        "terminal_status": "failed",
+        "error": "timeout",
+        "exit_code": -15
+      }
+    },
+    {
+      "task_id": "dna-insert",
+      "trial_id": "dna-insert__dra2aiz",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-20T17:07:38.741121Z"
+      },
+      "native": {
+        "status": "completed",
+        "work_state": "completed",
+        "work_reason": "completed",
+        "failure": null,
+        "work_model_requests": 19,
+        "model_invocations": 19,
+        "physical_request_count": 19,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "verification_environment_blocked",
+      "verifier_symptom": "Verifier stopped before pytest: dpkg interrupted, then curl and uvx missing; no CTRF.",
+      "root_cause_assessment": "Agent's package-install command was terminated by its own 300s tool timeout (exit -15), then the verifier encountered an interrupted package-manager state. The DNA answer was not functionally evaluated.",
+      "confidence": "strong chain; answer unassessed",
+      "functional_validation_reached": false,
+      "changed_in_tb_2_1": false,
+      "test_counts": null,
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/dna-insert__dra2aiz/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/dna-insert__dra2aiz/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/dna-insert__dra2aiz/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          6,
+          7,
+          9
+        ],
+        "ctrf": null
+      },
+      "agent_selected_package_timeout": {
+        "tool_timeout_seconds": 300,
+        "run_id": "27c59e58-919d-5fd9-a9ae-90763d5bf401",
+        "package_start_at": "2026-10-20 17:00:59.274193",
+        "terminal_receipt_at": "2026-10-20 17:06:00.081454",
+        "terminal_status": "failed",
+        "error": "timeout",
+        "exit_code": -15
+      }
+    },
+    {
+      "task_id": "extract-moves-from-video",
+      "trial_id": "extract-moves-from-video__Cksy4m8",
+      "official": {
+        "reward": 0.0,
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 1800.0 seconds",
+        "finished_at": "2026-10-20T11:34:07.492859Z"
+      },
+      "native": {
+        "status": "cancelled",
+        "work_state": "queued",
+        "work_reason": "activation_cancelled",
+        "failure": "task_cancelled",
+        "work_model_requests": 41,
+        "model_invocations": 41,
+        "physical_request_count": 41,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "unfinished_at_official_timeout",
+      "verifier_symptom": "Both tests failed because the required solution file did not exist.",
+      "root_cause_assessment": "The required final artifact was not delivered before the official 1800s agent deadline.",
+      "confidence": "high",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": true,
+      "test_counts": {
+        "tests": 2,
+        "passed": 0,
+        "failed": 2,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792496043.662624,
+        "stop": 1792496043.7407527
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/extract-moves-from-video__Cksy4m8/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/extract-moves-from-video__Cksy4m8/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/extract-moves-from-video__Cksy4m8/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          46,
+          64
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/extract-moves-from-video__Cksy4m8/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "filter-js-from-html",
+      "trial_id": "filter-js-from-html__GiMdt5j",
+      "official": {
+        "reward": null,
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 1800.0 seconds",
+        "finished_at": "2026-10-20T15:25:28.884440Z"
+      },
+      "native": {
+        "status": "cancelled",
+        "work_state": "queued",
+        "work_reason": "activation_cancelled",
+        "failure": "task_cancelled",
+        "work_model_requests": 78,
+        "model_invocations": 78,
+        "physical_request_count": 78,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "no_completed_verifier_evidence",
+      "verifier_symptom": "No reward file or CTRF; verifier stdout ends during dependency installation. Official result retains AgentTimeoutError and reward=null.",
+      "root_cause_assessment": "Agent hit its official 1800s deadline. Live metadata previously confirmed two official verifier attempts of 900s each, but neither produced a final reward. The cause of the verifier's prolonged preparation is not proved.",
+      "confidence": "high missing-evidence; verifier root cause unknown",
+      "functional_validation_reached": false,
+      "changed_in_tb_2_1": true,
+      "test_counts": null,
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/filter-js-from-html__GiMdt5j/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/filter-js-from-html__GiMdt5j/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/filter-js-from-html__GiMdt5j/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [],
+        "ctrf": null
+      },
+      "verification_note": "Live metadata audit recorded two official verifier attempts, each900s. Raw stdout contains an overwritten/null-filled gap, so package-install progress alone cannot prove the underlying stall cause."
+    },
+    {
+      "task_id": "gcode-to-text",
+      "trial_id": "gcode-to-text__wGV6BJ4",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-20T11:41:42.239415Z"
+      },
+      "native": {
+        "status": "completed",
+        "work_state": "completed",
+        "work_reason": "completed",
+        "failure": null,
+        "work_model_requests": 41,
+        "model_invocations": 41,
+        "physical_request_count": 41,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "artifact_contract_mismatch",
+      "verifier_symptom": "1/2 tests passed; exact file-content comparison failed.",
+      "root_cause_assessment": "The answer file included explanatory notes and a case mismatch, violating the exact-output contract. No expected answer text is reproduced here.",
+      "confidence": "high",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": false,
+      "test_counts": {
+        "tests": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792496499.9568238,
+        "stop": 1792496500.001993
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/gcode-to-text__wGV6BJ4/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/gcode-to-text__wGV6BJ4/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/gcode-to-text__wGV6BJ4/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          198,
+          205,
+          213
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/gcode-to-text__wGV6BJ4/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "git-multibranch",
+      "trial_id": "git-multibranch__MFF3pgJ",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-20T07:28:53.807147Z"
+      },
+      "native": {
+        "status": "completed",
+        "work_state": "completed",
+        "work_reason": "completed",
+        "failure": null,
+        "work_model_requests": 19,
+        "model_invocations": 19,
+        "physical_request_count": 19,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "artifact_contract_mismatch",
+      "verifier_symptom": "0/1 functional tests passed; verifier clone reported an empty repository and never produced its deployment-success marker.",
+      "root_cause_assessment": "The repository/deployment state did not satisfy the multi-branch HTTPS workflow. Exact repository/hook configuration cause was not isolated.",
+      "confidence": "high symptom; medium underlying cause",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": false,
+      "test_counts": {
+        "tests": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792481311.004239,
+        "stop": 1792481331.2793202
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/git-multibranch__MFF3pgJ/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/git-multibranch__MFF3pgJ/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/git-multibranch__MFF3pgJ/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          213,
+          214
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/git-multibranch__MFF3pgJ/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "gpt2-codegolf",
+      "trial_id": "gpt2-codegolf__uQAW6vN",
+      "official": {
+        "reward": 0.0,
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 900.0 seconds",
+        "finished_at": "2026-10-19T20:12:50.776878Z"
+      },
+      "native": {
+        "status": "cancelled",
+        "work_state": "queued",
+        "work_reason": "activation_cancelled",
+        "failure": "task_cancelled",
+        "work_model_requests": 56,
+        "model_invocations": 56,
+        "physical_request_count": 56,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "unfinished_at_official_timeout",
+      "verifier_symptom": "0/1 tests passed; required C source artifact was missing.",
+      "root_cause_assessment": "Required implementation was not present at the tested path when the official 900s agent deadline expired.",
+      "confidence": "high",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": true,
+      "test_counts": {
+        "tests": 1,
+        "passed": 0,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792440767.7390344,
+        "stop": 1792440767.8055367
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/gpt2-codegolf__uQAW6vN/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/gpt2-codegolf__uQAW6vN/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/gpt2-codegolf__uQAW6vN/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          84,
+          91
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/gpt2-codegolf__uQAW6vN/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "hf-model-inference",
+      "trial_id": "hf-model-inference__q9ihU73",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-20T05:39:21.996797Z"
+      },
+      "native": {
+        "status": "completed",
+        "work_state": "completed",
+        "work_reason": "completed",
+        "failure": null,
+        "work_model_requests": 45,
+        "model_invocations": 45,
+        "physical_request_count": 45,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "artifact_contract_mismatch",
+      "verifier_symptom": "3/4 tests passed; the sentiment endpoint returned the wrong polarity for a positive input.",
+      "root_cause_assessment": "Functional inference output was wrong. The logs alone do not distinguish model/weight selection from label-mapping or other implementation errors.",
+      "confidence": "high symptom; underlying implementation cause unknown",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": true,
+      "test_counts": {
+        "tests": 4,
+        "passed": 3,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792474754.966089,
+        "stop": 1792474758.231593
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/hf-model-inference__q9ihU73/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/hf-model-inference__q9ihU73/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/hf-model-inference__q9ihU73/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          105,
+          106
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/hf-model-inference__q9ihU73/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "install-windows-3.11",
+      "trial_id": "install-windows-3.11__poJtuN5",
+      "official": {
+        "reward": 0.0,
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 3600.0 seconds",
+        "finished_at": "2026-10-20T10:07:27.699919Z"
+      },
+      "native": {
+        "status": "cancelled",
+        "work_state": "queued",
+        "work_reason": "activation_cancelled",
+        "failure": "task_cancelled",
+        "work_model_requests": 160,
+        "model_invocations": 160,
+        "physical_request_count": 160,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "artifact_contract_mismatch",
+      "verifier_symptom": "2/4 tests passed; QEMU used a different image path and the expected monitor socket was absent, so keyboard verification failed.",
+      "root_cause_assessment": "Delivered QEMU launch/monitor endpoints did not match TB2.0 verifier's interface contract. This does not establish whether the guest OS was otherwise usable.",
+      "confidence": "high symptom; version-contract caveat",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": true,
+      "test_counts": {
+        "tests": 4,
+        "passed": 2,
+        "failed": 2,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792490827.9501278,
+        "stop": 1792490842.9414413
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/install-windows-3.11__poJtuN5/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/install-windows-3.11__poJtuN5/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/install-windows-3.11__poJtuN5/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          130,
+          173,
+          175
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/install-windows-3.11__poJtuN5/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "make-doom-for-mips",
+      "trial_id": "make-doom-for-mips__F9MbXBe",
+      "official": {
+        "reward": 0.0,
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 900.0 seconds",
+        "finished_at": "2026-10-20T10:25:19.815318Z"
+      },
+      "native": {
+        "status": "cancelled",
+        "work_state": "queued",
+        "work_reason": "activation_cancelled",
+        "failure": "task_cancelled",
+        "work_model_requests": 80,
+        "model_invocations": 80,
+        "physical_request_count": 80,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "unfinished_at_official_timeout",
+      "verifier_symptom": "2/3 tests passed; VM execution output did not reach the expected graphics initialization marker.",
+      "root_cause_assessment": "A compiled artifact existed, but required MIPS runtime behavior was not demonstrated before the official 900s deadline. The exact runtime stall/implementation cause was not isolated.",
+      "confidence": "high symptom; medium underlying cause",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": true,
+      "test_counts": {
+        "tests": 3,
+        "passed": 2,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792491916.0800579,
+        "stop": 1792491917.3896782
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/make-doom-for-mips__F9MbXBe/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/make-doom-for-mips__F9MbXBe/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/make-doom-for-mips__F9MbXBe/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          447,
+          455
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/make-doom-for-mips__F9MbXBe/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "merge-diff-arc-agi-task",
+      "trial_id": "merge-diff-arc-agi-task__rFvU4Ev",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-19T20:51:26.244644Z"
+      },
+      "native": {
+        "status": "completed",
+        "work_state": "completed",
+        "work_reason": "completed",
+        "failure": null,
+        "work_model_requests": 27,
+        "model_invocations": 27,
+        "physical_request_count": 27,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "verification_environment_blocked",
+      "verifier_symptom": "Verifier stopped before pytest: dpkg interrupted, then curl and uvx missing; no CTRF.",
+      "root_cause_assessment": "Agent's Python package-install command was terminated by its own 180s tool timeout (exit -15), then verifier observed interrupted dpkg state. Core answer correctness was not functionally assessed.",
+      "confidence": "strong chain; answer unassessed",
+      "functional_validation_reached": false,
+      "changed_in_tb_2_1": false,
+      "test_counts": null,
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/merge-diff-arc-agi-task__rFvU4Ev/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/merge-diff-arc-agi-task__rFvU4Ev/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/merge-diff-arc-agi-task__rFvU4Ev/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          6,
+          7,
+          9
+        ],
+        "ctrf": null
+      },
+      "agent_selected_package_timeout": {
+        "tool_timeout_seconds": 180,
+        "run_id": "495f5aea-c681-5634-8e5f-55dc4e8513a5",
+        "package_start_at": "2026-10-19 20:47:20.283224",
+        "terminal_receipt_at": "2026-10-19 20:50:26.887111",
+        "terminal_status": "failed",
+        "error": "timeout",
+        "exit_code": -15
+      }
+    },
+    {
+      "task_id": "mteb-retrieve",
+      "trial_id": "mteb-retrieve__k7Ndz2v",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-20T01:23:15.528560Z"
+      },
+      "native": {
+        "status": "completed",
+        "work_state": "completed",
+        "work_reason": "completed",
+        "failure": null,
+        "work_model_requests": 18,
+        "model_invocations": 18,
+        "physical_request_count": 18,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "verification_environment_blocked",
+      "verifier_symptom": "Verifier's uvx process crashed with Bus error (core dumped) while preparing dependencies; no CTRF.",
+      "root_cause_assessment": "Verifier process crash prevented functional evaluation. Disk, memory, filesystem and package-library causes were not individually established.",
+      "confidence": "high crash evidence; underlying cause unknown",
+      "functional_validation_reached": false,
+      "changed_in_tb_2_1": true,
+      "test_counts": null,
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/mteb-retrieve__k7Ndz2v/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/mteb-retrieve__k7Ndz2v/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/mteb-retrieve__k7Ndz2v/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          170
+        ],
+        "ctrf": null
+      }
+    },
+    {
+      "task_id": "pytorch-model-cli",
+      "trial_id": "pytorch-model-cli__3CaLFJD",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-19T21:36:20.363717Z"
+      },
+      "native": {
+        "status": "completed",
+        "work_state": "completed",
+        "work_reason": "completed",
+        "failure": null,
+        "work_model_requests": 34,
+        "model_invocations": 34,
+        "physical_request_count": 34,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "verification_environment_blocked",
+      "verifier_symptom": "Verifier apt dependency downloads failed to connect to deb.debian.org; curl/uvx then missing; no CTRF.",
+      "root_cause_assessment": "Dependency/network bootstrap failed before functional tests. The underlying routing, proxy or remote-server cause was not isolated.",
+      "confidence": "high bootstrap evidence; network cause not isolated",
+      "functional_validation_reached": false,
+      "changed_in_tb_2_1": false,
+      "test_counts": null,
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/pytorch-model-cli__3CaLFJD/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/pytorch-model-cli__3CaLFJD/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/pytorch-model-cli__3CaLFJD/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          800,
+          821,
+          822,
+          824
+        ],
+        "ctrf": null
+      }
+    },
+    {
+      "task_id": "qemu-alpine-ssh",
+      "trial_id": "qemu-alpine-ssh__kAeUaob",
+      "official": {
+        "reward": 0.0,
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 900.0 seconds",
+        "finished_at": "2026-10-20T09:03:03.918249Z"
+      },
+      "native": {
+        "status": "cancelled",
+        "work_state": "queued",
+        "work_reason": "activation_cancelled",
+        "failure": "task_cancelled",
+        "work_model_requests": 55,
+        "model_invocations": 55,
+        "physical_request_count": 55,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "verification_environment_blocked",
+      "verifier_symptom": "Verifier apt downloads returned Debian package404; curl and uvx missing; no CTRF. Agent also hit official900s deadline.",
+      "root_cause_assessment": "The retained zero is accompanied by a failed verifier dependency bootstrap, so it is not direct evidence of a functional SSH failure. Agent timeout remains a separate fact.",
+      "confidence": "high bootstrap evidence; answer unassessed",
+      "functional_validation_reached": false,
+      "changed_in_tb_2_1": false,
+      "test_counts": null,
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/qemu-alpine-ssh__kAeUaob/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/qemu-alpine-ssh__kAeUaob/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/qemu-alpine-ssh__kAeUaob/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          28,
+          31,
+          32,
+          34
+        ],
+        "ctrf": null
+      }
+    },
+    {
+      "task_id": "qemu-startup",
+      "trial_id": "qemu-startup__7jA9wyQ",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-20T07:11:46.494955Z"
+      },
+      "native": {
+        "status": "completed",
+        "work_state": "completed",
+        "work_reason": "completed",
+        "failure": null,
+        "work_model_requests": 44,
+        "model_invocations": 44,
+        "physical_request_count": 44,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "verification_environment_blocked",
+      "verifier_symptom": "Verifier apt downloads returned Debian package404; curl and uvx missing; no CTRF.",
+      "root_cause_assessment": "Verifier dependency bootstrap failed before functional tests. Agent had completed; guest-OS behavior was not assessed by this run.",
+      "confidence": "high bootstrap evidence; answer unassessed",
+      "functional_validation_reached": false,
+      "changed_in_tb_2_1": false,
+      "test_counts": null,
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/qemu-startup__7jA9wyQ/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/qemu-startup__7jA9wyQ/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/qemu-startup__7jA9wyQ/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          29,
+          32,
+          33,
+          35
+        ],
+        "ctrf": null
+      }
+    },
+    {
+      "task_id": "regex-chess",
+      "trial_id": "regex-chess__Ndgib99",
+      "official": {
+        "reward": 0.0,
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 3600.0 seconds",
+        "finished_at": "2026-10-19T23:14:53.605093Z"
+      },
+      "native": {
+        "status": "cancelled",
+        "work_state": "queued",
+        "work_reason": "activation_cancelled",
+        "failure": "task_cancelled",
+        "work_model_requests": 89,
+        "model_invocations": 89,
+        "physical_request_count": 89,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "artifact_contract_mismatch",
+      "verifier_symptom": "3/4 tests passed; a generated chess move's en-passant target did not match legal-move validation.",
+      "root_cause_assessment": "The generated board/FEN transition was inconsistent with chess move rules in the tested case. Agent also hit official3600s deadline.",
+      "confidence": "high",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": false,
+      "test_counts": {
+        "tests": 4,
+        "passed": 3,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792451409.0891504,
+        "stop": 1792451690.5526662
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/regex-chess__Ndgib99/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/regex-chess__Ndgib99/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/regex-chess__Ndgib99/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          216,
+          420
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/regex-chess__Ndgib99/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "regex-log",
+      "trial_id": "regex-log__gfPw76n",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-20T14:23:43.586868Z"
+      },
+      "native": {
+        "status": "completed",
+        "work_state": "completed",
+        "work_reason": "completed",
+        "failure": null,
+        "work_model_requests": 15,
+        "model_invocations": 15,
+        "physical_request_count": 15,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "verification_environment_blocked",
+      "verifier_symptom": "Verifier stopped before pytest: dpkg interrupted, then curl and uvx missing; no CTRF.",
+      "root_cause_assessment": "Agent's Python package-install command was terminated by its own180s tool timeout (exit -15), then verifier observed interrupted dpkg state. Core regex correctness was not functionally assessed.",
+      "confidence": "strong chain; answer unassessed",
+      "functional_validation_reached": false,
+      "changed_in_tb_2_1": false,
+      "test_counts": null,
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/regex-log__gfPw76n/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/regex-log__gfPw76n/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/regex-log__gfPw76n/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          6,
+          7,
+          9
+        ],
+        "ctrf": null
+      },
+      "agent_selected_package_timeout": {
+        "tool_timeout_seconds": 180,
+        "run_id": "9b449037-4583-5857-98e7-ff47e3680e18",
+        "package_start_at": "2026-10-20 14:19:22.019136",
+        "terminal_receipt_at": "2026-10-20 14:22:22.628522",
+        "terminal_status": "failed",
+        "error": "timeout",
+        "exit_code": -15
+      }
+    },
+    {
+      "task_id": "sam-cell-seg",
+      "trial_id": "sam-cell-seg__yTrKe3j",
+      "official": {
+        "reward": 0.0,
+        "exception_type": null,
+        "exception_message": null,
+        "finished_at": "2026-10-20T16:37:41.908250Z"
+      },
+      "native": {
+        "status": "failed",
+        "work_state": "failed",
+        "work_reason": "WorkspaceError",
+        "failure": "WorkspaceError",
+        "work_model_requests": 66,
+        "model_invocations": 67,
+        "physical_request_count": 66,
+        "model_error_categories": {
+          "WorkspaceError": 1
+        },
+        "usage_complete": false
+      },
+      "primary_category": "native_runtime_failure",
+      "verifier_symptom": "Native Work failed with WorkspaceError; verifier also rejected the script CLI arguments (exit2), producing no output CSV; 1/9 tests passed.",
+      "root_cause_assessment": "WorkspaceError is structured at activation stage, physical_requests=0 for its failed invocation; deeper cause unknown. Independently, the delivered script's CLI did not accept the verifier arguments. It is not proved that the runtime error caused this CLI mismatch.",
+      "confidence": "high facts; causal link unknown",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": true,
+      "test_counts": {
+        "tests": 9,
+        "passed": 1,
+        "failed": 8,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792514244.0201445,
+        "stop": 1792514255.8355057
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/sam-cell-seg__yTrKe3j/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/sam-cell-seg__yTrKe3j/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/sam-cell-seg__yTrKe3j/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          394,
+          415,
+          422
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/sam-cell-seg__yTrKe3j/verifier/ctrf.json"
+      },
+      "structured_native_failure": {
+        "error_category": "WorkspaceError",
+        "code": "WorkspaceError",
+        "stage": "activation",
+        "retryable": false,
+        "certainty": "unknown",
+        "successful_invocations": 66,
+        "failed_local_invocations": 1,
+        "failed_invocation_physical_requests": 0,
+        "diagnostic_dropped": 19
+      }
+    },
+    {
+      "task_id": "torch-pipeline-parallelism",
+      "trial_id": "torch-pipeline-parallelism__dXRdiqf",
+      "official": {
+        "reward": 0.0,
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 900.0 seconds",
+        "finished_at": "2026-10-20T10:46:25.044718Z"
+      },
+      "native": {
+        "status": "cancelled",
+        "work_state": "queued",
+        "work_reason": "activation_cancelled",
+        "failure": "task_cancelled",
+        "work_model_requests": 63,
+        "model_invocations": 63,
+        "physical_request_count": 63,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "artifact_contract_mismatch",
+      "verifier_symptom": "Verifier reported rotary-embedding forward microbatch-count mismatch; CTRF records2 passed/1 failed while raw pytest summary is2 passed/2 failed parametrizations.",
+      "root_cause_assessment": "The pipeline's observed execution did not satisfy the tested microbatch/instrumentation contract. The precise implementation/specification cause was not isolated; official900s timeout is separate.",
+      "confidence": "high mismatch; root cause not isolated",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": true,
+      "test_counts": {
+        "tests": 3,
+        "passed": 2,
+        "failed": 1,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792493097.3821208,
+        "stop": 1792493180.4009674
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/torch-pipeline-parallelism__dXRdiqf/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/torch-pipeline-parallelism__dXRdiqf/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/torch-pipeline-parallelism__dXRdiqf/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          208,
+          343,
+          354
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/torch-pipeline-parallelism__dXRdiqf/verifier/ctrf.json"
+      }
+    },
+    {
+      "task_id": "train-fasttext",
+      "trial_id": "train-fasttext__7sMPyaM",
+      "official": {
+        "reward": 0.0,
+        "exception_type": "AgentTimeoutError",
+        "exception_message": "Agent execution timed out after 3600.0 seconds",
+        "finished_at": "2026-10-20T08:30:47.586471Z"
+      },
+      "native": {
+        "status": "cancelled",
+        "work_state": "queued",
+        "work_reason": "activation_cancelled",
+        "failure": "task_cancelled",
+        "work_model_requests": 39,
+        "model_invocations": 39,
+        "physical_request_count": 39,
+        "model_error_categories": {},
+        "usage_complete": true
+      },
+      "primary_category": "unfinished_at_official_timeout",
+      "verifier_symptom": "Both tests failed because model.bin could not be loaded / did not exist.",
+      "root_cause_assessment": "The required trained model artifact was not delivered before the official3600s agent deadline.",
+      "confidence": "high",
+      "functional_validation_reached": true,
+      "changed_in_tb_2_1": true,
+      "test_counts": {
+        "tests": 2,
+        "passed": 0,
+        "failed": 2,
+        "skipped": 0,
+        "pending": 0,
+        "other": 0,
+        "start": 1792485039.6307416,
+        "stop": 1792485042.5660005
+      },
+      "evidence": {
+        "official_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/train-fasttext__7sMPyaM/result.json",
+        "native_result": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/train-fasttext__7sMPyaM/agent/yuki/result.json",
+        "verifier_stdout": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/train-fasttext__7sMPyaM/verifier/test-stdout.txt",
+        "verifier_stdout_lines": [
+          150,
+          168
+        ],
+        "ctrf": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/train-fasttext__7sMPyaM/verifier/ctrf.json"
+      }
+    }
+  ]
+}

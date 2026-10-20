@@ -1,6 +1,6 @@
 # com.example.echo
 
-这是 Yuki Plugin API 5.0 的最小完整示例。它演示：
+这是 Yuki 4.0 / Plugin API 7.0 的最小完整示例。它演示：
 
 - 普通用户可用工具 `echo_text`；
 - 确定性命令 `echo`；
@@ -9,6 +9,8 @@
 - 插件私有 KV 计数；
 - `global`、`user`、`group` 三种配置作用域；
 - 使用独立 Fake Facade 的无网络测试。
+
+`user` 与 `group` 配置分别使用内部 `person_id` 和 `space_id`；平台账号和群号只表示原传输来源。
 
 插件代码只导入公开的 `yuki_plugin_sdk`（以及 handler 类型边界使用的 Pydantic `BaseModel`），不导入 Yuki Host 内部模块，不访问网络、文件、数据库、NoneBot 或 QQ 网关。
 

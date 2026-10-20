@@ -15,7 +15,7 @@ Manifest 同时使用：
 
 ```toml
 plugin_api = "7.0"
-yuki_requires = ">=3.9.0,<4.0"
+yuki_requires = ">=4.0.0,<5.0"
 ```
 
 ## Feature 探测

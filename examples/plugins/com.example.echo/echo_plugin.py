@@ -1,4 +1,4 @@
-"""Network-free reference plugin for Yuki Plugin API 5.0."""
+"""Network-free reference plugin for Yuki Plugin API 7.0."""
 
 from __future__ import annotations
 
@@ -139,18 +139,18 @@ class EchoPlugin:
         prefix = await context.config.get("prefix", scope_type="global")
         uppercase = await context.config.get("uppercase", scope_type="global")
         current = context.current
-        if current is not None:
+        if current is not None and current.person_id is not None:
             user_prefix = await context.config.get(
-                "prefix", scope_type="user", scope_id=current.sender_user_id
+                "prefix", scope_type="user", scope_id=current.person_id
             )
             if isinstance(user_prefix, str):
                 prefix = user_prefix
-            if current.group_id is not None:
-                group_prefix = await context.config.get(
-                    "prefix", scope_type="group", scope_id=current.group_id
-                )
-                if isinstance(group_prefix, str):
-                    prefix = group_prefix
+        if current is not None and current.space_id is not None:
+            group_prefix = await context.config.get(
+                "prefix", scope_type="group", scope_id=current.space_id
+            )
+            if isinstance(group_prefix, str):
+                prefix = group_prefix
         return (
             prefix if isinstance(prefix, str) else "Echo",
             uppercase if isinstance(uppercase, bool) else False,
