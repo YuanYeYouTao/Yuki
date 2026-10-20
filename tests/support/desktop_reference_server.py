@@ -79,6 +79,11 @@ async def serve(root: Path, port: int) -> None:
             social_transfer_directory=root / "transfer",
             **prompt_options,
             **operator_options,
+            **(
+                {"max_input_characters": 6000}
+                if os.environ.get("YUKI_DESKTOP_LONG_TEXT_FIXTURE") == "1"
+                else {}
+            ),
             runtime_work_enabled=True,
             asr_enabled=True,
             automation_enabled=os.environ.get("YUKI_DESKTOP_CHARACTER_FIXTURE") == "1",
@@ -249,7 +254,7 @@ async def serve(root: Path, port: int) -> None:
         return {"ok": True}
 
     @personal.post("/__test/artifacts")
-    async def send_artifacts():
+    async def send_artifacts(long_names: bool = False):
         async with database.sessions() as session:
             original = await session.scalar(
                 select(ChatEventModel)
@@ -260,9 +265,10 @@ async def serve(root: Path, port: int) -> None:
                 .limit(1)
             )
         assert original is not None
+        name = "研究Data_" * 5 + "最終.md" if long_names else "same.md"
         files = [
-            ("same.md", b"# First artifact\n\nOriginal immutable content.\n"),
-            ("same.md", b"# Another artifact\n\nDifferent immutable content.\n"),
+            (name, b"# First artifact\n\nOriginal immutable content.\n"),
+            (name, b"# Another artifact\n\nDifferent immutable content.\n"),
             ("manual.pdf", pdf_document()),
             ("unknown.custom", b"binary artifact content\x00\x01"),
         ]
@@ -271,7 +277,9 @@ async def serve(root: Path, port: int) -> None:
                 container.workspace_service.store,
                 name,
                 content,
-                artifact_id=str(uuid5(NAMESPACE_URL, f"{root}/{index}")),
+                artifact_id=str(
+                    uuid5(NAMESPACE_URL, f"{root}/{index}" + ("/long-name" if long_names else ""))
+                ),
             )
             for index, (name, content) in enumerate(files)
         ]
@@ -324,7 +332,7 @@ async def serve(root: Path, port: int) -> None:
         return {"ok": True}
 
     @personal.post("/__test/qq-entry")
-    async def qq_entry():
+    async def qq_entry(long_text: bool = False):
         async with database.immediate_session() as session:
             await create_presence(
                 session, external_account_id="8000", platform="qq", now=datetime.now(UTC)
@@ -332,7 +340,15 @@ async def serve(root: Path, port: int) -> None:
         ingress = fixture_ingress(database)
         message = replace(
             inbound(
-                "QQ 原入口的真實帳本內容", message_id=str(uuid4()), user_id="1001", group_id=None
+                "QQ 原入口的真實帳本內容"
+                + (
+                    "\n\n" + "原入口的中英混排長內容 Context remains separate. " * 150
+                    if long_text
+                    else ""
+                ),
+                message_id=str(uuid4()),
+                user_id="1001",
+                group_id=None,
             ),
             bot_user_id="8000",
         )
