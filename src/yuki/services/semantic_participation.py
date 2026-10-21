@@ -198,13 +198,21 @@ class SemanticParticipationService:
         )
         key = self.app.settings.semantic_participation_api_key.get_secret_value()
         if key:
-            self._observer = JevObserver(key, model=self.app.settings.semantic_participation_model)
+            self._observer = JevObserver(
+                key,
+                identity=self._observer_identity,
+                model=self.app.settings.semantic_participation_model,
+            )
         for conversation_id, generation in await self.repository.list_current_autonomous_scopes():
             scene = await self._scene(conversation_id)
             if scene is not None and scene.generation == generation:
                 await self._session(scene)
                 self._discovery_cursor += 1
         self._task = asyncio.create_task(self._loop(), name="semantic-participation")
+
+    def _observer_identity(self) -> dict[str, object]:
+        identity = self.app.settings.character_identity
+        return {"display_name": identity.display_name, "aliases": identity.aliases}
 
     async def close(self) -> None:
         if self._task is not None:
@@ -663,7 +671,7 @@ class SemanticParticipationService:
             observation_priority=row.author_is_human()
             and any(
                 alias.casefold() in row.perceived_content.casefold()
-                for alias in self.app.settings.bot_aliases
+                for alias in self.app.settings.character_identity.aliases
             ),
         )
 

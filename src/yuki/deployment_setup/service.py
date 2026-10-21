@@ -14,6 +14,7 @@ import tomllib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from io import StringIO
 from pathlib import Path, PurePosixPath
 from typing import Any, get_origin
 from urllib.parse import urlsplit
@@ -21,6 +22,7 @@ from uuid import uuid4
 
 import httpx
 import tomlkit
+from dotenv.parser import parse_stream
 from pydantic import AliasChoices, AliasPath, ValidationError
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -42,6 +44,15 @@ _ENV_LINE = re.compile(r"^(?P<prefix>\s*(?:export\s+)?)(?P<key>[A-Za-z_][A-Za-z0
 _SAFE_ENV_VALUE = re.compile(r"^[A-Za-z0-9_./:@+,-]*$")
 GATEWAY_PROVIDER_IDS = ("snowluma",)
 _GATEWAY_PROFILE_SET = frozenset(GATEWAY_PROVIDER_IDS)
+_RETIRED_ROLE_ENV = frozenset(
+    {
+        "SYSTEM_PROMPT",
+        "SYSTEM_PROMPT_FILE",
+        "BOT_PERSONA_FILE",
+        "YUKI_PERSONA_FILE",
+        "BOT_DISPLAY_NAME",
+    }
+)
 _FLASH_TASKS = frozenset(
     {
         ModelTask.MEMORY_EXTRACTION,
@@ -88,6 +99,14 @@ class SetupPaths:
     def restart_required(self) -> Path:
         return self.root / "data/setup/restart-required"
 
+    @property
+    def soul(self) -> Path:
+        return self.root / "character/SOUL.md"
+
+    @property
+    def soul_template(self) -> Path:
+        return self.root / "config/SOUL.md"
+
 
 @dataclass(frozen=True, slots=True)
 class SetupConfiguration:
@@ -127,6 +146,8 @@ def prepare_operator_configuration(paths: SetupPaths, environment: dict[str, str
                         "control.config.mutate",
                         "control.config.file.content.read",
                         "control.config.file.mutate",
+                        "control.character.read",
+                        "control.character.mutate",
                         "control.plugin.read",
                         "control.plugin.mutate",
                         "control.plugin.config.content.read",
@@ -202,10 +223,20 @@ class EnvironmentDocument:
         return values
 
     def merge(self, updates: Mapping[str, str]) -> str:
-        normalized = {key.upper(): value for key, value in updates.items()}
+        normalized = {
+            key.upper(): value
+            for key, value in updates.items()
+            if key.upper() not in _RETIRED_ROLE_ENV
+        }
         written: set[str] = set()
         output: list[str] = []
-        for line in self._lines:
+        current = "\n".join(self._lines) + "\n"
+        retained = "".join(
+            binding.original.string
+            for binding in parse_stream(StringIO(current))
+            if binding.key is None or binding.key.upper() not in _RETIRED_ROLE_ENV
+        )
+        for line in retained.splitlines():
             match = _ENV_LINE.match(line)
             if match is None:
                 output.append(line)
@@ -329,7 +360,8 @@ def model_profiles_use_flash(profile_path: Path) -> bool:
 
 def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration) -> Settings:
     environment = dict(configuration.environment)
-    environment["BOT_PERSONA_FILE"] = str((paths.root / "config/persona.md").resolve())
+    soul = Path(environment.get("SOUL_FILE", "character/SOUL.md"))
+    environment["SOUL_FILE"] = str((soul if soul.is_absolute() else paths.root / soul).resolve())
     environment["MODEL_PROFILES_FILE"] = str(paths.model_profiles.resolve())
     environment["YUKI_VERSION"] = __version__
     _validate_gateway_configuration(environment)
@@ -395,6 +427,25 @@ def validate_configuration(paths: SetupPaths, configuration: SetupConfiguration)
     except ValueError as exc:
         raise SetupValidationError(str(exc)) from exc
     return settings
+
+
+def initialize_soul(paths: SetupPaths) -> None:
+    """The confirmed setup initializes a missing private file without replacing one."""
+    if paths.soul.exists():
+        return
+    content = paths.soul_template.read_bytes()
+    paths.soul.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with paths.soul.open("xb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+            if os.name != "nt":
+                os.fchmod(stream.fileno(), 0o640)
+    except FileExistsError:
+        return
+    if os.name == "nt":
+        _restrict_windows_acl(paths.soul)
 
 
 def commit_configuration(

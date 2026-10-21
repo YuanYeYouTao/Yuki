@@ -14,7 +14,11 @@ from sqlalchemy.engine import Engine
 from tests.unit.test_migration_0119 import _seed_0118
 
 from yuki.persistence.history_search import compile_match, prepare_query
-from yuki.persistence.schema_guard import CanonicalSchemaError, require_canonical_schema
+from yuki.persistence.schema_guard import (
+    CanonicalSchemaError,
+    canonical_schema_revision,
+    require_canonical_schema,
+)
 
 
 @pytest.fixture(scope="module")
@@ -72,7 +76,10 @@ def test_upgrade_backfills_before_head_without_conversion_under_writer(
     command.upgrade(Config("alembic.ini"), target)
     assert calls == len(before)
     with closing(sqlite3.connect(path)) as connection, connection:
-        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0145",)
+        expected_revision = "0145" if target == "0145" else canonical_schema_revision()
+        assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == (
+            expected_revision,
+        )
         assert connection.execute("SELECT * FROM chat_events ORDER BY id").fetchall() == before
         assert (
             connection.execute(
@@ -92,10 +99,10 @@ def test_upgrade_backfills_before_head_without_conversion_under_writer(
             connection.execute("SELECT rowid FROM chat_history_fts WHERE rowid=2").fetchone()
             is None
         )
-    asyncio.run(require_canonical_schema(url))
     calls = 0
     command.upgrade(Config("alembic.ini"), "head")
     assert calls == 0
+    asyncio.run(require_canonical_schema(url))
 
 
 def test_interrupted_partial_load_stays_0144_and_rebuilds_on_resume(
@@ -133,6 +140,7 @@ def test_interrupted_partial_load_stays_0144_and_rebuilds_on_resume(
     with closing(sqlite3.connect(path)) as connection:
         assert connection.execute("SELECT version_num FROM alembic_version").fetchone() == ("0145",)
         assert connection.execute("SELECT count(*) FROM chat_history_fts").fetchone() == (274,)
+    command.upgrade(Config("alembic.ini"), "head")
     asyncio.run(require_canonical_schema(url))
 
 

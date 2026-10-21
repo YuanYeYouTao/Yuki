@@ -70,7 +70,9 @@ async def runner_env(database, tmp_path, responses, *, max_tool_calls=8):
     chat.runtime.runner.code_mode_settings = settings
     # The frozen projection the deployed contract would carry.
     chat.runtime.runner.main_contract = SimpleNamespace(
-        revision="manifest-test", script_api=project(TOOLS, "manifest-test")
+        revision="manifest-test",
+        script_api=project(TOOLS, "manifest-test"),
+        invariant_messages=chat._prompt_composer.invariant_messages,
     )
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)

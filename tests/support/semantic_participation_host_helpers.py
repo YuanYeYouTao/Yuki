@@ -12,6 +12,7 @@ from tests.support.event_seed import seed_event
 from yuki_participation.models import Choice, Observation
 from yuki_participation.rubric import CRITERIA, REVISION
 
+from yuki.config import BotIdentity
 from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
@@ -150,7 +151,7 @@ async def _host(database, tmp_path, *, observer=True):
         database=database,
         ledger=EventLedgerRepository(database),
         settings=SimpleNamespace(
-            bot_aliases=("Yuki", "由纪"),
+            character_identity=BotIdentity("Yuki", ("Yuki", "由纪")),
             semantic_participation_model_config_file=tmp_path / "autonomous-model.json",
         ),
         runtime_config=SimpleNamespace(

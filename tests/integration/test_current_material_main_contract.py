@@ -95,6 +95,7 @@ async def _deployment(
         ),
         database=database,
     )
+    await app.character.initialize("Yuki")
     app.models.apply_catalog(
         _catalog(_profile()), ModelClientPool(injected_profiles={"main": provider})
     )

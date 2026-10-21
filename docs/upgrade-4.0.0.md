@@ -108,7 +108,7 @@ Bot 更新之外，还要核对宿主 `src/yuki`、Manager unit/依赖、现行 
 | ASR | 明确选择 `chat_completions` 或 `audio_transcriptions`，不按模型名猜协议；见[Provider 合同](architecture/model-providers.md) |
 | 表情 | 清理退役 `emoji_replacement` 路由、旧 emoji 专属热配置与 `VISION_MAX_RETRIES`，保留其他模型、视觉/ASR连接和密钥 |
 
-系统提示文件是实际部署资料。若设置了 `SYSTEM_PROMPT_FILE`，先备份并将其与当前系统合同一起更新；仅更新代码或示例不会替换挂载文件。静默 SELF 的部署副本见[原提示交付资料](operations/system-prompt-quiet-self-initiative-20261018.md)。保留用户自己的角色设定，按当前合同整理发言、工具和持续工作规则，不改写旧已付请求。
+人格原件统一为 `character/SOUL.md`，启动只读取 `SOUL_FILE`；角色名直接认数据库角色资料。旧系统/人格文件、配置变量与占位符已退出。已有部署先比较并明确整理原生效内容，保留用户设定，再按[单 SOUL 升级说明](operations/soul-deployment-20261022.md)切换文件、可写目录挂载和角色初始化。只更新镜像不会替用户选择或合并旧人设。历史已付请求、原主体和回执保持原件。
 
 ## 7. 升级后核对
 

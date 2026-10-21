@@ -33,13 +33,13 @@ def proactive_message_label(
     if row.direction != "outbound" or row.origin != "plugin_background":
         return None
     if row.caused_by_event_id is None:
-        return "[Yuki主动消息｜历史来源未知]"
+        return "[主动消息｜历史来源未知]"
     source = row.caused_by_external_source or (cause.external_source if cause is not None else None)
     event_type = row.caused_by_external_event_type or (
         cause.external_event_type if cause is not None else None
     )
     return (
-        f"[Yuki主动消息｜由外部事件 #{row.caused_by_event_id} 触发｜"
+        f"[主动消息｜由外部事件 #{row.caused_by_event_id} 触发｜"
         f"source={_causal_token(source, fallback='external')}｜"
         f"type={_causal_token(event_type, fallback='event')}]"
     )
@@ -196,11 +196,9 @@ class ChatEventPromptRenderer:
         self,
         events: Iterable[EventRecord] = (),
         *,
-        bot_display_name: str = "Yuki",
         timezone: str = "Asia/Shanghai",
         references: EventPromptReferences | None = None,
     ) -> None:
-        self._bot_display_name = bot_display_name
         self._timezone = timezone
         self._references = (
             EventPromptIndex(events).capture()
@@ -328,7 +326,7 @@ class ChatEventPromptRenderer:
         return (
             "assistant" if row.direction == "outbound" else "user",
             self._sender_identity(row),
-            self._row_display_name(row),
+            row.sender_display_name,
             prompt_origin_class(row),
             row.caused_by_event_id,
         )
@@ -400,7 +398,7 @@ class ChatEventPromptRenderer:
         mention_field = self._mention_field(row)
         if mention_field:
             fields.append(mention_field)
-        envelope = f"[{self._row_display_name(row)}|{self._principal_ref(row)}]"
+        envelope = f"[{row.sender_display_name}|{self._principal_ref(row)}]"
         if proactive_label is not None:
             envelope = proactive_label
         return f"{envelope}\n{'|'.join(fields)}>{content}"
@@ -455,7 +453,7 @@ class ChatEventPromptRenderer:
 
     def _event_envelope(self, row: EventRecord) -> str:
         fields = [
-            f"发送者:{self._row_display_name(row)}",
+            f"发送者:{row.sender_display_name}",
             self._principal_ref(row),
             f"事件:#{row.id}",
         ]
@@ -520,11 +518,4 @@ class ChatEventPromptRenderer:
         return (row.author_kind or "unknown", row.platform, row.sender_user_id)
 
     def _row_identity_label(self, row: EventRecord) -> str:
-        return f"{self._row_display_name(row)}/{self._principal_ref(row)}"
-
-    def _row_display_name(self, row: EventRecord) -> str:
-        return (
-            sanitize_display_name(row.sender_group_card)
-            or sanitize_display_name(row.sender_nickname)
-            or (self._bot_display_name if row.author_is_yuki() else row.sender_display_name)
-        )
+        return f"{row.sender_display_name}/{self._principal_ref(row)}"

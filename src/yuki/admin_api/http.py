@@ -18,8 +18,21 @@ from yuki.admin.config_files import ConfigFileError
 from yuki.admin.operations import AdminOperations
 from yuki.admin.operations.base import authorize, fail
 from yuki.admin.queries import AdminQueries
+from yuki.character.repository import CharacterRepository
+from yuki.character.soul import CharacterSoul
+from yuki.client_api.errors import ClientError
 from yuki.client_api.http_errors import install_identity_errors
 from yuki.client_api.identity import ClientIdentityService
+from yuki.client_api.models import (
+    CharacterProfile,
+    CharacterUpdateBody,
+    Envelope,
+    SoulDocument,
+    SoulReloadBody,
+    SoulResult,
+    SoulSaveBody,
+    character_changes,
+)
 from yuki.domain.identity import RequestId
 from yuki.plugin_host.configuration_service import PluginConfigurationError
 from yuki.plugin_host.manager import PluginManagementRejected
@@ -32,6 +45,8 @@ class AdminApi:
     commands: AdminOperations
     identities: ClientIdentityService
     queries: AdminQueries
+    character: CharacterRepository | None = None
+    soul: CharacterSoul | None = None
 
 
 class CommandBody(BaseModel):
@@ -124,6 +139,88 @@ def attach_admin_api(app: FastAPI, resolve: Callable[[], AdminApi]) -> None:
         return await resolve().access.authenticate(credential, source=PrincipalSource.CLI)
 
     Actor = Annotated[ControlPrincipal, Depends(principal)]
+
+    def character() -> CharacterRepository:
+        service = resolve().character
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
+    def soul() -> CharacterSoul:
+        service = resolve().soul
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
+    @router.get(
+        "/character", response_model=Envelope[CharacterProfile], response_model_exclude_unset=True
+    )
+    async def character_profile(actor: Actor) -> Any:
+        authorize(actor, "control.character.read")
+        return {"data": await character().get()}
+
+    @router.patch(
+        "/character", response_model=Envelope[CharacterProfile], response_model_exclude_unset=True
+    )
+    async def update_character(body: CharacterUpdateBody, actor: Actor) -> Any:
+        authorize(actor, "control.character.mutate")
+        return {
+            "data": await character().update(
+                str(body["request_id"]),
+                body["expected_revision"],
+                character_changes(body),
+                operator_id=actor.principal_id.text,
+            )
+        }
+
+    @router.get("/character/owners")
+    async def character_owners(actor: Actor) -> Any:
+        authorize(actor, "control.character.read")
+        return {"data": {"items": await character().owners()}}
+
+    @router.post("/character/owners/{person_id}/{action}")
+    async def character_owner(
+        person_id: UUID4, action: Literal["grant", "revoke"], body: IdentityRequest, actor: Actor
+    ) -> Any:
+        authorize(actor, "control.character.mutate")
+        return {
+            "data": await character().set_owner(
+                actor.principal_id.text,
+                str(person_id),
+                str(body.request_id),
+                granted=action == "grant",
+            )
+        }
+
+    @router.get("/character/soul", response_model=Envelope[SoulDocument])
+    async def read_soul(actor: Actor) -> Any:
+        authorize(actor, "control.character.read")
+        return {"data": await soul().read(operator_id=actor.principal_id.text)}
+
+    @router.put(
+        "/character/soul", response_model=Envelope[SoulResult], response_model_exclude_unset=True
+    )
+    async def save_soul(body: SoulSaveBody, actor: Actor) -> Any:
+        authorize(actor, "control.character.mutate")
+        return {
+            "data": await soul().save(
+                str(body.request_id),
+                body.expected_revision,
+                body.content,
+                operator_id=actor.principal_id.text,
+            )
+        }
+
+    @router.post(
+        "/character/soul/reload",
+        response_model=Envelope[SoulResult],
+        response_model_exclude_unset=True,
+    )
+    async def reload_soul(body: SoulReloadBody, actor: Actor) -> Any:
+        authorize(actor, "control.character.mutate")
+        return {
+            "data": await soul().reload(str(body.request_id), operator_id=actor.principal_id.text)
+        }
 
     @router.get("/health")
     async def health(actor: Actor) -> Any:

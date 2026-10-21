@@ -250,14 +250,12 @@ class InProcessToolProvider:
         definitions: DefinitionFactory,
         execute: ToolExecutor,
         plugin_read_only: Callable[[str], bool] | None = None,
-        bot_aliases: tuple[str, ...] = ("Yuki", "yuki", "由纪"),
     ) -> None:
         self._provider_id = provider_id
         self._source = source
         self._definitions = definitions
         self._execute = execute
         self._plugin_read_only = plugin_read_only
-        self._bot_aliases = bot_aliases
 
     @property
     def provider_id(self) -> str:
@@ -297,11 +295,6 @@ class InProcessToolProvider:
             if self._source is CapabilityTrustSource.CORE
             else tool.tags
         )
-        if tool.name == "search_memory":
-            search_tags = (
-                *search_tags,
-                *(f"{alias}记忆" for alias in self._bot_aliases if alias.strip()),
-            )
         return replace(
             descriptor,
             provider_id=self._provider_id,

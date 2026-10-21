@@ -78,10 +78,8 @@ def parse_command(text: str, ai_prefix: str) -> tuple[CommandName | None, str, b
     return None, remainder, triggered
 
 
-def parse_message_command(
-    message: InboundMessage, ai_prefix: str
-) -> tuple[CommandName | None, str, bool]:
-    """Read a command after leading native Bot mentions, retaining the original message."""
+def message_command_text(message: InboundMessage, ai_prefix: str = "") -> str:
+    """Project command text after native Bot mentions without rewriting the source."""
 
     cursor = 0
     yuki_ids = message.yuki_account_ids | ({message.bot_user_id} if message.bot_user_id else set())
@@ -92,10 +90,18 @@ def parse_message_command(
             break
         cursor = mention.text_end
     if cursor:
-        parsed = parse_command(message.text[cursor:], ai_prefix)
-        if parsed[2]:
-            return parsed
-    return parse_command(message.text, ai_prefix)
+        remainder = message.text[cursor:]
+        if parse_command(remainder, ai_prefix)[2]:
+            return remainder
+    return message.text
+
+
+def parse_message_command(
+    message: InboundMessage, ai_prefix: str
+) -> tuple[CommandName | None, str, bool]:
+    """Read a command after leading native Bot mentions, retaining the original message."""
+
+    return parse_command(message_command_text(message, ai_prefix), ai_prefix)
 
 
 def replies_to_bot(

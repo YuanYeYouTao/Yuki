@@ -21,6 +21,8 @@ logs/
 /webui-config/
 .cache/
 .workbuddy/
+/character/
+# Historical operator files remain private; they are not runtime sources.
 config/system_prompt.md
 config/model_profiles.toml
 config/model_profiles.secrets.json

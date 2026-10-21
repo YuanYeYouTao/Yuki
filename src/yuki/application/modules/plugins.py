@@ -75,7 +75,6 @@ class PluginModule:
         signal_invocation_scope: InvocationScope,
         on_activated: Callable[..., Any],
         on_deactivated: Callable[..., Any],
-        bot_display_name: str = "Yuki",
     ) -> None:
         self._settings = settings
         self._yuki_version = yuki_version
@@ -89,7 +88,6 @@ class PluginModule:
         self._signal_invocation_scope = signal_invocation_scope
         self._on_activated = on_activated
         self._on_deactivated = on_deactivated
-        self._bot_display_name = bot_display_name
 
     def build(self) -> PluginBundle:
         settings = self._settings
@@ -104,7 +102,6 @@ class PluginModule:
             concurrency=self._concurrency,
             runtime_config=self._runtime_config,
             repository=session_repository,
-            bot_display_name=self._bot_display_name,
             max_history_messages=settings.plugin_ai_session_max_history_messages,
         )
         http = SafeHttpClient(

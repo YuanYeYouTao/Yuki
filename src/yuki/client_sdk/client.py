@@ -134,6 +134,24 @@ class PersonalClient:
         self.outbox.prepare(identity, "acp/sessions", {"request_id": identity})
         return identity
 
+    async def prepare_soul(
+        self, content: str, expected_revision: str, *, request_id: str | None = None
+    ) -> str:
+        await self._bind()
+        identity = request_id or str(uuid4())
+        self.outbox.prepare(
+            identity,
+            "character/soul",
+            {"request_id": identity, "expected_revision": expected_revision, "content": content},
+        )
+        return identity
+
+    async def prepare_soul_reload(self, *, request_id: str | None = None) -> str:
+        await self._bind()
+        identity = request_id or str(uuid4())
+        self.outbox.prepare(identity, "character/soul/reload", {"request_id": identity})
+        return identity
+
     async def prepare_input(self, work_id: str, text: str, *, request_id: str | None = None) -> str:
         await self._bind()
         identity = request_id or str(uuid4())
@@ -191,6 +209,11 @@ class PersonalClient:
         original = await self.query(identity)
         if not original["found"]:
             return row
+        if row["path"].startswith("character/soul") and original["status"] not in {
+            "succeeded",
+            "failed",
+        }:
+            return row
         resolved = {**original, **(original.get("result") or {})}
         resolved.pop("result", None)
         if original.get("problem_code"):
@@ -224,6 +247,26 @@ class PersonalClient:
             operation, target = "client.acp_session_new", owner["binding_id"]
         elif row["path"] == "uploads":
             operation, target = "client.upload", self._entry_conversation_id or owner["person"]
+        elif row["path"].startswith("character/soul"):
+            reload = row["path"].endswith("/reload")
+            digest = hashlib.sha256(
+                json.dumps(
+                    [
+                        "client.character_soul.reload" if reload else "client.character_soul",
+                        "soul",
+                        body,
+                    ],
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest()
+            if (
+                original["operation_kind"],
+                original.get("target"),
+                original.get("payload_hash"),
+            ) != ("control", "character_soul:reload" if reload else "character_soul", digest):
+                raise ClientProblem("request_conflict")
+            return
         else:
             _, target, action = row["path"].split("/")
             operation = "client.work_input" if action == "inputs" else "client.work_cancel"
@@ -243,7 +286,12 @@ class PersonalClient:
         if row["state"] != "draft":
             original = await self.get(f"requests/{identity}")
             if original["found"]:
-                return await self.resolve(identity)
+                self._verify(row, original)
+                if not row["path"].startswith("character/soul") or original["status"] in {
+                    "succeeded",
+                    "failed",
+                }:
+                    return await self.resolve(identity)
         self.outbox.update(identity, "submitted", row["result"])
         try:
             if row["path"] == "uploads":
@@ -265,6 +313,10 @@ class PersonalClient:
                 response = await self.http.post(
                     self.endpoint("uploads"), headers=self.headers, params=params, content=chunks()
                 )
+            elif row["path"] == "character/soul":
+                response = await self.http.put(
+                    self.endpoint(row["path"]), headers=self.headers, json=row["body"]
+                )
             else:
                 response = await self.http.post(
                     self.endpoint(row["path"]), headers=self.headers, json=row["body"]
@@ -284,7 +336,11 @@ class PersonalClient:
         # Transport errors keep the durable submitted state: outcome remains unknown.
         self.outbox.update(
             identity,
-            "result" if row["path"] == "uploads" or row["path"].endswith("/cancel") else "accepted",
+            "result"
+            if row["path"] == "uploads"
+            or row["path"].endswith("/cancel")
+            or row["path"].startswith("character/soul")
+            else "accepted",
             result,
         )
         return self.outbox.get(identity)

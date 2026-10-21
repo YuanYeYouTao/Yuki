@@ -365,7 +365,6 @@ class PluginFacadeServices:
     """Private dependency bundle; never returned through PluginContext."""
 
     approval_revision: str = ""
-    bot_display_name: str = "Yuki"
     ledger: EventLedgerRepository | None = None
     social: SocialService | None = None
     people: PeopleRepository | None = None
@@ -2590,6 +2589,9 @@ async def _send_onebot(
             return _delivery_result(receipt)
         assert receipt.prepared is not None
         entry_binding_id = receipt.prepared["binding_id"]
+        from yuki.persistence.history_search import prepare_terms
+
+        prepared_terms = await asyncio.to_thread(prepare_terms, outbound.content)
         gateway = await _qq_gateway(host, invocation)
         claimed = False
         if receipt.status is OperationStatus.PREPARED:
@@ -2660,6 +2662,7 @@ async def _send_onebot(
                         sender_user_id=invocation.bot_user_id,
                         direction="outbound",
                         content=outbound.content,
+                        prepared_terms=prepared_terms,
                         segments=outbound.segments,
                         origin=invocation.origin.value,
                         session=session,

@@ -9,7 +9,14 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-from yuki.admin_api.client import admin_client, identity_mutation, mutate, read
+from yuki.admin_api.client import (
+    admin_client,
+    character_mutation,
+    identity_mutation,
+    mutate,
+    read,
+    soul_mutation,
+)
 from yuki.config import Settings
 
 
@@ -28,6 +35,28 @@ def add_admin_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPar
     admin = subparsers.add_parser("admin", help="通过 operator API 管理正在运行的 Yuki")
     commands = admin.add_subparsers(dest="admin_command", required=True)
     commands.add_parser("health")
+    character = commands.add_parser("character").add_subparsers(
+        dest="character_action", required=True
+    )
+    character.add_parser("show")
+    updated = character.add_parser("update")
+    updated.add_argument("--display-name")
+    updated.add_argument("--slug")
+    updated.add_argument("--bio")
+    _mutation(updated)
+    soul = character.add_parser("soul").add_subparsers(dest="soul_action", required=True)
+    soul.add_parser("show")
+    saved = soul.add_parser("set")
+    saved.add_argument("file", type=Path)
+    saved.add_argument("--revision")
+    _mutation(saved, revision=False)
+    _mutation(soul.add_parser("reload"), revision=False)
+    owners = character.add_parser("owner").add_subparsers(dest="owner_action", required=True)
+    owners.add_parser("list")
+    for action in ("grant", "revoke"):
+        parser = owners.add_parser(action)
+        parser.add_argument("--person", required=True)
+        _mutation(parser, revision=False)
     operation = commands.add_parser("operation")
     operation.add_argument("id", help="原 operation ID 或本 operator 的请求 UUID")
     trace = commands.add_parser("trace")
@@ -143,6 +172,41 @@ async def admin_command(settings: Settings, args: argparse.Namespace) -> int:
         data: Any
         if kind == "health":
             data = await read(client, "health")
+        elif kind == "character":
+            if args.character_action == "show":
+                data = await read(client, "character")
+            elif args.character_action == "update":
+                data = await character_mutation(
+                    client,
+                    request_id=args.request_id,
+                    expected_revision=args.revision,
+                    **{
+                        key: getattr(args, key)
+                        for key in ("display_name", "slug", "bio")
+                        if getattr(args, key) is not None
+                    },
+                )
+            elif args.character_action == "owner":
+                data = (
+                    await read(client, "character/owners")
+                    if args.owner_action == "list"
+                    else await identity_mutation(
+                        client,
+                        f"character/owners/{args.person}/{args.owner_action}",
+                        request_id=args.request_id,
+                    )
+                )
+            elif args.soul_action == "show":
+                data = await read(client, "character/soul")
+            else:
+                data = await soul_mutation(
+                    client,
+                    request_id=args.request_id,
+                    content=args.file.read_bytes().decode("utf-8")
+                    if args.soul_action == "set"
+                    else None,
+                    expected_revision=getattr(args, "revision", None),
+                )
         elif kind == "operation":
             data = await read(client, f"operations/{args.id}")
         elif kind == "trace":

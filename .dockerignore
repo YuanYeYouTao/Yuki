@@ -1,6 +1,7 @@
 .git
 .venv
 .env
+character
 config/system_prompt.md
 config/model_profiles.secrets.json
 data

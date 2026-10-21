@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -44,6 +45,14 @@ class BotIdentity:
 
     display_name: str
     aliases: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SoulDocument:
+    """One actual source document; the revision identifies its original UTF-8 bytes."""
+
+    content: str
+    revision: str
 
 
 class Settings(BaseSettings):
@@ -96,17 +105,14 @@ class Settings(BaseSettings):
     ignored_bot_users_csv: str = Field(default="", validation_alias="IGNORED_BOT_USERS")
     ai_prefix: str = "!ai"
 
-    bot_display_name: str = Field(
-        default="Yuki",
-        min_length=1,
-        max_length=128,
-        validation_alias="BOT_DISPLAY_NAME",
-    )
     bot_aliases_csv: str = Field(
-        default="Yuki,yuki,由纪",
+        default="",
         validation_alias="BOT_ALIASES",
     )
-    bot_persona_file: Path | None = Field(default=None, validation_alias="BOT_PERSONA_FILE")
+    soul_file: Path = Path("character/SOUL.md")
+    _character_name: str = PrivateAttr(default="")
+    _character_revision: int = PrivateAttr(default=-1)
+    _soul_document: SoulDocument = PrivateAttr(default=SoulDocument("", ""))
 
     llm_provider: str = "openai"
     llm_base_url: str = "https://api.openai.com/v1"
@@ -128,12 +134,6 @@ class Settings(BaseSettings):
     llm_flash_model: str = ""
     model_profiles_file: Path = Path("webui-config/model_profiles.toml")
     model_stats_recent_error_limit: int = 5
-    system_prompt: str = "你是 AI 助手 Yuki。自然、清楚地交流并认真完成委托，不输出隐藏的推理过程。"
-    system_prompt_file: Path | None = None
-    # Compatibility for deployments created before BOT_PERSONA_FILE existed.
-    yuki_persona_file: Path | None = None
-    _bot_persona: str = PrivateAttr(default="")
-    _loaded_bot_persona_file: Path | None = PrivateAttr(default=None)
 
     database_url: str = "sqlite+aiosqlite:///./data/yuki.db"
     control_operators_file: Path | None = None
@@ -353,14 +353,6 @@ class Settings(BaseSettings):
             raise ValueError("WEB_SEARCH_DEPTH must be basic or advanced")
         return normalized
 
-    @field_validator("bot_display_name")
-    @classmethod
-    def _single_line_bot_name(cls, value: str) -> str:
-        normalized = value.strip()
-        if not normalized or any(character in normalized for character in "\r\n"):
-            raise ValueError("bot names must be non-empty single-line values")
-        return normalized
-
     @field_validator("default_timezone")
     @classmethod
     def _valid_default_timezone(cls, value: str) -> str:
@@ -420,63 +412,48 @@ class Settings(BaseSettings):
         return self
 
     @model_validator(mode="after")
-    def _load_system_prompt_file(self) -> Self:
-        """Load the shared UTF-8 persona without changing prompt assembly semantics."""
-
-        persona_file = self.resolved_bot_persona_file
-        persona_setting = (
-            "BOT_PERSONA_FILE"
-            if self.bot_persona_file is not None or self.yuki_persona_file is None
-            else "YUKI_PERSONA_FILE"
-        )
-        try:
-            persona = persona_file.read_text(encoding="utf-8").strip()
-        except OSError as exc:
-            raise ValueError(f"cannot read {persona_setting}: {persona_file}") from exc
-        if not persona:
-            raise ValueError(f"{persona_setting} must not be empty")
-        self._bot_persona = persona
-        self._loaded_bot_persona_file = persona_file
-
-        if self.system_prompt_file is not None:
-            try:
-                prompt = self.system_prompt_file.read_text(encoding="utf-8").strip()
-            except OSError as exc:
-                raise ValueError(
-                    f"cannot read SYSTEM_PROMPT_FILE: {self.system_prompt_file}"
-                ) from exc
-            if not prompt:
-                raise ValueError("SYSTEM_PROMPT_FILE must not be empty")
-            self.system_prompt = prompt
-        self.system_prompt = self.system_prompt.replace(
-            "{{YUKI_PERSONA_CORE}}",
-            self._bot_persona,
-        )
+    def _load_soul(self) -> Self:
+        self.apply_soul_document(self.read_soul_document())
         return self
 
-    @property
-    def resolved_bot_persona_file(self) -> Path:
-        """Use exactly the startup selection, including the old default-path alias."""
-        if self._loaded_bot_persona_file is not None:
-            return self._loaded_bot_persona_file
-        persona_file = self.bot_persona_file or self.yuki_persona_file or Path("config/persona.md")
-        if (
-            self.bot_persona_file is None
-            and persona_file == Path("config/yuki_persona_core.md")
-            and not persona_file.exists()
-        ):
-            persona_file = Path("config/persona.md")
-        return persona_file
+    def read_soul_document(self) -> SoulDocument:
+        content = self.soul_file.read_bytes()
+        return SoulDocument(
+            content=content.decode("utf-8"),
+            revision="sha256:" + hashlib.sha256(content).hexdigest(),
+        )
+
+    def apply_soul_document(self, document: SoulDocument) -> None:
+        self._soul_document = document
 
     @property
-    def bot_persona(self) -> str:
-        return self._bot_persona
+    def soul(self) -> str:
+        return self._soul_document.content
 
     @property
-    def yuki_persona(self) -> str:
-        """Compatibility alias for older callers."""
+    def active_soul_revision(self) -> str:
+        return self._soul_document.revision
 
-        return self._bot_persona
+    def apply_character_name(self, display_name: str, revision: int) -> None:
+        """Publish the canonical role record after its transaction commits."""
+        if revision >= self._character_revision:
+            self._character_name = display_name
+            self._character_revision = revision
+
+    @property
+    def character_identity(self) -> BotIdentity:
+        aliases = (self._character_name, *_csv_tuple(self.bot_aliases_csv))
+        return BotIdentity(
+            display_name=self._character_name,
+            aliases=tuple(dict.fromkeys(alias for alias in aliases if alias.strip())),
+        )
+
+    @property
+    def character_prompt(self) -> str:
+        identity = self.character_identity
+        reference = "【角色身份】\n当前角色的名称是 " + identity.display_name + "。"
+        soul = self.soul.replace("{{name}}", identity.display_name)
+        return reference + ("\n\n【SOUL】\n" + soul if soul.strip() else "")
 
     @model_validator(mode="after")
     def _compose_domain_settings(self) -> Self:
@@ -587,26 +564,6 @@ class Settings(BaseSettings):
     @cached_property
     def ignored_bot_users(self) -> frozenset[str]:
         return _csv_set(self.ignored_bot_users_csv)
-
-    @cached_property
-    def bot_aliases(self) -> tuple[str, ...]:
-        aliases = (self.bot_display_name, *_csv_tuple(self.bot_aliases_csv))
-        seen: set[str] = set()
-        normalized: list[str] = []
-        for alias in aliases:
-            key = alias.casefold()
-            if key in seen:
-                continue
-            seen.add(key)
-            normalized.append(alias)
-        return tuple(normalized)
-
-    @cached_property
-    def bot_identity(self) -> BotIdentity:
-        return BotIdentity(
-            display_name=self.bot_display_name,
-            aliases=self.bot_aliases,
-        )
 
     @property
     def sqlite_path(self) -> Path | None:

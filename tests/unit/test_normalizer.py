@@ -61,7 +61,7 @@ def test_private_text_and_group_mention_normalize() -> None:
     assert private.scope_type is ScopeType.PRIVATE and private.text == "hello"
     assert private.sender.nickname == "tester" and not private.sender.group_card
     assert group.scope_type is ScopeType.GROUP and group.mentions_bot
-    assert group.text == "[提及Yuki] question" and group.group_id == "2001"
+    assert group.text == "[提及Agent] question" and group.group_id == "2001"
     assert group.sender.nickname == "tester" and group.sender.group_card == "card"
 
 
@@ -94,14 +94,14 @@ def test_group_mention_uses_original_message_after_nonebot_strips_at() -> None:
     normalized = normalize_event(event)
 
     assert normalized.mentions_bot
-    assert normalized.text == "[提及Yuki] question"
+    assert normalized.text == "[提及Agent] question"
 
 
 def test_group_message_with_only_bot_mention_keeps_empty_text_trigger() -> None:
     normalized = normalize_event(group_event(Message([MessageSegment.at(9999)])))
 
     assert normalized.mentions_bot
-    assert normalized.text == "[提及Yuki]"
+    assert normalized.text == "[提及Agent]"
 
 
 def test_original_message_is_the_only_authoritative_segment_source() -> None:
@@ -143,7 +143,7 @@ def test_mentions_keep_real_targets_and_order_across_yuki_presences() -> None:
     assert normalized.mentions_bot
     assert normalized.mentioned_user_ids == ("12345678", "87654321")
     assert normalized.text == (
-        "[提及Yuki]和[提及12345678][提及全体成员][提及12345678][提及87654321][提及Yuki]"
+        "[提及Agent]和[提及12345678][提及全体成员][提及12345678][提及87654321][提及Agent]"
     )
 
 
@@ -156,7 +156,7 @@ def test_canonical_reprojection_reclassifies_another_presence() -> None:
 
     projected = reproject_inbound_mentions(normalized, frozenset({"9999", "8001"}))
 
-    assert projected.text == "[提及Yuki]回来啦"
+    assert projected.text == "[提及Agent]回来啦"
     assert projected.mentions_bot
     assert projected.mentioned_user_ids == ()
     assert projected.yuki_account_ids == frozenset({"9999", "8001"})
@@ -264,7 +264,7 @@ def test_reply_text_uses_the_same_yuki_and_member_projection() -> None:
 
     normalized = normalize_event(event, yuki_account_ids=frozenset({"8001"}))
 
-    assert normalized.reply_text == "[提及Yuki]与[提及12345678]"
+    assert normalized.reply_text == "[提及Agent]与[提及12345678]"
 
 
 def test_image_attachment_has_stable_history_marker() -> None:

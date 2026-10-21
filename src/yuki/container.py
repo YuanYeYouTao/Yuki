@@ -126,7 +126,6 @@ class ApplicationContainer:
             max_media_frames=settings.vision_max_frames_per_turn,
         )
         self.permission_catalog = PermissionCatalogService(
-            settings=settings,
             config_registry=self.runtime_config.registry,
         )
         self.conversation_scopes = persistence.conversation_scopes
@@ -454,7 +453,6 @@ class ApplicationContainer:
             signal_invocation_scope=self._plugin_signal_scope,
             on_activated=self._activate_plugin_extensions,
             on_deactivated=self._deactivate_plugin_extensions,
-            bot_display_name=settings.bot_display_name,
         )
         plugins = self.plugin_module.build()
         self.plugins = plugins
@@ -484,6 +482,11 @@ class ApplicationContainer:
         from yuki.client_api.identity import ClientIdentityService
 
         self.client_identity = ClientIdentityService(self.database, self.presence_router)
+        from yuki.character.repository import CharacterRepository
+        from yuki.character.soul import CharacterSoul
+
+        self.character = CharacterRepository(self.client_identity, settings)
+        self.soul = CharacterSoul(self.client_identity, settings)
         self.admin_api = build_admin_api(self)
         from yuki.client_api.http import ClientApi
 
@@ -635,7 +638,13 @@ class ApplicationContainer:
                 ),
             )
         client_works = ClientWorks(self.client_api.identity, client_gateways)
-        client_views = ClientViews(self.client_api.identity, client_works, self.models.traces)
+        client_views = ClientViews(
+            self.client_api.identity,
+            client_works,
+            self.models.traces,
+            character=self.character,
+            soul=self.soul,
+        )
         client_files = ClientFiles(
             ConversationUploads(self.client_api.identity, self.conversation_media),
             client_views,
@@ -650,6 +659,8 @@ class ApplicationContainer:
             client_views,
             client_files,
             client_prompts,
+            self.character,
+            self.soul,
         )
         self.semantic_participation.set_promoter(
             partial(self.processor.promote_committed_event, reason="semantic_invitation")
@@ -708,7 +719,6 @@ class ApplicationContainer:
             services=PluginFacadeServices(
                 social=self.social_service,
                 approval_revision=manifest.manifest_hash,
-                bot_display_name=self.settings.bot_display_name,
                 ledger=self.ledger,
                 people=self.people,
                 groups=self.groups,
@@ -951,6 +961,8 @@ class ApplicationContainer:
         """Start maintenance tasks after migrations have run."""
 
         await bootstrap_settings_identity(self.database, self.settings)
+        character = await self.character.current()
+        self.settings.apply_character_name(character.display_name, character.revision)
         await self.lifecycle.start()
 
     async def _cleanup_loop(self) -> None:

@@ -9,16 +9,7 @@ from yuki.persistence.repository_records import EventRecord
 from yuki.time.formatting import local_iso
 
 
-def event_view(
-    row: EventRecord, *, timezone: str = "Asia/Taipei", bot_name: str = "Yuki"
-) -> dict[str, Any]:
-    name = row.sender_display_name
-    if (
-        row.author_is_yuki()
-        and not row.sender_group_card.strip()
-        and not row.sender_nickname.strip()
-    ):
-        name = bot_name
+def event_view(row: EventRecord, *, timezone: str = "Asia/Taipei") -> dict[str, Any]:
     return {
         "id": row.id,
         "event_id": row.id,
@@ -37,7 +28,7 @@ def event_view(
         "ingress_presence_id": row.ingress_presence_id,
         "sender_nickname": row.sender_nickname,
         "sender_group_card": row.sender_group_card,
-        "sender_display_name": name,
+        "sender_display_name": row.sender_display_name,
         "scope": row.scope_type.value,
         "conversation_id": row.canonical_conversation_id,
         "direction": row.direction,

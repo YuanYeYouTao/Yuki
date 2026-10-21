@@ -10,13 +10,27 @@ from fastapi import APIRouter, Depends, FastAPI, Header, Query, Request
 from fastapi.responses import Response, StreamingResponse
 from pydantic import UUID4, BaseModel, ConfigDict, Field, SecretStr
 
+from yuki.character.repository import CharacterRepository
+from yuki.character.soul import CharacterSoul
 from yuki.client_api.errors import ClientError
 from yuki.client_api.files import ClientFiles
 from yuki.client_api.http_errors import install_identity_errors
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal
 from yuki.client_api.messages import ClientMessages
+from yuki.client_api.models import (
+    CharacterProfile,
+    CharacterUpdateBody,
+    Envelope,
+    Meta,
+    SoulDocument,
+    SoulReloadBody,
+    SoulResult,
+    SoulSaveBody,
+    character_changes,
+)
 from yuki.client_api.prompts import ClientPrompts
 from yuki.client_api.sessions import ClientSessions
+from yuki.client_api.version import CLIENT_API_REVISION
 from yuki.client_api.views import ClientViews
 from yuki.client_api.works import ClientWorks
 
@@ -29,6 +43,8 @@ class ClientApi:
     views: ClientViews | None = None
     files: ClientFiles | None = None
     prompts: ClientPrompts | None = None
+    character: CharacterRepository | None = None
+    soul: CharacterSoul | None = None
 
 
 class PersonalRequest(BaseModel):
@@ -62,6 +78,7 @@ class WorkCancelBody(BaseModel):
 
 
 def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
+    app.extra.setdefault("x-yuki-api-revision", CLIENT_API_REVISION)
     router = APIRouter(prefix="/client/v1")
 
     async def principal(
@@ -85,6 +102,63 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
         return await principal(authorization, x_yuki_entry, None)
 
     BaseActor = Annotated[ClientPrincipal, Depends(base_principal)]
+
+    def character() -> CharacterRepository:
+        service = resolve().character
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
+    def soul() -> CharacterSoul:
+        service = resolve().soul
+        if service is None:
+            raise ClientError("unavailable")
+        return service
+
+    @router.get("/meta", response_model=Envelope[Meta])
+    async def meta() -> Any:
+        return {"data": await character().meta()}
+
+    @router.get(
+        "/character", response_model=Envelope[CharacterProfile], response_model_exclude_unset=True
+    )
+    async def character_profile(actor: Actor) -> Any:
+        return {"data": await character().get(actor)}
+
+    @router.patch(
+        "/character", response_model=Envelope[CharacterProfile], response_model_exclude_unset=True
+    )
+    async def update_character(body: CharacterUpdateBody, actor: Actor) -> Any:
+        return {
+            "data": await character().update(
+                str(body["request_id"]),
+                body["expected_revision"],
+                character_changes(body),
+                principal=actor,
+            )
+        }
+
+    @router.get("/character/soul", response_model=Envelope[SoulDocument])
+    async def read_soul(actor: Actor) -> Any:
+        return {"data": await soul().read(principal=actor)}
+
+    @router.put(
+        "/character/soul", response_model=Envelope[SoulResult], response_model_exclude_unset=True
+    )
+    async def save_soul(body: SoulSaveBody, actor: Actor) -> Any:
+        return {
+            "data": await soul().save(
+                str(body.request_id), body.expected_revision, body.content, principal=actor
+            )
+        }
+
+    @router.post(
+        "/character/soul/reload",
+        response_model=Envelope[SoulResult],
+        response_model_exclude_unset=True,
+    )
+    async def reload_soul(body: SoulReloadBody, actor: Actor) -> Any:
+        return {"data": await soul().reload(str(body.request_id), principal=actor)}
 
     @router.post("/acp/sessions")
     async def new_session(body: PersonalRequest, actor: BaseActor) -> Any:

@@ -25,6 +25,7 @@ from yuki.deployment_setup.service import (
     build_model_profiles,
     commit_configuration,
     compose_profiles_with_features,
+    initialize_soul,
     prepare_operator_configuration,
     selected_gateway_providers,
     validate_configuration,
@@ -78,8 +79,8 @@ def test_new_setup_writes_selected_profiles_without_retired_gateway_artifacts(
     paths = SetupPaths(tmp_path)
     paths.env_example.write_text(template.merge({"COMPOSE_PROFILES": profiles}), encoding="utf-8")
     (tmp_path / "config").mkdir()
-    (tmp_path / "config/persona.md").write_text(
-        (root / "config/persona.md").read_text(encoding="utf-8"), encoding="utf-8"
+    (tmp_path / "config/SOUL.md").write_text(
+        (root / "config/SOUL.md").read_text(encoding="utf-8"), encoding="utf-8"
     )
     monkeypatch.chdir(tmp_path)
     answers = iter(
@@ -109,6 +110,8 @@ def test_new_setup_writes_selected_profiles_without_retired_gateway_artifacts(
 
     environment = EnvironmentDocument.load(paths).values()
     assert environment["COMPOSE_PROFILES"] == profiles
+    assert environment["SOUL_FILE"] == "character/SOUL.md"
+    assert paths.soul.read_bytes() == paths.soul_template.read_bytes()
     assert environment["ONEBOT_ACCESS_TOKEN"] == template.values()["ONEBOT_ACCESS_TOKEN"]
     assert environment["SNOWLUMA_VNC_PASSWORD"] == template.values()["SNOWLUMA_VNC_PASSWORD"]
     policy = tomllib.loads((tmp_path / environment["CONTROL_OPERATORS_FILE"]).read_text("utf-8"))
@@ -212,8 +215,8 @@ def test_snowluma_port_validation_uses_current_listeners() -> None:
 
 
 def _search_setup(tmp_path: Path, profiles: str, **updates: str):
-    (tmp_path / "config").mkdir(exist_ok=True)
-    (tmp_path / "config/persona.md").write_text("Test persona", encoding="utf-8")
+    (tmp_path / "character").mkdir(exist_ok=True)
+    (tmp_path / "character/SOUL.md").write_text("Test persona", encoding="utf-8")
     environment = {
         "LLM_PROVIDER": "deepseek",
         "LLM_BASE_URL": "https://api.deepseek.com/v1",
@@ -435,7 +438,7 @@ def test_native_setup_commits_provider_search_without_tavily(
         (root / ".env.example").read_text(encoding="utf-8"), encoding="utf-8"
     )
     (tmp_path / "config").mkdir()
-    (tmp_path / "config/persona.md").write_text("Test persona", encoding="utf-8")
+    (tmp_path / "config/SOUL.md").write_text("Test persona", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     answers = iter(
         (
@@ -571,3 +574,74 @@ def test_setup_explicit_native_ignores_old_tavily_default(tmp_path: Path) -> Non
     )
     paths, configuration = _search_setup(tmp_path, profiles, WEB_MODE="tavily")
     validate_configuration(paths, configuration)
+
+
+def test_setup_removes_retired_role_sources_including_multiline_values() -> None:
+    document = EnvironmentDocument(
+        "# operator notes\n"
+        "SYSTEM_PROMPT='private first line\nprivate second line'\n"
+        "SYSTEM_PROMPT_FILE=old-main.md\n"
+        "BOT_PERSONA_FILE=old-self.md\n"
+        "YUKI_PERSONA_FILE=oldest.md\n"
+        "BOT_DISPLAY_NAME=old-name\n"
+        "CUSTOM_EXTENSION=keep\n"
+    )
+    rendered = document.merge({**document.values(), "SOUL_FILE": "character/SOUL.md"})
+    assert "private" not in rendered
+    assert "old-" not in rendered and "oldest" not in rendered
+    assert "# operator notes" in rendered and "CUSTOM_EXTENSION=keep" in rendered
+    assert "SOUL_FILE=character/SOUL.md" in rendered
+
+
+def test_soul_initialization_preserves_an_existing_empty_user_file(tmp_path: Path) -> None:
+    paths = SetupPaths(tmp_path)
+    paths.soul.parent.mkdir()
+    paths.soul.write_bytes(b"")
+    initialize_soul(paths)
+    assert paths.soul.read_bytes() == b""
+    assert not paths.soul_template.exists()
+
+
+def test_setup_cancel_does_not_initialize_the_user_soul(tmp_path: Path) -> None:
+    paths = SetupPaths(tmp_path)
+    paths.soul_template.parent.mkdir()
+    paths.soul_template.write_text("# Explicit template", encoding="utf-8")
+    draft = _SetupDraft(
+        {
+            "LLM_PROVIDER": "gemini",
+            "LLM_BASE_URL": "https://generativelanguage.googleapis.com/v1beta",
+            "LLM_API_KEY": "fixture-key",
+            "LLM_MODEL": "fixture-model",
+            "COMPOSE_PROFILES": "",
+            "WEB_MODE": "disabled",
+        },
+        "gemini",
+        False,
+        initial=True,
+    )
+    ui = TerminalUI(no_color=True, input_fn=lambda _prompt: "n", output=StringIO())
+    assert (
+        _review_and_commit(
+            paths=paths,
+            ui=ui,
+            document=EnvironmentDocument(""),
+            draft=draft,
+            sections=("basic",),
+            initial=True,
+        )
+        == 2
+    )
+    assert not paths.soul.exists()
+    assert not paths.env.exists() and not paths.model_profiles.exists()
+
+
+def test_validation_reads_only_the_selected_soul_and_allows_empty_text(tmp_path: Path) -> None:
+    profiles = build_model_profiles(main_protocol="gemini", flash_enabled=False)
+    paths, configuration = _search_setup(tmp_path, profiles, WEB_MODE="disabled")
+    paths.soul.write_bytes(b"")
+    paths.soul_template.parent.mkdir()
+    paths.soul_template.write_text("A different role", encoding="utf-8")
+    assert validate_configuration(paths, configuration).soul == ""
+    paths.soul.unlink()
+    with pytest.raises(FileNotFoundError):
+        validate_configuration(paths, configuration)

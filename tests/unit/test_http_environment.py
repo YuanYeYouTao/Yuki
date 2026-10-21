@@ -116,8 +116,9 @@ def test_bot_loads_http_environment_before_initialization(
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(os, "environ", {"USERPROFILE": str(tmp_path), "HOME": str(tmp_path)})
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config/persona.md").write_text("Test persona", encoding="utf-8")
+    (tmp_path / "character").mkdir()
+    soul_file = tmp_path / "character/SOUL.md"
+    soul_file.write_text("Test persona", encoding="utf-8")
     (tmp_path / ".env").write_text("ALL_PROXY=http://bot.example:8080\n", encoding="utf-8")
 
     class InitializationObserved(Exception):
@@ -129,7 +130,7 @@ def test_bot_loads_http_environment_before_initialization(
 
     monkeypatch.setattr(main.nonebot, "init", observe_initialization)
     with pytest.raises(InitializationObserved):
-        main.bootstrap(Settings(_env_file=None))
+        main.bootstrap(Settings(_env_file=None, soul_file=soul_file))
 
 
 def test_management_cli_loads_http_environment_without_exporting_keys(
@@ -139,11 +140,13 @@ def test_management_cli_loads_http_environment_without_exporting_keys(
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(os, "environ", {"USERPROFILE": str(tmp_path), "HOME": str(tmp_path)})
-    (tmp_path / "config").mkdir()
-    (tmp_path / "config/persona.md").write_text("Test persona", encoding="utf-8")
+    (tmp_path / "character").mkdir()
+    (tmp_path / "character/SOUL.md").write_text("Test persona", encoding="utf-8")
     monkeypatch.setattr(sys, "argv", ["yuki", "init-db"])
     (tmp_path / ".env").write_text(
-        "ALL_PROXY=http://cli.example:8080\nLLM_API_KEY=private-bot-key\n", encoding="utf-8"
+        "SOUL_FILE=character/SOUL.md\nALL_PROXY=http://cli.example:8080\n"
+        "LLM_API_KEY=private-bot-key\n",
+        encoding="utf-8",
     )
     observed: list[str] = []
 

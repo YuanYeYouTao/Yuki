@@ -197,7 +197,11 @@ async def test_new_native_jev_http_uses_current_person_but_returns_original_snap
             )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(http)) as transport:
-            observer = JevObserver("synthetic-key", client=transport)
+            observer = JevObserver(
+                "synthetic-key",
+                identity=lambda: {"display_name": "测试角色", "aliases": ()},
+                client=transport,
+            )
             result = await TracedSemanticObserver(observer, None, database=database).evaluate(
                 snapshot
             )

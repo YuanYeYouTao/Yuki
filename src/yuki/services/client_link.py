@@ -12,6 +12,7 @@ from yuki.gateway.models import ConnectionSnapshot
 from yuki.gateway.registry import GatewayConnectionRegistry, RegistryClosed
 from yuki.identity.canonical_repository import find_presence
 from yuki.identity.db_models import PresenceModel
+from yuki.services.policies import message_command_text
 
 
 class ClientLinkCommands:
@@ -21,7 +22,7 @@ class ClientLinkCommands:
         self.identities, self.registry = identities, registry
 
     def is_request(self, message: InboundMessage) -> bool:
-        parts = message.text.strip().split(maxsplit=2)
+        parts = message_command_text(message).strip().split(maxsplit=2)
         return len(parts) >= 2 and parts[0].casefold() == "/ai" and parts[1].casefold() == "link"
 
     async def _require_proof(
@@ -49,7 +50,7 @@ class ClientLinkCommands:
     async def execute(self, bot: object, message: InboundMessage) -> str:
         if message.scope_type is not ScopeType.PRIVATE:
             return "请在私聊中使用 /ai link。"
-        parts = message.text.strip().split(maxsplit=2)
+        parts = message_command_text(message).strip().split(maxsplit=2)
         code = parts[2].strip() if len(parts) == 3 else ""
         if len(code.split()) > 1:
             return "用法：/ai link，或 /ai link <绑定码>。"

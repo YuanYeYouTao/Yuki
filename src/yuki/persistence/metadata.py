@@ -7,6 +7,7 @@ of them without turning :mod:`yuki.persistence.models` into a monolith.
 
 # These imports are intentionally side-effectful: defining each mapped class
 # registers its table on ``Base.metadata``.
+from yuki.character import db_models as _character_db_models  # noqa: F401
 from yuki.client_api import db_models as _client_db_models  # noqa: F401
 from yuki.conversation import autonomy_db_models as _autonomy_db_models  # noqa: F401
 from yuki.conversation import (  # noqa: F401

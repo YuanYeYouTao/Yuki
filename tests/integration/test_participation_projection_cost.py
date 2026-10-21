@@ -24,6 +24,7 @@ from yuki_participation.observer import JevObserver
 from yuki_participation.participation import ParticipationUnit, UnitBinding
 from yuki_participation.self_report import SelfDelta, SelfReport
 
+from yuki.config import BotIdentity
 from yuki.domain.conversations import ScopeType
 from yuki.event_prompt import ChatEventPromptRenderer
 from yuki.persistence.models import ChatEventModel
@@ -69,11 +70,23 @@ async def test_jev_and_main_keep_the_same_named_mentions_in_original_positions(d
                 },
             )
 
+        host.app.settings.character_identity = BotIdentity("阿澪", ("阿澪", "小澪"))
         async with httpx.AsyncClient(transport=httpx.MockTransport(http)) as transport:
-            observer = JevObserver("synthetic-key", client=transport)
+            observer = JevObserver(
+                "synthetic-key", identity=host._observer_identity, client=transport
+            )
             await observer.evaluate(snapshot)
-        assert len(requests) == 1
+            host.app.settings.character_identity = BotIdentity("林舟", ("林舟", "阿舟"))
+            await observer.evaluate(snapshot.model_copy(update={"sequence": 2}))
+        assert len(requests) == 2
         payload = requests[0]["state"]
+        assert payload["agent_identity"] == {"display_name": "阿澪", "aliases": ["阿澪", "小澪"]}
+        assert requests[1]["state"]["agent_identity"] == {
+            "display_name": "林舟",
+            "aliases": ["林舟", "阿舟"],
+        }
+        assert requests[1]["state"]["focus"] == payload["focus"]
+        assert requests[0]["questions"] == requests[1]["questions"]
         main = ChatEventPromptRenderer((row,)).reference_message(
             row, current_event_id=row.id, current_content=body
         )

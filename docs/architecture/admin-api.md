@@ -47,9 +47,14 @@ operator 角色只作描述，能力逐项声明；Person 超管映射到明确�
 | `GET /plugins/{id}/observe` | `plugin observe` | `control.plugin.config.content.read` |
 | `POST /plugin-outbox/{id}/retry` | `plugin retry-outbox` | `control.plugin.mutate` |
 | `GET /models`；`POST /models/apply`；`POST /models/secrets` | `admin model show\|apply`、`admin model secret set` | `control.config.file.content.read\|mutate` |
+| `GET /character`；`PATCH /character` | `admin character show\|update` | `control.character.read\|mutate` |
+| `GET /character/owners`；`POST /character/owners/{person_id}/{grant\|revoke}` | `admin character owner list\|grant\|revoke` | `control.character.read\|mutate` |
+| `GET /character/soul`；`PUT` 同路径；`POST /character/soul/reload` | `admin character soul show\|set\|reload` | `control.character.read\|mutate` |
 | `POST /works/{id}/{cancel\|resume}` | `admin work cancel\|resume` | `control.work.mutate` |
 
 健康投影分别报告 enabled、running、healthy 和检查时间；没有健康证据时为 null。
+角色名称与单 SOUL 沿同一领域服务发布，保原 UUID、profile revision、文件 CAS 和实际生效结果；
+不会编辑工具或授权规则，也不重写已付请求。角色 owner 不等于 operator，资格按原 Person 授予或撤销。
 平台项来自已登记 Provider 的平台声明和实际 Presence，不按固定平台名单列举。
 聊天 status 显示当前 Conversation 所在平台连接与 `chat_agent` 当前选中 Profile 的模型。
 轨迹查询使用内部事件 ID 与原 turn/Work ID，按有效期过滤，使用 `after` 与 `limit`

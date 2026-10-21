@@ -34,7 +34,7 @@ async def test_telegram_main_has_neutral_static_prompt_and_current_platform(tele
         message.content or "" for message in request.messages if message.role == "system"
     )
     assert "运行在 QQ 中" not in static
-    assert "你是 AI 助手 Yuki" in static
+    assert "当前角色的名称是 Yuki" in static
     assert any('"platform":"telegram"' in (message.content or "") for message in request.messages)
     frozen = deepcopy(request.messages)
     await env.gateway.receive(native.update(2, text="another turn"))
@@ -42,22 +42,21 @@ async def test_telegram_main_has_neutral_static_prompt_and_current_platform(tele
     assert request.messages == frozen
 
 
-def test_custom_persona_and_system_prompt_remain_exact(tmp_path):
-    persona = tmp_path / "persona.md"
-    persona.write_text("私人人格", encoding="utf-8")
-    settings = make_settings(
-        "sqlite+aiosqlite://", bot_persona_file=persona, system_prompt="我的固定指令"
-    )
-    assert settings.system_prompt == "我的固定指令" and settings.bot_persona == "私人人格"
-    assert any(
-        "我的固定指令" in message.content for message in PromptComposer(settings).static_messages()
-    )
+def test_custom_soul_and_role_identity_are_one_reference(tmp_path):
+    soul = tmp_path / "SOUL.md"
+    soul.write_text("私人人格，名称引用{{name}}", encoding="utf-8")
+    settings = make_settings("sqlite+aiosqlite://", soul_file=soul)
+    settings.apply_character_name("小雪", revision=2)
+    static = PromptComposer(settings).static_messages()[0].content
+    assert "当前角色的名称是 小雪" in static
+    assert "私人人格，名称引用小雪" in static
+    assert settings.soul == "私人人格，名称引用{{name}}"
 
 
 def test_loaded_main_prompt_keeps_source_labels_without_blanket_distrust(tmp_path):
     template = tmp_path / "system.md"
     template.write_text("来自配置文件的人设正文", encoding="utf-8")
-    settings = make_settings("sqlite+aiosqlite://", system_prompt_file=template)
+    settings = make_settings("sqlite+aiosqlite://", soul_file=template)
     registry = PromptRegistry()
     registry.register(
         PromptFragment(

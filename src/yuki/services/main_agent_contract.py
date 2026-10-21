@@ -11,13 +11,14 @@ from typing import TYPE_CHECKING, Any
 
 from yuki.codemode.contract import CODE_API_REVISION
 from yuki.codemode.tool_visibility import DIRECT_TOOL_NAMES, LOOKUP_TOOLS, model_definitions
-from yuki.domain.messages import ChatTool
+from yuki.domain.messages import ChatMessage, ChatTool
 from yuki.runtime.work_control import work_control_tools
 from yuki.services.agent_tools import ToolRuntime
 from yuki.workspace.short_state import STATE_TOOL, ShortState
 
 if TYPE_CHECKING:
     from yuki.codemode.api_projection import ScriptApi
+    from yuki.services.prompt_composer import PromptComposer
 
 
 class MainAgentContract:
@@ -51,6 +52,10 @@ class MainAgentContract:
             "restart_required": bool(self._stale_plugins),
             "persistent_environment_tools_complete": (SANDBOX_TOOLS | WORKSPACE_TOOLS) <= names,
         }
+
+    def invariant_messages(self) -> tuple[ChatMessage, ...]:
+        composer: PromptComposer = self.chat._prompt_composer
+        return composer.invariant_messages()
 
     async def definitions(self) -> tuple[ChatTool, ...]:
         """Full execution contract; the Provider uses model_definitions instead."""
@@ -99,7 +104,8 @@ class MainAgentContract:
                         # 19: lifecycle decisions settle after the original tool round.
                         # 25: Account mentions and prepared parts replace retired dispatch.
                         # 26: one history tool and one entry-independent manifest.
-                        "version": 26,
+                        # 27: role-independent descriptions and the single SOUL contract.
+                        "version": 27,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

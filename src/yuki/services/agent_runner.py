@@ -210,6 +210,8 @@ class AgentRunner:
         script_api: ScriptApi | None = None,
         manifest_revision: str = "",
     ) -> str:
+        if self.main_contract is not None:
+            system_messages = self.main_contract.invariant_messages()
         return hashlib.sha256(
             json.dumps(
                 [

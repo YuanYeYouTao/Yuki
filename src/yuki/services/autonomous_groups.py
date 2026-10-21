@@ -273,6 +273,7 @@ class AutonomousGroupService:
         )
         snapshot = LocalAutonomousParticipationPolicy(
             threshold=policy.autonomous_admission_threshold,
+            bot_aliases=self._chat._settings.character_identity.aliases,
         ).evaluate(features)
         conversation_key = scope_key
         publisher = getattr(self._chat, "_event_publisher", None)

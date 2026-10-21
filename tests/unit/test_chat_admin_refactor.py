@@ -18,14 +18,10 @@ from yuki.services.policies import CommandName, parse_command
 
 
 def test_retired_emoji_pool_is_not_offered_as_management_capability():
-    from tests.conftest import make_settings
-
     from yuki.admin.permission_catalog import PermissionCatalogService
     from yuki.domain.tool_actor import ToolActor
 
-    report = PermissionCatalogService(
-        settings=make_settings("sqlite+aiosqlite://")
-    ).report_for_actor(
+    report = PermissionCatalogService().report_for_actor(
         ToolActor.from_inbound(message("/ai capabilities emoji")),
         category="emoji",
         actor_is_superuser=True,
@@ -35,13 +31,9 @@ def test_retired_emoji_pool_is_not_offered_as_management_capability():
 
 
 def test_permission_directory_accepts_the_complete_search_text():
-    from tests.conftest import make_settings
-
     from yuki.admin.permission_catalog import PermissionCatalogService
 
-    report = PermissionCatalogService(
-        settings=make_settings("sqlite+aiosqlite://")
-    ).report_for_message(
+    report = PermissionCatalogService().report_for_message(
         message("/ai capabilities"),
         query="an ordinary complete directory search " * 4,
         actor_is_superuser=True,

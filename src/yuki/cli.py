@@ -55,6 +55,27 @@ def _init_database(settings: Settings) -> None:
     command.upgrade(config, "head")
 
 
+async def _initialize_character(settings: Settings, name: str) -> None:
+    from yuki.character.repository import CharacterRepository
+    from yuki.client_api.identity import ClientIdentityService
+    from yuki.gateway.providers import builtin_provider_catalog
+    from yuki.gateway.registry import GatewayConnectionRegistry
+    from yuki.identity.routing import PresenceRouter
+
+    database = Database(settings.database_url)
+    try:
+        identity = ClientIdentityService(
+            database,
+            PresenceRouter(
+                database, GatewayConnectionRegistry(providers=builtin_provider_catalog())
+            ),
+        )
+        current = await CharacterRepository(identity, settings).initialize(name)
+        print(json.dumps(asdict(current), ensure_ascii=False))
+    finally:
+        await database.close()
+
+
 def _render_snowluma_config(settings: Settings, output: Path) -> None:
     """Merge Yuki's reverse WS client without replacing SnowLuma-owned settings."""
 
@@ -231,7 +252,7 @@ def _prompt_diagnostic(settings: Settings, scenario: str) -> dict[str, object]:
             trust=PromptTrust.CORE,
             priority=100,
             stability=PromptStability.STATIC,
-            content=settings.system_prompt,
+            content=settings.character_prompt,
         ),
         PromptContribution(
             id="core.contract",
@@ -512,7 +533,8 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(prog="yuki")
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("init-db", help="运行 Alembic 数据库迁移")
+    initialize = subparsers.add_parser("init-db", help="运行 Alembic 数据库迁移")
+    initialize.add_argument("--character-name", help="明确初始化当前角色名称；已有角色保持原样")
     render_snowluma = subparsers.add_parser(
         "render-snowluma-config",
         help="合并 SnowLuma OneBot 配置",
@@ -560,6 +582,8 @@ def main() -> None:
     settings = Settings()
     if args.command == "init-db":
         _init_database(settings)
+        if args.character_name is not None:
+            asyncio.run(_initialize_character(settings, args.character_name))
     elif args.command == "render-snowluma-config":
         _render_snowluma_config(settings, args.output)
     elif args.command == "plugin":

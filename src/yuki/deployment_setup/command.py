@@ -11,7 +11,7 @@ import secrets
 import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -30,6 +30,7 @@ from yuki.deployment_setup.service import (
     build_model_profiles,
     commit_configuration,
     compose_profiles_with_features,
+    initialize_soul,
     load_plugin_setup_states,
     main_protocol,
     model_profiles_use_flash,
@@ -63,6 +64,7 @@ _PERSISTENT_DIRECTORIES = (
     "social-transfer",
     "data/setup",
     "config",
+    "character",
     "webui-config",
     "plugins",
     "snowluma-data",
@@ -112,7 +114,8 @@ def run_setup_command(args: argparse.Namespace) -> int:
         if action == "environment-check":
             from yuki.deployment_setup.environment_check import check_environment
 
-            settings = Settings()
+            with _working_directory(paths.root):
+                settings = Settings()
             result = asyncio.run(
                 check_environment(settings.sandbox_socket, settings.workspace_directory)
             )
@@ -182,6 +185,7 @@ def _configure(paths: SetupPaths, ui: TerminalUI) -> int:
     )
     draft.environment["YUKI_VERSION"] = __version__
     draft.environment["MODEL_PROFILES_FILE"] = "webui-config/model_profiles.toml"
+    draft.environment["SOUL_FILE"] = "character/SOUL.md"
 
     forced_sections: set[str] = set()
 
@@ -563,6 +567,7 @@ def _review_and_commit(
     sections: tuple[str, ...],
     initial: bool,
 ) -> int:
+    draft.environment["SOUL_FILE"] = "character/SOUL.md"
     write_model_profiles = initial or not paths.model_profiles.is_file()
     if write_model_profiles:
         profiles = build_model_profiles(
@@ -609,9 +614,17 @@ def _review_and_commit(
         write_model_profiles=write_model_profiles,
         operator_policy=operator_policy,
     )
-    validate_configuration(paths, configuration)
+    soul_source = paths.soul if paths.soul.exists() else paths.soul_template
+    validate_configuration(
+        paths,
+        replace(
+            configuration,
+            environment={**configuration.environment, "SOUL_FILE": str(soul_source)},
+        ),
+    )
     ui.success("Settings、模型路由和本地配置合同有效")
     ui.warning("API Key 尚未在线验证；本次没有发起任何计费请求")
+    ui.info("人格原件：character/SOUL.md；已存在则保留，缺失时在确认后从 config/SOUL.md 初始化。")
     _render_summary(
         ui,
         draft.environment,
@@ -624,11 +637,14 @@ def _review_and_commit(
         return 2
     for relative in _PERSISTENT_DIRECTORIES:
         (paths.root / relative).mkdir(parents=True, exist_ok=True)
+    initialize_soul(paths)
     backup = commit_configuration(paths, document, configuration)
     if backup is not None:
         ui.info(f"原配置已备份到 {backup.relative_to(paths.root)}")
     ui.success("配置写入完成")
-    ui.info("请先启动 Bot 并核验数据库；operator 入口使用现有 HTTP 服务。")
+    ui.info("新部署先显式初始化角色和数据库（将角色名称替换为自己的名称）：")
+    ui.info('docker compose run --rm --entrypoint yuki bot init-db --character-name "角色名称"')
+    ui.info("普通启动和重复迁移不重命名已有角色；再启动 Bot，operator 入口使用现有 HTTP 服务。")
     ui.info("operator policy：" + draft.environment["CONTROL_OPERATORS_FILE"])
     if operator_policy is not None:
         ui.info("凭据保存在 .env 的 YUKI_CONTROL_OPERATOR_TOKEN；向导不显示凭据。")

@@ -37,6 +37,7 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
         ),
         database=database,
     )
+    await app.character.initialize("Offline fixture")
     bridge = LocalDirectoryBridge(tmp_path / "manager-workspace", app.workspace_service.store)
 
     async def manager_read_or_file(method, arguments, *, request_id, **_kwargs):

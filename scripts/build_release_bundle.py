@@ -20,13 +20,13 @@ _ROOT_FILES = frozenset({"docker-compose.yml", ".env.example", "install.sh", "in
 _CONFIG_FILES = frozenset(
     {
         "config/model_profiles.example.toml",
-        "config/persona.md",
+        "config/SOUL.md",
         "config/qq_face_map.json",
-        "config/system_prompt.example.md",
     }
 )
 _EMPTY_DIRECTORIES = (
     "data",
+    "character",
     "workspace",
     "social-transfer",
     "webui-config",
@@ -64,6 +64,7 @@ def select_bundle_files(files: Iterable[str], version: str) -> dict[str, str]:
     upgrade_guide = f"docs/upgrade-{version}.md"
     snowluma_guide = "docs/deployment/snowluma.md"
     model_profile_migration = "docs/operations/model-profile-path-migration.md"
+    soul_deployment = "docs/operations/soul-deployment-20261022.md"
     required = (
         _ROOT_FILES
         | _CONFIG_FILES
@@ -72,6 +73,7 @@ def select_bundle_files(files: Iterable[str], version: str) -> dict[str, str]:
             upgrade_guide,
             snowluma_guide,
             model_profile_migration,
+            soul_deployment,
             "docs/operations/persistent-environment.md",
             "docs/operations/persistent-environment.zh-CN.md",
         }
@@ -83,12 +85,13 @@ def select_bundle_files(files: Iterable[str], version: str) -> dict[str, str]:
     selected = {
         path: path
         for path in required
-        - {release_note, upgrade_guide, snowluma_guide, model_profile_migration}
+        - {release_note, upgrade_guide, snowluma_guide, model_profile_migration, soul_deployment}
     }
     selected[release_note] = f"Yuki-{version}-Release-Notes.md"
     selected[upgrade_guide] = f"Yuki-{version}-Upgrade.md"
     selected[snowluma_guide] = "SnowLuma.md"
     selected[model_profile_migration] = "Model-Profile-Path-Migration.md"
+    selected[soul_deployment] = "SOUL-Deployment.md"
     for path in sorted(tracked):
         pure = PurePosixPath(path)
         if pure.parts[:1] == ("plugins",):
