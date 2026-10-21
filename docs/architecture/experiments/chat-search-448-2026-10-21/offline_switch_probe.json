@@ -1,0 +1,17 @@
+{
+  "sqlite": "3.53.1",
+  "storage": ":memory:",
+  "rename_queries": [
+    [
+      7
+    ]
+  ],
+  "objects_after_rename": [
+    "search_live",
+    "search_live_config",
+    "search_live_data",
+    "search_live_docsize",
+    "search_live_idx"
+  ],
+  "optional_trigger_table_missing_delete_error": "no such table: main.search_live"
+}

@@ -1,0 +1,191 @@
+{
+  "environment": {
+    "python": "3.12.14",
+    "sqlite": "3.53.1",
+    "storage": ":memory:",
+    "target_scope_rows": 200,
+    "repeats": 20
+  },
+  "limitations": [
+    "Synthetic only; no OpenCC/ASR/runtime/production I/O.",
+    "VDBE and ledger predicate counts do not capture internal FTS intersections."
+  ],
+  "cases": [
+    {
+      "events": 20000,
+      "scopes": 100,
+      "build_seconds": 0.5336,
+      "index_allocated_bytes": 2568192,
+      "queries": {
+        "京": {
+          "match_candidates_total": 200,
+          "returned_count": 21,
+          "median_ms": 0.08145,
+          "ledger_scope_predicate_evaluations": 21,
+          "query_plan": [
+            [
+              5,
+              0,
+              156,
+              "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+            ],
+            [
+              10,
+              0,
+              45,
+              "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          ]
+        },
+        "预算": {
+          "match_candidates_total": 200,
+          "returned_count": 21,
+          "median_ms": 0.0966,
+          "ledger_scope_predicate_evaluations": 21,
+          "query_plan": [
+            [
+              5,
+              0,
+              156,
+              "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+            ],
+            [
+              10,
+              0,
+              45,
+              "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          ]
+        },
+        "仅外域": {
+          "match_candidates_total": 0,
+          "returned_count": 0,
+          "median_ms": 0.3096,
+          "ledger_scope_predicate_evaluations": 0,
+          "query_plan": [
+            [
+              5,
+              0,
+              156,
+              "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+            ],
+            [
+              10,
+              0,
+              45,
+              "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          ]
+        },
+        "三千北京": {
+          "match_candidates_total": 200,
+          "returned_count": 21,
+          "median_ms": 0.22965,
+          "ledger_scope_predicate_evaluations": 21,
+          "query_plan": [
+            [
+              5,
+              0,
+              156,
+              "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+            ],
+            [
+              10,
+              0,
+              45,
+              "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "events": 200000,
+      "scopes": 1000,
+      "build_seconds": 5.638574,
+      "index_allocated_bytes": 18575360,
+      "queries": {
+        "京": {
+          "match_candidates_total": 200,
+          "returned_count": 21,
+          "median_ms": 0.387,
+          "ledger_scope_predicate_evaluations": 21,
+          "query_plan": [
+            [
+              5,
+              0,
+              156,
+              "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+            ],
+            [
+              10,
+              0,
+              45,
+              "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          ]
+        },
+        "预算": {
+          "match_candidates_total": 200,
+          "returned_count": 21,
+          "median_ms": 0.3115,
+          "ledger_scope_predicate_evaluations": 21,
+          "query_plan": [
+            [
+              5,
+              0,
+              156,
+              "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+            ],
+            [
+              10,
+              0,
+              45,
+              "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          ]
+        },
+        "仅外域": {
+          "match_candidates_total": 0,
+          "returned_count": 0,
+          "median_ms": 1.32605,
+          "ledger_scope_predicate_evaluations": 0,
+          "query_plan": [
+            [
+              5,
+              0,
+              156,
+              "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+            ],
+            [
+              10,
+              0,
+              45,
+              "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          ]
+        },
+        "三千北京": {
+          "match_candidates_total": 200,
+          "returned_count": 21,
+          "median_ms": 0.621,
+          "ledger_scope_predicate_evaluations": 21,
+          "query_plan": [
+            [
+              5,
+              0,
+              156,
+              "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+            ],
+            [
+              10,
+              0,
+              45,
+              "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          ]
+        }
+      }
+    }
+  ]
+}

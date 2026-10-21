@@ -1,0 +1,893 @@
+[
+  {
+    "rows": 50000,
+    "distribution": "one-conversation",
+    "name": "author_in_auto",
+    "sql": "SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.id DESC LIMIT 21",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p0",
+      "p1",
+      "p2",
+      "p3"
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        110,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        46,
+        0,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    ],
+    "vm_steps_exact": 458,
+    "returned": 21,
+    "ids": [
+      38799,
+      38798,
+      38797,
+      38796,
+      38795,
+      38794,
+      38793,
+      38792,
+      38791,
+      38790,
+      38789,
+      38788,
+      38787,
+      38786,
+      38785,
+      38784,
+      38783,
+      38782,
+      38781,
+      38780,
+      38779
+    ]
+  },
+  {
+    "rows": 50000,
+    "distribution": "one-conversation",
+    "name": "author_in_force_index",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_probe_scope_author WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.id DESC LIMIT 21",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p0",
+      "p1",
+      "p2",
+      "p3"
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        110,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        46,
+        0,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    ],
+    "vm_steps_exact": 366,
+    "returned": 21,
+    "ids": [
+      38799,
+      38798,
+      38797,
+      38796,
+      38795,
+      38794,
+      38793,
+      38792,
+      38791,
+      38790,
+      38789,
+      38788,
+      38787,
+      38786,
+      38785,
+      38784,
+      38783,
+      38782,
+      38781,
+      38780,
+      38779
+    ]
+  },
+  {
+    "rows": 50000,
+    "distribution": "one-conversation",
+    "name": "author_union_top21",
+    "sql": "SELECT * FROM (SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21)) ORDER BY id DESC LIMIT 21",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p0",
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p1",
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p2",
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p3"
+    ],
+    "plan": [
+      [
+        4,
+        0,
+        0,
+        "MERGE (UNION ALL)"
+      ],
+      [
+        6,
+        4,
+        0,
+        "LEFT"
+      ],
+      [
+        9,
+        6,
+        0,
+        "MERGE (UNION ALL)"
+      ],
+      [
+        11,
+        9,
+        0,
+        "LEFT"
+      ],
+      [
+        13,
+        11,
+        0,
+        "CO-ROUTINE (subquery-1)"
+      ],
+      [
+        18,
+        13,
+        90,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        34,
+        11,
+        59,
+        "SCAN (subquery-1)"
+      ],
+      [
+        46,
+        11,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      [
+        53,
+        9,
+        0,
+        "RIGHT"
+      ],
+      [
+        55,
+        53,
+        0,
+        "CO-ROUTINE (subquery-3)"
+      ],
+      [
+        60,
+        55,
+        90,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        76,
+        53,
+        59,
+        "SCAN (subquery-3)"
+      ],
+      [
+        88,
+        53,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      [
+        120,
+        4,
+        0,
+        "RIGHT"
+      ],
+      [
+        123,
+        120,
+        0,
+        "MERGE (UNION ALL)"
+      ],
+      [
+        125,
+        123,
+        0,
+        "LEFT"
+      ],
+      [
+        127,
+        125,
+        0,
+        "CO-ROUTINE (subquery-5)"
+      ],
+      [
+        132,
+        127,
+        90,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        148,
+        125,
+        59,
+        "SCAN (subquery-5)"
+      ],
+      [
+        160,
+        125,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      [
+        167,
+        123,
+        0,
+        "RIGHT"
+      ],
+      [
+        169,
+        167,
+        0,
+        "CO-ROUTINE (subquery-7)"
+      ],
+      [
+        174,
+        169,
+        90,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        190,
+        167,
+        59,
+        "SCAN (subquery-7)"
+      ],
+      [
+        202,
+        167,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    ],
+    "vm_steps_exact": 2054,
+    "returned": 21,
+    "ids": [
+      38799,
+      38798,
+      38797,
+      38796,
+      38795,
+      38794,
+      38793,
+      38792,
+      38791,
+      38790,
+      38789,
+      38788,
+      38787,
+      38786,
+      38785,
+      38784,
+      38783,
+      38782,
+      38781,
+      38780,
+      38779
+    ]
+  },
+  {
+    "rows": 200000,
+    "distribution": "one-conversation",
+    "name": "author_in_auto",
+    "sql": "SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.id DESC LIMIT 21",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p0",
+      "p1",
+      "p2",
+      "p3"
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        130,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        46,
+        0,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    ],
+    "vm_steps_exact": 458,
+    "returned": 21,
+    "ids": [
+      192399,
+      192398,
+      192397,
+      192396,
+      192395,
+      192394,
+      192393,
+      192392,
+      192391,
+      192390,
+      192389,
+      192388,
+      192387,
+      192386,
+      192385,
+      192384,
+      192383,
+      192382,
+      192381,
+      192380,
+      192379
+    ]
+  },
+  {
+    "rows": 200000,
+    "distribution": "one-conversation",
+    "name": "author_in_force_index",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_probe_scope_author WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.id DESC LIMIT 21",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p0",
+      "p1",
+      "p2",
+      "p3"
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        130,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        46,
+        0,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    ],
+    "vm_steps_exact": 366,
+    "returned": 21,
+    "ids": [
+      192399,
+      192398,
+      192397,
+      192396,
+      192395,
+      192394,
+      192393,
+      192392,
+      192391,
+      192390,
+      192389,
+      192388,
+      192387,
+      192386,
+      192385,
+      192384,
+      192383,
+      192382,
+      192381,
+      192380,
+      192379
+    ]
+  },
+  {
+    "rows": 200000,
+    "distribution": "one-conversation",
+    "name": "author_union_top21",
+    "sql": "SELECT * FROM (SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21)) ORDER BY id DESC LIMIT 21",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p0",
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p1",
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p2",
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p3"
+    ],
+    "plan": [
+      [
+        4,
+        0,
+        0,
+        "MERGE (UNION ALL)"
+      ],
+      [
+        6,
+        4,
+        0,
+        "LEFT"
+      ],
+      [
+        9,
+        6,
+        0,
+        "MERGE (UNION ALL)"
+      ],
+      [
+        11,
+        9,
+        0,
+        "LEFT"
+      ],
+      [
+        13,
+        11,
+        0,
+        "CO-ROUTINE (subquery-1)"
+      ],
+      [
+        18,
+        13,
+        110,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        34,
+        11,
+        59,
+        "SCAN (subquery-1)"
+      ],
+      [
+        46,
+        11,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      [
+        53,
+        9,
+        0,
+        "RIGHT"
+      ],
+      [
+        55,
+        53,
+        0,
+        "CO-ROUTINE (subquery-3)"
+      ],
+      [
+        60,
+        55,
+        110,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        76,
+        53,
+        59,
+        "SCAN (subquery-3)"
+      ],
+      [
+        88,
+        53,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      [
+        120,
+        4,
+        0,
+        "RIGHT"
+      ],
+      [
+        123,
+        120,
+        0,
+        "MERGE (UNION ALL)"
+      ],
+      [
+        125,
+        123,
+        0,
+        "LEFT"
+      ],
+      [
+        127,
+        125,
+        0,
+        "CO-ROUTINE (subquery-5)"
+      ],
+      [
+        132,
+        127,
+        110,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        148,
+        125,
+        59,
+        "SCAN (subquery-5)"
+      ],
+      [
+        160,
+        125,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      [
+        167,
+        123,
+        0,
+        "RIGHT"
+      ],
+      [
+        169,
+        167,
+        0,
+        "CO-ROUTINE (subquery-7)"
+      ],
+      [
+        174,
+        169,
+        110,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        190,
+        167,
+        59,
+        "SCAN (subquery-7)"
+      ],
+      [
+        202,
+        167,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    ],
+    "vm_steps_exact": 2054,
+    "returned": 21,
+    "ids": [
+      192399,
+      192398,
+      192397,
+      192396,
+      192395,
+      192394,
+      192393,
+      192392,
+      192391,
+      192390,
+      192389,
+      192388,
+      192387,
+      192386,
+      192385,
+      192384,
+      192383,
+      192382,
+      192381,
+      192380,
+      192379
+    ]
+  },
+  {
+    "rows": 400000,
+    "distribution": "one-conversation",
+    "name": "author_in_auto",
+    "sql": "SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.id DESC LIMIT 21",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p0",
+      "p1",
+      "p2",
+      "p3"
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        140,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        46,
+        0,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    ],
+    "vm_steps_exact": 458,
+    "returned": 21,
+    "ids": [
+      397199,
+      397198,
+      397197,
+      397196,
+      397195,
+      397194,
+      397193,
+      397192,
+      397191,
+      397190,
+      397189,
+      397188,
+      397187,
+      397186,
+      397185,
+      397184,
+      397183,
+      397182,
+      397181,
+      397180,
+      397179
+    ]
+  },
+  {
+    "rows": 400000,
+    "distribution": "one-conversation",
+    "name": "author_in_force_index",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_probe_scope_author WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.id DESC LIMIT 21",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p0",
+      "p1",
+      "p2",
+      "p3"
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        140,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        46,
+        0,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    ],
+    "vm_steps_exact": 366,
+    "returned": 21,
+    "ids": [
+      397199,
+      397198,
+      397197,
+      397196,
+      397195,
+      397194,
+      397193,
+      397192,
+      397191,
+      397190,
+      397189,
+      397188,
+      397187,
+      397186,
+      397185,
+      397184,
+      397183,
+      397182,
+      397181,
+      397180,
+      397179
+    ]
+  },
+  {
+    "rows": 400000,
+    "distribution": "one-conversation",
+    "name": "author_union_top21",
+    "sql": "SELECT * FROM (SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.id DESC LIMIT 21)) ORDER BY id DESC LIMIT 21",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p0",
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p1",
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p2",
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      "p3"
+    ],
+    "plan": [
+      [
+        4,
+        0,
+        0,
+        "MERGE (UNION ALL)"
+      ],
+      [
+        6,
+        4,
+        0,
+        "LEFT"
+      ],
+      [
+        9,
+        6,
+        0,
+        "MERGE (UNION ALL)"
+      ],
+      [
+        11,
+        9,
+        0,
+        "LEFT"
+      ],
+      [
+        13,
+        11,
+        0,
+        "CO-ROUTINE (subquery-1)"
+      ],
+      [
+        18,
+        13,
+        120,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        34,
+        11,
+        59,
+        "SCAN (subquery-1)"
+      ],
+      [
+        46,
+        11,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      [
+        53,
+        9,
+        0,
+        "RIGHT"
+      ],
+      [
+        55,
+        53,
+        0,
+        "CO-ROUTINE (subquery-3)"
+      ],
+      [
+        60,
+        55,
+        120,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        76,
+        53,
+        59,
+        "SCAN (subquery-3)"
+      ],
+      [
+        88,
+        53,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      [
+        120,
+        4,
+        0,
+        "RIGHT"
+      ],
+      [
+        123,
+        120,
+        0,
+        "MERGE (UNION ALL)"
+      ],
+      [
+        125,
+        123,
+        0,
+        "LEFT"
+      ],
+      [
+        127,
+        125,
+        0,
+        "CO-ROUTINE (subquery-5)"
+      ],
+      [
+        132,
+        127,
+        120,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        148,
+        125,
+        59,
+        "SCAN (subquery-5)"
+      ],
+      [
+        160,
+        125,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ],
+      [
+        167,
+        123,
+        0,
+        "RIGHT"
+      ],
+      [
+        169,
+        167,
+        0,
+        "CO-ROUTINE (subquery-7)"
+      ],
+      [
+        174,
+        169,
+        120,
+        "SEARCH ce USING INDEX ix_probe_scope_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+      ],
+      [
+        190,
+        167,
+        59,
+        "SCAN (subquery-7)"
+      ],
+      [
+        202,
+        167,
+        0,
+        "USE TEMP B-TREE FOR ORDER BY"
+      ]
+    ],
+    "vm_steps_exact": 2054,
+    "returned": 21,
+    "ids": [
+      397199,
+      397198,
+      397197,
+      397196,
+      397195,
+      397194,
+      397193,
+      397192,
+      397191,
+      397190,
+      397189,
+      397188,
+      397187,
+      397186,
+      397185,
+      397184,
+      397183,
+      397182,
+      397181,
+      397180,
+      397179
+    ]
+  }
+]

@@ -1363,9 +1363,8 @@ def probe_lifecycle(seed: int) -> dict:
 
 
 async def _snapshot_case(path: Path, explicit_begin: bool) -> dict:
-    from sqlalchemy import text
-
     from qq_ai_bot.persistence.database import Database
+    from sqlalchemy import text
 
     path.unlink(missing_ok=True)  # noqa: ASYNC240 - synchronous setup before any await
     database = Database(f"sqlite+aiosqlite:///{path}")
