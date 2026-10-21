@@ -52,6 +52,9 @@ class SocialOperationModel(Base):
     event_id: Mapped[int | None] = mapped_column(
         ForeignKey("chat_events.id", onupdate="RESTRICT", ondelete="SET NULL"), nullable=True
     )
+    # Original receipt facts outlive the source row; event_id remains its live FK.
+    original_event_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    original_conversation_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     # Only new split-send parents record a plan. Historical NULL is unknowable.
     planned_parts: Mapped[int | None] = mapped_column(Integer, nullable=True)
     prepared_json: Mapped[str | None] = mapped_column(Text, nullable=True)

@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import threading
 from collections.abc import Collection
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any, cast
 
-from sqlalchemy import and_, func, or_, select, text
+from aiosqlite import Connection as SQLiteConnection
+from sqlalchemy import Integer, and_, column, func, or_, select, table, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -22,19 +26,45 @@ from yuki.memory.rebuild.models import (
     MemoryRebuildSelection,
 )
 from yuki.persistence.database import Database
+from yuki.persistence.history_search import (
+    MatchMode,
+    compile_match,
+    match_fields,
+    prepare_query,
+)
 from yuki.persistence.models import (
     ChatEventModel,
+    ConversationMediaItemModel,
     MemoryJobModel,
 )
 from yuki.persistence.repository_helpers import (
     _event_record,
     keeper_event_clause,
-    sql_keeper_event_predicate,
 )
 from yuki.persistence.repository_records import (
     EventRecord,
+    HistoryPage,
 )
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+
+
+async def _history_read(session: AsyncSession, statement: Any, *, single: bool = False) -> Any:
+    """Interrupt this read before its driver/transaction is returned on cancellation."""
+    connection = await session.connection()
+    raw = await connection.get_raw_connection()
+    driver = cast(SQLiteConnection, raw.driver_connection)
+    operation: asyncio.Task[Any] = asyncio.create_task(
+        session.scalar(statement) if single else session.scalars(statement)
+    )
+    try:
+        return await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        await driver.interrupt()
+        try:
+            await operation
+        except OperationalError:
+            pass  # SQLITE_INTERRUPT belongs to the cancelled read, not a retry.
+        raise
 
 
 async def _conversation_id_for_scope(session: AsyncSession, scope: ConversationScope) -> str | None:
@@ -401,34 +431,6 @@ class EventLedgerRepository:
         rows.reverse()
         return tuple(_event_record(row) for row in rows)
 
-    async def list_canonical_recent(
-        self,
-        conversation_id: str,
-        *,
-        limit: int,
-        message_only: bool = False,
-    ) -> tuple[EventRecord, ...]:
-        """Newest keeper or legacy-null events. Non-live statuses never participate."""
-
-        from yuki.conversation.canonical_db_models import CanonicalConversationModel
-
-        async with self._database.sessions() as session:
-            conversation = await session.get(CanonicalConversationModel, conversation_id)
-            if conversation is None:
-                return ()
-            query = select(ChatEventModel).where(
-                ChatEventModel.canonical_conversation_id == conversation_id,
-                keeper_event_clause(),
-                ChatEventModel.id > conversation.starts_after_event_id,
-            )
-            if message_only:
-                query = query.where(ChatEventModel.event_kind == "message")
-            rows = list(
-                (await session.scalars(query.order_by(ChatEventModel.id.desc()).limit(limit))).all()
-            )
-        rows.reverse()
-        return tuple(_event_record(row) for row in rows)
-
     async def list_recent_activity(
         self,
         scope: ConversationScope,
@@ -626,59 +628,277 @@ class EventLedgerRepository:
                 or 0
             )
 
-    async def list_scope_around(
+    @staticmethod
+    def _history_conditions(
+        conversation_id: str, event_kind: str, predicates: Collection[Any]
+    ) -> list[Any]:
+        conditions = [
+            ChatEventModel.canonical_conversation_id == conversation_id,
+            keeper_event_clause(),
+            *predicates,
+        ]
+        if event_kind not in ("message", "external_event", "all"):
+            raise ValueError("event_kind must be message, external_event, or all")
+        if event_kind != "all":
+            conditions.append(ChatEventModel.event_kind == event_kind)
+        return conditions
+
+    async def query_history(
         self,
-        scope: ConversationScope,
         *,
+        conversation_id: str,
+        session: AsyncSession | None = None,
+        starts_after_event_id: int = 0,
+        order: str = "recent",
+        limit: int = 20,
+        cursor: int | None = None,
+        before_event_id: int | None = None,
+        after_event_id: int | None = None,
+        event_kind: str = "message",
+        person_id: str | None = None,
+        author_kind: str | None = None,
+        start_at: datetime | None = None,
+        end_at: datetime | None = None,
+        has: Collection[str] = (),
+        keyword: str = "",
+        match: MatchMode = "all",
+        exclude: tuple[str, ...] = (),
+        context_before: int = 0,
+        context_after: int = 0,
+        predicates: Collection[Any] = (),
+    ) -> HistoryPage:
+        """Read exact matches and neighbors in one snapshot; never acquire a writer."""
+        from yuki.identity.person_identity import person_family_ids
+        from yuki.persistence.unit_of_work import optional_session
+
+        if order not in ("recent", "oldest"):
+            raise ValueError("order must be recent or oldest")
+        if limit <= 0 or context_before < 0 or context_after < 0:
+            raise ValueError("limit must be positive and context counts nonnegative")
+        query = (
+            await asyncio.to_thread(prepare_query, keyword, match, exclude)
+            if keyword or exclude
+            else prepare_query(keyword, match, exclude)
+        )
+        metadata_candidates = bool(start_at or end_at or has)
+        lower = max(starts_after_event_id, after_event_id or 0)
+        upper = before_event_id
+        if cursor is not None:
+            if order == "recent":
+                upper = cursor if upper is None else min(upper, cursor)
+            else:
+                lower = max(lower, cursor)
+        conditions = self._history_conditions(conversation_id, event_kind, predicates)
+        if author_kind is not None:
+            conditions.append(ChatEventModel.author_kind == author_kind)
+        for stamp, comparison in ((start_at, "start"), (end_at, "end")):
+            if stamp is not None:
+                aware = (
+                    stamp
+                    if stamp.tzinfo is not None
+                    else stamp.replace(tzinfo=timezone(timedelta(hours=8)))
+                )
+                utc = aware.astimezone(UTC).replace(tzinfo=None)
+                conditions.append(
+                    ChatEventModel.occurred_at >= utc
+                    if comparison == "start"
+                    else ChatEventModel.occurred_at < utc
+                )
+        if has:
+            kinds = tuple(
+                dict.fromkeys(
+                    item
+                    for kind in has
+                    for item in (("audio", "record") if kind == "audio" else (kind,))
+                )
+            )
+            # The index retains platform domain classification; record is audio.
+            conditions.append(
+                ChatEventModel.id.in_(
+                    select(ConversationMediaItemModel.source_event_id).where(
+                        ConversationMediaItemModel.conversation_id == conversation_id,
+                        ConversationMediaItemModel.source_snapshot_json.is_(None),
+                        ConversationMediaItemModel.kind.in_(kinds),
+                    )
+                )
+            )
+        async with optional_session(self._database, session, write=False) as active:
+            with active.no_autoflush:
+                if session is None:
+                    await active.execute(text("BEGIN"))
+                family: tuple[str, ...] = ()
+                if person_id is not None:
+                    family = await person_family_ids(active, person_id)
+                    conditions.append(ChatEventModel.author_person_id.in_(family))
+                fts_expression = (
+                    await asyncio.to_thread(
+                        compile_match,
+                        conversation_id,
+                        query,
+                        person_ids=family,
+                        author_kind=author_kind,
+                    )
+                    if query.terms and not metadata_candidates
+                    else None
+                )
+                fts = table("chat_history_fts", column("rowid", Integer))
+                candidate_id = fts.c.rowid if fts_expression else ChatEventModel.id
+                selected: list[EventRecord] = []
+                fields: dict[int, tuple[str, ...]] = {}
+                boundary = upper if order == "recent" else lower
+
+                cancelled = threading.Event()
+
+                def exact_fields(
+                    records: tuple[EventRecord, ...],
+                ) -> tuple[tuple[str, ...] | None, ...]:
+                    matched: list[tuple[str, ...] | None] = []
+                    for row in records:
+                        if cancelled.is_set():
+                            break
+                        matched.append(match_fields(query, row.content, row.audio_transcript))
+                    return tuple(matched)
+
+                while len(selected) <= limit:
+                    batch_conditions = [*conditions]
+                    identifier = candidate_id
+                    if order == "recent":
+                        batch_conditions.append(identifier > lower)
+                        if boundary is not None:
+                            batch_conditions.append(identifier < boundary)
+                    else:
+                        batch_conditions.append(identifier > boundary)
+                        if upper is not None:
+                            batch_conditions.append(identifier < upper)
+                    statement = select(ChatEventModel)
+                    if fts_expression:
+                        statement = statement.select_from(fts).join(
+                            ChatEventModel, ChatEventModel.id == fts.c.rowid
+                        )
+                        statement = statement.where(*batch_conditions)
+                        statement = statement.where(text("chat_history_fts MATCH :history_match"))
+                    else:
+                        statement = statement.where(*batch_conditions)
+                    statement = statement.order_by(
+                        candidate_id.desc() if order == "recent" else candidate_id.asc()
+                    ).limit(limit + 1)
+                    if fts_expression:
+                        statement = statement.params(history_match=fts_expression)
+                    rows = (await _history_read(active, statement)).all()
+                    if not rows:
+                        break
+                    records = tuple(_event_record(row) for row in rows)
+                    if query.terms or query.exclude:
+                        try:
+                            matched = await asyncio.to_thread(exact_fields, records)
+                        except asyncio.CancelledError:
+                            cancelled.set()
+                            raise
+                    else:
+                        matched = ((),) * len(records)
+                    for record, labels in zip(records, matched, strict=True):
+                        if labels is not None:
+                            selected.append(record)
+                            fields[record.id] = labels
+                            if len(selected) > limit:
+                                break
+                    boundary = records[-1].id
+                    if len(rows) < limit + 1:
+                        break
+                has_more = len(selected) > limit
+                events = tuple(selected[:limit])
+                contexts: dict[int, EventRecord] = {}
+                if context_before or context_after:
+                    for record in events:
+                        _, earlier, later = await self.history_around(
+                            session=active,
+                            conversation_id=conversation_id,
+                            starts_after_event_id=starts_after_event_id,
+                            event_id=record.id,
+                            before=context_before,
+                            after=context_after,
+                            event_kind=event_kind,
+                            predicates=predicates,
+                        )
+                        contexts.update((row.id, row) for row in (*earlier, *later))
+                    for record in events:
+                        contexts.pop(record.id, None)
+                return HistoryPage(
+                    events,
+                    has_more,
+                    events[-1].id if has_more else None,
+                    {row.id: fields[row.id] for row in events},
+                    tuple(contexts[key] for key in sorted(contexts)),
+                )
+
+    async def history_around(
+        self,
+        *,
+        conversation_id: str,
         event_id: int,
         before: int,
         after: int,
-        message_only: bool = False,
+        session: AsyncSession | None = None,
+        starts_after_event_id: int = 0,
+        event_kind: str = "message",
+        predicates: Collection[Any] = (),
+        anchor_event: EventRecord | None = None,
     ) -> tuple[EventRecord | None, tuple[EventRecord, ...], tuple[EventRecord, ...]]:
-        """Read nearby events strictly inside the current scope generation."""
+        """Read one actual anchor and ID-adjacent events within the legal range."""
+        from yuki.persistence.unit_of_work import optional_session
 
-        async with self._database.sessions() as session:
-            await session.execute(text("BEGIN"))
-            version = await _read_version(session, scope)
-            if version.conversation_id is None:
-                return None, (), ()
-            query = select(ChatEventModel).where(
-                ChatEventModel.canonical_conversation_id == version.conversation_id,
-                ChatEventModel.id > version.starts_after_event_id,
-                keeper_event_clause(),
-            )
-            if message_only:
-                query = query.where(ChatEventModel.event_kind == "message")
-            center = await session.scalar(query.where(ChatEventModel.id == event_id))
-            if center is None:
-                return None, (), ()
-            earlier = (
-                (
-                    await session.scalars(
-                        query.where(ChatEventModel.id < event_id)
-                        .order_by(ChatEventModel.id.desc())
-                        .limit(before)
+        if before < 0 or after < 0:
+            raise ValueError("context counts must be nonnegative")
+        async with optional_session(self._database, session, write=False) as active:
+            with active.no_autoflush:
+                if session is None:
+                    await active.execute(text("BEGIN"))
+                conditions = self._history_conditions(conversation_id, event_kind, predicates)
+                if (
+                    anchor_event is None
+                    or anchor_event.id != event_id
+                    or anchor_event.canonical_conversation_id != conversation_id
+                ):
+                    conditions.append(ChatEventModel.id > starts_after_event_id)
+                center = await _history_read(
+                    active,
+                    select(ChatEventModel).where(*conditions, ChatEventModel.id == event_id),
+                    single=True,
+                )
+                if center is None:
+                    return None, (), ()
+                earlier = (
+                    await self.query_history(
+                        session=active,
+                        conversation_id=conversation_id,
+                        starts_after_event_id=starts_after_event_id,
+                        before_event_id=event_id,
+                        event_kind=event_kind,
+                        predicates=predicates,
+                        limit=before,
                     )
-                ).all()
-                if before > 0
-                else ()
-            )
-            later = (
-                (
-                    await session.scalars(
-                        query.where(ChatEventModel.id > event_id)
-                        .order_by(ChatEventModel.id)
-                        .limit(after)
+                    if before
+                    else None
+                )
+                later = (
+                    await self.query_history(
+                        session=active,
+                        conversation_id=conversation_id,
+                        starts_after_event_id=starts_after_event_id,
+                        after_event_id=event_id,
+                        event_kind=event_kind,
+                        predicates=predicates,
+                        limit=after,
+                        order="oldest",
                     )
-                ).all()
-                if after > 0
-                else ()
-            )
-            return (
-                _event_record(center),
-                tuple(_event_record(row) for row in reversed(earlier)),
-                tuple(_event_record(row) for row in later),
-            )
+                    if after
+                    else None
+                )
+                return (
+                    _event_record(center),
+                    tuple(reversed(earlier.events)) if earlier else (),
+                    later.events if later else (),
+                )
 
     async def hydrate_rebuild_subjects(self, event: EventRecord) -> EventRecord:
         """Read legacy selectors in their actual platform; recorded Person IDs win."""
@@ -750,125 +970,6 @@ class EventLedgerRepository:
                     select(MemoryJobModel.status).where(MemoryJobModel.event_id == event_id)
                 ),
             )
-
-    async def search(
-        self,
-        *,
-        keyword: str,
-        conversation_id: str | None = None,
-        scope: ConversationScope | None = None,
-        limit: int = 20,
-        user_id: str | None = None,
-        group_id: str | None = None,
-        person_id: str | None = None,
-        space_id: str | None = None,
-        after: datetime | None = None,
-        before: datetime | None = None,
-        message_only: bool = False,
-    ) -> tuple[EventRecord, ...]:
-        """Search with trigram FTS, falling back to bounded LIKE for short terms."""
-
-        conditions: list[str] = [sql_keeper_event_predicate("ce")]
-        params: dict[str, Any] = {"limit": limit}
-        has_search_bound = bool(user_id or group_id or person_id or space_id or after or before)
-        if scope is not None:
-            conditions.extend(
-                (
-                    "ce.canonical_conversation_id = :scope_conversation_id",
-                    "ce.id > (SELECT c.starts_after_event_id FROM canonical_conversations AS c "
-                    "WHERE c.id = :scope_conversation_id)",
-                )
-            )
-            has_search_bound = True
-        if conversation_id is not None:
-            conditions.append("ce.canonical_conversation_id = :conversation_id")
-            conditions.append(
-                "ce.id > (SELECT starts_after_event_id FROM canonical_conversations "
-                "WHERE id = :conversation_id)"
-            )
-            params["conversation_id"] = conversation_id
-            has_search_bound = True
-        if message_only:
-            conditions.append("ce.event_kind = 'message'")
-        if user_id:
-            conditions.append(
-                "(ce.sender_user_id = :user_id OR ce.private_peer_user_id = :user_id)"
-            )
-            params["user_id"] = user_id
-        if group_id:
-            conditions.append("ce.group_id = :group_id")
-            params["group_id"] = group_id
-        if person_id is not None:
-            conditions.append(
-                "(ce.author_person_id = :person_id OR EXISTS (SELECT 1 "
-                "FROM canonical_conversations AS source_scene "
-                "WHERE source_scene.id=ce.canonical_conversation_id "
-                "AND source_scene.kind='private' AND source_scene.person_id=:person_id))"
-            )
-            params["person_id"] = person_id
-        if space_id is not None:
-            conditions.append(
-                "EXISTS (SELECT 1 FROM canonical_conversations AS source_scene "
-                "WHERE source_scene.id=ce.canonical_conversation_id "
-                "AND source_scene.space_id=:space_id)"
-            )
-            params["space_id"] = space_id
-        if after:
-            conditions.append("ce.occurred_at >= :after")
-            params["after"] = after
-        if before:
-            conditions.append("ce.occurred_at <= :before")
-            params["before"] = before
-        prefix = f" AND {' AND '.join(conditions)}" if conditions else ""
-        stripped = keyword.strip()
-        if len(stripped) >= 3:
-            bounds = ""
-            matches = "SELECT rowid FROM chat_events_fts WHERE chat_events_fts MATCH :keyword"
-            if has_search_bound:
-                bounded_events = "SELECT ce.id FROM chat_events AS ce WHERE " + " AND ".join(
-                    conditions
-                )
-                bounds = (
-                    "WITH search_bounds AS MATERIALIZED (SELECT ("
-                    + bounded_events
-                    + " ORDER BY ce.id ASC LIMIT 1) AS first_id, ("
-                    + bounded_events
-                    + " ORDER BY ce.id DESC LIMIT 1) AS last_id) "
-                )
-                matches += (
-                    " AND rowid >= (SELECT first_id FROM search_bounds)"
-                    " AND rowid <= (SELECT last_id FROM search_bounds)"
-                )
-            sql = text(
-                bounds
-                + "SELECT ce.* FROM chat_events AS ce WHERE ce.id IN ("
-                + matches
-                + ")"
-                + prefix
-                + " ORDER BY ce.occurred_at DESC, ce.id DESC LIMIT :limit"
-            )
-            params["keyword"] = '"' + stripped.replace('"', '""') + '"'
-        else:
-            if not has_search_bound:
-                raise ValueError(
-                    "short history searches require a conversation, owner, or time bound"
-                )
-            sql = text(
-                "SELECT ce.* FROM chat_events AS ce WHERE "
-                "(ce.content LIKE :pattern OR ce.audio_transcript LIKE :pattern)"
-                + prefix
-                + " ORDER BY ce.occurred_at DESC, ce.id DESC LIMIT :limit"
-            )
-            params["pattern"] = f"%{stripped}%"
-        async with self._database.sessions() as session:
-            if scope is not None:
-                await session.execute(text("BEGIN"))
-                params["scope_conversation_id"] = await _conversation_id_for_scope(session, scope)
-            mappings = (await session.execute(sql, params)).mappings().all()
-        records: list[EventRecord] = []
-        for row in mappings:
-            records.append(_event_record(dict(row)))
-        return tuple(reversed(records))
 
     async def set_visual_summary(self, event_id: int, summary: str) -> bool:
         """Attach one compact derived observation to its immutable source event."""

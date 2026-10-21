@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -504,6 +505,9 @@ class PluginNotificationRepository:
                 "source_person_id": grant.canonical_created_by_person_id,
             }
 
+        from yuki.persistence.history_search import prepare_terms
+
+        prepared_terms = await asyncio.to_thread(prepare_terms, request.summary)
         async with self._database.immediate_session() as session:
             installation = await session.get(PluginInstallationModel, plugin_id)
             if installation is None or not installation.enabled or installation.status != "running":
@@ -565,6 +569,7 @@ class PluginNotificationRepository:
                         external_payload=request.payload,
                         external_target_id=target.target_id,
                         content=request.summary,
+                        prepared_terms=prepared_terms,
                         occurred_at=_aware(request.occurred_at),
                         session=session,
                     )

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from functools import partial
 from typing import Any, Literal
 
 from sqlalchemy import select, text
@@ -48,6 +50,8 @@ from yuki.identity.receipt_compat import (
     transport_receipt,
 )
 from yuki.persistence.database import Database
+from yuki.persistence.history_search import prepare_terms
+from yuki.persistence.history_search_index import replace_event
 from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
 from yuki.persistence.repository_helpers import _event_record
 from yuki.persistence.repository_records import EventRecord
@@ -106,6 +110,7 @@ class ScopedEventLedgerUnitOfWork:
         content: str,
         occurred_at: datetime,
         session: AsyncSession | None = None,
+        prepared_terms: tuple[str, ...] | None = None,
     ) -> ScopedAppendResult:
         """Persist one plugin/automation event through the scoped ledger boundary."""
 
@@ -125,6 +130,7 @@ class ScopedEventLedgerUnitOfWork:
             external_payload=external_payload,
             external_target_id=external_target_id,
             session=session,
+            prepared_terms=prepared_terms,
         )
 
     async def append(
@@ -156,71 +162,47 @@ class ScopedEventLedgerUnitOfWork:
         identity_binding_id: str | None = None,
         space_binding_id: str | None = None,
         source_event_id: int | None = None,
+        prepared_terms: tuple[str, ...] | None = None,
     ) -> ScopedAppendResult:
         """Record confirmed outbound or external facts using their original entry."""
         timestamp = occurred_at
         observed_at = datetime.now(UTC)
+        if prepared_terms is None:
+            prepared_terms = await asyncio.to_thread(prepare_terms, content)
+        append = partial(
+            self._append_canonical,
+            scope=scope,
+            platform_message_id=platform_message_id,
+            sender_user_id=sender_user_id,
+            direction=direction,
+            content=content,
+            segments=segments,
+            reply_to_message_id=reply_to_message_id,
+            reply_to_event_id=reply_to_event_id,
+            timestamp=timestamp,
+            observed_at=observed_at,
+            sender_nickname=sender_nickname,
+            sender_group_card=sender_group_card,
+            origin=origin,
+            automation_id=automation_id,
+            automation_run_id=automation_run_id,
+            event_kind=event_kind,
+            source_plugin_id=source_plugin_id,
+            external_source=external_source,
+            external_event_key=external_event_key,
+            external_event_type=external_event_type,
+            external_payload=external_payload,
+            external_target_id=external_target_id,
+            caused_by_event_id=caused_by_event_id,
+            identity_binding_id=identity_binding_id,
+            space_binding_id=space_binding_id,
+            source_event_id=source_event_id,
+            prepared_terms=prepared_terms,
+        )
         if session is not None:
-            return await self._append_on_session(
-                session,
-                scope=scope,
-                platform_message_id=platform_message_id,
-                sender_user_id=sender_user_id,
-                direction=direction,
-                content=content,
-                segments=segments,
-                reply_to_message_id=reply_to_message_id,
-                reply_to_event_id=reply_to_event_id,
-                timestamp=timestamp,
-                observed_at=observed_at,
-                sender_nickname=sender_nickname,
-                sender_group_card=sender_group_card,
-                origin=origin,
-                automation_id=automation_id,
-                automation_run_id=automation_run_id,
-                event_kind=event_kind,
-                source_plugin_id=source_plugin_id,
-                external_source=external_source,
-                external_event_key=external_event_key,
-                external_event_type=external_event_type,
-                external_payload=external_payload,
-                external_target_id=external_target_id,
-                caused_by_event_id=caused_by_event_id,
-                identity_binding_id=identity_binding_id,
-                space_binding_id=space_binding_id,
-                source_event_id=source_event_id,
-            )
+            return await append(session)
         async with self._database.immediate_session() as session:
-            result = await self._append_canonical(
-                session,
-                scope=scope,
-                platform_message_id=platform_message_id,
-                sender_user_id=sender_user_id,
-                direction=direction,
-                content=content,
-                segments=segments,
-                reply_to_message_id=reply_to_message_id,
-                reply_to_event_id=reply_to_event_id,
-                timestamp=timestamp,
-                observed_at=observed_at,
-                sender_nickname=sender_nickname,
-                sender_group_card=sender_group_card,
-                origin=origin,
-                automation_id=automation_id,
-                automation_run_id=automation_run_id,
-                event_kind=event_kind,
-                source_plugin_id=source_plugin_id,
-                external_source=external_source,
-                external_event_key=external_event_key,
-                external_event_type=external_event_type,
-                external_payload=external_payload,
-                external_target_id=external_target_id,
-                caused_by_event_id=caused_by_event_id,
-                identity_binding_id=identity_binding_id,
-                space_binding_id=space_binding_id,
-                source_event_id=source_event_id,
-            )
-        return result
+            return await append(session)
 
     async def set_visual_summary(self, event_id: int, summary: str) -> bool:
         normalized = summary.strip()[:6000]
@@ -317,6 +299,7 @@ class ScopedEventLedgerUnitOfWork:
                 if conversation_id is not None
                 else ()
             )
+            prepared_terms = await asyncio.to_thread(prepare_terms, prepared_message.text)
             async with self._database.immediate_session() as session:
                 event = await session.get(ChatEventModel, event_id)
                 if event is None:
@@ -361,6 +344,15 @@ class ScopedEventLedgerUnitOfWork:
                     await session.delete(removed)
                 event.content, event.segments_json = prepared_message.text, segments
                 event.visual_summary, event.audio_transcript = "", ""
+                await session.flush()
+                await replace_event(
+                    session,
+                    event.id,
+                    conversation_id,
+                    prepared_terms,
+                    author_person_id=event.author_person_id,
+                    author_kind=event.author_kind,
+                )
                 if conversation is not None:
                     conversation.prompt_source_revision += 1
                     conversation.revision += 1
@@ -442,6 +434,11 @@ class ScopedEventLedgerUnitOfWork:
             )
             if isinstance(prepared, bool):
                 return prepared
+            prepared_terms = (
+                await asyncio.to_thread(prepare_terms, prepared.event.content, normalized)
+                if audio
+                else ()
+            )
             async with self._database.immediate_session() as session:
                 row = await session.get(ChatEventModel, event_id)
                 if row is None:
@@ -472,6 +469,15 @@ class ScopedEventLedgerUnitOfWork:
                 else:
                     row.visual_summary = normalized
                 await session.flush()
+                if audio:
+                    await replace_event(
+                        session,
+                        row.id,
+                        row.canonical_conversation_id,
+                        prepared_terms,
+                        author_person_id=row.author_person_id,
+                        author_kind=row.author_kind,
+                    )
             return True
 
     async def _find_existing_live(
@@ -718,67 +724,6 @@ class ScopedEventLedgerUnitOfWork:
             created=False,
         )
 
-    async def _append_on_session(
-        self,
-        session: AsyncSession,
-        *,
-        scope: ConversationScope,
-        platform_message_id: str,
-        sender_user_id: str,
-        direction: Literal["outbound", "external"],
-        content: str,
-        segments: tuple[dict[str, Any], ...],
-        reply_to_message_id: str | None,
-        reply_to_event_id: int | None,
-        timestamp: datetime | None,
-        observed_at: datetime,
-        sender_nickname: str,
-        sender_group_card: str,
-        origin: str,
-        automation_id: int | None,
-        automation_run_id: int | None,
-        event_kind: str,
-        source_plugin_id: str | None,
-        external_source: str | None,
-        external_event_key: str | None,
-        external_event_type: str | None,
-        external_payload: dict[str, Any] | None,
-        external_target_id: str | None,
-        caused_by_event_id: int | None,
-        identity_binding_id: str | None = None,
-        space_binding_id: str | None = None,
-        source_event_id: int | None = None,
-    ) -> ScopedAppendResult:
-        return await self._append_canonical(
-            session,
-            scope=scope,
-            platform_message_id=platform_message_id,
-            sender_user_id=sender_user_id,
-            direction=direction,
-            content=content,
-            segments=segments,
-            reply_to_message_id=reply_to_message_id,
-            reply_to_event_id=reply_to_event_id,
-            timestamp=timestamp,
-            observed_at=observed_at,
-            sender_nickname=sender_nickname,
-            sender_group_card=sender_group_card,
-            origin=origin,
-            automation_id=automation_id,
-            automation_run_id=automation_run_id,
-            event_kind=event_kind,
-            source_plugin_id=source_plugin_id,
-            external_source=external_source,
-            external_event_key=external_event_key,
-            external_event_type=external_event_type,
-            external_payload=external_payload,
-            external_target_id=external_target_id,
-            caused_by_event_id=caused_by_event_id,
-            identity_binding_id=identity_binding_id,
-            space_binding_id=space_binding_id,
-            source_event_id=source_event_id,
-        )
-
     async def _append_canonical(
         self,
         session: AsyncSession,
@@ -809,6 +754,7 @@ class ScopedEventLedgerUnitOfWork:
         identity_binding_id: str | None = None,
         space_binding_id: str | None = None,
         source_event_id: int | None = None,
+        prepared_terms: tuple[str, ...],
     ) -> ScopedAppendResult:
         from uuid import uuid4
 
@@ -1105,6 +1051,14 @@ class ScopedEventLedgerUnitOfWork:
                 external_payload=external_payload,
                 caused_by_event_id=caused_by_event_id,
             )
+        await replace_event(
+            session,
+            row.id,
+            hydrated.conversation_id,
+            prepared_terms,
+            author_person_id=row.author_person_id,
+            author_kind=row.author_kind,
+        )
         await touch_canonical_watermarks(
             session,
             hydrated.conversation_id,

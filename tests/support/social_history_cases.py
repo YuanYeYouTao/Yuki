@@ -23,7 +23,7 @@ async def history_agent_loop(env, *, same_batch=False):
     from yuki.workspace.short_state import ShortState
 
     calls = 0
-    arguments = "{}"
+    arguments = '{"view": "recent", "event_kind": "all"}'
     env.bot.history = {"messages": [{"message_id": 50, "message": "第一条"}]}
 
     def respond(request):
@@ -35,7 +35,7 @@ async def history_agent_loop(env, *, same_batch=False):
         if calls == 2:
             assert returned[-1]["ok"], returned[-1]
             assert returned[-1]["data"]["source"] == "canonical_ledger"
-            assert returned[-1]["data"]["count"] >= 1
+            assert returned[-1]["data"]["returned_count"] >= 1
             if same_batch:
                 assert len(returned) == 2 and all(
                     r["data"]["source"] == "canonical_ledger" for r in returned
@@ -51,7 +51,7 @@ async def history_agent_loop(env, *, same_batch=False):
             tool_calls=tuple(
                 ToolCall(
                     id=f"history-{calls}-{index}",
-                    function=ToolFunction(name="read_conversation_history", arguments=arguments),
+                    function=ToolFunction(name="query_chat_history", arguments=arguments),
                 )
                 for index in range(2 if same_batch else 1)
             ),

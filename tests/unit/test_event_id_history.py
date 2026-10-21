@@ -3,16 +3,35 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.support.canonical_identity import ensure_person, ensure_presence
 from tests.support.event_seed import seed_event
 
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.hydrate import conversation_for_scope
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.persistence.database import Database
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repositories import EventLedgerRepository
+
+
+async def _around(ledger, scope, *, event_id, before, after, message_only=False):
+    # Entry resolution and the page belong to the same caller-owned snapshot.
+    async with ledger._database.sessions() as session:
+        await session.execute(text("BEGIN"))
+        conversation = await conversation_for_scope(session, scope)
+        if conversation is None:
+            return None, (), ()
+        return await ledger.history_around(
+            session=session,
+            conversation_id=conversation.id,
+            starts_after_event_id=conversation.starts_after_event_id,
+            event_id=event_id,
+            before=before,
+            after=after,
+            event_kind="message" if message_only else "all",
+        )
 
 
 @pytest.mark.asyncio
@@ -54,19 +73,17 @@ async def test_history_around_keeps_original_event_across_presence_switch(
     )
     new_scope = ConversationScope.private("8001", "10001")
     assert (
-        await ledger.list_scope_around(
-            new_scope, event_id=old.id, before=0, after=2, message_only=True
-        )
+        await _around(ledger, new_scope, event_id=old.id, before=0, after=2, message_only=True)
     )[0] is None
     original_scope = old.scope
-    center, _, later = await ledger.list_scope_around(
-        original_scope, event_id=old.id, before=0, after=2, message_only=True
+    center, _, later = await _around(
+        ledger, original_scope, event_id=old.id, before=0, after=2, message_only=True
     )
     assert center is not None and center.id == old.id
     assert later == ()
     assert (
-        await ledger.list_scope_around(
-            new_scope, event_id=collision.id, before=0, after=0, message_only=True
+        await _around(
+            ledger, new_scope, event_id=collision.id, before=0, after=0, message_only=True
         )
     )[0] is None
     assert old.canonical_conversation_id is not None
@@ -75,9 +92,7 @@ async def test_history_around_keeps_original_event_across_presence_switch(
         assert conversation is not None
         conversation.starts_after_event_id = old.id
     assert (
-        await ledger.list_scope_around(
-            new_scope, event_id=old.id, before=0, after=0, message_only=True
-        )
+        await _around(ledger, new_scope, event_id=old.id, before=0, after=0, message_only=True)
     )[0] is None
     assert (
         await ledger.get_reply_event(
@@ -127,13 +142,11 @@ async def test_history_around_keeps_one_snapshot_and_rejects_duplicate_center(
 
     monkeypatch.setattr(AsyncSession, "scalar", reset_after_center)
     scope = ConversationScope.private("8000", "10001")
-    center, earlier, later = await ledger.list_scope_around(
-        scope, event_id=events[1].id, before=1, after=1
-    )
+    center, earlier, later = await _around(ledger, scope, event_id=events[1].id, before=1, after=1)
     assert raced and center.id == events[1].id
     assert [row.id for row in earlier] == [events[0].id]
     assert [row.id for row in later] == [events[2].id]
-    assert (await ledger.list_scope_around(scope, event_id=center.id, before=1, after=1))[0] is None
+    assert (await _around(ledger, scope, event_id=center.id, before=1, after=1))[0] is None
     duplicate, _ = await seed_event(
         ledger,
         bot_user_id="8000",
@@ -149,6 +162,4 @@ async def test_history_around_keeps_one_snapshot_and_rejects_duplicate_center(
             .where(ChatEventModel.id == duplicate.id)
             .values(suppression_status="duplicate", utterance_fingerprint="d" * 64)
         )
-    assert (await ledger.list_scope_around(scope, event_id=duplicate.id, before=1, after=1))[
-        0
-    ] is None
+    assert (await _around(ledger, scope, event_id=duplicate.id, before=1, after=1))[0] is None

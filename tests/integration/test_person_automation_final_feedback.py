@@ -134,8 +134,11 @@ async def test_scheduled_main_contacts_receipt_history_and_recall_share_real_soc
             name, arguments = "send_message", {"text": "SCHEDULED_SHARED_SOCIAL"}
         elif index == 2:
             name, arguments = (
-                "read_conversation_history",
-                {"operation_id": responses[-1]["data"]["operation_id"]},
+                "query_chat_history",
+                {
+                    "view": "recent",
+                    "target": {"operation_id": responses[-1]["data"]["operation_id"]},
+                },
             )
         elif index == 3:
             name, arguments = "recall_own_message", {"event_id": responses[1]["data"]["event_id"]}
@@ -159,7 +162,7 @@ async def test_scheduled_main_contacts_receipt_history_and_recall_share_real_soc
     assert {name for name, _ in contexts} >= {
         "find_contacts",
         "send_message",
-        "read_conversation_history",
+        "query_chat_history",
         "recall_own_message",
     }
     assert all(

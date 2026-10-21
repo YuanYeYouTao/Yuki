@@ -22,15 +22,30 @@ from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import PresenceModel
 from yuki.identity.routing import RouteSendError
 from yuki.persistence.models import ChatEventModel
-from yuki.services.personal_entry_tool import read_entry
 from yuki.social.db_models import SocialOperationModel
+from yuki.social.history import read_history
 from yuki.social.models import SocialError
+from yuki.social.service import SocialContext
 
 admin = admin_fixture
 app_env = app_fixture
 
 
-async def test_both_contracts_freeze_once_and_app_model_really_uses_own_other_entry(
+async def read_personal_history(database, runtime, args):
+    return await read_history(
+        database,
+        {"view": "recent", "event_kind": "all", "target": args},
+        SocialContext(
+            "personal-read",
+            "personal-read",
+            runtime.effective_conversation_id,
+            actor=runtime.require_actor(),
+        ),
+        runtime=runtime,
+    )
+
+
+async def test_one_contract_freezes_once_and_app_model_reads_own_other_entry(
     app_env, database
 ):
     env = app_env
@@ -39,14 +54,13 @@ async def test_both_contracts_freeze_once_and_app_model_really_uses_own_other_en
     principal = await env.identity.authenticate(device["token"])
     contract = env.harness.processor._chat.runtime.runner.main_contract
     platform = await contract.definitions()
-    app = await contract.definitions("app")
-    assert {tool.name for tool in app} - {tool.name for tool in platform} == {"read_personal_entry"}
-    assert contract.app_revision != contract.revision
-    assert await contract.entry_for(original.row["conversation_id"]) == "platform"
-    assert await contract.entry_for(principal.conversation_id) == "app"
-    modified = await contract.definitions("app")
+    app = await contract.definitions()
+    assert app == platform
+    assert "read_personal_entry" not in {tool.name for tool in app}
+    assert "query_chat_history" in {tool.name for tool in app}
+    modified = await contract.definitions()
     modified[0].parameters["tampered"] = True
-    assert all("tampered" not in item.parameters for item in await contract.definitions("app"))
+    assert all("tampered" not in item.parameters for item in await contract.definitions())
     async with database.sessions() as session:
         binding = await find_identity_binding(session, "1001")
     captured = []
@@ -64,7 +78,10 @@ async def test_both_contracts_freeze_once_and_app_model_really_uses_own_other_en
             tool_calls=(
                 ToolCall(
                     "read-entry",
-                    ToolFunction("read_personal_entry", json.dumps({"binding_id": binding.id})),
+                    ToolFunction(
+                        "query_chat_history",
+                        json.dumps({"view": "recent", "target": {"binding_id": binding.id}}),
+                    ),
                 ),
             ),
         )
@@ -77,7 +94,7 @@ async def test_both_contracts_freeze_once_and_app_model_really_uses_own_other_en
     )
     assert response.status_code == 200, response.text
     await drain(env)
-    assert any(tool.name == "read_personal_entry" for tool in captured[0].tools)
+    assert any(tool.name == "query_chat_history" for tool in captured[0].tools)
     reply = next(
         message
         for request in captured[1:]
@@ -85,7 +102,7 @@ async def test_both_contracts_freeze_once_and_app_model_really_uses_own_other_en
         if message.role == "tool" and message.tool_call_id == "read-entry"
     )
     data = json.loads(reply.content)
-    assert data["ok"] and data["data"]["items"][0]["event_id"] == original.event.id
+    assert data["ok"] and data["data"]["events"][0]["event_id"] == original.event.id
     assert (
         data["data"]["conversation_id"] == original.row["conversation_id"]
         and person == principal.person_id
@@ -106,23 +123,25 @@ async def test_execution_requires_main_and_own_private_target(app_env, database)
     env = app_env
     device, person = await owner(env, database)
     own = await seeded(env, database)
-    other = await seeded(env, database, account="1002")
-    group = await seeded(env, database, group=True)
+    await seeded(env, database, account="1002")
+    await seeded(env, database, group=True)
     principal = await env.identity.authenticate(device["token"])
     runtime = SimpleNamespace(
         effective_conversation_id=principal.conversation_id,
         require_actor=lambda: SimpleNamespace(person_id=person),
     )
-    for identity in (
-        other.row["conversation_id"],
-        group.row["conversation_id"],
-        principal.conversation_id,
-    ):
-        with pytest.raises(SocialError, match="not_found"):
-            await read_entry(database, runtime, {"conversation_id": identity})
+    # A qualified local source can explicitly select its own current entry.
+    result = await read_personal_history(
+        database, runtime, {"conversation_id": principal.conversation_id}
+    )
+    assert result["conversation_id"] == principal.conversation_id
+    async with database.sessions() as session:
+        other_binding = await find_identity_binding(session, "1002")
+    unavailable = await read_personal_history(database, runtime, {"binding_id": other_binding.id})
+    assert unavailable["error"] == "history_unavailable"
     runtime.effective_conversation_id = own.row["conversation_id"]
     with pytest.raises(SocialError, match="main_entry_required"):
-        await read_entry(database, runtime, {"conversation_id": other.row["conversation_id"]})
+        await read_personal_history(database, runtime, {"binding_id": other_binding.id})
 
 
 @pytest.mark.parametrize("receipt", [{"message_id": "confirmed"}, {}])
@@ -190,7 +209,7 @@ async def test_app_cannot_choose_other_person_route_without_binding(app_env, dat
         )
 
 
-async def test_app_input_keeps_qq_work_contract_and_two_code_views(app_env, database, tmp_path):
+async def test_app_input_keeps_qq_work_contract_and_one_code_view(app_env, database, tmp_path):
     from yuki.services.main_agent_contract import MainAgentContract
     from yuki.workspace.short_state import ShortState
     from yuki.workspace.store import WorkspaceStore
@@ -200,30 +219,23 @@ async def test_app_input_keeps_qq_work_contract_and_two_code_views(app_env, data
     original = await seeded(env, database, group=True, state="waiting_user")
     chat = env.harness.processor._chat
     config = await chat._runtime_config.snapshot()
-    before = await chat.runtime.main_turns.recovery_contract(
-        config, original.row["conversation_id"]
-    )
+    before = await chat.runtime.main_turns.recovery_contract(config)
     response = await env.client.post(
         f"/client/v1/works/{original.row['id']}/inputs",
         json={"request_id": str(uuid4()), "text": "keep original contract"},
         headers=bearer(device["token"]),
     )
     assert response.status_code == 200, response.text
-    assert before == await chat.runtime.main_turns.recovery_contract(
-        config, original.row["conversation_id"]
-    )
+    assert before == await chat.runtime.main_turns.recovery_contract(config)
     code = MainAgentContract(
         chat, ShortState(WorkspaceStore(tmp_path / "code-state")), code_enabled=True
     )
     base = await code.model_definitions()
-    app = await code.model_definitions("app")
-    assert "read_personal_entry" not in {tool.name for tool in base}
-    assert "read_personal_entry" in {tool.name for tool in app}
-    assert (
-        "read_personal_entry" in code.app_script_api.schemas
-        and "read_personal_entry" not in code.script_api.schemas
-    )
-    assert code.app_script_api.manifest_revision != code.script_api.manifest_revision
+    app = await code.model_definitions()
+    assert base == app
+    assert "query_chat_history" in {tool.name for tool in base}
+    assert "read_personal_entry" not in code.script_api.schemas
+    assert "query_chat_history" in code.script_api.schemas
 
 
 async def test_cross_entry_file_caption_retains_selected_binding(app_env, database):
@@ -349,9 +361,9 @@ async def test_app_reads_own_telegram_ledger_without_using_history_as_authorizat
         effective_conversation_id=principal.conversation_id,
         require_actor=lambda: SimpleNamespace(person_id=person),
     )
-    result = await read_entry(database, runtime, {"binding_id": binding.id})
+    result = await read_personal_history(database, runtime, {"binding_id": binding.id})
     assert result["platform"] == "telegram"
-    assert result["items"][0]["event_id"] == event.id
+    assert result["events"][0]["event_id"] == event.id
     assert not env.calls
 
 
@@ -370,9 +382,13 @@ async def test_delegated_current_conversation_does_not_read_other_personal_entry
             "yuki-app", person, platform="app", conversation_id=principal.conversation_id
         ),
     )
-    with pytest.raises(SocialError, match="not_found"):
-        await read_entry(database, runtime, {"conversation_id": own.row["conversation_id"]})
+    with pytest.raises(SocialError, match="history_scope_denied"):
+        await read_personal_history(
+            database, runtime, {"conversation_id": own.row["conversation_id"]}
+        )
     # Ordinary App Main has no delegated current-Conversation read scope.
     runtime.read_target_id = None
-    result = await read_entry(database, runtime, {"conversation_id": own.row["conversation_id"]})
-    assert result["items"][0]["event_id"] == own.event.id
+    result = await read_personal_history(
+        database, runtime, {"conversation_id": own.row["conversation_id"]}
+    )
+    assert result["events"][0]["event_id"] == own.event.id

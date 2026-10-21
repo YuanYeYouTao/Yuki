@@ -2736,11 +2736,10 @@ class WorkRepository:
                 candidate["invocation"] = {**metadata, "revision": metadata["revision"] + 1}
             serialized = encode_json(candidate)
             async with self.database.immediate_session() as writer:
-                if media_source is not None:
+                history_source = candidate.get("outcome", {})
+                if media_source is not None or history_source.get("source_event_ids"):
                     from yuki.execution_trace.db_models import ExecutionTraceStateModel
 
-                    conversation_id, generation, privacy_generation = media_source
-                    source = await writer.get(CanonicalConversationModel, conversation_id)
                     privacy = (
                         await writer.scalar(
                             select(ExecutionTraceStateModel.privacy_generation).where(
@@ -2749,6 +2748,13 @@ class WorkRepository:
                         )
                         or 0
                     )
+                    if history_source.get("source_event_ids") and privacy != history_source.get(
+                        "source_privacy_generation"
+                    ):
+                        raise WorkConflict("work_effect_history_source_changed")
+                if media_source is not None:
+                    conversation_id, generation, privacy_generation = media_source
+                    source = await writer.get(CanonicalConversationModel, conversation_id)
                     if (
                         source is None
                         or source.generation != generation

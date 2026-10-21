@@ -7,6 +7,17 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
+class ArtifactRead(dict[str, object]):
+    """A saved result page with Host provenance outside the model-facing mapping."""
+
+    def __init__(
+        self, data: dict[str, object], event_ids: tuple[int, ...], privacy: int | None
+    ) -> None:
+        super().__init__(data)
+        self.source_event_ids = event_ids
+        self.source_privacy_generation = privacy
+
+
 @dataclass(frozen=True, slots=True)
 class ArtifactAccess:
     conversation_id: str

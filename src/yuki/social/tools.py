@@ -52,45 +52,6 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         )
 
     return (
-        ChatTool(
-            name="read_conversation_history",
-            description=(
-                "读取已入账的会话历史，返回内部事件和人物编号。默认当前入口；"
-                "跨入口使用内部 conversation_id 或明确人物/群，多个入口时从候选中选择。"
-                "operation_id 沿原发送回执读取真实出站会话，event_id 只读当前会话原事件。"
-                "coverage=observed 仅代表已观察资料，不冒充平台完整历史或转发内容。"
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    **selector,
-                    "conversation_id": {"type": "string", "format": "uuid"},
-                    "event_id": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "当前会话原外层内部事件 ID，与 operation_id 二选一",
-                    },
-                    "kind": {"type": "string", "enum": ["person", "space"]},
-                    "operation_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": "当前来源会话的发送回执；不能同时指定其他目标或账号",
-                    },
-                    "binding_id": {"type": "string", "format": "uuid"},
-                    "presence_id": {
-                        "type": "string",
-                        "format": "uuid",
-                        "description": (
-                            "原私聊入口的内部 Presence ID；歧义时选择内部 Conversation ID"
-                        ),
-                    },
-                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
-                },
-                "additionalProperties": False,
-            },
-            result_cacheable=False,
-            schema_version="2",
-        ),
         tool(
             "find_contacts",
             "查找 Yuki 可联系的人或群。名称歧义必须澄清；成员名单出现不等于认识。",

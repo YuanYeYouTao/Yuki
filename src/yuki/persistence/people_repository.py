@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import unicodedata
@@ -77,6 +78,8 @@ from yuki.memory.rebuild.privacy import PreparedRebuildForget
 from yuki.memory.rebuild.repository import MemoryRebuildRepository
 from yuki.model_runtime.db_models import ModelInvocationModel
 from yuki.persistence.database import Database
+from yuki.persistence.history_search import prepare_terms
+from yuki.persistence.history_search_index import replace_event
 from yuki.persistence.models import (
     AdminOperationEventModel,
     AutomationModel,
@@ -92,6 +95,7 @@ from yuki.persistence.models import (
     MemoryToolReceiptModel,
     PersonAliasModel,
     RuntimeConfigOverrideModel,
+    ToolArtifactModel,
     WebSearchRunModel,
 )
 from yuki.persistence.repository_records import (
@@ -190,13 +194,25 @@ def _privacy_json_match(
 
 
 @dataclass(frozen=True)
+class _EventRedaction:
+    event_id: int
+    conversation_id: str | None
+    author_person_id: str | None
+    author_kind: str | None
+    values: dict[str, str]
+    terms: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class PersonForgetPreparation:
     person_id: str
     person_ids: tuple[str, ...]
     ownership: tuple[BindingOwnership, ...]
     private_ids: tuple[str, ...]
     affected_ids: tuple[str, ...]
-    redactions: tuple[tuple[int, dict[str, str]], ...]
+    source_receipt_ids: tuple[int, ...]
+    source_artifact_ids: tuple[str, ...]
+    redactions: tuple[_EventRedaction, ...]
     rebuild: PreparedRebuildForget
     audit_redactions: tuple[tuple[int, dict[str, str]], ...]
     sandbox_request_ids: tuple[str, ...]
@@ -847,7 +863,49 @@ class PeopleRepository:
             )
             owned = _privacy_owned_events(person_ids, private_ids, ownership)
             mentions = _privacy_mentions(person_ids, ownership)
+            erased_events = select(ChatEventModel.id).where(or_(owned, mentions))
+            from yuki.runtime.work_schema_v1 import effects, work
+
+            copied_events = func.json_each(
+                effects.c.receipt_json, "$.outcome.source_event_ids"
+            ).table_valued("value")
+            copied_tools = func.json_each(
+                MemoryToolReceiptModel.source_event_ids_json
+            ).table_valued("value")
+            source_receipt_ids = tuple(
+                await reader.scalars(
+                    select(MemoryToolReceiptModel.id).where(
+                        select(copied_tools.c.value)
+                        .where(cast(copied_tools.c.value, Integer).in_(erased_events))
+                        .exists()
+                    )
+                )
+            )
+            copied_artifacts = func.json_each(
+                ToolArtifactModel.access_json, "$.source_event_ids"
+            ).table_valued("value")
+            source_artifact_ids = tuple(
+                await reader.scalars(
+                    select(ToolArtifactModel.handle_id).where(
+                        select(copied_artifacts.c.value)
+                        .where(cast(copied_artifacts.c.value, Integer).in_(erased_events))
+                        .exists()
+                    )
+                )
+            )
             affected = set(private_ids)
+            affected.update(
+                await reader.scalars(
+                    select(work.c.conversation_id)
+                    .join(effects, effects.c.work_id == work.c.id)
+                    .where(
+                        select(copied_events.c.value)
+                        .where(cast(copied_events.c.value, Integer).in_(erased_events))
+                        .exists()
+                    )
+                    .distinct()
+                )
+            )
             affected.update(
                 item
                 for item in await reader.scalars(
@@ -885,21 +943,28 @@ class PeopleRepository:
                     + "|".join(re.escape(item) for item in sorted(aliases, key=len, reverse=True))
                     + r")(?![A-Za-z0-9_-])"
                 )
+                values = dict(
+                    content=pattern.sub(lambda _: marker, event.content),
+                    visual_summary=pattern.sub(lambda _: marker, event.visual_summary),
+                    audio_transcript=serialize_transcripts(
+                        tuple(
+                            replace(item, text=pattern.sub(lambda _: marker, item.text))
+                            for item in parse_transcripts(event.audio_transcript)
+                        )
+                    ),
+                    segments_json=_redact_privacy_json(event.segments_json, pattern, marker),
+                )
                 redactions.append(
-                    (
-                        event.id,
-                        dict(
-                            content=pattern.sub(lambda _: marker, event.content),
-                            visual_summary=pattern.sub(lambda _: marker, event.visual_summary),
-                            audio_transcript=serialize_transcripts(
-                                tuple(
-                                    replace(item, text=pattern.sub(lambda _: marker, item.text))
-                                    for item in parse_transcripts(event.audio_transcript)
-                                )
-                            ),
-                            segments_json=_redact_privacy_json(
-                                event.segments_json, pattern, marker
-                            ),
+                    _EventRedaction(
+                        event_id=event.id,
+                        conversation_id=event.canonical_conversation_id
+                        if event.suppression_status in (None, "keeper")
+                        else None,
+                        author_person_id=event.author_person_id,
+                        author_kind=event.author_kind,
+                        values=values,
+                        terms=await asyncio.to_thread(
+                            prepare_terms, values["content"], values["audio_transcript"]
                         ),
                     )
                 )
@@ -1011,6 +1076,7 @@ class PeopleRepository:
                     MemoryToolReceiptModel.canonical_person_id.in_(person_ids),
                     MemoryToolReceiptModel.trigger_event_id.in_(erased_events),
                     MemoryToolReceiptModel.initiative_run_id.in_(initiative_ids),
+                    MemoryToolReceiptModel.id.in_(source_receipt_ids),
                 )
             )
             affected_facts = select(MemoryFactModel.id).where(
@@ -1129,6 +1195,8 @@ class PeopleRepository:
             ownership=ownership,
             private_ids=private_ids,
             affected_ids=tuple(sorted(affected)),
+            source_receipt_ids=source_receipt_ids,
+            source_artifact_ids=source_artifact_ids,
             redactions=tuple(redactions),
             rebuild=rebuild,
             audit_redactions=tuple(audit_redactions),
@@ -1253,16 +1321,33 @@ class PeopleRepository:
         )
         await self._forget_person_plugin(session, person_ids, legacy)
         await self._forget_person_automations(session, person_ids)
-        await self._forget_person_memory(session, person_ids)
+        await self._forget_person_memory(session, person_ids, prepared.source_receipt_ids)
+        await session.execute(
+            update(ToolArtifactModel)
+            .where(ToolArtifactModel.handle_id.in_(prepared.source_artifact_ids))
+            .values(deleting=True)
+        )
         await self._forget_person_conversation(session, prepared.private_ids, legacy)
         trip("after_forget_plugin")
         trip("after_forget_automations")
         trip("after_forget_memory")
         trip("after_forget_conversation")
-        for event_id, values in prepared.redactions:
-            await session.execute(
-                update(ChatEventModel).where(ChatEventModel.id == event_id).values(**values)
+        for redaction in prepared.redactions:
+            changed = await session.scalar(
+                update(ChatEventModel)
+                .where(ChatEventModel.id == redaction.event_id)
+                .values(**redaction.values)
+                .returning(ChatEventModel.id)
             )
+            if changed is not None:
+                await replace_event(
+                    session,
+                    redaction.event_id,
+                    redaction.conversation_id,
+                    redaction.terms,
+                    author_person_id=redaction.author_person_id,
+                    author_kind=redaction.author_kind,
+                )
         await session.execute(
             delete(RuntimeConfigOverrideModel).where(
                 RuntimeConfigOverrideModel.scope_type == "user",
@@ -1407,7 +1492,11 @@ class PeopleRepository:
         )
 
     @staticmethod
-    async def _forget_person_memory(session: AsyncSession, person_ids: tuple[str, ...]) -> None:
+    async def _forget_person_memory(
+        session: AsyncSession,
+        person_ids: tuple[str, ...],
+        source_receipt_ids: tuple[int, ...] = (),
+    ) -> None:
         """Delete Person-owned live Memory rows before canonical Person delete.
 
         Clusters first (RESTRICT on persons). Facts next so their evidence
@@ -1426,6 +1515,11 @@ class PeopleRepository:
                 or_(
                     MemoryFactModel.canonical_subject_person_id.in_(person_ids),
                     MemoryFactModel.canonical_visibility_person_id.in_(person_ids),
+                    MemoryFactModel.id.in_(
+                        select(MemoryEvidenceModel.fact_id).where(
+                            MemoryEvidenceModel.tool_receipt_id.in_(source_receipt_ids)
+                        )
+                    ),
                 )
             )
         )
@@ -1434,7 +1528,10 @@ class PeopleRepository:
         )
         await session.execute(
             delete(MemoryToolReceiptModel).where(
-                MemoryToolReceiptModel.canonical_person_id.in_(person_ids)
+                or_(
+                    MemoryToolReceiptModel.canonical_person_id.in_(person_ids),
+                    MemoryToolReceiptModel.id.in_(source_receipt_ids),
+                )
             )
         )
         await session.execute(

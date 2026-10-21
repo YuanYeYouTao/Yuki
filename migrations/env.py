@@ -33,6 +33,13 @@ def run_migrations_offline() -> None:
         dialect_opts={"paramstyle": "named"},
         render_as_batch=True,
     )
+    migration = context.get_context()
+    starting = context.get_starting_revision_argument()
+    steps = migration.opts["fn"]((starting,) if starting else (), migration)
+    if any(step.is_upgrade and step.revision.revision == "0145" for step in steps):
+        raise RuntimeError(
+            "history search upgrade needs a live offline database; --sql cannot convert source text"
+        )
     with context.begin_transaction():
         context.run_migrations()
 
@@ -51,18 +58,48 @@ def _run_sqlite_migrations(
         render_as_batch=True,
         transactional_ddl=True,
     )
-    # sqlite3 does not reliably BEGIN for DDL. The explicit writer transaction
-    # makes both the frozen baseline and the destructive 0049 bridge atomic.
-    connection.exec_driver_sql("BEGIN IMMEDIATE")
+    migration = context.get_context()
+    steps = tuple(migration.opts["fn"](migration.get_current_heads(), migration))
+    connection.commit()
+    complete = next(
+        (
+            index
+            for index, step in enumerate(steps)
+            if step.is_upgrade and step.revision.revision == "0145"
+        ),
+        None,
+    )
+
+    def apply(selected: tuple[object, ...]) -> None:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            render_as_batch=True,
+            transactional_ddl=True,
+            fn=lambda _heads, _context: selected,
+        )
+        # Keep the frozen baseline and destructive 0049 bridge atomic.
+        connection.exec_driver_sql("BEGIN IMMEDIATE")
+        try:
+            context.run_migrations()
+            connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
+
     try:
-        context.run_migrations()
-    except BaseException:
-        connection.rollback()
-        raise
-    else:
-        connection.commit()
+        if complete is None:
+            apply(steps)
+        else:
+            from yuki.persistence.history_search_index import rebuild_history_search
+
+            if complete:
+                apply(steps[:complete])
+            rebuild_history_search(connection)
+            apply(steps[complete:])
     finally:
         connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+        connection.commit()
 
 
 def do_run_migrations(connection: Connection) -> None:

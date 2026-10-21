@@ -163,7 +163,7 @@ def attach_client_api(app: FastAPI, resolve: Callable[[], ClientApi]) -> None:
         actor: Actor,
         after: int = Query(0, ge=0),
         before: int | None = Query(None, ge=1),
-        limit: int = Query(50, ge=1, le=50),
+        limit: int = Query(50, ge=1),
     ) -> Any:
         return {
             "data": await views().events(

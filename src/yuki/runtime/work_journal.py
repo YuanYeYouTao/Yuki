@@ -543,6 +543,10 @@ class WorkJournal:
                     original_tool=original_tool,
                     kind=row["kind"] if row is not None else "tool",
                 )
+                capture.observe_sources(
+                    tuple(capture.evidence.get("source_event_ids", ())),
+                    capture.evidence.get("source_privacy_generation"),
+                )
             return result
 
         async with self.repository.database.sessions() as session:

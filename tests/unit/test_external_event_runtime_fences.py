@@ -183,15 +183,24 @@ async def test_message_history_filters_external_before_limit(database: Database)
         message_only=True,
     )
     assert [row.content for row in rows] == ["before external", "after external"]
-    searched = await ledger.search(
+    searched = await ledger.query_history(
+        conversation_id=_conversation_id,
         keyword="external",
-        user_id="1001",
         limit=10,
-        message_only=True,
+        order="oldest",
     )
-    assert [row.content for row in searched] == ["before external", "after external"]
-    with pytest.raises(ValueError, match="require a conversation, owner, or time bound"):
-        await ledger.search(keyword="x", limit=10, message_only=True)
+    assert [row.content for row in searched.events] == ["before external", "after external"]
+    assert not searched.has_more
+    full_timeline = await ledger.query_history(
+        conversation_id=_conversation_id, keyword="external", event_kind="all", order="oldest"
+    )
+    assert [row.event_kind for row in full_timeline.events] == [
+        "message",
+        "external_event",
+        "message",
+    ]
+    short = await ledger.query_history(conversation_id=_conversation_id, keyword="x")
+    assert [row.content for row in short.events] == ["after external", "before external"]
 
 
 @pytest.mark.asyncio

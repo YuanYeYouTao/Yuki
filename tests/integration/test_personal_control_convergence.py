@@ -17,6 +17,7 @@ from tests.integration.test_client_continuation import live
 from tests.integration.test_current_material_main_contract import _catalog, _profile
 from tests.unit.test_acp_adapter import Peer, text
 from tests.unit.test_client_api import bearer
+from tests.unit.test_personal_entry_contract import read_personal_history
 
 from yuki.client_api.http import attach_client_api
 from yuki.client_api.prompts import ClientPrompts
@@ -34,7 +35,6 @@ from yuki.model_runtime.pool import ModelClientPool
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import effects, journal
 from yuki.services.main_agent_contract import MainAgentContract
-from yuki.services.personal_entry_tool import read_entry
 from yuki.social.service import SocialContext
 
 
@@ -574,7 +574,7 @@ async def test_disabled_platform_binding_can_transfer_without_reviving_old_owner
         assert current.history_starts_at == current.created_at == old.ended_at == old.updated_at
 
 
-async def test_acp_uses_fixed_personal_tools_and_explicit_person_routing(acp_runtime, database):
+async def test_acp_uses_fixed_common_tools_and_explicit_person_routing(acp_runtime, database):
     env = acp_runtime
     session = await new_session(env)
     identity = env.app.client_api.identity
@@ -583,22 +583,22 @@ async def test_acp_uses_fixed_personal_tools_and_explicit_person_routing(acp_run
         env.device["token"], conversation_id=session["session_id"]
     )
     contract = env.app.main_agent_contract
-    assert await contract.entry_for(principal.conversation_id) == "app"
-    assert await contract.model_definitions("app") != await contract.model_definitions("platform")
+    assert await contract.model_definitions() == await contract.model_definitions()
     for code in (False, True):
         view = MainAgentContract(env.app.chat, contract.state, code_enabled=code)
-        assert "read_personal_entry" in {tool.name for tool in await view.definitions("app")}
-        assert "read_personal_entry" not in {
-            tool.name for tool in await view.definitions("platform")
-        }
+        declared = await view.definitions()
+        assert "query_chat_history" in {tool.name for tool in declared}
+        assert "read_personal_entry" not in {tool.name for tool in declared}
         if code:
-            assert "read_personal_entry" in view.app_script_api.schemas
+            assert "query_chat_history" in view.script_api.schemas
             assert "read_personal_entry" not in view.script_api.schemas
     runtime = SimpleNamespace(
         effective_conversation_id=principal.conversation_id,
         require_actor=lambda: SimpleNamespace(person_id=principal.person_id),
     )
-    original = await read_entry(database, runtime, {"conversation_id": base.conversation_id})
+    original = await read_personal_history(
+        database, runtime, {"conversation_id": base.conversation_id}
+    )
     assert original["conversation_id"] == base.conversation_id and original["platform"] == "app"
     result = await env.app.social_service.execute(
         "send_message",
@@ -622,15 +622,19 @@ async def test_acp_uses_fixed_personal_tools_and_explicit_person_routing(acp_run
         )
         await asyncio.gather(*tuple(env.app.acp_gateway.tasks), return_exceptions=True)
     runtime.effective_conversation_id = base.conversation_id
-    candidates = await read_entry(database, runtime, {"binding_id": principal.binding_id})
-    assert candidates["error"] == "conversation_required"
+    candidates = await read_personal_history(
+        database, runtime, {"binding_id": principal.binding_id}
+    )
+    assert candidates["error"] == "conversation_ambiguous"
     assert {item["conversation_id"] for item in candidates["conversations"]} == {
         session["session_id"],
         another["session_id"],
     }
-    selected = await read_entry(database, runtime, {"conversation_id": session["session_id"]})
-    assert "First ACP entry" in {item["text"] for item in selected["items"]}
-    assert "Second ACP entry" not in {item["text"] for item in selected["items"]}
+    selected = await read_personal_history(
+        database, runtime, {"conversation_id": session["session_id"]}
+    )
+    assert "First ACP entry" in {item["content"] for item in selected["events"]}
+    assert "Second ACP entry" not in {item["content"] for item in selected["events"]}
 
 
 async def test_stdio_replay_of_failed_turn_flushes_original_confirmed_output(acp_runtime, tmp_path):

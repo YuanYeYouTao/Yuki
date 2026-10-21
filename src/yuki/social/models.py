@@ -62,6 +62,8 @@ class SocialReceipt(BaseModel):
     presence_id: str | None = None
     platform_reference: str | None = None
     event_id: int | None = None
+    original_event_id: int | None = None
+    original_conversation_id: str | None = None
     error_category: str | None = None
     # Local proof carried from preparation to its dispatch CAS, never model output.
     payload_hash: str | None = Field(default=None, exclude=True)

@@ -179,36 +179,50 @@ class CodeModeDriver:
         return await self._traced_composition(resumed=True)
 
     async def _traced_composition(self, *, resumed: bool) -> str:
-        """Diagnostic hierarchy only; originals stay in Work/artifact storage."""
+        """Own this composition's Host provenance across live and restored children."""
         identity = self.outer.identity
-        async with trace_span(
-            "code_composition",
-            {
-                "operation_id": identity.operation_id,
-                "owner_execution_id": identity.owner_execution_id,
-                "provider_call_id": identity.provider_call_id,
-                "manifest_revision": self.host.api.manifest_revision if self.host.api else None,
-                "engine_resource_policy": self.host.limits.engine(),
-                "api_revision": self.host.api.digest() if self.host.api else None,
-                "resumed": resumed,
-            },
-        ) as span:
-            result = await self._resume() if resumed else await self._start()
-            try:
-                decoded = json.loads(result)
-            except ValueError:
-                decoded = None
-            value = decoded if isinstance(decoded, dict) else {}
-            span.result = {
-                "operation_id": identity.operation_id,
-                "receipt_sha256": hashlib.sha256(result.encode()).hexdigest(),
-                "status": value.get("status"),
-                "stop_reason": value.get("stop_reason"),
-                "error": value.get("error"),
-                "usage": value.get("usage"),
-                "result_ref": value.get("result_ref"),
-            }
-            return result
+        parent_capture = current_result_capture.get()
+        capture = ResultCapture(
+            self.control.current["id"] if self.control.current else "", identity.operation_id
+        )
+        token = current_result_capture.set(capture)
+        try:
+            async with trace_span(
+                "code_composition",
+                {
+                    "operation_id": identity.operation_id,
+                    "owner_execution_id": identity.owner_execution_id,
+                    "provider_call_id": identity.provider_call_id,
+                    "manifest_revision": self.host.api.manifest_revision if self.host.api else None,
+                    "engine_resource_policy": self.host.limits.engine(),
+                    "api_revision": self.host.api.digest() if self.host.api else None,
+                    "resumed": resumed,
+                },
+            ) as span:
+                result = await self._resume() if resumed else await self._start()
+                try:
+                    decoded = json.loads(result)
+                except ValueError:
+                    decoded = None
+                value = decoded if isinstance(decoded, dict) else {}
+                span.result = {
+                    "operation_id": identity.operation_id,
+                    "receipt_sha256": hashlib.sha256(result.encode()).hexdigest(),
+                    "status": value.get("status"),
+                    "stop_reason": value.get("stop_reason"),
+                    "error": value.get("error"),
+                    "usage": value.get("usage"),
+                    "result_ref": value.get("result_ref"),
+                }
+                return result
+        finally:
+            current_result_capture.reset(token)
+            if parent_capture is not None:
+                parent_capture.observe_sources(
+                    capture.source_event_ids, capture.source_privacy_generation
+                )
+                if capture.evidence is not None:
+                    parent_capture.evidence = capture.evidence
 
     async def _start(self) -> str:
         control = self.control
@@ -652,6 +666,7 @@ class CodeModeDriver:
         capture = ResultCapture(
             control.current["id"] if control.current else "", child.operation_id
         )
+        parent_capture = current_result_capture.get()
         token = current_result_capture.set(capture)
         try:
             child.receipt = await self.host.execute_business(invocation, child.klass.side_effecting)
@@ -671,6 +686,10 @@ class CodeModeDriver:
             raise _Stop(STOP_BUDGET, child.operation_id) from exc
         finally:
             current_result_capture.reset(token)
+            if parent_capture is not None:
+                parent_capture.observe_sources(
+                    capture.source_event_ids, capture.source_privacy_generation
+                )
             self._inflight -= int(charged)
         # Admission is the durable T2 marker, never a counter delta that another
         # concurrent sibling could have moved.
@@ -702,12 +721,17 @@ class CodeModeDriver:
             raise _Stop(STOP_UNKNOWN_EFFECT, child.operation_id)
         child.dispatched = True
         capture = ResultCapture(control.current["id"], child.operation_id)
+        parent_capture = current_result_capture.get()
         token = current_result_capture.set(capture)
         try:
             result, executed = await self.host.execute_control(call, child.operation_id)
             child.evidence = self._captured_evidence(child, capture)
         finally:
             current_result_capture.reset(token)
+            if parent_capture is not None:
+                parent_capture.observe_sources(
+                    capture.source_event_ids, capture.source_privacy_generation
+                )
         # Ordinary completion/waiting is a proposal to the settlement writer.
         # Only revocation of this execution stops its remaining VM statements.
         revoked = control.ending in {"failed", "cancelled"}
@@ -850,12 +874,17 @@ class CodeModeDriver:
                 raise WorkConflict("code_media_source_missing")
             result = MediaResultText(result, images)
         assert control.session is not None
+        capture = current_result_capture.get()
         evidence = execution_evidence(
             ToolExecutionResult(
                 ok=body.get("ok") is True,
                 data={"executed": executed},
                 provider_id="core",
                 tool_name="execute_code",
+                source_event_ids=capture.source_event_ids if capture is not None else (),
+                source_privacy_generation=(
+                    capture.source_privacy_generation if capture is not None else None
+                ),
             ),
             tool="execute_code",
             side_effecting=state.side_effect_done,
@@ -867,7 +896,6 @@ class CodeModeDriver:
             {"result": result, "outcome": evidence},
             media_source=state.media_source,
         )
-        capture = current_result_capture.get()
         if capture is not None:
             capture.evidence = evidence
         return result
@@ -1092,6 +1120,7 @@ class CodeModeDriver:
         capture = ResultCapture(
             self.control.current["id"] if self.control.current else "", child.operation_id
         )
+        parent_capture = current_result_capture.get()
         token = current_result_capture.set(capture)
         try:
             result = await self.control.session.journal.effect_result(child.operation_id)
@@ -1099,6 +1128,10 @@ class CodeModeDriver:
             return result
         finally:
             current_result_capture.reset(token)
+            if parent_capture is not None:
+                parent_capture.observe_sources(
+                    capture.source_event_ids, capture.source_privacy_generation
+                )
 
     @staticmethod
     def _captured_evidence(child: _Child, capture: ResultCapture) -> dict[str, Any]:
@@ -1110,6 +1143,10 @@ class CodeModeDriver:
         )
         if evidence is None:
             raise TypeError("Code child execution did not publish typed evidence")
+        capture.observe_sources(
+            tuple(evidence.get("source_event_ids", ())),
+            evidence.get("source_privacy_generation"),
+        )
         return evidence
 
     async def _parent_row(self) -> dict[str, Any] | None:

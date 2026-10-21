@@ -25,8 +25,6 @@ DIRECT_TOOL_NAMES = frozenset(
         "find_contacts",
         "get_group_members",
         "get_my_capabilities",
-        "read_conversation_history",
-        "read_personal_entry",
         "inspect_conversation_attachment",
         "read_tool_artifact",
         "workspace_inspect",
