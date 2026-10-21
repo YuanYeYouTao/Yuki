@@ -6,16 +6,13 @@ import pytest
 from sqlalchemy import select
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.persistence.web_repository import WebSearchSourceRepository
-from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
-from qq_ai_bot.services.execution_sources import recover_source
-from qq_ai_bot.web.base import WebSearchError
-from qq_ai_bot.web.models import WebSearchResponse, WebSearchSource
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.sandbox.task_repository import SandboxTaskRepository
+from yuki.services.execution_sources import recover_source
 
 
 @pytest.mark.asyncio
@@ -63,7 +60,7 @@ async def test_sandbox_self_source_keeps_original_execution_without_message_or_w
 
     from tests.unit.test_self_initiative_runtime import self_source
 
-    from qq_ai_bot.services.execution_sources import recover_execution_source
+    from yuki.services.execution_sources import recover_execution_source
 
     source, _, _ = await self_source(database)
     original_execution = f"initiative:{source['initiative_run_id']}"
@@ -80,70 +77,12 @@ async def test_sandbox_self_source_keeps_original_execution_without_message_or_w
 
 
 @pytest.mark.asyncio
-async def test_web_provenance_uses_event_and_execution_identity(database, tmp_path):
-    env = await social_env(database, tmp_path)
+async def test_prompt_and_inbound_identity_use_internal_event_not_platform_id(database, tmp_path):
+    await social_env(database, tmp_path)
     ledger = EventLedgerRepository(database)
     async with database.sessions() as session:
         event_id = await session.scalar(select(ChatEventModel.id))
     original = await ledger.get_event(event_id)
-    repository = WebSearchSourceRepository(database)
-    response = WebSearchResponse(
-        query="q",
-        sources=(
-            WebSearchSource(
-                source_id="s",
-                title="Evidence",
-                url="https://example.com/evidence",
-                domain="example.com",
-                snippet="actual evidence",
-                relevant_content="actual evidence",
-            ),
-        ),
-        latency_seconds=0,
-        provider_request_id=None,
-    )
-    await repository.save_response(
-        conversation_key="conversation",
-        trigger_message_id="reused",
-        trigger_event_id=event_id,
-        provider="test",
-        response=response,
-        max_runs=10,
-        canonical_conversation_id=env.context.conversation_id,
-    )
-    assert await repository.used_url_for_trigger(
-        conversation_key="conversation",
-        trigger_event_id=event_id,
-        url="https://example.com/evidence",
-    )
-    assert not await repository.for_trigger(
-        conversation_key="conversation", trigger_event_id=event_id + 1
-    )
-    assert not await repository.for_trigger(conversation_key="other", trigger_event_id=event_id)
-    with pytest.raises(WebSearchError, match="内部"):
-        await repository.for_trigger(conversation_key="conversation", trigger_event_id=None)
-    await repository.save_response(
-        conversation_key="conversation",
-        trigger_message_id="reused",
-        execution_id="automation:run:step",
-        provider="test",
-        response=response,
-        max_runs=10,
-        canonical_conversation_id=env.context.conversation_id,
-    )
-    assert (
-        len(
-            await repository.for_trigger(
-                conversation_key="conversation",
-                trigger_event_id=None,
-                execution_id="automation:run:step",
-            )
-        )
-        == 1
-    )
-    assert not await repository.for_trigger(
-        conversation_key="conversation", trigger_event_id=None, execution_id="another-run"
-    )
     # The same QQ id in a different event must not substitute current user content.
     other = replace(original, id=event_id + 1)
     assert ChatEventPromptRenderer.event_content(other, event_id, "replacement") == original.content

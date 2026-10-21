@@ -18,6 +18,8 @@ registrar.register_config_schema(WeatherConfig)
 
 需要 `plugin.config.read` 或 `plugin.config.write`；实际读取和写入分别要求对应权限。一个插件只能注册一个自己的配置 Schema，不能反射 Yuki `Settings`。
 
+Host 在批准安装定义后读取 `register()` 的配置声明，不要求先启动插件。首次启用前、停用后或启动失败后均可用管理 CLI 的 `plugin configuration/configure` 修正配置；配置查询不会隐式启动插件。停用移除运行工具与命令，保留当前已批准定义的 schema；版本或 Manifest 变化沿原批准流程重新读取，不能继续使用旧定义。`observe` 仍要求真实运行实例。
+
 ## 配置作用域
 
 ```python
@@ -29,7 +31,7 @@ await ctx.config.set("units", "imperial", scope_type="group", scope_id=group_id)
 ```
 
 - `global` 的 `scope_id` 必须为空。
-- `user`/`group` 必须给出真实可访问的 QQ/群号。
+- `user`/`group` 必须给出真实可访问的内部 Person/Space ID。
 - Facade 会绑定当前真实上下文，插件不能借参数跨作用域。
 - 值必须能表示为 `JsonValue` 并通过注册 Schema。
 

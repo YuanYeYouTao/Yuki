@@ -2,6 +2,8 @@
 
 本轮对应 `755f725` 审计任务书的已确认路径，源码版本仍是未发布的 3.9.0 开发基线，数据库 head 为 `0084`。本文说明实现与验证范围，不是上线证明。
 
+历史范围说明：A01 的同步人物/群名补查、256 项/60 秒空值缓存和外层查询超时已不再是现行规范；2026-10-18 将整条同步补查列入退役范围。下表保留当时实现，不要求恢复这些路径或验收条件。
+
 | 审计项 | 当前修复 |
 | --- | --- |
 | F01 | 过期 outbox processing 转 uncertain，保留原尝试，不自动重发；同尝试且凭据一致的迟到回执可确认；未分类 transport 异常不重试，仓库也检查安全未发送类别 |
@@ -21,7 +23,7 @@
 
 | 附录项 | 当前范围 |
 | --- | --- |
-| A01 | 明确空 nickname/card 保持 known；成功空值仅缓存作用域 known 标记，256 项/60 秒，命中不续期；复用原 runtime snapshot，迟到资料按原 Person 核验；可选人物/群名查询各限 0.25 秒 |
+| A01（历史，补查链退役） | 当时对明确空 nickname/card 保持 known，并为同步补查设置空值缓存和外层超时。缓存、补查与超时不再作为当前实现要求；原事件明确空值与未知值的区别不随之删除。 |
 | A02 | Profile 在 stage 前读齐 owner、别名、Space 和 Membership，短 immediate 事务序列化首次观察；未变昵称和群名不增加 revision，last_seen 仍保留 |
 | A03 | metadata-only 插件通知进入有界队列，冻结 payload 与订阅身份，退出/撤权停止投递；SDK 显式 publish 仍等待结果 |
 | A04 | Social 路由和 probe 在 writer 前完成，原回执 CAS 认领发送权，writer 复核 canonical/route/SELF，并在 claim 与真实调用前复核原 connection；scheduled SELF 按原冻结场景及 generation 核验，reset 后不发送 |

@@ -7,13 +7,14 @@ from sqlalchemy import func, select
 from tests.support.runtime_work_helpers import _persisted_tool_receipt
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import inputs, work
-from qq_ai_bot.runtime.work_wait import WorkWaitRepository, normalize_conditions
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import inputs, work
+from yuki.runtime.work_wait import WorkWaitRepository, normalize_conditions
 
 
 async def _running_work(database, tmp_path, *, interactive=False, goal="answer"):
+    database.subagents_enabled = True
     env = await social_env(database, tmp_path)
     repository = WorkRepository(database)
     lease = await repository.acquire(env.context.conversation_id, 1)
@@ -364,9 +365,9 @@ async def test_optional_note_reporting_and_null_result_do_not_veto_completion(da
 
 @pytest.mark.asyncio
 async def test_private_note_keeps_original_work_without_public_publication(database, tmp_path):
-    from qq_ai_bot.conversation.observation_models import ContextObservationModel
-    from qq_ai_bot.runtime.work_context_note import visible_context_note
-    from qq_ai_bot.tool_results.access import access_from_source
+    from yuki.conversation.observation_models import ContextObservationModel
+    from yuki.runtime.work_context_note import visible_context_note
+    from yuki.tool_results.access import access_from_source
 
     repository, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
@@ -410,7 +411,7 @@ async def test_private_note_keeps_original_work_without_public_publication(datab
 async def test_explicit_resume_keeps_identity_and_retires_replaced_wait(
     database, tmp_path, entry, prior_state
 ):
-    from qq_ai_bot.runtime.work_management import manage_work
+    from yuki.runtime.work_management import manage_work
 
     repository, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
@@ -493,8 +494,8 @@ async def test_model_can_manage_a_derived_child_without_replacing_current_work(
 async def test_model_stop_accepts_live_descendants_and_preserves_unknown_receipt(
     database, tmp_path, action
 ):
-    from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-    from qq_ai_bot.runtime.work_schema_v1 import effects
+    from yuki.runtime.subagent_repository import SubagentRepository
+    from yuki.runtime.work_schema_v1 import effects
 
     repository, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
@@ -561,12 +562,10 @@ async def test_model_stop_accepts_live_descendants_and_preserves_unknown_receipt
 async def test_existing_timer_can_resolve_all_conditions_without_delay_policy(
     database, tmp_path, seconds, expired, child
 ):
-    from qq_ai_bot.control_plane.paging import PageRequest
-    from qq_ai_bot.persistence.control_work_query import ControlWorkQueryAdapter
 
     repository, lease, control = await _running_work(database, tmp_path)
     if child:
-        from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+        from yuki.runtime.subagent_repository import SubagentRepository
 
         workers = SubagentRepository(repository)
         identity = await workers.start(
@@ -618,14 +617,9 @@ async def test_existing_timer_can_resolve_all_conditions_without_delay_policy(
             )
         )
         assert result["ok"]
-    history = await ControlWorkQueryAdapter(database.sessions).list_work_history(
-        PageRequest(),
-        work_id=control.current["id"],
-        section="waits",
-        include_content=True,
-    )
-    assert len(history.items) == 1
-    assert len(history.items[0].fields["conditions"]) == len(conditions)
+    wait_repository = WorkWaitRepository(repository)
+    retained_wait = await wait_repository.describe(control.current["id"])
+    assert len(retained_wait["conditions"]) == len(conditions)
     await control.settle(pending_inputs=False)
     wait_repository = WorkWaitRepository(repository)
     wait = await wait_repository.describe(control.current["id"])
@@ -727,7 +721,7 @@ async def test_retained_work_and_pending_inputs_do_not_block_new_intents(databas
         goal="different owner's task",
         initial_state="queued",
     )
-    from qq_ai_bot.runtime.work_queries import WorkQueries
+    from yuki.runtime.work_queries import WorkQueries
 
     # The global read directory is still readable, but doesn't grant mutation authority.
     assert await WorkQueries(repository).get(lease, source, foreign["id"]) is not None
@@ -745,7 +739,7 @@ async def test_retained_work_and_pending_inputs_do_not_block_new_intents(databas
 async def test_wait_conditions_follow_mode_with_failed_member(
     database, tmp_path, terminal, mode, shorthand
 ):
-    from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+    from yuki.runtime.subagent_repository import SubagentRepository
 
     repository, lease, control = await _running_work(database, tmp_path)
     workers = SubagentRepository(repository)
@@ -802,9 +796,9 @@ async def test_wait_shorthand_keeps_long_owned_run_id_and_completed_uncertainty(
 
     from jsonschema import validate
 
-    from qq_ai_bot.runtime.work_control import work_control_tools
-    from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
-    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+    from yuki.runtime.work_control import work_control_tools
+    from yuki.sandbox.db_models import SandboxTaskRunModel
+    from yuki.sandbox.task_repository import SandboxTaskRepository
 
     repository, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
@@ -846,7 +840,7 @@ async def test_wait_shorthand_keeps_long_owned_run_id_and_completed_uncertainty(
 async def test_batched_waits_keep_owner_tuple_and_sandbox_self_scope(database, tmp_path):
     from datetime import UTC, datetime
 
-    from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
+    from yuki.sandbox.db_models import SandboxTaskRunModel
 
     repository, lease, control = await _running_work(database, tmp_path)
     owner = control.current["id"]
@@ -893,9 +887,9 @@ async def test_abandoned_batch_repairs_original_inputs_and_advances_work_once(da
 
     from sqlalchemy import update
 
-    from qq_ai_bot.conversation.ordinary_admission_db_models import OrdinaryTurnAdmissionModel
-    from qq_ai_bot.identity.db_models import PresenceModel
-    from qq_ai_bot.persistence.models import ChatEventModel
+    from yuki.conversation.ordinary_admission_db_models import OrdinaryTurnAdmissionModel
+    from yuki.identity.db_models import PresenceModel
+    from yuki.persistence.models import ChatEventModel
 
     repository, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
@@ -994,8 +988,8 @@ async def test_due_wait_after_unchanged_first_page_delivers_to_original_work(
 
     from sqlalchemy import update
 
-    from qq_ai_bot.runtime import work_wait
-    from qq_ai_bot.runtime.work_wait_schema import waits
+    from yuki.runtime import work_wait
+    from yuki.runtime.work_wait_schema import waits
 
     repository, lease, control = await _running_work(database, tmp_path)
     wait_ids = iter(UUID(int=index + 1, version=4) for index in range(129))
@@ -1125,9 +1119,9 @@ async def test_fulfilled_wait_before_first_settlement_retires_original_decision(
 async def test_ordinary_publication_failure_rolls_back_ready_admission_and_wake(database, tmp_path):
     from sqlalchemy import update
 
-    from qq_ai_bot.conversation.ordinary_admission import OrdinaryAdmissionRepository
-    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-    from qq_ai_bot.persistence.models import ChatEventModel
+    from yuki.conversation.ordinary_admission import OrdinaryAdmissionRepository
+    from yuki.persistence.event_repository import EventLedgerRepository
+    from yuki.persistence.models import ChatEventModel
 
     repository, lease, control = await _running_work(database, tmp_path)
     identity = control.current["id"]
@@ -1180,9 +1174,9 @@ async def test_late_conversation_delivery_keeps_its_id_and_all_readable_signal_r
     from datetime import UTC, datetime
     from uuid import uuid4
 
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.plugin_host.db_models import (
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.persistence.models import ChatEventModel
+    from yuki.plugin_host.db_models import (
         PluginBackgroundTargetGrantModel,
         PluginInstallationModel,
     )

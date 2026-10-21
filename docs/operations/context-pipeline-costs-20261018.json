@@ -1,0 +1,1098 @@
+{
+  "date": "2026-10-18",
+  "baseline_commit": "815897032b4e77e6e7f11ea2d63d74a7fd4e674d",
+  "candidate": "local uncommitted implementation; each probe records its own source boundary",
+  "production_writes": false,
+  "new_paid_model_or_platform_calls": false,
+  "asynchronous_preassembly": false,
+  "limitations": [
+    "Independent components overlap and their times must not be summed",
+    "Synthetic fixtures and a concurrent Windows development host; no production percentiles",
+    "No Provider cache hit or token-saving conclusion",
+    "Windows process CPU clock is coarse; zero sample CPU time does not mean zero CPU work",
+    "Compact timing precedes the final first-candidate slicing simplification; equivalence was rechecked after it"
+  ],
+  "projection_storage": {
+    "base_revision": "815897032b4e77e6e7f11ea2d63d74a7fd4e674d",
+    "scope": "Real projection read, FrozenFragments append, prepare and writer publication with SQLite/WAL; synthetic source events/text; no models/network/platform; current uncommitted source",
+    "limitations": [
+      "Five samples, concurrent development host; not production latency or percentile",
+      "Public complete model request encoding is excluded",
+      "All WAL includes real original selection/indices/head writes",
+      "No asynchronous preassembly experiment"
+    ],
+    "current_source_hashes": {
+      "src/yuki/conversation/projections.py": "918f10832a746eb5759d0c4787fcf43010c714d5a840b03e1a5b12da351ede03",
+      "src/yuki/conversation/frozen_fragments.py": "49efe56a72b2a4d6cac6f60c08653ae8172d7d5bb29bfb3e1c8cd42294a201eb"
+    },
+    "results": [
+      {
+        "mode": "baseline",
+        "original_fragments": 1000,
+        "delta_each": 1,
+        "samples": [
+          {
+            "seconds": 0.05990089988335967,
+            "cpu_seconds": 0.0,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1113007,
+            "wal_bytes": 1161872,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.058112400118261576,
+            "cpu_seconds": 0.03125,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1114120,
+            "wal_bytes": 1149512,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.055313799995929,
+            "cpu_seconds": 0.03125,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1115233,
+            "wal_bytes": 1153632,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.056243499740958214,
+            "cpu_seconds": 0.0,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1116346,
+            "wal_bytes": 1161872,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.06121090007945895,
+            "cpu_seconds": 0.03125,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1117459,
+            "wal_bytes": 1165992,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          }
+        ],
+        "median_ms": 58.112400118261576,
+        "median_cpu_ms": 31.25,
+        "median_bound_bytes": 1115233,
+        "median_wal_bytes": 1161872,
+        "median_sql_statements": 15
+      },
+      {
+        "mode": "baseline",
+        "original_fragments": 5000,
+        "delta_each": 1,
+        "samples": [
+          {
+            "seconds": 0.35472230007871985,
+            "cpu_seconds": 0.15625,
+            "sql_statements": 31,
+            "current_projection_bound_bytes": 5565007,
+            "wal_bytes": 5636192,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.38866369985044,
+            "cpu_seconds": 0.078125,
+            "sql_statements": 31,
+            "current_projection_bound_bytes": 5566120,
+            "wal_bytes": 5652672,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.37829050002619624,
+            "cpu_seconds": 0.09375,
+            "sql_statements": 31,
+            "current_projection_bound_bytes": 5567233,
+            "wal_bytes": 5636192,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.35689730010926723,
+            "cpu_seconds": 0.140625,
+            "sql_statements": 31,
+            "current_projection_bound_bytes": 5568346,
+            "wal_bytes": 5636192,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.3083825004287064,
+            "cpu_seconds": 0.046875,
+            "sql_statements": 31,
+            "current_projection_bound_bytes": 5569459,
+            "wal_bytes": 5644432,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          }
+        ],
+        "median_ms": 356.89730010926723,
+        "median_cpu_ms": 93.75,
+        "median_bound_bytes": 5567233,
+        "median_wal_bytes": 5636192,
+        "median_sql_statements": 31
+      },
+      {
+        "mode": "current",
+        "original_fragments": 1000,
+        "delta_each": 1,
+        "samples": [
+          {
+            "seconds": 0.012787200044840574,
+            "cpu_seconds": 0.0,
+            "sql_statements": 14,
+            "current_projection_bound_bytes": 1114,
+            "wal_bytes": 57712,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.012432700023055077,
+            "cpu_seconds": 0.0,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1114,
+            "wal_bytes": 45352,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.012305600102990866,
+            "cpu_seconds": 0.015625,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1114,
+            "wal_bytes": 41232,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.012348499614745378,
+            "cpu_seconds": 0.0,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1114,
+            "wal_bytes": 53592,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.014568000100553036,
+            "cpu_seconds": 0.0,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1114,
+            "wal_bytes": 45352,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          }
+        ],
+        "median_ms": 12.432700023055077,
+        "median_cpu_ms": 0.0,
+        "median_bound_bytes": 1114,
+        "median_wal_bytes": 45352,
+        "median_sql_statements": 15
+      },
+      {
+        "mode": "current",
+        "original_fragments": 5000,
+        "delta_each": 1,
+        "samples": [
+          {
+            "seconds": 0.01188440015539527,
+            "cpu_seconds": 0.0,
+            "sql_statements": 14,
+            "current_projection_bound_bytes": 1114,
+            "wal_bytes": 45352,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.01225150004029274,
+            "cpu_seconds": 0.0,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1114,
+            "wal_bytes": 65952,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.01137219974771142,
+            "cpu_seconds": 0.0,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1114,
+            "wal_bytes": 32992,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.011289599817246199,
+            "cpu_seconds": 0.0,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1114,
+            "wal_bytes": 41232,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          },
+          {
+            "seconds": 0.011017400305718184,
+            "cpu_seconds": 0.0,
+            "sql_statements": 15,
+            "current_projection_bound_bytes": 1114,
+            "wal_bytes": 41232,
+            "checkpoint": [
+              0,
+              0,
+              0
+            ]
+          }
+        ],
+        "median_ms": 11.37219974771142,
+        "median_cpu_ms": 0.0,
+        "median_bound_bytes": 1114,
+        "median_wal_bytes": 41232,
+        "median_sql_statements": 15
+      }
+    ]
+  },
+  "cold_selection": {
+    "base_revision": "815897032b4e77e6e7f11ea2d63d74a7fd4e674d",
+    "scope": "Actual PromptProjectionRepository.selected against synthetic SQLite provenance; captured SQL replayed for VM opcodes and EXPLAIN",
+    "limitations": [
+      "Five samples on development host, not production latency/percentiles",
+      "Exact visible-event subset remains after range prefilter",
+      "No preassembly/model/network/platform"
+    ],
+    "current_source_hashes": {
+      "src/yuki/conversation/projections.py": "e5862d7bc6aa813d44f5941af5515366403e73ce1ea2ccf8b63f3357905fcb28",
+      "src/yuki/conversation/observation_models.py": "42e61447b5fcb844a2183f33d116a27971c269a996cb7767b3cd8cf29f74c8d8"
+    },
+    "results": [
+      {
+        "mode": "baseline",
+        "stored_selections": 1000,
+        "position": "tail",
+        "visible_events": 32,
+        "selected_groups": 33,
+        "median_ms": 7.947899866849184,
+        "vm_operations": 10637,
+        "returned_db_rows": 1033,
+        "returned_text_bytes": 7793,
+        "query_plans": [
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INTEGER PRIMARY KEY (rowid=?)"
+          ]
+        ]
+      },
+      {
+        "mode": "baseline",
+        "stored_selections": 10000,
+        "position": "tail",
+        "visible_events": 32,
+        "selected_groups": 33,
+        "median_ms": 50.89950002729893,
+        "vm_operations": 102509,
+        "returned_db_rows": 10033,
+        "returned_text_bytes": 61858,
+        "query_plans": [
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INTEGER PRIMARY KEY (rowid=?)"
+          ]
+        ]
+      },
+      {
+        "mode": "baseline",
+        "stored_selections": 10000,
+        "position": "head",
+        "visible_events": 32,
+        "selected_groups": 33,
+        "median_ms": 53.36239980533719,
+        "vm_operations": 102509,
+        "returned_db_rows": 10033,
+        "returned_text_bytes": 61712,
+        "query_plans": [
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INDEX ix_context_selection_scope (conversation_id=? AND generation=? AND rowid>?)"
+          ],
+          [
+            "SEARCH model_context_selections USING INTEGER PRIMARY KEY (rowid=?)"
+          ]
+        ]
+      },
+      {
+        "mode": "current",
+        "stored_selections": 1000,
+        "position": "tail",
+        "visible_events": 32,
+        "selected_groups": 33,
+        "median_ms": 2.765200100839138,
+        "vm_operations": 1157,
+        "returned_db_rows": 66,
+        "returned_text_bytes": 3064,
+        "query_plans": [
+          [
+            "MERGE (UNION ALL)",
+            "LEFT",
+            "SEARCH model_context_selections USING INDEX ix_context_selection_range (view_key=? AND generation=? AND max_event_id=?)",
+            "RIGHT",
+            "SEARCH model_context_selections USING INDEX ix_context_selection_range (view_key=? AND generation=? AND max_event_id>? AND max_event_id<?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          [
+            "SEARCH model_context_selections USING INTEGER PRIMARY KEY (rowid=?)"
+          ]
+        ]
+      },
+      {
+        "mode": "current",
+        "stored_selections": 10000,
+        "position": "tail",
+        "visible_events": 32,
+        "selected_groups": 33,
+        "median_ms": 2.314899582415819,
+        "vm_operations": 1157,
+        "returned_db_rows": 66,
+        "returned_text_bytes": 3160,
+        "query_plans": [
+          [
+            "MERGE (UNION ALL)",
+            "LEFT",
+            "SEARCH model_context_selections USING INDEX ix_context_selection_range (view_key=? AND generation=? AND max_event_id=?)",
+            "RIGHT",
+            "SEARCH model_context_selections USING INDEX ix_context_selection_range (view_key=? AND generation=? AND max_event_id>? AND max_event_id<?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          [
+            "SEARCH model_context_selections USING INTEGER PRIMARY KEY (rowid=?)"
+          ]
+        ]
+      },
+      {
+        "mode": "current",
+        "stored_selections": 10000,
+        "position": "head",
+        "visible_events": 32,
+        "selected_groups": 33,
+        "median_ms": 2.4425997398793697,
+        "vm_operations": 1158,
+        "returned_db_rows": 66,
+        "returned_text_bytes": 2941,
+        "query_plans": [
+          [
+            "MERGE (UNION ALL)",
+            "LEFT",
+            "SEARCH model_context_selections USING INDEX ix_context_selection_range (view_key=? AND generation=? AND max_event_id=?)",
+            "RIGHT",
+            "SEARCH model_context_selections USING INDEX ix_context_selection_range (view_key=? AND generation=? AND max_event_id>? AND max_event_id<?)",
+            "USE TEMP B-TREE FOR ORDER BY"
+          ],
+          [
+            "SEARCH model_context_selections USING INTEGER PRIMARY KEY (rowid=?)"
+          ]
+        ]
+      }
+    ]
+  },
+  "compact_candidate": {
+    "baseline_commit": "815897032b4e77e6e7f11ea2d63d74a7fd4e674d",
+    "candidate": "current uncommitted implementation",
+    "network": false,
+    "database": false,
+    "samples": 5,
+    "scenarios": [
+      {
+        "native_checkpoint": false,
+        "tail_messages": 128,
+        "baseline": {
+          "copied_prefix_entries": 7525,
+          "capacity_json_characters": 948573,
+          "selected_prefix_entries": 45,
+          "milliseconds": [
+            99.82739994302392,
+            98.93180010840297,
+            102.68490016460419,
+            118.02319996058941,
+            92.82669983804226
+          ],
+          "median_ms": 99.82739994302392
+        },
+        "candidate": {
+          "copied_prefix_entries": 45,
+          "capacity_json_characters": 16186,
+          "selected_prefix_entries": 45,
+          "milliseconds": [
+            2.264999784529209,
+            2.118899952620268,
+            2.20259977504611,
+            2.5657000951468945,
+            2.4386998265981674
+          ],
+          "median_ms": 2.264999784529209
+        }
+      },
+      {
+        "native_checkpoint": false,
+        "tail_messages": 512,
+        "baseline": {
+          "copied_prefix_entries": 131365,
+          "capacity_json_characters": 16546269,
+          "selected_prefix_entries": 45,
+          "milliseconds": [
+            1864.891900215298,
+            1771.676399745047,
+            1804.0324002504349,
+            1844.2194000817835,
+            1877.4780998937786
+          ],
+          "median_ms": 1844.2194000817835
+        },
+        "candidate": {
+          "copied_prefix_entries": 45,
+          "capacity_json_characters": 63802,
+          "selected_prefix_entries": 45,
+          "milliseconds": [
+            8.331300225108862,
+            8.557300083339214,
+            7.047200109809637,
+            7.177799940109253,
+            9.481700137257576
+          ],
+          "median_ms": 8.331300225108862
+        }
+      },
+      {
+        "native_checkpoint": false,
+        "tail_messages": 1024,
+        "baseline": {
+          "copied_prefix_entries": 525861,
+          "capacity_json_characters": 66244873,
+          "selected_prefix_entries": 45,
+          "milliseconds": [
+            7210.843400098383,
+            8902.341400273144,
+            6887.968600261956,
+            7220.371200237423,
+            7828.917699865997
+          ],
+          "median_ms": 7220.371200237423
+        },
+        "candidate": {
+          "copied_prefix_entries": 45,
+          "capacity_json_characters": 127314,
+          "selected_prefix_entries": 45,
+          "milliseconds": [
+            15.581399668008089,
+            14.297899790108204,
+            14.224600046873093,
+            14.325099997222424,
+            17.861200030893087
+          ],
+          "median_ms": 14.325099997222424
+        }
+      },
+      {
+        "native_checkpoint": true,
+        "tail_messages": 128,
+        "baseline": {
+          "copied_prefix_entries": 7700,
+          "capacity_json_characters": 989364,
+          "selected_prefix_entries": 44,
+          "milliseconds": [
+            115.79969990998507,
+            139.9721996858716,
+            138.117800001055,
+            114.11829991266131,
+            113.41119976714253
+          ],
+          "median_ms": 115.79969990998507
+        },
+        "candidate": {
+          "copied_prefix_entries": 44,
+          "capacity_json_characters": 16482,
+          "selected_prefix_entries": 44,
+          "milliseconds": [
+            3.5671000368893147,
+            3.9925999008119106,
+            3.377700224518776,
+            3.7275003269314766,
+            3.0922996811568737
+          ],
+          "median_ms": 3.5671000368893147
+        }
+      },
+      {
+        "native_checkpoint": true,
+        "tail_messages": 512,
+        "baseline": {
+          "copied_prefix_entries": 131924,
+          "capacity_json_characters": 16716852,
+          "selected_prefix_entries": 44,
+          "milliseconds": [
+            1764.5730003714561,
+            1751.146899536252,
+            1810.7791999354959,
+            1925.6739998236299,
+            1778.09360018
+          ],
+          "median_ms": 1778.09360018
+        },
+        "candidate": {
+          "copied_prefix_entries": 44,
+          "capacity_json_characters": 64098,
+          "selected_prefix_entries": 44,
+          "milliseconds": [
+            12.864000163972378,
+            12.388200033456087,
+            17.762199975550175,
+            11.901500169187784,
+            15.156399924308062
+          ],
+          "median_ms": 12.864000163972378
+        }
+      },
+      {
+        "native_checkpoint": true,
+        "tail_messages": 1024,
+        "baseline": {
+          "copied_prefix_entries": 526932,
+          "capacity_json_characters": 66588512,
+          "selected_prefix_entries": 44,
+          "milliseconds": [
+            7239.997600205243,
+            7338.084499817342,
+            7290.861600078642,
+            6794.201499782503,
+            6650.942099746317
+          ],
+          "median_ms": 7239.997600205243
+        },
+        "candidate": {
+          "copied_prefix_entries": 44,
+          "capacity_json_characters": 127610,
+          "selected_prefix_entries": 44,
+          "milliseconds": [
+            22.09929982200265,
+            20.44409979134798,
+            21.26580011099577,
+            26.277100201696157,
+            22.06850005313754
+          ],
+          "median_ms": 22.06850005313754
+        }
+      }
+    ]
+  },
+  "social": {
+    "kind": "local-real-Social-SQLite-testfixture-fake-OneBot-only",
+    "limitation": "No ToolKernel/Work activation or real HTTP/platform; one sample timing not benchmark; fixture account scope; original inbound/Presence explicitly bound",
+    "initial_send": {
+      "status": "succeeded",
+      "ms": 62.835,
+      "sql_count": 40,
+      "method_counts": {
+        "find": 1,
+        "target": 1,
+        "check_target": 2,
+        "resolve_send_for_conversation": 1,
+        "send_route": 1,
+        "prepare": 1,
+        "validate_prepared_send": 1,
+        "claim": 1,
+        "finish": 1,
+        "_dispatch_claimed": 1,
+        "_receipt_result": 1,
+        "_effect": 1,
+        "_send_message_sequence": 1
+      },
+      "platform": [
+        {
+          "action": "send_group_msg",
+          "phase": "_dispatch_claimed",
+          "writer_active": false
+        }
+      ]
+    },
+    "same_call_replay": {
+      "status": "succeeded",
+      "ms": 5.988,
+      "sql_count": 5,
+      "method_counts": {
+        "find": 1,
+        "prepare": 1,
+        "_receipt_result": 1
+      },
+      "platform": []
+    }
+  },
+  "shared_media": {
+    "kind": "local-real-Social-ingress-SQLite-HTTPXMock-ConversationMedia-AttachmentInput-EmojiCollector",
+    "limitation": "Same generated image; no real HTTP/socket/platform/model; operation count, not online latency proof",
+    "before": {
+      "shared": false,
+      "physical_http_requests": 3,
+      "returned_media_bytes": 225,
+      "native_frames": 1,
+      "emoji_bytes": 75
+    },
+    "after": {
+      "shared": true,
+      "physical_http_requests": 1,
+      "returned_media_bytes": 75,
+      "native_frames": 1,
+      "emoji_bytes": 75
+    }
+  },
+  "incremental_pipeline": {
+    "source_revision": "815897032b4e77e6e7f11ea2d63d74a7fd4e674d + current uncommitted context optimization candidate",
+    "scope": "local real SQLite, Processor/Main/Social ownership pipeline, real Assembler/Composer, HTTPX MockTransport; no paid provider, platform message or production read",
+    "measurement": "exact operation counts and byte/hash, not elapsed latency or p95; SQL body counter includes all pipeline chat_events body selects; scope counter is actual EventRecord body materialization in scope_repository",
+    "old_raw_seed_rows": 64,
+    "phases": {
+      "cold_64_old_plus_current_physical": {
+        "scope_body_rows_materialized": 66,
+        "sql_body_rows_all_pipeline": 136,
+        "raw_metadata_rows_extended": 66,
+        "reference_rows_rendered": 66,
+        "group_propagation_R": 0,
+        "http_requests": 1,
+        "assembled_history": {
+          "utf8_bytes": 1412,
+          "sha256": "ad8a6df3b71c1bfeb0403da09ed6970d55dd1b56c026127a0252a6e313809651"
+        },
+        "assembled_current": {
+          "utf8_bytes": 109,
+          "sha256": "f5783c682705aaa972d9e195cc7775715efe9e3c6c508fb082df271c62713497"
+        },
+        "history_fragments": 1,
+        "final_messages": {
+          "utf8_bytes": 12677,
+          "sha256": "1c408b66004998ca94be6ccdb6b4eddd9d4959020202c8c4f42271452a8113f9"
+        },
+        "source_memory_estimate_bytes": 155006,
+        "physical_http_json": {
+          "utf8_bytes": 34115,
+          "sha256": "9e1afa90cfc9ea1adbbf55163ffcb7e68d17edbde6655290628894f6766c24fc"
+        }
+      },
+      "warm_delta_0_plugin_prepare_only": {
+        "scope_body_rows_materialized": 0,
+        "sql_body_rows_all_pipeline": 0,
+        "raw_metadata_rows_extended": 0,
+        "reference_rows_rendered": 0,
+        "group_propagation_R": 0,
+        "http_requests": 0,
+        "assembled_history": {
+          "utf8_bytes": 1522,
+          "sha256": "20a70c1cf8752fc0697ee72e2815aab1f766424f7d50750115145f16f0b4becb"
+        },
+        "assembled_current": {
+          "utf8_bytes": 23,
+          "sha256": "5614200e7b3182716f0cb765a0cf0dbd2b50393daf88c980693b3bf461af7288"
+        },
+        "history_fragments": 2,
+        "final_messages": {
+          "utf8_bytes": 12701,
+          "sha256": "3ba6ca9a62ccb6b63729e6791b1a7e8abd7199ae20814e7832f0c9080c66982f"
+        },
+        "source_memory_estimate_bytes": 152886
+      },
+      "warm_delta_1_physical": {
+        "scope_body_rows_materialized": 1,
+        "sql_body_rows_all_pipeline": 72,
+        "raw_metadata_rows_extended": 1,
+        "reference_rows_rendered": 1,
+        "group_propagation_R": 0,
+        "http_requests": 1,
+        "assembled_history": {
+          "utf8_bytes": 1522,
+          "sha256": "20a70c1cf8752fc0697ee72e2815aab1f766424f7d50750115145f16f0b4becb"
+        },
+        "assembled_current": {
+          "utf8_bytes": 109,
+          "sha256": "28b7eaa7a54d1c5bd1961c9348b65c0ecd32ba9ee9aedd07fee74d152277ba78"
+        },
+        "history_fragments": 2,
+        "final_messages": {
+          "utf8_bytes": 12787,
+          "sha256": "c6e54ede6c84a58aee71430a82558cd7c259b12c86e95f7ae60c4e05392d0396"
+        },
+        "source_memory_estimate_bytes": 155109,
+        "physical_http_json": {
+          "utf8_bytes": 34242,
+          "sha256": "8ff52c13ddc71ecc2e1f56a285dc24ec2b0d6ceca972b8458ee145964bf0a41d"
+        }
+      },
+      "warm_delta_0_repeat_plugin_prepare_only": {
+        "scope_body_rows_materialized": 0,
+        "sql_body_rows_all_pipeline": 0,
+        "raw_metadata_rows_extended": 0,
+        "reference_rows_rendered": 0,
+        "group_propagation_R": 0,
+        "http_requests": 0,
+        "assembled_history": {
+          "utf8_bytes": 1632,
+          "sha256": "d7e69efe251e9a355a2d4279bebc283afc79bab2a584d8fe923dab949fec3c2c"
+        },
+        "assembled_current": {
+          "utf8_bytes": 23,
+          "sha256": "5614200e7b3182716f0cb765a0cf0dbd2b50393daf88c980693b3bf461af7288"
+        },
+        "history_fragments": 3,
+        "final_messages": {
+          "utf8_bytes": 12811,
+          "sha256": "8222d87f959e0252f918f9936788a0ad8b0d258feba3b6a4784b7121353eccd4"
+        },
+        "source_memory_estimate_bytes": 155069
+      },
+      "non_tail_old_current_prepare_only": {
+        "scope_body_rows_materialized": 1,
+        "sql_body_rows_all_pipeline": 1,
+        "raw_metadata_rows_extended": 0,
+        "reference_rows_rendered": 1,
+        "group_propagation_R": 66,
+        "http_requests": 0,
+        "assembled_history": {
+          "utf8_bytes": 1632,
+          "sha256": "d7e69efe251e9a355a2d4279bebc283afc79bab2a584d8fe923dab949fec3c2c"
+        },
+        "assembled_current": {
+          "utf8_bytes": 109,
+          "sha256": "f5783c682705aaa972d9e195cc7775715efe9e3c6c508fb082df271c62713497"
+        },
+        "history_fragments": 3,
+        "final_messages": {
+          "utf8_bytes": 12897,
+          "sha256": "0fe81660cb30cccbc70d06fd645b6e0471f0fa86f973287613f1cc8bf613c875"
+        },
+        "source_memory_estimate_bytes": 155061
+      }
+    },
+    "boundaries": [
+      "plugin and non-tail phases prepare/compose only, zero physical model requests; no inferred payment/cache hit",
+      "real pipeline regression separately compared every assembled/compiled byte with prior full-tail renderer oracle",
+      "non-tail R is actual affected metadata IDs, not old body re-render count",
+      "final message materialization/JSON encoding remains O(P) in public bytes; hashes are output evidence, not upstream cache evidence",
+      "pending/refs captured by original H/head; SQLite Event-barrier concurrent-admission regression independently passed",
+      "no background preassembly or related experiment"
+    ]
+  }
+}

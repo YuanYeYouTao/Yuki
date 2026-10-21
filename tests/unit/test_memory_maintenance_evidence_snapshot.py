@@ -10,11 +10,11 @@ from sqlalchemy import event, func, select, update
 from sqlalchemy.exc import OperationalError
 from tests.conftest import make_settings
 
-from qq_ai_bot.memory.maintenance import MemoryMaintenanceWorker
-from qq_ai_bot.memory.models import MemoryFactCreate
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.models import (
+from yuki.memory.maintenance import MemoryMaintenanceWorker
+from yuki.memory.models import MemoryFactCreate
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.service import MemoryFactService
+from yuki.persistence.models import (
     MemoryFactModel,
     MemoryFactRelationModel,
     MemoryFactStateEventModel,

@@ -3,7 +3,7 @@
 import sqlalchemy as sa
 from alembic import op
 
-from qq_ai_bot.conversation.projection_schema import PROJECTION_TRIGGERS_0054
+from yuki.conversation.projection_schema import PROJECTION_TRIGGERS_0054
 
 revision = "0054"
 down_revision = "0053"

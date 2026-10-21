@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from qq_ai_bot.model_runtime.models import ModelTask
-from qq_ai_bot.model_runtime.profiles import parse_model_profile_catalog
+from yuki.model_runtime.models import ModelTask
+from yuki.model_runtime.profiles import parse_model_profile_catalog
 
 
 def test_legacy_compaction_route_is_ignored_with_one_warning(caplog):

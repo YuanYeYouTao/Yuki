@@ -1,0 +1,36 @@
+"""Standard Responses wire policy, separate from DeepSeek-specific omissions."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from yuki.domain.messages import ChatRequest
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+
+
+class OpenAIResponsesProvider(DeepSeekResponsesProvider):
+    """Reuse ordered item parsing while preserving standard execution controls."""
+
+    provider_name = "openai"
+    supports_tool_choice = True
+
+    def _build_payload(self, request: ChatRequest) -> dict[str, Any]:
+        payload = super()._build_payload(request)
+        if request.tool_choice is not None:
+            payload["tool_choice"] = (
+                request.tool_choice
+                if request.tool_choice in {"auto", "none", "required"}
+                else {"type": "function", "name": request.tool_choice}
+            )
+        # Yuki replays its own ordered transcript, rather than a remote stored thread.
+        payload["store"] = False
+        payload["include"] = ["reasoning.encrypted_content"]
+        if request.native_tools:
+            payload["include"].append("web_search_call.action.sources")
+        return payload
+
+
+class OpenAICompatibleResponsesProvider(OpenAIResponsesProvider):
+    """Keep compatible endpoints in their configured provider continuation domain."""
+
+    provider_name = "openai_compatible"

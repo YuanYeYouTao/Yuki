@@ -1,0 +1,2226 @@
+"""Transactional persistence for plugin external events, delivery, and background turns."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+import time
+from dataclasses import asdict, dataclass
+from dataclasses import replace as dataclass_replace
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+from sqlalchemy import DateTime, and_, bindparam, func, or_, select, text, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from yuki.conversation.canonical_db_models import (
+    CanonicalConversationModel,
+    SpaceActiveRouteModel,
+    SpaceBindingIngestRouteModel,
+)
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.identity import AuthorKind
+from yuki.identity.db_models import (
+    CanonicalPersonModel,
+    IdentityBindingModel,
+    PresenceModel,
+    SpaceBindingModel,
+)
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.identity.person_identity import person_family_condition, person_root_id, same_person_id
+from yuki.persistence.database import Database
+from yuki.persistence.models import ChatEventModel
+from yuki.persistence.repository_helpers import (
+    keeper_event_clause,
+    suppression_is_canonical_live,
+)
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.plugin_host.db_models import (
+    PluginBackgroundTargetGrantModel,
+    PluginBackgroundTurnJobModel,
+    PluginInstallationModel,
+    PluginMediaArtifactModel,
+    PluginNotificationOutboxModel,
+)
+from yuki.plugin_host.notification_manifest import (
+    MediaIdentity,
+    PublicationManifest,
+    canonical_json,
+    is_sha256_digest,
+    manifest_from_request,
+    media_part_key,
+)
+from yuki.plugin_host.ownership import (
+    CANONICAL_OWNER_DISABLED,
+    CANONICAL_OWNER_MISMATCH,
+    MISSING_CANONICAL_OWNER,
+    STATE_MISMATCH,
+    PluginOwnershipError,
+    find_grant_lineage,
+    inherit_publication_canonicals,
+    plugin_ownership_error,
+    require_grant_readable,
+    require_inherited_publication,
+    require_live_conversation,
+    require_live_space,
+    require_person_source,
+    require_presence_provenance,
+    resolve_grant_target_owners,
+    resolve_human_person_id,
+    stamp_grant_owners,
+)
+from yuki.runtime.work_recovery_schema import recovery
+from yuki.runtime.work_repository import TERMINAL, WorkConflict, WorkLease, WorkRepository
+from yuki.runtime.work_schema_v1 import scope, work
+from yuki.runtime.work_wait import WorkWaitRepository
+from yuki.runtime.work_wait_schema import waits
+from yuki_plugin_sdk.errors import PluginPermissionError
+from yuki_plugin_sdk.models import (
+    BackgroundTargetGrantView,
+    NotificationPublishReceipt,
+    NotificationTarget,
+    PublishNotificationRequest,
+)
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class OutboxRecord:
+    id: int
+    notification_id: str
+    source_event_id: int
+    plugin_id: str
+    target_type: str
+    target_id: str
+    bot_user_id: str
+    part_type: str
+    text: str
+    media_handle_id: str | None
+    attempts: int
+    canonical_target_person_id: str | None
+    canonical_target_space_id: str | None
+    canonical_presence_id: str | None
+    canonical_conversation_id: str | None
+    source_person_id: str | None = None
+    prepared: dict[str, Any] | None = None
+
+
+OUTBOX_LEASE_SECONDS = 300
+TURN_LEASE_SECONDS = 900
+TURN_ERROR_SUPERSEDED_COVERED = "superseded_covered"
+TURN_ERROR_GENERATION_STALE = "generation_stale"
+TURN_ERROR_LATER_HUMAN = "later_human_inbound"
+TURN_ERROR_ATTEMPT_RECLAIMED = "attempt_reclaimed"
+TURN_ERROR_WORK_PARKED = "runtime_work_parked"
+
+
+class BackgroundTurnFenceError(RuntimeError):
+    """The claimed attempt may not call the provider or emit a reply."""
+
+    def __init__(self, category: str) -> None:
+        super().__init__(category)
+        self.category = category
+
+
+@dataclass(frozen=True, slots=True)
+class BackgroundTurnJobRecord:
+    id: int
+    source_event_id: int
+    plugin_id: str
+    target_type: str
+    target_id: str
+    bot_user_id: str
+    agent_intent: str
+    attempts: int
+    generation: int
+    canonical_target_person_id: str | None
+    canonical_target_space_id: str | None
+    canonical_presence_id: str | None
+    canonical_conversation_id: str | None
+    # The exact original Work bound to this Job, or None before first admission.
+    work_id: str | None = None
+    source_person_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QueuedCanonicalContext:
+    person_id: str | None
+    space_id: str | None
+    conversation_id: str
+    provenance_presence_id: str | None
+    creator_person_id: str
+    primary_alias: str
+    generation: int
+
+
+class PluginNotificationRepository:
+    """Keep publication idempotency and delivery work in Host-owned transactions."""
+
+    def __init__(
+        self,
+        database: Database,
+        scoped_events: ScopedEventLedgerUnitOfWork | None = None,
+    ) -> None:
+        self._database = database
+        self._scoped_events = scoped_events or ScopedEventLedgerUnitOfWork(
+            database,
+        )
+
+    async def unprepared_outbox(self, *, after_id: int = 0) -> tuple[OutboxRecord, ...]:
+        async with self._database.sessions() as session:
+            rows = await session.scalars(
+                select(PluginNotificationOutboxModel)
+                .where(
+                    PluginNotificationOutboxModel.status == "pending",
+                    PluginNotificationOutboxModel.id > after_id,
+                    PluginNotificationOutboxModel.next_attempt_at <= datetime.now(UTC),
+                    or_(
+                        PluginNotificationOutboxModel.prepared_json.is_(None),
+                        func.json_extract(
+                            PluginNotificationOutboxModel.prepared_json, "$.message"
+                        ).is_(None),
+                    ),
+                )
+                .order_by(PluginNotificationOutboxModel.id)
+                .limit(128)
+            )
+            return tuple(_outbox_record(row) for row in rows)
+
+    async def fail_unclaimed_outbox(self, item: OutboxRecord, category: str) -> None:
+        async with self._database.immediate_session() as session:
+            await session.execute(
+                update(PluginNotificationOutboxModel)
+                .where(
+                    PluginNotificationOutboxModel.id == item.id,
+                    PluginNotificationOutboxModel.status == "pending",
+                )
+                .values(status="failed", last_error_category=category, updated_at=datetime.now(UTC))
+            )
+
+    async def require_unclaimed_outbox_source(self, item: OutboxRecord) -> None:
+        """Check the original effect source before preparing its platform layout."""
+        async with self._database.sessions() as session:
+            await require_queued_work_readable(session, item)
+            conversation = await require_live_conversation(session, item.canonical_conversation_id)
+            if conversation.identity_binding_id is not None:
+                binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+                if binding is not None and binding.status == "ended":
+                    raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+            presence = await session.get(PresenceModel, item.canonical_presence_id)
+            if presence is not None and presence.status == "ended":
+                raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+
+    async def prepare_outbox(self, item: OutboxRecord, parts: tuple[dict[str, Any], ...]) -> None:
+        """Freeze layout on the original intent before claiming any physical part."""
+        encoded = tuple(canonical_json(part) for part in parts)
+        async with self._database.immediate_session() as session:
+            row = await session.get(PluginNotificationOutboxModel, item.id)
+            if row is None or row.status != "pending":
+                return
+            if row.prepared_json is not None and "message" in json.loads(row.prepared_json):
+                return
+            await require_queued_work_readable(session, row)
+            if row.text != item.text or row.media_handle_id != item.media_handle_id:
+                raise PluginOwnershipError(STATE_MISMATCH)
+            original_key = row.part_key
+            original = {
+                column.name: getattr(row, column.name)
+                for column in PluginNotificationOutboxModel.__table__.columns
+                if column.name not in {"id", "prepared_json", "part_key"}
+            }
+            children = []
+            for index, payload in enumerate(encoded):
+                if index == 0:
+                    child = row
+                else:
+                    child = PluginNotificationOutboxModel(
+                        **original, part_key=f"{original_key}:part:{index}"
+                    )
+                    children.append(child)
+                child.prepared_json = payload
+                child.text = parts[index]["message"]["text"]
+                if not parts[index]["message"]["media"]:
+                    child.part_type = "text"
+                    child.media_handle_id = None
+                else:
+                    child.part_type = original["part_type"]
+                    child.media_handle_id = original["media_handle_id"]
+            session.add_all(children)
+
+    async def grant_target(
+        self,
+        *,
+        plugin_id: str,
+        target: NotificationTarget,
+        bot_user_id: str,
+        created_by_user_id: str,
+        presence_id: str | None = None,
+    ) -> BackgroundTargetGrantView:
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            person_id, space_id = await _grant_owners(
+                session,
+                created_by_user_id=created_by_user_id,
+                target=target,
+            )
+            conversation = await _target_conversation(session, target)
+            presence = await _grant_presence(session, conversation, presence_id)
+            row = await find_grant_lineage(
+                session,
+                plugin_id=plugin_id,
+                target_type=target.target_type,
+                person_id=person_id,
+                space_id=space_id,
+                conversation_id=conversation.id,
+            )
+            if row is None:
+                row = PluginBackgroundTargetGrantModel(
+                    plugin_id=plugin_id,
+                    target_type=target.target_type,
+                    target_id=target.target_id,
+                    bot_user_id=presence.external_account_id,
+                    enabled=True,
+                    created_by_user_id=created_by_user_id,
+                    created_at=now,
+                    updated_at=now,
+                )
+            else:
+                row.target_id = target.target_id
+                row.bot_user_id = presence.external_account_id
+                row.enabled = True
+                row.created_by_user_id = created_by_user_id
+                row.updated_at = now
+            await stamp_grant_owners(
+                session,
+                row,
+                created_by_user_id=created_by_user_id,
+                target_type=target.target_type,
+                target_id=target.target_id,
+                presence_id=presence.id,
+                conversation_id=conversation.id,
+            )
+            session.add(row)
+            await session.flush()
+            return _grant_view(row)
+
+    async def revoke_target(
+        self,
+        *,
+        plugin_id: str,
+        target: NotificationTarget,
+    ) -> bool:
+        now = datetime.now(UTC)
+        async with self._database.sessions() as session, session.begin():
+            person_id, space_id = await resolve_grant_target_owners(
+                session,
+                target_type=target.target_type,
+                target_id=target.target_id,
+            )
+            row = await find_grant_lineage(
+                session,
+                plugin_id=plugin_id,
+                target_type=target.target_type,
+                person_id=person_id,
+                space_id=space_id,
+                conversation_id=target.conversation_id,
+            )
+            if row is None:
+                return False
+            await require_grant_readable(session, row)
+            row.enabled = False
+            row.updated_at = now
+            outbox_match = (
+                PluginNotificationOutboxModel.canonical_target_person_id
+                == row.canonical_target_person_id
+                if row.canonical_target_person_id
+                else PluginNotificationOutboxModel.canonical_target_space_id
+                == row.canonical_target_space_id
+            )
+            turn_match = (
+                PluginBackgroundTurnJobModel.canonical_target_person_id
+                == row.canonical_target_person_id
+                if row.canonical_target_person_id
+                else PluginBackgroundTurnJobModel.canonical_target_space_id
+                == row.canonical_target_space_id
+            )
+            await session.execute(
+                update(PluginNotificationOutboxModel)
+                .where(
+                    PluginNotificationOutboxModel.plugin_id == plugin_id,
+                    outbox_match,
+                    PluginNotificationOutboxModel.canonical_conversation_id
+                    == row.canonical_conversation_id,
+                    PluginNotificationOutboxModel.status.in_(("pending", "processing")),
+                )
+                .values(status="cancelled", lease_until=None, updated_at=now)
+            )
+            await session.execute(
+                update(PluginBackgroundTurnJobModel)
+                .where(
+                    PluginBackgroundTurnJobModel.plugin_id == plugin_id,
+                    turn_match,
+                    PluginBackgroundTurnJobModel.canonical_conversation_id
+                    == row.canonical_conversation_id,
+                    PluginBackgroundTurnJobModel.status.in_(("pending", "processing")),
+                )
+                .values(status="cancelled", lease_until=None, updated_at=now)
+            )
+            target_filter = (
+                person_family_condition(
+                    CanonicalConversationModel.person_id, row.canonical_target_person_id
+                )
+                if row.canonical_target_person_id
+                else CanonicalConversationModel.space_id == row.canonical_target_space_id
+            )
+            bindings = (
+                await session.execute(
+                    select(waits.c.id, waits.c.conditions_json)
+                    .join(
+                        CanonicalConversationModel,
+                        CanonicalConversationModel.id == waits.c.conversation_id,
+                    )
+                    .where(
+                        waits.c.status == "active",
+                        target_filter,
+                        waits.c.conversation_id == row.canonical_conversation_id,
+                    )
+                )
+            ).all()
+            for binding_id, encoded_conditions in bindings:
+                if any(
+                    condition.get("kind") == "plugin_event"
+                    and condition.get("plugin_id") == plugin_id
+                    for condition in json.loads(encoded_conditions)
+                ):
+                    await session.execute(
+                        update(waits)
+                        .where(waits.c.id == binding_id, waits.c.status == "active")
+                        .values(status="invalidated", updated=now.timestamp())
+                    )
+            return True
+
+    async def list_grants(self, plugin_id: str) -> tuple[BackgroundTargetGrantView, ...]:
+        async with self._database.sessions() as session:
+            rows = (
+                await session.scalars(
+                    select(PluginBackgroundTargetGrantModel)
+                    .where(PluginBackgroundTargetGrantModel.plugin_id == plugin_id)
+                    .order_by(
+                        PluginBackgroundTargetGrantModel.target_type,
+                        PluginBackgroundTargetGrantModel.canonical_target_person_id,
+                        PluginBackgroundTargetGrantModel.canonical_target_space_id,
+                    )
+                )
+            ).all()
+            for row in rows:
+                await require_grant_readable(session, row)
+            return tuple(_grant_view(row) for row in rows)
+
+    async def publish(
+        self,
+        *,
+        plugin_id: str,
+        request: PublishNotificationRequest,
+    ) -> NotificationPublishReceipt:
+        if not request.ask_agent and request.agent_intent:
+            raise ValueError("agent_intent requires ask_agent=true")
+        payload_json = canonical_json(request.payload)
+        if len(payload_json.encode("utf-8")) > 32 * 1024:
+            raise ValueError("notification payload exceeds 32 KiB")
+        receipt = await self._publish_once(
+            plugin_id=plugin_id,
+            request=request,
+        )
+        logger.info(
+            "plugin_external_event_published plugin_id=%s event_type=%s "
+            "target_type=%s event_created=%s deduplicated=%s",
+            plugin_id,
+            request.event_type,
+            request.target.target_type,
+            receipt.event_created,
+            receipt.deduplicated,
+        )
+        return receipt
+
+    async def _publish_once(
+        self,
+        *,
+        plugin_id: str,
+        request: PublishNotificationRequest,
+    ) -> NotificationPublishReceipt:
+        now = datetime.now(UTC)
+        target = request.target
+        async with self._database.sessions() as preparation:
+            grant = await _load_enabled_grant(preparation, plugin_id=plugin_id, target=target)
+            if grant is None:
+                raise PluginPermissionError("notification target is not granted")
+            await require_grant_readable(preparation, grant)
+            identity = await _publication_scope(preparation, grant)
+            grant_id = grant.id
+            grant_facts = (
+                grant.canonical_target_person_id,
+                grant.canonical_target_space_id,
+                grant.canonical_conversation_id,
+                grant.canonical_presence_id,
+                grant.canonical_created_by_person_id,
+            )
+            existing = await _load_existing_external_event(
+                preparation,
+                plugin_id=plugin_id,
+                event_key=request.event_key,
+                scope_type=identity.scope_type.value,
+                conversation_id=identity.conversation_id,
+            )
+            if existing is not None:
+                return await _existing_event_receipt(
+                    preparation,
+                    plugin_id=plugin_id,
+                    event=existing,
+                    notification_id=str(_publication_data(existing)["notification_id"]),
+                    request=request,
+                )
+            media = await _resolve_request_media(
+                preparation, plugin_id=plugin_id, handle_ids=request.media_handles, now=now
+            )
+            publication = asdict(
+                manifest_from_request(
+                    request,
+                    plugin_id=plugin_id,
+                    media=tuple(MediaIdentity(index=index, sha256=sha) for index, _, sha in media),
+                )
+            )
+            notification_id = _notification_id(
+                plugin_id, request.event_key, target.target_type, identity.conversation_id or ""
+            )
+            source_data = {
+                "notification_id": notification_id,
+                "publication": publication,
+                "media_handles": list(request.media_handles),
+                "publication_hash": hashlib.sha256(
+                    canonical_json(publication).encode()
+                ).hexdigest(),
+                "source_person_id": grant.canonical_created_by_person_id,
+            }
+
+        async with self._database.immediate_session() as session:
+            installation = await session.get(PluginInstallationModel, plugin_id)
+            if installation is None or not installation.enabled or installation.status != "running":
+                raise PluginPermissionError("plugin is not running")
+            grant = await session.get(PluginBackgroundTargetGrantModel, grant_id)
+            if (
+                grant is None
+                or not grant.enabled
+                or grant_facts
+                != (
+                    grant.canonical_target_person_id,
+                    grant.canonical_target_space_id,
+                    grant.canonical_conversation_id,
+                    grant.canonical_presence_id,
+                    grant.canonical_created_by_person_id,
+                )
+            ):
+                raise PluginPermissionError("notification target is not granted")
+            await require_grant_readable(session, grant)
+            scope = await _publication_scope(session, grant)
+            if scope != identity:
+                raise PluginPermissionError("notification entry changed")
+            notification_id = _notification_id(
+                plugin_id, request.event_key, target.target_type, scope.conversation_id or ""
+            )
+            # Another publisher may have committed the same original request
+            # after preparation. Its receipt takes precedence over current TTL.
+            existing = await _load_existing_external_event(
+                session,
+                plugin_id=plugin_id,
+                event_key=request.event_key,
+                scope_type=scope.scope_type.value,
+                conversation_id=scope.conversation_id,
+            )
+            if existing is not None:
+                notification_id = str(_publication_data(existing)["notification_id"])
+                receipt = await _existing_event_receipt(
+                    session,
+                    plugin_id=plugin_id,
+                    event=existing,
+                    notification_id=notification_id,
+                    request=request,
+                )
+            else:
+                await _resolve_request_media(
+                    session,
+                    plugin_id=plugin_id,
+                    handle_ids=request.media_handles,
+                    now=datetime.now(UTC),
+                )
+                try:
+                    appended = await self._scoped_events.append_external(
+                        scope=scope,
+                        platform_message_id=f"external2-{notification_id}",
+                        source_plugin_id=plugin_id,
+                        external_source=request.external_source,
+                        external_event_key=request.event_key,
+                        external_event_type=request.event_type,
+                        external_payload=request.payload,
+                        external_target_id=target.target_id,
+                        content=request.summary,
+                        occurred_at=_aware(request.occurred_at),
+                        session=session,
+                    )
+                except CanonicalIdentityError as exc:
+                    if exc.category == "receipt_conflict":
+                        raise
+                    raise plugin_ownership_error(exc) from None
+                created = await session.get(ChatEventModel, appended.event.id)
+                if created is None:
+                    raise RuntimeError("scoped external event could not be reloaded")
+                _require_system_external(created)
+                if appended.created:
+                    created.external_resume_wait = request.resume_waiting_work
+                    segments = json.loads(created.segments_json)
+                    metadata = next(
+                        (part["data"] for part in segments if part.get("type") == "yuki_context"),
+                        None,
+                    )
+                    if metadata is None:
+                        segments.append({"type": "yuki_context", "data": source_data})
+                    else:
+                        metadata.update(source_data)
+                    created.segments_json = canonical_json(segments)
+                if not appended.created:
+                    receipt = await _existing_event_receipt(
+                        session,
+                        plugin_id=plugin_id,
+                        event=created,
+                        notification_id=notification_id,
+                        request=request,
+                    )
+                else:
+                    delivery_enqueued = False
+                    resumed_wait = False
+                    if request.resume_waiting_work:
+                        resumed_wait = (
+                            await WorkWaitRepository(WorkRepository(self._database)).match_event(
+                                event_id=created.id,
+                                kind="plugin_event",
+                                session=session,
+                            )
+                        ) is not None
+                    for index, handle_id, sha256 in media:
+                        delivery_enqueued |= await _ensure_outbox_part(
+                            session,
+                            notification_id=notification_id,
+                            part_key=media_part_key(index=index, sha256=sha256),
+                            source_event_id=created.id,
+                            plugin_id=plugin_id,
+                            grant=grant,
+                            event=created,
+                            part_type="media",
+                            text="",
+                            media_handle_id=handle_id,
+                            now=now,
+                        )
+                    if request.text:
+                        delivery_enqueued |= await _ensure_outbox_part(
+                            session,
+                            notification_id=notification_id,
+                            part_key="text",
+                            source_event_id=created.id,
+                            plugin_id=plugin_id,
+                            grant=grant,
+                            event=created,
+                            part_type="text",
+                            text=request.text,
+                            media_handle_id=None,
+                            now=now,
+                        )
+                    job_created = False
+                    if request.ask_agent:
+                        job = PluginBackgroundTurnJobModel(
+                            source_event_id=created.id,
+                            plugin_id=plugin_id,
+                            target_type=grant.target_type,
+                            target_id=target.target_id,
+                            bot_user_id=grant.bot_user_id,
+                            agent_intent=request.agent_intent,
+                            status="cancelled" if resumed_wait else "pending",
+                            attempts=0,
+                            max_attempts=3,
+                            next_attempt_at=now,
+                            lease_until=None,
+                            generated_text="",
+                            tool_calls_used=0,
+                            model_requests=0,
+                            last_error_category=None,
+                            created_at=now,
+                            updated_at=now,
+                            completed_at=now if resumed_wait else None,
+                        )
+                        await _stamp_publication_child(
+                            session,
+                            job,
+                            grant=grant,
+                            event=created,
+                        )
+                        session.add(job)
+                        await session.flush()
+                        job_created = not resumed_wait
+                    receipt = NotificationPublishReceipt(
+                        notification_id=notification_id,
+                        source_event_id=created.id,
+                        event_created=True,
+                        delivery_enqueued=delivery_enqueued,
+                        agent_turn_enqueued=job_created,
+                        deduplicated=False,
+                    )
+        return receipt
+
+    async def claim_outbox(
+        self,
+        *,
+        lease_seconds: int = OUTBOX_LEASE_SECONDS,
+    ) -> OutboxRecord | None:
+        now = datetime.now(UTC)
+        eligible = (
+            (PluginNotificationOutboxModel.status == "pending")
+            & (PluginNotificationOutboxModel.next_attempt_at <= now)
+            & func.json_extract(PluginNotificationOutboxModel.prepared_json, "$.message").is_not(
+                None
+            )
+        ) | (
+            (PluginNotificationOutboxModel.status == "processing")
+            & (PluginNotificationOutboxModel.lease_until < now)
+        )
+        async with self._database.sessions() as discovery:
+            ids = tuple(
+                await discovery.scalars(
+                    select(PluginNotificationOutboxModel.id)
+                    .where(eligible)
+                    .order_by(
+                        PluginNotificationOutboxModel.created_at, PluginNotificationOutboxModel.id
+                    )
+                    .limit(128)
+                )
+            )
+        if not ids:
+            return None
+        async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
+            expired = await session.scalars(
+                select(PluginNotificationOutboxModel).where(
+                    PluginNotificationOutboxModel.id.in_(ids),
+                    PluginNotificationOutboxModel.status == "processing",
+                    PluginNotificationOutboxModel.lease_until < now,
+                )
+            )
+            for item in expired:
+                item.status = "uncertain"
+                item.last_error_category = "processing_lease_expired"
+                item.lease_until = None
+                item.updated_at = now
+            await session.flush()
+            row = await session.scalar(
+                select(PluginNotificationOutboxModel)
+                .where(
+                    PluginNotificationOutboxModel.id.in_(ids),
+                    PluginNotificationOutboxModel.next_attempt_at <= now,
+                    PluginNotificationOutboxModel.status == "pending",
+                )
+                .order_by(
+                    PluginNotificationOutboxModel.created_at, PluginNotificationOutboxModel.id
+                )
+                .limit(1)
+            )
+            if row is None:
+                return None
+            row.status = "processing"
+            row.attempts += 1
+            row.lease_until = now + timedelta(seconds=lease_seconds)
+            row.updated_at = now
+            await session.flush()
+            try:
+                await require_queued_work_readable(session, row)
+            except PluginOwnershipError as exc:
+                row.status = "failed"
+                row.last_error_category = queued_work_error_category(exc, row)
+                row.lease_until = None
+                return None
+            return _outbox_record(row)
+
+    async def finish_outbox(
+        self,
+        item_id: int,
+        *,
+        attempt: int,
+        status: str,
+        platform_message_id: str | None = None,
+        error_category: str | None = None,
+    ) -> bool:
+        async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
+            row = await session.get(PluginNotificationOutboxModel, item_id)
+            if not _owns_processing_attempt(row, attempt=attempt) and not (
+                row is not None
+                and row.attempts == attempt
+                and row.status == "uncertain"
+                and status in {"sent", "uncertain"}
+                and platform_message_id
+                and row.platform_message_id in {None, platform_message_id}
+            ):
+                return False
+            assert row is not None
+            row.status = status
+            row.platform_message_id = platform_message_id
+            row.last_error_category = error_category
+            row.lease_until = None
+            row.updated_at = now
+            row.sent_at = now if status == "sent" else None
+            return True
+
+    async def retry_outbox(
+        self,
+        item_id: int,
+        *,
+        attempt: int | None = None,
+        error_category: str,
+        session: AsyncSession | None = None,
+    ) -> bool:
+        async def mutate(active: AsyncSession) -> bool:
+            now = datetime.now(UTC)
+            row = await active.get(PluginNotificationOutboxModel, item_id)
+            if attempt is not None and not _owns_processing_attempt(row, attempt=attempt):
+                return False
+            if row is None:
+                return False
+            safe_errors = {"bot_unavailable", "gateway_disconnected", "effect_gate_timeout"}
+            if row.platform_message_id is not None:
+                return False
+            if attempt is None:
+                if (
+                    error_category != "manual_retry"
+                    or row.status != "failed"
+                    or row.last_error_category not in safe_errors
+                    or row.attempts >= row.max_attempts
+                ):
+                    return False
+            elif error_category not in safe_errors:
+                return False
+            # Historical terminal rows may legitimately lack canonical owners.
+            # They remain auditable, but can never re-enter the live queue by
+            # treating raw target provenance as routing authority.
+            await require_queued_work_readable(active, row)
+            if row.attempts >= row.max_attempts:
+                row.status = "failed"
+            else:
+                delays = (10, 30, 120, 600, 1800)
+                row.status = "pending"
+                row.next_attempt_at = now + timedelta(seconds=delays[min(row.attempts - 1, 4)])
+            row.last_error_category = error_category
+            row.lease_until = None
+            row.updated_at = now
+            return True
+
+        if session is not None:
+            return await mutate(session)
+        async with self._database.immediate_session() as active:
+            return await mutate(active)
+
+    async def claim_turn(
+        self, *, lease_seconds: int = TURN_LEASE_SECONDS
+    ) -> BackgroundTurnJobRecord | None:
+        """Claim one runnable Job; a Job bound to a paused Work stays parked.
+
+        Discovery seeks unbound Jobs, runnable Work and expired leases separately.
+        The original Work/attempt is rechecked in the claim writer. A Job linked
+        to a suspended/waiting Work stays parked without spending an attempt.
+        """
+        now = datetime.now(UTC)
+        async with self._database.sessions() as discovery:
+            candidate_id = await discovery.scalar(_claim_candidate(now))
+        if candidate_id is None:
+            return None
+        async with self._database.immediate_session() as session:
+            now = datetime.now(UTC)
+            found = (
+                await session.execute(
+                    _claim_select(
+                        PluginBackgroundTurnJobModel,
+                        work.c.state,
+                        work.c.generation,
+                        _linked_work_ready(now).label("work_ready"),
+                        now=now,
+                    ).where(PluginBackgroundTurnJobModel.id == candidate_id)
+                )
+            ).first()
+            if found is None:
+                return None
+            row, work_state, work_generation, work_ready = found
+            if row.work_id is not None:
+                if work_state is None or work_state in TERMINAL:
+                    # The original Work already ended: close the Job only.
+                    # No model request, no new send.
+                    await _close_with_terminal_work(session, row, now=now)
+                    return None
+                if not work_ready:
+                    # Only an expired processing lease reaches here. Reconcile it
+                    # once; the paused Work keeps it out of discovery afterwards.
+                    row.status = "pending"
+                    row.lease_until = None
+                    row.last_error_category = TURN_ERROR_WORK_PARKED
+                    row.updated_at = now
+                    return None
+            row.status = "processing"
+            row.attempts += 1
+            row.lease_until = now + timedelta(seconds=lease_seconds)
+            row.updated_at = now
+            await session.flush()
+            try:
+                await require_queued_work_readable(session, row)
+            except PluginOwnershipError as exc:
+                await _retire_turn(
+                    session,
+                    row,
+                    status="failed",
+                    category=queued_work_error_category(exc, row),
+                    now=now,
+                )
+                return None
+            conversation = await session.get(
+                CanonicalConversationModel,
+                row.canonical_conversation_id,
+            )
+            if conversation is None:
+                await _retire_turn(
+                    session,
+                    row,
+                    status="cancelled",
+                    category=TURN_ERROR_SUPERSEDED_COVERED,
+                    now=now,
+                )
+                return None
+            generation = int(conversation.generation)
+            if row.work_id is not None and work_generation != generation:
+                await _retire_turn(
+                    session, row, status="cancelled", category=TURN_ERROR_GENERATION_STALE, now=now
+                )
+                return None
+            category = await _turn_fence_category(
+                session,
+                row,
+                expected_generation=generation,
+            )
+            if category is not None:
+                await _retire_turn(session, row, status="cancelled", category=category, now=now)
+                return None
+            return _turn_record(row, generation=generation)
+
+    async def reconcile_terminal_turns(self) -> None:
+        """Settle original terminal/missing Work results outside the hot poll."""
+        job = PluginBackgroundTurnJobModel
+        conditions = (
+            job.status.in_(("pending", "processing")),
+            job.work_id.is_not(None),
+            or_(work.c.id.is_(None), work.c.state.in_(tuple(TERMINAL))),
+        )
+        async with self._database.sessions() as reader:
+            identities = list(
+                await reader.scalars(
+                    select(job.id).outerjoin(work, work.c.id == job.work_id).where(*conditions)
+                )
+            )
+        for identity in identities:
+            async with self._database.immediate_session() as writer:
+                row = await writer.scalar(
+                    select(job)
+                    .outerjoin(work, work.c.id == job.work_id)
+                    .where(job.id == identity, *conditions)
+                )
+                if row is not None:
+                    await _close_with_terminal_work(writer, row, now=datetime.now(UTC))
+
+    async def validate_turn_attempt(
+        self,
+        job_id: int,
+        *,
+        attempt: int,
+        generation: int,
+        lease_seconds: int = TURN_LEASE_SECONDS,
+    ) -> None:
+        """Fence and renew the exact attempt immediately before each model request."""
+
+        now = datetime.now(UTC)
+        category: str | None = None
+        async with self._database.immediate_session() as session:
+            job = await session.get(PluginBackgroundTurnJobModel, job_id)
+            if not _owns_processing_attempt(job, attempt=attempt):
+                category = TURN_ERROR_ATTEMPT_RECLAIMED
+            else:
+                assert job is not None
+                category = await _turn_fence_category(
+                    session,
+                    job,
+                    expected_generation=generation,
+                )
+                if category is None:
+                    job.lease_until = now + timedelta(seconds=max(1, lease_seconds))
+                    job.updated_at = now
+                else:
+                    await _retire_turn(session, job, status="cancelled", category=category, now=now)
+        if category is not None:
+            raise BackgroundTurnFenceError(category)
+
+    async def finish_turn(
+        self,
+        job_id: int,
+        *,
+        attempt: int,
+        generation: int,
+        tool_calls_used: int,
+        model_requests: int,
+    ) -> bool:
+        now = datetime.now(UTC)
+        async with self._database.immediate_session() as session:
+            job = await session.get(PluginBackgroundTurnJobModel, job_id)
+            if not _owns_processing_attempt(job, attempt=attempt):
+                return False
+            assert job is not None
+            category = await _turn_fence_category(
+                session,
+                job,
+                expected_generation=generation,
+            )
+            if category is not None:
+                await _retire_turn(session, job, status="cancelled", category=category, now=now)
+                return False
+            job.status = "completed"
+            job.generated_text = ""
+            job.tool_calls_used = tool_calls_used
+            job.model_requests = model_requests
+            _keep_actual_usage(job, await _linked_work_usage(session, job))
+            job.lease_until = None
+            job.updated_at = now
+            job.completed_at = now
+            return True
+
+    async def fail_turn(self, job_id: int, *, attempt: int, error_category: str) -> bool:
+        now = datetime.now(UTC)
+        async with self._database.immediate_session() as session:
+            row = await session.get(PluginBackgroundTurnJobModel, job_id)
+            if not _owns_processing_attempt(row, attempt=attempt):
+                return False
+            assert row is not None
+            if row.attempts >= row.max_attempts:
+                # The owner decides permanent failure: Job and its original
+                # Work are closed together in this writer.
+                await _retire_turn(session, row, status="failed", category=error_category, now=now)
+                return True
+            delays = (30, 120, 600)
+            row.status = "pending"
+            row.next_attempt_at = now + timedelta(
+                seconds=delays[min(max(row.attempts - 1, 0), len(delays) - 1)]
+            )
+            row.last_error_category = error_category
+            row.lease_until = None
+            row.updated_at = now
+            return True
+
+    async def abandon_turn(self, job_id: int, *, attempt: int, error_category: str) -> bool:
+        """Permanently stop a background turn that is unsafe to repeat."""
+
+        now = datetime.now(UTC)
+        async with self._database.immediate_session() as session:
+            row = await session.get(PluginBackgroundTurnJobModel, job_id)
+            if not _owns_processing_attempt(row, attempt=attempt):
+                return False
+            assert row is not None
+            await _retire_turn(
+                session,
+                row,
+                status="failed",
+                category=error_category,
+                now=now,
+                work_state="cancelled",
+            )
+            return True
+
+    async def park_turn(self, job_id: int, *, attempt: int, error_category: str) -> bool:
+        """Release a Job whose original Work paused; the Work JOIN keeps it parked.
+
+        It returns to pending with an ordinary next_attempt_at and the attempt
+        that ran is not charged. An unbound Job has no Work to wake it, so it
+        keeps the ordinary bounded retry instead of parking.
+        """
+
+        now = datetime.now(UTC)
+        async with self._database.immediate_session() as session:
+            row = await session.get(PluginBackgroundTurnJobModel, job_id)
+            if not _owns_processing_attempt(row, attempt=attempt):
+                return False
+            assert row is not None
+            if row.work_id is None:
+                if row.attempts >= row.max_attempts:
+                    await _retire_turn(
+                        session, row, status="failed", category=error_category, now=now
+                    )
+                    return True
+                row.next_attempt_at = now + timedelta(seconds=30)
+            else:
+                row.max_attempts += 1
+                row.next_attempt_at = now
+            row.status = "pending"
+            row.last_error_category = error_category
+            row.lease_until = None
+            row.updated_at = now
+            return True
+
+    async def defer_turn(
+        self,
+        job_id: int,
+        *,
+        attempt: int,
+        error_category: str,
+        delay_seconds: int = 5,
+        preserve_budget: bool = False,
+    ) -> bool:
+        """Return an unstarted/interrupted turn to the queue without losing its lease."""
+
+        now = datetime.now(UTC)
+        async with self._database.immediate_session() as session:
+            row = await session.get(PluginBackgroundTurnJobModel, job_id)
+            if not _owns_processing_attempt(row, attempt=attempt):
+                return False
+            assert row is not None
+            row.status = "pending"
+            if preserve_budget:
+                row.max_attempts += 1
+            row.next_attempt_at = now + timedelta(seconds=max(1, delay_seconds))
+            row.last_error_category = error_category
+            row.lease_until = None
+            row.updated_at = now
+            return True
+
+    async def counts(self, plugin_id: str) -> dict[str, int]:
+        async with self._database.sessions() as session:
+            outbox = (
+                await session.execute(
+                    select(PluginNotificationOutboxModel.status, func.count())
+                    .where(PluginNotificationOutboxModel.plugin_id == plugin_id)
+                    .group_by(PluginNotificationOutboxModel.status)
+                )
+            ).all()
+            turns = (
+                await session.execute(
+                    select(PluginBackgroundTurnJobModel.status, func.count())
+                    .where(PluginBackgroundTurnJobModel.plugin_id == plugin_id)
+                    .group_by(PluginBackgroundTurnJobModel.status)
+                )
+            ).all()
+        result: dict[str, int] = {}
+        for prefix, values in (("outbox", outbox), ("turn", turns)):
+            for value, count in values:
+                key = f"{prefix}_{value}"
+                result[key] = count
+        return result
+
+    async def turn_delivery_counts(self, job: BackgroundTurnJobRecord) -> dict[str, int]:
+        """Actual outbox states, scoped to the originating job/event, not model success."""
+        async with self._database.sessions() as session:
+            rows = await session.execute(
+                select(PluginNotificationOutboxModel.status, func.count())
+                .where(
+                    PluginNotificationOutboxModel.source_event_id == job.source_event_id,
+                    PluginNotificationOutboxModel.plugin_id == job.plugin_id,
+                    PluginNotificationOutboxModel.part_key == "agent_reply",
+                )
+                .group_by(PluginNotificationOutboxModel.status)
+            )
+            return {state: count for state, count in rows}
+
+    async def require_outbox_ready(self, item: OutboxRecord) -> None:
+        """Require the exact attempt plus live target, Conversation, and Presence."""
+
+        now = datetime.now(UTC)
+        async with self._database.immediate_session() as session:
+            row = await session.get(PluginNotificationOutboxModel, item.id)
+            if not _owns_processing_attempt(row, attempt=item.attempts):
+                raise BackgroundTurnFenceError(TURN_ERROR_ATTEMPT_RECLAIMED)
+            assert row is not None
+            await require_queued_work_readable(session, row)
+            row.lease_until = now + timedelta(seconds=OUTBOX_LEASE_SECONDS)
+            row.updated_at = now
+
+    async def require_agent_reply_ready(self, item: OutboxRecord) -> str:
+        """Return the frozen effect-gate key after an exact delivery-time fence."""
+
+        from yuki.conversation.hydrate import require_primary_alias_for_conversation
+
+        now = datetime.now(UTC)
+        category: str | None = None
+        primary_alias: str | None = None
+        async with self._database.immediate_session() as session:
+            row = await session.get(PluginNotificationOutboxModel, item.id)
+            if not _owns_processing_attempt(row, attempt=item.attempts):
+                category = TURN_ERROR_ATTEMPT_RECLAIMED
+            else:
+                assert row is not None
+                try:
+                    await require_queued_work_readable(session, row)
+                except PluginOwnershipError as exc:
+                    category = queued_work_error_category(exc, row)
+                conversation = await session.get(
+                    CanonicalConversationModel,
+                    row.canonical_conversation_id,
+                )
+                source = await session.get(ChatEventModel, row.source_event_id)
+                if category is not None:
+                    pass
+                elif conversation is None or source is None:
+                    category = TURN_ERROR_GENERATION_STALE
+                elif (
+                    source.event_kind != "external_event"
+                    or source.direction != "external"
+                    or source.author_kind != AuthorKind.SYSTEM.value
+                    or source.source_plugin_id != row.plugin_id
+                    or source.canonical_conversation_id != conversation.id
+                    or source.id <= conversation.starts_after_event_id
+                    or source.id > conversation.last_event_id
+                    or not suppression_is_canonical_live(source.suppression_status)
+                ):
+                    category = TURN_ERROR_GENERATION_STALE
+                elif await _has_later_human_message(
+                    session,
+                    source=source,
+                    through_event_id=int(conversation.last_event_id),
+                ):
+                    category = TURN_ERROR_LATER_HUMAN
+                else:
+                    try:
+                        primary_alias = await require_primary_alias_for_conversation(
+                            session,
+                            conversation.id,
+                        )
+                    except CanonicalIdentityError:
+                        category = TURN_ERROR_GENERATION_STALE
+                    if category is None:
+                        row.lease_until = now + timedelta(seconds=OUTBOX_LEASE_SECONDS)
+                        row.updated_at = now
+            if (
+                category is not None
+                and row is not None
+                and _owns_processing_attempt(
+                    row,
+                    attempt=item.attempts,
+                )
+            ):
+                row.status = "cancelled"
+                row.last_error_category = category
+                row.lease_until = None
+                row.updated_at = now
+        if category is not None or primary_alias is None:
+            raise BackgroundTurnFenceError(category or TURN_ERROR_SUPERSEDED_COVERED)
+        return primary_alias
+
+    async def granted_canonical_creator(
+        self,
+        *,
+        plugin_id: str,
+        person_id: str | None,
+        space_id: str | None,
+        conversation_id: str | None = None,
+    ) -> str | None:
+        """Read a grant by persisted Person XOR Space. No raw QQ/group key."""
+
+        async with self._database.sessions() as session:
+            try:
+                grant = await _canonical_enabled_grant(
+                    session,
+                    plugin_id=plugin_id,
+                    person_id=person_id,
+                    space_id=space_id,
+                    conversation_id=conversation_id,
+                )
+            except PluginOwnershipError:
+                return None
+            if grant is None:
+                return None
+            installation = await session.get(PluginInstallationModel, plugin_id)
+            if installation is None or not installation.enabled or installation.status != "running":
+                return None
+            return grant.canonical_created_by_person_id
+
+    async def load_background_context(
+        self, job: BackgroundTurnJobRecord, *, work_id: str | None = None
+    ) -> QueuedCanonicalContext:
+        """Read the original scene under its Job attempt or retained Work ownership."""
+
+        from yuki.conversation.hydrate import (
+            require_primary_alias_for_conversation,
+        )
+
+        category: str | None = None
+        result: QueuedCanonicalContext | None = None
+        async with self._database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            stored = await session.get(PluginBackgroundTurnJobModel, job.id)
+            if work_id is not None:
+                from yuki.runtime.work_tree import descendants
+
+                if stored is None or stored.work_id is None:
+                    raise WorkConflict("plugin_turn_work_source_mismatch")
+                retained = await session.scalar(
+                    select(work.c.id).where(
+                        work.c.id == work_id,
+                        work.c.id.in_(descendants(stored.work_id, include_self=True)),
+                        work.c.conversation_id == stored.canonical_conversation_id,
+                        work.c.generation == job.generation,
+                        func.json_extract(work.c.source_json, "$.owner") == "plugin_background",
+                        func.json_extract(work.c.source_json, "$.plugin_id") == stored.plugin_id,
+                        func.json_extract(work.c.source_json, "$.trigger_event_id")
+                        == stored.source_event_id,
+                    )
+                )
+                if retained is None:
+                    raise WorkConflict("plugin_turn_work_source_mismatch")
+            elif not _owns_processing_attempt(stored, attempt=job.attempts):
+                category = TURN_ERROR_ATTEMPT_RECLAIMED
+            if category is None:
+                assert stored is not None
+                category = await _turn_fence_category(
+                    session,
+                    stored,
+                    expected_generation=job.generation,
+                )
+            if category is None:
+                assert stored is not None
+                await require_queued_work_readable(session, stored)
+                grant = await _canonical_enabled_grant(
+                    session,
+                    plugin_id=stored.plugin_id,
+                    person_id=stored.canonical_target_person_id,
+                    space_id=stored.canonical_target_space_id,
+                    conversation_id=stored.canonical_conversation_id,
+                )
+                if grant is None:
+                    raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+                conversation = await require_live_conversation(
+                    session,
+                    stored.canonical_conversation_id,
+                )
+                try:
+                    primary = await require_primary_alias_for_conversation(
+                        session,
+                        conversation.id,
+                    )
+                except CanonicalIdentityError as exc:
+                    raise plugin_ownership_error(exc) from None
+                creator_id = stored.source_person_id
+                if not creator_id:
+                    raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+                await require_person_source(session, creator_id)
+                result = QueuedCanonicalContext(
+                    person_id=stored.canonical_target_person_id,
+                    space_id=stored.canonical_target_space_id,
+                    conversation_id=conversation.id,
+                    provenance_presence_id=stored.canonical_presence_id,
+                    creator_person_id=creator_id,
+                    primary_alias=primary,
+                    generation=int(conversation.generation),
+                )
+        if work_id is None and category is not None and category != TURN_ERROR_ATTEMPT_RECLAIMED:
+            # Discovery did not authorize a cancellation. Recheck the live
+            # attempt and its original source fence in a separate short writer.
+            async with self._database.immediate_session() as writer:
+                stored = await writer.get(PluginBackgroundTurnJobModel, job.id)
+                if not _owns_processing_attempt(stored, attempt=job.attempts):
+                    category = TURN_ERROR_ATTEMPT_RECLAIMED
+                else:
+                    assert stored is not None
+                    current = await _turn_fence_category(
+                        writer, stored, expected_generation=job.generation
+                    )
+                    if current is not None:
+                        category = current
+                        await _retire_turn(
+                            writer,
+                            stored,
+                            status="cancelled",
+                            category=current,
+                            now=datetime.now(UTC),
+                        )
+        if category is not None or result is None:
+            raise BackgroundTurnFenceError(category or TURN_ERROR_SUPERSEDED_COVERED)
+        return result
+
+    async def ensure_resolved_transport_alias(
+        self,
+        *,
+        conversation_id: str,
+        transport_key: str,
+    ) -> None:
+        """Attach the current Presence key as a secondary alias. Primary stays frozen."""
+
+        from yuki.conversation.hydrate import ensure_legacy_alias
+
+        async with self._database.sessions() as session, session.begin():
+            conversation = await require_live_conversation(session, conversation_id)
+            try:
+                await ensure_legacy_alias(
+                    session,
+                    conversation_id=conversation.id,
+                    scope_key=transport_key,
+                    primary=False,
+                )
+            except CanonicalIdentityError as exc:
+                raise plugin_ownership_error(exc) from None
+
+
+def queued_work_error_category(exc: PluginOwnershipError, row: object) -> str:
+    """Sanitize claim/read failures. Dual/missing XOR keep stable delivery names."""
+
+    person_id = getattr(row, "canonical_target_person_id", None)
+    space_id = getattr(row, "canonical_target_space_id", None)
+    if exc.category == MISSING_CANONICAL_OWNER and not person_id and not space_id:
+        return "canonical_target_missing"
+    if exc.category == STATE_MISMATCH and person_id and space_id:
+        return "canonical_target_ambiguous"
+    return exc.category
+
+
+def _owns_processing_attempt(row: object | None, *, attempt: int) -> bool:
+    return bool(
+        row is not None
+        and getattr(row, "status", None) == "processing"
+        and int(getattr(row, "attempts", -1)) == attempt
+    )
+
+
+def _linked_work_ready(now: datetime) -> Any:
+    """A bound Job may run only when its original Work can actually continue."""
+
+    timestamp = now.timestamp()
+    scope_free = or_(scope.c.conversation_id.is_(None), scope.c.lease_until <= timestamp)
+    return or_(
+        PluginBackgroundTurnJobModel.work_id.is_(None),
+        work.c.id.is_(None),
+        work.c.state.in_(tuple(TERMINAL)),
+        and_(
+            work.c.state == "queued",
+            or_(recovery.c.work_id.is_(None), recovery.c.not_before <= timestamp),
+            scope_free,
+        ),
+        # Running only when the original activation lease is really lost.
+        and_(work.c.state == "running", scope_free),
+    )
+
+
+def _claim_select(*columns: Any, now: datetime) -> Any:
+    job = PluginBackgroundTurnJobModel
+    return (
+        select(*columns)
+        .select_from(job)
+        .outerjoin(work, work.c.id == job.work_id)
+        .outerjoin(recovery, recovery.c.work_id == work.c.id)
+        .outerjoin(scope, scope.c.conversation_id == work.c.conversation_id)
+        .where(
+            or_(
+                and_(
+                    job.status == "pending",
+                    job.next_attempt_at <= now,
+                    _linked_work_ready(now),
+                ),
+                # An expired attempt is always reconciled exactly once.
+                and_(
+                    job.status == "processing",
+                    job.lease_until < now,
+                    job.next_attempt_at <= now,
+                ),
+            )
+        )
+    )
+
+
+def _claim_candidate(now: datetime) -> Any:
+    """Each queue has an indexed driver; paused Jobs are not polling candidates."""
+    # SQLite CROSS JOIN fixes the driver to the indexed runnable Work set;
+    # an ordinary JOIN may otherwise drive from the entire paused Job pool.
+    return text(
+        """
+        SELECT id FROM (
+            SELECT id, created_at FROM plugin_background_turn_jobs
+            WHERE status = 'pending' AND work_id IS NULL AND next_attempt_at <= :now
+            UNION ALL
+            SELECT j.id, j.created_at FROM runtime_work AS w
+            CROSS JOIN plugin_background_turn_jobs AS j ON j.work_id = w.id
+            LEFT JOIN runtime_work_recovery AS r ON r.work_id = w.id
+            LEFT JOIN runtime_work_scopes AS s ON s.conversation_id = w.conversation_id
+            WHERE w.state IN ('queued', 'running')
+              AND j.status = 'pending' AND j.next_attempt_at <= :now
+              AND (s.conversation_id IS NULL OR s.lease_until <= :timestamp)
+              AND (w.state = 'running' OR r.work_id IS NULL OR r.not_before <= :timestamp)
+            UNION ALL
+            SELECT id, created_at FROM plugin_background_turn_jobs
+            WHERE status = 'processing' AND lease_until < :now AND next_attempt_at <= :now
+        ) ORDER BY created_at, id LIMIT 1
+        """
+    ).bindparams(
+        bindparam("now", now, type_=DateTime(timezone=True)),
+        bindparam("timestamp", now.timestamp()),
+    )
+
+
+async def _linked_work_usage(session: AsyncSession, row: PluginBackgroundTurnJobModel) -> Any:
+    if row.work_id is None:
+        return None
+    return (
+        await session.execute(
+            select(work.c.state, work.c.model_requests, work.c.tool_calls).where(
+                work.c.id == row.work_id
+            )
+        )
+    ).first()
+
+
+def _keep_actual_usage(row: PluginBackgroundTurnJobModel, usage: Any) -> None:
+    # A Job summary of 0 must not hide real calls the original Work made.
+    if usage is not None:
+        row.model_requests = max(int(row.model_requests or 0), int(usage.model_requests))
+        row.tool_calls_used = max(int(row.tool_calls_used or 0), int(usage.tool_calls))
+
+
+async def _close_with_terminal_work(
+    session: AsyncSession,
+    row: PluginBackgroundTurnJobModel,
+    *,
+    now: datetime,
+) -> None:
+    usage = await _linked_work_usage(session, row)
+    if usage is None:
+        row.status, row.last_error_category = "failed", "runtime_work_missing"
+    elif usage.state == "completed":
+        row.status, row.last_error_category = "completed", None
+        row.completed_at = now
+    elif usage.state == "cancelled":
+        row.status, row.last_error_category = "cancelled", "runtime_work_cancelled"
+    else:
+        row.status, row.last_error_category = "failed", "runtime_work_failed"
+    _keep_actual_usage(row, usage)
+    row.lease_until = None
+    row.updated_at = now
+
+
+async def _close_linked_work(
+    session: AsyncSession, identity: str, *, state: str, reason: str
+) -> None:
+    """Close the original Work tree with the Job; confirmed effects stay intact."""
+
+    from yuki.runtime.work_management import stop_owned_execution
+
+    await stop_owned_execution(session, identity, reason)
+    await session.execute(
+        update(work)
+        .where(work.c.id == identity, work.c.state.not_in(tuple(TERMINAL)))
+        .values(state=state, reason=reason, revision=work.c.revision + 1, updated=time.time())
+    )
+
+
+async def _retire_turn(
+    session: AsyncSession,
+    row: PluginBackgroundTurnJobModel,
+    *,
+    status: str,
+    category: str,
+    now: datetime,
+    work_state: str | None = None,
+) -> None:
+    """Owner-decided permanent end of a Job, closing its original Work too."""
+
+    if row.work_id is not None:
+        await _close_linked_work(session, row.work_id, state=work_state or status, reason=category)
+        _keep_actual_usage(row, await _linked_work_usage(session, row))
+    row.status = status
+    row.last_error_category = category
+    row.lease_until = None
+    row.updated_at = now
+
+
+async def admit_background_turn_work(
+    database: Database,
+    lease: WorkLease,
+    *,
+    job_id: int,
+    attempt: int,
+    generation: int,
+    source_key: str,
+    source: dict[str, Any],
+    goal: str,
+) -> dict[str, Any]:
+    """Admit the first Work and bind it to its Job in one short writer.
+
+    The exact Job attempt, original source and generation are rechecked here.
+    The link only moves null -> this Work or confirms the same ID; there is no
+    window in which a Work is admitted without its Job owning it.
+    """
+
+    category: str | None = None
+    admitted: dict[str, Any] | None = None
+    async with database.immediate_session() as session:
+        now = datetime.now(UTC)
+        job = await session.get(PluginBackgroundTurnJobModel, job_id)
+        if not _owns_processing_attempt(job, attempt=attempt):
+            category = TURN_ERROR_ATTEMPT_RECLAIMED
+        else:
+            assert job is not None
+            if (
+                source.get("owner") != "plugin_background"
+                or source.get("plugin_id") != job.plugin_id
+                or source.get("trigger_event_id") != job.source_event_id
+                or source.get("conversation_id") != job.canonical_conversation_id
+                or source.get("generation") != generation
+                or lease.conversation_id != job.canonical_conversation_id
+                or lease.generation != generation
+            ):
+                raise WorkConflict("plugin_turn_source_mismatch")
+            category = await _turn_fence_category(session, job, expected_generation=generation)
+            if category is not None:
+                await _retire_turn(session, job, status="cancelled", category=category, now=now)
+            else:
+                admitted = await WorkRepository(database).accept_in_session(
+                    session,
+                    lease,
+                    source_key=source_key,
+                    source=source,
+                    goal=goal,
+                )
+                if job.work_id is not None and job.work_id != admitted["id"]:
+                    raise WorkConflict("plugin_turn_work_link_conflict")
+                job.work_id = admitted["id"]
+                job.updated_at = now
+    if category is not None or admitted is None:
+        raise BackgroundTurnFenceError(category or TURN_ERROR_SUPERSEDED_COVERED)
+    return admitted
+
+
+async def _has_later_human_message(
+    session: AsyncSession,
+    *,
+    source: ChatEventModel,
+    through_event_id: int,
+) -> bool:
+    if not source.canonical_conversation_id:
+        return True
+    later = await session.scalar(
+        select(ChatEventModel.id)
+        .where(
+            ChatEventModel.canonical_conversation_id == source.canonical_conversation_id,
+            ChatEventModel.id > source.id,
+            ChatEventModel.id <= through_event_id,
+            keeper_event_clause(),
+            ChatEventModel.event_kind == "message",
+            ChatEventModel.direction == "inbound",
+            ChatEventModel.author_kind == AuthorKind.PERSON.value,
+        )
+        .order_by(ChatEventModel.id.asc())
+        .limit(1)
+    )
+    return later is not None
+
+
+async def _turn_fence_category(
+    session: AsyncSession,
+    job: PluginBackgroundTurnJobModel,
+    *,
+    expected_generation: int,
+) -> str | None:
+    if not await background_authority_live(
+        session,
+        plugin_id=job.plugin_id,
+        source_person_id=job.source_person_id,
+        person_id=job.canonical_target_person_id,
+        space_id=job.canonical_target_space_id,
+        conversation_id=job.canonical_conversation_id,
+    ):
+        return "plugin_authority_revoked"
+    conversation = await session.get(
+        CanonicalConversationModel,
+        job.canonical_conversation_id,
+    )
+    source = await session.get(ChatEventModel, job.source_event_id)
+    if conversation is None or source is None:
+        return TURN_ERROR_SUPERSEDED_COVERED
+    if int(conversation.generation) != expected_generation:
+        return TURN_ERROR_SUPERSEDED_COVERED
+    if (
+        source.event_kind != "external_event"
+        or source.direction != "external"
+        or source.author_kind != AuthorKind.SYSTEM.value
+        or source.source_plugin_id != job.plugin_id
+        or source.canonical_conversation_id != conversation.id
+        or source.id <= conversation.starts_after_event_id
+        or source.id > conversation.last_event_id
+        or not suppression_is_canonical_live(source.suppression_status)
+    ):
+        return TURN_ERROR_SUPERSEDED_COVERED
+    if job.work_id is not None:
+        # An admitted Work owns this event now. New input reaches its mailbox;
+        # coverage/later-human staleness only filters new opportunities.
+        return None
+    if await _has_later_human_message(
+        session,
+        source=source,
+        through_event_id=int(conversation.last_event_id),
+    ):
+        return TURN_ERROR_LATER_HUMAN
+    return None
+
+
+async def require_queued_work_readable(session: AsyncSession, row: object) -> None:
+    """Authorize the original actor separately from the current receiving subject."""
+
+    await require_person_source(session, getattr(row, "source_person_id", None))
+
+    person_id = getattr(row, "canonical_target_person_id", None)
+    space_id = getattr(row, "canonical_target_space_id", None)
+    if person_id and space_id:
+        raise PluginOwnershipError(STATE_MISMATCH)
+    if not person_id and not space_id:
+        raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+    target_type = getattr(row, "target_type", None)
+    if target_type == "private":
+        if space_id:
+            raise PluginOwnershipError(STATE_MISMATCH)
+        enabled = await session.scalar(
+            select(CanonicalPersonModel.enabled).where(
+                CanonicalPersonModel.id == person_root_id(person_id)
+            )
+        )
+        if enabled is None:
+            raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+        if not enabled:
+            raise PluginOwnershipError(CANONICAL_OWNER_DISABLED)
+    elif target_type == "group":
+        if person_id:
+            raise PluginOwnershipError(STATE_MISMATCH)
+        await require_live_space(session, space_id)
+    else:
+        raise PluginOwnershipError(STATE_MISMATCH)
+    conversation = await require_live_conversation(
+        session, getattr(row, "canonical_conversation_id", None)
+    )
+    if person_id:
+        if (
+            not conversation.person_id
+            or not await same_person_id(session, conversation.person_id, person_id)
+            or conversation.space_id
+        ):
+            raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+    elif conversation.space_id != space_id or conversation.person_id:
+        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+    await require_presence_provenance(
+        session,
+        getattr(row, "canonical_presence_id", None),
+    )
+
+
+async def background_authority_live(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    source_person_id: str | None,
+    person_id: str | None,
+    space_id: str | None,
+    conversation_id: str | None = None,
+) -> bool:
+    """Read current installation and the original canonical target grant."""
+    installation = await session.get(PluginInstallationModel, plugin_id)
+    if installation is None or not installation.enabled or installation.status != "running":
+        return False
+    try:
+        await require_person_source(session, source_person_id)
+        grant = await _canonical_enabled_grant(
+            session,
+            plugin_id=plugin_id,
+            person_id=person_id,
+            space_id=space_id,
+            conversation_id=conversation_id,
+        )
+    except PluginOwnershipError:
+        return False
+    return grant is not None
+
+
+async def _canonical_enabled_grant(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    person_id: str | None,
+    space_id: str | None,
+    conversation_id: str | None = None,
+) -> PluginBackgroundTargetGrantModel | None:
+    if bool(person_id) == bool(space_id):
+        raise PluginOwnershipError(STATE_MISMATCH)
+    row = await find_grant_lineage(
+        session,
+        plugin_id=plugin_id,
+        target_type="private" if person_id else "group",
+        person_id=person_id,
+        space_id=space_id,
+        conversation_id=conversation_id,
+    )
+    if row is None or not row.enabled:
+        return None
+    await require_grant_readable(session, row)
+    return row
+
+
+def _require_system_external(event: ChatEventModel) -> None:
+    if (
+        event.event_kind != "external_event"
+        or event.direction != "external"
+        or event.origin != "plugin_background"
+        or event.author_kind != AuthorKind.SYSTEM.value
+    ):
+        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+    if event.author_person_id or event.author_presence_id:
+        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+
+
+def _receipt_conflict() -> CanonicalIdentityError:
+    return CanonicalIdentityError("receipt_conflict")
+
+
+async def _load_existing_external_event(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    event_key: str,
+    scope_type: str,
+    conversation_id: str | None,
+) -> ChatEventModel | None:
+    rows = list(
+        (
+            await session.scalars(
+                select(ChatEventModel).where(
+                    ChatEventModel.event_kind == "external_event",
+                    ChatEventModel.source_plugin_id == plugin_id,
+                    ChatEventModel.external_event_key == event_key,
+                    ChatEventModel.scope_type == scope_type,
+                    ChatEventModel.canonical_conversation_id == conversation_id,
+                )
+            )
+        ).all()
+    )
+    if len(rows) > 1:
+        raise _receipt_conflict()
+    return rows[0] if rows else None
+
+
+async def _resolve_request_media(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    handle_ids: tuple[str, ...],
+    now: datetime,
+) -> tuple[tuple[int, str, str], ...]:
+    if not handle_ids:
+        return ()
+    artifacts = {
+        row.handle_id: row
+        for row in await session.scalars(
+            select(PluginMediaArtifactModel).where(
+                PluginMediaArtifactModel.handle_id.in_(set(handle_ids))
+            )
+        )
+    }
+    resolved: list[tuple[int, str, str]] = []
+    for index, handle_id in enumerate(handle_ids):
+        artifact = artifacts.get(handle_id)
+        if (
+            artifact is None
+            or artifact.plugin_id != plugin_id
+            or _aware(artifact.expires_at) <= now
+            or not is_sha256_digest(artifact.sha256)
+        ):
+            raise PluginPermissionError("media handle is invalid, expired, or foreign")
+        resolved.append((index, handle_id, artifact.sha256))
+    return tuple(resolved)
+
+
+def _publication_data(event: ChatEventModel) -> dict[str, Any]:
+    for segment in json.loads(event.segments_json):
+        if segment.get("type") == "yuki_context" and "publication" in segment.get("data", {}):
+            return dict(segment["data"])
+    raise _receipt_conflict()
+
+
+def publication_source_person(event: ChatEventModel) -> str | None:
+    """Original accepted publication actor, independent of later grant changes."""
+    value = _publication_data(event)["source_person_id"]
+    return str(value) if value is not None else None
+
+
+def publication_manifest(event: ChatEventModel) -> PublicationManifest:
+    values = dict(_publication_data(event)["publication"])
+    values["media"] = tuple(MediaIdentity(**item) for item in values["media"])
+    return PublicationManifest(**values)
+
+
+async def _existing_event_receipt(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    event: ChatEventModel,
+    notification_id: str,
+    request: PublishNotificationRequest,
+) -> NotificationPublishReceipt:
+    """Exact match returns the prior receipt. Any mismatch fails closed. No child writes."""
+
+    _require_system_external(event)
+    stored = publication_manifest(event)
+    original_handles = _publication_data(event)["media_handles"]
+    original_media = {item.index: item for item in stored.media}
+    replacements = {
+        handle_id
+        for index, handle_id in enumerate(request.media_handles)
+        if not (
+            index < len(original_handles)
+            and original_handles[index] == handle_id
+            and index in original_media
+        )
+    }
+    artifacts = {}
+    if replacements:
+        artifacts = {
+            row.handle_id: row
+            for row in await session.scalars(
+                select(PluginMediaArtifactModel).where(
+                    PluginMediaArtifactModel.handle_id.in_(replacements)
+                )
+            )
+        }
+    media = []
+    for index, handle_id in enumerate(request.media_handles):
+        if (
+            index < len(original_handles)
+            and original_handles[index] == handle_id
+            and index in original_media
+        ):
+            # The accepted original handle/position proves its original bytes;
+            # current temporary storage cannot invalidate that old receipt.
+            media.append(original_media[index])
+        elif (artifact := artifacts.get(handle_id)) is not None:
+            if artifact.plugin_id != plugin_id or not is_sha256_digest(artifact.sha256):
+                raise PluginPermissionError("media handle is invalid or foreign")
+            media.append(MediaIdentity(index=index, sha256=artifact.sha256))
+        else:
+            raise PluginPermissionError("media handle has no original publication proof")
+    incoming = dataclass_replace(
+        manifest_from_request(request, plugin_id=plugin_id, media=tuple(media)),
+        target_id=stored.target_id,
+    )
+    if stored != incoming:
+        raise _receipt_conflict()
+    return NotificationPublishReceipt(
+        notification_id=notification_id,
+        source_event_id=event.id,
+        event_created=False,
+        delivery_enqueued=False,
+        agent_turn_enqueued=False,
+        deduplicated=True,
+    )
+
+
+async def _ensure_outbox_part(
+    session: AsyncSession,
+    *,
+    notification_id: str,
+    part_key: str,
+    source_event_id: int,
+    plugin_id: str,
+    grant: PluginBackgroundTargetGrantModel,
+    event: ChatEventModel,
+    part_type: str,
+    text: str,
+    media_handle_id: str | None,
+    now: datetime,
+) -> bool:
+    row = PluginNotificationOutboxModel(
+        notification_id=notification_id,
+        part_key=part_key,
+        source_event_id=source_event_id,
+        plugin_id=plugin_id,
+        target_type=grant.target_type,
+        target_id=grant.target_id,
+        bot_user_id=grant.bot_user_id,
+        part_type=part_type,
+        text=text,
+        media_handle_id=media_handle_id,
+        status="pending",
+        attempts=0,
+        max_attempts=5,
+        next_attempt_at=now,
+        lease_until=None,
+        platform_message_id=None,
+        last_error_category=None,
+        created_at=now,
+        updated_at=now,
+        sent_at=None,
+    )
+    inherit_publication_canonicals(
+        row,
+        grant=grant,
+        conversation_id=event.canonical_conversation_id,
+        presence_id=event.ingress_presence_id,
+    )
+    row.source_person_id = grant.canonical_created_by_person_id
+    session.add(row)
+    return True
+
+
+async def _stamp_publication_child(
+    session: AsyncSession,
+    row: PluginNotificationOutboxModel | PluginBackgroundTurnJobModel,
+    *,
+    grant: PluginBackgroundTargetGrantModel,
+    event: ChatEventModel,
+) -> None:
+    row.source_person_id = grant.canonical_created_by_person_id
+    inherit_publication_canonicals(
+        row,
+        grant=grant,
+        conversation_id=event.canonical_conversation_id,
+        presence_id=event.ingress_presence_id,
+    )
+    await require_inherited_publication(
+        session,
+        row,
+        grant=grant,
+        conversation_id=event.canonical_conversation_id,
+        presence_id=event.ingress_presence_id,
+    )
+
+
+async def _grant_owners(
+    session: AsyncSession,
+    *,
+    created_by_user_id: str,
+    target: NotificationTarget,
+) -> tuple[str | None, str | None]:
+    try:
+        await resolve_human_person_id(
+            session,
+            created_by_user_id,
+            missing_message="grant creator is not a known person",
+        )
+    except PluginOwnershipError as exc:
+        raise _grant_api_error(exc, creator=True, target=target) from None
+    try:
+        return await resolve_grant_target_owners(
+            session,
+            target_type=target.target_type,
+            target_id=target.target_id,
+        )
+    except PluginOwnershipError as exc:
+        raise _grant_api_error(exc, creator=False, target=target) from None
+
+
+def _grant_api_error(
+    exc: PluginOwnershipError,
+    *,
+    creator: bool,
+    target: NotificationTarget,
+) -> PluginPermissionError | PluginOwnershipError:
+    if exc.category not in {MISSING_CANONICAL_OWNER, CANONICAL_OWNER_DISABLED}:
+        return exc
+    if creator:
+        return PluginPermissionError("grant creator is not a known person")
+    if target.target_type == "group":
+        return PluginPermissionError("notification group is unknown or disabled")
+    return PluginPermissionError("notification private target is unknown")
+
+
+async def _target_conversation(
+    session: AsyncSession, target: NotificationTarget
+) -> CanonicalConversationModel:
+    if target.conversation_id is not None:
+        conversation = await require_live_conversation(session, target.conversation_id)
+        owner = conversation.person_id if target.target_type == "private" else conversation.space_id
+        matches = owner == target.target_id or (
+            target.target_type == "private"
+            and owner is not None
+            and await same_person_id(session, owner, target.target_id)
+        )
+        if not matches:
+            raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+        return conversation
+    query = (
+        select(CanonicalConversationModel)
+        .where(
+            person_family_condition(CanonicalConversationModel.person_id, target.target_id)
+            if target.target_type == "private"
+            else CanonicalConversationModel.space_id == target.target_id
+        )
+        .limit(2)
+    )
+    rows = list(await session.scalars(query))
+    if len(rows) != 1:
+        raise PluginPermissionError(
+            "specify an existing conversation_id for this notification target"
+        )
+    return rows[0]
+
+
+async def _grant_presence(
+    session: AsyncSession, conversation: CanonicalConversationModel, presence_id: str | None
+) -> PresenceModel:
+    if conversation.kind == "private":
+        if conversation.entry_presence_id is not None:
+            if presence_id is not None and presence_id != conversation.entry_presence_id:
+                raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+            presence_id = conversation.entry_presence_id
+        binding: IdentityBindingModel | SpaceBindingModel | None = await session.get(
+            IdentityBindingModel, conversation.identity_binding_id
+        )
+    else:
+        binding = (
+            await session.get(SpaceBindingModel, conversation.space_binding_id)
+            if conversation.space_binding_id
+            else None
+        )
+        if presence_id is None and binding is not None:
+            route = await session.get(SpaceActiveRouteModel, conversation.space_id)
+            if route is not None and route.space_binding_id == binding.id:
+                presence_id = route.presence_id
+            else:
+                ingest = await session.get(SpaceBindingIngestRouteModel, binding.id)
+                if ingest is not None:
+                    presence_id = ingest.ingest_presence_id
+    presence = await session.get(PresenceModel, presence_id) if presence_id else None
+    if presence is None or binding is None or binding.platform != presence.platform:
+        raise PluginOwnershipError(MISSING_CANONICAL_OWNER)
+    return presence
+
+
+async def _publication_scope(
+    session: AsyncSession, grant: PluginBackgroundTargetGrantModel
+) -> ConversationScope:
+    conversation = await require_live_conversation(session, grant.canonical_conversation_id)
+    presence = await _grant_presence(session, conversation, grant.canonical_presence_id)
+    person_matches = conversation.person_id == grant.canonical_target_person_id or (
+        conversation.person_id is not None
+        and grant.canonical_target_person_id is not None
+        and await same_person_id(session, conversation.person_id, grant.canonical_target_person_id)
+    )
+    if not person_matches or conversation.space_id != grant.canonical_target_space_id:
+        raise PluginOwnershipError(CANONICAL_OWNER_MISMATCH)
+    if conversation.kind == "private":
+        binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
+        assert binding is not None
+        return ConversationScope.private(
+            presence.external_account_id,
+            binding.external_account_id,
+            platform=presence.platform,
+            presence_id=presence.id,
+            conversation_id=conversation.id,
+            thread_id=conversation.thread_id,
+        )
+    space_binding = await session.get(SpaceBindingModel, conversation.space_binding_id)
+    assert space_binding is not None
+    return ConversationScope.group(
+        presence.external_account_id,
+        space_binding.external_space_id,
+        platform=presence.platform,
+        presence_id=presence.id,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    )
+
+
+async def _load_enabled_grant(
+    session: AsyncSession,
+    *,
+    plugin_id: str,
+    target: NotificationTarget,
+) -> PluginBackgroundTargetGrantModel | None:
+    person_id, space_id = await resolve_grant_target_owners(
+        session,
+        target_type=target.target_type,
+        target_id=target.target_id,
+    )
+    row = await find_grant_lineage(
+        session,
+        plugin_id=plugin_id,
+        target_type=target.target_type,
+        person_id=person_id,
+        space_id=space_id,
+        conversation_id=target.conversation_id,
+    )
+    if row is None or not row.enabled:
+        return None
+    return row
+
+
+def _grant_view(row: PluginBackgroundTargetGrantModel) -> BackgroundTargetGrantView:
+    return BackgroundTargetGrantView(
+        target_type=row.target_type,
+        target_id=row.canonical_target_person_id or row.canonical_target_space_id or row.target_id,
+        bot_user_id=row.bot_user_id,
+        enabled=row.enabled,
+        created_by_user_id=row.canonical_created_by_person_id or row.created_by_user_id,
+        conversation_id=row.canonical_conversation_id,
+    )
+
+
+def _outbox_record(row: PluginNotificationOutboxModel) -> OutboxRecord:
+    return OutboxRecord(
+        id=row.id,
+        notification_id=row.notification_id,
+        source_event_id=row.source_event_id,
+        plugin_id=row.plugin_id,
+        target_type=row.target_type,
+        target_id=row.target_id,
+        bot_user_id=row.bot_user_id,
+        part_type=row.part_type,
+        text=row.text,
+        media_handle_id=row.media_handle_id,
+        attempts=row.attempts,
+        canonical_target_person_id=row.canonical_target_person_id,
+        canonical_target_space_id=row.canonical_target_space_id,
+        canonical_presence_id=row.canonical_presence_id,
+        canonical_conversation_id=row.canonical_conversation_id,
+        source_person_id=row.source_person_id,
+        prepared=json.loads(row.prepared_json) if row.prepared_json is not None else None,
+    )
+
+
+def _turn_record(
+    row: PluginBackgroundTurnJobModel,
+    *,
+    generation: int,
+) -> BackgroundTurnJobRecord:
+    return BackgroundTurnJobRecord(
+        id=row.id,
+        source_event_id=row.source_event_id,
+        plugin_id=row.plugin_id,
+        target_type=row.target_type,
+        target_id=row.target_id,
+        bot_user_id=row.bot_user_id,
+        agent_intent=row.agent_intent,
+        attempts=row.attempts,
+        generation=generation,
+        canonical_target_person_id=row.canonical_target_person_id,
+        canonical_target_space_id=row.canonical_target_space_id,
+        canonical_presence_id=row.canonical_presence_id,
+        canonical_conversation_id=row.canonical_conversation_id,
+        work_id=row.work_id,
+        source_person_id=row.source_person_id,
+    )
+
+
+def _notification_id(plugin_id: str, event_key: str, target_type: str, target_id: str) -> str:
+    raw = f"{plugin_id}\0{event_key}\0{target_type}\0{target_id}".encode()
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _aware(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)

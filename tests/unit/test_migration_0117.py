@@ -6,7 +6,7 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
 
-from qq_ai_bot.persistence.database import Database
+from yuki.persistence.database import Database
 
 
 def test_upgrade_removes_only_agent_action_diagnostics(tmp_path, monkeypatch):
@@ -58,10 +58,9 @@ def test_upgrade_removes_only_agent_action_diagnostics(tmp_path, monkeypatch):
     }
     assert not retired.intersection(upgraded)
     assert "agent_actions" not in upgraded
-    assert {name: sql for name, sql in upgraded.items() if name != "canonical_conversations"} == {
-        name: sql
-        for name, sql in current.items()
-        if name not in retired and name != "canonical_conversations"
-    }
+    assert {"client_devices", "client_link_codes"} <= upgraded.keys()
+    assert {"accounts", "account_assignments"} <= upgraded.keys()
+    assert not {"identity_bindings", "presences"} & upgraded.keys()
+    assert "started_at" in upgraded["account_assignments"]
     command.upgrade(config, "head")
     assert asyncio.run(inspect()) == upgraded

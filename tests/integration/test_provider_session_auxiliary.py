@@ -10,31 +10,32 @@ from tests.integration.test_current_material_main_contract import _catalog, _pro
 from tests.support.social_identity_cases import social_env
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
-from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-from qq_ai_bot.conversation.projections import PromptProjectionRepository
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.llm.openai_responses import OpenAICompatibleResponsesProvider
-from qq_ai_bot.model_runtime.dispatch_guard import model_dispatch_guard
-from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.models import (
+from yuki.conversation.frozen_fragments import FrozenFragments
+from yuki.conversation.projections import PromptProjectionRepository
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatMessage
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.llm.openai_responses import OpenAICompatibleResponsesProvider
+from yuki.model_runtime.dispatch_guard import model_dispatch_guard
+from yuki.model_runtime.executor import TaskModelExecutor
+from yuki.model_runtime.models import (
     ModelExecutionPriority,
     ModelProtocol,
     ModelTask,
     StructuredOutputMode,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.routes import ModelRouter
-from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.services.context_compaction import PublicCompactContext, render_context_checkpoint
-from qq_ai_bot.services.turn_execution import TurnExecution
-from qq_ai_bot.web.bridge_state import BridgeState
-from qq_ai_bot.web.models import WebMode, WebSearchRequest
-from qq_ai_bot.web.native_bridge import NativeSearchBridge
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.routes import ModelRouter
+from yuki.model_runtime.structured import StructuredTaskRunner
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.runtime.work_activation import current_work_control
+from yuki.services.context_compaction import PublicCompactContext, render_context_checkpoint
+from yuki.services.turn_execution import TurnExecution
+from yuki.web.bridge_state import BridgeState
+from yuki.web.models import WebMode, WebSearchRequest
+from yuki.web.native_bridge import NativeSearchBridge
+from yuki.web.page_extractor import DirectPageExtractor
 
 
 class _StructuredResult(BaseModel):
@@ -358,14 +359,17 @@ async def test_native_search_uses_actual_work_owner_without_changing_body(databa
             credential="synthetic",
             provider=provider,
             state=BridgeState(tmp_path / "search.sqlite3"),
+            extractor=DirectPageExtractor(
+                state=BridgeState(tmp_path / "search.sqlite3"), timeout_seconds=2
+            ),
         )
         try:
             token = current_work_control.set(control)
             try:
-                first = await bridge._search(WebSearchRequest("核对原事实", extract_max_results=0))
+                first = await bridge._search(WebSearchRequest("核对原事实"))
             finally:
                 current_work_control.reset(token)
-            second = await bridge._search(WebSearchRequest("核对原事实", extract_max_results=0))
+            second = await bridge._search(WebSearchRequest("核对原事实"))
             assert first.sources == second.sources
             assert headers == [owner, None] and len(wire) == 2
             assert wire[0] == wire[1]

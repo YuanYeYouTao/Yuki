@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from tests.support.event_seed import seed_scoped_event
+
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.persistence.database import Database
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 async def _append(
@@ -18,7 +20,7 @@ async def _append(
     actor_prefix: str = "member",
     origin: str = "user_message",
 ) -> None:
-    from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
+    from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
 
     async with uow._database.sessions() as session, session.begin():
         await ensure_presence(session, scope.bot_user_id)
@@ -31,7 +33,8 @@ async def _append(
         for index in range(start, start + count):
             await ensure_person(session, f"{actor_prefix}-{index % 2}")
     for index in range(start, start + count):
-        await uow.append(
+        await seed_scoped_event(
+            uow,
             scope=scope,
             platform_message_id=f"message-{scope.bot_user_id}-{index}",
             sender_user_id=f"{actor_prefix}-{index % 2}",
@@ -48,7 +51,7 @@ _NOW = datetime(2026, 8, 24, tzinfo=UTC)
 async def _prepare_v2_private(
     database: Database, *, bot: str = "8000", peer: str = "1001"
 ) -> ConversationScope:
-    from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
+    from tests.support.canonical_identity import ensure_person, ensure_presence
 
     async with database.sessions() as session, session.begin():
         await ensure_presence(session, bot)
@@ -59,8 +62,8 @@ async def _prepare_v2_private(
 async def _publish_checkpoint(database, conversation_id, coverage, text="selected checkpoint"):
     from uuid import uuid4
 
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.conversation.projection_models import PromptProjectionModel
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.conversation.projection_models import PromptProjectionModel
 
     async with database.immediate_session() as session:
         owner = await session.get(CanonicalConversationModel, conversation_id)
@@ -75,7 +78,8 @@ async def _publish_checkpoint(database, conversation_id, coverage, text="selecte
                 context_key="fixture",
                 revision=1,
                 rebuild_reason="compact",
-                payload_json="[]",
+                tail_ordinal=0,
+                item_count=0,
                 byte_size=2,
                 updated_at=datetime.now(UTC),
                 selected_summary_text=text,

@@ -4,6 +4,10 @@
 
 本指南对应 [Yuki 3.9.0 正式发行](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0)，随包数据库单一 head 为 `0119`，Plugin API 为 `3.5`。正式 Bot 镜像为 `ghcr.io/yuanyeyoutao/yuki-qqbot:3.9.0`，部署包、安装入口与 `SHA256SUMS` 从同一 Release 获取。完整合并范围、贡献者和交付证据见[发布说明](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/releases/v3.9.0.md)。
 
+当前源码后续的 Compact 配置变更见[0130 升级说明](#0130-compact-触发值与模型容量分开)。它不改变 3.9.0 随包 `0119` 的历史；本轮交付范围为 PR，生产环境清理、迁移和部署尚未执行。
+
+开发版本的 `0136/0137` 改为 Person 持久超管资格，并删除设备 GET 活跃度写入；旧部署须先导出只读候选，再清旧名单并由独立 operator 按内部人物 ID 授权。具体顺序和新命令见[人物授权升级与管理命令迁移](operations/person-admin-control-plane-upgrade.md)。
+
 默认构建与发行使用 direct：同一 Agent loop 提供固定完整工具声明，不包含 Monty binding、原生 worker 或 launcher，`CODE_MODE_ENABLED=false`。Code Mode 已合入主线，是显式 `--target codemode` 构建与启用的可选能力；持久子 Agent 与这个可选原生组件是不同模块。切换模式保留原 Work、composition、预算和回执，不能取得重派发资格。
 
 3.9.0 正式发行支持 `linux/amd64` 与 `linux/arm64`，共用版本标签和部署包；[PR #431](https://github.com/YuanYeYouTao/Yuki/pull/431) 已合入。安装器按 Docker Engine 架构选择配置镜像，模板已删除 Bot、SnowLuma 的固定 `platform: linux/amd64`。安装器仍不覆盖现有 Compose；已有 ARM 部署需要核对实际 Bot/网关镜像支持 arm64，再从自己的 service 配置中去掉该固定平台。保留原挂载、配置和业务数据，不因此重置会话或迁移 owner。旧版发行物保持原内容，不能据此推定旧标签也有双架构镜像。
@@ -11,6 +15,45 @@
 3.9.0 的现有 WebUI 定位为**临时管理界面**，仍使用当前控制面、认证与业务入口。下一个大版本将进行彻底的多客户端重构；这是未来计划，当前 WebUI 尚未退役，也没有要求现有部署现在迁移到新客户端。当前实现见[WebUI 合同](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/architecture/webui-console.md)。
 
 3.9.0 包含 [PR #276](https://github.com/YuanYeYouTao/Yuki/pull/276) 的 NapCat 退役；当时的开发部署事实见[任务书与交付状态](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/architecture/Yuki-NapCat删除与既有网关抽象保留任务书-2026-10-09.md)及[上线回执](https://github.com/YuanYeYouTao/Yuki/blob/v3.9.0/docs/operations/napcat-retirement-20261009.md)。旧部署需按下文清理实际执行配置，原私密资料保留。
+
+## 当前开发版：工具精简与持久终端升级
+
+本节描述正式3.9.0之后的开发实现，不改上方Release的`0119`、API3.5基线。#454精简后，#456再新增一项固定`external_agent`，当前Main合同为23，Code API仍为`yuki.codemode.api.v2`、Plugin API仍为4.0。默认direct的平台/App内置工具为30/31项，Code完整32/33项、直调27/28项；批准插件另计。实际交付见[454实施与审查](architecture/Yuki-454工具精简实施与审查记录-2026-10-17.md)。
+
+- 终端使用`terminal_exec/read/control`，control接收input/interrupt/cancel/close；按原run读取增量日志和原completion，pending后不重新提交。`get_code_run`、`terminal_write`、`cancel_code_run`和`environment_packages`不再接受新调用。旧APT/Python job、已付结果、原ID/hash/累计预算保留。
+- 普通`workspace_list/read/write/search/patch/mkdir/move/delete`整链退役，直接用同一`/workspace`上的终端。`workspace_inspect/publish`、临时会话附件提升和私有工具结果读取仍在原链；已发送版本不跟随当前文件修改。SDK普通文件接口相同退役，不能用旧名创建新效果。
+- 自动化使用`automation_query(view=…)`、`automation_manage(action=…)`；当前会话历史用`query_chat_history(view=recent/search/around)`；记忆用`read_memory(view=fact/evidence)`；子任务消息并入`subagent_control(action=message)`。原owner、Person/Conversation、创建键、版本、问题/回执语义继续生效。插件委托不再按可选工具名二次缩名单，实际调用复用Host现有领域批准；SDK独立session合同未因此合并。
+- 搜索不再暗中追加网页提取；`web_search`与显式`read_webpage`分开。删除`WEB_EXTRACT_MAX_RESULTS`和`WEB_SOURCE_MAX_RUNS_PER_CONVERSATION`及对应热配置，同时退出当轮`used_url_for_trigger`来源门禁；升级迁移只清退当前override，历史配置审计与原搜索/页面结果保留。缓存采用新搜索语义，不重购已付或未知请求。
+
+持久终端以环境内管理员执行，HOME仍为`/home/yuki`。apt直接在同一execd/PTY链运行；软件数量、默认1800秒/最长一天、经验内存余量、回执积压和文件发布配额已移除。实际容器资源、OS错误、协议流控和宿主隔离继续按事实处理。
+
+**已有持久环境不能只替换Bot镜像。** 先停写并一致性备份Bot数据库、配置/插件、workspace与artifact引用，保存Manager的jobs数据库、原unit/argv/源码、原HOME/runtime和当前环境rootFS。rootFS镜像可能含execd凭据，必须留在本机私有备份中。停止原Manager与环境后，从原rootFS、原HOME/runtime恢复同一个环境；保旧容器/镜像供查证，不能拿发行基础镜像覆盖后装软件。同步实际checkpoint指向完整快照、管理员身份、现行Supervisor、专属公网bridge/NAT与Manager控制连接回包规则。原在途执行如实记录中断/未知，不自动重跑。SnowLuma、代理和其他服务保持原实例。
+
+升级按实际随包单一迁移head继续，不stamp、不清空会话。验收分别核Bot连接、Manager/socket、环境身份/HOME/原安装与文件、原run/receipt、实际PTY/APT/后台重连、公网TCP/UDP和localhost。Bot healthy不能替代环境迁移；未观测的自然消息和Provider cache保持未知。
+
+## 当前源码：统一 Yuki 命名
+
+Python 模块与发行包统一为 `yuki`，管理／个人客户端／ACP 使用 `yuki`，服务进程使用 `yuki-bot`。旧 `qq-ai-bot-cli`、`qq-ai-bot` 可执行别名和 `qq_ai_bot` 模块已删除；源码集成与直接导入一并改为新路径，不增加旧包 shim。重新同步依赖或构建镜像，不能只移动已安装的源码目录。
+
+新部署默认 Compose 项目为 `yuki`、网络为 `yuki-network`，数据库为 `data/yuki.db`。已有部署按原完整 Compose、项目／网络、挂载与实际 `DATABASE_URL` 继续，旧数据库文件无需改名，也不另建新栈或空库。原 Person、事件、会话、已付协议与发送回执保留。本轮A/B合流与交付授权、实际状态见[原任务书§11](architecture/Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#11-456-方向-b-与已承诺后端收尾)。更名本身不要求重建网关或代理；ACP B需要的Manager/环境升级单独按下节和持久环境手册执行，不能把获准上线写成已经上线。
+
+旧 native／源码安装若原来没有配置 `DATABASE_URL`，升级前需将原数据库绝对路径显式写入 `.env`，让迁移和服务启动读取同一值。例如原库为 `/srv/yuki/data/qq_ai_bot.db` 时，设置 `DATABASE_URL=sqlite+aiosqlite:////srv/yuki/data/qq_ai_bot.db`。新默认只用于新部署，不自动查找旧文件、不搬库，也不应先执行默认配置在新路径建空库。
+
+未来发行镜像使用 `ghcr.io/yuanyeyoutao/yuki`；正式 3.9.0 原镜像、安装包、下载 URL 和历史说明仍属于原 Release，不冒称新名称标签已发布。使用源码开发版时本地构建；安装正式版使用固定 Release 的原安装器与 Compose。
+
+## ACP B：原持久环境托管外部 Agent
+
+`external_agent`固定提供list/prompt/get/respond/cancel/close；目录由Manager operator的`--acp-config`配置，示例见[`acp-agents.example.toml`](../deploy/sandbox/acp-agents.example.toml)。外部peer是原Work的执行资源，不是人物或另一个聊天入口；仅prompt登记新执行，原session复用、已付请求和未知结果不重发。权限沿原Work接续，原生cancel已提交不代表外部效果已撤销。
+
+除重建Bot之外，还须同步宿主`src/yuki`、Manager依赖/启动模块、原环境内`agent-client-protocol==0.12.1`和只读`/opt/yuki-runtime/acp_peer.py`。旧环境先保全原rootFS、HOME/runtime和jobs再显式更换挂载；不能用空基础镜像丢掉已有安装。执行步骤和清退范围见[持久环境](operations/persistent-environment.zh-CN.md)。Agent命令、适配器安装、登录和凭据由operator明确配置，Bot不会把全部环境或QQ凭据交给它；没有统一保证的外部usage/cache仍为未知。
+
+## 0132 ACP 独立会话
+
+#455 增加 `yuki acp` 本地 stdio 适配器，使用原个人设备凭据调用服务器。新会话返回内部 Conversation UUID；同一人的多个 ACP session 分别保存上下文，App、QQ、TG 原会话不变。运行与互操作限制见[个人 API](architecture/client-api.md#acp-方向-a)和[原任务书](architecture/Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。
+
+迁移 `0132` 从实际 `0131` 继续：复用原 thread 字段扩展私聊唯一索引，为原命令回执增加可空的 `request_conversation_id`，添加 ACP scope 索引并建立共享 ACP Presence。旧回执的 NULL、原 Person/Binding、事件、generation、已付输入和累计预算不重写；不需要 `/ai new` 或重建人物。迁移只支持前向升级。
+
+上线前停 Bot 写入并一致性备份三个数据库、配置、插件与被引用文件；保存原镜像和完整 Compose 链。只替换 Bot，保留网关、代理、持久环境及其原执行。代码回退不能直接对 0132 库运行旧镜像；确需恢复数据时单独处理备份一致性并保存升级后的新写入，不能用旧库覆盖新数据。stdio 的关闭或重启不取消服务器原 Work；重查原 session/request，不盲目补跑。ACP 工具沿现有平台固定声明，非空 MCP 配置明确不支持，不恢复动态工具。
 
 ## 版本与迁移范围
 
@@ -138,7 +181,7 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 1. 从 `v3.9.0` Release 获取部署资产并核对 `SHA256SUMS`，固定目标提交与镜像，核随包 head、Docker 主机架构、配置与插件版本。
 2. 在独立数据库和文件副本演练迁移及启动，核原身份、Work、预算、协议和发送回执；不启动第二个主动 Bot 写生产库或向 QQ 发消息。
 3. 停止旧 Bot，保存一致数据库、配置、插件、媒体、工具正文、协议对象和持久环境回执；只在迁移涉及其他实际写者时暂停对应写入。QQ 网关与无关服务保留原部署，不要求所有 Manager 任务先达到终态。
-4. 完成配置、授权和语音保全后，沿原 Compose 参数用目标镜像执行 `qq-ai-bot-cli init-db`，核 head `0119`。来自正式 3.8.3/3.8.4 的旧投递计划先在停写副本运行 `work import-legacy-deliveries --dry-run` 再导入；原计划、未知效果和预算保留。已经完成该导入的开发部署不重复处理。
+4. 完成配置、授权和语音保全后，沿原 Compose 参数用目标镜像执行原镜像实际入口 `qq-ai-bot-cli init-db`，核 head `0119`（本步仅针对正式 3.9.0；当前源码入口为 `yuki`）。来自正式 3.8.3/3.8.4 的旧投递计划先在停写副本运行 `work import-legacy-deliveries --dry-run` 再导入；原计划、未知效果和预算保留。已经完成该导入的开发部署不重复处理。
 5. 启动一个 Bot，核真实 revision、数据库、QQ 连接、工具合同、模型路由与 worker。启动健康、真实 API、自然聊天和长任务交付分别验收。
 
 ## 回退与已知问题
@@ -223,11 +266,11 @@ token、用户配置与插件，不能默认删除；Git/镜像 ignore 暂时保
 
 从实际 `.env` 和 Bot 环境删除 `CONVERSATION_ROLLUP_*`、`CONTEXT_COMPACTION_WINDOW_TOKENS`、
 `WORK_COMPACTION_MAX_OUTPUT_TOKENS`、`WORK_COMPACTION_TRIGGER_RATIO`、`WORK_COMPACTION_TARGET_RATIO`。
-`0119` 同时删除对应的旧热配置 override。聊天和 Work 窗口配置继续有效，compact 使用当前 Main
-的模型设置与真实请求容量。Memory evidence compaction 是独立功能，保留其配置与工作者。
+`0119` 同时删除对应的旧热配置 override。3.9.0 当时的聊天和 Work 窗口配置继续有效，compact 使用当前 Main
+的模型设置与真实请求容量；当前源码进一步退役双窗口，见下方 `0130`。Memory evidence compaction 是独立功能，保留其配置与工作者。
 旧 `model_profiles.toml` 的 `conversation_compaction` 路由读取时跳过并给出警告，应从文件中删除。
 
-当前公共历史与私有执行尾部由 Main 的 `compact_current` 统一整理；自动 compact 只在完整请求超过真实容量时发生，手动 `/ai compact [重点]` 只处理公共历史。旧独立 Work/ordinary 摘要与后台 Rollup 链已经退役。已付响应恢复复用原件，只有派发事实而无持久响应时仍属未知，不自动重购；缓存字段缺失保持未知，不从前缀哈希推算命中率。
+3.9.0 的公共历史与私有执行尾部由 Main 的 `compact_current` 统一整理，当时自动 compact 只在完整请求超过真实容量时发生；当前源码已将提前整理触发值与模型硬容量分开，见下节。手动 `/ai compact [重点]` 仍只处理公共历史。旧独立 Work/ordinary 摘要与后台 Rollup 链已经退役。已付响应恢复复用原件，只有派发事实而无持久响应时仍属未知，不自动重购；缓存字段缺失保持未知，不从前缀哈希推算命中率。
 
 Control API 的 ConversationView 删除 `covered_through_event_id` 和 `uncovered_event_count`；
 health 删除 Rollup 组件，`/ai status` 显示已选公共 compact 的覆盖点和公共窗口更新时间。
@@ -239,4 +282,56 @@ CLI 的 `conversation recount-uncovered` 与旧专用摘要探针退役；实际
 这些 Work 按当前公共历史与原任务材料进行业务恢复，已付响应与效果沿原调用 ID 对账，不能重新购买或重发。
 迁移演练、真实模型、QQ 验收和部署按各自证据记录；文档不代替实际上线。
 
-下一大版本的多客户端重构尚未交付。当前部署继续使用现有 WebUI/控制面；未来接口、升级和数据处理以对应版本的实现及升级说明为准。
+## 0130 Compact 触发值与模型容量分开
+
+本节描述当前源码 PR 的升级变更，不表示已发布新版、已清理生产配置或已部署。现行语义见[会话 Compact](architecture/conversation-compact.md)。
+
+普通聊天、Work 和子任务统一使用 `context.compact_trigger_tokens`，默认 `96000`，环境变量为 `CONTEXT_COMPACT_TRIGGER_TOKENS`。它按完整请求的本地估值提前触发 Main 整理，不要求结果必须压到该值以下，也不代替可执行输入上限。仍可容纳的请求，不因没有可整理前缀或未产生有效检查点而被拒绝。
+
+模型硬容量只由当前 Profile 的 `max_input_tokens` 和 `context_window_tokens` 明确声明；联合窗口扣除本次输出额度后形成输入预算，两者都声明时取较小值。`None` 保持未知，不补 `262144` 或其他 Host 默认容量。运维按实际端点填写已知容量，不能从旧窗口值或模型名称推定上游规格。
+
+旧 `context.window_tokens`、`context.work_window_tokens` 与 `CONTEXT_WINDOW_TOKENS`、`WORK_CONTEXT_WINDOW_TOKENS` 退役。迁移 `0130` 仅删除这两个热配置键在全部 scope 的当前 override，保留配置变更历史、原执行、预算和已付/发送回执；不把旧值复制为 Profile 容量或新整理触发值。未显式配置新触发值时使用 `96000`。
+
+实际部署时沿现用 Compose 文件和覆盖链逐项整理，不用模板覆盖整份配置：
+
+1. 备份实际 `.env`、Compose 文件、模型配置及数据库，再检查 Bot 的 `environment`、`env_file` 和宿主导出环境。删除两个旧窗口变量；需要修改整理触发值时，仅设置 `CONTEXT_COMPACT_TRIGGER_TOKENS` 或对应热配置。
+2. 继续删除旧 Rollup 残留：`CONVERSATION_ROLLUP_*`、`CONTEXT_COMPACTION_WINDOW_TOKENS`、`WORK_COMPACTION_MAX_OUTPUT_TOKENS`、`WORK_COMPACTION_TRIGGER_RATIO`、`WORK_COMPACTION_TARGET_RATIO`。从模型文件删除退役的 `conversation_compaction` 路由。更新源码或模板不会自动清除存量部署环境；Memory evidence compaction 的配置继续保留。
+3. 在停写副本演练 `0129→0130`，核对全 scope 的旧窗口当前 override 已清退、其他配置及原执行事实保留。按实际当前 revision 运行完整迁移链，不修改冻结迁移，也不通过改 head 标记跳过升级。
+4. 核对解析后的 Bot 配置及 Profile 容量声明。生产迁移、Bot 更新和生效确认另按获准部署执行；本轮 PR 不执行这些生产步骤，不重启网关或代理。
+
+本轮不重建 Rollup、摘要路由、比例策略或摘要输出预算。整理继续沿原 Main、固定 system/工具、来源和原回执派发，压缩不重置累计预算，未知已付不盲重购，已发生消息不重发。旧请求与协议原件保留，新检查点在合法边界接续；更频繁整理不承诺改善缓存，真实命中与成本仍查上游 usage。
+
+冷恢复也保留已确认没有有效检查点的原配对回执。自动整理对相同实际候选复用该失败，不按 chain/诊断字段变化重复购买；原请求仍超出已知硬容量时保留容量失败，内容、工具或设置改变后的新候选继续按实际输入处理。已知空响应或畸形本地调用只保存真实失败类别，不补造模型响应或 usage；取消、未知派发和原生工具效果的边界不变。
+
+## 0133 当前公共投影分块
+
+本节描述本地上下文性能改动，不表示已经部署。迁移把 `prompt_projections.payload_json` 的实际当前内容移到按 view、epoch、ordinal 排序的 `prompt_projection_chunks`，头保存计数和原来源/CAS；随后删除旧 blob 列。摘要、覆盖点及原首次 selection 保留，selection 的最小/最大内部事件 ID 只用于冷恢复候选预筛，最终仍核完整组内 IDs。迁移不重新渲染旧正文，也不以历史首次 selection 覆盖当前表示。
+
+当前块在原 source revision 失效、reset、事件删除、epoch 更换及容量回收时一并清退；旧付费请求、执行 ID、预算、发送回执和 selection 来源事实继续保留。正文迁移与新 reader/writer 必须一起升级，旧镜像不能读取已删除 blob 列的新 schema。
+
+获准上线时先按原流程停写和备份数据库，在副本运行实际 revision 至 head 的完整迁移链，核对当前片段顺序、摘要/覆盖点、原工作与回执及外键完整性，再替换 Bot。无需 reset 会话、提前 compact 或清除已付原件。0133 的定向升级/降级测试只验证结构与当前表示可还原，不把整个旧迁移链或旧镜像宣称为可无损回退；生产恢复沿原备份和向前修补流程执行。
+
+本轮共享源索引只在原 projection repository 的内存预算内回收，冷启动仍读取数据库原件，不增加配置、后台预装配或队列。实现与离线成本证据见[实施记录](operations/context-pipeline-implementation-20261018.md)；最终完整模型请求仍需展开与编码，真实 Provider 缓存命中另看 usage。
+
+## 0134 诊断写入删减
+
+迁移清退已无现行读者的 `tool_invocations`、`runtime_turn_observations` 两张旧统计表，以及 `execution_trace_entries` 上 roots、operation_id 两条无消费者索引。其余表事实和执行过程原行、正文不变；原 turn、Work、source event、已投递事件、Conversation 和过期清理索引保留。元数据查询只取元数据，正文仍需原独立权限。退役统计数据不重建，0134 只能向前修补；恢复旧部署须使用升级前一致备份。
+
+新记录在实际 HTTP 层保存请求和返回，逻辑层只保存当前故障定位需要的关联、状态、真实 usage 与耗时，不再重复保存全套上下文。旧记录按原格式与保留期继续读取，查询不补造已删除的事件或新字段。业务账本、已付请求检查点、Memory 证据及 Social 回执不属于这次可丢诊断删减。
+
+上线仍按当前 revision 到 head 的副本迁移、停写一致备份和 Bot-only 流程执行；不以删除日志、reset 会话或重发效果代替升级。实现、测试、合并和线上性能采样各自记录，当前说明不宣称已上线。
+
+
+## 0138—0140 文件表情库与按需媒体
+
+这是当前开发分支的前向升级合同，实际部署另按交付记录确认。`0138` 删除旧表情池的五张表及退役 emoji 当前配置，原人物、事件、Work、已付请求、控制与投递回执保留；不把旧池迁为另一套主业务资产表。表情原图和 canonical JSON 改为共享环境 `/workspace/stickers/<platform>/` 中的唯一资料源，`search.sqlite3` 可删除重建。旧 `data/emoji` 在确认已无活引用、完成升级后清理，不删除 data、workspace 或 artifact 父目录。用户允许舍弃旧表情库，本次不做隐式旧图库导入。
+
+`0139` 仅增加后台 Social 配图意图的持久输入，不保存表情资产/标签；正文先沿原 Social 完成，图片独立沿原回执发送，Main 不等选图。`0140` 为原附件行增加可空 `source_snapshot_json`，只保存本次实际观察但原消息未入账的引用 segment，使用本次真实事件和追加附件槽；原有行仍为 NULL，不从平台消息号伪造过去事件。已有模型请求、协议与回执不回写。
+
+同步退出 Plugin API 4 的旧表情 facade、管理/API/CLI/自动化入口与专属权限，现行 SDK 为5.0。独立现用插件先用当前 SDK 验证，部署时保存原批准、KV、存档与 outbox，重新发现后沿原权限批准；不能只改 manifest 数字或扩大权限。模型配置仅删除退役 `emoji_replacement` route，实际环境与热配置仅清退已删除的 emoji 键和 `VISION_MAX_RETRIES`，保其他连接、Profile、密钥及配置历史。超级管理员 Person 升级另沿[管理控制面](architecture/control-plane-foundation.md)的显式原人物授权，不从旧账号环境名单自动赋权。
+
+图片、视频、贴纸和普通文件首次 Main 输入统一只给附件索引与文件资料，删除自动像素/采帧/文档展开及固定失败回复；语音 ASR 沿原配置独立处理。原件保留24小时，访问不续期，清理后不重新下载复活；不再有旧缓存单文件、会话、全局经验容量和 pending32 跳过门槛。模型明确选读时的解码与帧数预算继续沿实际输入合同。
+
+Bot 原 `conversation-media-cache` 同份目录需只读挂进共享环境 `/inputs/media-cache`，各会话的 Agent 均可直接读取或复制，聊天历史仍按各自 Conversation。Manager 显式设置 `YUKI_MANAGER_MEDIA_CACHE` 到 Bot 实际缓存宿主路径；既有容器不会自动新增挂载。保全 HOME/runtime、jobs、服务和完整 rootFS 后，通过原私有 checkpoint 明确替换一次环境，加挂同一份缓存；保留原 ExecStart 和所有自定义覆盖，停止期限用 infinity 收拢真实 I/O。表情 helper 两文件也要实际安装进该 rootFS，不能仅更新 Bot 镜像或未来 Dockerfile。具体步骤见[持久环境](operations/persistent-environment.zh-CN.md)。
+
+升级前一致备份数据库与文件，在副本沿实际 revision 到 head 验证迁移和原事实，再仅替换需要的 Bot/Manager/持久环境。SnowLuma、代理与其他服务不随之重建。健康、schema、原插件批准/数据、共享只读缓存、Main终端和清理分别记录；不发送真实 QQ/TG 测试消息，不将离线 codec、SQL 性能或健康检查冒称自然流量、语义准确率或 Provider 缓存验收。回退保全升级后的新消息、文件和效果，不默认恢复旧数据库。

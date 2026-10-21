@@ -9,21 +9,20 @@ from tests.support.runtime_execution import make_child_executor
 from tests.support.subagents_helpers import stack
 from tests.unit.test_plugin_native_media import environment
 
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_tools import execute_subagent
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, work
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_tools import execute_subagent
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects, inputs, work
+from yuki.tool_results.artifacts import ToolArtifactRepository
 from yuki_plugin_sdk.results import ToolResult
 
 
 async def _message_child(database, tmp_path, *, privileged=False):
-    case = await setup_run(
-        database, tmp_path, mode="silent", superusers_csv="10001" if privileged else "9000"
-    )
+    database.subagents_enabled = True
+    case = await setup_run(database, tmp_path, mode="silent", privileged=privileged)
     async with database.sessions() as reader:
         event = await reader.scalar(select(ChatEventModel))
     source = {
@@ -79,14 +78,15 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
         ),
         ("update_short_state", {"slot": 1, "text": "child updated shared state"}),
         (
-            "automation_create",
+            "automation_manage",
             {
+                "action": "create",
                 "task": {
                     "name": "child reminder",
                     "goal": "check later",
                     "trigger": {"type": "after", "seconds": 3600},
                     "delivery": {"target": "none"},
-                }
+                },
             },
         ),
         (plugin.name, {}),
@@ -120,8 +120,9 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
         assert (await repository.get(child))["state"] == "completed"
         for name, _ in calls[:-2]:
             assert observed[name]["ok"], (name, observed[name])
-        assert observed["call_onebot_api"]["ok"] is privileged
-        assert sum(action == "get_status" for action, _ in case.env.bot.calls) == int(privileged)
+        assert not observed["call_onebot_api"]["ok"]
+        assert observed["call_onebot_api"]["error"] == "tool_not_declared"
+        assert not any(action == "get_status" for action, _ in case.env.bot.calls)
         assert sum(action == "send_group_msg" for action, _ in case.env.bot.calls) == 1
         assert plugin.calls == [True]
         assert (
@@ -137,6 +138,7 @@ async def test_child_executes_main_business_tools_with_own_receipts(database, tm
             case.provider.requests[0].tools
             == await case.chat.runtime.runner.main_contract.model_definitions()
         )
+        assert "call_onebot_api" not in {tool.name for tool in case.provider.requests[0].tools}
         assert (
             case.provider.requests[0].messages[0] == case.chat._prompt_composer.static_messages()[0]
         )
@@ -162,7 +164,7 @@ async def test_real_worker_completion_keeps_original_tail_and_late_parent_mail(
     calls = (
         ("task_control", {"action": "complete", "result": "verified child result"}),
         ("send_message", {"text": "actual tail delivery"}),
-        ("subagent_message", {"text": "original detailed report"}),
+        ("subagent_control", {"action": "message", "text": "original detailed report"}),
         ("subagent_start", {"goal": "independent nested step"}),
     )
     response = ChatResponse(
@@ -241,7 +243,10 @@ async def test_nested_subagent_parent_message_control_and_cancel_follow_real_tre
         "children"
     ][0]["child_id"] == grandchild
     await execute_subagent(
-        control, "subagent_message", {"child_id": grandchild, "text": "check fact"}, "to-grandchild"
+        control,
+        "subagent_control",
+        {"action": "message", "child_id": grandchild, "text": "check fact"},
+        "to-grandchild",
     )
     grand_lease = await workers.acquire(grandchild)
     grand_row = await repository.get(grandchild)
@@ -258,7 +263,10 @@ async def test_nested_subagent_parent_message_control_and_cancel_follow_real_tre
         current=grand_row,
     )
     result = await execute_subagent(
-        grand_control, "subagent_message", {"text": "which fact?", "ask": True}, "to-child"
+        grand_control,
+        "subagent_control",
+        {"action": "message", "text": "which fact?", "ask": True},
+        "to-child",
     )
     assert result["waiting_parent"] and grand_control.ending == "waiting_user"
     async with database.sessions() as reader:
@@ -288,15 +296,15 @@ async def test_plugin_background_child_reuses_original_job_authority_after_resta
     database, tmp_path
 ):
     from tests.conftest import build_harness, make_settings
+    from tests.support.canonical_identity import ensure_presence
     from tests.unit.test_external_event_runtime_fences import _seed_job
 
-    from qq_ai_bot.identity.canonical_repository import ensure_presence
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.plugin_host.db_models import (
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.plugin_host.db_models import (
         PluginBackgroundTurnJobModel,
         PluginInstallationModel,
     )
-    from qq_ai_bot.services.execution_sources import BackgroundTaskSource, recover_execution_source
+    from yuki.services.execution_sources import BackgroundTaskSource, recover_execution_source
 
     _notifications, event_id, conversation = await _seed_job(database)
     async with database.sessions() as reader:
@@ -324,6 +332,7 @@ async def test_plugin_background_child_reuses_original_job_authority_after_resta
             .where(PluginBackgroundTurnJobModel.id == job.id)
             .values(work_id=root["id"])
         )
+    database.subagents_enabled = True
     workers = SubagentRepository(repository)
     child = await workers.start(
         lease, root["id"], "plugin-child", {"goal": "check original external event"}
@@ -339,9 +348,9 @@ async def test_plugin_background_child_reuses_original_job_authority_after_resta
     assert recovered.actor_person_id is None and recovered.actor_user_id == ""
     provider = FakeLLMProvider(lambda _: "original plugin source checked")
     chat = build_harness(database, make_settings(database.url), provider).processor._chat
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
-    from qq_ai_bot.workspace.short_state import ShortState
-    from qq_ai_bot.workspace.store import WorkspaceStore
+    from yuki.services.main_agent_contract import MainAgentContract
+    from yuki.workspace.short_state import ShortState
+    from yuki.workspace.store import WorkspaceStore
 
     chat.runtime.runner.main_contract = MainAgentContract(
         chat, ShortState(WorkspaceStore(tmp_path / "state"))

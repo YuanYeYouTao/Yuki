@@ -1,6 +1,6 @@
 # Subscription Monitor / 订阅监控
 
-与 GitHub Monitor 一样，这是通过现有 Plugin API 3.4 运行的轮询插件。
+与 GitHub Monitor 一样，这是通过 Yuki 4.0 / Plugin API 7.0 运行的轮询插件。
 它读取 RSS 2、Atom、JSON Feed 1/1.1，为每条订阅保存增量状态，并把新动态和判断条件
 交给 Yuki 的统一主 Agent。主 Agent 决定是否通过 `send_message` 通知当前目标。
 
@@ -14,10 +14,10 @@
 复制整个目录到生产挂载的 `plugins/subscription-monitor/`，使用已有管理入口检查、批准并启用：
 
 ```text
-/ai plugin discover
-/ai plugin inspect subscription-monitor
-/ai plugin approve subscription-monitor
-/ai plugin enable subscription-monitor
+/ai admin plugin discover
+/ai admin plugin show subscription-monitor
+/ai admin plugin approve subscription-monitor
+/ai admin plugin enable subscription-monitor
 ```
 
 插件没有额外依赖、Secret 或数据库迁移；XML 解析使用 Yuki 已安装的 `defusedxml`。
@@ -48,7 +48,7 @@ PLUGIN_DIRECT_COMMAND_BINDINGS={"/monitor":"subscription-monitor:monitor"}
 ```
 
 `add` 默认每 300 秒检查该源，首次只建立基线，之后处理新条目。无新条目时不调用模型。
-目标可使用 `group:群号` 或 `private:QQ号`。命令返回配置回执；运行中的监控通知只通过主 Agent。
+目标可使用 `group:<Space-ID>` 或 `private:<Person-ID>`。命令返回配置回执；运行中的监控通知只通过主 Agent。
 
 复杂配置用 `set` 传完整订阅 JSON，或先 `show` 读取后编辑。以下是单条订阅示例：
 
@@ -119,7 +119,7 @@ Host 已接纳的主 Agent 轮次仍由原 job/event 和现有授权继续管理
 uv run pytest -q plugins/subscription-monitor/tests
 uv run ruff check plugins/subscription-monitor
 uv run mypy --follow-imports=silent plugins/subscription-monitor/subscription_monitor
-uv run qq-ai-bot-cli plugin test plugins/subscription-monitor
+uv run yuki plugin test plugins/subscription-monitor
 ```
 
 测试使用 SDK Fake 和真实插件生命周期契约，不连接外网、真实模型或 QQ。
@@ -132,3 +132,7 @@ normal Main Agent, which owns all visible notifications through `send_message`. 
 separate judge model or direct delivery path. The first fetch creates a silent baseline by default;
 pending requests survive restart and reuse Host notification idempotency. Copy the plugin directory,
 approve its manifest, then manage subscriptions with the `monitor` administrator command.
+
+## Plugin API 7.0 的通知目标
+
+`target_id` 是内部 Person/Space，不是 QQ/TG 外部账号或群号。目标可带 `conversation_id` 指定原私聊 Bot 或群 topic；短命令也接受 `group:<Space-ID>:conversation:<Conversation-ID>` / `private:<Person-ID>:conversation:<Conversation-ID>`。未指定时仅接受当前或唯一真实入口，保存 Host 返回的 Conversation；有多个入口时显式选择。已有排队事件保留原来源、游标和回执，迁移不会重发已接纳通知。

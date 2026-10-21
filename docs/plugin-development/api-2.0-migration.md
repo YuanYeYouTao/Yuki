@@ -1,7 +1,8 @@
 # Plugin API 2.0 历史迁移
 
+> 本页保留该版本的历史变更；当前开发和部署只使用 [Plugin API 7.0](api-7.0-migration.md)。
 > 本页记录当时从 1.x 迁移到 2.0 的变更，不代表当前 Host 的兼容策略。当前 Host
-> 只接受精确的 Plugin API 3.5；升级应继续完成 [API 3.0 历史迁移](api-3.0-migration.md)、[API 3.1 历史迁移](api-3.1-migration.md)、[API 3.2 历史迁移](api-3.2-migration.md)、[API 3.3 迁移](api-3.3-migration.md)和 [API 3.4 迁移](api-3.4-migration.md)，最后按 [API 3.5 迁移](api-3.5-migration.md)更新声明与实际代码。
+> 只接受精确的 Plugin API 7.0；升级应继续完成 [API 3.0 历史迁移](api-3.0-migration.md)、[API 3.1 历史迁移](api-3.1-migration.md)、[API 3.2 历史迁移](api-3.2-migration.md)、[API 3.3 迁移](api-3.3-migration.md)和 [API 3.4 迁移](api-3.4-migration.md)，最后按 [API 7.0 迁移](api-7.0-migration.md)更新声明与实际代码。
 
 Plugin API `2.0` 是破坏性升级。Host 在导入插件代码前校验 `plugin_api` 主版本；声明 `1.0` 或 `1.1` 的插件会被拒绝，不会半加载。
 
@@ -68,5 +69,5 @@ ToolMetadata(
 3. 需要自主群提示时改为 `register_admission_signal`。
 4. Prompt `target` 只保留 `agent`；独立插件会话仍使用 `agent_sessions`。
 5. 为工具补 namespace/aliases/use_when/tags（可选，但名称冲突由 Host 拒绝）。
-6. `uv run qq-ai-bot-cli plugin validate <path>`，再 `plugin test`。
+6. `uv run yuki plugin validate <path>`，再 `plugin test`。
 7. 部署后重新 `discover` / 审阅 / `approve` / `enable`，或通过 Guided Setup 的 pending 一次应用。

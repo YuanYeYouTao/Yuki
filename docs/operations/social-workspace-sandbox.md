@@ -35,104 +35,63 @@ and [persistent workers](../architecture/persistent-subagents.md).
 
 ## Social operations
 
-`find_contacts` resolves names or canonical IDs. Only people with actual inbound
-interaction qualify; a group member-list entry alone is insufficient. Proactive sending needs
-an existing enabled target and unpaused active route. Group sends also require
-`autonomous_enabled`. These tools do not change account, repair routes or add friends.
-SnowLuma uses the existing explicit social-operation interface; the gateway
-abstraction remains independent of business ownership.
+Common model tools use internal Person, Space, Binding, Presence, Conversation and
+event IDs. find_contacts returns real bindings with their platform; it does not
+change routes, grant authority or turn observed members into known contacts.
 
-Replies to the current private sender (text, image or file) instead use the proven
-inbound Presence. The adapter supplies the event reference, never model arguments;
-the ledger must match the conversation, private human sender and ingress Presence.
-This does not unpause the proactive route. A reconnection may use only the same
-Presence; there is no fallback to another account. Other targets and automation
-still require their active route. Target enablement and idempotency apply to both
-paths, with a final connection check before execution. Social sends and pokes have
-no additional per-target or global minute rate limiter.
-For `send_message`, omit `target` to use the current conversation, or provide a
-structured canonical target. Other social selectors support `subject_ref=current_speaker`;
-`target_id` is a canonical UUID, not a QQ number. Published files use top-level
-`send_message.artifact_id` together with `attachment_kind=image|file`.
-Validation/route failures do not delete already generated workspace artifacts.
-Social send, poke and recall results return to the Agent as ordinary tool evidence.
-They do not replace its response with a fixed status sentence or automatically close
-the whole loop. Unknown side effects still engage the durable-work execution fence;
-no automatic resend is added. Administrative and memory writes retain their
-applicable mutation/retry restrictions, but their receipts do not automatically
-become user-visible final text.
+Replies use the original Conversation entry and actual Presence. Explicit delivery
+to another entry resolves its real Binding; proactive sends use the actual target
+route. Source, ownership, permission and connection checks remain at execution.
+Internal Work, child execution and automation do not require an online gateway or
+an unchanged connection generation, a unique human platform account or an active
+original human Binding before model, memory or workspace work. Current Person
+authority follows explicit human merges; original sources, request proofs and root
+budgets remain unchanged. Account transfer does not revoke the original human's
+accepted internal Work. Actual Person revocation and new transport qualification
+remain effective.
 
-`poke_person` defaults to the backend's current canonical Space in group turns,
-and to private delivery outside a group. Set `scene=private` to explicitly poke
-privately; it cannot be combined with `space_id`. An explicit `space_id` is a
-canonical UUID, never a QQ group number. Group pokes use the Space route and a
-live member probe, not the person's private route. Paused routes remain paused;
-there is no automatic fallback between private and group scenes.
+Social owns original operation IDs, budget reservations, claim, ledger and durable
+receipts. A GatewayProvider's native adapter performs protocol encoding, media
+staging and result parsing. Its pure plan_send lays out actual native steps; each
+step receives its own Social receipt. An already claimed or uncertain step is not
+resent. A never-claimed PREPARED plan may be laid out for current protocol limits,
+retaining original IDs, Work and cumulative budgets.
 
-The dedicated `social-transfer` host directory must be owned by Bot UID 10001,
-mode 0755. Bot mounts it read-write at `/app/social-transfer`; providers mount the
-same directory read-only at `/yuki-transfer`. Do not place the Bot's transfer path
-under a gateway login directory whose parent cannot be traversed by the Bot UID.
-Adding this mount to an existing provider container requires a planned recreation;
-preserve every existing login/config mount. Do not widen login-directory permissions.
-Files are published mode 0644 on the read-only gateway mount and removed after use.
-SnowLuma copies the source mode into its private staging directory, then reopens
-the copy read-write to sync it. Mode 0444 breaks that flow; mount-level read-only
-protection still prevents gateway changes to the original transfer file.
-Preparation errors report `artifact_transfer_unavailable` before contacting the
-gateway; cleanup errors are logged without overwriting a confirmed send result.
+App sends file and text atomically. QQ upload and caption have separate receipts.
+Telegram obeys its actual text/caption limits and sends each planned step once.
+Confirmed file success survives caption failure. Replays project original receipts
+and confirmed ledger facts, including before the final tool result was persisted.
+Native message references remain in transport/receipts; public tool results use
+internal operation/event IDs. Recall uses the original Presence and message locator.
 
-`send_message` accepts text or workspace artifacts and selects private/group transport
-from its resolved target. Omitting the target sends to the current conversation.
-Images may include text. File uploads may include a caption: upload first, then send
-the text only after confirmed upload success, with separate durable receipts and
-separate target-ledger events. The combined tool result reports both stages; caption
-failure never erases file success. Replays return recorded outcomes without resending
-either stage, including after source expiry. A crash between stages can leave the
-caption unsent. Both stages retain the same Presence and recheck the route before
-dispatch. These network effects are not atomic.
-File APIs may return no retractable message ID; such uploads are
-recorded in the target ledger but `recall_own_message` cannot invent a recall handle.
-Recall always uses the original Presence. Poke, members and recall have dedicated
-methods; no arbitrary OneBot action is available through these tools.
+An original receipt is read against its original call parameters and committed
+transport facts before today's media TTL, conversation reset floor or route state.
+SDK image replay verifies the immutable snapshot's original plugin handle without
+reopening expired media. Fresh attachment use still requires available media.
+Explicit forgetting may remove content and its Conversation while a send is in
+flight. A real transport confirmation settles its original content-free success
+receipt with no event link when necessary; it never restores forgotten content or
+sends again. An unconfirmed operation remains unknown.
 
-Receipts use source turn/call identity and a payload hash. `uncertain` means the
-gateway may have acted: do not automatically resend. Database persistence cannot be
-atomic with a network operation. The model's final text is internal loop output and is
-not sent automatically; only an accepted `send_message` gateway receipt confirms delivery.
-Route and live membership preparation does not hold a global Social lock. A slow
-cross-group probe leaves independent current-conversation sends available. A short
-claim transaction rechecks the canonical target, active binding, exact Presence,
-route generation and live connection snapshot before the existing receipt CAS
-selects one dispatch owner. After the claim SQL, a synchronous connection check
-rejects changes during that SQL and rolls back the claim. A second synchronous
-check after commit and immediately before dispatch rejects disconnects or
-reconnections during commit; the already claimed receipt becomes `uncertain` and
-replay only reads it. Neither check selects a replacement connection.
-Immediate replies and recall retain their original
-Presence rules; no reachability cache or automatic resend is introduced.
-Each scheduled SELF occurrence uses the current generation of its original canonical
-Conversation. Accepted Work keeps that generation and its original Space and Presence;
-a reset during execution invalidates the old Work.
-Ordinary message sends require a nonempty scalar OneBot message ID. Empty, boolean,
-or object-valued IDs after dispatch produce a durable `uncertain` receipt; replay
-reads that result instead of sending again. File uploads retain their separate
-completion contract and need not return a retractable message ID.
+The public history tool reads authorized canonical ledger events, even while the
+platform is offline. Explicit Conversation IDs disambiguate multiple entries.
+The member directory returns observed people with coverage=observed. Neither tool
+implicitly fetches remote history or a complete platform member list. Default model
+tools no longer expose arbitrary OneBot actions, pokes or remote forward expansion.
+An independently approved QQ SDK transport extension retains its explicit boundary.
 
-The content-free operation receipt remains separate from the immutable event ledger.
-Tool results may project the confirmed ledger's internal event ID and actually delivered
-text, matched to the receipt's Presence, canonical target, platform reference, source,
-and dispatch interval. Missing, conflicting, or unreadable ledger data omits this text
-without downgrading the send receipt. The projection preserves confirmed delivered text,
-including split parts and file captions; it never re-splits raw tool arguments or treats
-a file/image ledger placeholder as delivered prose. Memory attribution is retired.
+QQ file delivery alone uses the dedicated social-transfer mount: Bot writes it,
+SnowLuma reads the matching directory, and staged files use mode 0644. Preserve
+gateway login/config mounts and do not place transfer files behind inaccessible
+login-directory parents. Telegram uses native multipart bytes; App uses its local
+artifact path. No platform-specific file handle is reused on another platform.
 
-Emoji preparation receives the validated delivery `ConversationScope`, not an
-invented human actor. Plugin-background sends retain their proven external event and
-frozen current target, and may use the same media parameters when enabled. Explicit
-target overrides remain forbidden for that origin. Private emoji lookup uses the real
-recipient; group lookup uses only the real group. This preparation context grants no
-permissions and does not bypass the Social route or mutation checks.
+Emoji lookup and usage take the actual internal recipient Person or destination
+Space. Actorless plugin group deliveries do not invent a human speaker. Current
+authorization and source checks remain independent of media preparation.
+
+See [platform adapters and upgrades](../architecture/platform-adapters.md) for
+entry isolation, protocol boundaries, SDK 4.0 and the migration chain.
 
 ## Shared persistent storage
 
@@ -168,30 +127,20 @@ acknowledgements remain readable.
 
 ### Social account and group resolution
 
-Recall resolves the original outbound ledger event's enabled Presence and rechecks
-that exact connection before claiming the operation. Pausing, deleting or switching
-the active send route does not prevent recall; another account cannot substitute.
-Member reads use live group membership and active QQ group bindings independently
-of outbound routes. Multiple group bindings require `space_binding_id`; read failure
-may try another accessible connection to that same group without changing any pin.
+Recall follows the confirmed event and original Presence. Pausing or switching an
+unrelated proactive route does not substitute another account for that operation.
+Public member/history reads use observed canonical data, without live connection
+probes. Actual mentions resolve a real same-platform Binding and check membership
+through its native adapter before sending; plain @name text is not a notification.
 
-`find_contacts` includes active QQ binding IDs. Group pokes and mentions resolve an
-explicit `binding_id`, or the account behind an inbound `subject_ref`, or a unique
-active binding. Ambiguous bindings are rejected. Private pokes use the binding of
-the resolved private route and reject conflicting selectors.
-Creator-owned scheduled Main Agent calls use current chat-equivalent authority.
+Private Conversations use Binding + Presence; group Conversations use SpaceBinding
++ topic. Linked Person facts may be shared, while histories stay entry-local.
+Scheduled Main calls retain their original creator, Conversation and source.
+The schema is fixed for the deployment and authority is checked at execution.
 
-`send_message.mentions` is an array of person selectors with optional
-`binding_id`. Each member is verified against the selected group, then serialized
-as a real OneBot `at` segment before the text. Plain `@name` text does not notify.
-Text, image and separately receipted file captions preserve these segments in the
-ledger. No `@all` or arbitrary raw QQ selector is exposed. Schemas remain identical
-between chat and delegated automation within this deployment.
-
-中文：撤回绑定原消息 Presence；成员查询依据真实群连接，不受主动发送路由暂停影响。
-多 QQ Binding 有歧义时拒绝，须明确选择；当前事件引用保留具体 QQ 账号。
-定时主 Agent 使用原主体的当前权限，目标选择沿共同 Social 实现处理。
-群消息的 `mentions` 生成真实 `at` 段，图片及文件说明均保留结构化 @ 和独立回执。
+中文：公共历史和成员目录读取已观察的内部账本；真实发送、引用及撤回由原生适配器完成。
+人物使用内部 Person，群使用内部 Space，私聊与 topic 按真实入口隔离。
+未知发送不重发；原 Work、预算、已确认文件及部分失败回执继续保留。
 
 Social receipts originated in migration 0052; current deployments must apply the
 complete migration chain required by the running binary. Follow the

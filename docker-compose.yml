@@ -1,18 +1,29 @@
-name: qq-ai-bot
+name: yuki
 
 services:
   bot:
-    image: ghcr.io/yuanyeyoutao/yuki-qqbot:${YUKI_VERSION:?missing}
+    image: ghcr.io/yuanyeyoutao/yuki:${YUKI_VERSION:?missing}
     init: true
     restart: unless-stopped
     env_file:
       - path: .env
         required: false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
+      HTTP_PROXY: "${http_proxy-${HTTP_PROXY-}}"
+      http_proxy: "${http_proxy-${HTTP_PROXY-}}"
+      HTTPS_PROXY: "${https_proxy-${HTTPS_PROXY-}}"
+      https_proxy: "${https_proxy-${HTTPS_PROXY-}}"
+      ALL_PROXY: "${all_proxy-${ALL_PROXY-}}"
+      all_proxy: "${all_proxy-${ALL_PROXY-}}"
+      NO_PROXY: "${no_proxy-${NO_PROXY-localhost,127.0.0.1,::1,bot,snowluma}}"
+      no_proxy: "${no_proxy-${NO_PROXY-localhost,127.0.0.1,::1,bot,snowluma}}"
       CODE_MODE_ENABLED: "false"
+      COMPOSE_PROFILES: ${COMPOSE_PROFILES:-}
       APP_HOST: 0.0.0.0
       APP_PORT: 8080
-      DATABASE_URL: sqlite+aiosqlite:////app/data/qq_ai_bot.db
+      DATABASE_URL: sqlite+aiosqlite:////app/data/yuki.db
       MODEL_PROFILES_FILE: /app/webui-config/model_profiles.toml
       WORKSPACE_DIRECTORY: /app/workspace
       CONVERSATION_MEDIA_CACHE_DIRECTORY: /app/data/conversation-media-cache
@@ -23,7 +34,7 @@ services:
       SNOWLUMA_REVERSE_WS_URL: ws://bot:8080/onebot/v11/snowluma/ws
       SNOWLUMA_UID: ${SNOWLUMA_UID:-1000}
       SNOWLUMA_GID: ${SNOWLUMA_GID:-1000}
-      ONEBOT_ACCESS_TOKEN: ${ONEBOT_ACCESS_TOKEN:-replace-with-a-long-random-token}
+      ONEBOT_ACCESS_TOKEN: ${ONEBOT_ACCESS_TOKEN:-}
     expose:
       - "8080"
     volumes:
@@ -36,7 +47,7 @@ services:
       - ./webui-config:/app/webui-config:ro
       - ./plugins:/app/plugins:ro
     networks:
-      - qq-ai-bot-network
+      - yuki-network
     healthcheck:
       test:
         - CMD
@@ -83,10 +94,10 @@ services:
       - ./snowluma-extra-accounts:/app/qq-accounts
       - ./social-transfer:/yuki-transfer:ro
     networks:
-      - qq-ai-bot-network
+      - yuki-network
     stop_grace_period: 30s
 
 networks:
-  qq-ai-bot-network:
-    name: qq-ai-bot-network
+  yuki-network:
+    name: yuki-network
     driver: bridge

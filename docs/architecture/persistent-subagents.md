@@ -4,11 +4,11 @@
 不再维护子 Agent 独有的 SQLite BUSY 重试或旧沙箱进度预算。
 
 主 Yuki 用 `subagent_start` 登记并派出子任务，继续处理聊天；通过
-`subagent_message` 补充要求，通过 `subagent_control` 查询、取消或恢复同一目标。
+`subagent_control(action=message)` 补充要求，通过 `subagent_control` 查询、取消或恢复同一目标。
 派生本身已经登记工作，工作者无需再次 `task_control.accept`。
 
 工作者沿部署的 direct / Code Mode 执行，复用 `MainAgentContract` 的完整声明、核心 system、
-同一 ScriptApi 和 `MainAgentBackend`。`lookup_tools` 查询同一已提交目录，不维护独立工具
+原入口的 ScriptApi 和 `MainAgentBackend`。App 子任务保留 App 的工具合同，平台子任务保留平台入口的合同；不会把 App 请求换成 QQ 声明。`lookup_tools` 查询同一已提交目录，不维护独立工具
 上限。子目标、父子关系和 cwd 作为 brief 资料；实际来源与权限由 Host 绑定，模型不能
 通过资料包取得额外身份或授权。pending 沿原 run_id 等待，不以新脚本重做已提交子调用。
 
@@ -29,12 +29,19 @@
 不另调视觉 Provider。媒体读取最多 20 MiB，主请求仍计入根预算；更大视频可先通过
 终端提取帧或生成较小文件。来源和版本规则见[聊天媒体](chat-media-workspace.md)。
 
-工作者可沿真实来源与授权发送 QQ、撤回、戳人、写长期记忆、修改 short_state、管理
+工作者可沿真实来源与授权使用统一 Social 发送、撤回、写长期记忆、修改 short_state、管理
 自动化和使用已批准插件。Person、SELF、automation 与插件来源分别核验自己的 actor、
-目标、能力批准和权限；普通 Person 不因成为 worker 获得 generic OneBot 管理权限。
-主、子 Agent 在同一群交错发言时，正文与回执仍归各自原执行，已确认发送不重复交付。
+目标、能力批准和权限。固定 Main 合同不再声明 raw OneBot 管理入口；独立批准的插件 QQ 扩展只在真实 QQ 传输边界执行。
+主、子 Agent 在同一会话交错发言时，正文与回执仍归各自原执行，已确认发送不重复交付。
+子任务的最终正文和 `task_control.complete(result=...)` 是回给父任务的内部结果，不会自动发到聊天平台；需要对外交付时仍显式调用 `send_message`。
 
-子 Agent 用自己的 Work 作为嵌套子任务的父节点。`subagent_message` 指定 child_id 时联系
+后台执行沿原内部 Conversation、Person/Space、Presence、event/run 和 Work 租约核验。
+断开连接、同 Presence 重连或活动发送路由变化不终止纯内部执行；真正发送时才解析、核验
+当次平台连接。群入口保原 SpaceBinding 与 topic；平台群地址迁移不改变原业务来源。
+迁移前私聊曾由两个 QQ Bot 共用 Conversation 的真实旧执行，只能用原内部事件、原
+Presence 与旧持久 alias 证明其入口；新的私聊按 Binding + Presence 分开，不借旧 alias 合并。
+
+子 Agent 用自己的 Work 作为嵌套子任务的父节点。`subagent_control(action=message)` 指定 child_id 时联系
 自己的子任务；省略时联系自己的父任务。实际提问保存后，只有父任务仍非终态时才接纳 `waiting_parent=true` 并提议子任务等待；父已经终态时仍保存问题，返回 `waiting_parent=false`，不暂停子任务或复活父任务。同一原批次、程序中剩余获准的通信、派生、保存和交付继续收拢。子孙通信和管理核验
 真实方向与树关系。只读 Work 目录使用 Main 的同一范围，目录信息不授予修改或取消权限。
 工作者默认跟随 Main 模型；Provider/合同变化沿原合法边界恢复，不暗换协议。
@@ -84,6 +91,7 @@ child Work ID、父子归属和通知 revision 读取对应 checkpoint；恢复�
 
 固定提示词、完整工具顺序/schema 和 Provider 设置在资料包之前。
 工作者的固定提示词包含与主 Agent 相同的 Memory 使用规则，新的记忆查询回执不重复附带该规则。
+普通聊天表达、任务进展反馈与公开资料查证沿同一固定合同；已有 child Work 无需再次 accept。子任务的 `need_input(reason=问题)` 会沿父子通信向父任务提问，并按原回执决定是否等待，无需再调用一次 message。
 工作者按 Main 的方式准备当前运行资料；既有私有协议不被新 short_state 或目录改写。
 每条链保存实际协议 continuation；普通唤醒只追加，合同或 Provider 改变时建立新链。
 图片按内容哈希单独保存，恢复时还原原始协议内容，不能因内联图片丢掉整条链。
@@ -112,7 +120,9 @@ SDK child 使用原 plugin_invocation 来源，并核当前 live Host 的批准�
 
 ## 配置、验证与回退
 
-`SUBAGENTS_ENABLED` 默认关闭，只控制新任务接纳；关闭后已存在的任务仍收拢运行。
+`SUBAGENTS_ENABLED` 默认关闭，由 `SubagentRepository.start` 统一控制新工作者登记；
+`subagent_start` 和工作者的 `task_control(derive)` 使用同一入口。关闭后原调用重放仍返回
+原 child ID，已接纳任务继续执行、恢复并提交回执；普通业务子 Work 不受工作者开关影响。
 `AGENT_MAX_MODEL_REQUESTS=24`、`AGENT_MAX_TOOL_CALLS=32` 更新旧环境里的显式配置。
 主、子任务窗口由所选模型 Profile 的容量合同统一提供，不保留子任务独有的默认窗口。
 `SUBAGENT_CONCURRENCY` 由调度器控制后台激活并发，收尾 reconcile 租约不占执行名额。
@@ -126,7 +136,7 @@ SDK child 使用原 plugin_invocation 来源，并核当前 live Host 的批准�
 真实缓存审计应使用隔离数据库与选定 Provider 的实际 API，不启动第二个生产 Bot，不发送 QQ 消息。
 生产网关、RSS、Manager 和持久环境必须在更新 Bot 后复核。
 
-部署前停止 Bot 并做一致性数据库及配置备份，使用目标镜像执行 `qq-ai-bot-cli init-db`，
+部署前停止 Bot 并做一致性数据库及配置备份，使用目标镜像执行 `yuki init-db`，
 升级至随包 Alembic head 后更新 Bot；0057 是工作者表的历史引入版本，不是当前升级终点。
 回退先关闭新派生并收拢任务，保留当前数据库、工作文件、执行回执和预算。
 恢复镜像必须兼容当前存储合同，不能用旧数据库覆盖上线后的写入；迁移 downgrade

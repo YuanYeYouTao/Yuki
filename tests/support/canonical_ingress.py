@@ -3,14 +3,15 @@
 from dataclasses import replace
 from types import SimpleNamespace
 
+from tests.support.event_seed import seed_event
 from tests.support.gateway import builtin_registry
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
-from qq_ai_bot.identity.ingress import CanonicalIngressResolver
-from qq_ai_bot.identity.routing import PresenceRouter
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
+from yuki.domain.conversations import ScopeType
+from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
+from yuki.identity.ingress import CanonicalIngressResolver
+from yuki.identity.routing import PresenceRouter
+from yuki.persistence.database import Database
+from yuki.persistence.repositories import EventLedgerRepository
 
 
 async def _member(*args, **kwargs):
@@ -33,7 +34,7 @@ class FixtureIngress(CanonicalIngressResolver):
                 if bot is not None and str(getattr(bot, "self_id", "")) == account
                 else SimpleNamespace(self_id=account)
             )
-            self._registry.connect(handle)
+            self._registry.connect(handle, provider_id="snowluma")
             self.handles[account] = handle
         return await super().pre_admit(self.handles[account], replace(message, bot_user_id=account))
 
@@ -68,7 +69,8 @@ async def append_user_event(
     content: str = "正常聊天",
     user_id: str = "1001",
 ) -> int:
-    row, _ = await EventLedgerRepository(database).append(
+    row, _ = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id=message_id,
         scope_type=ScopeType.PRIVATE,

@@ -22,6 +22,8 @@ from yuki_plugin_sdk.sessions import AgentSessionFacade
 
 
 class MessageFacade(Protocol):
+    """Targets are internal Person/Space IDs; images use owned media artifact handles."""
+
     async def get_current(self) -> CurrentMessage | None: ...
 
     async def get_reply(self) -> CurrentMessage | None: ...
@@ -42,6 +44,8 @@ class MessageFacade(Protocol):
 
 
 class PeopleFacade(Protocol):
+    """user_id parameters identify a canonical Person, independent of platform accounts."""
+
     async def get_current(self) -> Mapping[str, JsonValue] | None: ...
 
     async def get(self, user_id: str) -> Mapping[str, JsonValue] | None: ...
@@ -52,6 +56,8 @@ class PeopleFacade(Protocol):
 
 
 class GroupFacade(Protocol):
+    """group_id parameters identify a canonical Space; member coverage is observed."""
+
     async def get_current(self) -> Mapping[str, JsonValue] | None: ...
 
     async def get(self, group_id: str) -> Mapping[str, JsonValue] | None: ...
@@ -66,6 +72,8 @@ class GroupFacade(Protocol):
 
 
 class MemoryFacade(Protocol):
+    """Subjects and visibility use internal Person/Space IDs, not transport accounts."""
+
     async def list_person(
         self, user_id: str, limit: int = 20
     ) -> tuple[Mapping[str, JsonValue], ...]: ...
@@ -121,7 +129,6 @@ class AgentFacade(Protocol):
         instruction: str,
         *,
         context_profile: str = "none",
-        allowed_capabilities: tuple[str, ...] = (),
         max_tool_calls: int | None = None,
         max_model_requests: int | None = None,
     ) -> PluginResult: ...
@@ -150,7 +157,9 @@ class VisionFacade(Protocol):
 
 
 class MediaFacade(Protocol):
-    async def get_current(self) -> tuple[Mapping[str, JsonValue], ...]: ...
+    async def get_current(self) -> tuple[Mapping[str, JsonValue], ...]:
+        """Read current/reply media facts and preview availability, without transport locators."""
+        ...
 
     async def create_artifact(
         self,
@@ -180,35 +189,6 @@ class NotificationFacade(Protocol):
     async def list_grants(self) -> tuple[BackgroundTargetGrantView, ...]: ...
 
     async def status(self) -> Mapping[str, int]: ...
-
-
-class EmojiFacade(Protocol):
-    async def list(
-        self, status: str | None = None, limit: int = 30
-    ) -> tuple[Mapping[str, JsonValue], ...]: ...
-
-    async def get(self, emoji_id: str) -> Mapping[str, JsonValue] | None: ...
-
-    async def search(self, query: str, limit: int = 20) -> tuple[Mapping[str, JsonValue], ...]: ...
-
-    async def collect_current(self) -> PluginResult: ...
-
-    async def select(
-        self,
-        *,
-        goal: str,
-        emotion: str = "",
-        mode: str = "optional",
-        placement: str = "after_text",
-    ) -> PluginResult: ...
-
-    async def adopt(
-        self, emoji_id: str, *, scope_type: str = "global", scope_id: str = ""
-    ) -> PluginResult: ...
-
-    async def reject(self, emoji_id: str) -> PluginResult: ...
-
-    async def ban(self, emoji_id: str) -> PluginResult: ...
 
 
 class AutomationFacade(Protocol):
@@ -354,9 +334,6 @@ class PluginContext(Protocol):
 
     @property
     def notifications(self) -> NotificationFacade: ...
-
-    @property
-    def emoji(self) -> EmojiFacade: ...
 
     @property
     def automation(self) -> AutomationFacade: ...

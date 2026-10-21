@@ -20,28 +20,31 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from sqlalchemy import Column, DateTime, Integer, String, Text, select, text
 from sqlalchemy.orm import declarative_base
+from tests.support.canonical_identity import ensure_space
+from tests.support.event_seed import seed_scoped_event
+from tests.support.legacy_conversation_seed import frozen_social_env
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
-from qq_ai_bot.conversation.observation_models import ContextObservationModel, ContextSelectionModel
-from qq_ai_bot.conversation.observation_schema import PROJECTION_TRIGGERS_0089
-from qq_ai_bot.conversation.observations import (
+from yuki.conversation.observation_models import ContextObservationModel, ContextSelectionModel
+from yuki.conversation.observation_schema import PROJECTION_TRIGGERS_0089
+from yuki.conversation.observations import (
     encode,
     validate_observations,
 )
-from qq_ai_bot.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import ensure_space
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.conversation.projection_chunks_schema import PROJECTION_TRIGGERS_CURRENT
+from yuki.conversation.projection_compact_schema import PROJECTION_TRIGGERS_0119
+from yuki.conversation.projection_models import PromptProjectionChunkModel, PromptProjectionModel
+from yuki.domain.conversations import ConversationScope
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     ChatEventModel,
     RuntimeConfigOverrideModel,
     ToolArtifactModel,
 )
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 HEADER = "本轮运行资料（按 trust 字段区分可信度）："
 VIEW = "a" * 64
@@ -122,33 +125,7 @@ def selected_0109(env, identity, payload, event_ids=()):
 async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=True):
     database = Database(url)
     try:
-        # Frozen 0107 rows still require the retired coverage columns. Seed this
-        # old shape explicitly; the current writer must not recreate old fields.
-        async with database.immediate_session() as writer:
-            space = await ensure_space(writer, "20001")
-            conversation = str(uuid4())
-            alias = str(uuid4())
-            now = datetime.now(UTC)
-            await writer.execute(
-                text(
-                    "INSERT INTO canonical_conversations("
-                    "id,kind,space_id,primary_alias_id,primary_marker,generation,"
-                    "starts_after_event_id,last_event_id,last_generation_change_event_id,"
-                    "covered_through_event_id,uncovered_event_count,uncovered_character_count,"
-                    "revision,created_at,updated_at) "
-                    "VALUES(:id,'space',:space,:alias,1,1,0,0,0,0,0,0,1,:now,:now)"
-                ),
-                {"id": conversation, "space": space, "alias": alias, "now": now},
-            )
-            await writer.execute(
-                text(
-                    "INSERT INTO conversation_legacy_aliases("
-                    "id,conversation_id,scope_key,is_primary,created_at,updated_at) "
-                    "VALUES(:alias,:id,'bot:80001:group:20001',1,:now,:now)"
-                ),
-                {"id": conversation, "alias": alias, "now": now},
-            )
-        env = await social_env(database, tmp_path)
+        env = await frozen_social_env(database)
         identities = [str(uuid4()) for _ in range(3)]
         summary = str(uuid4())
         useful_note = str(uuid4())
@@ -354,8 +331,10 @@ async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=
                 selected_0109(env, useful_note, "[Observation; derived notes]\n" + useful_payload)
             )
             await writer.flush()
-            owner = await writer.get(CanonicalConversationModel, env.context.conversation_id)
-            original_revision = owner.prompt_source_revision
+            original_revision = await writer.scalar(
+                text("SELECT prompt_source_revision FROM canonical_conversations WHERE id=:id"),
+                {"id": env.context.conversation_id},
+            )
             projection_payload = encode([json.loads(payload) for _, payload in originals])
             await writer.execute(
                 text(
@@ -368,7 +347,7 @@ async def seed_0107(url, tmp_path, protection, malformed=False, outdated_config=
                 ),
                 {
                     "view": VIEW,
-                    "conversation": owner.id,
+                    "conversation": env.context.conversation_id,
                     "revision": original_revision,
                     "epoch": str(uuid4()),
                     "key": "b" * 64,
@@ -443,7 +422,15 @@ def test_upgrade_retires_public_packages_without_deleting_real_occurrences_or_pr
                 assert (
                     await reader.scalar(text("SELECT version_num FROM alembic_version")) == "0109"
                 )
-                cache = await reader.get(PromptProjectionModel, VIEW)
+                cache = (
+                    await reader.execute(
+                        text(
+                            "SELECT payload_json,byte_size FROM prompt_projections "
+                            "WHERE view_key=:view"
+                        ),
+                        {"view": VIEW},
+                    )
+                ).one()
                 assert (cache.payload_json, cache.byte_size) == ("[]", 2)
                 columns = {
                     row[1]
@@ -597,9 +584,11 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
             table: before.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
             for table in private
         }
-    cli = Path(sys.executable).parent / (
-        "qq-ai-bot-cli.exe" if os.name == "nt" else "qq-ai-bot-cli"
-    )
+        original_columns = {
+            table: [row[1] for row in before.execute(f"PRAGMA table_info({table})")]
+            for table in private
+        }
+    cli = Path(sys.executable).parent / ("yuki.exe" if os.name == "nt" else "yuki")
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
     env["DATABASE_URL"] = f"sqlite+aiosqlite:///{copied.as_posix()}"
@@ -612,7 +601,8 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
         assert after.execute("PRAGMA integrity_check").fetchone() == ("ok",)
         assert not after.execute("PRAGMA foreign_key_check").fetchall()
         for table, rows in original_rows.items():
-            assert after.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+            columns = ",".join(original_columns[table])
+            assert after.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall() == rows
         assert not after.execute(
             "SELECT 1 FROM sqlite_master WHERE name='context_observation_reset'"
         ).fetchall()
@@ -622,7 +612,7 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
     reset_argv = [
         sys.executable,
         "-m",
-        "qq_ai_bot.operations.reset_conversations",
+        "yuki.operations.reset_conversations",
         "--batch-id",
         "original-context-reset",
         "--apply-offline",
@@ -637,7 +627,11 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
     with sqlite3.connect(copied) as after:
         for table, rows in original_rows.items():
             if table != "runtime_work":
-                assert after.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall() == rows
+                columns = ",".join(original_columns[table])
+                assert (
+                    after.execute(f"SELECT {columns} FROM {table} ORDER BY rowid").fetchall()
+                    == rows
+                )
         assert after.execute(
             "SELECT state,reason,source_json,checkpoint_json,model_requests,tool_calls "
             "FROM runtime_work WHERE id=?",
@@ -797,7 +791,6 @@ async def test_metadata_trigger_invalidates_selected_chat_and_keeps_private_sour
                 context_key="b" * 64,
                 revision=1,
                 rebuild_reason="bootstrap",
-                payload_json="[]",
                 byte_size=2,
                 updated_at=datetime.now(UTC),
             )
@@ -812,7 +805,7 @@ async def test_metadata_trigger_invalidates_selected_chat_and_keeps_private_sour
         await writer.execute(text("UPDATE chat_events SET audio_transcript='实际语音'"))
     async with database.sessions() as reader:
         row = await reader.get(PromptProjectionModel, VIEW)
-        assert (row.payload_json, row.byte_size) == ("[]", 2)
+        assert (row.tail_ordinal, row.item_count, row.byte_size) == (0, 0, 2)
         installed = dict(
             (
                 await reader.execute(
@@ -820,7 +813,7 @@ async def test_metadata_trigger_invalidates_selected_chat_and_keeps_private_sour
                 )
             ).all()
         )
-        for name, expected in PROJECTION_TRIGGERS_0119.items():
+        for name, expected in PROJECTION_TRIGGERS_CURRENT.items():
             assert " ".join(installed[name].replace("IF NOT EXISTS ", "").split()) == " ".join(
                 expected.split()
             )
@@ -839,7 +832,8 @@ async def _trigger_sources(database, tmp_path, privacy_update):
             await writer.execute(
                 text("INSERT INTO execution_trace_state(id,privacy_generation) VALUES(1,0)")
             )
-    await ledger.append(
+    await seed_scoped_event(
+        ledger,
         scope=ConversationScope.group(env.bot.self_id, "20002"),
         platform_message_id="unrelated-trigger-owner",
         sender_user_id="10001",
@@ -888,20 +882,26 @@ async def _trigger_sources(database, tmp_path, privacy_update):
             writer.add(representation)
             owner = await writer.get(CanonicalConversationModel, event.canonical_conversation_id)
             body = encode([json.loads(representation.payload_json)])
+            projection = PromptProjectionModel(
+                view_key=view,
+                conversation_id=owner.id,
+                generation=1,
+                source_revision=owner.prompt_source_revision,
+                starts_after_event_id=0,
+                epoch_id=str(uuid4()),
+                context_key="b" * 64,
+                revision=1,
+                rebuild_reason="bootstrap",
+                tail_ordinal=1,
+                item_count=1,
+                byte_size=len(body.encode()),
+                updated_at=datetime.now(UTC),
+            )
+            writer.add(projection)
+            await writer.flush()
             writer.add(
-                PromptProjectionModel(
-                    view_key=view,
-                    conversation_id=owner.id,
-                    generation=1,
-                    source_revision=owner.prompt_source_revision,
-                    starts_after_event_id=0,
-                    epoch_id=str(uuid4()),
-                    context_key="b" * 64,
-                    revision=1,
-                    rebuild_reason="bootstrap",
-                    payload_json=body,
-                    byte_size=len(body.encode()),
-                    updated_at=datetime.now(UTC),
+                PromptProjectionChunkModel(
+                    view_key=view, epoch_id=projection.epoch_id, ordinal=1, payload_json=body
                 )
             )
     return env, main_event, other_event, identities, other_space
@@ -914,7 +914,7 @@ _TRIGGER_OPERATIONS = (
     ("prompt_projection_audio_update", "audio", "source_changed", 1, 0),
     ("prompt_projection_owner_update", "owner", "source_changed", 1, 0),
     ("prompt_projection_event_metadata_update", "nickname", "source_changed", 1, 0),
-    ("context_selection_source_changed", "source_revision", None, 1, 0),
+    ("context_selection_source_changed", "source_revision", "source_changed", 1, 0),
     ("prompt_projection_reset", "cut", "reset", 1, 0),
     ("context_observation_privacy", "privacy_update", None, 0, 0),
     ("context_observation_privacy_initial", "privacy_insert", None, 0, 0),
@@ -940,8 +940,8 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
     permissions = (
         "persons",
         "spaces",
-        "presences",
-        "identity_bindings",
+        "accounts",
+        "account_assignments",
         "space_bindings",
         "person_active_routes",
         "space_active_routes",
@@ -1029,17 +1029,26 @@ async def test_current_trigger_sql_keeps_material_and_source_boundaries(
             original = caches[view]
             if increment and reason is not None:
                 assert (
-                    current["payload_json"],
+                    current["tail_ordinal"],
+                    current["item_count"],
                     current["byte_size"],
                     current["invalidated_reason"],
-                ) == ("[]", 2, reason)
+                ) == (0, 0, 2, reason)
+                assert not list(
+                    await reader.scalars(
+                        select(PromptProjectionChunkModel.ordinal).where(
+                            PromptProjectionChunkModel.view_key == view
+                        )
+                    )
+                )
                 assert current["revision"] > original["revision"]
                 assert all(
                     current[key] == value
                     for key, value in original.items()
                     if key
                     not in {
-                        "payload_json",
+                        "tail_ordinal",
+                        "item_count",
                         "byte_size",
                         "invalidated_reason",
                         "revision",

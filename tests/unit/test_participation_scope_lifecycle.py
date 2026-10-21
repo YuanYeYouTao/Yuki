@@ -9,17 +9,16 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select, update
 from tests.conftest import make_settings
+from tests.support.canonical_identity import ensure_space
 from tests.support.semantic_participation_host_helpers import _event_and_route, _host, _message
 from yuki_participation.models import CandidateKind, Proposal
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.conversation.autonomy_binding import AutonomyOwner
-from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.identity.canonical_repository import ensure_space
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.runtime.work_control import WorkControl
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.conversation.autonomy_binding import AutonomyOwner
+from yuki.conversation.autonomy_db_models import InitiativeRunModel
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.runtime.work_control import WorkControl
 
 
 async def test_tick_keeps_held_scopes_and_admits_another_without_duplicate_controller(
@@ -148,7 +147,7 @@ async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_ori
         await host._hydrate(item)
         binding = await host._binding(item)
         assert binding.effective_owner is AutonomyOwner.SEMANTIC
-        assert requested_groups and all(group == "2001" for group in requested_groups)
+        assert requested_groups and all(group == item.scene.space_id for group in requested_groups)
         now = time.time()
         accepted = Proposal(
             proposal_id="original-accepted",
@@ -176,11 +175,10 @@ async def test_disabled_scope_uses_real_global_policy_to_retire_selector_and_ori
                 .where(CanonicalSpaceModel.id == item.scene.space_id)
                 .values(enabled=False)
             )
-        # Live-scoped runtime reads remain forbidden; only the disabled Host's
-        # control metadata read uses global policy to apply its existing OFF path.
-        with pytest.raises(CanonicalIdentityError) as error:
-            await original_snapshot(group_id="2001")
-        assert error.value.category == "canonical_owner_disabled"
+        # Configuration is readable material even for a disabled Space. Actual Host
+        # admission still uses the Space's current state and its existing OFF path.
+        scoped = await original_snapshot(group_id=item.scene.space_id)
+        assert scoped.conversation_policy().semantic_participation_enabled
         if restart:
             # Simulate cold cache restore using the real persisted controller state.
             host._sessions.clear()

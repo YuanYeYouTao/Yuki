@@ -1,14 +1,16 @@
 """Final review regressions for paid compact, checkpoint ownership and recovery."""
 
 import pytest
+from tests.support.canonical_identity import ensure_space
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.projections import PromptProjectionRepository
-from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.identity.canonical_repository import ensure_space
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.conversation.frozen_fragments import FrozenFragments
+from yuki.conversation.projections import PromptProjectionRepository
+from yuki.conversation.scope_repository import ConversationScopeRepository
+from yuki.domain.conversations import ConversationScope
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
 
 @pytest.mark.parametrize("maximum_views", [1, 128])
@@ -17,15 +19,16 @@ async def test_public_compact_checkpoint_survives_projection_cache_eviction(
     database, tmp_path, maximum_views, byte_budget
 ):
     await social_env(database, tmp_path)
-    scopes = [
-        ConversationScope.group("80001", str(20001 + index))
-        for index in range(2 * maximum_views + 1)
-    ]
+    # Each empty [] projection uses two bytes: three exceed the four-byte budget.
+    # Without a byte budget, retain the full default-128 view eviction exercise.
+    view_count = 3 if byte_budget is not None else 2 * maximum_views + 1
+    scopes = [ConversationScope.group("80001", str(20001 + index)) for index in range(view_count)]
     writer = ScopedEventLedgerUnitOfWork(database)
     for index, scope in enumerate(scopes[1:], start=1):
         async with database.sessions() as session, session.begin():
             await ensure_space(session, scope.group_id)
-        await writer.append(
+        await seed_scoped_event(
+            writer,
             scope=scope,
             platform_message_id=f"cache-{index}",
             sender_user_id="10001",
@@ -54,7 +57,7 @@ async def test_public_compact_checkpoint_survives_projection_cache_eviction(
             expected_source_revision=version.prompt_source_revision,
             starts_after_event_id=version.starts_after_event_id,
             context_key="review-cache",
-            items=[],
+            fragments=FrozenFragments.load([]),
             rebuild_reason="compact" if index == 0 else "bootstrap",
             selected_summary_text="Paid public checkpoint" if index == 0 else None,
             selected_summary_coverage=max(event.id for event in events) if index == 0 else 0,
@@ -64,39 +67,31 @@ async def test_public_compact_checkpoint_survives_projection_cache_eviction(
         async with database.immediate_session() as session:
             await publication(session)
         snapshot = await ConversationScopeRepository(database).load_prompt_snapshot(owner)
-        if index in {0, maximum_views, 2 * maximum_views}:
-            print(
-                {
-                    "maximum_views": maximum_views,
-                    "stage": index,
-                    "checkpoint": snapshot.checkpoint_text,
-                    "coverage": snapshot.effective_coverage,
-                    "raw_event_ids": [e.id for e in snapshot.raw_events],
-                }
-            )
+    owner_version, owner_events = await ledger.read_scope_context(owner, limit=100)
+    assert await projections.invalidation_reason(owner_version.conversation_id) == "capacity"
     assert snapshot.checkpoint_text == "Paid public checkpoint"
-    assert snapshot.effective_coverage == max(
-        event.id for event in (await ledger.read_scope_context(owner, limit=100))[1]
-    )
+    assert snapshot.effective_coverage == max(event.id for event in owner_events)
     assert not snapshot.raw_events
 
 
 @pytest.mark.parametrize("protocol", ["gemini", "openai_responses", "deepseek_responses"])
-async def test_native_compact_preserves_fitting_unobserved_tool_tail(protocol, database, tmp_path):
+async def test_native_compact_preserves_fitting_unobserved_tool_tail(
+    protocol, database, tmp_path, monkeypatch
+):
     import json
 
     import httpx
 
-    from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ChatTool
-    from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-    from qq_ai_bot.llm.gemini import GeminiProvider
-    from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-    from qq_ai_bot.model_runtime.capacity import estimate_request_tokens
-    from qq_ai_bot.services.context_compaction import (
+    from yuki.domain.messages import ChatMessage, ChatRequest, ChatTool
+    from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+    from yuki.llm.gemini import GeminiProvider
+    from yuki.llm.openai_responses import OpenAIResponsesProvider
+    from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+    from yuki.services.context_compaction import (
         EXECUTION_COMPACT_INSTRUCTION,
         execution_compact_plan,
     )
-    from qq_ai_bot.services.turn_transcript import TurnTranscript
+    from yuki.services.turn_transcript import TurnTranscript
 
     initial = (
         ChatMessage("system", "original static contract"),
@@ -256,9 +251,9 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(protocol, d
 
         from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
-        from qq_ai_bot.llm.fake import FakeLLMProvider
-        from qq_ai_bot.services.turn_execution import TurnExecution
-        from qq_ai_bot.web.models import WebMode
+        from yuki.llm.fake import FakeLLMProvider
+        from yuki.services.turn_execution import TurnExecution
+        from yuki.web.models import WebMode
 
         control, session, _ = await _session(database, tmp_path)
         session.transcript = transcript
@@ -275,13 +270,15 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(protocol, d
             lambda request: "Earlier finding retained; continue original work."
         )
         runner, runtime = await _runtime(database, control, initial, summarizer)
+        monkeypatch.setattr(
+            runner._models, "capacity", lambda task: ModelCapacity(input_tokens=budget + 256)
+        )
         runtime = replace(
             runtime,
             max_model_requests=None,
             auxiliary_requests=[0],
             runtime_config=replace(
                 runtime.runtime_config,
-                context=replace(runtime.runtime_config.context, work_window_tokens=budget + 256),
                 llm=replace(runtime.runtime_config.llm, max_output_tokens=256),
             ),
         )
@@ -294,16 +291,17 @@ async def test_native_compact_preserves_fitting_unobserved_tool_tail(protocol, d
         assert original_effect_key in str(prepared.request.messages)
 
 
-async def test_irreducible_raw_tail_does_not_buy_repeated_compacts(database, tmp_path):
+async def test_irreducible_raw_tail_does_not_buy_repeated_compacts(database, tmp_path, monkeypatch):
     from dataclasses import replace
 
     from tests.support.work_compaction_capacity_helpers import _runtime, _session
 
-    from qq_ai_bot.domain.messages import ChatMessage, ToolCall, ToolFunction
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.runtime.work_repository import WorkCapacityError
-    from qq_ai_bot.services.turn_execution import TurnExecution
-    from qq_ai_bot.web.models import WebMode
+    from yuki.domain.messages import ChatMessage, ToolCall, ToolFunction
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.model_runtime.capacity import ModelCapacity
+    from yuki.runtime.work_repository import WorkCapacityError
+    from yuki.services.turn_execution import TurnExecution
+    from yuki.web.models import WebMode
 
     control, session, initial = await _session(database, tmp_path)
     session.transcript.append(ChatMessage("assistant", "earlier completed finding " * 100))
@@ -314,13 +312,13 @@ async def test_irreducible_raw_tail_does_not_buy_repeated_compacts(database, tmp
         lambda request: "Earlier finding retained. Continue the original work."
     )
     runner, runtime = await _runtime(database, control, initial, provider)
+    monkeypatch.setattr(runner._models, "capacity", lambda task: ModelCapacity(input_tokens=4096))
     runtime = replace(
         runtime,
         max_model_requests=3,
         auxiliary_requests=[0],
         runtime_config=replace(
             runtime.runtime_config,
-            context=replace(runtime.runtime_config.context, work_window_tokens=4096),
             llm=replace(runtime.runtime_config.llm, max_output_tokens=256),
         ),
     )
@@ -381,16 +379,24 @@ def test_0119_keeps_valid_rollup_checkpoint_without_cached_projection(tmp_path, 
     assert after == before
 
 
-def test_public_plan_scaling_measurement():
+@pytest.mark.parametrize("budget_kind", ["fixed", "growing"])
+def test_public_plan_scaling_measurement(monkeypatch, budget_kind):
+    from dataclasses import replace
     from time import perf_counter
     from types import SimpleNamespace
 
-    from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-    from qq_ai_bot.domain.messages import ChatMessage, ChatRequest
-    from qq_ai_bot.services.context_compaction import PublicCompactContext, public_compact_plan
-    from qq_ai_bot.services.turn_transcript import TurnTranscript
+    from yuki.conversation.frozen_fragments import FrozenFragments
+    from yuki.domain.messages import ChatMessage, ChatRequest
+    from yuki.model_runtime import capacity
+    from yuki.services.context_compaction import (
+        PUBLIC_COMPACT_INSTRUCTION,
+        PublicCompactContext,
+        public_compact_plan,
+    )
+    from yuki.services.turn_transcript import TurnTranscript
 
     static = ChatMessage("system", "original static instructions")
+    instruction = ChatMessage("user", PUBLIC_COMPACT_INSTRUCTION)
     metrics = []
     for count in (256, 512):
         fragments = FrozenFragments.load(
@@ -420,34 +426,59 @@ def test_public_plan_scaling_measurement():
             (static, *fragments.messages()), 1, fragments, version, "offline-scaling", None, adopt
         )
         initial = (*context.messages, ChatMessage("user", "current trigger"))
+        request = ChatRequest(messages=initial)
+        messages = fragments.messages()
+        budget = (
+            2048
+            if budget_kind == "fixed"
+            else capacity.estimate_request_tokens(
+                replace(request, messages=(static, *messages[: count // 2], instruction))
+            )
+        )
         observed = []
+        original_cost = capacity._input_token_cost
 
-        def prepare(request, observed=observed):
-            observed.append(len(request.messages))
-            return request
+        def input_cost(value, original_cost=original_cost, observed=observed):
+            cost = original_cost(value)
+            observed.append(cost.ascii + cost.non_ascii)
+            return cost
 
         started = perf_counter()
-        plan = public_compact_plan(
-            context,
-            TurnTranscript(initial),
-            ChatRequest(messages=initial),
-            initial=initial,
-            input_budget=2048,
-            prepare=prepare,
+        with monkeypatch.context() as patch:
+            patch.setattr(capacity, "_input_token_cost", input_cost)
+            plan = public_compact_plan(
+                context,
+                TurnTranscript(initial),
+                request,
+                initial=initial,
+                input_budget=budget,
+                prepare=lambda request: request,
+            )
+        elapsed = perf_counter() - started
+        coverage = plan.public["coverage"]
+        assert 0 < coverage < count
+        assert plan.request.messages == (static, *messages[:coverage], instruction)
+        assert capacity.estimate_request_tokens(plan.request) <= budget
+        # The next whole event must exceed capacity; prompt wording can change
+        # the maximal legal prefix without changing the planning contract.
+        assert (
+            capacity.estimate_request_tokens(
+                replace(plan.request, messages=(static, *messages[: coverage + 1], instruction))
+            )
+            > budget
         )
+        assert FrozenFragments.load(plan.public["items"]).messages() == messages[coverage:]
+        assert observed  # Record real preparation work without fixing its implementation count.
         metrics.append(
             {
                 "input_fragments": count,
-                "capacity_estimates": len(observed),
-                "total_messages_serialized": sum(observed),
-                "coverage": plan.public["coverage"],
-                "seconds": perf_counter() - started,
+                "input_budget": budget,
+                "serialized_characters": sum(observed),
+                "coverage": coverage,
+                "seconds": elapsed,
             }
         )
     print({"public_plan_scaling": metrics})
-    assert {item["coverage"] for item in metrics} == {20}
-    # Doubling source length must not quadruple serialized preparation work.
-    assert metrics[1]["total_messages_serialized"] < 3 * metrics[0]["total_messages_serialized"]
 
 
 async def test_status_does_not_report_source_invalidated_checkpoint(database, tmp_path):
@@ -455,18 +486,19 @@ async def test_status_does_not_report_source_invalidated_checkpoint(database, tm
     from tests.conftest import MemorySender, build_harness, make_settings
     from tests.support.commands_and_chat_helpers import inbound
 
-    from qq_ai_bot.conversation.projections import PromptProjectionRepository
-    from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-    from qq_ai_bot.persistence.models import ChatEventModel
+    from yuki.conversation.projections import PromptProjectionRepository
+    from yuki.conversation.scope_repository import ConversationScopeRepository
+    from yuki.domain.conversations import ConversationScope
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.persistence.event_repository import EventLedgerRepository
+    from yuki.persistence.models import ChatEventModel
 
     harness = build_harness(
         database, make_settings(database.url), FakeLLMProvider(lambda request: "not called")
     )
     scope = ConversationScope.group("9999", "2001")
-    await harness.scoped_events.append(
+    await seed_scoped_event(
+        harness.scoped_events,
         scope=scope,
         platform_message_id="source-for-status",
         sender_user_id="9000",
@@ -483,7 +515,7 @@ async def test_status_does_not_report_source_invalidated_checkpoint(database, tm
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
         context_key="status-review",
-        items=[],
+        fragments=FrozenFragments.load([]),
         rebuild_reason="compact",
         selected_summary_text="checkpoint using original public source",
         selected_summary_coverage=coverage,
@@ -523,8 +555,8 @@ async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
     from tests.support.work_compaction_capacity_helpers import _session
     from tests.unit.test_current_context_compaction import _append_public, _public_context
 
-    from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-    from qq_ai_bot.services.context_compaction import (
+    from yuki.conversation.frozen_fragments import FrozenFragments
+    from yuki.services.context_compaction import (
         PublicCompactContext,
         current_public_compact,
         public_compact_publication,
@@ -556,7 +588,7 @@ async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
         context_key=original.context_key,
-        items=[],
+        fragments=FrozenFragments.load([]),
         rebuild_reason="compact",
         selected_summary_text="Later adopted checkpoint",
         selected_summary_coverage=latest_coverage,
@@ -567,7 +599,8 @@ async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
         await publication(writer)
     async with database.sessions() as writer, writer.begin():
         await ensure_space(writer, "20002")
-    await ScopedEventLedgerUnitOfWork(database).append(
+    await seed_scoped_event(
+        ScopedEventLedgerUnitOfWork(database),
         scope=ConversationScope.group("80001", "20002"),
         platform_message_id="eviction-other",
         sender_user_id="10001",
@@ -584,7 +617,7 @@ async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
         expected_source_revision=other_version.prompt_source_revision,
         starts_after_event_id=other_version.starts_after_event_id,
         context_key="other",
-        items=[],
+        fragments=FrozenFragments.load([]),
         rebuild_reason="bootstrap",
     )
     async with database.immediate_session() as writer:
@@ -604,7 +637,7 @@ async def test_paid_public_recovery_keeps_newer_checkpoint_after_cache_eviction(
     )
     # Also fence a stale publisher that raced a later adoption. Cache availability
     # must not let this already-paid older checkpoint move coverage backwards.
-    from qq_ai_bot.conversation.projections import ProjectionConflict
+    from yuki.conversation.projections import ProjectionConflict
 
     stale_publication = await public_compact_publication(repository, paid, "Older paid checkpoint")
     with pytest.raises(ProjectionConflict, match="newer checkpoint"):
@@ -640,10 +673,10 @@ async def test_two_unselected_source_changes_can_reprepare_same_journal(
     from tests.support.work_compaction_capacity_helpers import _session
     from tests.unit.test_current_context_compaction import _append_public
 
-    from qq_ai_bot.domain.messages import ChatMessage
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.runtime.work_repository import WorkConflict
-    from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+    from yuki.domain.messages import ChatMessage
+    from yuki.persistence.models import ChatEventModel
+    from yuki.runtime.work_repository import WorkConflict
+    from yuki.runtime.work_source_guard import WorkSourceGuard
 
     control, session, _ = await _session(database, tmp_path)
     scope = ConversationScope.group("80001", "20001")
@@ -706,9 +739,9 @@ async def test_source_recheck_does_not_republish_after_unconfirmed_rollback(
 ):
     from tests.support.work_compaction_capacity_helpers import _session
 
-    from qq_ai_bot.domain.messages import ChatMessage
-    from qq_ai_bot.runtime.work_repository import WorkConflict
-    from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
+    from yuki.domain.messages import ChatMessage
+    from yuki.runtime.work_repository import WorkConflict
+    from yuki.runtime.work_source_guard import WorkSourceGuard
 
     control, session, _ = await _session(database, tmp_path)
     version, _ = await EventLedgerRepository(database).read_scope_context(

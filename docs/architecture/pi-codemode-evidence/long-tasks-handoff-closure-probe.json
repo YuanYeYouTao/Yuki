@@ -17,11 +17,11 @@
   "receipt_errors_scope": "visible tool history per HTTP request; repeated history is not a new failed operation",
   "harness_sha256": "ff884c357d21e702db6164a5c61ca7b0166ed286285bdeca4cc233358500414d",
   "runtime_source_sha256": {
-    "src/qq_ai_bot/codemode/engine_monty.py": "eef01e95f1c4a5d2adadfe5db70fe38ea3e8f27b9987062a1568f1a9a4d1b3de",
-    "src/qq_ai_bot/runtime/work_control.py": "a72bdba0e68aa070980c1db021c078cffb63636be8f99e74b1146ecf8be5f754",
-    "src/qq_ai_bot/runtime/work_session.py": "2b38aebb579ff92ff04ce81ba2cd0c799518cf80fbfe7e05a834a27bece3868b",
-    "src/qq_ai_bot/services/turn_execution.py": "8ff7b5b6861d50f3353edf7c9b370717c87daa6e216b17558ae12e1e284309a2",
-    "src/qq_ai_bot/codemode/contract.py": "8d7ea9ff09faec0eab226b1758a62fa0474c1b5e7b7b51d2565d219f86c1c38c",
+    "src/yuki/codemode/engine_monty.py": "eef01e95f1c4a5d2adadfe5db70fe38ea3e8f27b9987062a1568f1a9a4d1b3de",
+    "src/yuki/runtime/work_control.py": "a72bdba0e68aa070980c1db021c078cffb63636be8f99e74b1146ecf8be5f754",
+    "src/yuki/runtime/work_session.py": "2b38aebb579ff92ff04ce81ba2cd0c799518cf80fbfe7e05a834a27bece3868b",
+    "src/yuki/services/turn_execution.py": "8ff7b5b6861d50f3353edf7c9b370717c87daa6e216b17558ae12e1e284309a2",
+    "src/yuki/codemode/contract.py": "8d7ea9ff09faec0eab226b1758a62fa0474c1b5e7b7b51d2565d219f86c1c38c",
     "scripts/benchmark_pi_codemode.py": "de0491d76037da0c88ff6d022d46661b78ee3f1d31524dad56bff9d13e0c9e92",
     "tests/integration/test_codemode_runner.py": "ff914c3f6b180af073936b5df76c0a196aefe5baff1d52fce92995fbe118aee6"
   },

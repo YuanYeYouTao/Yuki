@@ -1,113 +1,138 @@
-"""Issue #50 regressions at the persisted-history prompt boundary."""
-
-from __future__ import annotations
+"""The prompt reads the common immutable mention snapshot without target rebinding."""
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.memory.subjects import SubjectResolver
-from qq_ai_bot.persistence.repository_records import EventRecord
+from yuki.domain.conversations import ScopeType
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.persistence.repository_records import EventRecord
 
 
-def test_history_reprojects_ordered_mentions_from_persisted_segments() -> None:
+def test_canonical_mentions_keep_original_names_and_positions_in_every_prompt_view() -> None:
     event = EventRecord(
         id=9,
         bot_user_id="9999",
         platform_message_id="mention-message",
+        platform="qq",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
-        sender_group_card="远野",
+        sender_group_card="发言人",
         direction="inbound",
-        content="旧的丢失提及正文",
+        content="@油桃 这句和你说，@远野 那句和你说；@油桃 再确认。",
         visual_summary="",
         segments=(
-            {"type": "at", "data": {"qq": "8001"}},
-            {"type": "text", "data": {"text": "和"}},
-            {"type": "at", "data": {"qq": "1001"}},
-            {"type": "at", "data": {"qq": "1002"}},
-            {"type": "at", "data": {"qq": "1002"}},
-            {"type": "at", "data": {"qq": "all"}},
+            {
+                "type": "mention",
+                "data": {"kind": "member", "display_name": "油桃", "account_id": "account-a"},
+            },
+            {"type": "text", "data": {"text": " 这句和你说，"}},
+            {
+                "type": "mention",
+                "data": {"kind": "member", "display_name": "远野", "account_id": "account-b"},
+            },
+            {"type": "text", "data": {"text": " 那句和你说；"}},
+            {
+                "type": "mention",
+                "data": {"kind": "member", "display_name": "油桃", "account_id": "account-a"},
+            },
+            {"type": "text", "data": {"text": " 再确认。"}},
         ),
+        mentioned_user_ids=("1002", "1003"),
+        mentioned_person_ids=("person-a", "person-b"),
         occurred_at=datetime.now(UTC),
-        group_id="2001",
-        mentioned_user_ids=("1001", "1002"),
-        reply_sender_user_id="1002",
+        canonical_conversation_id="conversation-a",
+        author_kind="person",
+        author_person_id="speaker",
     )
+    renamed = replace(event, id=10, sender_user_id="1002", sender_group_card="后来改名")
+    renderer = ChatEventPromptRenderer((event, renamed))
 
-    member = replace(
-        event,
-        id=8,
-        sender_user_id="1002",
-        sender_group_card="小明",
-        segments=(),
-        content="成员历史",
-    )
-    rendered = ChatEventPromptRenderer(
-        (member, event),
-        yuki_account_ids=frozenset({"9999", "8001"}),
-    ).render_reference_event(event)
-
-    assert rendered.endswith(
-        ">[提及Yuki]和[提及远野/QQ:1001][提及小明/QQ:1002][提及小明/QQ:1002][提及全体成员]"
-    )
-    # Sender mentions, ordinary mentions and replies resolve the same real people.
-    subjects = SubjectResolver.context(event)
-    assert subjects.resolve("speaker:person").subject_user_id == "1001"
-    assert subjects.resolve("member_1002:person_group").subject_user_id == "1002"
-    assert subjects.resolve("reply_author:person_group").subject_user_id == "1002"
-    assert event.content == "旧的丢失提及正文"
-    assert "8001" not in rendered
-
-    base = replace(
-        event,
-        id=1,
-        platform_message_id="same-platform-id",
-        canonical_conversation_id="conversation-1",
-    )
-    collision = replace(base, id=2, sender_user_id="1002", content="second")
-    reply = replace(
-        base,
-        id=3,
-        platform_message_id="reply",
-        sender_user_id="1003",
-        content="reply body",
-        reply_to_message_id="same-platform-id",
-        reply_to_event_id=base.id,
-    )
-    renderer = ChatEventPromptRenderer((base, collision, reply))
-    quoted = renderer.render_reference_event(reply)
-    assert "回复:#1/" in quoted
-    assert "回复:#2/" not in quoted
-    missing = renderer.render_reference_event(replace(reply, reply_to_event_id=None))
-    assert "回复:引用不可用" in missing
+    for text in (
+        renderer.render_event(event),
+        renderer.render_reference_event(event),
+        renderer.reference_message(
+            event, current_event_id=event.id, current_content=event.content
+        ).content,
+        renderer.main_agent_history((event,))[0][2].content,
+    ):
+        assert text is not None and text.endswith(event.content)
+        assert (
+            "提及:油桃/@{account:account-a},远野/@{account:account-b},油桃/@{account:account-a}"
+            in text
+        )
+        assert "[提及成员]" not in text and "提及Yuki" not in text
+        assert "后来改名" not in text
 
 
-def test_history_segment_fallback_log_never_contains_content_or_ids(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_canonical_current_text_does_not_rewrite_quoted_or_literal_markers() -> None:
     event = EventRecord(
-        id=919191,
+        id=1,
         bot_user_id="9999",
-        platform_message_id="private-message-id",
+        platform_message_id="current",
+        platform="qq",
         scope_type=ScopeType.GROUP,
         sender_user_id="1001",
         direction="inbound",
-        content="可信回退正文",
+        content="@油桃 当前正文",
         visual_summary="",
-        segments=({"type": "at", "data": "private-segment-content"},),
+        segments=(),
+        mentioned_user_ids=("1002",),
         occurred_at=datetime.now(UTC),
-        group_id="2001",
+    )
+    current = "[回复的消息]\n@远野 引用正文 [提及1002]\n\n@油桃 当前正文"
+    rendered = ChatEventPromptRenderer((event,)).render_reference_event(
+        event, current_event_id=event.id, current_content=current
     )
 
-    with caplog.at_level("WARNING", logger="qq_ai_bot.event_prompt"):
-        rendered = ChatEventPromptRenderer((event,)).render_reference_event(event)
+    assert rendered.endswith(current)
 
-    assert rendered.endswith(">可信回退正文")
-    assert "historical_segment_projection_fallback category=segment_data_invalid" in caplog.text
-    assert "919191" not in caplog.text
-    assert "private-message-id" not in caplog.text
-    assert "private-segment-content" not in caplog.text
+
+def test_account_author_is_displayed_without_a_fabricated_person():
+    account_id = str(uuid4())
+    event = EventRecord(
+        id=11,
+        bot_user_id="yuki",
+        platform_message_id="unknown-source",
+        platform="third",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="tenant/user",
+        sender_nickname="真实账号",
+        direction="inbound",
+        content="hello",
+        visual_summary="",
+        segments=(),
+        occurred_at=datetime.now(UTC),
+        canonical_conversation_id="conversation",
+        author_kind="account",
+        author_account_id=account_id,
+    )
+    text = ChatEventPromptRenderer((event,)).render_reference_event(event)
+    assert f"account:{account_id}" in text and "person:" not in text
+    assert text.endswith(">hello")
+
+
+@pytest.mark.parametrize(
+    "content", ["[表情：这只是普通正文]", "[语音：示例发送了一条语音，声线：名字]"]
+)
+def test_outbound_text_is_not_hidden_by_media_like_wording(content: str) -> None:
+    event = EventRecord(
+        id=1,
+        bot_user_id="yuki",
+        platform_message_id="plain-text",
+        platform="qq",
+        scope_type=ScopeType.GROUP,
+        sender_user_id="yuki",
+        direction="outbound",
+        content=content,
+        visual_summary="",
+        segments=({"type": "text", "data": {"text": content}},),
+        occurred_at=datetime.now(UTC),
+    )
+    renderer = ChatEventPromptRenderer((event,))
+
+    assert renderer.render_event(event).endswith(content)
+    assert renderer.render_reference_event(event).endswith(content)
+    assert renderer.main_agent_history((event,))[0][2].content.endswith(content)

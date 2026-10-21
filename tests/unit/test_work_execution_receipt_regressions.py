@@ -14,13 +14,13 @@ from sqlalchemy import select
 from tests.support.work_effect_results_helpers import execute, owned_session
 from tests.support.work_session import invoke_tool
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.domain.messages import ToolCall, ToolFunction
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
-from qq_ai_bot.sandbox.persistent import PersistentManager
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.domain.messages import ToolCall, ToolFunction
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_schema_v1 import effects
+from yuki.sandbox.db_models import SandboxTaskRunModel
+from yuki.sandbox.persistent import PersistentManager
+from yuki.workspace.store import WorkspaceStore
 
 OWNED = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 EXTERNAL = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
@@ -148,8 +148,8 @@ async def test_reading_own_running_execution_does_not_remove_original_dependency
     assert control.current["state"] == "waiting_external"
     assert control.accepted["action"] == "complete"
 
-    from qq_ai_bot.runtime.work_activation import activate_work
-    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
+    from yuki.runtime.work_activation import activate_work
+    from yuki.sandbox.task_repository import SandboxTaskRepository
 
     original = await control.repository.get(control.current["id"])
     request_id = session.call_key("launch-owned")
@@ -189,14 +189,46 @@ async def test_reading_own_running_execution_does_not_remove_original_dependency
         assert receipt["run_id"] == OWNED and not receipt["pending"]
 
 
-async def test_reconnecting_control_cannot_settle_a_still_running_execution(database, tmp_path):
+async def test_reconnecting_control_cannot_settle_a_still_running_execution(
+    database, tmp_path, monkeypatch
+):
     control, session, store = await ready(database, tmp_path)
     await launch(session, store)
-    # Real Manager error branch; only the physical process/connection storage is fake.
-    manager_state = SimpleNamespace(
-        get=lambda _: {"run_id": OWNED, "status": "running", "pending": True}, connections={}
+    # The original terminal job survives reconnect without a live physical connection.
+    manager = PersistentManager(
+        tmp_path / "manager",
+        WorkspaceStore(tmp_path / "artifacts"),
+        "test-image",
+        "test-network",
+        "",
+        tmp_path / "home",
+        testing=True,
     )
-    response = await PersistentManager.control(manager_state, OWNED, "interrupt")
+    # Only physical output files are absent; original job/kind lookup is real SQLite.
+    monkeypatch.setattr(manager, "output", lambda _: {})
+    try:
+        with manager.db:
+            manager.db.execute(
+                "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
+                (
+                    OWNED,
+                    session.call_key("launch-owned"),
+                    "original-proof",
+                    "{}",
+                    "running",
+                    "{}",
+                    0,
+                ),
+            )
+            manager.db.execute(
+                "INSERT INTO environment_jobs VALUES (?,?,?,?,?)",
+                (OWNED, "terminal_exec", None, "original-container", 1),
+            )
+        response = await manager.control(OWNED, "interrupt")
+        assert manager.get(OWNED)["status"] == "running"
+        assert manager.get(OWNED)["pending"] is True
+    finally:
+        await manager.close()
     assert response["error"] == "terminal_reconnecting"
     assert "status" not in response and "pending" not in response
     await execute(
@@ -230,10 +262,10 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
 ):
     import signal
 
-    from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-    from qq_ai_bot.sandbox import persistent
-    from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
-    from qq_ai_bot.services.subagent_execution import SubagentExecution
+    from yuki.runtime.subagent_repository import SubagentRepository
+    from yuki.sandbox import persistent
+    from yuki.sandbox.task_repository import SandboxTaskRepository
+    from yuki.services.subagent_execution import SubagentExecution
 
     control, session, store = await ready(database, tmp_path)
     request_id = session.call_key("launch-owned")
@@ -267,14 +299,26 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
     monkeypatch.setattr(manager, "wait_result", observe)
     process = None
     try:
-        assert (await manager.submit(kind, args, request_id))["run_id"] == OWNED
+        if kind == "terminal_exec":
+            assert (await manager.submit(kind, args, request_id))["run_id"] == OWNED
+        else:
+            # An upgrade observes the original dispatched APT intent; the retired
+            # package entry does not receive a new submission or another launch.
+            with manager.db:
+                manager.db.execute(
+                    "INSERT INTO jobs VALUES (?,?,?,?,?,?,?)",
+                    (OWNED, request_id, "original-proof", json.dumps(args), "running", "{}", 0),
+                )
+                manager.db.execute(
+                    "INSERT INTO environment_jobs VALUES (?,?,?,?,?)",
+                    (OWNED, kind, None, "original-container", 1),
+                )
+            manager.state_path(OWNED).mkdir(parents=True)
         await launch(session, store, tool_name=kind)
         budget = await control.repository.get(control.current["id"])
         if kind == "terminal_exec":
             with pytest.raises(TimeoutError, match="handshake lost"):
                 await manager.launch(OWNED)
-        else:
-            await manager.launch(OWNED)
         state = manager.state_path(OWNED)
         if already_started:
             (state / "started").touch()
@@ -291,7 +335,11 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
         await manager.reconcile(manager.active()[0])
         assert manager.get(OWNED)["status"] == "running"
         assert dict(manager.active()[0]) == original
-        assert (await manager.submit(kind, args, request_id))["run_id"] == OWNED
+        assert (
+            await manager.handle(
+                {"method": "get_code_run_by_request", "args": {"request_id": request_id}}
+            )
+        )["run_id"] == OWNED
         if kind == "terminal_exec":
             assert transport.request.await_count == 1
             assert transport.request.await_args.args[:2] == ("POST", "/pty")
@@ -300,8 +348,7 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
                 (EXTERNAL,),
             ]
         else:
-            assert command.await_count == 1
-            assert command.await_args.args[:3] == ("docker", "exec", "-d")
+            command.assert_not_awaited()
             transport.request.assert_not_awaited()
             transport.connect.assert_not_awaited()
         assert not manager.completions.pending()["events"]
@@ -316,14 +363,14 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
             assert receipt["request_id"] == request_id and receipt["run_id"] == OWNED
             assert receipt["result"]["status"] == "failed"
             assert receipt["result"]["exit_code"] == 7 and receipt["result"]["pending"] is False
-            assert command.await_count == 1
+            command.assert_not_awaited()
             return
 
         # Execute the real Supervisor in an isolated runtime directory. An attach
         # can invoke the wrapper again; its existing started file prevents a second command.
         wrapper = (
             "import sys; from pathlib import Path; "
-            "from qq_ai_bot.sandbox import environment_supervisor as s; "
+            "from yuki.sandbox import environment_supervisor as s; "
             "root, job = Path(sys.argv[1]), sys.argv[2]; "
             "s.Path = lambda value: root if value == '/var/lib/yuki-runtime' else Path(value); "
             "sys.argv = ['supervisor', job]; raise SystemExit(s.main())"
@@ -356,7 +403,10 @@ async def test_manager_restores_dispatched_run_without_replaying_request(
                 assert control.current["state"] == "cancelled"
 
                 async def cancel(method, arguments, *, request_id):
-                    assert method == "cancel_code_run" and arguments["run_id"] == OWNED
+                    assert method == "terminal_control" and arguments == {
+                        "run_id": OWNED,
+                        "action": "cancel",
+                    }
                     assert request_id == f"worker-cancel:{OWNED}"
                     return await manager.control(OWNED, "cancel")
 
@@ -499,9 +549,8 @@ async def test_unknown_mutation_remains_unknown_without_vetoing_new_call_or_comp
     assert json.loads(retained["receipt_json"])["outcome"]["uncertain"] is True
 
 
-@pytest.mark.parametrize("tool", ["get_code_run", "terminal_read"])
 async def test_external_running_read_through_real_kernel_does_not_block_completion(
-    database, tmp_path, monkeypatch, tool
+    database, tmp_path, monkeypatch
 ):
     from tests.support.sandbox_submission_unknown_lifecycle_helpers import (
         host_case,
@@ -527,12 +576,14 @@ async def test_external_running_read_through_real_kernel_does_not_block_completi
         work,
         backend,
         runtime,
-        ToolCall("external-status", ToolFunction(tool, json.dumps({"run_id": EXTERNAL}))),
+        ToolCall(
+            "external-status", ToolFunction("terminal_read", json.dumps({"run_id": EXTERNAL}))
+        ),
     )
     public = json.loads(result.calls[0][1])
     assert public["ok"] is True and public["process"]["pending"] is True
     assert public["mutation_committed"] is False
-    assert [item["method"] for item in wire] == ["terminal_exec", tool]
+    assert [item["method"] for item in wire] == ["terminal_exec", "terminal_read"]
     # The read does not create an owned SandboxTask for the observed run.
     assert await tasks.get(wire[1]["request_id"]) is None
     assert (await complete(work.control))["ok"] is True

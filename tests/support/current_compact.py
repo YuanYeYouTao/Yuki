@@ -4,10 +4,10 @@ from dataclasses import replace
 
 from tests.support.work_compaction_capacity_helpers import _runtime
 
-from qq_ai_bot.domain.messages import ChatRequest
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-from qq_ai_bot.services.turn_execution import TurnExecution
+from yuki.domain.messages import ChatRequest
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.models import ModelExecutionPriority
+from yuki.services.turn_execution import TurnExecution
 
 
 async def compact_session(database, control, initial, *, public_tail=()):

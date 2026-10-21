@@ -1,0 +1,99 @@
+"""Restart declarations and Settings share one actual startup contract."""
+
+import pytest
+from tests.conftest import make_settings
+
+from yuki.admin.config_registry import ConfigRegistry
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.admin.models import ConfigApplyMode
+from yuki.config import Settings
+
+
+async def test_every_restart_declaration_reaches_actual_startup_settings(database):
+    settings = make_settings(database.url)
+    runtime = RuntimeConfigService(settings=settings, database=database)
+    await runtime.initialize()
+    updates = await runtime.startup_settings_updates()
+    restarted = Settings(_env_file=None, **{**settings.model_dump(), **updates})
+    for spec in runtime.registry.list():
+        if spec.apply_mode is ConfigApplyMode.RESTART_REQUIRED:
+            for name in spec.settings_fields:
+                assert name in updates
+                assert str(getattr(restarted, name)) == str(spec.default_getter(settings))
+
+
+@pytest.mark.parametrize(
+    ("key", "field", "value"),
+    [
+        ("plugins.enabled", "plugin_system_enabled", False),
+        ("plugins.directory", "plugin_directory", "changed-plugins"),
+        ("memory.dream_enabled", "memory_dream_enabled", False),
+        ("memory.self_reflection_enabled", "memory_self_reflection_enabled", False),
+        ("memory.rebuild_enabled", "memory_rebuild_enabled", False),
+        ("memory.dream_schedule_hour", "memory_dream_schedule_hour", 4),
+    ],
+)
+async def test_saved_restart_setting_is_activated_by_new_settings(database, key, field, value):
+    settings = make_settings(
+        database.url, **({field: not value} if isinstance(value, bool) else {})
+    )
+    runtime = RuntimeConfigService(settings=settings, database=database)
+    await runtime.initialize()
+    saved = await runtime.set_override(
+        key,
+        value,
+        scope_type="global",
+        scope_id="",
+        actor_user_id="test",
+        trigger_message_id="startup-contract",
+    )
+    assert saved.success and saved.pending_restart
+    restarted_runtime = RuntimeConfigService(settings=settings, database=database)
+    await restarted_runtime.initialize()
+    restarted = Settings(
+        _env_file=None,
+        **{
+            **settings.model_dump(),
+            **await restarted_runtime.startup_settings_updates(),
+        },
+    )
+    assert str(getattr(restarted, field)) == str(value)
+
+
+@pytest.mark.parametrize(
+    ("name", "invalid", "valid"),
+    [
+        ("timeout_seconds", 0, 1),
+        ("max_download_bytes", 0, 1),
+        ("max_duration_seconds", 301, 300),
+        ("global_concurrency", 0, 1),
+        ("queue_max_pending", 0, 1),
+    ],
+)
+async def test_asr_uses_actual_settings_field_metadata(database, name, invalid, valid):
+    registry = ConfigRegistry()
+    spec = registry.get(f"asr.{name}")
+    with pytest.raises(ValueError):
+        registry.convert(spec, invalid)
+    assert registry.convert(spec, valid) == valid
+    settings = make_settings(database.url)
+    runtime = RuntimeConfigService(settings=settings, database=database)
+    await runtime.initialize()
+    saved = await runtime.set_override(
+        spec.key,
+        invalid,
+        scope_type="global",
+        scope_id="",
+        actor_user_id="test",
+        trigger_message_id="asr-contract",
+    )
+    assert not saved.success and saved.error_category == "validation_error"
+    restarted_runtime = RuntimeConfigService(settings=settings, database=database)
+    await restarted_runtime.initialize()
+    Settings(
+        _env_file=None,
+        **{
+            **settings.model_dump(),
+            **await restarted_runtime.startup_settings_updates(),
+        },
+    )

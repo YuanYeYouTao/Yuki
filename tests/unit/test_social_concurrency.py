@@ -7,15 +7,16 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.canonical_identity import ensure_space
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.canonical_db_models import SpaceActiveRouteModel
-from qq_ai_bot.identity.canonical_repository import ensure_space
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
-from qq_ai_bot.identity.routing import RouteSendError
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.social.models import SocialError, SocialTarget
+from yuki.conversation.canonical_db_models import SpaceActiveRouteModel
+from yuki.gateway.social import TransportMessage
+from yuki.identity.db_models import CanonicalSpaceModel, PresenceModel, SpaceBindingModel
+from yuki.identity.routing import RouteSendError
+from yuki.persistence.database import Database
+from yuki.persistence.models import ChatEventModel
+from yuki.social.models import SocialError, SocialTarget
 
 
 @pytest.mark.parametrize("enabled", [True, False])
@@ -40,7 +41,7 @@ async def test_explicit_group_send_does_not_require_autonomous_participation(
 
 
 @pytest.mark.asyncio
-async def test_slow_cross_space_probe_does_not_block_current_group_reply(
+async def test_slow_cross_space_send_does_not_block_current_group_reply(
     database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     env = await social_env(database, tmp_path)
@@ -60,15 +61,15 @@ async def test_slow_cross_space_probe_does_not_block_current_group_reply(
     current_target = SocialTarget(kind="space", id=UUID(env.space))
     current_route = await env.service.send_route(current_target, current_context)
     entered, release = asyncio.Event(), asyncio.Event()
-    original = env.router._probe
+    original = env.bot.call_api
 
-    async def slow_probe(bot, group_id, user_id):
-        if group_id == "20002":
+    async def slow_send(action, **params):
+        if action == "send_group_msg" and params["group_id"] == 20002:
             entered.set()
             await release.wait()
-        return await original(bot, group_id, user_id)
+        return await original(action, **params)
 
-    monkeypatch.setattr(env.router, "_probe", slow_probe)
+    monkeypatch.setattr(env.bot, "call_api", slow_send)
     slow = asyncio.create_task(
         env.service._effect(
             "send_message",
@@ -76,8 +77,8 @@ async def test_slow_cross_space_probe_does_not_block_current_group_reply(
             replace(env.context, call_id="other"),
             other_target,
             other_route,
-            "send_group_msg",
-            {"group_id": 20002, "message": []},
+            "send",
+            {"message": TransportMessage("concurrent")},
         )
     )
     try:
@@ -89,8 +90,8 @@ async def test_slow_cross_space_probe_does_not_block_current_group_reply(
                 current_context,
                 current_target,
                 current_route,
-                "send_group_msg",
-                {"group_id": 20001, "message": []},
+                "send",
+                {"message": TransportMessage("concurrent")},
             ),
             2,
         )
@@ -131,8 +132,8 @@ async def test_concurrent_same_operation_dispatches_once(
                 env.context,
                 target,
                 route,
-                "send_group_msg",
-                {"group_id": 20001, "message": []},
+                "send",
+                {"message": TransportMessage("concurrent")},
             )
             for _ in range(2)
         ]
@@ -145,16 +146,16 @@ async def test_concurrent_same_operation_dispatches_once(
 @pytest.mark.parametrize(
     "change", ["paused", "generation", "binding", "presence", "connection", "reconnect", "target"]
 )
-async def test_route_change_after_probe_before_claim_fails_closed(
+async def test_route_change_after_prepare_before_claim_fails_closed(
     database: Database, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
     env = await social_env(database, tmp_path)
     target = SocialTarget(kind="space", id=UUID(env.space))
     route = await env.service.send_route(target, env.context)
-    send_route = env.service.send_route
+    prepare = env.service.receipts.prepare
 
     async def change_after_prepare(*args, **kwargs):
-        prepared = await send_route(*args, **kwargs)
+        prepared = await prepare(*args, **kwargs)
         if change in {"connection", "reconnect"}:
             env.registry.disconnect(env.bot)
             if change == "reconnect":
@@ -182,7 +183,20 @@ async def test_route_change_after_probe_before_claim_fails_closed(
                     space.enabled = False
         return prepared
 
-    monkeypatch.setattr(env.service, "send_route", change_after_prepare)
+    monkeypatch.setattr(env.service.receipts, "prepare", change_after_prepare)
+    if change in {"paused", "generation"}:
+        result = await env.service._effect(
+            "send_message",
+            {"text": "one"},
+            env.context,
+            target,
+            route,
+            "send",
+            {"message": TransportMessage("current entry")},
+        )
+        assert result["status"] == "succeeded"
+        assert any(action == "send_group_msg" for action, _ in env.bot.calls)
+        return
     with pytest.raises((RouteSendError, SocialError)):
         await env.service._effect(
             "send_message",
@@ -190,8 +204,8 @@ async def test_route_change_after_probe_before_claim_fails_closed(
             env.context,
             target,
             route,
-            "send_group_msg",
-            {"group_id": 20001, "message": []},
+            "send",
+            {"message": TransportMessage("concurrent")},
         )
     assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
     receipt = await env.service.receipts.find(env.context.turn_id, env.context.call_id)

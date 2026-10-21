@@ -1,5 +1,7 @@
 """Manager failures preserve failed and unknown tool effect receipts."""
 
+import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -7,28 +9,28 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from tests.conftest import make_settings
 
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-from qq_ai_bot.capabilities.models import CapabilityEffect
-from qq_ai_bot.capabilities.results import resolve_mutation_commit
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.sandbox.client import SandboxClient
-from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
+from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+from yuki.capabilities.models import CapabilityEffect
+from yuki.capabilities.results import resolve_mutation_commit
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.service import MemoryFactService
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.sandbox.client import SandboxClient
+from yuki.services.agent_tools import AgentToolService, ToolRuntime
 
 
 @pytest.mark.parametrize(
     ("tool", "payload", "committed"),
     [
-        ("workspace_write", {"error": "version_conflict"}, False),
-        ("workspace_patch", {"error": "workspace_full"}, False),
-        ("terminal_exec", {"error": "environment_busy"}, False),
-        ("terminal_write", {"error": "idempotency_conflict"}, False),
-        ("workspace_move", {"error": "sandbox_unavailable", "uncertain": True}, None),
+        ("workspace_publish", {"error": "version_conflict"}, False),
+        ("workspace_publish", {"error": "workspace_full"}, False),
+        ("terminal_exec", {"error": "environment_unavailable"}, False),
+        ("terminal_control", {"error": "idempotency_conflict"}, False),
+        ("workspace_publish", {"error": "sandbox_unavailable", "uncertain": True}, None),
         ("terminal_exec", {"error": "sandbox_submission_unknown", "uncertain": True}, None),
-        ("workspace_write", {"path": "result.txt", "version": "new"}, True),
+        ("workspace_publish", {"artifact_id": "published-snapshot", "immutable": True}, True),
     ],
 )
 async def test_tool_operation_receipt(database, tool, payload, committed):
@@ -49,8 +51,6 @@ async def test_tool_operation_receipt(database, tool, payload, committed):
             "write a file",
             bot_user_id="8000",
         ),
-        gateway=None,
-        allow_generic_onebot=False,
         execution_id="execution-test",
         conversation_id="conversation-test",
         target_presence_id="presence-test",
@@ -72,15 +72,15 @@ async def test_tool_operation_receipt(database, tool, payload, committed):
 @pytest.mark.parametrize(
     ("tool", "uncertain"),
     [
-        ("workspace_write", True),
-        ("workspace_upload", True),
-        ("terminal_write", True),
-        ("workspace_read", False),
+        ("workspace_publish", True),
+        ("terminal_control", True),
+        ("workspace_media_read", False),
         ("terminal_read", False),
     ],
 )
 async def test_lost_manager_response_preserves_unknown_effect(monkeypatch, tool, uncertain):
-    reader = SimpleNamespace(readline=AsyncMock(side_effect=OSError("response lost")))
+    reader = asyncio.StreamReader()
+    reader.set_exception(OSError("response lost"))
     writer = SimpleNamespace(
         write=Mock(),
         drain=AsyncMock(),
@@ -90,6 +90,7 @@ async def test_lost_manager_response_preserves_unknown_effect(monkeypatch, tool,
     monkeypatch.setattr(
         "asyncio.open_unix_connection",
         AsyncMock(return_value=(reader, writer)),
+        raising=False,
     )
     result = await SandboxClient(Path("/unused.sock")).execute(
         tool,
@@ -99,13 +100,22 @@ async def test_lost_manager_response_preserves_unknown_effect(monkeypatch, tool,
     assert result["error"] == "sandbox_unavailable"
     assert result["uncertain"] is uncertain
     writer.write.assert_called_once()
+    assert json.loads(writer.write.call_args.args[0]) == {
+        "method": tool,
+        "args": {},
+        "request_id": "original-request",
+    }
+    writer.drain.assert_awaited_once()
     writer.close.assert_called_once()
+    writer.wait_closed.assert_awaited_once()
 
 
 async def test_connection_failure_has_no_dispatched_effect(monkeypatch):
-    monkeypatch.setattr("asyncio.open_unix_connection", AsyncMock(side_effect=OSError("offline")))
+    monkeypatch.setattr(
+        "asyncio.open_unix_connection", AsyncMock(side_effect=OSError("offline")), raising=False
+    )
     result = await SandboxClient(Path("/unused.sock")).execute(
-        "workspace_write",
+        "workspace_publish",
         {},
         request_id="original-request",
     )

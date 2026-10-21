@@ -3,25 +3,27 @@
 import json
 
 from tests.conftest import make_settings
+from tests.support.event_seed import seed_event
 
-from qq_ai_bot.capabilities.results import normalize_legacy_result
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.memory.context import MEMORY_GROUNDING_RULE
-from qq_ai_bot.memory.enums import MemoryEvidenceRelation, MemoryScopeType, MemorySourceType
-from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
-from qq_ai_bot.services.prompt_composer import PromptComposer
+from yuki.capabilities.results import normalize_legacy_result
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.memory.context import MEMORY_GROUNDING_RULE
+from yuki.memory.enums import MemoryEvidenceRelation, MemoryScopeType, MemorySourceType
+from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.service import MemoryFactService
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.agent_tools import AgentToolService, ToolRuntime
+from yuki.services.prompt_composer import PromptComposer
 
 
 async def test_memory_read_result_keeps_complete_fact_and_evidence_without_policy(database):
     settings = make_settings(database.url, agent_tool_result_max_characters=2400)
     ledger = EventLedgerRepository(database)
     content = ("observatory history " * 45).strip()
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="original-memory-source",
         scope_type=ScopeType.PRIVATE,
@@ -60,9 +62,10 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
             SenderIdentity("1001"),
             "observatory",
             bot_user_id="8000",
+            person_id=event.author_person_id,
+            conversation_id=event.canonical_conversation_id,
+            presence_id=event.ingress_presence_id,
         ),
-        gateway=None,
-        allow_generic_onebot=False,
         trigger_event_id=event.id,
     )
     search = await tools.execute("search_memory", '{"query":"observatory"}', runtime)
@@ -73,12 +76,14 @@ async def test_memory_read_result_keeps_complete_fact_and_evidence_without_polic
     assert wire["evidence_state"]
     assert "memory_grounding_policy" not in wire
     assert len(json.dumps(wire, ensure_ascii=False)) <= settings.agent_tool_result_max_characters
-    for name in ("get_memory_fact", "get_memory_evidence"):
-        result = await tools.execute(name, json.dumps({"fact_id": fact.id}), runtime)
+    for view in ("fact", "evidence"):
+        result = await tools.execute(
+            "read_memory", json.dumps({"view": view, "fact_id": fact.id}), runtime
+        )
         payload = result.model_payload()
         assert payload["ok"], payload
         assert "memory_grounding_policy" not in payload
-        if name == "get_memory_fact":
+        if view == "fact":
             assert payload["evidence_state"]
             assert payload["data"]["memory"]["content"] == content
         else:

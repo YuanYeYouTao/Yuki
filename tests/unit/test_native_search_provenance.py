@@ -5,9 +5,10 @@ from dataclasses import replace
 
 import httpx
 import pytest
+from tests.support.provider_parsing import parse_response
 from tests.unit.test_provider_protocols import provider, request
 
-from qq_ai_bot.domain.messages import (
+from yuki.domain.messages import (
     ChatMessage,
     CitationOrigin,
     ModelResponseStatus,
@@ -18,14 +19,14 @@ from qq_ai_bot.domain.messages import (
     ProviderContinuation,
     ResponseCitation,
 )
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.base import LLMInvalidResponseError
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.openai_responses import (
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.base import LLMInvalidResponseError
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.llm.openai_responses import (
     OpenAICompatibleResponsesProvider,
     OpenAIResponsesProvider,
 )
-from qq_ai_bot.web.native_sources import recover_native_web_response
+from yuki.web.native_sources import recover_native_web_response
 
 
 def native_request():
@@ -122,7 +123,8 @@ async def test_responses_sources_include_and_original_tail_survive_replay(kind):
 async def test_responses_sources_keep_failed_or_unknown_call_state(status):
     async with httpx.AsyncClient() as client:
         adapter = provider(OpenAIResponsesProvider, client)
-        answer = adapter._parse(
+        answer = parse_response(
+            adapter,
             httpx.Response(
                 200,
                 json={
@@ -191,7 +193,8 @@ async def test_messages_result_sources_need_real_call_and_preserve_opaque():
     blocks = [calls, result, text]
     async with httpx.AsyncClient() as client:
         adapter = provider(AnthropicMessagesProvider, client)
-        answer = adapter._parse(
+        answer = parse_response(
+            adapter,
             httpx.Response(
                 200,
                 json={
@@ -235,7 +238,8 @@ async def test_messages_result_sources_need_real_call_and_preserve_opaque():
             payload=({"role": "assistant", "content": [{**calls, "name": "code_execution"}]},),
         )
         with pytest.raises(LLMInvalidResponseError, match="matching call"):
-            adapter._parse(
+            parse_response(
+                adapter,
                 httpx.Response(200, json={"content": [result], "stop_reason": "end_turn"}),
                 replace(native_request(), continuation=previous),
             )
@@ -253,7 +257,8 @@ async def test_messages_result_sources_need_real_call_and_preserve_opaque():
 )
 async def test_messages_missing_or_failed_results_never_become_completed(content, status):
     async with httpx.AsyncClient() as client:
-        answer = provider(AnthropicMessagesProvider, client)._parse(
+        answer = parse_response(
+            provider(AnthropicMessagesProvider, client),
             httpx.Response(
                 200,
                 json={

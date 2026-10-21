@@ -7,10 +7,10 @@ from sqlalchemy import select
 from tests.support.automation_unified_delivery_helpers import setup_run
 from tests.support.runtime_execution import make_child_executor
 
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import work
+from yuki.tool_results.artifacts import ToolArtifactRepository
 
 
 @pytest.mark.parametrize("limit_kind,limit", [("model_requests", 2), ("tool_calls", 1)])
@@ -35,7 +35,8 @@ async def test_child_obeys_hot_limit_without_resetting_original_work(
                 0,
                 tool_calls=(
                     ToolCall(
-                        f"read-{worker_requests}", ToolFunction("get_recent_chat_history", "{}")
+                        f"read-{worker_requests}",
+                        ToolFunction("query_chat_history", '{"view": "recent"}'),
                     ),
                 ),
             )

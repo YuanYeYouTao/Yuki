@@ -1,10 +1,12 @@
 #!/bin/sh
 set -eu
 
-VERSION="3.9.0"
+VERSION="4.0.0"
 INSTALL_DIR=""
-REPOSITORY="YuanYeYouTao/Yuki-QQbot"
-BOT_IMAGE="ghcr.io/yuanyeyoutao/yuki-qqbot"
+REPOSITORY="YuanYeYouTao/Yuki"
+# This source installer targets the matching future Yuki release artifacts.
+# Published releases retain their own installers and immutable image names.
+BOT_IMAGE="ghcr.io/yuanyeyoutao/yuki"
 
 usage() {
     printf '%s\n' "Usage: install.sh [--dir PATH] [--version X.Y.Z] (configure only)"
@@ -118,7 +120,7 @@ docker pull --platform "$platform" "$image"
 docker run --rm -it \
     --platform "$platform" \
     --user "$(id -u):$(id -g)" \
-    --entrypoint qq-ai-bot-cli \
+    --entrypoint yuki \
     --volume "$INSTALL_DIR:/deploy" \
     --workdir /deploy \
     "$image" setup --deployment-root /deploy
@@ -130,4 +132,4 @@ printf '%s\n' "Path file tools and terminals require the Linux host Manager; Com
 printf '%s\n' "After preparing the persistent-environment prerequisites, explicitly run on the Docker host:"
 printf '%s\n' 'sudo /opt/yuki-sandbox/deploy/sandbox/install-manager.sh --deployment-root /absolute/deployment/path'
 printf 'Use this deployment root: %s\n' "$INSTALL_DIR"
-printf '%s\n' 'Then check: docker compose exec --user 10001:10001 bot qq-ai-bot-cli setup environment-check'
+printf '%s\n' 'Then check: docker compose exec --user 10001:10001 bot yuki setup environment-check'

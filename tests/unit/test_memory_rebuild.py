@@ -8,12 +8,14 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import func, select, update
 from tests.conftest import make_settings
+from tests.support.event_seed import seed_event
 from tests.support.model_executor import InjectedModelExecutor
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
-from qq_ai_bot.llm.base import LLMProvider, LLMUnavailableError
-from qq_ai_bot.memory.enums import (
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import ChatRequest, ChatResponse
+from yuki.identity.canonical_repository import find_identity_binding
+from yuki.llm.base import LLMProvider, LLMUnavailableError
+from yuki.memory.enums import (
     MemoryRebuildCommitStatus,
     MemoryRebuildExpiredClaimPolicy,
     MemoryRebuildItemStatus,
@@ -22,24 +24,24 @@ from qq_ai_bot.memory.enums import (
     MemorySourceType,
     MemoryStatus,
 )
-from qq_ai_bot.memory.models import MemoryFactQuery
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-from qq_ai_bot.memory.rebuild.service import MemoryRebuildService
-from qq_ai_bot.memory.rebuild.worker import MemoryRebuildWorker
-from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.memory.models import MemoryFactQuery
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.memory.rebuild.service import MemoryRebuildService
+from yuki.memory.rebuild.worker import MemoryRebuildWorker
+from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
+from yuki.memory.service import MemoryFactService
+from yuki.memory.worker import MemoryWorker
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryJobModel,
     MemoryRebuildItemModel,
     MemoryRebuildProposalModel,
     MemoryRebuildRunModel,
 )
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.concurrency import ConcurrencyManager
 
 
 class _ExtractionProvider(LLMProvider):
@@ -80,10 +82,18 @@ class _ExtractionProvider(LLMProvider):
         )
 
 
+async def _admin(database):
+    async with database.sessions() as session:
+        person_id = (await find_identity_binding(session, "9000")).person_id
+        assert person_id is not None
+        return person_id
+
+
 async def _service(
     database: Database,
     *,
     provider: _ExtractionProvider | None = None,
+    people=None,
     **settings_overrides: object,
 ):
     settings = make_settings(
@@ -102,6 +112,7 @@ async def _service(
         ledger=ledger,
         model_executor=InjectedModelExecutor(provider),
         concurrency=ConcurrencyManager(),
+        people=people,
     )
     service = MemoryRebuildService(
         settings=settings,
@@ -120,7 +131,8 @@ async def _event(
     content: str = "我住在杭州",
     occurred_at: datetime | None = None,
 ):
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=message_id,
         scope_type=ScopeType.PRIVATE,
@@ -137,11 +149,11 @@ async def _event(
 async def test_rebuild_requires_review_then_commits_one_receipt(database: Database) -> None:
     from types import SimpleNamespace
 
-    from qq_ai_bot.memory.embedding.jobs import MemoryEmbeddingJobRepository
-    from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile
-    from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
-    from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
-    from qq_ai_bot.persistence.models import MemoryEmbeddingJobModel
+    from yuki.memory.embedding.jobs import MemoryEmbeddingJobRepository
+    from yuki.memory.embedding.models import EmbeddingProviderProfile
+    from yuki.memory.embedding.repository import MemoryEmbeddingRepository
+    from yuki.memory.embedding.text import EmbeddingDocumentBuilder
+    from yuki.persistence.models import MemoryEmbeddingJobModel
 
     settings, ledger, facts, provider, service = await _service(database)
     profile = await MemoryEmbeddingRepository(database).ensure_profile(
@@ -159,30 +171,37 @@ async def test_rebuild_requires_review_then_commits_one_receipt(database: Databa
         documents=EmbeddingDocumentBuilder(template_version=1, max_characters=4000),
     )
     facts.set_embedding_scheduler(SimpleNamespace(schedule=jobs.enqueue_fact))
-    await _event(ledger, message_id="history")
+    event = await _event(ledger, message_id="history")
     selection = MemoryRebuildSelection(
         all_events=True,
         scope_types=(ScopeType.PRIVATE, ScopeType.PRIVATE),
-        sender_user_ids=("1001", "1001"),
+        person_ids=(event.author_person_id, event.author_person_id),
     )
-    run = await service.plan(selection, actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
+    run = await service.plan(selection, actor_user_id=await _admin(database))
+    await service.start(run.public_id, actor_user_id=await _admin(database))
     worker = MemoryRebuildWorker(
         service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
     )
     assert await worker.process_once() == 1
     assert await worker.process_once() == 0
     assert (await service.repository.get_run(run.public_id)).status is MemoryRebuildRunStatus.REVIEW
-    rows = await service.review(run.public_id, actor_user_id="9000")
+    rows = await service.review(run.public_id, actor_user_id=await _admin(database))
     assert len(rows) == 1
     assert rows[0].source_excerpt == "我住在杭州"
-    assert await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000") == 1
-    await service.commit(run.public_id, actor_user_id="9000")
+    assert (
+        await service.set_review(
+            run.public_id, "all", approved=True, actor_user_id=await _admin(database)
+        )
+        == 1
+    )
+    await service.commit(run.public_id, actor_user_id=await _admin(database))
     assert await worker.process_once() == 1
     assert (
         await service.repository.get_run(run.public_id)
     ).status is MemoryRebuildRunStatus.COMPLETED
-    statistics = (await service.status(run.public_id, actor_user_id="9000"))["statistics"]
+    statistics = (await service.status(run.public_id, actor_user_id=await _admin(database)))[
+        "statistics"
+    ]
     assert statistics["extraction_requests"] == 1
     assert statistics["input_tokens"] == 11
     assert statistics["output_tokens"] == 7
@@ -232,9 +251,10 @@ async def test_rebuild_selection_quantity_remains_the_requested_boundary(databas
     await _event(ledger, message_id="bounded-first")
     await _event(ledger, message_id="bounded-second")
     run = await service.plan(
-        MemoryRebuildSelection(all_events=True, maximum_events=maximum_events), actor_user_id="9000"
+        MemoryRebuildSelection(all_events=True, maximum_events=maximum_events),
+        actor_user_id=await _admin(database),
     )
-    await service.start(run.public_id, actor_user_id="9000")
+    await service.start(run.public_id, actor_user_id=await _admin(database))
     worker = MemoryRebuildWorker(
         service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
     )
@@ -250,8 +270,10 @@ async def test_rebuild_selection_quantity_remains_the_requested_boundary(databas
 async def test_restart_pauses_without_resuming_or_calling_model(database: Database) -> None:
     settings, ledger, _facts, provider, service = await _service(database)
     await _event(ledger, message_id="restart")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
+    run = await service.plan(
+        MemoryRebuildSelection(all_events=True), actor_user_id=await _admin(database)
+    )
+    await service.start(run.public_id, actor_user_id=await _admin(database))
     worker = MemoryRebuildWorker(
         service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
     )
@@ -270,7 +292,9 @@ async def test_snapshot_keyset_is_stable_and_excludes_later_event(database: Data
     occurred_at = datetime.now(UTC) - timedelta(days=1)
     first = await _event(ledger, message_id="keyset-1", occurred_at=occurred_at)
     second = await _event(ledger, message_id="keyset-2", occurred_at=occurred_at)
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
+    run = await service.plan(
+        MemoryRebuildSelection(all_events=True), actor_user_id=await _admin(database)
+    )
     await _event(
         ledger,
         message_id="after-snapshot",
@@ -297,7 +321,8 @@ async def test_snapshot_keyset_is_stable_and_excludes_later_event(database: Data
 async def test_internal_reply_subject_metadata_never_crosses_group(database: Database) -> None:
     _settings, ledger, _facts, _provider, service = await _service(database)
     assert service is not None
-    referenced, _ = await ledger.append(
+    referenced, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="reply-source",
         scope_type=ScopeType.GROUP,
@@ -306,7 +331,8 @@ async def test_internal_reply_subject_metadata_never_crosses_group(database: Dat
         content="原消息",
         group_id="3001",
     )
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="legacy-subjects",
         scope_type=ScopeType.GROUP,
@@ -322,7 +348,8 @@ async def test_internal_reply_subject_metadata_never_crosses_group(database: Dat
     assert hydrated.mentioned_user_ids == ("3003",)
     assert hydrated.reply_sender_user_id == "2002"
 
-    cross_group, _ = await ledger.append(
+    cross_group, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="cross-group",
         scope_type=ScopeType.GROUP,
@@ -334,7 +361,8 @@ async def test_internal_reply_subject_metadata_never_crosses_group(database: Dat
     )
     assert (await ledger.hydrate_rebuild_subjects(cross_group)).reply_sender_user_id is None
 
-    old_event, _ = await ledger.append(
+    old_event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="old-subjects",
         scope_type=ScopeType.GROUP,
@@ -351,17 +379,21 @@ async def test_internal_reply_subject_metadata_never_crosses_group(database: Dat
 async def test_commit_rechecks_live_receipt_without_overwriting_it(database: Database) -> None:
     settings, ledger, _facts, _provider, service = await _service(database)
     event = await _event(ledger, message_id="receipt-race")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
+    run = await service.plan(
+        MemoryRebuildSelection(all_events=True), actor_user_id=await _admin(database)
+    )
+    await service.start(run.public_id, actor_user_id=await _admin(database))
     worker = MemoryRebuildWorker(
         service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
     )
     await worker.process_once()
     await worker.process_once()
-    await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
+    await service.set_review(
+        run.public_id, "all", approved=True, actor_user_id=await _admin(database)
+    )
     jobs = MemoryJobRepository(database)
     assert await jobs.enqueue(event.id, "private:1001")
-    await service.commit(run.public_id, actor_user_id="9000")
+    await service.commit(run.public_id, actor_user_id=await _admin(database))
     assert await worker.process_once() == 1
     async with database.sessions() as session:
         receipt = await session.scalar(
@@ -397,15 +429,17 @@ async def test_expired_claim_policy_never_creates_an_active_fact(
         occurred_at=datetime(2019, 1, 1, tzinfo=UTC),
     )
     selection = MemoryRebuildSelection(all_events=True, expired_claim_policy=policy)
-    run = await service.plan(selection, actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
+    run = await service.plan(selection, actor_user_id=await _admin(database))
+    await service.start(run.public_id, actor_user_id=await _admin(database))
     worker = MemoryRebuildWorker(
         service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
     )
     await worker.process_once()
     await worker.process_once()
-    await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
-    await service.commit(run.public_id, actor_user_id="9000")
+    await service.set_review(
+        run.public_id, "all", approved=True, actor_user_id=await _admin(database)
+    )
+    await service.commit(run.public_id, actor_user_id=await _admin(database))
     assert await worker.process_once() == 1
     async with database.sessions() as session:
         proposal = await session.scalar(select(MemoryRebuildProposalModel))
@@ -427,19 +461,23 @@ async def test_expired_claim_policy_never_creates_an_active_fact(
 async def test_commit_detects_source_fingerprint_change(database: Database) -> None:
     settings, ledger, facts, _provider, service = await _service(database)
     event = await _event(ledger, message_id="changed-source")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
+    run = await service.plan(
+        MemoryRebuildSelection(all_events=True), actor_user_id=await _admin(database)
+    )
+    await service.start(run.public_id, actor_user_id=await _admin(database))
     worker = MemoryRebuildWorker(
         service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
     )
     await worker.process_once()
     await worker.process_once()
-    await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
+    await service.set_review(
+        run.public_id, "all", approved=True, actor_user_id=await _admin(database)
+    )
     async with database.sessions() as session, session.begin():
         await session.execute(
             update(ChatEventModel).where(ChatEventModel.id == event.id).values(content="已改变")
         )
-    await service.commit(run.public_id, actor_user_id="9000")
+    await service.commit(run.public_id, actor_user_id=await _admin(database))
     assert await worker.process_once() == 1
     assert await facts.list_person("1001") == ()
     async with database.sessions() as session:
@@ -452,12 +490,12 @@ async def test_commit_detects_source_fingerprint_change(database: Database) -> N
 @pytest.mark.asyncio
 async def test_forget_person_removes_staging_and_redacts_selection(database: Database) -> None:
     settings, ledger, _facts, _provider, service = await _service(database)
-    await _event(ledger, message_id="privacy-staging")
+    event = await _event(ledger, message_id="privacy-staging")
     run = await service.plan(
-        MemoryRebuildSelection(sender_user_ids=("1001",)),
-        actor_user_id="9000",
+        MemoryRebuildSelection(person_ids=(event.author_person_id,)),
+        actor_user_id=await _admin(database),
     )
-    await service.start(run.public_id, actor_user_id="9000")
+    await service.start(run.public_id, actor_user_id=await _admin(database))
     worker = MemoryRebuildWorker(
         service, interval_seconds=settings.memory_rebuild_worker_interval_seconds
     )
@@ -472,7 +510,8 @@ async def test_forget_person_removes_staging_and_redacts_selection(database: Dat
             select(MemoryRebuildRunModel).where(MemoryRebuildRunModel.public_id == run.public_id)
         )
     assert proposal_count == 0
-    assert stored is not None and stored.status == "cancelled"
+    assert stored is not None and stored.status == "review"
+    assert MemoryRebuildSelection.model_validate_json(stored.selection_json).event_ids == ()
     assert "1001" not in stored.selection_json
 
 
@@ -485,13 +524,17 @@ async def test_rebuild_commit_receipt_is_atomic_and_usage_cannot_replay(
 
     _settings, ledger, facts, _provider, service = await _service(database)
     await _event(ledger, message_id="atomic-rebuild")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
+    run = await service.plan(
+        MemoryRebuildSelection(all_events=True), actor_user_id=await _admin(database)
+    )
+    await service.start(run.public_id, actor_user_id=await _admin(database))
     worker = MemoryRebuildWorker(service, interval_seconds=1)
     await worker.process_once()
     await worker.process_once()
-    await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
-    await service.commit(run.public_id, actor_user_id="9000")
+    await service.set_review(
+        run.public_id, "all", approved=True, actor_user_id=await _admin(database)
+    )
+    await service.commit(run.public_id, actor_user_id=await _admin(database))
     resolve_spy = Mock(wraps=service.processor.resolve)
     monkeypatch.setattr(service.processor, "resolve", resolve_spy)
     injected = False
@@ -556,13 +599,17 @@ async def test_rebuild_database_failure_retains_proposal_until_recovery_without_
 
     _settings, ledger, facts, _provider, service = await _service(database)
     await _event(ledger, message_id="persistent-database-failure")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
+    run = await service.plan(
+        MemoryRebuildSelection(all_events=True), actor_user_id=await _admin(database)
+    )
+    await service.start(run.public_id, actor_user_id=await _admin(database))
     worker = MemoryRebuildWorker(service, interval_seconds=1)
     await worker.process_once()
     await worker.process_once()
-    await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
-    await service.commit(run.public_id, actor_user_id="9000")
+    await service.set_review(
+        run.public_id, "all", approved=True, actor_user_id=await _admin(database)
+    )
+    await service.commit(run.public_id, actor_user_id=await _admin(database))
     resolver = Mock(wraps=service.processor.resolve)
     monkeypatch.setattr(service.processor, "resolve", resolver)
     database_write = AsyncMock(side_effect=OperationalError("write", {}, RuntimeError("disk")))
@@ -606,8 +653,10 @@ async def test_rebuild_extraction_recovers_original_item_past_old_attempt_limit(
     provider = Provider()
     _settings, ledger, _facts, _provider, service = await _service(database, provider=provider)
     source = await _event(ledger, message_id="repeated-rebuild-extraction")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-    await service.start(run.public_id, actor_user_id="9000")
+    run = await service.plan(
+        MemoryRebuildSelection(all_events=True), actor_user_id=await _admin(database)
+    )
+    await service.start(run.public_id, actor_user_id=await _admin(database))
     worker = MemoryRebuildWorker(service, interval_seconds=1)
     for attempts in range(1, 7):
         assert await worker.process_once() == 0

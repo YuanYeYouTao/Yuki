@@ -4,6 +4,8 @@ FROM yuki-environment:20260912
 USER root
 COPY --from=docker /usr/local/bin/docker /usr/local/bin/docker
 RUN pip install --no-cache-dir websockets==15.0.1 pytest==8.4.2 pytest-asyncio==0.26.0
+COPY src/yuki/emoji/sticker_index.py /opt/yuki-runtime/sticker_index.py
+COPY src/yuki/emoji/media.py /opt/yuki-runtime/media.py
 ENV PYTHONPATH=/src/src
 WORKDIR /src
 ENTRYPOINT ["python"]

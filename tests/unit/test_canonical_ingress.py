@@ -8,35 +8,29 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_person
+from tests.support.canonical_identity import ensure_presence as ensure_v2_presence
+from tests.support.canonical_identity import ensure_space as ensure_v2_space
 from tests.support.gateway import builtin_registry
 from tests.support.user_profiles_helpers import observe_members
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.identity import AuthorKind
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.identity.canonical_repository import (
-    ensure_person,
-    set_identity_failpoint,
-)
-from qq_ai_bot.identity.canonical_repository import (
-    ensure_presence as ensure_v2_presence,
-)
-from qq_ai_bot.identity.canonical_repository import (
-    ensure_space as ensure_v2_space,
-)
-from qq_ai_bot.identity.canonical_uow import CanonicalIngressUnitOfWork
-from qq_ai_bot.identity.db_models import IdentityBindingModel
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.identity.ingress import CanonicalIngressResolver, overlay_yuki_signals
-from qq_ai_bot.identity.routing import PresenceRouter
-from qq_ai_bot.identity.write_settings import (
+from yuki.domain.conversations import ScopeType
+from yuki.domain.identity import AuthorKind
+from yuki.domain.messages import InboundMessage, MessageMention, SenderIdentity
+from yuki.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.identity.canonical_repository import find_identity_binding, set_identity_failpoint
+from yuki.identity.canonical_uow import CanonicalIngressUnitOfWork
+from yuki.identity.db_models import IdentityBindingModel
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.identity.ingress import CanonicalIngressResolver, overlay_yuki_signals
+from yuki.identity.routing import PresenceRouter
+from yuki.identity.write_settings import (
     IdentityWriteSettings,
     configure_identity_write_settings,
 )
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import ChatEventModel
+from yuki.persistence.database import Database
+from yuki.persistence.models import ChatEventModel
 
 _NOW = datetime(2026, 8, 24, tzinfo=UTC)
 
@@ -50,6 +44,17 @@ class _Bot:
 
 
 class _LagrangeProvider:
+    def media(self, handle: object) -> None:
+        return None
+
+    def activity(self, handle: object, target: object) -> None:
+        return None
+
+    def project_inbound(self, message, yuki_ids):
+        from yuki.adapters.onebot.normalizer import reproject_inbound_mentions
+
+        return reproject_inbound_mentions(message, yuki_ids)
+
     provider_id = "lagrange"
 
     def describe_connection(self, handle: object) -> GatewayConnectionProfile:
@@ -92,9 +97,7 @@ def _message(
 async def _stack(
     database: Database,
 ) -> tuple[GatewayConnectionRegistry, CanonicalIngressResolver, CanonicalIngressUnitOfWork]:
-    configure_identity_write_settings(
-        IdentityWriteSettings(superusers=frozenset({"9000"}), ignored_bot_users=frozenset({"7777"}))
-    )
+    configure_identity_write_settings(IdentityWriteSettings(ignored_bot_users=frozenset({"7777"})))
     registry = builtin_registry(gateway_instance_id="gw-test")
     router = PresenceRouter(
         database,
@@ -121,7 +124,7 @@ async def test_v2_private_and_group_dual_presence_same_person_space(database: Da
         presence_a = await ensure_v2_presence(session, "8000")
         presence_b = await ensure_v2_presence(session, "8001")
         await ensure_v2_space(session, "2001")
-    registry.connect(bot_a)
+    registry.connect(bot_a, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     private = await resolver.pre_admit(bot_a, _message(message_id="p1", user_id="1001"))
     assert private is not None and not private.dropped
@@ -133,15 +136,15 @@ async def test_v2_private_and_group_dual_presence_same_person_space(database: Da
     )
     assert group is not None and not group.dropped
     assert group.space_id is not None
-    registry.connect(bot_b)
+    registry.connect(bot_b, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
     other = await resolver.pre_admit(
         bot_b, _message(message_id="p2", user_id="1001", bot_user_id="8001")
     )
     assert other is not None and not other.dropped
     assert other.person_id == private.person_id
-    assert other.conversation_id == private.conversation_id
-    assert other.primary_alias == private.primary_alias
+    assert other.conversation_id != private.conversation_id
+    assert other.primary_alias != private.primary_alias
     again = await resolver.pre_admit(
         bot_b, _message(message_id="g2", user_id="1001", group_id="2001", bot_user_id="8001")
     )
@@ -165,13 +168,13 @@ async def test_non_ingest_drops_before_policy_without_body(
         presence_a = await ensure_v2_presence(session, "8000")
         presence_b = await ensure_v2_presence(session, "8001")
         await ensure_v2_space(session, "2001")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence_a)
     first = await resolver.pre_admit(
         bot, _message(message_id="g-ok", user_id="1001", group_id="2001")
     )
     assert first is not None and not first.dropped
-    registry.connect(other)
+    registry.connect(other, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8001", presence_id=presence_b)
     dropped = await resolver.pre_admit(
         other,
@@ -193,7 +196,7 @@ async def test_fence_failpoint_is_same_immediate_and_receipt_dedupe(database: Da
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     admitted = await resolver.pre_admit(bot, _message(message_id="fence-1"))
     assert admitted is not None and not admitted.dropped
@@ -216,12 +219,86 @@ async def test_fence_failpoint_is_same_immediate_and_receipt_dedupe(database: Da
 
 
 @pytest.mark.asyncio
+async def test_retired_presence_sender_becomes_person_without_rewriting_history(
+    database: Database,
+) -> None:
+    from yuki.identity.db_models import PresenceModel
+
+    registry, resolver, uow = await _stack(database)
+    bot = _Bot("8000")
+    async with database.immediate_session() as session:
+        ingress_presence = await ensure_v2_presence(session, "8000")
+        retired_presence = await ensure_v2_presence(session, "8001")
+    registry.connect(bot, provider_id="snowluma")
+    registry.bind_presence(platform="qq", external_account_id="8000", presence_id=ingress_presence)
+    native = _message(message_id="before-retirement", user_id="8001", group_id="2001")
+    original = await resolver.pre_admit(bot, native)
+    assert original is not None and not original.dropped
+    assert original.author_kind == AuthorKind.YUKI.value
+    stored = await uow.append_inbound(original.message, original)
+    assert stored.event.author_presence_id == retired_presence
+    async with database.immediate_session() as session:
+        presence = await session.get(PresenceModel, retired_presence)
+        assert presence is not None
+        presence.enabled = False
+        presence.ingest_eligible = False
+        presence.revision += 1
+    replay = await resolver.pre_admit(bot, native)
+    assert replay is not None and replay.author_kind == AuthorKind.YUKI.value
+    recovered = await uow.append_inbound(replay.message, replay)
+    assert not recovered.created and recovered.event.id == stored.event.id
+    assert recovered.event.author_presence_id == retired_presence
+    assert recovered.event.author_person_id is None
+    current = await resolver.pre_admit(
+        bot, _message(message_id="after-retirement", user_id="8001", group_id="2001")
+    )
+    assert current is not None and not current.dropped
+    assert current.author_kind == AuthorKind.YUKI.value
+    assert current.author_person_id is None
+    assert current.author_presence_id == retired_presence
+    appended = await uow.append_inbound(current.message, current)
+    assert appended.event.author_person_id == current.author_person_id
+    repeated = await resolver.pre_admit(
+        bot, _message(message_id="after-binding-created", user_id="8001", group_id="2001")
+    )
+    assert repeated is not None and repeated.author_person_id == current.author_person_id
+    async with database.sessions() as session:
+        historic = await session.get(ChatEventModel, stored.event.id)
+        assert historic is not None
+        assert historic.author_kind == AuthorKind.YUKI.value
+        assert historic.author_presence_id == retired_presence
+        assert historic.author_person_id is None
+        presence = await session.get(PresenceModel, retired_presence)
+        assert presence is not None and presence.external_account_id == "8001"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_ensure_person_only_conflicts_with_current_presence(
+    database: Database, enabled: bool
+) -> None:
+    from yuki.identity.db_models import PresenceModel
+    from yuki.identity.event_author import project_event_author
+
+    async with database.immediate_session() as session:
+        presence_id = await ensure_v2_presence(session, "8001")
+        presence = await session.get(PresenceModel, presence_id)
+        assert presence is not None
+        presence.enabled = enabled
+        with pytest.raises(CanonicalIdentityError) as error:
+            await ensure_person(session, "8001", now=_NOW)
+        assert error.value.category == "canonical_kind_mismatch"
+        author = await project_event_author(session, sender_user_id="8001")
+        assert author.as_tuple() == (AuthorKind.YUKI.value, None, presence_id)
+
+
+@pytest.mark.asyncio
 async def test_external_bot_does_not_create_person(database: Database) -> None:
     registry, resolver, _uow = await _stack(database)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     admitted = await resolver.pre_admit(
         bot, _message(message_id="bot-1", user_id="6666", is_bot=True)
@@ -231,7 +308,7 @@ async def test_external_bot_does_not_create_person(database: Database) -> None:
     assert admitted.author_person_id is None
     assert admitted.conversation_id is None
     async with database.sessions() as session:
-        from qq_ai_bot.identity.db_models import CanonicalPersonModel
+        from yuki.identity.db_models import CanonicalPersonModel
 
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "6666")
@@ -245,9 +322,9 @@ async def test_external_bot_does_not_create_person(database: Database) -> None:
 async def test_private_reply_keeps_original_connection_without_resending(failure: str) -> None:
     from unittest.mock import AsyncMock
 
-    from qq_ai_bot.adapters.onebot.sender import OneBotSender, OneBotSendError
-    from qq_ai_bot.domain.messages import OutboundMessage
-    from qq_ai_bot.gateway.registry import configure_process_registry
+    from yuki.adapters.onebot.sender import OneBotSender, OneBotSendError
+    from yuki.domain.messages import OutboundMessage
+    from yuki.gateway.registry import configure_process_registry
 
     @dataclass
     class SendingBot(_Bot):
@@ -265,11 +342,11 @@ async def test_private_reply_keeps_original_connection_without_resending(failure
         )
         replacement = SendingBot("8000", AsyncMock(return_value={"message_id": "replacement"}))
         other = SendingBot("8001", AsyncMock(return_value={"message_id": "other"}))
-        registry.connect(ingress, presence_id="p-a")
-        registry.connect(other, presence_id="p-b")
+        registry.connect(ingress, presence_id="p-a", provider_id="snowluma")
+        registry.connect(other, presence_id="p-b", provider_id="snowluma")
         sender = OneBotSender(ingress, event=object())  # type: ignore[arg-type]
         registry.disconnect(ingress)
-        registry.connect(replacement, presence_id="p-a")
+        registry.connect(replacement, presence_id="p-a", provider_id="snowluma")
         message = OutboundMessage(text="" if failure == "local" else "hello")
         with pytest.raises(OneBotSendError):
             await sender.send(message)
@@ -285,13 +362,17 @@ async def test_private_reply_keeps_original_connection_without_resending(failure
 
 
 def test_any_presence_mention_and_reply_overlay() -> None:
-    from qq_ai_bot.services.policies import replies_to_bot
+    from dataclasses import replace
+
+    from yuki.services.policies import replies_to_bot
 
     message = _message(
         message_id="m1",
         mentioned_user_ids=("8001",),
         reply_sender_user_id="8001",
+        text="[提及8001]",
     )
+    message = replace(message, mentions=(MessageMention("member", 0, 0, 8, "8001"),))
     assert message.mentions_bot is False
     assert replies_to_bot(message) is False
     overlay = overlay_yuki_signals(message, frozenset({"8000", "8001"}))
@@ -299,11 +380,20 @@ def test_any_presence_mention_and_reply_overlay() -> None:
     assert replies_to_bot(overlay, yuki_account_ids=frozenset({"8000", "8001"})) is True
 
 
+def test_unlocated_legacy_account_list_does_not_become_a_yuki_mention() -> None:
+    from dataclasses import replace
+
+    message = _message(message_id="no-native-mention", mentioned_user_ids=("8001",))
+    assert not overlay_yuki_signals(message, frozenset({"8000", "8001"})).mentions_bot
+    explicit = replace(message, mentioned_user_ids=(), mentions_bot=True)
+    assert overlay_yuki_signals(explicit, frozenset({"8000", "8001"})).mentions_bot
+
+
 @pytest.mark.asyncio
 async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
     database: Database,
 ) -> None:
-    configure_identity_write_settings(IdentityWriteSettings(superusers=frozenset({"9000"})))
+    configure_identity_write_settings(IdentityWriteSettings())
     registry = GatewayConnectionRegistry(
         providers=GatewayProviderCatalog(
             (_LagrangeProvider(),),
@@ -316,7 +406,7 @@ async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="lagrange")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     mismatch = await resolver.pre_admit(
         bot, _message(message_id="mismatch", user_id="1001", bot_user_id="9999")
@@ -340,14 +430,14 @@ async def test_ingress_uses_handle_provider_and_rejects_bot_mismatch(
 async def test_retired_provider_provenance_remains_readable_without_recreating_event(
     database: Database,
 ) -> None:
-    from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-    from qq_ai_bot.persistence.repositories import EventLedgerRepository
+    from yuki.conversation.scope_repository import ConversationScopeRepository
+    from yuki.persistence.repositories import EventLedgerRepository
 
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
-    registry.connect(bot, presence_id=presence)
+    registry.connect(bot, presence_id=presence, provider_id="snowluma")
     admitted = await resolver.pre_admit(bot, _message(message_id="historical-provider"))
     assert admitted is not None and not admitted.dropped
     appended = await uow.append_inbound(admitted.message, admitted)
@@ -376,11 +466,11 @@ async def test_retired_provider_provenance_remains_readable_without_recreating_e
 
 @pytest.mark.asyncio
 async def test_unknown_group_and_unknown_presence_fail_closed(database: Database) -> None:
-    from qq_ai_bot.identity.db_models import CanonicalPersonModel, SpaceBindingModel
+    from yuki.identity.db_models import CanonicalPersonModel, SpaceBindingModel
 
     registry, resolver, _uow = await _stack(database)
     bot = _Bot("8888")
-    registry.connect(bot, presence_id=None)
+    registry.connect(bot, presence_id=None, provider_id="snowluma")
     missing_presence = await resolver.pre_admit(
         bot, _message(message_id="no-p", bot_user_id="8888")
     )
@@ -410,7 +500,7 @@ async def _admit_private(database: Database, message_id: str, *, text: str = "he
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     admitted = await resolver.pre_admit(
         bot, _message(message_id=message_id, user_id="1001", text=text)
@@ -455,7 +545,9 @@ async def test_canonical_ingress_segments_or_occurred_at_conflict_fails_closed(
     with pytest.raises(CanonicalIdentityError) as occurred:
         await uow.append_inbound(
             replace(
-                admitted.message, received_at=admitted.message.received_at + timedelta(minutes=1)
+                admitted.message,
+                occurred_at=(admitted.message.occurred_at or admitted.message.received_at)
+                + timedelta(minutes=1),
             ),
             admitted,
         )
@@ -472,8 +564,8 @@ async def test_canonical_ingress_race_rereads_winner(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
-    from qq_ai_bot.identity import canonical_uow as ingress_uow
+    from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
+    from yuki.identity import canonical_uow as ingress_uow
 
     uow, admitted = await _admit_private(database, "ingress-race-1", text="race-winner")
     first = await uow.append_inbound(admitted.message, admitted)
@@ -509,7 +601,7 @@ async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
 ) -> None:
     from uuid import uuid4
 
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalEventReceiptModel
+    from yuki.conversation.canonical_db_models import CanonicalEventReceiptModel
 
     uow, admitted = await _admit_private(database, "ingress-forge-1", text="kept")
     first = await uow.append_inbound(admitted.message, admitted)
@@ -521,7 +613,7 @@ async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
         await uow.append_inbound(admitted.message, admitted)
     assert dangling.value.category == "receipt_conflict"
     async with database.sessions() as session, session.begin():
-        from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
+        from yuki.conversation.hydrate import ensure_canonical_conversation
 
         receipt = await session.scalar(select(CanonicalEventReceiptModel))
         assert receipt is not None
@@ -534,6 +626,7 @@ async def test_canonical_ingress_dangling_or_forged_receipt_fails_closed(
             kind="private",
             primary_scope_key="bot:8000:private:1099",
             person_id=other_person,
+            identity_binding_id=(await find_identity_binding(session, "1099")).id,
         )
         row.canonical_conversation_id = other.conversation_id
     with pytest.raises(CanonicalIdentityError) as forged:
@@ -617,7 +710,7 @@ async def test_canonical_reply_uses_keeper_author_and_ignores_other_conversation
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     first = await resolver.pre_admit(bot, _message(message_id="reply-base", user_id="1001"))
     assert first is not None and not first.dropped and first.conversation_id
@@ -714,7 +807,7 @@ async def test_canonical_reply_ambiguous_or_duplicate_only(
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     first = await resolver.pre_admit(bot, _message(message_id="amb-base", user_id="1001"))
     assert first is not None and not first.dropped and first.conversation_id
@@ -782,7 +875,7 @@ async def test_gateway_probe_during_pre_admission_does_not_hold_sqlite_writer(
         presence = await ensure_v2_presence(session, "8000")
         await ensure_v2_space(session, "2001")
     bot = _Bot("8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     entered, release = asyncio.Event(), asyncio.Event()
 
@@ -813,7 +906,7 @@ async def test_gateway_probe_during_pre_admission_does_not_hold_sqlite_writer(
 async def test_admitted_group_message_survives_disconnect_but_not_route_change(
     database: Database, route_state: str
 ) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import SpaceBindingIngestRouteModel
+    from yuki.conversation.canonical_db_models import SpaceBindingIngestRouteModel
 
     registry, resolver, uow = await _stack(database)
     async with database.sessions() as session, session.begin():
@@ -821,7 +914,7 @@ async def test_admitted_group_message_survives_disconnect_but_not_route_change(
         replacement_presence = await ensure_v2_presence(session, "8001")
         await ensure_v2_space(session, "2001")
     bot = _Bot("8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     admitted = await resolver.pre_admit(
         bot, _message(message_id="admitted-before-disconnect", group_id="2001")
@@ -851,14 +944,14 @@ async def test_admitted_group_message_survives_disconnect_but_not_route_change(
 async def test_admitted_group_new_survives_socket_disconnect_but_not_route_pause(
     database: Database, route_paused: bool
 ) -> None:
-    from qq_ai_bot.conversation.canonical_db_models import SpaceBindingIngestRouteModel
+    from yuki.conversation.canonical_db_models import SpaceBindingIngestRouteModel
 
     registry, resolver, uow = await _stack(database)
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
         await ensure_v2_space(session, "2001")
     bot = _Bot("8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     admitted = await resolver.pre_admit(
         bot,
@@ -897,7 +990,7 @@ async def test_internal_reply_reference_rejects_a_foreign_conversation(database:
     bot = _Bot("8000")
     async with database.sessions() as session, session.begin():
         presence = await ensure_v2_presence(session, "8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     registry.bind_presence(platform="qq", external_account_id="8000", presence_id=presence)
     first = await resolver.pre_admit(bot, _message(message_id="owned-anchor", user_id="1001"))
     anchor = await uow.append_inbound(first.message, first)
@@ -919,10 +1012,12 @@ async def test_internal_reply_reference_rejects_a_foreign_conversation(database:
 async def test_person_references_keep_all_people_and_the_first_mentioned_binding(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.event_author import project_event_author, project_event_authors
+    from dataclasses import replace
+
+    from yuki.identity.event_author import project_event_author, project_event_authors
 
     user_ids = tuple(str(61001 + index) for index in range(8))
-    people = await observe_members(database, user_ids)
+    await observe_members(database, user_ids)
     async with database.immediate_session() as session:
         owner = await session.scalar(
             select(IdentityBindingModel).where(
@@ -930,19 +1025,14 @@ async def test_person_references_keep_all_people_and_the_first_mentioned_binding
             )
         )
         assert owner is not None
-        session.add(
-            IdentityBindingModel(
-                id=str(uuid4()),
-                person_id=owner.person_id,
-                platform="qq",
-                external_account_id="61999",
-                display_name="alternate account",
-                first_seen_at=_NOW,
-                last_seen_at=_NOW,
-                created_at=_NOW,
-                updated_at=_NOW,
-            )
+        from yuki.identity.canonical_repository import ensure_account, replace_assignment
+        from yuki.identity.db_models import CanonicalPersonModel
+
+        account = await ensure_account(
+            session, "61999", platform="qq", display_name="alternate account", now=_NOW
         )
+        person = await session.get(CanonicalPersonModel, owner.person_id)
+        await replace_assignment(session, account, None, person, now=_NOW)
         disabled = await session.scalar(
             select(IdentityBindingModel).where(
                 IdentityBindingModel.external_account_id == user_ids[-1]
@@ -951,26 +1041,52 @@ async def test_person_references_keep_all_people_and_the_first_mentioned_binding
         assert disabled is not None
         disabled.status = "disabled"
     inputs = ("61999", "8000", "7777", "404", *user_ids, "1001", user_ids[1])
-    references = await people.person_reference_ids(
-        inputs, speaker_user_id="1001", bot_user_id="8000"
+    registry, resolver, uow = await _stack(database)
+    bot = _Bot("8000")
+    registry.connect(bot, provider_id="snowluma")
+    native = replace(
+        _message(message_id="canonical-reference-input", text=""),
+        segments=tuple({"type": "at", "data": {"qq": account}} for account in inputs),
     )
-    assert references == ("61999", *user_ids[1:-1])
+    admitted = await resolver.pre_admit(bot, native)
+    stored = await uow.append_inbound(admitted.message, admitted)
     async with database.sessions() as session:
-        batch = await project_event_authors(session, sender_user_ids=inputs)
-        for account in dict.fromkeys(inputs):
+        bindings = {
+            row.external_account_id: row.person_id
+            for row in await session.scalars(
+                select(IdentityBindingModel).where(IdentityBindingModel.platform == "qq")
+            )
+        }
+    expected = tuple(bindings[item] for item in ("61999", *user_ids[1:], "1001"))
+    assert admitted.message.mentioned_person_ids == expected
+    assert stored.event.mentioned_person_ids == expected
+    assert len(admitted.message.mentions) == len(inputs)
+    assert admitted.message.mentions[0].target_user_id == "61999"
+    assert admitted.message.mentions[0].account_id != admitted.message.mentions[4].account_id
+    assert admitted.message.mentions[0].person_id == admitted.message.mentions[4].person_id
+    assert all(
+        admitted.message.text[mention.text_start : mention.text_end] == mention.text
+        for mention in admitted.message.mentions
+    )
+    async with database.sessions() as session:
+        authors = tuple(item for item in inputs if item != user_ids[-1])
+        batch = await project_event_authors(session, sender_user_ids=authors)
+        for account in dict.fromkeys(authors):
             assert batch[account] == await project_event_author(session, sender_user_id=account)
+        with pytest.raises(CanonicalIdentityError) as disabled:
+            await project_event_authors(session, sender_user_ids=(user_ids[-1],))
+        assert disabled.value.category == "canonical_owner_disabled"
     assert batch["8000"].author_kind == "yuki"
     assert batch["7777"].author_kind == "yuki"
     assert batch["404"].author_person_id is None
-    assert batch[user_ids[-1]].author_person_id is None
 
 
 @pytest.mark.asyncio
-async def test_reference_projection_rejects_disabled_owner_and_presence_person_collision(
+async def test_author_projection_rejects_disabled_source_and_cannot_dual_assign_presence(
     database: Database,
 ) -> None:
-    from qq_ai_bot.identity.db_models import CanonicalPersonModel, PresenceModel
-    from qq_ai_bot.identity.event_author import project_event_authors
+    from yuki.identity.db_models import CanonicalPersonModel, PresenceModel
+    from yuki.identity.event_author import project_event_authors
 
     async with database.immediate_session() as session:
         disabled_id = await ensure_person(session, "61010", now=_NOW)
@@ -981,26 +1097,20 @@ async def test_reference_projection_rejects_disabled_owner_and_presence_person_c
             select(PresenceModel).where(PresenceModel.external_account_id == "8000")
         )
         assert presence is not None
-        session.add(
-            IdentityBindingModel(
-                id=str(uuid4()),
-                person_id=disabled_id,
-                platform="qq",
-                external_account_id="8000",
-                display_name="collision",
-                first_seen_at=_NOW,
-                last_seen_at=_NOW,
-                created_at=_NOW,
-                updated_at=_NOW,
+        from yuki.identity.canonical_repository import create_person_binding
+
+        with pytest.raises(CanonicalIdentityError) as collision:
+            await create_person_binding(
+                session, external_account_id="8000", display_name="collision", now=_NOW
             )
-        )
+        assert collision.value.category == "canonical_kind_mismatch"
     async with database.sessions() as session:
         with pytest.raises(CanonicalIdentityError) as disabled:
             await project_event_authors(session, sender_user_ids=("1001", "61010"))
         assert disabled.value.category == "canonical_owner_disabled"
-        with pytest.raises(CanonicalIdentityError) as collision:
-            await project_event_authors(session, sender_user_ids=("8000",))
-        assert collision.value.category == "canonical_kind_mismatch"
+        authors = await project_event_authors(session, sender_user_ids=("8000",))
+        assert authors["8000"].author_kind == "yuki"
+        assert authors["8000"].author_presence_id == presence.id
 
 
 @pytest.mark.asyncio
@@ -1009,8 +1119,13 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
 ) -> None:
     from sqlalchemy import delete
 
-    from qq_ai_bot.identity.db_models import CanonicalPersonModel, SpaceBindingModel
-    from qq_ai_bot.persistence.models import MembershipModel, PersonAliasModel
+    from yuki.identity.canonical_repository import ensure_account, replace_assignment
+    from yuki.identity.db_models import (
+        AccountNameObservationModel,
+        CanonicalPersonModel,
+        SpaceBindingModel,
+    )
+    from yuki.persistence.models import MembershipModel, PersonAliasModel
 
     people = await observe_members(database, ("61021", "61022", "61023"))
     async with database.immediate_session() as session:
@@ -1019,18 +1134,11 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
         )
         assert original is not None
         person_id = original.person_id
-        session.add(
-            IdentityBindingModel(
-                id=str(uuid4()),
-                person_id=person_id,
-                platform="qq",
-                external_account_id="61029",
-                display_name="alternate display",
-                first_seen_at=_NOW,
-                last_seen_at=_NOW,
-                created_at=_NOW,
-                updated_at=_NOW,
-            )
+        alternate = await ensure_account(
+            session, "61029", platform="qq", display_name="alternate display", now=_NOW
+        )
+        await replace_assignment(
+            session, alternate, None, await session.get(CanonicalPersonModel, person_id), now=_NOW
         )
         disabled = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "61023")
@@ -1061,11 +1169,12 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
     )
     accounts = ("61029", "61022", "61021", "61029", "404", "61023")
     profiles = await people.get_many(accounts, group_id="2001")
-    assert tuple(profiles) == ("61029", "61022", "61021")
-    assert profiles["61029"].nickname == profiles["61021"].nickname == "name-61021"
+    assert tuple(profiles) == ("61029", "61022", "61021", "61023")
+    assert profiles["61029"].nickname == "alternate display"
+    assert profiles["61021"].nickname == "name-61021"
     assert profiles["61029"].group_card == profiles["61021"].group_card == ""
     assert profiles["61022"].group_card == "card-61022"
-    assert await people.members_in_group(accounts, "2001") == {"61029", "61021", "61022"}
+    assert await people.members_in_group(accounts, "2001") == {"61021", "61022", "61023"}
     card_only = await people.get(user_id="61021", group_id="2001", include_nickname=False)
     assert card_only is not None and card_only.nickname == card_only.group_card == ""
     assert await people.find_group_members_by_exact_name("card-61021", "2001") == ("61021",)
@@ -1086,14 +1195,15 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
         assert membership is not None
         assert membership.last_seen_at == binding.last_seen_at == space_binding.last_seen_at
 
-    # With no global nickname, prefer this account's display, then the last
-    # active display across the Person's accounts, including future platforms.
+    # Removing observed aliases or adding account display names does not rename
+    # the Person. Platform metadata remains independent of the chosen main name.
     async with database.immediate_session() as session:
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.external_account_id == "61021")
         )
         assert binding is not None
-        binding.display_name = ""
+        binding.account.display_name = ""
+        observed_account_id, observed_assignment_id = binding.account_id, binding.id
         await session.execute(
             delete(PersonAliasModel).where(
                 PersonAliasModel.canonical_person_id == person_id,
@@ -1105,20 +1215,13 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
             ("~foreign", "future-platform", "cross-platform fallback", "active"),
             ("~~disabled", "qq", "disabled fallback", "disabled"),
         ):
-            session.add(
-                IdentityBindingModel(
-                    id=str(uuid4()),
-                    person_id=person_id,
-                    platform=platform,
-                    external_account_id=account,
-                    display_name=display_name,
-                    status=status,
-                    first_seen_at=_NOW,
-                    last_seen_at=_NOW,
-                    created_at=_NOW,
-                    updated_at=_NOW,
-                )
+            known = await ensure_account(
+                session, account, platform=platform, display_name=display_name, now=_NOW
             )
+            assignment = await replace_assignment(
+                session, known, None, await session.get(CanonicalPersonModel, person_id), now=_NOW
+            )
+            assignment.status = status
         other_space = await ensure_v2_space(session, "2002", now=_NOW)
         session.add(
             PersonAliasModel(
@@ -1131,29 +1234,29 @@ async def test_profile_batch_preserves_accounts_names_and_known_empty_group_card
             )
         )
     fallback = await people.get_many(("61021", "61029"))
-    assert fallback["61021"].nickname == "cross-platform fallback"
+    assert fallback["61021"].nickname == ""
     assert fallback["61029"].nickname == "alternate display"
-    assert await people.find_group_members_by_exact_name("cross-platform fallback", "2001") == (
-        "61021",
-    )
+    assert (await people.get(person_id=person_id)).nickname == "name-61021"
+    assert not await people.find_group_members_by_exact_name("cross-platform fallback", "2001")
     assert not await people.find_group_members_by_exact_name("disabled fallback", "2001")
     assert not await people.find_group_members_by_exact_name("foreign scoped nickname", "2001")
 
-    # Equal timestamps retain the original latest-id nickname tie rule.
+    # New observed aliases stay searchable without replacing the Person name.
     async with database.immediate_session() as session:
         for name in ("tied earlier nickname", "tied later nickname"):
             session.add(
-                PersonAliasModel(
-                    canonical_person_id=person_id,
-                    canonical_space_id=None,
-                    alias=name,
-                    alias_type="nickname",
+                AccountNameObservationModel(
+                    account_id=observed_account_id,
+                    assignment_id=observed_assignment_id,
+                    space_binding_id=None,
+                    name=name,
+                    kind="nickname",
                     first_seen_at=_NOW,
                     last_seen_at=_NOW,
                 )
             )
     tied = await people.get_many(("61021", "61029"), group_id="2001")
-    assert all(profile.nickname == "tied later nickname" for profile in tied.values())
+    assert tied["61021"].nickname == "" and tied["61029"].nickname == "alternate display"
     assert await people.find_group_members_by_exact_name("tied later nickname", "2001") == (
         "61021",
     )

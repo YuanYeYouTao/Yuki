@@ -6,9 +6,9 @@ from datetime import UTC, datetime
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
+from tests.support.legacy_conversation_seed import seed_legacy_person
 
-from qq_ai_bot.identity.canonical_repository import ensure_person
-from qq_ai_bot.persistence.database import Database
+from yuki.persistence.database import Database
 
 
 def test_upgrade_preserves_reflection_work_state(tmp_path, monkeypatch):
@@ -21,7 +21,7 @@ def test_upgrade_preserves_reflection_work_state(tmp_path, monkeypatch):
         db = Database(url)
         try:
             async with db.immediate_session() as writer:
-                person = await ensure_person(writer, "1001")
+                person = await seed_legacy_person(writer, "1001")
                 await writer.execute(
                     text(
                         "INSERT INTO memory_self_reflection_states "

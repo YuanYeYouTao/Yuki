@@ -9,15 +9,15 @@ import pytest
 # P10: explicit Invocation fixture contract; existing assertions are retained.
 from tests.support.agent_backend import StubAgentBackend
 
-from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
-from qq_ai_bot.capabilities.invocation import (
+from yuki.capabilities.coordinator import ToolInvocationCoordinator
+from yuki.capabilities.invocation import (
     Invocation,
     InvocationIdentity,
     TrustedInvocationContext,
     direct_invocations,
     direct_operation_id,
 )
-from qq_ai_bot.domain.messages import ToolCall, ToolFunction
+from yuki.domain.messages import ToolCall, ToolFunction
 
 
 class IdentityBackend(StubAgentBackend):

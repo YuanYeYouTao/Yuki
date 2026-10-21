@@ -10,40 +10,42 @@ from sqlalchemy import select
 from tests.conftest import MemorySender, make_settings
 from tests.integration.test_self_common_capabilities import runtime, self_actor
 from tests.support.automation_runtime_helpers import FakeClock
+from tests.support.event_seed import seed_scoped_event
 from tests.support.model_profiles import write_fake_profiles
+from tests.support.projection import projection_record
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.container import ApplicationContainer
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.model_runtime.db_models import ModelInvocationModel
-from qq_ai_bot.model_runtime.models import (
+from yuki.automation.models import RunStatus
+from yuki.container import ApplicationContainer
+from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.domain.tool_actor import ToolActor
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.llm.fake import FakeLLMProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.model_runtime.db_models import ModelInvocationModel
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
     ModelRoute,
     ModelTask,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.protocol_store import ProtocolStore
-from qq_ai_bot.runtime.trigger import SelfInitiativeTrigger
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_journal import WorkJournal, decode_transcript
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
-from qq_ai_bot.sandbox.environment_tools import SANDBOX_TOOLS
-from qq_ai_bot.workspace.tools import WORKSPACE_TOOLS
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import ModelProfileCatalog
+from yuki.persistence.models import ChatEventModel
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.protocol_store import ProtocolStore
+from yuki.runtime.trigger import SelfInitiativeTrigger
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_journal import WorkJournal, decode_transcript
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects, journal, work
+from yuki.sandbox.environment_tools import SANDBOX_TOOLS
+from yuki.workspace.tools import WORKSPACE_TOOLS
 from yuki_plugin_sdk.permissions import PluginPermission
 
 
@@ -216,7 +218,9 @@ async def test_actual_main_http_separates_host_material_before_final_user_body(
             assert joined.endswith(current.text) and texts[-1].endswith(current.text)
             assert texts[-3] + host + texts[-1] in joined
             async with database.sessions() as reader:
-                saved = (await reader.scalars(select(PromptProjectionModel))).one()
+                saved = await projection_record(
+                    reader, (await reader.scalars(select(PromptProjectionModel))).one()
+                )
                 assert "<runtime_context>" not in saved.payload_json
                 assert "CURRENT_MATERIAL_VALUE" not in saved.payload_json
         finally:
@@ -269,7 +273,9 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert (await app.processor.handle(message, sender)).reason == "chat"
             assert len(wire) == 1 and "CHAT_CURRENT_STATE" in _text(wire[0])
             async with database.sessions() as reader:
-                original_public = (await reader.scalars(select(PromptProjectionModel))).one()
+                original_public = await projection_record(
+                    reader, (await reader.scalars(select(PromptProjectionModel))).one()
+                )
                 original_epoch = original_public.epoch_id
                 original_items = json.loads(original_public.payload_json)
 
@@ -277,7 +283,7 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             scope = await app.conversation_scopes.get(identity)
             actor = await self_actor(database, env)
             source = runtime(actor, env)
-            config = await app.runtime_config.snapshot(group_id="20001")
+            config = await app.runtime_config.snapshot(group_id=env.space)
             token = await app.turn_coordinator.notify_message(
                 scope.runtime_scope_key, TurnOrigin.SELF_INITIATIVE
             )
@@ -315,7 +321,9 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert "CHAT_CURRENT_STATE" not in _text(wire[1])
             assert actor.instruction in _text(wire[1])
             async with database.sessions() as reader:
-                self_public = (await reader.scalars(select(PromptProjectionModel))).one()
+                self_public = await projection_record(
+                    reader, (await reader.scalars(select(PromptProjectionModel))).one()
+                )
                 assert self_public.view_key == scope.id and self_public.epoch_id == original_epoch
                 assert json.loads(self_public.payload_json) == original_items
 
@@ -363,7 +371,9 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             assert len(wire) == 3 and "SCHEDULE_CURRENT_INSTRUCTION" in _text(wire[2])
             assert "SELF_CURRENT_STATE" not in _text(wire[2]) and "短记录" not in _text(wire[2])
             async with database.sessions() as reader:
-                schedule_public = (await reader.scalars(select(PromptProjectionModel))).one()
+                schedule_public = await projection_record(
+                    reader, (await reader.scalars(select(PromptProjectionModel))).one()
+                )
                 assert schedule_public.view_key == scope.id
                 assert schedule_public.epoch_id == original_epoch
                 assert json.loads(schedule_public.payload_json) == original_items
@@ -375,16 +385,19 @@ async def test_current_deployment_three_entries_share_full_contract_and_fresh_ma
             full = {tool.name: tool for tool in await app.main_agent_contract.definitions()}
             assert SANDBOX_TOOLS | WORKSPACE_TOOLS <= full.keys()
             assert {
-                "automation_create",
+                "automation_manage",
                 "task_control",
                 "update_short_state",
                 "send_message",
             } <= full.keys()
-            schema = full["automation_create"].parameters
+            schema = full["automation_manage"].parameters
             assert "steps" not in json.dumps(schema) and "goal" in json.dumps(schema)
             async with database.sessions() as reader:
                 public = "\n".join(
-                    row.payload_json for row in await reader.scalars(select(PromptProjectionModel))
+                    [
+                        (await projection_record(reader, row)).payload_json
+                        for row in await reader.scalars(select(PromptProjectionModel))
+                    ]
                 )
                 events = list(await reader.scalars(select(ChatEventModel)))
             assert all(
@@ -478,7 +491,7 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
         )
         app, env, message, sender = await _deployment(database, tmp_path, original, request_limit=2)
         try:
-            config = await app.runtime_config.snapshot(group_id="20001")
+            config = await app.runtime_config.snapshot(group_id=env.space)
             original_contract = await app.runtime.main_turns.recovery_contract(config)
             original_profile_revision = app.models.profile_revision(ModelTask.CHAT_AGENT)
             assert (await app.processor.handle(message, sender)).reason == "chat"
@@ -540,20 +553,35 @@ async def test_original_gemini_work_provider_rename_keeps_contract_and_receipts(
             assert final["id"] == old_work["id"] and final["source_key"] == old_work["source_key"]
             assert final["source_json"] == old_work["source_json"]
             assert final["state"] == "completed" and final["model_requests"] == 3
-            assert len(wire) == 3 and neutral[2].request_chain_id != old_journal["chain_id"]
-            assert neutral[2].continuation is None and not neutral[2].continuation_items
-            assert all(item.response_item is None for item in neutral[2].messages)
-            assert "original-paid-" not in json.dumps(wire[2])
-            assert "ORIGINAL_SENT_RESULT" in _text(wire[2])
+            assert len(wire) == 3 and neutral[2].request_chain_id == old_journal["chain_id"]
+            assert neutral[2].continuation == transcript.request().continuation
+            assert neutral[2].continuation is not None
+            assert neutral[2].continuation.provider == "gemini"
+            assert neutral[2].continuation.protocol == "gemini"
+            assert wire[2]["contents"][: len(wire[1]["contents"])] == wire[1]["contents"]
+            resumed_parts = [part for item in wire[2]["contents"] for part in item["parts"]]
+            calls = [part["functionCall"] for part in resumed_parts if "functionCall" in part]
+            responses = [
+                part["functionResponse"] for part in resumed_parts if "functionResponse" in part
+            ]
+            assert [(call["id"], call["name"]) for call in calls] == [
+                ("original-accept", "task_control"),
+                ("original-send", "send_message"),
+                ("original-read", "time_get_current"),
+            ]
+            assert [(response["id"], response["name"]) for response in responses] == [
+                (call["id"], call["name"]) for call in calls
+            ]
+            assert [
+                part["thoughtSignature"] for part in resumed_parts if "thoughtSignature" in part
+            ] == [
+                "original-paid-accept-signature",
+                "original-paid-send-signature",
+                "original-paid-private-read-signature",
+            ]
+            assert all(response["response"]["output"] for response in responses)
+            assert calls[1]["args"] == {"text": "ORIGINAL_SENT_RESULT"}
             assert _fixed(wire[1]) == _fixed(wire[2])
-            resumed_parts = wire[2]["contents"][-1]["parts"]
-            assert resumed_parts[-1]["text"] == neutral[2].messages[-1].content
-            materials = [part["text"] for part in resumed_parts if part["text"].startswith("\n\n{")]
-            assert {json.loads(text)["kind"] for text in materials} == {
-                "work_current_material",
-                "work_unobserved_tool_round",
-            }
-            assert all(text.endswith("\n\n") for text in materials)
             main_session = f"yuki:{old_work['conversation_id']}:g{old_work['generation']}"
             assert sessions == [
                 f"{main_session}:main",
@@ -618,7 +646,9 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
     monkeypatch.setattr(chat, "_run_agent", capture_runtime)
     await harness.processor.handle(message, MemorySender())
     async with database.sessions() as reader:
-        before = (await reader.scalars(select(PromptProjectionModel))).one()
+        before = await projection_record(
+            reader, (await reader.scalars(select(PromptProjectionModel))).one()
+        )
         original = (before.epoch_id, before.revision, before.payload_json)
     if source_kind == "person":
         source = original_runtime[0]
@@ -626,10 +656,11 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
     else:
         actor = await self_actor(database, env)
         source = replace(runtime(actor, env), runtime_config=await chat._runtime_config.snapshot())
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+    from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
     scoped = ScopedEventLedgerUnitOfWork(database)
-    added = await scoped.append(
+    added = await seed_scoped_event(
+        scoped,
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="new-public-source-before-sdk",
         sender_user_id="10001",
@@ -664,7 +695,10 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
     for item in public:
         assert (item["message"]["content"] in [m.content for m in actual]) is read_history
     async with database.sessions() as reader:
-        rows = (await reader.scalars(select(PromptProjectionModel))).all()
+        rows = [
+            await projection_record(reader, row)
+            for row in await reader.scalars(select(PromptProjectionModel))
+        ]
         assert len(rows) == 1 and rows[0].view_key == message.conversation_id
         if not read_history:
             assert (rows[0].epoch_id, rows[0].revision, rows[0].payload_json) == original
@@ -682,7 +716,9 @@ async def test_sdk_history_grant_uses_common_conversation_without_scope_fork(
         MemorySender(),
     )
     async with database.sessions() as reader:
-        final = (await reader.scalars(select(PromptProjectionModel))).one()
+        final = await projection_record(
+            reader, (await reader.scalars(select(PromptProjectionModel))).one()
+        )
         assert final.epoch_id == epoch
         assert json.loads(final.payload_json)[: len(adopted)] == adopted
         assert "当前插件实际要求" not in final.payload_json

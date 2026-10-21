@@ -7,8 +7,8 @@
 async def _persisted_tool_receipt(
     control, key, name, result, *, arguments="{}", side_effecting=True, owner=None
 ):
-    from qq_ai_bot.capabilities.results import normalize_legacy_result
-    from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+    from yuki.capabilities.results import normalize_legacy_result
+    from yuki.runtime.effect_outcomes import execution_evidence
 
     owner = owner or control.current["id"]
     outcome = normalize_legacy_result(result, provider_id="core", tool_name=name)

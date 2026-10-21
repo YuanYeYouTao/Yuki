@@ -9,22 +9,22 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import event, insert, select, update
 from sqlalchemy.exc import OperationalError
+from tests.support.canonical_identity import ensure_person
 
-from qq_ai_bot.identity.canonical_repository import ensure_person
-from qq_ai_bot.memory.authorized_scope import AuthorizedMemoryScope
-from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
-from qq_ai_bot.memory.embedding.fake import FakeEmbeddingProvider
-from qq_ai_bot.memory.embedding.jobs import EmbeddingWrite, MemoryEmbeddingJobRepository
-from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile, EmbeddingVector
-from qq_ai_bot.memory.embedding.provider import EmbeddingProviderError
-from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
-from qq_ai_bot.memory.embedding.semantic import MemorySemanticIndex
-from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
-from qq_ai_bot.memory.embedding.worker import MemoryEmbeddingWorker
-from qq_ai_bot.memory.enums import MemoryScopeType, MemoryTargetRole
-from qq_ai_bot.memory.models import MemoryEntityTarget
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.memory.authorized_scope import AuthorizedMemoryScope
+from yuki.memory.embedding.codec import Float32VectorCodec
+from yuki.memory.embedding.fake import FakeEmbeddingProvider
+from yuki.memory.embedding.jobs import EmbeddingWrite, MemoryEmbeddingJobRepository
+from yuki.memory.embedding.models import EmbeddingProviderProfile, EmbeddingVector
+from yuki.memory.embedding.provider import EmbeddingProviderError
+from yuki.memory.embedding.repository import MemoryEmbeddingRepository
+from yuki.memory.embedding.semantic import MemorySemanticIndex
+from yuki.memory.embedding.text import EmbeddingDocumentBuilder
+from yuki.memory.embedding.worker import MemoryEmbeddingWorker
+from yuki.memory.enums import MemoryScopeType, MemoryTargetRole
+from yuki.memory.models import MemoryEntityTarget
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     MemoryEmbeddingJobModel,
     MemoryEmbeddingModel,
     MemoryFactModel,
@@ -291,7 +291,7 @@ async def test_explicit_retry_cannot_reuse_claim_timestamp_when_clock_stalls(dat
         def now(cls, tz=None):
             return clock
 
-    monkeypatch.setattr("qq_ai_bot.memory.embedding.jobs.datetime", FixedClock)
+    monkeypatch.setattr("yuki.memory.embedding.jobs.datetime", FixedClock)
     (old,) = await jobs.claim(limit=1)
     await jobs.fail(old, error_category="permanent", retryable=False, initial_delay_seconds=0)
     assert await jobs.retry_failed() == 1

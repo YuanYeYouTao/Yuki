@@ -11,16 +11,16 @@ from sqlalchemy import delete, event, insert, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.conversation.frozen_fragments import FrozenFragments
-from qq_ai_bot.conversation.projections import ProjectionConflict, PromptProjectionRepository
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.services.context_assembler import AssembledContext, ContextMetrics
-from qq_ai_bot.services.history_projection import prepare_history
-from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.frozen_fragments import FrozenFragments
+from yuki.conversation.projections import ProjectionConflict, PromptProjectionRepository
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatMessage
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.services.context_assembler import AssembledContext, ContextMetrics
+from yuki.services.history_projection import prepare_history
+from yuki.services.turn_coordinator import HistorySourceChangedError
 
 
 @contextmanager
@@ -57,7 +57,7 @@ def metadata_rows(statements):
 async def scene(database, count):
     registry, resolver, uow = await _stack(database)
     bot = _Bot("8000")
-    registry.connect(bot)
+    registry.connect(bot, provider_id="snowluma")
     admitted = await resolver.pre_admit(bot, _message(message_id="missing-history-seed"))
     assert admitted is not None and not admitted.dropped
     receipt = await uow.append_inbound(admitted.message, admitted)
@@ -87,9 +87,7 @@ async def scene(database, count):
         owner = await writer.get(CanonicalConversationModel, admitted.conversation_id)
         owner.last_event_id = current
     ledger = EventLedgerRepository(database)
-    version, rows = await ledger.read_scope_context(
-        ConversationScope.parse(admitted.primary_alias), limit=count + 2
-    )
+    version, rows = await ledger.read_scope_context(admitted.message.scope(), limit=count + 2)
     parts = tuple(((row.id,), ChatMessage("user", row.content)) for row in rows[:-1])
     context = AssembledContext(
         metadata_payload={},
@@ -152,7 +150,7 @@ async def test_empty_legacy_checkpoint_appends_without_rebuilding_frozen_history
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
         context_key="existing-public-window",
-        items=list(original.items),
+        fragments=FrozenFragments.load(list(original.items)),
         rebuild_reason="bootstrap",
         selected_summary_text="",
         selected_summary_coverage=version.starts_after_event_id,
@@ -219,7 +217,7 @@ async def test_full_prepare_equivalence_and_only_missing_body_reads(database, mo
         generation=version.generation,
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
-        items=list(frozen.items),
+        fragments=FrozenFragments.load(list(frozen.items)),
         rebuild_reason="bootstrap",
         # Current producer records the full representation. Legacy NULL metadata
         # is separately tested as an explicit epoch rebuild, never silent reuse.
@@ -418,7 +416,7 @@ async def test_history_preparation_version_change_is_source_error(database, monk
         generation=version.generation,
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
-        items=list(frozen.items),
+        fragments=FrozenFragments.load(list(frozen.items)),
         rebuild_reason="bootstrap",
         selected_summary_text="",
         selected_summary_coverage=0,
@@ -471,8 +469,8 @@ async def test_missing_bodies_are_parameter_bounded_on_real_sqlite(database, mon
     assert body_rows(statements) == 600 and metadata_rows(statements) == 601
 
 
-async def test_missing_history_rejects_removed_alias_before_reading_any_event(database):
-    from qq_ai_bot.conversation.canonical_db_models import ConversationLegacyAliasModel
+async def test_missing_history_uses_saved_conversation_after_alias_removal(database):
+    from yuki.conversation.canonical_db_models import ConversationLegacyAliasModel
 
     ledger, context, _seed = await scene(database, 16)
     secondary = ConversationScope.private(context.read_version.scope.bot_user_id, "secondary")
@@ -502,8 +500,9 @@ async def test_missing_history_rejects_removed_alias_before_reading_any_event(da
             frozen_event_ids=frozenset(),
             current_event_id=context.current_event_id,
         )
-    assert version.conversation_id is None and version != context.read_version
-    assert records == () and body_rows(statements) == metadata_rows(statements) == 0
+    assert version == expected
+    assert {row.id for row in records} == context.visible_event_ids - {context.current_event_id}
+    assert body_rows(statements) == len(records)
 
 
 async def test_missing_history_filters_duplicate_ids_and_keeps_explicit_keeper(database):
@@ -548,7 +547,7 @@ async def test_publication_still_rejects_change_after_missing_history_prepare(da
         generation=version.generation,
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
-        items=list(frozen.items),
+        fragments=FrozenFragments.load(list(frozen.items)),
         rebuild_reason="bootstrap",
         selected_summary_text="",
         selected_summary_coverage=0,
@@ -619,11 +618,13 @@ async def test_projection_uses_privacy_from_its_source_snapshot(database, monkey
         generation=version.generation,
         expected_source_revision=version.prompt_source_revision,
         starts_after_event_id=version.starts_after_event_id,
-        items=list(frozen.items),
+        fragments=FrozenFragments.load(list(frozen.items)),
         rebuild_reason="bootstrap",
     )
     async with database.immediate_session() as writer:
         published = await publication(writer)
     assert changed
     assert published.items() == list(frozen.items)
-    assert await repository.read("a" * 64) == published
+    restored = await repository.read("a" * 64)
+    assert restored._prefix_stamp == published._prefix_stamp
+    assert restored.items() == published.items()

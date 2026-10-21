@@ -8,15 +8,15 @@ import pytest
 from sqlalchemy import select
 from tests.support.work_runner_helpers import case, run, tool
 
-from qq_ai_bot.domain.messages import ChatResponse
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_schema import children
-from qq_ai_bot.runtime.subagent_tools import execute_subagent
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_schema_v1 import inputs, work
-from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+from yuki.domain.messages import ChatResponse
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_schema import children
+from yuki.runtime.subagent_tools import execute_subagent
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_schema_v1 import inputs, work
+from yuki.runtime.work_wait import WorkWaitRepository
 
 
 async def worker_case(database, tmp_path, calls, *, close_parent=False, wait_parent=False):
@@ -69,6 +69,64 @@ def receipts(control):
     }
 
 
+async def test_worker_admission_switch_covers_both_routes_and_keeps_accepted_child(
+    database, tmp_path
+):
+    probe, parent, workers, identity = await worker_case(database, tmp_path, ())
+    database.subagents_enabled = False
+    direct = json.loads(
+        await probe.control.execute("subagent_start", {"goal": "new child"}, "disabled-start")
+    )
+    derived = json.loads(
+        await probe.control.execute(
+            "task_control", {"action": "derive", "goal": "new child"}, "disabled-derive"
+        )
+    )
+    assert direct == derived == {"ok": False, "error": "subagent_admission_disabled"}
+    async with database.sessions() as reader:
+        assert list(await reader.scalars(select(children.c.work_id))) == [identity]
+    # The original accepted call keeps its identity after new admission closes.
+    replayed = await workers.start(
+        parent.lease, parent.current["id"], "original-worker", {"goal": "original child goal"}
+    )
+    assert replayed == identity
+    await probe.repository.release(probe.control.lease)
+    lease = await workers.acquire(identity)
+    assert lease is not None
+    row = await probe.repository.get(identity)
+
+    async def validate():
+        assert await probe.repository.valid(lease)
+
+    resumed = WorkControl(
+        probe.repository,
+        lease,
+        row["source_key"],
+        json.loads(row["source_json"]),
+        validate,
+        current=row,
+    )
+    completed = json.loads(
+        await resumed.execute(
+            "task_control", {"action": "complete", "result": "original result"}, "complete"
+        )
+    )
+    assert completed["ok"], completed
+    await resumed.settle(pending_inputs=False)
+    await workers.finish(lease)
+    result = await workers.related(parent.current["id"], identity, include_checkpoint=True)
+    assert json.loads(result["result_json"])["text"] == "original result"
+    assert len(await parent.pending()) == 1
+    ordinary = await probe.repository.derive(
+        parent.lease, parent.current["id"], "ordinary-subgoal", "continue the business goal"
+    )
+    assert ordinary["parent_work_id"] == parent.current["id"]
+    async with database.sessions() as reader:
+        assert list(await reader.scalars(select(children.c.work_id))) == [identity]
+    await probe.repository.release(lease)
+    await probe.repository.release(parent.lease)
+
+
 async def test_parent_complete_still_dispatches_original_child(database, tmp_path):
     database.subagents_enabled = True
     calls = (
@@ -94,7 +152,11 @@ async def test_worker_complete_keeps_mail_delivery_grandchild_and_finish_receipt
 ):
     calls = (
         tool("task_control", {"action": "complete", "result": "actual child result"}, "complete"),
-        tool("subagent_message", {"text": "detailed parent report"}, "report"),
+        tool(
+            "subagent_control",
+            {"action": "message", "text": "detailed parent report"},
+            "report",
+        ),
         tool("subagent_start", {"goal": "independent nested step"}, "spawn-grandchild"),
         tool("send_message", {"text": "group deliverable"}, "delivery"),
     )
@@ -127,7 +189,11 @@ async def test_child_question_keeps_its_remaining_calls_and_retires_parent_compl
     database, tmp_path
 ):
     calls = (
-        tool("subagent_message", {"text": "which artifact?", "ask": True}, "question"),
+        tool(
+            "subagent_control",
+            {"action": "message", "text": "which artifact?", "ask": True},
+            "question",
+        ),
         tool("write_fixture", {}, "save"),
         tool("subagent_start", {"goal": "independent nested step"}, "spawn"),
     )
@@ -150,7 +216,11 @@ async def test_child_question_keeps_its_remaining_calls_and_retires_parent_compl
 
 async def test_question_to_completed_parent_is_saved_without_pausing_child(database, tmp_path):
     calls = (
-        tool("subagent_message", {"text": "which artifact?", "ask": True}, "question"),
+        tool(
+            "subagent_control",
+            {"action": "message", "text": "which artifact?", "ask": True},
+            "question",
+        ),
         tool("write_fixture", {}, "save"),
         tool("task_control", {"action": "complete", "result": "available work done"}, "complete"),
     )
@@ -177,7 +247,11 @@ async def test_complete_then_question_accepts_only_a_consumable_parent_wait(
 ):
     calls = (
         tool("task_control", {"action": "complete", "result": "earlier result"}, "complete"),
-        tool("subagent_message", {"text": "need your choice", "ask": True}, "ask-after-complete"),
+        tool(
+            "subagent_control",
+            {"action": "message", "text": "need your choice", "ask": True},
+            "ask-after-complete",
+        ),
         tool("write_fixture", {}, "save-after-question"),
     )
     probe, parent, workers, identity = await worker_case(
@@ -203,7 +277,10 @@ async def test_saved_child_question_wait_survives_activation_failure_or_restart(
 ):
     probe, parent, workers, identity = await worker_case(database, tmp_path, ())
     receipt = await execute_subagent(
-        probe.control, "subagent_message", {"text": "need your choice", "ask": True}, "question"
+        probe.control,
+        "subagent_control",
+        {"action": "message", "text": "need your choice", "ask": True},
+        "question",
     )
     assert receipt["waiting_parent"] is True
     original = await probe.repository.get(identity)
@@ -243,7 +320,13 @@ async def test_saved_child_question_wait_survives_activation_failure_or_restart(
 async def test_child_question_wakes_parent_from_owned_wait_then_answer_resumes_original_child(
     database, tmp_path
 ):
-    calls = (tool("subagent_message", {"text": "which result?", "ask": True}, "question"),)
+    calls = (
+        tool(
+            "subagent_control",
+            {"action": "message", "text": "which result?", "ask": True},
+            "question",
+        ),
+    )
     probe, parent, workers, identity = await worker_case(
         database, tmp_path, calls, wait_parent=True
     )
@@ -260,7 +343,9 @@ async def test_child_question_wakes_parent_from_owned_wait_then_answer_resumes_o
     await parent.confirm_inputs()
     answer = json.loads(
         await parent.execute(
-            "subagent_message", {"child_id": identity, "text": "publish the first result"}, "answer"
+            "subagent_control",
+            {"action": "message", "child_id": identity, "text": "publish the first result"},
+            "answer",
         )
     )
     assert answer["ok"] and answer["waiting_parent"] is False
@@ -320,15 +405,18 @@ async def test_foreground_manages_original_child_without_accepting_another_work(
     )
     await execute_subagent(
         parent,
-        "subagent_message",
-        {"child_id": identity, "text": "continue original task"},
+        "subagent_control",
+        {"action": "message", "child_id": identity, "text": "continue original task"},
         "update",
     )
     resumed = await workers.acquire(identity)
     assert resumed is not None
     with pytest.raises(WorkConflict, match="work_activation_obsolete"):
         await execute_subagent(
-            probe.control, "subagent_message", {"text": "obsolete lease"}, "obsolete"
+            probe.control,
+            "subagent_control",
+            {"action": "message", "text": "obsolete lease"},
+            "obsolete",
         )
     await execute_subagent(
         parent, "subagent_control", {"action": "cancel", "child_id": identity}, "cancel-original"
@@ -370,7 +458,7 @@ async def test_foreground_subagent_tools_retain_real_actor_scope(database, tmp_p
         result = await execute_subagent(parent, "subagent_control", {"action": "list"}, "list")
         assert result["children"] == []
     else:
-        name = "subagent_message" if action == "message" else "subagent_control"
+        name = "subagent_control"
         with pytest.raises(ValueError, match="subagent_not_owned"):
             await execute_subagent(
                 parent, name, {"action": action, "child_id": identity, "text": "borrowed"}, action
@@ -386,7 +474,10 @@ async def test_question_does_not_resume_an_independently_suspended_parent(databa
         parent.lease, current["id"], current["revision"], "suspended", reason="context_capacity"
     )
     response = await execute_subagent(
-        probe.control, "subagent_message", {"text": "need your choice", "ask": True}, "ask"
+        probe.control,
+        "subagent_control",
+        {"action": "message", "text": "need your choice", "ask": True},
+        "ask",
     )
     assert response["waiting_parent"] is True
     assert await probe.repository.get(parent.current["id"]) == suspended
@@ -436,7 +527,11 @@ async def test_question_and_completion_writer_order_preserves_truth(
             current=row,
         )
         receipt = json.loads(
-            await control.execute("subagent_message", {"text": "need decision", "ask": True}, "ask")
+            await control.execute(
+                "subagent_control",
+                {"action": "message", "text": "need decision", "ask": True},
+                "ask",
+            )
         )
         allowed.set()
         await probe.repository.release(lease)

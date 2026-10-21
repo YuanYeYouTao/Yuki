@@ -6,8 +6,10 @@
 
 ## 仓库与 CI
 
-Quality workflow 检查 Python 的 Ruff、Mypy、pytest 与 Node 24 前端测试及构建。
+当前开发分支的 Quality workflow 检查 Python 的 Ruff、Mypy 和 pytest；旧 WebUI 前端已退役。3.9.0 发行时的检查范围保留在原发布记录中。
 正式 tag 发布使用 `scripts/release_validate.py` 核对 tag、项目版本、运行时版本、锁文件、安装器及 main 祖先关系；不再运行 Memory synthetic quality/baseline/release-check 或独立迁移矩阵。迁移与启动由实际构建镜像的 release smoke 核验。
+
+当前源码已统一为 Python 发行包／模块 `yuki`，只发布 `yuki` 与 `yuki-bot` 两个命令。后续发行 workflow 使用 `ghcr.io/yuanyeyoutao/yuki`；源码开发需本地构建，不把未发布的新名称标签当作可拉取的 3.9.0 产物。上方正式 3.9.0 的旧镜像地址继续表示原发行事实。既有生产保实际数据库、Compose 项目与网络，只按完整配置替换 Bot。
 
 ## 发布流程
 
@@ -48,14 +50,16 @@ Code Mode 是显式可选构建：使用 `docker build --target codemode`，按 
 明确选择 `search_mode="bridge"`，通过独立请求检索真实来源；支持原生搜索的
 OpenAI Responses / Anthropic 主连接选择 `native` 并声明 `native_web_search`。
 所选模型及接入服务仍须实际支持该能力；向导的本地验证不等于真实 API 验收。
-默认 DeepSeek 示例保留 Responses 主对话，另以 `search_mode="external"`、
-`search_connection="primary_agent"` 和 `WEB_SEARCH_BACKEND=deepseek_anthropic`
-明确使用官方独立搜索，不宣称主对话具备原生搜索。
+默认 DeepSeek 示例保留 Responses 主对话，以 `search_backend="model"` 和独立 Messages
+搜索连接共用原 DeepSeek 密钥引用，不宣称主对话具备内联原生搜索，也不需要 Claude 账户。
+安装向导与 Admin API / CLI 共用搜索默认配置生成；Gemini 默认桥接自身连接，Anthropic
+Messages 默认内联原生搜索。自定义网关沿其真实地址与凭据配置，不按品牌转发密钥。
 
 向导仍允许选择“关闭”；不支持模型搜索的主连接需选择 Tavily 并提供密钥，
-或明确配置可用的搜索连接。Gemini 搜索桥返回服务提供的检索来源，未配置 Tavily
-时网页提取不可用会如实报错。现有 `.env` 的显式关闭和模型档案的搜索选择不会
-被新默认覆盖。已有模型档案由 WebUI 或文件入口调整；再次运行向导保留该档案，不因选择 `basic` / `flash` 重建全部连接。
+或明确配置可用的搜索连接。Gemini 搜索桥返回服务提供的检索来源，网页读取使用直接
+HTTP 提取，不需要 Tavily 密钥。缺省后端为 `model`；旧 `WEB_ENABLED=true` 表示模型搜索，
+`false` 仍关闭，显式 Tavily 后端继续有效。现有 `.env` 的显式关闭和模型档案的搜索选择不会
+被新默认覆盖。已有模型档案由管理 API／CLI 或文件入口调整；再次运行向导保留该档案，不因选择 `basic` / `flash` 重建全部连接。
 
 ## 现有服务器
 
@@ -63,6 +67,11 @@ OpenAI Responses / Anthropic 主连接选择 `native` 并声明 `native_web_sear
 运行正常且未授权部署时，仓库基线推进不触发容器重建或数据库变更。
 执行部署时保留原 Compose 覆盖、挂载和可用恢复点，按升级指南只更新相关服务。
 普通 Bot 更新保留 QQ 网关、代理和持久环境服务；保存一致数据库、配置、插件与引用文件后，沿原完整 Compose 链替换 `bot`。只有涉及其他真实写者的数据迁移才暂停对应写入，不要求所有 Manager 任务终态。正式发行不会自动替换服务器上的开发热修镜像，生产切换及自然回执按实际运维记录另记。
+
+每次上线完成后清理服务器上的旧备份、部署临时文件、废弃镜像与可重建构建缓存，
+本次切换准备的临时恢复副本也在新 Bot 健康核验后删除。先确认实际挂载、现用 Compose
+配置与服务引用，再删除具体路径；现用配置、业务数据库、工作区、被引用媒体、原执行
+和投递回执不属于垃圾缓存。清理不停止或删除其他服务、现用镜像及持久卷，记录实际回收结果。
 
 Bot 的 Docker 探针请求 `/livez`，只检查 ASGI 事件循环能否及时响应；进程退出或
 主循环停顿仍使探针失败。详细依赖与 Worker 状态保留在 `/healthz`，运维监控须继续

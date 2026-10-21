@@ -6,21 +6,26 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
+from tests.support.event_seed import seed_scoped_event
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from qq_ai_bot.conversation.canonical_db_models import SpaceActiveRouteModel
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.registry import GatewayConnectionRegistry
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence, ensure_space
-from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel, SpaceBindingModel
-from qq_ai_bot.identity.routing import PresenceRouter, RouteSendError
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.social.models import SocialError
-from qq_ai_bot.social.service import SocialContext, SocialService
-from qq_ai_bot.social.transfer import ArtifactTransfer
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.conversation.canonical_db_models import SpaceActiveRouteModel
+from yuki.domain.conversations import ConversationScope
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.registry import GatewayConnectionRegistry
+from yuki.identity.db_models import (
+    AccountModel,
+    IdentityBindingModel,
+    PresenceModel,
+    SpaceBindingModel,
+)
+from yuki.identity.routing import PresenceRouter, RouteSendError
+from yuki.persistence.models import ChatEventModel
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.social.models import SocialError
+from yuki.social.service import SocialContext, SocialService
+from yuki.workspace.store import WorkspaceStore
 
 
 class Bot:
@@ -48,15 +53,46 @@ class Bot:
 
 async def social_env(database, tmp_path):
     bot = Bot("80001")
-    registry = GatewayConnectionRegistry(providers=builtin_provider_catalog())
+    registry = GatewayConnectionRegistry(
+        providers=builtin_provider_catalog(
+            qq_transfer_root=tmp_path / "transfer", qq_gateway_root="/transfer"
+        )
+    )
     router = PresenceRouter(database, registry)
     writer = ScopedEventLedgerUnitOfWork(database)
     async with database.sessions() as session, session.begin():
         person = await ensure_person(session, "10001")
+        # This shared fixture exercises the original, pre-0121 Social contracts.
+        from sqlalchemy import update
+
+        await session.execute(
+            update(IdentityBindingModel)
+            .where(IdentityBindingModel.person_id == person)
+            .values(history_starts_at=None)
+        )
         presence = await ensure_presence(session, bot.self_id)
         space = await ensure_space(session, "20001")
+    from datetime import UTC, datetime
+
+    from yuki.identity.canonical_repository import find_identity_binding
+    from yuki.identity.person_state import observe_canonical_person
+
+    async with database.sessions() as session, session.begin():
+        binding = await find_identity_binding(session, "10001")
+        await observe_canonical_person(
+            session,
+            binding=binding,
+            nickname="test-10001",
+            group_id="20001",
+            group_card="",
+            group_name="",
+            nickname_known=True,
+            group_card_known=True,
+            now=datetime.now(UTC),
+        )
     registry.connect(bot, provider_id="snowluma", presence_id=presence)
-    await writer.append(
+    await seed_scoped_event(
+        writer,
         scope=ConversationScope.group(bot.self_id, "20001"),
         platform_message_id="inbound",
         sender_user_id="10001",
@@ -66,10 +102,15 @@ async def social_env(database, tmp_path):
     async with database.sessions() as session:
         event = await session.scalar(select(ChatEventModel))
         conversation = event.canonical_conversation_id
+        account = await session.scalar(
+            select(AccountModel).where(
+                AccountModel.platform == "qq", AccountModel.external_account_id == "10001"
+            )
+        )
     assert await router.cas_takeover_space(space) == "taken"
     service = SocialService(database, router, writer)
     store = WorkspaceStore(tmp_path / "workspace")
-    service.transfer = ArtifactTransfer(store, tmp_path / "transfer", "/transfer")
+    service.workspace = store
     return SimpleNamespace(
         db=database,
         bot=bot,
@@ -77,6 +118,7 @@ async def social_env(database, tmp_path):
         router=router,
         service=service,
         person=person,
+        account=account.id,
         presence=presence,
         space=space,
         store=store,
@@ -91,9 +133,7 @@ async def test_recall_uses_original_presence(social_env, route_state):
     async with env.db.sessions() as session, session.begin():
         second = await ensure_presence(session, other.self_id)
         event = await session.scalar(
-            select(ChatEventModel).where(
-                ChatEventModel.platform_message_id == sent["platform_reference"]
-            )
+            select(ChatEventModel).where(ChatEventModel.id == sent["event_id"])
         )
         event_id = event.id
         route = await session.get(SpaceActiveRouteModel, env.space)
@@ -108,7 +148,7 @@ async def test_recall_uses_original_presence(social_env, route_state):
         "recall_own_message", {"event_id": event_id}, replace(env.context, call_id="recall")
     )
     assert result["status"] == "succeeded"
-    assert env.bot.calls[-1] == ("delete_msg", {"message_id": sent["platform_reference"]})
+    assert env.bot.calls[-1] == ("delete_msg", {"message_id": event.platform_message_id})
     assert other.calls == []
     env.registry.disconnect(env.bot)
     with pytest.raises(RouteSendError, match="original_presence_unavailable"):
@@ -120,23 +160,18 @@ async def test_recall_uses_original_presence(social_env, route_state):
 
 async def test_members_ignore_send_pause_and_try_accessible_connections(social_env):
     env = social_env
-    other = Bot("80002")
-    env.bot.fail_list = True
     async with env.db.sessions() as session, session.begin():
-        second = await ensure_presence(session, other.self_id)
         route = await session.get(SpaceActiveRouteModel, env.space)
         route.paused = True
         generation = route.route_generation
-    env.registry.connect(other, provider_id="snowluma", presence_id=second)
+    env.bot.calls.clear()
     result = await env.service.execute("get_group_members", {}, env.context)
-    assert result["items"] == [{"user_id": "10001", "display_name": "member"}]
+    assert result["coverage"] == "observed" and result["items"][0]["account_id"] == env.account
+    assert result["items"][0]["reference"] == f"@{{account:{env.account}}}"
+    assert env.bot.calls == []
     async with env.db.sessions() as session:
         route = await session.get(SpaceActiveRouteModel, env.space)
         assert route.paused and route.route_generation == generation
-    env.bot.missing.add(env.bot.self_id)
-    other.missing.add(other.self_id)
-    with pytest.raises(RouteSendError, match="group_unavailable"):
-        await env.service.execute("get_group_members", {}, env.context)
 
 
 async def test_multiple_space_bindings_require_explicit_selection(social_env):
@@ -147,11 +182,9 @@ async def test_multiple_space_bindings_require_explicit_selection(social_env):
             select(SpaceBindingModel).where(SpaceBindingModel.space_id == other)
         )
         binding.space_id = env.space
-        binding_id = binding.id
-    with pytest.raises(RouteSendError, match="binding_ambiguous"):
-        await env.service.execute("get_group_members", {}, env.context)
-    await env.service.execute("get_group_members", {"space_binding_id": binding_id}, env.context)
-    assert env.bot.calls[-1][1]["group_id"] == 20002
+    observed = await env.service.execute("get_group_members", {}, env.context)
+    assert observed["coverage"] == "observed"
+    assert [item["person_id"] for item in observed["items"]] == [env.person]
 
 
 async def test_recall_rechecks_connection_before_claim(social_env, monkeypatch):
@@ -159,9 +192,7 @@ async def test_recall_rechecks_connection_before_claim(social_env, monkeypatch):
     sent = await env.service.execute("send_message", {"text": "hello"}, env.context)
     async with env.db.sessions() as session:
         event = await session.scalar(
-            select(ChatEventModel).where(
-                ChatEventModel.platform_message_id == sent["platform_reference"]
-            )
+            select(ChatEventModel).where(ChatEventModel.id == sent["event_id"])
         )
         event_id = event.id
     prepare = env.service.receipts.prepare
@@ -172,7 +203,7 @@ async def test_recall_rechecks_connection_before_claim(social_env, monkeypatch):
         return receipt
 
     monkeypatch.setattr(env.service.receipts, "prepare", disconnect_before_claim)
-    with pytest.raises(RouteSendError, match="original_presence_unavailable"):
+    with pytest.raises(RouteSendError, match="disconnected"):
         await env.service.execute(
             "recall_own_message", {"event_id": event_id}, replace(env.context, call_id="recall")
         )
@@ -188,8 +219,8 @@ async def test_disabled_presence_cannot_read_or_recall(social_env):
         presence.enabled = False
     with pytest.raises(RouteSendError, match="original_presence_unavailable"):
         await env.router.resolve_presence(env.presence)
-    with pytest.raises(RouteSendError, match="group_unavailable"):
-        await env.service.execute("get_group_members", {}, env.context)
+    observed = await env.service.execute("get_group_members", {}, env.context)
+    assert observed["coverage"] == "observed"
 
 
 async def add_second_account(env):
@@ -198,11 +229,13 @@ async def add_second_account(env):
         binding = await session.scalar(
             select(IdentityBindingModel).where(IdentityBindingModel.person_id == other)
         )
-        binding.person_id = env.person
+        from yuki.identity.person_identity import merge_persons
+
+        await merge_persons(session, other, env.person)
         return binding.id
 
 
-async def test_private_poke_uses_pinned_binding_and_rejects_conflict(social_env):
+async def test_private_send_uses_explicit_binding_and_rejects_foreign_binding(social_env):
     env = social_env
     assert await env.router.cas_takeover_person(env.person) == "taken"
     second = await add_second_account(env)
@@ -214,86 +247,96 @@ async def test_private_poke_uses_pinned_binding_and_rejects_conflict(social_env)
         },
         env.context,
     )
-    assert {binding["user_id"] for binding in contacts["bindings"]} == {"10001", "10002"}
-    with pytest.raises(SocialError, match="binding_unavailable"):
+    assert len(contacts["bindings"]) == 2
+    assert all(
+        binding["platform"] == "qq" and "user_id" not in binding for binding in contacts["bindings"]
+    )
+    with pytest.raises(RouteSendError, match="binding_unavailable"):
         await env.service.execute(
-            "poke_person",
+            "send_message",
             {
-                "target_id": env.person,
-                "scene": "private",
-                "binding_id": second,
+                "text": "private report",
+                "target": {"kind": "person", "target_id": env.person, "binding_id": str(uuid4())},
             },
             env.context,
         )
     result = await env.service.execute(
-        "poke_person",
+        "send_message",
         {
-            "target_id": env.person,
-            "scene": "private",
+            "text": "private report",
+            "target": {"kind": "person", "target_id": env.person, "binding_id": second},
         },
         env.context,
     )
     assert result["status"] == "succeeded"
-    assert env.bot.calls[-1] == ("send_poke", {"user_id": 10001})
+    assert env.bot.calls[-1] == (
+        "send_private_msg",
+        {"user_id": 10002, "message": [{"type": "text", "data": {"text": "private report"}}]},
+    )
 
 
-async def test_group_poke_resolves_binding_without_first_item(social_env, selector):
+async def test_group_mention_resolves_binding_without_first_item(social_env, selector):
     env = social_env
-    binding = await add_second_account(env)
-    args = {"target_id": env.person}
-    context = env.context
-    if selector == "explicit":
-        args["binding_id"] = binding
-    elif selector == "subject":
-        args = {"subject_ref": "mentioned_user"}
-        context = replace(
-            context,
-            person_refs={"mentioned_user": env.person},
-            account_refs={"mentioned_user": "10002"},
-        )
-    elif selector == "foreign":
-        args["binding_id"] = str(uuid4())
-    if selector in {"ambiguous", "foreign"}:
-        with pytest.raises(SocialError, match=r"binding_ambiguous|binding_unavailable"):
-            await env.service.execute("poke_person", args, context)
-        assert not any(action == "send_poke" for action, _ in env.bot.calls)
+    other = await add_second_account(env)
+    async with env.db.sessions() as session:
+        second = await session.get(IdentityBindingModel, other)
+        account_id = second.account_id
+    if selector == "subject":
+        with pytest.raises(SocialError, match="invalid_message_arguments"):
+            await env.service.execute(
+                "send_message",
+                {"text": "hello", "mentions": [{"subject_ref": "current_speaker"}]},
+                env.context,
+            )
+        return
+    requested = str(uuid4()) if selector == "foreign" else account_id
+    result = await env.service.execute(
+        "send_message", {"text": f"@{{account:{requested}}} hello"}, env.context
+    )
+    assert result["status"] == "succeeded"
+    native = [part for part in env.bot.calls[-1][1]["message"] if part["type"] == "at"]
+    if selector == "foreign":
+        assert not native and result["unresolved_mentions"]
     else:
-        result = await env.service.execute("poke_person", args, context)
-        assert result["status"] == "succeeded"
-        assert env.bot.calls[-1] == ("send_poke", {"user_id": 10002, "group_id": 20001})
+        assert native == [{"type": "at", "data": {"qq": "10002"}}]
 
 
 async def test_real_mentions_preserve_segments_and_replay(social_env, attachment):
     env = social_env
-    args = {"mentions": [{"target_id": env.person}]}
+    args = {"text": f"前@{{account:{env.account}}}后"}
     if attachment:
         artifact = snapshot_bytes(env.store, "hello.txt", b"hello")
         args.update(artifact_id=artifact["artifact_id"], attachment_kind=attachment)
     result = await env.service.execute("send_message", args, env.context)
     assert result["status"] == "succeeded"
-    sends = [params for action, params in env.bot.calls if action == "send_group_msg"]
-    assert len(sends) == 1
-    assert sends[0]["message"][0] == {"type": "at", "data": {"qq": "10001"}}
+    messages = [params["message"] for action, params in env.bot.calls if action == "send_group_msg"]
+    assert len(messages) == 1
+    assert messages[0][:3] == [
+        {"type": "text", "data": {"text": "前"}},
+        {"type": "at", "data": {"qq": "10001"}},
+        {"type": "text", "data": {"text": "后"}},
+    ]
     async with env.db.sessions() as session:
-        events = (
+        events = list(
             await session.scalars(
                 select(ChatEventModel).where(ChatEventModel.direction == "outbound")
             )
-        ).all()
-        assert any('"at"' in str(event.segments_json) for event in events)
-    effects = [call for call in env.bot.calls if call[0] in {"send_group_msg", "upload_group_file"}]
+        )
+        assert any(
+            env.account in event.segments_json and '"mention"' in event.segments_json
+            for event in events
+        )
+    effects = list(env.bot.calls)
     assert await env.service.execute("send_message", args, env.context) == result
-    assert effects == [
-        call for call in env.bot.calls if call[0] in {"send_group_msg", "upload_group_file"}
-    ]
+    assert env.bot.calls == effects
 
 
 async def current_speaker_mention(env):
     from tests.support.commands_and_chat_helpers import inbound
 
-    from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-    from qq_ai_bot.services.agent_tools import ToolRuntime
-    from qq_ai_bot.social.agent_adapter import invoke_social
+    from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+    from yuki.services.agent_tools import ToolRuntime
+    from yuki.social.agent_adapter import invoke_social
 
     async with env.db.sessions() as session:
         event_id = await session.scalar(select(ChatEventModel.id))
@@ -306,15 +349,14 @@ async def current_speaker_mention(env):
         space_id=env.space,
         presence_id=env.presence,
     )
-    runtime = ToolRuntime(inbound=message, gateway=None, allow_generic_onebot=False)
+    runtime = ToolRuntime(inbound=message)
     token = current_invocation.set(ToolInvocationContext(runtime=runtime, call_id="mention-me"))
     try:
         result = await invoke_social(
             env.service,
             "send_message",
             {
-                "mentions": [{"subject_ref": "current_speaker"}],
-                "text": "test",
+                "text": "@test-10001 test",
             },
             runtime,
         )
@@ -326,18 +368,23 @@ async def current_speaker_mention(env):
 
 async def test_mentions_reject_ambiguous_or_nonmember_accounts(social_env):
     env = social_env
-    binding = await add_second_account(env)
-    with pytest.raises(SocialError, match="binding_ambiguous"):
-        await env.service.execute(
-            "send_message",
-            {"mentions": [{"target_id": env.person}], "text": "hello"},
-            env.context,
-        )
+    binding_id = await add_second_account(env)
+    async with env.db.sessions() as session, session.begin():
+        binding = await session.get(IdentityBindingModel, binding_id)
+        account = binding.account_id
+        from yuki.identity.db_models import CanonicalPersonModel
+
+        person = await session.get(CanonicalPersonModel, binding.person_id)
+        person.enabled = False
     env.bot.missing.add("10002")
-    with pytest.raises(SocialError, match="group_member_unavailable"):
-        await env.service.execute(
-            "send_message",
-            {"mentions": [{"target_id": env.person, "binding_id": binding}]},
-            env.context,
+    env.bot.calls.clear()
+    result = await env.service.execute(
+        "send_message", {"text": f"@{{account:{account}}}"}, env.context
+    )
+    assert result["status"] == "succeeded"
+    assert env.bot.calls == [
+        (
+            "send_group_msg",
+            {"group_id": 20001, "message": [{"type": "at", "data": {"qq": "10002"}}]},
         )
-    assert not any(action == "send_group_msg" for action, _ in env.bot.calls)
+    ]

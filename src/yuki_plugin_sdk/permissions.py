@@ -1,4 +1,4 @@
-"""Stable Plugin API v3 permission names."""
+"""Stable Plugin API permission names."""
 
 from __future__ import annotations
 
@@ -34,11 +34,6 @@ class PluginPermission(StrEnum):
     VISION_ANALYZE = "vision.analyze"
     MEDIA_CURRENT_READ = "media.current.read"
     MEDIA_ARTIFACT_CREATE = "media.artifact.create"
-    EMOJI_READ = "emoji.read"
-    EMOJI_COLLECT = "emoji.collect"
-    EMOJI_SELECT = "emoji.select"
-    EMOJI_MANAGE = "emoji.manage"
-    EMOJI_HOOK = "emoji.hook"
     AUTOMATION_READ = "automation.read"
     AUTOMATION_MANAGE_SELF = "automation.manage_self"
     PLUGIN_CONFIG_READ = "plugin.config.read"
@@ -66,13 +61,10 @@ HIGH_RISK_PERMISSIONS: frozenset[PluginPermission] = frozenset(
         PluginPermission.AGENT_RUN,
         PluginPermission.AGENT_SESSION,
         PluginPermission.NOTIFICATION_AGENT,
-        PluginPermission.EMOJI_MANAGE,
     }
 )
 
-RESERVED_PLUGIN_NAMESPACES: frozenset[str] = frozenset(
-    {"qq_ai_bot", "qq-ai-bot", "yuki", "core", "system"}
-)
+RESERVED_PLUGIN_NAMESPACES: frozenset[str] = frozenset({"yuki", "core", "system"})
 
 
 def parse_permissions(values: list[str] | tuple[str, ...]) -> tuple[PluginPermission, ...]:

@@ -1,9 +1,12 @@
-# Yuki 3.8 canonical runtime
+# Yuki canonical runtime
 
 本文描述永久主体与 canonical 运行时合同；运行时只支持 canonical schema，
 数据库版本以随包 Alembic head 为准，启动由 `persistence/schema_guard.py` 读取；
 当前应用与数据库基线统一见 [README](../../README.md)。
 跨模块开发遵循 [共同架构约束](development-contract.md)。
+
+普通启动只核数据库版本、表列及维护真实事实的触发器，不扫描全库业务数据。加速索引由迁移建立并在查询测试中验证，缺少加速索引不阻止正常启动。
+全库外键完整性在冻结迁移或显式离线审核中校验；正常连接继续启用 SQLite 外键写约束。
 
 ## 永久主体与身份
 
@@ -13,33 +16,105 @@
 核心身份对象如下：
 
 - `Person`：一个永久的人类主体。人物记忆和长期偏好按 Person 保存。
-- `IdentityBinding`：Person 在某个平台上的外部账号。一个 Person 可以有多个 Binding。
+- `Account`：唯一的平台原生账号及昵称等账号资料；未知账号和外部 Bot 也可登记而无 Person。
+- `AccountAssignment`：账号的一段归属，只有 person／yuki 两种；每个账号至多一个未结束阶段。
+- `IdentityBinding`：Assignment 的 person 类型投影。一个 Person 可以有多个 Binding，也可以没有账号。
 - `Space`：永久共享空间；QQ 群只是它的一种外部表现。
 - `SpaceBinding`：Space 与外部群号的绑定。
-- `Presence`：Yuki 自己的平台账号。Presence 不是 Person。
-- `CanonicalConversation`：私聊按 Person 唯一，群聊按 Space 唯一。显式 `/ai new` 或隐私遗忘
-  等上下文边界操作会推进 Conversation generation；更换账号本身不推进它。
+- `Presence`：Assignment 的 yuki 类型投影，保原 Presence UUID，不是第二张归属事实表。
+- `CanonicalConversation`：私聊按 IdentityBinding＋Presence＋可选 thread 区分，群聊按 SpaceBinding＋topic 区分。
+  同一 Person 的多个入口分别保有历史、generation、检查点与模型 session；Memory 仍归 Person。
+  `/ai new` 只推进命令所在会话的 generation。
 
-第三方机器人使用 `external_bot` 作者类型，不创建 Person 或人物记忆。事件作者只有
-`person`、`yuki`、`external_bot`、`system` 四类；命令、插件和自动化属于 event origin，
-不是作者类型。
+第三方机器人使用 `external_bot` 作者类型，不创建 Person 或人物记忆。已证明原生账号、
+但不能证明历史归属阶段的首次迟到消息使用 `account` 作者，保存内部 Account，不猜 Person。
+另有 `person`、`yuki`、`system` 作者；命令、插件和自动化属于 event origin，不是作者类型。
+
+Assignment 统一使用 active／disabled／ended。暂停保留归属，结束才释放账号；恢复原阶段与
+结束后重新登记不同。人↔Yuki、换人和真解绑后再绑创建新阶段，同人重复关联只读返回。
+首次从无归属的账号可自动登记；有过阶段的账号不靠重连复活旧 Presence。角色变化不关闭
+物理连接，也不改原作者、Conversation、设备 namespace、接入与投递回执。
+
+## 人物归并、账号转移与名称
+
+`persons.merged_into_person_id` 只表示经认证证明属于同一人的归并，直接指向最终人物；
+目标没有指针。A→B→C 时原 A/B 都指向 C，重复归并只读返回。Person 可以没有账号。
+原 Binding、事件、私聊 Conversation、原 Work/source、已付模型输入与效果回执继续保存原 Person ID；
+当前目录、人物资料、获准记忆、管理权及配置查询才解析当前人物，不批改历史。
+人物历史入口发现及获准的人物范围读取沿同人关系包含原入口，仍分别读取实际 Conversation；
+新挂接账号归当前人物，旧 Binding 的原归属和停用事实不变。
+没有第二套人物映射、全库迁移开关、身份缓存或惰性资料搬迁。
+
+已认证 `/ai link` 同人关联调用人物归并；operator `binding transfer` 明确把账号转给另一人，
+结束旧 Binding 时段、创建新 Binding，原历史仍归原人。已停用人物、设备、grant 或执行的
+撤权事实不会随归并复活；当前人物停用影响其全部入口，来源已停用也不误停目标正常入口。
+超级管理员资格持久化于当前 root Person 的 `is_superuser`，不再从 QQ Binding 或环境名单推导。
+账号转移不携带资格，账号停用/解绑不删除原人资格；Person 停用保资格并暂停使用。
+同人合并对两个当前 root 的未撤销资格取 OR，不改变来源 enabled；实际使用同时核原人物与最终人物启用，历史成员的旧 true 不作 fallback。设备凭据不成为 operator 凭据。
+原来源的停用可按其内部 Person ID 明确恢复：管理查询分别展示来源和当前人物的启用状态、revision；enable 只恢复该来源及其当前人物，不批量恢复其他成员，也不撤销设备、Binding 或执行自身的停用事实。
+
+人物名称是可空、可修改、允许重名的 `Person.display_name`，不参与身份或授权。
+首次非空观察补齐空名，后续账号昵称变化只更新账号与别名；旧数据按最近全局 nickname 回填。
+明确改名保旧名为别名；归并保目标主名，目标空时采用来源主名，来源主名入原人物别名。
+目录与资料按当前人物读取主名，无账号人物也能读取；未命名显示占位不落库。
+账号昵称认 Account，群名片认 Account＋SpaceBinding；同人的多个账号不会互相覆盖名片。
+Membership 只记录原 Person 在 Space 中的首次、末次观察时间，不再保存账号群名片。
+人物别名与事件当时名称保原来源，同人目录命中及共同群按人物去重。
+
+人物资料只观察当前真实事件携带的昵称、群名片和已知标记，在首次入账的同一事务更新
+原人物、Account、别名与账号名片。缺失字段不擦除已有资料；明确的空群名片可以清空
+当前名片。事件当时名称仍按原消息保存，不用库中的旧名字补写该事件，也不改过去的
+公共历史。缺少名称不阻止接纳或回复，人物身份与权限继续使用内部 ID。
+
+群名来自普通入站消息或真实平台资料通知，更新原平台的既有 SpaceBinding 与 Space。
+普通消息随首次入账观察群名和 last-seen；独立资料通知遇到相同或空群名只读返回。
+改名不修改启用设置、路由或聊天历史。独立资料通知不建立聊天事件，
+不触发模型，也不要求先远端补齐资料。没有资料时保留已知值，不另设刷新缓存、TTL 或 worker。
+
+当前 Runtime USER 配置保目标有效键，来源独有有效键连原行 ID/版本迁入目标。
+Plugin USER 配置按整个对象归属：目标已有对象则保目标；目标无对象才移动来源整组原行，
+不拼成双方都未配置过的混合对象。
+来源冲突行只保历史，不作 fallback；unset 和再次归并不会使它复活。原配置审计仍可查，
+rollback 核对原行与修订，旧审计跨归并只沿实际配置移动审计确认，不凭相同值和版本冒领另一行。
+Plugin-global KV 不改键值、版本或原所属。目标已有主动路由优先，未设置时只继承来源已有路由，
+不为归并猜一个账号；当前路由 SQL 与派发复核认可同人来源 Binding，原物理发送证明保持原件。
+
+归并在一致 WAL 读视图准备本人物关系、配置、别名和路由，再在同事务短写入。
+原生 BUSY 只在纯数据库操作整体回滚后重备原 ID；不持 writer 做外部或全库历史扫描。
+人物遗忘按完整归并族清退敏感资料，原无正文 Social 回执可保原来源 ID；
+已确认发送可结算原成功且 `event_id=None`，不重建正文、人物、会话或重发。
+
+迁移 `0129` 增加归并、人物名称及原 App 请求 scope，并解除 Social 原来源会话的生存依赖；
+保原事件、请求 hash、UUID、预算和回执。App 各入口与稳定原请求 namespace 见[个人客户端合同](client-api.md)。
 
 ## Conversation 与事件账本
 
-OneBot 原始消息先投影正文、附件、按位置保序的 mention 和 reply，再解析 Person、Space、
+平台适配器先将原始消息投影为正文、附件、按位置保序的 mention 和 reply，再解析 Person、Space、
 Presence 与 canonical Conversation。事件账本保留平台 message ID、sender/group 外部 ID、Provider
 和 Gateway provenance，以便幂等、审计和故障定位；这些字段不再承担业务所有权。
+
+原生 mention 在入账前用已有本地资料解析展示名，正文原位置写为 `@名字`，结构化 segment
+保存原位置、名字与已知的 Person/Presence；重复提及不丢失。Main 与 JEV 读取同一份命名
+正文，不在各自装配时补查平台或改写名称。引用优先使用原内部事件保存的正文和提及快照，
+没有原件时保留引用本身携带的资料，不用今日 Binding 推断过去的对象。新增快照不重渲染
+旧冻结历史，不清空公共检查点或更换 epoch。
 
 入账后沿运行时快照和工作来源传递内部 `trigger_event_id` / `source_event_id`，按
 `chat_events.id` 定位并核验会话。不得用平台 message ID 反查已有内部事件或猜测来源。
 `canonical_event_id` 是另一种关联标识，不能与整数账本主键混用。
 
 历史 alias 只用于稳定兼容键。多个 alias 可以指向一个 canonical Conversation，当前插件 SDK
-读取固化的 primary alias。换 QQ、换 Provider、连接重建或路由接管都不得更改 Conversation
-generation。
+读取固化的 primary alias。新入口使用 `conversation:<id>` 作为 primary alias；私聊解析统一经过
+Presence 的平台和对方账号所对应的有效绑定，旧 transport alias 只作历史定位。
+已有 turn 或读版本直接使用其 Conversation ID。连接重建、Provider 更换或路由接管
+不推进 generation；自动化沿原创建会话执行，投递目标不改换创建者的来源。
+
+迁移 0120 保留旧会话及全部事件、Work、回执与检查点 ID，把旧会话归到 primary alias
+对应的绑定；不能唯一确定时中止。其他绑定下次入站建立新会话，旧 alias 不搬迁。
+Person 隐私遗忘覆盖其所有入口会话。
 
 公共历史由该 Conversation 的已选 compact 检查点和覆盖点后的原消息组成；原始
-`chat_events` 始终是证据源。检查点是不可信输入，不进入 Memory，也不授予权限。
+`chat_events` 始终是证据源。检查点不进入 Memory，也不授予权限。
 容量判断沿 Main 的真实完整请求，装配阶段不截短历史或等待独立后台摘要。
 
 插件外部事件保持 `external_event` 独立账本类型，不伪装为 Person 发言。插件的主动触发只是一个
@@ -48,6 +123,20 @@ compact 检查点、raw history、按需 Memory 工具、Prompt compiler、工�
 最后一条临时 user input，既不落入聊天历史，也不形成插件专属短上下文。Yuki 成功发送的主动消息
 仍是普通 outbound `message`，并通过 `caused_by_event_id` 永久指向来源 external event。模型历史与
 公共消息渲染保留因果来源标签，平台正文不被改写。
+
+ACP 使用共享 Presence 与每个原 Person 的稳定 Binding；每次 `session/new` 在该入口新建独立 thread／Conversation，`sessionId` 就是 Conversation UUID。原 App、QQ、TG 的空 thread 入口保持不变，人物资料与记忆仍归 Person。请求按实际 ACP Conversation＋原 UUID 查证，不按平台消息号重建归属。协议、结束与取消见[个人 API](client-api.md#acp-方向-a)。
+
+## 平台入口与原生适配
+
+私聊以内部 Binding＋Presence＋可选 thread 确定入口，群以 SpaceBinding＋topic 确定入口。每个入口各有 Conversation；同一 Person/Space 的长期身份和已定义记忆语义共享，聊天上下文不串入口。旧记录、冻结 primary alias 和 generation 不重写。
+
+GatewayProvider 提供连接事实、接入投影和实际原生社交操作。公共 Social 准备内部目标、核授权、claim 原操作并记录回执；各适配器编码文本、提及、引用、文件及协议实际限制。Provider 的纯发送计划不发送消息，每个实际平台步骤各有原回执。公共层不调用任意 OneBot action，也不按 Telegram/QQ 分叉一套领域服务。
+
+Telegram token 配置后使用 long polling，原生 getMe 确认 Bot，实际 getChatMember 用于新群接纳与发送探针。消息引用在适配器中用 chat＋message 定位，进入业务后传内部事件 ID；topic、编辑和群迁移沿原绑定。媒体 file/token URL 留在 Telegram 适配器，公共媒体接收真实字节或适配器提供的流，不获得凭据 URL。原件缓存不设经验容量门槛，显式模型读取仍受实际输入预算限制。
+
+polling 偏移确认表示原事件已入账或已明确不接纳，不表示 Main 已完成。普通无 Work 对话在进程中止后不自动重买模型或补发；已接纳的 Work、原工具和未知效果按各自持久执行/回执恢复。不能把 native ACK、事件入账、Work 接纳和平台送达混称完成。
+
+公共会话历史和成员目录只返回已观察账本与内部人物 ID，明确标注 observed。QQ 远端/raw 转发展开不再作为默认模型工具；原确认事实与独立批准的 QQ SDK 传输扩展保留。跨平台同数字不会继承 QQ 忽略机器人、超管或隐私归属。
 
 ## 三类平台收发路由
 
@@ -73,11 +162,11 @@ admission 再确认原连接与 pin。探测或 CAS 前取消不安装路由；�
 或反向删除可能已提交的路由。数值日志分别报告初读、探测准备、恢复和 fresh recheck，
 恢复包含 CAS，不能将其耗时称作纯数据库锁等待。
 
-群内超管的精确 `/ai on` 使用独立的确定性控制入口，不是绕过 ingest 的聊天事件：QQ adapter
-验证真实事件连接与管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
+群内超管的 `/ai admin group current enable` 使用共同的确定性控制入口，不是绕过 ingest 的聊天事件：原生平台入口
+验证真实事件连接与同平台管理员 Binding，恢复服务保留健康接入 pin，否则仅接受唯一通过实时成员
 探针的候选。群启用、必要的两张群路由变更、审计和幂等回执在同一个 `BEGIN IMMEDIATE` 中提交；
 重验身份、路由 revision 与连接快照，冲突整笔退出。命令及回执不进聊天账本、模型或Memory，不修改 ConversationGeneration。普通消息、插件和其他管理命令仍受原围栏限制。
-尚无 SpaceBinding 的新群也只可由上述超管控制入口首次登记：按 Registry 中当前 QQ 连接的内部
+尚无 SpaceBinding 时，上述超管控制入口也可首次登记：按 Registry 中同平台当前连接的内部
 Presence ID 有界读取并在写事务前完成实时成员核验，要求唯一候选就是事件所在账号。writer 重验
 原连接、Presence revision 和外部绑定仍不存在，再将新内部 Space/Binding、两条路由、审计和回执
 一起提交；竞态或多个候选不创建身份，也不采纳或替换期间新出现的 owner。已有绑定继续按原
@@ -90,7 +179,7 @@ Presence ID 有界读取并在写事务前完成实时成员核验，要求唯�
 GatewayConnection 只存在于进程内 Registry。Registry 保存 Provider、Presence、连接句柄、能力、
 健康状态和 ConnectionGeneration；连接对象、token、Cookie 和 QQ 登录数据不进入数据库。
 
-Yuki 不再支持 NapCat，当前仅装配 SnowLuma QQ/OneBot v11 Provider。既有 GatewayProvider、
+Yuki 不再支持 NapCat，当前内置 SnowLuma QQ/OneBot v11、原生 Telegram 与进程内 App Provider。既有 GatewayProvider、
 GatewayConnectionProfile、Catalog、Registry 和 ProviderOneBotAdapter 继续承载可替换网关，
 provider 标识仍是通用字符串，不把业务核心改成品牌专用逻辑：
 
@@ -98,11 +187,16 @@ provider 标识仍是通用字符串，不把业务核心改成品牌专用逻�
 - 同一 QQ 只能有一条活动连接；重复连接在 Adapter 和 Registry 两层拒绝，新连接不会挤掉旧连接。
 - 同一 Provider 的重连、迟到断连和重复 socket 仍沿原连接合同处理。
 - 更换网关实现保留原 Presence 与业务 owner；连接变化不复制 Conversation、Memory 或历史。
+- App 使用迁移 0121 的 Presence 与配对生成的绑定，登记本地连接；它不表示 QQ 已连接。
+  连接必须显式选择 provider_id；目录只负责实际适配器，不按正文猜平台。恢复工作者启动前登记 App 连接。
+  App 普通消息先提交 canonical 事件，只有首次创建再通知原轮次协调器和 Main；HTTP 返回或
+  客户端断开不取消处理。输入文本走个人聊天，平台 `/ai` 控制命令仍在平台入口使用。
+  App 出站由原 Social 事务写账本与回执，不调用 OneBot，不伪造外部消息 ID；确认丢失时查原回执。
 
 历史账本的 `ingress_provider` 保留当时真实来源，旧 `napcat` 字段不迁移成 `snowluma`。
 读取历史不会重新装配退役 Provider，也不能据此重发或重跑旧效果。
 
-Provider 只承诺 Yuki 使用的 OneBot 核心能力。Provider 私有 action 不进入跨 Provider 合同，
+QQ Provider 只承诺 Yuki 使用的 OneBot 核心能力。Provider 私有 action 不进入跨 Provider 合同，
 不支持时必须显式失败。
 
 SnowLuma noVNC 与 WebUI 的宿主监听分别由 `SNOWLUMA_NOVNC_BIND_ADDRESS` 和
@@ -115,62 +209,39 @@ Memory 使用 canonical owner 分区：SELF 属于永久 Yuki，PERSON 属于 Pe
 PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真实事件来源，读取仍受作用域、
 权限和内容能力约束。Presence 或 Provider 变化不会复制或迁移记忆。
 
-偏好、自动化目标、插件状态、Emoji、Speech 和配置投影均使用 canonical owner。
+偏好、自动化目标、插件状态、Speech 和配置投影均使用 canonical owner；表情原件与标签由共享沙箱文件保存。
 定时 Main 保留真实创建主体、原触发场景和 generation；SELF 保自身主体和来源，
-Person 按原永久身份解析当前账号。发送由共同 Social 按明确目标和当前路由处理，
+Person 按原永久身份与当前同人关系核权限，纯内部工作无需当前账号或发送路由。发送由共同 Social 按明确目标和当前路由处理，
 触发群与 Presence 不构成额外的发送目标菜单。路由暂停只控制实际发送，不阻止内部 Main 工作。
 
-Plugin API 当前为 `3.5`，Host 只加载 API 与已批准 manifest 精确匹配的插件。兼容键仍使用 primary
+Plugin API 当前为 `7.0`，Host 只加载 API 与已批准 manifest 精确匹配的插件。兼容键仍使用 primary
 `conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
 插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。
 
-## Control Plane 与未来 WebUI
+## 管理入口与客户端接入
 
-Control Plane 是未来 WebUI 的唯一后端业务边界：
+当前管理入口沿同一个 Bot 的领域服务：
 
 ```text
-future HTTP/WebUI | current CLI | current QQ commands
-                         |
-                         v
-               transport adapters
-                         |
-                         v
-        ControlPlaneBundle / application services
-                         |
-                         v
-          repositories + runtime registries
+QQ / Telegram / App → MessageProcessor → Main / Work / Social / Memory / Workspace
+operator CLI → Admin API ────────────────┘
 ```
 
-HTTP 层把已认证身份转换为 `ControlPrincipal`、`DecisionContext` 和 canonical target，
-然后调用同一 Query/Command 服务。它不得直接查询 ORM、调用 OneBot 私有 API、读取 secret 或把
-QQ 消息证明伪造成 Web 请求。分页使用 opaque cursor；mutation 使用 request ID、expected revision、
-同步审计和幂等回执。
+管理身份从服务器 operator 声明与 Bearer 凭据得到。`ApplicationContainer.admin_api`
+复用运行中的领域服务、模型文件服务和原命令回执；QQ `/ai` 仍调用原领域入口。
+请求不能提交主体或借管理权限以 Person 发言。正文权限、短事务、事务外效果和原操作查询
+见[管理 API](admin-api.md)与[管理控制面合同](control-plane-foundation.md)。
 
-正式 HTTP、登录与前端已接入同一控制面，认证、CSRF 和内容权限见
-[WebUI 合同](webui-console.md)。页面不复制领域服务。
-
-`ApplicationContainer.control_plane` 已装配共享 Query/Command 服务及运行中的配置、连接、
-自动化、插件和 Memory 依赖；access 从服务器配置认证 CLI/Web operator，
-公开 wire 合同仅转换已核验的 DTO；HTTP transport 复用这套转换。现有 QQ/CLI 仍有直接调用共享领域服务的入口，图中边界是
-统一接入方向，不表示所有入口已经迁入 ControlPlaneBundle。
-配置、revision、分页、事务外执行、原操作查询和管理 HTTP 边界见
-[Control Plane 地基](control-plane-foundation.md)。
+旧浏览器入口、前端与旧控制面方法表已从源码删除。个人客户端接入同一事实源，
+使用 Person 设备身份，提供消息、原 Work 接续、SSE 与文件访问；HTTP-only 参考客户端
+复用这些接口。合同见[个人客户端 API](client-api.md)，本地验收与部署状态分别记录。
 
 ## 数据库与安全边界
 
-人物资料刷新复用入站已取得的 runtime snapshot。已确认的空 nickname/card 仅以
-bot、账号和群为键缓存 known 标记，最多 256 项、60 秒，命中不续期；该缓存不保存
-名字或身份权威。明确入站资料优先，网络异常不产生成功空值。异步资料返回后的写入
-核对原 Person，遗忘并重建同一 QQ Binding 后不能写入迟到的旧资料。
-
-普通人物观察在原事务维护群 Binding 的 last-seen。额外群名刷新仅在取得非空群名时
-写入，不因刷新冷却、空返回或没有解析器再占 writer；真正刷新在短 writer 中读取当前
-Space/Binding，不改变启用开关。可选展示资料的数据库写入失败记录类别后继续处理，
-后续可信身份、ingest 路由和账本写入的拒绝仍按原合同执行。
-
 人物遗忘保留一整个隐私事务，包含 Work、投影失效、trace 隐私代次、领域删除与脱敏。
 Rebuild selection 在锁外一次准备全部 Binding 别名，写入前核原 Person、别名和完整
-Rebuild 目录；变化则整个事务回滚并有限重备，不逐个别名在 writer 中解析历史。
+Rebuild 目录；变化则整个事务回滚后重备同一纯数据库计划，保原 ID，不设经验次数封口，
+取消继续传播；提交或回滚确认未知不授予重放资格。不逐个别名在 writer 中解析历史。
 插件队列使用 canonical Person 或同 plugin/Space 的原创建者 grant 集合删除。
 JSON 候选检查解码后的键和值，脱敏先解析再序列化，数字账号与转义文本保持有效 JSON；
 损坏的旧 JSON 导致整个遗忘回滚，不能报告部分遗忘成功。

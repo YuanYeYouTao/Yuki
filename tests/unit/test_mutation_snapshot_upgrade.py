@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import sqlite3
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import event as sqlalchemy_event
@@ -14,17 +15,19 @@ from sqlalchemy.exc import OperationalError
 from tests.unit.test_memory_mutation import _context, _event, _service
 from tests.unit.test_memory_v2 import _claim
 
-from qq_ai_bot.memory.claim_processor import MemoryProcessingContext
-from qq_ai_bot.memory.enums import MemoryScopeType
-from qq_ai_bot.memory.mutation import service as mutation_service
-from qq_ai_bot.memory.mutation.models import (
+from yuki.identity.canonical_repository import find_identity_binding, replace_assignment
+from yuki.identity.db_models import CanonicalPersonModel
+from yuki.memory.claim_processor import MemoryProcessingContext
+from yuki.memory.enums import MemoryScopeType
+from yuki.memory.mutation import service as mutation_service
+from yuki.memory.mutation.models import (
     MemoryMutationOperation,
     MemoryMutationRequest,
     MemoryMutationTarget,
 )
-from qq_ai_bot.memory.mutation.service import MemoryMutationRejected
-from qq_ai_bot.memory.repository import MemoryJobRepository
-from qq_ai_bot.persistence.models import MemoryFactModel, MemoryMutationReceiptModel
+from yuki.memory.mutation.service import MemoryMutationRejected
+from yuki.memory.repository import MemoryJobRepository
+from yuki.persistence.models import MemoryFactModel, MemoryMutationReceiptModel
 
 
 @pytest.mark.parametrize("entry", ["tool", "worker"])
@@ -161,7 +164,7 @@ async def test_four_busy_rollbacks_reprepare_without_repeating_resolution(
             # This leaves the decision input and original queue claim unchanged.
             async with database.immediate_session() as writer:
                 await writer.execute(
-                    text("UPDATE identity_bindings SET display_name=:label"),
+                    text("UPDATE accounts SET display_name=:label"),
                     {"label": f"snapshot-gate-{preparations}"},
                 )
 
@@ -169,9 +172,7 @@ async def test_four_busy_rollbacks_reprepare_without_repeating_resolution(
         reserved_ids.append(kwargs["mutation_id"])
         if code == 5 and entry == "tool" and (len(reserved_ids) <= 4 or stop == "cancel"):
             async with database.immediate_session() as writer:
-                await writer.execute(
-                    text("UPDATE identity_bindings SET display_name='busy-writer'")
-                )
+                await writer.execute(text("UPDATE accounts SET display_name='busy-writer'"))
                 return await original_reserve(**kwargs)
         return await original_reserve(**kwargs)
 
@@ -180,9 +181,7 @@ async def test_four_busy_rollbacks_reprepare_without_repeating_resolution(
         fence_calls += 1
         if code == 5 and (fence_calls <= 4 or stop == "cancel"):
             async with database.immediate_session() as writer:
-                await writer.execute(
-                    text("UPDATE identity_bindings SET display_name='busy-writer'")
-                )
+                await writer.execute(text("UPDATE accounts SET display_name='busy-writer'"))
                 return await original_fence(session, job)
         return await original_fence(session, job)
 
@@ -255,7 +254,9 @@ async def test_four_busy_rollbacks_reprepare_without_repeating_resolution(
 
 @pytest.mark.parametrize("entry", ["tool", "worker"])
 @pytest.mark.parametrize("change", ["binding_owner", "source_hidden"])
-async def test_retry_rejects_changed_claim_identity_or_source(database, monkeypatch, entry, change):
+async def test_retry_keeps_original_owner_and_rejects_hidden_source(
+    database, monkeypatch, entry, change
+):
     mutations, facts, ledger, processor = _service(database)
     source = await _event(
         ledger,
@@ -286,13 +287,11 @@ async def test_retry_rejects_changed_claim_identity_or_source(database, monkeypa
             changed = True
             async with database.immediate_session() as writer:
                 if change == "binding_owner":
-                    await writer.execute(
-                        text(
-                            "UPDATE identity_bindings SET person_id=(SELECT person_id "
-                            "FROM identity_bindings WHERE platform='qq' "
-                            "AND external_account_id='1002'), revision=revision+1 "
-                            "WHERE platform='qq' AND external_account_id='1001'"
-                        )
+                    original = await find_identity_binding(writer, "1001")
+                    target = await find_identity_binding(writer, "1002")
+                    person = await writer.get(CanonicalPersonModel, target.person_id)
+                    await replace_assignment(
+                        writer, original.account, original.id, person, now=datetime.now(UTC)
                     )
                 else:
                     await writer.execute(
@@ -333,14 +332,26 @@ async def test_retry_rejects_changed_claim_identity_or_source(database, monkeypa
         )
     sqlalchemy_event.listen(database.engine.sync_engine, "handle_error", capture_error)
     try:
-        with pytest.raises(MemoryMutationRejected, match="memory_resolution_snapshot_changed"):
-            await operation
+        if change == "source_hidden":
+            with pytest.raises(MemoryMutationRejected, match="memory_resolution_snapshot_changed"):
+                await operation
+        else:
+            result = await operation
+            assert result.ok
     finally:
         sqlalchemy_event.remove(database.engine.sync_engine, "handle_error", capture_error)
     assert resolve_calls == 1
     assert 517 in sqlite_errors  # Real BUSY_SNAPSHOT, rather than a mocked retry exception.
     async with database.sessions() as reader:
-        assert await reader.scalar(select(func.count()).select_from(MemoryFactModel)) == 0
-        assert (
-            await reader.scalar(select(func.count()).select_from(MemoryMutationReceiptModel)) == 0
-        )
+        stored = list(await reader.scalars(select(MemoryFactModel)))
+        if change == "binding_owner":
+            assert len(stored) == 1
+            assert stored[0].canonical_subject_person_id == source.author_person_id
+            current_owner = (await find_identity_binding(reader, "1001")).person_id
+            assert current_owner != source.author_person_id
+            assert stored[0].canonical_subject_person_id != current_owner
+        else:
+            assert not stored
+        assert await reader.scalar(
+            select(func.count()).select_from(MemoryMutationReceiptModel)
+        ) == (1 if change == "binding_owner" else 0)

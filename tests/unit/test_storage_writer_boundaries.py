@@ -7,9 +7,9 @@ import pytest
 from sqlalchemy import event
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.plugin_host.ownership import PluginOwnershipError
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
-from qq_ai_bot.plugin_host.session_repository import PluginAgentSessionRepository
+from yuki.plugin_host.ownership import PluginOwnershipError
+from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki.plugin_host.session_repository import PluginAgentSessionRepository
 
 
 @contextmanager
@@ -53,14 +53,14 @@ async def session_repository(database):
 async def test_session_identity_reads_finish_before_sequence_or_transcript_write(
     database, tmp_path
 ):
-    await social_env(database, tmp_path)
+    env = await social_env(database, tmp_path)
     repository = await session_repository(database)
     with sql_capture(database) as statements:
         session = await repository.create(
             plugin_id="metadata.session",
-            owner_user_id="10001",
+            owner_user_id=env.person,
             scope_type="user",
-            scope_id="10001",
+            scope_id=env.person,
         )
     assert_reads_precede_dml(statements)
     with sql_capture(database) as statements:
@@ -69,7 +69,7 @@ async def test_session_identity_reads_finish_before_sequence_or_transcript_write
             session_id=session.session_id,
             role="user",
             content="one",
-            sender_user_id="10001",
+            sender_user_id=env.person,
         )
     assert message.sequence == 1
     assert_reads_precede_dml(statements)
@@ -83,13 +83,13 @@ async def test_session_identity_reads_finish_before_sequence_or_transcript_write
 async def test_bad_sender_does_not_allocate_sequence_and_concurrent_appends_are_unique(
     database, tmp_path
 ):
-    await social_env(database, tmp_path)
+    env = await social_env(database, tmp_path)
     repository = await session_repository(database)
     session = await repository.create(
         plugin_id="metadata.session",
-        owner_user_id="10001",
+        owner_user_id=env.person,
         scope_type="user",
-        scope_id="10001",
+        scope_id=env.person,
     )
     with pytest.raises(PluginOwnershipError):
         await repository.append_message(
@@ -106,7 +106,7 @@ async def test_bad_sender_does_not_allocate_sequence_and_concurrent_appends_are_
                 session_id=session.session_id,
                 role="user",
                 content=str(i),
-                sender_user_id="10001",
+                sender_user_id=env.person,
             )
             for i in range(4)
         )

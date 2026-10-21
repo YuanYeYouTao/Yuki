@@ -18,8 +18,8 @@ name = "Hello"
 version = "0.1.0"
 description = "最小 Hello 插件"
 entrypoint = "hello_plugin:HelloPlugin"
-plugin_api = "3.5"
-yuki_requires = ">=3.9.0,<4.0"
+plugin_api = "7.0"
+yuki_requires = ">=4.0.0,<5.0"
 permissions = ["command.register"]
 
 [limits]
@@ -75,8 +75,8 @@ class HelloPlugin:
 
 ```bash
 uv sync --frozen --extra dev
-uv run qq-ai-bot-cli plugin validate plugins/com.example.hello
-uv run qq-ai-bot-cli plugin test plugins/com.example.hello
+uv run yuki plugin validate plugins/com.example.hello
+uv run yuki plugin test plugins/com.example.hello
 ```
 
 也可以在 pytest 中使用测试 SDK：
@@ -100,15 +100,18 @@ PLUGIN_SYSTEM_ENABLED=true
 PLUGIN_DIRECTORY=plugins
 ```
 
-启动 Host 后，使用已有 Control 操作员凭据管理在线插件。通过环境注入 `YUKI_CONTROL_CREDENTIAL`，不要将凭据写进命令行或日志；`WEBUI_ORIGIN` 必须指向可访问的 Host Control 地址并与服务配置一致。客户端登录、使用 CSRF、读取最新 revision，随后提交原请求。
+启动 Host 后，使用服务器声明的 operator 凭据管理在线插件。通过环境注入
+`YUKI_CONTROL_CREDENTIAL`，`ADMIN_API_URL` 指向运行中的 Bot HTTP 服务。
+CLI 以 Bearer 逐次认证，读取最新 revision 后提交原请求；未知结果沿原请求号查询。
+见[管理 API](../architecture/admin-api.md)。
 
 审阅 `inspect` 的权限后显式批准：
 
 ```bash
-uv run qq-ai-bot-cli plugin discover
-uv run qq-ai-bot-cli plugin inspect com.example.hello
-uv run qq-ai-bot-cli plugin approve com.example.hello --permission command.register
-uv run qq-ai-bot-cli plugin enable com.example.hello
+uv run yuki plugin discover
+uv run yuki plugin inspect com.example.hello
+uv run yuki plugin approve com.example.hello --permission command.register
+uv run yuki plugin enable com.example.hello
 ```
 
 `approve` 不传 `--permission` 只批准空权限集合，不自动批准 Manifest 的全部请求。连接中断会保留并显示原请求编号；查原 Control 回执后再决定后续动作，不盲重发。`validate`、`test`、`docs` 仍可离线运行。`setup apply-pending` 在线时调用同一 Control 接口；仅在成功获取原应用排他锁后才进行停机 bootstrap。
@@ -126,4 +129,4 @@ docker compose logs -f bot
 
 先阅读 [权限](permissions.md) 和 [安全模型](security.md)，然后从 [Echo 示例](../../examples/plugins/com.example.echo/README.md) 复制完整结构。
 
-当前合同见 [API 3.5 迁移](api-3.5-migration.md)；旧关系服务退役见 [API 3.4 迁移](api-3.4-migration.md)。
+当前合同见 [API 7.0 迁移](api-7.0-migration.md)；旧关系服务退役见 [API 3.4 迁移](api-3.4-migration.md)。

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass
 from itertools import count
@@ -10,43 +12,39 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-from qq_ai_bot.domain.messages import OutboundMessage, OutboundSendReceipt
-from qq_ai_bot.llm.base import LLMProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repositories import (
-    EmojiDescriptionRepository,
+from tests.support.model_executor import require_model_executor
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.config import Settings
+from yuki.conversation.scope_repository import ConversationScopeRepository
+from yuki.domain.messages import OutboundMessage, OutboundSendReceipt
+from yuki.llm.base import LLMProvider
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
+from yuki.memory.service import MemoryFactService
+from yuki.persistence.database import Database
+from yuki.persistence.repositories import (
     EventLedgerRepository,
     GroupSettingsRepository,
     MediaAnalysisRepository,
     PeopleRepository,
     PrivateUserSettingsRepository,
-    WebSearchSourceRepository,
 )
-from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-from qq_ai_bot.persistence.turn_observations import RuntimeTurnObservationRepository
-from qq_ai_bot.services.agent_tools import AgentToolService
-from qq_ai_bot.services.chat import ChatService
-from qq_ai_bot.services.command_service import CommandService
-from qq_ai_bot.services.concurrency import ConcurrencyManager
-from qq_ai_bot.services.effect_gate import ConversationEffectGate
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
-from qq_ai_bot.services.media_resolver import MediaResolver
-from qq_ai_bot.services.processor import DirectPluginCommandResolver, MessageProcessor
-from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
-from qq_ai_bot.services.turn_coordinator import ConversationTurnCoordinator
-from qq_ai_bot.services.user_profiles import UserProfileService
-from qq_ai_bot.services.vision_rate_limit import VisionRateLimiter
-from qq_ai_bot.services.vision_service import VisionService
-from qq_ai_bot.vision.base import VisionProvider
-from qq_ai_bot.web.base import WebSearchProvider
-from tests.support.model_executor import require_model_executor
+from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+from yuki.services.agent_tools import AgentToolService
+from yuki.services.chat import ChatService
+from yuki.services.command_service import CommandService
+from yuki.services.concurrency import ConcurrencyManager
+from yuki.services.effect_gate import ConversationEffectGate
+from yuki.services.image_preprocessor import ImagePreprocessor
+from yuki.services.media_resolver import MediaResolver
+from yuki.services.processor import DirectPluginCommandResolver, MessageProcessor
+from yuki.services.rate_limit import SlidingWindowRateLimiter
+from yuki.services.turn_coordinator import ConversationTurnCoordinator
+from yuki.services.vision_rate_limit import VisionRateLimiter
+from yuki.services.vision_service import VisionService
+from yuki.vision.base import VisionProvider
+from yuki.web.base import WebSearchProvider
 
 
 class MemorySender:
@@ -89,7 +87,6 @@ class Harness:
 def make_settings(database_url: str, **overrides: object) -> Settings:
     values: dict[str, object] = {
         "database_url": database_url,
-        "superusers_csv": "9000",
         "enabled_groups_csv": "2001,2002",
         "ignored_bot_users_csv": "7777",
         "llm_provider": "fake",
@@ -115,7 +112,7 @@ def build_harness(
     command_service: CommandService | None = None,
     direct_plugin_commands: DirectPluginCommandResolver | None = None,
 ) -> Harness:
-    from qq_ai_bot.identity.write_settings import configure_identity_write_settings
+    from yuki.identity.write_settings import configure_identity_write_settings
 
     configure_identity_write_settings(settings)
     groups = GroupSettingsRepository(database)
@@ -125,13 +122,11 @@ def build_harness(
     profiles = PeopleRepository(
         database,
     )
-    user_profiles = UserProfileService(profiles)
     scoped_events = ScopedEventLedgerUnitOfWork(database)
     ledger = EventLedgerRepository(database)
     ledger.set_scoped_writer(scoped_events)
     conversation_scopes = ConversationScopeRepository(database)
     memories = MemoryFactService(MemoryFactRepository(database))
-    web_sources = WebSearchSourceRepository(database)
     vision = (
         VisionService(
             provider=vision_provider,
@@ -147,7 +142,6 @@ def build_harness(
             ),
             analyses=MediaAnalysisRepository(database),
             rate_limiter=VisionRateLimiter(),
-            emoji_descriptions=EmojiDescriptionRepository(database),
             max_prepared_bytes=settings.vision_max_prepared_bytes,
             global_concurrency=settings.vision_global_concurrency,
             queue_max_pending=settings.vision_queue_max_pending,
@@ -171,7 +165,6 @@ def build_harness(
         ledger=ledger,
         memories=memories,
         web_provider=web_provider,
-        web_sources=web_sources,
         runtime_config=runtime_config,
     )
     chat = ChatService(
@@ -182,7 +175,6 @@ def build_harness(
         people=profiles,
         memories=memories,
         tools=agent_tools,
-        web_sources=web_sources,
         runtime_config=runtime_config,
         memory_partition_lookup=DatabaseMemoryPartitionLookup(database),
         conversation_scopes=conversation_scopes,
@@ -190,7 +182,105 @@ def build_harness(
         turn_coordinator=turn_coordinator,
     )
     from tests.support.canonical_ingress import fixture_ingress
+    from tests.support.client_identity import client_identity_service
+    from yuki.admin.audit import AdminAuditService
+    from yuki.admin.config_files import ConfigFileService
+    from yuki.admin.operations import AdminOperations
+    from yuki.admin.permission_catalog import PermissionCatalogService
+    from yuki.admin.queries import AdminQueries
+    from yuki.memory.claim_processor import MemoryClaimProcessor
+    from yuki.memory.event_extractor import MemoryEventExtractor
+    from yuki.memory.mutation.service import MemoryMutationService
+    from yuki.memory.rebuild.repository import MemoryRebuildRepository
+    from yuki.memory.rebuild.service import MemoryRebuildService
+    from yuki.plugin_host.discovery import PluginDiscovery
+    from yuki.plugin_host.event_bus import PluginEventBus
+    from yuki.plugin_host.extension_registry import ExtensionRegistry
+    from yuki.plugin_host.loader import PluginLoader
+    from yuki.plugin_host.manager import PluginManager
+    from yuki.plugin_host.repository import PluginInstallationRepository
+    from yuki.services.admin.config_admin import ConfigAdminService
+    from yuki.services.admin.memory_admin import MemoryAdminService
+    from yuki.services.admin.preference_admin import PreferenceAdminService
+    from yuki_plugin_sdk.testing import FakePluginContext
 
+    audit = AdminAuditService(database)
+    claim_processor = MemoryClaimProcessor(settings=settings, facts=memories)
+    mutations = MemoryMutationService(
+        settings=settings,
+        facts=memories,
+        processor=claim_processor,
+        ledger=ledger,
+    )
+    memory_admin = MemoryAdminService(
+        settings=settings,
+        memories=memories,
+        audit=audit,
+        mutations=mutations,
+        ledger=ledger,
+        runtime_config=runtime_config,
+    )
+    plugins = PluginManager(
+        enabled=False,
+        discovery=PluginDiscovery(
+            Path("__test_plugin_directory_not_present__"), yuki_version="0.0.0", enabled=False
+        ),
+        installations=PluginInstallationRepository(database),
+        loader=PluginLoader(),
+        extensions=ExtensionRegistry(),
+        event_bus=PluginEventBus(),
+        context_factory=lambda manifest, _permissions: FakePluginContext(manifest.id),
+    )
+    files = ConfigFileService(settings)
+    operations = AdminOperations(
+        database,
+        plugins,
+        files,
+        identities=client_identity_service(database, fixture_ingress(database)._router),
+        people=profiles,
+        config=runtime_config,
+        groups=groups,
+        router=fixture_ingress(database)._router,
+    )
+
+    async def health():
+        return []
+
+    queries = AdminQueries(database, plugins, files, health)
+    rebuild = MemoryRebuildService(
+        settings=settings,
+        repository=MemoryRebuildRepository(database),
+        ledger=ledger,
+        extractor=MemoryEventExtractor(
+            models,
+            concurrency,
+            people=profiles,
+            bot_display_name=settings.bot_display_name,
+            timezone=settings.default_timezone,
+        ),
+        processor=claim_processor,
+    )
+    command_service = command_service or CommandService(
+        admin_operations=operations,
+        admin_queries=queries,
+        conversation_scopes=conversation_scopes,
+        memory_rebuild=rebuild,
+        settings=settings,
+        people=profiles,
+        memories=memories,
+        concurrency=concurrency,
+        platform_connected=lambda _platform: True,
+        model_executor=models,
+        runtime_config=runtime_config,
+        memory_admin=memory_admin,
+        preference_admin=PreferenceAdminService(memory_mutations=memory_admin, audit=audit),
+        config_admin=ConfigAdminService(runtime_config),
+        permission_catalog=PermissionCatalogService(
+            settings=settings, config_registry=runtime_config.registry
+        ),
+        vision_service=vision,
+        turn_coordinator=turn_coordinator,
+    )
     ingress = fixture_ingress(database)
     processor = MessageProcessor(
         canonical_ingress=ingress,
@@ -201,22 +291,18 @@ def build_harness(
         effect_gate=effect_gate,
         groups=groups,
         private_users=private_users,
-        user_profiles=user_profiles,
         chat=chat,
         rate_limiter=SlidingWindowRateLimiter(
             per_user=settings.per_user_requests_per_minute,
             per_group=settings.per_group_requests_per_minute,
         ),
         concurrency=concurrency,
-        onebot_connected=lambda: True,
         people=profiles,
         memories=memories,
         runtime_config=runtime_config,
-        vision_service=vision,
         command_service=command_service,
         direct_plugin_commands=direct_plugin_commands,
         turn_coordinator=turn_coordinator,
-        turn_observations=RuntimeTurnObservationRepository(database),
     )
     return Harness(
         settings,
@@ -236,7 +322,7 @@ def build_harness(
 
 @pytest.fixture(autouse=True)
 def _identity_write_settings_isolation() -> Iterator[None]:
-    from qq_ai_bot.identity.write_settings import (
+    from yuki.identity.write_settings import (
         IdentityWriteSettings,
         configure_identity_write_settings,
         reset_identity_write_settings,
@@ -250,23 +336,14 @@ def _identity_write_settings_isolation() -> Iterator[None]:
         reset_identity_write_settings()
 
 
-@pytest_asyncio.fixture
-async def database(tmp_path: Path) -> Database:
-    from qq_ai_bot.identity.write_settings import (
-        IdentityWriteSettings,
-        configure_identity_write_settings,
-        reset_identity_write_settings,
-    )
+async def _seed_database(db: Database) -> None:
+    """The original fixed identity seed, applied to a real newly created schema."""
+    from datetime import UTC, datetime
 
-    path = (tmp_path / "test.db").as_posix()
-    db = Database(f"sqlite+aiosqlite:///{path}")
-    await db.create_schema()
-    from qq_ai_bot.identity.canonical_repository import (
-        ensure_person,
-        ensure_presence,
-        ensure_space,
-    )
+    from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
+    from yuki.identity.canonical_repository import create_presence
 
+    identity_since = datetime(2026, 8, 24, tzinfo=UTC)
     async with db.immediate_session() as session:
         for user_id in (
             "1001",
@@ -286,9 +363,25 @@ async def database(tmp_path: Path) -> Database:
             "1808058482",
             "1808058483",
         ):
-            await ensure_person(session, user_id, display_name=f"test-{user_id}")
+            person_id = await ensure_person(
+                session, user_id, display_name=f"test-{user_id}", now=identity_since
+            )
+            if user_id == "9000":
+                from yuki.identity.db_models import CanonicalPersonModel
+
+                person = await session.get(CanonicalPersonModel, person_id)
+                assert person is not None
+                person.is_superuser = True
         for bot_user_id in ("7777", "8000", "8001", "9999", "99999"):
-            await ensure_presence(session, bot_user_id)
+            await ensure_presence(session, bot_user_id, now=identity_since)
+        from datetime import UTC, datetime
+
+        await create_presence(
+            session, external_account_id="yuki-app", platform="app", now=datetime.now(UTC)
+        )
+        await create_presence(
+            session, external_account_id="yuki-acp", platform="acp", now=datetime.now(UTC)
+        )
         for group_id in (
             "2001",
             "2002",
@@ -306,6 +399,43 @@ async def database(tmp_path: Path) -> Database:
                 name=f"test-{group_id}",
                 require_mention=True,
             )
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def _database_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    from yuki.identity.write_settings import (
+        IdentityWriteSettings,
+        configure_identity_write_settings,
+        reset_identity_write_settings,
+    )
+
+    path = tmp_path_factory.mktemp("database-template") / "template.db"
+    db = Database(f"sqlite+aiosqlite:///{path.as_posix()}")
+    reset_identity_write_settings()
+    configure_identity_write_settings(IdentityWriteSettings())
+    try:
+        await db.create_schema()
+        await _seed_database(db)
+        async with db.engine.connect() as connection:
+            await connection.exec_driver_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+    finally:
+        await db.close()
+        reset_identity_write_settings()
+    path.chmod(0o444)
+    return path
+
+
+@pytest_asyncio.fixture
+async def database(tmp_path: Path, _database_template: Path) -> Database:
+    from yuki.identity.write_settings import (
+        IdentityWriteSettings,
+        configure_identity_write_settings,
+        reset_identity_write_settings,
+    )
+
+    path = tmp_path / "test.db"
+    await asyncio.to_thread(shutil.copyfile, _database_template, path)
+    db = Database(f"sqlite+aiosqlite:///{path.as_posix()}")
     reset_identity_write_settings()
     configure_identity_write_settings(IdentityWriteSettings())
     try:

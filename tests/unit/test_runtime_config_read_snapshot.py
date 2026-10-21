@@ -8,15 +8,37 @@ from sqlalchemy import event, select, update
 from sqlalchemy.exc import IntegrityError
 from tests.conftest import make_settings
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.domain.memory_config import MemoryConfigScope
-from qq_ai_bot.identity.db_models import (
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.domain.memory_config import MemoryConfigScope
+from yuki.identity.db_models import (
     CanonicalPersonModel,
+    CanonicalSpaceModel,
     IdentityBindingModel,
+    PresenceModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.errors import CanonicalIdentityError
-from qq_ai_bot.persistence.models import RuntimeConfigOverrideModel
+from yuki.identity.errors import CanonicalIdentityError
+from yuki.persistence.models import RuntimeConfigOverrideModel
+
+
+async def _owners(database):
+    # Fixture transport bindings are resolved once at this test boundary.
+    async with database.sessions() as reader:
+        people = {}
+        for external in ("10001", "10002"):
+            people[external] = await reader.scalar(
+                select(IdentityBindingModel.person_id).where(
+                    IdentityBindingModel.platform == "qq",
+                    IdentityBindingModel.external_account_id == external,
+                )
+            )
+        space = await reader.scalar(
+            select(SpaceBindingModel.space_id).where(
+                SpaceBindingModel.platform == "qq", SpaceBindingModel.external_space_id == "2001"
+            )
+        )
+        presence = await reader.scalar(select(PresenceModel.id).limit(1))
+    return people["10001"], people["10002"], space, presence
 
 
 async def _override(
@@ -25,7 +47,7 @@ async def _override(
     value,
     scope="user",
     *,
-    key="context.window_tokens",
+    key="context.compact_trigger_tokens",
     value_type="integer",
 ):
     now = datetime.now(UTC)
@@ -47,6 +69,40 @@ async def _override(
         )
 
 
+async def test_snapshot_indexes_override_rows_once_without_changing_scope_values(
+    database, monkeypatch
+):
+    runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    person, _, space, _ = await _owners(database)
+    await _override(database, person, 0.0, key="llm.temperature", value_type="number")
+    await _override(database, space, 0.8, "group", key="llm.temperature", value_type="number")
+    await _override(database, space, 80000, "group")
+    expected = await runtime.snapshot(user_id=person, group_id=space)
+    assert expected.llm.temperature == 0.0 and expected.context.compact_trigger_tokens == 80000
+
+    class TrackedRows(tuple):
+        visits = 0
+
+        def __iter__(self):
+            for row in super().__iter__():
+                self.visits += 1
+                yield row
+
+    read = runtime._repository.read_relevant_snapshot
+    observed = []
+
+    async def tracked(**kwargs):
+        rows, person_id, space_id = await read(**kwargs)
+        records = TrackedRows(rows)
+        observed.append(records)
+        return records, person_id, space_id
+
+    monkeypatch.setattr(runtime._repository, "read_relevant_snapshot", tracked)
+    actual = await runtime.snapshot(user_id=person, group_id=space)
+    assert actual == expected
+    assert observed[0].visits == len(observed[0])
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("group_override", [False, True])
 async def test_group_history_uses_space_config_while_private_history_keeps_person_config(
@@ -54,19 +110,18 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
 ):
     settings = make_settings(
         database.url,
-        context_window_tokens=60000,
+        context_compact_trigger_tokens=60000,
     )
     runtime = RuntimeConfigService(settings=settings, database=database)
-    person_a, space = await runtime._owner_match(user_id="10001", group_id="2001")
-    person_b, _ = await runtime._owner_match(user_id="10002", group_id="2001")
+    person_a, person_b, space, _ = await _owners(database)
     values_a = {
-        "window_tokens": 100000,
+        "compact_trigger_tokens": 100000,
     }
     values_b = {
-        "window_tokens": 200000,
+        "compact_trigger_tokens": 200000,
     }
     space_values = {
-        "window_tokens": 80000,
+        "compact_trigger_tokens": 80000,
     }
     for name in values_a:
         value_type = "number" if name.endswith("ratio") else "integer"
@@ -83,14 +138,14 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
             )
     for owner, temperature in ((person_a, 0.2), (person_b, 0.8)):
         await _override(database, owner, temperature, key="llm.temperature", value_type="number")
-    group_a = await runtime.snapshot(user_id="10001", group_id="2001")
-    group_b = await runtime.snapshot(user_id="10002", group_id="2001")
+    group_a = await runtime.snapshot(user_id=person_a, group_id=space)
+    group_b = await runtime.snapshot(user_id=person_b, group_id=space)
     assert group_a.context == group_b.context
     expected = (
         space_values
         if group_override
         else {
-            "window_tokens": 60000,
+            "compact_trigger_tokens": 60000,
         }
     )
     for name, value in expected.items():
@@ -98,8 +153,8 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
     assert group_a.llm.temperature == 0.2 and group_b.llm.temperature == 0.8
     canonical = await runtime.snapshot(memory_scope=MemoryConfigScope(person_b, space))
     assert canonical.context == group_a.context
-    private_a = await runtime.snapshot(user_id="10001")
-    private_b = await runtime.snapshot(user_id="10002")
+    private_a = await runtime.snapshot(user_id=person_a)
+    private_b = await runtime.snapshot(user_id=person_b)
     for name in values_a:
         assert getattr(private_a.context, name) == values_a[name]
         assert getattr(private_b.context, name) == values_b[name]
@@ -110,17 +165,17 @@ async def test_group_history_uses_space_config_while_private_history_keeps_perso
 async def test_snapshot_matches_previous_complete_config_and_resolves_once(
     database, monkeypatch, scope
 ):
-    from qq_ai_bot.admin import config_service as module
+    from yuki.admin import config_service as module
 
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
-    person, space = await runtime._owner_match(user_id="10001", group_id="2001")
+    person, _, space, _ = await _owners(database)
     await _override(database, person, 70000)
     await _override(database, space, 80000, "group")
     kwargs = {
         "global": {},
-        "person": {"user_id": "10001"},
-        "space": {"group_id": "2001"},
-        "both": {"user_id": "10001", "group_id": "2001"},
+        "person": {"user_id": person},
+        "space": {"group_id": space},
+        "both": {"user_id": person, "group_id": space},
         "canonical": {"user_id": person, "group_id": space},
         "memory": {"memory_scope": MemoryConfigScope(person, space)},
     }[scope]
@@ -143,7 +198,7 @@ async def test_snapshot_matches_previous_complete_config_and_resolves_once(
     def capture(_connection, _cursor, statement, *_args):
         sql.append(statement)
 
-    for name in ("resolve_live_person_id", "resolve_live_space_id"):
+    for name in ("current_person_id", "resolve_space_owner"):
         original = getattr(module, name)
 
         async def wrapped(*args, _original=original, _name=name, **kw):
@@ -161,22 +216,24 @@ async def test_snapshot_matches_previous_complete_config_and_resolves_once(
     assert len(sessions) == 1
     assert all(statement.lstrip().startswith(("BEGIN", "SELECT")) for statement in sql)
     assert sql[0] == "BEGIN"
-    assert resolved.count("resolve_live_person_id") == int("user_id" in kwargs)
-    assert resolved.count("resolve_live_space_id") == int("group_id" in kwargs)
+    assert resolved.count("current_person_id") == int(
+        "user_id" in kwargs
+        or ("memory_scope" in kwargs and kwargs["memory_scope"].person_id is not None)
+    )
+    assert resolved.count("resolve_space_owner") == int("group_id" in kwargs)
 
 
 @pytest.mark.asyncio
 async def test_rebind_and_override_commit_between_queries_cannot_mix_snapshot_owners(
     database, monkeypatch
 ):
-    from qq_ai_bot.admin import config_service as module
+    from yuki.admin import config_service as module
 
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
-    old, _ = await runtime._owner_match(user_id="10001", group_id=None)
-    new, _ = await runtime._owner_match(user_id="10002", group_id=None)
+    old, new, _, _ = await _owners(database)
     await _override(database, old, 70000)
     await _override(database, new, 80000)
-    resolve = module.resolve_live_person_id
+    resolve = module.current_person_id
     changed = False
 
     async def concurrent_rebind(session, raw):
@@ -185,10 +242,15 @@ async def test_rebind_and_override_commit_between_queries_cannot_mix_snapshot_ow
         if not changed:
             changed = True
             async with database.immediate_session() as writer:
-                await writer.execute(
-                    update(IdentityBindingModel)
-                    .where(IdentityBindingModel.external_account_id == "10001")
-                    .values(person_id=new, revision=IdentityBindingModel.revision + 1)
+                from yuki.identity.canonical_repository import (
+                    find_identity_binding,
+                    replace_assignment,
+                )
+
+                original = await find_identity_binding(writer, "10001")
+                target = await writer.get(CanonicalPersonModel, new)
+                await replace_assignment(
+                    writer, original.account, original.id, target, now=datetime.now(UTC)
                 )
                 await writer.execute(
                     update(RuntimeConfigOverrideModel)
@@ -197,13 +259,19 @@ async def test_rebind_and_override_commit_between_queries_cannot_mix_snapshot_ow
                 )
         return owner
 
-    monkeypatch.setattr(module, "resolve_live_person_id", concurrent_rebind)
+    monkeypatch.setattr(module, "current_person_id", concurrent_rebind)
+    snapshot = await runtime.snapshot(user_id=old)
+    assert changed and snapshot.context.compact_trigger_tokens == 70000
+    assert (await runtime.snapshot(user_id=old)).context.compact_trigger_tokens == 71000
+    assert (await runtime.snapshot(user_id=new)).context.compact_trigger_tokens == 80000
+    with pytest.raises(CanonicalIdentityError):
+        await runtime.snapshot(user_id="10001")
 
 
 @pytest.mark.asyncio
 async def test_snapshot_under_wal_writer_reads_committed_config_without_dml(database):
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
-    owner, _ = await runtime._owner_match(user_id="10001", group_id=None)
+    owner, _, _, _ = await _owners(database)
     await _override(database, owner, 70000)
     async with database.immediate_session() as writer:
         await writer.execute(
@@ -218,21 +286,22 @@ async def test_snapshot_under_wal_writer_reads_committed_config_without_dml(data
 
         event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
         try:
-            result = await runtime.snapshot(user_id="10001")
+            result = await runtime.snapshot(user_id=owner)
         finally:
             event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
         assert all(statement.startswith(("SELECT", "BEGIN")) for statement in sql)
-        assert result.context.window_tokens == 70000
+        assert result.context.compact_trigger_tokens == 70000
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invalid",
-    ["person_disabled", "identity_disabled", "space_disabled", "missing", "presence_kind"],
+    ["person_disabled", "space_disabled", "missing", "presence_kind"],
 )
-async def test_snapshot_preserves_live_identity_rejections(database, invalid):
+async def test_snapshot_reads_disabled_material_owners_and_rejects_missing_types(database, invalid):
     runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
-    kwargs = {"user_id": "10001"}
+    person, _, space, presence = await _owners(database)
+    kwargs = {"user_id": person}
     async with database.immediate_session() as session:
         if invalid == "person_disabled":
             binding = await session.scalar(
@@ -245,25 +314,43 @@ async def test_snapshot_preserves_live_identity_rejections(database, invalid):
                 .where(CanonicalPersonModel.id == binding.person_id)
                 .values(enabled=False)
             )
-        elif invalid == "identity_disabled":
-            await session.execute(
-                update(IdentityBindingModel)
-                .where(IdentityBindingModel.external_account_id == "10001")
-                .values(status="disabled")
-            )
         elif invalid == "space_disabled":
             await session.execute(
-                update(SpaceBindingModel)
-                .where(SpaceBindingModel.external_space_id == "2001")
-                .values(status="disabled")
+                update(CanonicalSpaceModel)
+                .where(CanonicalSpaceModel.id == space)
+                .values(enabled=False)
             )
-            kwargs = {"group_id": "2001"}
+            kwargs = {"group_id": space}
         elif invalid == "missing":
             kwargs = {"user_id": "no-such-synthetic-owner"}
         else:
-            kwargs = {"user_id": "8000"}
-    with pytest.raises(CanonicalIdentityError):
-        await runtime.snapshot(**kwargs)
+            kwargs = {"user_id": presence}
+    if invalid in {"person_disabled", "space_disabled"}:
+        assert await runtime.snapshot(**kwargs)
+    else:
+        with pytest.raises(CanonicalIdentityError):
+            await runtime.snapshot(**kwargs)
+
+
+@pytest.mark.asyncio
+async def test_known_canonical_config_owners_do_not_require_an_active_qq_binding(database):
+    runtime = RuntimeConfigService(settings=make_settings(database.url), database=database)
+    person, _, space, _ = await _owners(database)
+    await _override(database, person, 70000)
+    await _override(database, space, 80000, "group")
+    async with database.immediate_session() as writer:
+        await writer.execute(
+            update(IdentityBindingModel)
+            .where(IdentityBindingModel.person_id == person)
+            .values(status="disabled")
+        )
+        await writer.execute(
+            update(SpaceBindingModel)
+            .where(SpaceBindingModel.space_id == space)
+            .values(status="disabled")
+        )
+    assert (await runtime.snapshot(user_id=person)).context.compact_trigger_tokens == 70000
+    assert (await runtime.snapshot(group_id=space)).context.compact_trigger_tokens == 80000
 
 
 @pytest.mark.asyncio

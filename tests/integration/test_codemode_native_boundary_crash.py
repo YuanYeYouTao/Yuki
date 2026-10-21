@@ -14,21 +14,21 @@ from tests.support.codemode_cases import (
     requires_worker,
 )
 
-from qq_ai_bot.codemode.driver import CodeModeDriver
-from qq_ai_bot.domain.messages import ChatMessage
+from yuki.codemode.driver import CodeModeDriver
+from yuki.domain.messages import ChatMessage
 
-pytestmark = requires_worker
+pytestmark = [requires_worker, pytest.mark.native_worker]
 
 CRASH_CHILD = r"""
 import asyncio, json, os, sys
 from tests.support.codemode_cases import build_host, outer_call
-from qq_ai_bot.codemode.driver import CodeModeDriver
-from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkLease, WorkRepository
-from qq_ai_bot.runtime.work_session import WorkSession
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.codemode.driver import CodeModeDriver
+from yuki.domain.messages import ChatMessage
+from yuki.persistence.database import Database
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkLease, WorkRepository
+from yuki.runtime.work_session import WorkSession
+from yuki.services.turn_transcript import TurnTranscript
 
 url, lease_json, identity, chain_id, code, log, stop_tool = sys.argv[1:]
 

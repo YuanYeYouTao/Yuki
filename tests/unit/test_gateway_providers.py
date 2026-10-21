@@ -8,17 +8,17 @@ from dataclasses import dataclass
 import pytest
 from nonebot.adapters.onebot.v11 import Adapter as OneBotV11Adapter
 
-from qq_ai_bot import cli as administrative_cli
-from qq_ai_bot.adapters.onebot.provider_adapter import SnowLumaOneBotAdapter
-from qq_ai_bot.gateway.compatibility import CORE_ONEBOT_ACTIONS, provider_doctor_payload
-from qq_ai_bot.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
-from qq_ai_bot.gateway.providers import builtin_provider_catalog
-from qq_ai_bot.gateway.providers.snowluma import (
+from yuki import cli as administrative_cli
+from yuki.adapters.onebot.provider_adapter import SnowLumaOneBotAdapter
+from yuki.gateway.compatibility import CORE_ONEBOT_ACTIONS, provider_doctor_payload
+from yuki.gateway.provider import GatewayConnectionProfile, GatewayProviderCatalog
+from yuki.gateway.providers import builtin_provider_catalog
+from yuki.gateway.providers.snowluma import (
     SNOWLUMA_CAPABILITIES,
     SNOWLUMA_PROVIDER_ID,
     SnowLumaProvider,
 )
-from qq_ai_bot.gateway.registry import (
+from yuki.gateway.registry import (
     GatewayConnectionConflict,
     GatewayConnectionRegistry,
     RegistryClosed,
@@ -35,6 +35,12 @@ class _Bot:
 class _Provider:
     provider_id: str
     platform: str = "qq"
+
+    def media(self, handle: object) -> None:
+        return None
+
+    def activity(self, handle: object, target: object) -> None:
+        return None
 
     def describe_connection(self, handle: object) -> GatewayConnectionProfile:
         return GatewayConnectionProfile(
@@ -72,9 +78,9 @@ def test_provider_catalog_is_explicit_and_fail_closed() -> None:
     with pytest.raises(ValueError, match="at least one"):
         GatewayProviderCatalog(())
     builtins = builtin_provider_catalog()
-    assert builtins.describe_connection(_Bot("8000")) == SnowLumaProvider().describe_connection(
-        _Bot("8000")
-    )
+    assert builtins.describe_connection(
+        _Bot("8000"), provider_id="snowluma"
+    ) == SnowLumaProvider().describe_connection(_Bot("8000"))
 
 
 def test_registry_uses_selected_provider_profile_not_constructor_strings() -> None:
@@ -240,9 +246,7 @@ def test_builtin_provider_doctor_freezes_the_core_onebot_contract() -> None:
     expected = {
         "send_private_msg",
         "send_group_msg",
-        "get_group_info",
         "get_group_member_info",
-        "get_stranger_info",
         "get_image",
         "get_group_msg_history",
         "get_friend_msg_history",
@@ -260,38 +264,48 @@ def test_builtin_provider_doctor_freezes_the_core_onebot_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_social_operations_use_custom_provider_connection_without_brand_dispatch() -> None:
+async def test_registered_custom_provider_supplies_native_social_operations() -> None:
     from unittest.mock import AsyncMock
 
-    from qq_ai_bot.identity.routing import ResolvedSend
-    from qq_ai_bot.social.service import SocialService
+    from yuki.gateway.social import TransportMessage, TransportReceipt, TransportTarget
+    from yuki.identity.routing import ResolvedSend
+
+    class NativeOperations:
+        async def send(self, handle, target, message):
+            reference = await handle.deliver(target.external_id, message.text)
+            return TransportReceipt(reference)
+
+    operations = NativeOperations()
+
+    class NativeProvider(_Provider):
+        @property
+        def social(self):
+            return operations
 
     @dataclass
     class ApiBot(_Bot):
-        call_api: AsyncMock
+        deliver: AsyncMock
 
-    bot = ApiBot("8000", AsyncMock(return_value={"message_id": "accepted"}))
-    registry = GatewayConnectionRegistry(providers=GatewayProviderCatalog((_Provider("custom"),)))
+    bot = ApiBot("8000", AsyncMock(return_value="accepted"))
+    registry = GatewayConnectionRegistry(
+        providers=GatewayProviderCatalog((NativeProvider("custom", platform="native-example"),))
+    )
     registry.connect(bot, presence_id="presence-yuki")
     route = ResolvedSend(
         presence_id="presence-yuki",
         binding_id="binding-peer",
-        platform="qq",
+        platform="native-example",
         external_target_id="1001",
         route_generation=1,
         connection=registry.resolve_active("presence-yuki"),
         kind="person",
         sender_account_id="8000",
     )
-    result = await SocialService._call(
-        route, "send_private_msg", {"user_id": 1001, "message": "hello"}
+    result = await registry.social(route.connection).send(
+        route.connection.bot, TransportTarget("person", "1001"), TransportMessage("hello")
     )
-    assert result == {"message_id": "accepted"}
-    bot.call_api.assert_awaited_with("send_private_msg", user_id=1001, message="hello")
-    bot.call_api.reset_mock()
-    with pytest.raises(ValueError, match="capability_unavailable"):
-        await SocialService._call(route, "provider_private_action", {})
-    bot.call_api.assert_not_awaited()
+    assert result.reference == "accepted"
+    bot.deliver.assert_awaited_once_with("1001", "hello")
 
 
 def test_gateway_doctor_does_not_require_runtime_settings(
@@ -304,7 +318,7 @@ def test_gateway_doctor_does_not_require_runtime_settings(
     monkeypatch.setattr(administrative_cli, "Settings", _settings_forbidden)
     monkeypatch.setattr(
         "sys.argv",
-        ["qq-ai-bot-cli", "gateway", "doctor", "--provider", "snowluma"],
+        ["yuki", "gateway", "doctor", "--provider", "snowluma"],
     )
 
     administrative_cli.main()
@@ -312,42 +326,9 @@ def test_gateway_doctor_does_not_require_runtime_settings(
     assert json.loads(capsys.readouterr().out)["provider_id"] == "snowluma"
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "action",
-    [
-        "get_group_list",
-        "send_private_msg",
-        "send_group_msg",
-        "upload_private_file",
-        "upload_group_file",
-        "send_poke",
-        "get_group_member_list",
-        "get_group_member_info",
-        "delete_msg",
-        "get_friend_msg_history",
-        "get_group_msg_history",
-    ],
-)
-async def test_social_gateway_preserves_explicit_action_and_parameters(action):
-    from unittest.mock import AsyncMock
-
-    from qq_ai_bot.gateway.providers.social import OneBotSocialOperations
-
-    bot = AsyncMock()
-    params = {"group_id": "group", "user_id": "person"}
-    result = await OneBotSocialOperations().social_action(bot, action, params)
-    bot.call_api.assert_awaited_once_with(action, **params)
-    assert result is bot.call_api.return_value
-
-
-@pytest.mark.asyncio
-async def test_social_gateway_rejects_actions_outside_its_whitelist():
-    from unittest.mock import AsyncMock
-
-    from qq_ai_bot.gateway.providers.social import OneBotSocialOperations
-
-    bot = AsyncMock()
-    with pytest.raises(ValueError, match="capability_unavailable"):
-        await OneBotSocialOperations().social_action(bot, "set_group_admin", {})
-    bot.call_api.assert_not_awaited()
+@pytest.mark.parametrize("provider", ["telegram", "app", "acp"])
+def test_onebot_doctor_declares_only_the_onebot_provider(monkeypatch, provider):
+    monkeypatch.setattr("sys.argv", ["yuki", "gateway", "doctor", "--provider", provider])
+    with pytest.raises(SystemExit) as failure:
+        administrative_cli.main()
+    assert failure.value.code == 2

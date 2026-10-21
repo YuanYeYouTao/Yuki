@@ -9,26 +9,27 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import insert, select, update
-from tests.unit.test_memory_rebuild import _service
+from tests.support.event_seed import seed_event
+from tests.unit.test_memory_rebuild import _admin, _service
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.memory.enums import MemoryRebuildRunStatus
-from qq_ai_bot.memory.extraction import MemoryClaim, source_event_fingerprint
-from qq_ai_bot.memory.rebuild import receipt_finalization
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildPlanStatistics, MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-from qq_ai_bot.memory.repository import MemoryJobRepository
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.conversations import ScopeType
+from yuki.memory.enums import MemoryRebuildRunStatus
+from yuki.memory.extraction import MemoryClaim, source_event_fingerprint
+from yuki.memory.rebuild import receipt_finalization
+from yuki.memory.rebuild.models import MemoryRebuildPlanStatistics, MemoryRebuildSelection
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.memory.repository import MemoryJobRepository
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryJobModel,
     MemoryRebuildItemModel,
     MemoryRebuildProposalModel,
     MemoryRebuildRunModel,
 )
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.persistence.repository_helpers import _event_record
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.persistence.repository_helpers import _event_record
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,8 @@ async def _seed(
 ) -> _Seed:
     """Bulk staging fixture, preserving a ledger-created canonical owner/binding."""
     now = datetime.now(UTC)
-    first, _ = await EventLedgerRepository(database).append(
+    first, _ = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id=str(uuid.uuid4()),
         scope_type=ScopeType.PRIVATE,
@@ -73,7 +75,7 @@ async def _seed(
             input_characters=count * 6,
             estimated_extraction_requests=count,
         ),
-        actor_user_id="9000",
+        actor_user_id=await _admin(database),
     )
     async with database.sessions() as session, session.begin():
         original = await session.get(ChatEventModel, first.id)

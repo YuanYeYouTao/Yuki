@@ -9,21 +9,21 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import select
 from tests.conftest import build_harness, make_settings
+from tests.support.canonical_identity import ensure_presence, ensure_space
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.semantic_participation_host_helpers import _event_and_route, _host
 
-from qq_ai_bot.conversation.canonical_db_models import SpaceActiveRouteModel
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.canonical_repository import ensure_presence, ensure_space
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.runtime.work_activation import activate_work
-from qq_ai_bot.runtime.work_management import manage_work
-from qq_ai_bot.runtime.work_scheduler import WorkScheduler
-from qq_ai_bot.runtime.work_schema_v1 import scope
-from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+from yuki.conversation.canonical_db_models import SpaceActiveRouteModel
+from yuki.conversation.hydrate import ensure_canonical_conversation
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.work_activation import activate_work
+from yuki.runtime.work_management import manage_work
+from yuki.runtime.work_scheduler import WorkScheduler
+from yuki.runtime.work_schema_v1 import scope
+from yuki.runtime.work_wait import WorkWaitRepository
 
 pytestmark = pytest.mark.asyncio
 

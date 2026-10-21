@@ -1,6 +1,7 @@
 """OneBot event normalization and unsupported-content tests."""
 
 import json
+from datetime import UTC, datetime
 
 from nonebot.adapters.onebot.v11 import (
     GroupMessageEvent,
@@ -10,16 +11,16 @@ from nonebot.adapters.onebot.v11 import (
 )
 from nonebot.adapters.onebot.v11.event import Reply, Sender
 
-from qq_ai_bot.adapters.onebot.normalizer import normalize_event, reproject_inbound_mentions
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import AttachmentKind
+from yuki.adapters.onebot.normalizer import normalize_event, reproject_inbound_mentions
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import AttachmentKind
 
 
 def private_event(
     message: Message, *, message_id: int = 1, user_id: int = 1001
 ) -> PrivateMessageEvent:
     return PrivateMessageEvent(
-        time=1,
+        time=int(datetime.now(UTC).timestamp()),
         self_id=9999,
         post_type="message",
         sub_type="friend",
@@ -36,7 +37,7 @@ def private_event(
 
 def group_event(message: Message, *, message_id: int = 2) -> GroupMessageEvent:
     return GroupMessageEvent(
-        time=1,
+        time=int(datetime.now(UTC).timestamp()),
         self_id=9999,
         post_type="message",
         sub_type="normal",
@@ -62,6 +63,26 @@ def test_private_text_and_group_mention_normalize() -> None:
     assert group.scope_type is ScopeType.GROUP and group.mentions_bot
     assert group.text == "[提及Yuki] question" and group.group_id == "2001"
     assert group.sender.nickname == "tester" and group.sender.group_card == "card"
+
+
+def test_native_group_name_is_metadata_from_the_original_event() -> None:
+    event = group_event(Message("hello"))
+    payload = event.model_dump()
+    payload["group_name"] = "Native group title"
+
+    normalized = normalize_event(GroupMessageEvent.model_validate(payload))
+
+    assert normalized.group_name == "Native group title"
+    assert normalized.text == "hello"
+    assert normalize_event(event).group_name == ""
+    assert normalize_event(private_event(Message("hello"))).group_name == ""
+
+
+def test_non_text_native_group_name_does_not_become_a_display_name() -> None:
+    event = group_event(Message("hello"))
+    event.model_extra["group_name"] = {"unexpected": "value"}
+
+    assert normalize_event(event).group_name == ""
 
 
 def test_group_mention_uses_original_message_after_nonebot_strips_at() -> None:
@@ -176,11 +197,43 @@ def test_at_all_is_not_exposed_as_a_user_target() -> None:
     assert "[提及全体成员]看看" in normalized.text
 
 
+def test_native_mention_spans_survive_whitespace_cleanup_without_replacing_literal_text() -> None:
+    from dataclasses import replace
+
+    from yuki.domain.messages import render_message_mentions
+
+    normalized = normalize_event(
+        group_event(
+            Message(
+                [
+                    MessageSegment.text(" \r\n[提及1002]\x00 \t"),
+                    MessageSegment.at(1002),
+                    MessageSegment.text("  \r\n "),
+                    MessageSegment.at(1003),
+                    MessageSegment.text(" \r\n"),
+                ]
+            )
+        )
+    )
+    assert [normalized.text[item.text_start : item.text_end] for item in normalized.mentions] == [
+        "[提及1002]",
+        "[提及1003]",
+    ]
+    text, _mentions = render_message_mentions(
+        normalized.text,
+        tuple(
+            replace(item, display_name=f"名字{index}")
+            for index, item in enumerate(normalized.mentions)
+        ),
+    )
+    assert text == "[提及1002] \t@名字0\n @名字1"
+
+
 def test_reply_text_and_face_placeholder_are_supported() -> None:
     message = Message([MessageSegment.at(9999), MessageSegment.face(14), MessageSegment.text("ok")])
     event = group_event(message)
     event.reply = Reply(
-        time=1,
+        time=int(datetime.now(UTC).timestamp()),
         message_type="group",
         message_id=8,
         real_id=8,
@@ -195,7 +248,7 @@ def test_reply_text_and_face_placeholder_are_supported() -> None:
 def test_reply_text_uses_the_same_yuki_and_member_projection() -> None:
     event = group_event(Message("继续"))
     event.reply = Reply(
-        time=1,
+        time=int(datetime.now(UTC).timestamp()),
         message_type="group",
         message_id=8,
         real_id=8,
@@ -249,3 +302,32 @@ def test_netease_album_share_card_becomes_bounded_chat_context() -> None:
     assert "用户分享了一个网易云专辑" in normalized.text
     assert "网易云专辑 ID：242154493" in normalized.text
     assert "中国有弹舌" in normalized.text
+
+
+def test_unlocated_account_list_does_not_supply_a_native_mention_signal():
+    from dataclasses import replace
+
+    original = normalize_event(group_event(Message("ordinary @8001 text")))
+    message = replace(original, segments=(), mentioned_user_ids=("8001",))
+    projected = reproject_inbound_mentions(message, frozenset({"9999", "8001"}))
+    assert not projected.mentions_bot and projected.mentions == ()
+    assert projected.text == original.text
+    explicit = replace(message, mentions_bot=True)
+    assert reproject_inbound_mentions(explicit, frozenset({"8001"})).mentions_bot
+
+
+def test_invalid_native_segments_do_not_fall_back_to_old_account_lists():
+    from dataclasses import replace
+
+    import pytest
+
+    from yuki.adapters.onebot.normalizer import SegmentProjectionError
+
+    original = normalize_event(group_event(Message("ordinary text")))
+    malformed = replace(
+        original,
+        segments=({"type": "at", "data": "not-a-native-object"},),
+        mentioned_user_ids=("8001",),
+    )
+    with pytest.raises(SegmentProjectionError, match="segment_data_invalid"):
+        reproject_inbound_mentions(malformed, frozenset({"8001"}))

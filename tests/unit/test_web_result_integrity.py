@@ -5,15 +5,17 @@ import json
 
 import httpx
 import pytest
+from tests.support.event_seed import seed_scoped_event
 
-from qq_ai_bot.domain.messages import ChatResponse, CitationOrigin, ResponseCitation
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
-from qq_ai_bot.web.bridge_state import BridgeState
-from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
-from qq_ai_bot.web.native_bridge import NativeSearchBridge
-from qq_ai_bot.web.tavily import TavilyWebSearchProvider
+from yuki.domain.messages import ChatResponse, CitationOrigin, ResponseCitation
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.fake import FakeLLMProvider
+from yuki.model_runtime.models import ModelProfile, ModelProtocol
+from yuki.web.bridge_state import BridgeState
+from yuki.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
+from yuki.web.native_bridge import NativeSearchBridge
+from yuki.web.page_extractor import DirectPageExtractor
+from yuki.web.tavily import TavilyWebSearchProvider
 
 
 async def test_tavily_passes_requested_counts_and_preserves_all_returned_evidence():
@@ -29,7 +31,12 @@ async def test_tavily_passes_requested_counts_and_preserves_all_returned_evidenc
         if request.url.path == "/search":
             return httpx.Response(
                 200,
-                json={"results": [dict(url=url, title=title, content=snippet) for url in urls]},
+                json={
+                    "results": [
+                        dict(url=url, title=title, content=snippet, raw_content=content)
+                        for url in urls
+                    ]
+                },
             )
         return httpx.Response(
             200,
@@ -42,9 +49,7 @@ async def test_tavily_passes_requested_counts_and_preserves_all_returned_evidenc
     provider = TavilyWebSearchProvider(api_key="synthetic", client=client)
     query = "q" * 700
     try:
-        result = await provider.search(
-            WebSearchRequest(query, max_results=7, extract_max_results=5)
-        )
+        result = await provider.search(WebSearchRequest(query, max_results=7))
     finally:
         await provider.close()
     assert captured[0] == (
@@ -59,19 +64,13 @@ async def test_tavily_passes_requested_counts_and_preserves_all_returned_evidenc
             include_images=False,
         ),
     )
-    assert captured[1] == (
-        "/extract",
-        dict(urls=urls[:5], extract_depth="basic", format="markdown", include_images=False),
-    )
+    assert len(captured) == 1
     assert [source.url for source in result.sources] == urls
     assert all(
         source.title == title.strip() and source.snippet == snippet.strip()
         for source in result.sources
     )
-    assert [source.relevant_content for source in result.sources] == [content] * 5 + [
-        snippet.strip(),
-        snippet.strip(),
-    ]
+    assert [source.relevant_content for source in result.sources] == [content] * 7
 
 
 async def test_anthropic_native_search_keeps_wire_evidence_without_local_response_caps(tmp_path):
@@ -121,6 +120,9 @@ async def test_anthropic_native_search_keeps_wire_evidence_without_local_respons
         ),
         credential="synthetic",
         state=BridgeState(tmp_path / "search.sqlite3"),
+        extractor=DirectPageExtractor(
+            state=BridgeState(tmp_path / "search.sqlite3"), timeout_seconds=2
+        ),
         provider=AnthropicMessagesProvider(
             base_url="https://wire.invalid/",
             api_key="synthetic",
@@ -130,9 +132,7 @@ async def test_anthropic_native_search_keeps_wire_evidence_without_local_respons
         ),
     )
     try:
-        result = await provider.search(
-            WebSearchRequest("q" * 700, max_results=7, extract_max_results=0)
-        )
+        result = await provider.search(WebSearchRequest("q" * 700, max_results=7))
     finally:
         await provider.close()
         await client.aclose()
@@ -172,6 +172,9 @@ async def test_gemini_keeps_original_grounding_and_full_summary(tmp_path):
         credential="synthetic",
         provider=provider,
         state=BridgeState(tmp_path / "search.sqlite3"),
+        extractor=DirectPageExtractor(
+            state=BridgeState(tmp_path / "search.sqlite3"), timeout_seconds=1
+        ),
     )
     try:
         result = await bridge.search(WebSearchRequest("q" * 700, max_results=7))
@@ -189,20 +192,21 @@ async def test_main_history_search_archives_original_requested_page(
 ):
     from tests.support.automation_unified_delivery_helpers import setup_run
 
-    from qq_ai_bot.automation.models import RunStatus
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.domain.messages import ToolCall, ToolFunction
-    from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+    from yuki.automation.models import RunStatus
+    from yuki.domain.conversations import ConversationScope
+    from yuki.domain.messages import ToolCall, ToolFunction
+    from yuki.tool_results.artifacts import ToolArtifactRepository
 
     case = await setup_run(database, tmp_path, delivery="none", mode="silent")
     case.settings.runtime_work_enabled = work_enabled
-    case.settings.context_window_tokens = 500000
+    case.settings.context_compact_trigger_tokens = 500000
     store = ToolArtifactRepository(database, tmp_path / "artifacts", retention_seconds=60)
     case.chat._tool_artifacts = store
     originals = []
     for index in range(101):
         content = f"history-needle {index}: " + "原始资料" * 500 + f" tail-{index}"
-        await case.env.service.writer.append(
+        await seed_scoped_event(
+            case.env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
             platform_message_id=f"history-{index}",
             sender_user_id="10001",
@@ -220,8 +224,10 @@ async def test_main_history_search_archives_original_requested_page(
                     ToolCall(
                         "original-history-read",
                         ToolFunction(
-                            "search_chat_history",
-                            json.dumps({"keyword": "history-needle", "limit": 101}),
+                            "query_chat_history",
+                            json.dumps(
+                                {"view": "search", "keyword": "history-needle", "limit": 101}
+                            ),
                         ),
                     ),
                 ),
@@ -248,8 +254,6 @@ async def test_main_history_search_archives_original_requested_page(
 
 @pytest.mark.parametrize("kind", ["search", "extract"])
 async def test_search_bridge_independent_requests_do_not_queue(tmp_path, monkeypatch, kind):
-    from qq_ai_bot.web.page_extractor import DirectPageExtractor
-
     extractor = DirectPageExtractor(
         state=BridgeState(tmp_path / "cache.sqlite3"), timeout_seconds=1
     )

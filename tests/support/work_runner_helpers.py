@@ -9,13 +9,13 @@ from tests.conftest import build_harness, make_settings
 from tests.support.agent_backend import StubAgentBackend
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunction
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.runtime.subagent_tools import subagent_tools
-from qq_ai_bot.runtime.work_control import WorkControl, work_control_tools
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.agent_runner import AgentRuntime
+from yuki.automation.models import TurnOrigin
+from yuki.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunction
+from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.subagent_tools import subagent_tools
+from yuki.runtime.work_control import WorkControl, work_control_tools
+from yuki.runtime.work_repository import WorkRepository
+from yuki.services.agent_runner import AgentRuntime
 
 
 def tool(name, args=None, identity=None):

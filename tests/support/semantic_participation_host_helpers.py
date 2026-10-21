@@ -8,19 +8,20 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
+from tests.support.event_seed import seed_event
 from yuki_participation.models import Choice, Observation
 from yuki_participation.rubric import CRITERIA, REVISION
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
 )
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.participation_snapshot import AsyncSnapshotStore
-from qq_ai_bot.services.semantic_participation import SemanticParticipationService
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.identity.db_models import CanonicalSpaceModel, SpaceBindingModel
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.participation_snapshot import AsyncSnapshotStore
+from yuki.services.semantic_participation import SemanticParticipationService
 
 pytestmark = pytest.mark.asyncio
 
@@ -71,13 +72,14 @@ class Observer:
         self.calls = []
         self.aclose = AsyncMock()
 
-    async def evaluate(self, snapshot):
+    async def evaluate(self, snapshot, **_kwargs):
         self.calls.append(snapshot)
         return _observation(snapshot, unknown=self.unknown)
 
 
 async def _event_and_route(database, ledger, *, group="2001", content="Yuki也来说说吧"):
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=str(uuid4()),
         scope_type=ScopeType.GROUP,
@@ -138,7 +140,7 @@ async def _host(database, tmp_path, *, observer=True):
     )
     from tests.conftest import make_settings
 
-    from qq_ai_bot.admin.config_service import RuntimeConfigService
+    from yuki.admin.config_service import RuntimeConfigService
 
     config = RuntimeConfigService(
         settings=make_settings(database.url, conversation_semantic_participation_enabled=True),

@@ -115,10 +115,10 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
     _assert_core_health(health, version)
     migration_command = (
         "import sqlite3; "
-        "connection=sqlite3.connect('/app/data/qq_ai_bot.db'); "
+        "connection=sqlite3.connect('/app/data/yuki.db'); "
         "row=connection.execute('SELECT version_num FROM alembic_version').fetchone(); "
         "connection.close(); "
-        "from qq_ai_bot.persistence.schema_guard import canonical_schema_revision; "
+        "from yuki.persistence.schema_guard import canonical_schema_revision; "
         "expected=canonical_schema_revision(); "
         "assert row and row[0] == expected, (row, expected); print('ok')"
     )
@@ -134,7 +134,7 @@ def verify_bot(compose: Compose, deploy_directory: Path, version: str) -> None:
 def verify_persistence(
     compose: Compose, deploy_directory: Path, sentinels: dict[Path, str]
 ) -> None:
-    database = deploy_directory / "data/qq_ai_bot.db"
+    database = deploy_directory / "data/yuki.db"
     database_size = database.stat().st_size
     compose.run("up", "-d", "--no-deps", "--pull", "never", "--force-recreate", "bot")
     wait_healthy(compose, "bot")

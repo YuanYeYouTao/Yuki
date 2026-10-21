@@ -10,15 +10,15 @@ from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.work_session import invoke_tool
 from tests.unit.test_tool_effect_audit import active_work
 
-from qq_ai_bot.capabilities.invocation import direct_invocations
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import ToolCall, ToolFunction
-from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.turn_coordinator import TurnSupersededError
+from yuki.capabilities.invocation import direct_invocations
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.messages import ToolCall, ToolFunction
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_repository import WorkConflict
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.services.turn_coordinator import TurnSupersededError
 
 
 @pytest.mark.parametrize(

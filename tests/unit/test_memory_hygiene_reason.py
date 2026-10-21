@@ -3,14 +3,14 @@
 from sqlalchemy import select, text, update
 from tests.unit.test_memory_mutation import _context, _event, _service
 
-from qq_ai_bot.memory.enums import MemoryInvalidationReason, MemoryScopeType, MemoryStatus
-from qq_ai_bot.memory.mutation.models import (
+from yuki.memory.enums import MemoryInvalidationReason, MemoryScopeType, MemoryStatus
+from yuki.memory.mutation.models import (
     MemoryMutationOperation,
     MemoryMutationRequest,
     MemoryMutationTarget,
 )
-from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
-from qq_ai_bot.persistence.models import MemoryFactModel, MemoryFactStateEventModel
+from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
+from yuki.persistence.models import MemoryFactModel, MemoryFactStateEventModel
 
 
 async def test_invalid_provenance_reason_matches_fact_and_state_event(database):

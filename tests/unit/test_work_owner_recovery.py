@@ -8,28 +8,29 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import select, update
 from tests.conftest import MemorySender, make_settings
+from tests.support.event_seed import seed_event
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.work_session import WorkSession
 from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-from qq_ai_bot.control_plane.command_service import ControlCommandService
-from qq_ai_bot.control_plane.commands import ControlCommand
-from qq_ai_bot.control_plane.principal import ControlPrincipal, PrincipalSource
-from qq_ai_bot.domain.control import DecisionContext
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.identity import PrincipalId, RequestId
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.llm.base import LLMUnavailableError
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.control_command import ControlCommandAdapter
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_recovery_schema import recovery
-from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
-from qq_ai_bot.runtime.work_scheduler import WorkScheduler
-from qq_ai_bot.runtime.work_schema_v1 import effects, inputs, journal, scope, work
-from qq_ai_bot.runtime.work_wait import WorkWaitRepository
-from qq_ai_bot.services.rate_limit import SlidingWindowRateLimiter
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.admin.authority.commands import ControlCommand
+from yuki.admin.authority.principal import ControlPrincipal, PrincipalSource
+from yuki.admin.operations.base import CommandExecutor
+from yuki.admin.operations.work import WorkOperations
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.identity import PrincipalId, RequestId
+from yuki.domain.messages import ChatMessage, ChatResponse, ToolCall, ToolFunction
+from yuki.identity.db_models import CanonicalPersonModel
+from yuki.llm.base import LLMUnavailableError
+from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_recovery_schema import recovery
+from yuki.runtime.work_repository import WorkConflict, WorkRepository
+from yuki.runtime.work_scheduler import WorkScheduler
+from yuki.runtime.work_schema_v1 import effects, inputs, journal, scope, work
+from yuki.runtime.work_wait import WorkWaitRepository
+from yuki.services.rate_limit import SlidingWindowRateLimiter
+from yuki.services.turn_transcript import TurnTranscript
 
 
 async def public_action(database, row, action):
@@ -47,14 +48,8 @@ async def public_action(database, row, action):
         expected_revision=row["revision"],
         payload={"resource_id": row["id"], "action": action},
     )
-    context = DecisionContext(
-        request_id=request,
-        principal=principal,
-        source=PrincipalSource.CLI,
-        canonical_target=row["id"],
-    )
-    return await ControlCommandService(ControlCommandAdapter(database)).mutate_work(
-        context, command
+    return await WorkOperations(CommandExecutor(database)).work_action(
+        principal, row["id"], action, command
     )
 
 
@@ -98,7 +93,9 @@ def original_responses(provider):
 
 
 @pytest.mark.parametrize("current_superuser", [False, True])
-async def test_message_work_recovery_uses_current_superusers(database, tmp_path, current_superuser):
+async def test_message_work_recovery_uses_current_person_qualification(
+    database, tmp_path, current_superuser
+):
     provider = FakeLLMProvider()
     provider._responder = original_responses(provider)
     env, harness, chat, _, message = await _scene(database, tmp_path, provider, request_limit=1)
@@ -114,9 +111,10 @@ async def test_message_work_recovery_uses_current_superusers(database, tmp_path,
             .where(work.c.id == original["id"])
             .values(source_json=json.dumps(frozen_source))
         )
-    settings = make_settings(
-        database.url, superusers_csv=message.sender.user_id if current_superuser else ""
-    )
+    async with database.immediate_session() as writer:
+        actor = await writer.get(CanonicalPersonModel, message.person_id)
+        actor.is_superuser = current_superuser
+    settings = make_settings(database.url)
     authorities = []
 
     async def capture_wakeup(**kwargs):
@@ -265,8 +263,8 @@ async def test_expired_original_work_recovers_from_original_dispatch_facts(
         )
     deferred = None
     if action.startswith("deferred-"):
-        from qq_ai_bot.runtime.activation_outcome import WorkRecoveryDeferred
-        from qq_ai_bot.runtime.work_activation import bind_work_activation
+        from yuki.runtime.activation_outcome import WorkRecoveryDeferred
+        from yuki.runtime.work_activation import bind_work_activation
 
         owner = await repository.acquire(original["conversation_id"], original["generation"])
 
@@ -565,7 +563,7 @@ async def test_persistent_maintenance_errors_do_not_block_original_work_selectio
 ):
     from tests.unit.test_work_settlement_writer import _running_work
 
-    from qq_ai_bot.runtime.protocol_store import ProtocolStore
+    from yuki.runtime.protocol_store import ProtocolStore
 
     repository, lease, control = await _running_work(database, tmp_path)
     row = await repository.transition(
@@ -600,7 +598,7 @@ async def test_persistent_maintenance_errors_do_not_block_original_work_selectio
 
 
 async def test_message_recovery_uses_original_event_account_and_canonical_owner(database, tmp_path):
-    from qq_ai_bot.services.execution_sources import recover_source
+    from yuki.services.execution_sources import recover_source
 
     provider = FakeLLMProvider()
     provider._responder = original_responses(provider)
@@ -635,10 +633,10 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
 ):
     from tests.support.automation_unified_delivery_helpers import sent, setup_run
 
-    from qq_ai_bot.automation.models import RunStatus
-    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-    from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
-    from qq_ai_bot.runtime.work_activation import current_work_control
+    from yuki.automation.models import RunStatus
+    from yuki.domain.conversations import ConversationScope, ScopeType
+    from yuki.persistence.models import AutomationModel, AutomationRunModel
+    from yuki.runtime.work_activation import current_work_control
 
     wait_for_timer = principal == "person" and not promoted
     case = await setup_run(
@@ -689,36 +687,20 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
     assert parent["state"] == "completed" and child["state"] == "queued"
     assert child["source_json"] == parent["source_json"]
     if promoted:
-        from uuid import uuid4
+        from yuki.automation.authority import PermissionLevel
+        from yuki.automation.control_context import resolve_execution_identity
+        from yuki.identity.canonical_repository import ensure_account, replace_assignment
 
-        from qq_ai_bot.automation.authority import PermissionLevel
-        from qq_ai_bot.automation.control_context import resolve_execution_identity
-        from qq_ai_bot.identity.db_models import IdentityBindingModel
-
-        assert "9000" in case.settings.superusers
-        case.settings.superusers_csv = "9000,9001"
-        del case.settings.__dict__["superusers"]
         await case.env.router.cas_takeover_person(case.env.person)
         now = case.clock.now()
         async with database.immediate_session() as writer:
-            writer.add(
-                IdentityBindingModel(
-                    id=str(uuid4()),
-                    person_id=case.env.person,
-                    platform="qq",
-                    external_account_id="9001",
-                    status="active",
-                    first_seen_at=now,
-                    last_seen_at=now,
-                    created_at=now,
-                    updated_at=now,
-                )
-            )
+            person = await writer.get(CanonicalPersonModel, case.env.person)
+            person.is_superuser = True
+            account = await ensure_account(writer, "9001", platform="qq", now=now)
+            await replace_assignment(writer, account, None, person, now=now)
         async with database.sessions() as reader:
-            actor, permission = await resolve_execution_identity(
-                reader, case.settings, owner_id=case.env.person
-            )
-        assert actor == "10001" and permission is PermissionLevel.SUPERUSER
+            actor, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
+        assert actor == "" and permission is PermissionLevel.SUPERUSER
     resumed_actors = []
 
     async def capture_main(**kwargs):
@@ -750,7 +732,8 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         if not observed:
             observed = True
             assert current_work_control.get() is None
-            await case.chat._ledger.append(
+            await seed_event(
+                case.chat._ledger,
                 bot_user_id="80001",
                 platform_message_id="derived-automation-observation",
                 scope_type=ScopeType.GROUP,
@@ -789,7 +772,7 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
         assert owner_before["claimed_by"] == "independent-original-owner"
     await scheduler.drain_once()
     if wait_for_timer:
-        from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+        from yuki.runtime.work_wait import WorkWaitRepository
 
         assert (await repository.get(child["id"]))["state"] == "waiting_external"
         waits = WorkWaitRepository(repository)
@@ -828,15 +811,15 @@ async def test_derived_automation_work_runs_on_original_scheduler_after_owner_se
 async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
     database, tmp_path, authority, monkeypatch
 ):
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.plugin_host.facades import (
+    from yuki.persistence.models import ChatEventModel
+    from yuki.plugin_host.facades import (
         HostPluginContext,
         PluginFacadeServices,
         PluginInvocation,
     )
-    from qq_ai_bot.plugin_host.main_turn import resume_plugin_work
-    from qq_ai_bot.plugin_host.manifest import PluginManifest
-    from qq_ai_bot.runtime.origin import TurnOrigin
+    from yuki.plugin_host.main_turn import resume_plugin_work
+    from yuki.plugin_host.manifest import PluginManifest
+    from yuki.runtime.origin import TurnOrigin
     from yuki_plugin_sdk.api import PLUGIN_API_VERSION
     from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -947,7 +930,6 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         waits = WorkWaitRepository(repository)
         wait_before = await waits.describe(parent["id"])
         with monkeypatch.context() as constrained:
-            constrained.setattr(chat, "_history_input_budget", lambda *args, **kwargs: 0)
             constrained.setattr(chat._settings, "runtime_work_enabled", False)
             async with host.bind(invocation):
                 waiting = await host.agent.run("original plugin goal")
@@ -973,7 +955,6 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
         assert stored_result.data["text"] == final_text
         assert (await repository.get(parent["id"]))["source_json"] == parent["source_json"]
         with monkeypatch.context() as constrained:
-            constrained.setattr(chat, "_history_input_budget", lambda *args, **kwargs: 0)
             constrained.setattr(chat._settings, "runtime_work_enabled", False)
             for saved_result in ("text", "missing", "null"):
                 checkpoint = json.loads(parent["checkpoint_json"])
@@ -999,7 +980,9 @@ async def test_derived_sdk_plugin_work_resumes_original_id_and_permissions(
     if revoked:
         host._approved_permissions = frozenset()
     elif authority == "promoted":
-        host._superuser_ids = frozenset({message.sender.user_id})
+        async with database.immediate_session() as writer:
+            person = await writer.get(CanonicalPersonModel, message.person_id)
+            person.is_superuser = True
     main = chat.runtime.main_turns
     original_run = main.run
     resumed_authorities = []
@@ -1053,9 +1036,9 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
 
     from tests.support.background_authority import approve_background_plugin
 
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.plugin_host.background_turns import PluginBackgroundTurnWorker
-    from qq_ai_bot.plugin_host.db_models import PluginBackgroundTurnJobModel
+    from yuki.persistence.models import ChatEventModel
+    from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
+    from yuki.plugin_host.db_models import PluginBackgroundTurnJobModel
     from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
     provider = FakeLLMProvider()
@@ -1068,7 +1051,9 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
         group_id="20001",
         creator_user_id="10001",
     )
-    target = NotificationTarget(target_type="group", target_id="20001")
+    target = NotificationTarget(
+        target_type="group", target_id=env.space, conversation_id=env.context.conversation_id
+    )
     receipt = await notifications.publish(
         plugin_id=plugin_id,
         request=PublishNotificationRequest(
@@ -1103,7 +1088,6 @@ async def test_retained_background_plugin_work_resumes_after_job_settles_without
         chat=chat,
         turns=chat._turn_coordinator,
         conversation_scopes=chat._conversation_scopes,
-        router=env.router,
     )
     job = await notifications.claim_turn()
     assert job and job.source_event_id == receipt.source_event_id

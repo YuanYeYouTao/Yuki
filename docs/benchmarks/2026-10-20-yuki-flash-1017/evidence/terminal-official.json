@@ -1,0 +1,1426 @@
+[
+  {
+    "task_id": "adaptive-rejection-sampler",
+    "trial_id": "adaptive-rejection-sampler__Wowbxyp",
+    "reward": 0.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 900.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T03:37:15.521867Z",
+      "finished_at": "2026-10-20T03:52:26.909097Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T03:52:26.953090Z",
+      "finished_at": "2026-10-20T03:53:19.677440Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/adaptive-rejection-sampler__Wowbxyp/result.json"
+  },
+  {
+    "task_id": "bn-fit-modify",
+    "trial_id": "bn-fit-modify__E3C3pBT",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T15:38:13.011265Z",
+      "finished_at": "2026-10-20T15:41:14.005015Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T15:41:14.005167Z",
+      "finished_at": "2026-10-20T15:42:21.520060Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/bn-fit-modify__E3C3pBT/result.json"
+  },
+  {
+    "task_id": "break-filter-js-from-html",
+    "trial_id": "break-filter-js-from-html__ZC8GoWk",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T20:28:08.547397Z",
+      "finished_at": "2026-10-19T20:29:11.638793Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T20:29:11.638938Z",
+      "finished_at": "2026-10-19T20:29:39.554111Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/break-filter-js-from-html__ZC8GoWk/result.json"
+  },
+  {
+    "task_id": "build-cython-ext",
+    "trial_id": "build-cython-ext__2eMLJSJ",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T15:48:37.882127Z",
+      "finished_at": "2026-10-20T15:55:39.983172Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T15:55:39.983324Z",
+      "finished_at": "2026-10-20T15:55:49.371845Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/build-cython-ext__2eMLJSJ/result.json"
+  },
+  {
+    "task_id": "build-pmars",
+    "trial_id": "build-pmars__sXbZUfG",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:45:19.853497Z",
+      "finished_at": "2026-10-20T16:48:43.358233Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:48:43.358340Z",
+      "finished_at": "2026-10-20T16:49:29.459087Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/build-pmars__sXbZUfG/result.json"
+  },
+  {
+    "task_id": "build-pov-ray",
+    "trial_id": "build-pov-ray__oiLZQxH",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T07:12:08.750754Z",
+      "finished_at": "2026-10-20T07:23:05.107191Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T07:23:05.107744Z",
+      "finished_at": "2026-10-20T07:24:13.618451Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/build-pov-ray__oiLZQxH/result.json"
+  },
+  {
+    "task_id": "caffe-cifar-10",
+    "trial_id": "caffe-cifar-10__rvFZ2Kv",
+    "reward": 0.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 1200.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-19T23:48:22.898222Z",
+      "finished_at": "2026-10-20T00:08:27.071013Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T00:08:27.139726Z",
+      "finished_at": "2026-10-20T00:09:03.056546Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/caffe-cifar-10__rvFZ2Kv/result.json"
+  },
+  {
+    "task_id": "cancel-async-tasks",
+    "trial_id": "cancel-async-tasks__zZxsHQ9",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T15:28:45.524801Z",
+      "finished_at": "2026-10-20T15:32:53.228775Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T15:32:53.228871Z",
+      "finished_at": "2026-10-20T15:33:59.194272Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/cancel-async-tasks__zZxsHQ9/result.json"
+  },
+  {
+    "task_id": "chess-best-move",
+    "trial_id": "chess-best-move__2mrfavY",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T04:14:32.193913Z",
+      "finished_at": "2026-10-20T04:17:31.993878Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T04:17:31.993995Z",
+      "finished_at": "2026-10-20T04:18:24.676469Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/chess-best-move__2mrfavY/result.json"
+  },
+  {
+    "task_id": "circuit-fibsqrt",
+    "trial_id": "circuit-fibsqrt__t5mwBbF",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T12:04:44.683162Z",
+      "finished_at": "2026-10-20T12:12:26.539748Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T12:12:26.540888Z",
+      "finished_at": "2026-10-20T12:13:01.664247Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/circuit-fibsqrt__t5mwBbF/result.json"
+  },
+  {
+    "task_id": "cobol-modernization",
+    "trial_id": "cobol-modernization__TsbrQoe",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T04:19:18.059707Z",
+      "finished_at": "2026-10-20T04:29:18.666087Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T04:29:18.666231Z",
+      "finished_at": "2026-10-20T04:29:52.914664Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/cobol-modernization__TsbrQoe/result.json"
+  },
+  {
+    "task_id": "code-from-image",
+    "trial_id": "code-from-image__LjCqnJT",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T13:27:53.984264Z",
+      "finished_at": "2026-10-20T13:28:14.240626Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T13:28:14.240735Z",
+      "finished_at": "2026-10-20T13:28:55.124884Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/code-from-image__LjCqnJT/result.json"
+  },
+  {
+    "task_id": "compile-compcert",
+    "trial_id": "compile-compcert__4dDm6gQ",
+    "reward": 1.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 2400.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T05:39:33.121516Z",
+      "finished_at": "2026-10-20T06:20:03.278017Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T06:20:03.286971Z",
+      "finished_at": "2026-10-20T06:20:30.146248Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/compile-compcert__4dDm6gQ/result.json"
+  },
+  {
+    "task_id": "configure-git-webserver",
+    "trial_id": "configure-git-webserver__uxmgnQv",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T03:56:01.136896Z",
+      "finished_at": "2026-10-20T04:06:02.261842Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T04:06:02.264985Z",
+      "finished_at": "2026-10-20T04:07:17.341797Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/configure-git-webserver__uxmgnQv/result.json"
+  },
+  {
+    "task_id": "constraints-scheduling",
+    "trial_id": "constraints-scheduling__jg8MPhD",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:58:23.061707Z",
+      "finished_at": "2026-10-20T16:58:59.385699Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:58:59.385835Z",
+      "finished_at": "2026-10-20T17:00:23.861234Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/constraints-scheduling__jg8MPhD/result.json"
+  },
+  {
+    "task_id": "count-dataset-tokens",
+    "trial_id": "count-dataset-tokens__As6545R",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T11:59:31.607240Z",
+      "finished_at": "2026-10-20T12:03:44.552777Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T12:03:44.552926Z",
+      "finished_at": "2026-10-20T12:04:25.636468Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/count-dataset-tokens__As6545R/result.json"
+  },
+  {
+    "task_id": "crack-7z-hash",
+    "trial_id": "crack-7z-hash__65dbkyi",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T04:08:40.885193Z",
+      "finished_at": "2026-10-20T04:13:01.553888Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T04:13:01.554167Z",
+      "finished_at": "2026-10-20T04:13:44.306776Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/crack-7z-hash__65dbkyi/result.json"
+  },
+  {
+    "task_id": "custom-memory-heap-crash",
+    "trial_id": "custom-memory-heap-crash__2Tsk3Ao",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T03:32:18.867892Z",
+      "finished_at": "2026-10-20T03:35:42.702636Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T03:35:42.706165Z",
+      "finished_at": "2026-10-20T03:36:51.650005Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/custom-memory-heap-crash__2Tsk3Ao/result.json"
+  },
+  {
+    "task_id": "db-wal-recovery",
+    "trial_id": "db-wal-recovery__Qhbpv4W",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T06:20:54.432392Z",
+      "finished_at": "2026-10-20T06:21:48.451542Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T06:21:48.451636Z",
+      "finished_at": "2026-10-20T06:23:49.022191Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/db-wal-recovery__Qhbpv4W/result.json"
+  },
+  {
+    "task_id": "distribution-search",
+    "trial_id": "distribution-search__tkvZNdZ",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T00:09:58.159400Z",
+      "finished_at": "2026-10-20T00:11:23.218115Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T00:11:23.218213Z",
+      "finished_at": "2026-10-20T00:12:25.967463Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/distribution-search__tkvZNdZ/result.json"
+  },
+  {
+    "task_id": "dna-assembly",
+    "trial_id": "dna-assembly__WzJmrdY",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T17:09:03.921701Z",
+      "finished_at": "2026-10-20T17:24:46.026425Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T17:24:46.026531Z",
+      "finished_at": "2026-10-20T17:24:49.700041Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/dna-assembly__WzJmrdY/result.json"
+  },
+  {
+    "task_id": "dna-insert",
+    "trial_id": "dna-insert__dra2aiz",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T17:00:33.257749Z",
+      "finished_at": "2026-10-20T17:07:33.668326Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T17:07:33.668753Z",
+      "finished_at": "2026-10-20T17:07:37.071339Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/dna-insert__dra2aiz/result.json"
+  },
+  {
+    "task_id": "extract-elf",
+    "trial_id": "extract-elf__azP5XcT",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T13:18:09.437529Z",
+      "finished_at": "2026-10-20T13:21:21.449961Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T13:21:21.450054Z",
+      "finished_at": "2026-10-20T13:22:03.063015Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/extract-elf__azP5XcT/result.json"
+  },
+  {
+    "task_id": "extract-moves-from-video",
+    "trial_id": "extract-moves-from-video__Cksy4m8",
+    "reward": 0.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 1800.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T11:03:17.340043Z",
+      "finished_at": "2026-10-20T11:33:35.490251Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T11:33:35.504130Z",
+      "finished_at": "2026-10-20T11:34:03.953082Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/extract-moves-from-video__Cksy4m8/result.json"
+  },
+  {
+    "task_id": "feal-differential-cryptanalysis",
+    "trial_id": "feal-differential-cryptanalysis__XvoMYRg",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T15:28:46.065900Z",
+      "finished_at": "2026-10-20T15:31:38.698615Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T15:31:38.698715Z",
+      "finished_at": "2026-10-20T15:35:39.122329Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/feal-differential-cryptanalysis__XvoMYRg/result.json"
+  },
+  {
+    "task_id": "feal-linear-cryptanalysis",
+    "trial_id": "feal-linear-cryptanalysis__bXoEfx5",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T23:46:03.609942Z",
+      "finished_at": "2026-10-19T23:47:28.823763Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T23:47:28.823836Z",
+      "finished_at": "2026-10-19T23:48:00.548029Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/feal-linear-cryptanalysis__bXoEfx5/result.json"
+  },
+  {
+    "task_id": "filter-js-from-html",
+    "trial_id": "filter-js-from-html__GiMdt5j",
+    "reward": null,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 1800.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T14:24:25.264536Z",
+      "finished_at": "2026-10-20T14:55:21.848855Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T14:55:21.857505Z",
+      "finished_at": "2026-10-20T15:25:22.859729Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/filter-js-from-html__GiMdt5j/result.json"
+  },
+  {
+    "task_id": "financial-document-processor",
+    "trial_id": "financial-document-processor__A9EAS5D",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T13:30:38.961292Z",
+      "finished_at": "2026-10-20T13:37:53.814879Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T13:37:53.814993Z",
+      "finished_at": "2026-10-20T13:38:26.559513Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/financial-document-processor__A9EAS5D/result.json"
+  },
+  {
+    "task_id": "fix-code-vulnerability",
+    "trial_id": "fix-code-vulnerability__hsJsfsv",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T13:29:31.894858Z",
+      "finished_at": "2026-10-20T13:30:19.101323Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T13:30:19.101418Z",
+      "finished_at": "2026-10-20T13:30:25.621538Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/fix-code-vulnerability__hsJsfsv/result.json"
+  },
+  {
+    "task_id": "fix-git",
+    "trial_id": "fix-git__kTKubaC",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T06:35:24.738886Z",
+      "finished_at": "2026-10-20T06:36:16.188050Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T06:36:16.188142Z",
+      "finished_at": "2026-10-20T06:36:40.840846Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/fix-git__kTKubaC/result.json"
+  },
+  {
+    "task_id": "fix-ocaml-gc",
+    "trial_id": "fix-ocaml-gc__HSWQpss",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T15:38:16.096574Z",
+      "finished_at": "2026-10-20T15:56:43.085428Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T15:56:43.085512Z",
+      "finished_at": "2026-10-20T16:08:11.875232Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/fix-ocaml-gc__HSWQpss/result.json"
+  },
+  {
+    "task_id": "gcode-to-text",
+    "trial_id": "gcode-to-text__wGV6BJ4",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T11:34:18.740260Z",
+      "finished_at": "2026-10-20T11:40:55.933978Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T11:40:55.934241Z",
+      "finished_at": "2026-10-20T11:41:40.209702Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/gcode-to-text__wGV6BJ4/result.json"
+  },
+  {
+    "task_id": "git-leak-recovery",
+    "trial_id": "git-leak-recovery__zjwUh2k",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T15:42:37.783821Z",
+      "finished_at": "2026-10-20T15:43:18.903852Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T15:43:18.903925Z",
+      "finished_at": "2026-10-20T15:44:17.708557Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/git-leak-recovery__zjwUh2k/result.json"
+  },
+  {
+    "task_id": "git-multibranch",
+    "trial_id": "git-multibranch__MFF3pgJ",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T07:25:17.477590Z",
+      "finished_at": "2026-10-20T07:27:19.327641Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T07:27:19.327773Z",
+      "finished_at": "2026-10-20T07:28:51.458002Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/git-multibranch__MFF3pgJ/result.json"
+  },
+  {
+    "task_id": "gpt2-codegolf",
+    "trial_id": "gpt2-codegolf__uQAW6vN",
+    "reward": 0.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 900.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-19T19:56:59.784057Z",
+      "finished_at": "2026-10-19T20:12:10.753645Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T20:12:10.926316Z",
+      "finished_at": "2026-10-19T20:12:47.926173Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/gpt2-codegolf__uQAW6vN/result.json"
+  },
+  {
+    "task_id": "headless-terminal",
+    "trial_id": "headless-terminal__X4zEEpd",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T06:24:02.743731Z",
+      "finished_at": "2026-10-20T06:34:09.550071Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T06:34:09.550194Z",
+      "finished_at": "2026-10-20T06:34:51.493995Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/headless-terminal__X4zEEpd/result.json"
+  },
+  {
+    "task_id": "hf-model-inference",
+    "trial_id": "hf-model-inference__q9ihU73",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T05:29:21.337591Z",
+      "finished_at": "2026-10-20T05:39:03.238096Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T05:39:03.241070Z",
+      "finished_at": "2026-10-20T05:39:19.348640Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/hf-model-inference__q9ihU73/result.json"
+  },
+  {
+    "task_id": "install-windows-3.11",
+    "trial_id": "install-windows-3.11__poJtuN5",
+    "reward": 0.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 3600.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T09:05:43.541617Z",
+      "finished_at": "2026-10-20T10:06:19.148010Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T10:06:19.167997Z",
+      "finished_at": "2026-10-20T10:07:23.204411Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/install-windows-3.11__poJtuN5/result.json"
+  },
+  {
+    "task_id": "kv-store-grpc",
+    "trial_id": "kv-store-grpc__vxEkL54",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T09:03:26.577052Z",
+      "finished_at": "2026-10-20T09:04:27.703139Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T09:04:27.703293Z",
+      "finished_at": "2026-10-20T09:04:43.241012Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/kv-store-grpc__vxEkL54/result.json"
+  },
+  {
+    "task_id": "large-scale-text-editing",
+    "trial_id": "large-scale-text-editing__vPghSoL",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:35:35.004742Z",
+      "finished_at": "2026-10-20T16:44:14.272577Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:44:14.272666Z",
+      "finished_at": "2026-10-20T16:45:25.542710Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/large-scale-text-editing__vPghSoL/result.json"
+  },
+  {
+    "task_id": "largest-eigenval",
+    "trial_id": "largest-eigenval__LffTDbC",
+    "reward": 1.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 900.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-19T21:36:31.429692Z",
+      "finished_at": "2026-10-19T21:51:48.243903Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T21:51:48.261101Z",
+      "finished_at": "2026-10-19T21:51:56.389816Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/largest-eigenval__LffTDbC/result.json"
+  },
+  {
+    "task_id": "llm-inference-batching-scheduler",
+    "trial_id": "llm-inference-batching-scheduler__aCfmLHG",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T20:13:03.997442Z",
+      "finished_at": "2026-10-19T20:26:58.796374Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T20:26:58.796851Z",
+      "finished_at": "2026-10-19T20:27:38.887686Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/llm-inference-batching-scheduler__aCfmLHG/result.json"
+  },
+  {
+    "task_id": "log-summary-date-ranges",
+    "trial_id": "log-summary-date-ranges__bvFJpxY",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T21:27:50.054755Z",
+      "finished_at": "2026-10-19T21:28:24.157542Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T21:28:24.157624Z",
+      "finished_at": "2026-10-19T21:29:02.652988Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/log-summary-date-ranges__bvFJpxY/result.json"
+  },
+  {
+    "task_id": "mailman",
+    "trial_id": "mailman__3vhrJnc",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T12:55:42.008497Z",
+      "finished_at": "2026-10-20T13:01:36.425458Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T13:01:36.425605Z",
+      "finished_at": "2026-10-20T13:02:40.850551Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/mailman__3vhrJnc/result.json"
+  },
+  {
+    "task_id": "make-doom-for-mips",
+    "trial_id": "make-doom-for-mips__F9MbXBe",
+    "reward": 0.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 900.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T10:07:58.845728Z",
+      "finished_at": "2026-10-20T10:23:35.100599Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T10:23:35.112199Z",
+      "finished_at": "2026-10-20T10:25:17.531853Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/make-doom-for-mips__F9MbXBe/result.json"
+  },
+  {
+    "task_id": "make-mips-interpreter",
+    "trial_id": "make-mips-interpreter__FjCqGLP",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T11:42:48.708462Z",
+      "finished_at": "2026-10-20T11:58:10.784050Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T11:58:10.786476Z",
+      "finished_at": "2026-10-20T11:59:15.411344Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/make-mips-interpreter__FjCqGLP/result.json"
+  },
+  {
+    "task_id": "mcmc-sampling-stan",
+    "trial_id": "mcmc-sampling-stan__Q2z6Gm9",
+    "reward": 1.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 1800.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T13:39:41.539478Z",
+      "finished_at": "2026-10-20T14:09:52.966080Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T14:09:52.996248Z",
+      "finished_at": "2026-10-20T14:17:20.110635Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/mcmc-sampling-stan__Q2z6Gm9/result.json"
+  },
+  {
+    "task_id": "merge-diff-arc-agi-task",
+    "trial_id": "merge-diff-arc-agi-task__rFvU4Ev",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T20:45:21.949580Z",
+      "finished_at": "2026-10-19T20:51:21.146059Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T20:51:21.146145Z",
+      "finished_at": "2026-10-19T20:51:24.617408Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/merge-diff-arc-agi-task__rFvU4Ev/result.json"
+  },
+  {
+    "task_id": "model-extraction-relu-logits",
+    "trial_id": "model-extraction-relu-logits__SLM8fCR",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:25:11.623318Z",
+      "finished_at": "2026-10-20T16:28:55.416201Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:28:55.416418Z",
+      "finished_at": "2026-10-20T16:29:53.590159Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/model-extraction-relu-logits__SLM8fCR/result.json"
+  },
+  {
+    "task_id": "modernize-scientific-stack",
+    "trial_id": "modernize-scientific-stack__zJc2fX4",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T23:15:20.452369Z",
+      "finished_at": "2026-10-19T23:15:53.820149Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T23:15:53.820213Z",
+      "finished_at": "2026-10-19T23:16:27.339376Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/modernize-scientific-stack__zJc2fX4/result.json"
+  },
+  {
+    "task_id": "mteb-leaderboard",
+    "trial_id": "mteb-leaderboard__xtEqyZe",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T12:37:00.119453Z",
+      "finished_at": "2026-10-20T12:54:21.029372Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T12:54:21.032548Z",
+      "finished_at": "2026-10-20T12:54:54.915724Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/mteb-leaderboard__xtEqyZe/result.json"
+  },
+  {
+    "task_id": "mteb-retrieve",
+    "trial_id": "mteb-retrieve__k7Ndz2v",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T01:18:40.452170Z",
+      "finished_at": "2026-10-20T01:20:55.150635Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T01:20:55.151313Z",
+      "finished_at": "2026-10-20T01:23:13.007245Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/mteb-retrieve__k7Ndz2v/result.json"
+  },
+  {
+    "task_id": "multi-source-data-merger",
+    "trial_id": "multi-source-data-merger__bPF7fsW",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T03:53:55.189200Z",
+      "finished_at": "2026-10-20T03:54:45.180661Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T03:54:45.180955Z",
+      "finished_at": "2026-10-20T03:55:47.059431Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/multi-source-data-merger__bPF7fsW/result.json"
+  },
+  {
+    "task_id": "nginx-request-logging",
+    "trial_id": "nginx-request-logging__iSsBM2E",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:30:15.748970Z",
+      "finished_at": "2026-10-20T16:31:24.407407Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:31:24.407695Z",
+      "finished_at": "2026-10-20T16:31:41.521840Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/nginx-request-logging__iSsBM2E/result.json"
+  },
+  {
+    "task_id": "openssl-selfsigned-cert",
+    "trial_id": "openssl-selfsigned-cert__ECrbH4K",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:56:42.962499Z",
+      "finished_at": "2026-10-20T16:57:26.436426Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:57:26.436597Z",
+      "finished_at": "2026-10-20T16:58:11.253040Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/openssl-selfsigned-cert__ECrbH4K/result.json"
+  },
+  {
+    "task_id": "overfull-hbox",
+    "trial_id": "overfull-hbox__KbosZkn",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T04:30:59.382566Z",
+      "finished_at": "2026-10-20T04:40:42.479544Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T04:40:42.479732Z",
+      "finished_at": "2026-10-20T04:43:07.624856Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/overfull-hbox__KbosZkn/result.json"
+  },
+  {
+    "task_id": "password-recovery",
+    "trial_id": "password-recovery__WZQvvEj",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T21:52:07.402366Z",
+      "finished_at": "2026-10-19T21:54:27.596280Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T21:54:27.596342Z",
+      "finished_at": "2026-10-19T21:55:16.156500Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/password-recovery__WZQvvEj/result.json"
+  },
+  {
+    "task_id": "path-tracing",
+    "trial_id": "path-tracing__8tVFuid",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T23:37:46.139730Z",
+      "finished_at": "2026-10-19T23:41:17.240817Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T23:41:17.240961Z",
+      "finished_at": "2026-10-19T23:42:13.811551Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/path-tracing__8tVFuid/result.json"
+  },
+  {
+    "task_id": "path-tracing-reverse",
+    "trial_id": "path-tracing-reverse__xBEhmax",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T22:00:23.114880Z",
+      "finished_at": "2026-10-19T22:06:56.836515Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T22:06:56.838557Z",
+      "finished_at": "2026-10-19T22:07:38.161409Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/path-tracing-reverse__xBEhmax/result.json"
+  },
+  {
+    "task_id": "polyglot-c-py",
+    "trial_id": "polyglot-c-py__1886085",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T15:16:49.566658Z",
+      "finished_at": "2026-10-20T15:20:41.515101Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T15:20:41.515200Z",
+      "finished_at": "2026-10-20T15:21:38.506976Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/polyglot-c-py__1886085/result.json"
+  },
+  {
+    "task_id": "polyglot-rust-c",
+    "trial_id": "polyglot-rust-c__vxWe7uB",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T04:44:51.789455Z",
+      "finished_at": "2026-10-20T04:48:40.683129Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T04:48:40.683300Z",
+      "finished_at": "2026-10-20T04:50:48.250637Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/polyglot-rust-c__vxWe7uB/result.json"
+  },
+  {
+    "task_id": "portfolio-optimization",
+    "trial_id": "portfolio-optimization__6B2c64N",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T21:55:34.910008Z",
+      "finished_at": "2026-10-19T21:58:50.514302Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T21:58:50.514395Z",
+      "finished_at": "2026-10-19T22:00:06.205559Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/portfolio-optimization__6B2c64N/result.json"
+  },
+  {
+    "task_id": "protein-assembly",
+    "trial_id": "protein-assembly__af6wFeY",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T13:22:15.399780Z",
+      "finished_at": "2026-10-20T13:26:58.034806Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T13:26:58.034954Z",
+      "finished_at": "2026-10-20T13:27:42.335592Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/protein-assembly__af6wFeY/result.json"
+  },
+  {
+    "task_id": "prove-plus-comm",
+    "trial_id": "prove-plus-comm__2GyqaCY",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T23:43:32.968778Z",
+      "finished_at": "2026-10-19T23:44:24.072491Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T23:44:24.072629Z",
+      "finished_at": "2026-10-19T23:45:36.853520Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/prove-plus-comm__2GyqaCY/result.json"
+  },
+  {
+    "task_id": "pypi-server",
+    "trial_id": "pypi-server__mL4wi4z",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T03:26:35.919630Z",
+      "finished_at": "2026-10-20T03:27:37.331460Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T03:27:37.331576Z",
+      "finished_at": "2026-10-20T03:28:01.730302Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/pypi-server__mL4wi4z/result.json"
+  },
+  {
+    "task_id": "pytorch-model-cli",
+    "trial_id": "pytorch-model-cli__3CaLFJD",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T21:29:14.022805Z",
+      "finished_at": "2026-10-19T21:33:02.870355Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T21:33:02.870486Z",
+      "finished_at": "2026-10-19T21:36:18.656597Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/pytorch-model-cli__3CaLFJD/result.json"
+  },
+  {
+    "task_id": "pytorch-model-recovery",
+    "trial_id": "pytorch-model-recovery__XF5H7mY",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:15:32.321888Z",
+      "finished_at": "2026-10-20T16:17:56.644975Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:17:56.647622Z",
+      "finished_at": "2026-10-20T16:24:49.527451Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/pytorch-model-recovery__XF5H7mY/result.json"
+  },
+  {
+    "task_id": "qemu-alpine-ssh",
+    "trial_id": "qemu-alpine-ssh__kAeUaob",
+    "reward": 0.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 900.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T08:47:35.450118Z",
+      "finished_at": "2026-10-20T09:02:48.419515Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T09:02:48.455631Z",
+      "finished_at": "2026-10-20T09:03:01.168933Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/qemu-alpine-ssh__kAeUaob/result.json"
+  },
+  {
+    "task_id": "qemu-startup",
+    "trial_id": "qemu-startup__7jA9wyQ",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T07:03:14.315137Z",
+      "finished_at": "2026-10-20T07:11:26.998725Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T07:11:27.001290Z",
+      "finished_at": "2026-10-20T07:11:43.866538Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/qemu-startup__7jA9wyQ/result.json"
+  },
+  {
+    "task_id": "query-optimize",
+    "trial_id": "query-optimize__MovPHxA",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T13:07:14.558427Z",
+      "finished_at": "2026-10-20T13:11:01.363351Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T13:11:01.363454Z",
+      "finished_at": "2026-10-20T13:17:13.319756Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/query-optimize__MovPHxA/result.json"
+  },
+  {
+    "task_id": "raman-fitting",
+    "trial_id": "raman-fitting__byVyDhj",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T13:02:54.523527Z",
+      "finished_at": "2026-10-20T13:06:10.700813Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T13:06:10.700933Z",
+      "finished_at": "2026-10-20T13:06:54.855206Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/raman-fitting__byVyDhj/result.json"
+  },
+  {
+    "task_id": "regex-chess",
+    "trial_id": "regex-chess__Ndgib99",
+    "reward": 0.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 3600.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-19T22:07:49.496866Z",
+      "finished_at": "2026-10-19T23:09:06.908738Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T23:09:06.922395Z",
+      "finished_at": "2026-10-19T23:14:51.876035Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/regex-chess__Ndgib99/result.json"
+  },
+  {
+    "task_id": "regex-log",
+    "trial_id": "regex-log__gfPw76n",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T14:18:05.982232Z",
+      "finished_at": "2026-10-20T14:23:38.301737Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T14:23:38.301931Z",
+      "finished_at": "2026-10-20T14:23:41.877568Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/regex-log__gfPw76n/result.json"
+  },
+  {
+    "task_id": "reshard-c4-data",
+    "trial_id": "reshard-c4-data__DAnUvdJ",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T20:31:36.813264Z",
+      "finished_at": "2026-10-19T20:36:12.027428Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T20:36:12.027609Z",
+      "finished_at": "2026-10-19T20:37:38.125865Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/reshard-c4-data__DAnUvdJ/result.json"
+  },
+  {
+    "task_id": "rstan-to-pystan",
+    "trial_id": "rstan-to-pystan__qL7gVeZ",
+    "reward": 1.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 1800.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T16:46:10.384751Z",
+      "finished_at": "2026-10-20T17:16:39.512908Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T17:16:39.560753Z",
+      "finished_at": "2026-10-20T17:17:36.920072Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/rstan-to-pystan__qL7gVeZ/result.json"
+  },
+  {
+    "task_id": "sam-cell-seg",
+    "trial_id": "sam-cell-seg__yTrKe3j",
+    "reward": 0.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:09:46.884492Z",
+      "finished_at": "2026-10-20T16:35:11.294065Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:35:11.294166Z",
+      "finished_at": "2026-10-20T16:37:36.402576Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/sam-cell-seg__yTrKe3j/result.json"
+  },
+  {
+    "task_id": "sanitize-git-repo",
+    "trial_id": "sanitize-git-repo__Qg8z4Xs",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:40:12.974487Z",
+      "finished_at": "2026-10-20T16:44:41.769247Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:44:41.769337Z",
+      "finished_at": "2026-10-20T16:45:06.219277Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/sanitize-git-repo__Qg8z4Xs/result.json"
+  },
+  {
+    "task_id": "schemelike-metacircular-eval",
+    "trial_id": "schemelike-metacircular-eval__S8fiWSt",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T06:36:52.474070Z",
+      "finished_at": "2026-10-20T07:00:03.644730Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T07:00:03.644943Z",
+      "finished_at": "2026-10-20T07:01:34.766208Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/schemelike-metacircular-eval__S8fiWSt/result.json"
+  },
+  {
+    "task_id": "sparql-university",
+    "trial_id": "sparql-university__Nnz86Yx",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:32:13.026920Z",
+      "finished_at": "2026-10-20T16:34:33.021282Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:34:33.021361Z",
+      "finished_at": "2026-10-20T16:35:20.365960Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/sparql-university__Nnz86Yx/result.json"
+  },
+  {
+    "task_id": "sqlite-db-truncate",
+    "trial_id": "sqlite-db-truncate__Cwoxr57",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:37:47.619216Z",
+      "finished_at": "2026-10-20T16:39:07.958730Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:39:07.958818Z",
+      "finished_at": "2026-10-20T16:39:49.008236Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/sqlite-db-truncate__Cwoxr57/result.json"
+  },
+  {
+    "task_id": "sqlite-with-gcov",
+    "trial_id": "sqlite-with-gcov__2ei6hms",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T16:49:38.764063Z",
+      "finished_at": "2026-10-20T16:55:28.755542Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T16:55:28.756043Z",
+      "finished_at": "2026-10-20T16:56:29.302224Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/sqlite-with-gcov__2ei6hms/result.json"
+  },
+  {
+    "task_id": "torch-pipeline-parallelism",
+    "trial_id": "torch-pipeline-parallelism__dXRdiqf",
+    "reward": 0.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 900.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T10:25:29.810688Z",
+      "finished_at": "2026-10-20T10:40:44.088470Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T10:40:44.097291Z",
+      "finished_at": "2026-10-20T10:46:21.855685Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/torch-pipeline-parallelism__dXRdiqf/result.json"
+  },
+  {
+    "task_id": "torch-tensor-parallelism",
+    "trial_id": "torch-tensor-parallelism__rAazrE3",
+    "reward": 1.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 900.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-19T23:16:37.291744Z",
+      "finished_at": "2026-10-19T23:31:52.560287Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T23:31:52.569241Z",
+      "finished_at": "2026-10-19T23:36:38.259290Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/torch-tensor-parallelism__rAazrE3/result.json"
+  },
+  {
+    "task_id": "train-fasttext",
+    "trial_id": "train-fasttext__7sMPyaM",
+    "reward": 0.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 3600.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T07:29:45.879777Z",
+      "finished_at": "2026-10-20T08:29:56.426299Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T08:29:56.526634Z",
+      "finished_at": "2026-10-20T08:30:43.029555Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/train-fasttext__7sMPyaM/result.json"
+  },
+  {
+    "task_id": "tune-mjcf",
+    "trial_id": "tune-mjcf__g7wQez4",
+    "reward": 1.0,
+    "exception_type": "AgentTimeoutError",
+    "exception_message": "Agent execution timed out after 900.0 seconds",
+    "agent_execution": {
+      "started_at": "2026-10-20T10:46:49.236921Z",
+      "finished_at": "2026-10-20T11:02:07.416840Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T11:02:07.428533Z",
+      "finished_at": "2026-10-20T11:03:04.643166Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/tune-mjcf__g7wQez4/result.json"
+  },
+  {
+    "task_id": "video-processing",
+    "trial_id": "video-processing__sKSq2rf",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T08:31:20.162366Z",
+      "finished_at": "2026-10-20T08:45:01.953604Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T08:45:01.953767Z",
+      "finished_at": "2026-10-20T08:45:57.887819Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/video-processing__sKSq2rf/result.json"
+  },
+  {
+    "task_id": "vulnerable-secret",
+    "trial_id": "vulnerable-secret__mE2rAG7",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-20T17:07:55.743690Z",
+      "finished_at": "2026-10-20T17:08:24.283496Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-20T17:08:24.283593Z",
+      "finished_at": "2026-10-20T17:08:57.386172Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/vulnerable-secret__mE2rAG7/result.json"
+  },
+  {
+    "task_id": "winning-avg-corewars",
+    "trial_id": "winning-avg-corewars__EBffjeM",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T20:51:50.874895Z",
+      "finished_at": "2026-10-19T21:26:59.363150Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T21:26:59.363301Z",
+      "finished_at": "2026-10-19T21:27:33.992937Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/winning-avg-corewars__EBffjeM/result.json"
+  },
+  {
+    "task_id": "write-compressor",
+    "trial_id": "write-compressor__uh9UjX7",
+    "reward": 1.0,
+    "exception_type": null,
+    "exception_message": null,
+    "agent_execution": {
+      "started_at": "2026-10-19T20:38:01.577107Z",
+      "finished_at": "2026-10-19T20:44:01.755300Z"
+    },
+    "verifier": {
+      "started_at": "2026-10-19T20:44:01.755552Z",
+      "finished_at": "2026-10-19T20:45:07.913000Z"
+    },
+    "source_ref": "local-source/runs/terminal-full-capacity/terminal-bench-2.0-20261020/write-compressor__uh9UjX7/result.json"
+  }
+]

@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from contextlib import AbstractContextManager, nullcontext
-from dataclasses import replace
 
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
-from qq_ai_bot.execution_trace.recorder import TraceRecorder
-from qq_ai_bot.model_runtime.capacity import ModelCapacity
-from qq_ai_bot.model_runtime.dispatch_guard import check_model_dispatch
-from qq_ai_bot.model_runtime.executor import ModelCompleter, ModelExecutor, request_shape_hash
-from qq_ai_bot.model_runtime.models import (
+from yuki.domain.messages import ChatRequest, ChatResponse
+from yuki.execution_trace.recorder import TraceRecorder
+from yuki.model_runtime.capacity import ModelCapacity, estimate_request_tokens
+from yuki.model_runtime.executor import (
+    ModelCompleter,
+    ModelExecutor,
+    PreparedModelInput,
+)
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelExecutionPriority,
     ModelProtocol,
@@ -34,20 +36,10 @@ class InjectedModelExecutor:
         *,
         priority: ModelExecutionPriority = ModelExecutionPriority.FOREGROUND,
         canonical_conversation_id: str | None = None,
+        prepared_capacity: PreparedModelInput | None = None,
     ) -> ChatResponse:
         del task, priority, canonical_conversation_id
-        normalized = replace(
-            request,
-            request_shape_hash=request_shape_hash(
-                request,
-                provider="fake",
-                model=self._model,
-                profile_id="legacy",
-                protocol=ModelProtocol.CHAT_COMPLETIONS.value,
-            ),
-        )
-        await check_model_dispatch()
-        return await self._provider.complete(normalized)
+        return await self._provider.complete(request)
 
     def model_name(self, task: ModelTask) -> str:
         del task
@@ -56,6 +48,10 @@ class InjectedModelExecutor:
     def capacity_request(self, task: ModelTask, request: ChatRequest) -> ChatRequest:
         del task
         return request
+
+    def prepare_capacity(self, task: ModelTask, request: ChatRequest) -> PreparedModelInput:
+        normalized = self.capacity_request(task, request)
+        return PreparedModelInput(normalized, estimate_request_tokens(normalized))
 
     def structured_output_mode(self, task: ModelTask) -> StructuredOutputMode:
         del task

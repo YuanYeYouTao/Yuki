@@ -7,20 +7,20 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import delete, select
+from tests.support.canonical_identity import ensure_presence, ensure_space
+from tests.support.event_seed import seed_scoped_event
 from tests.support.social_identity_cases import social_env
+from tests.support.sticker_delivery import make_delivery
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from qq_ai_bot.admin.models import ReplyRuntimeConfig
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.emoji.delivery import EmojiDeliveryService
-from qq_ai_bot.emoji.models import EmojiSelectionResult
-from qq_ai_bot.identity.canonical_repository import ensure_presence, ensure_space
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.social.agent_adapter import invoke_social
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.social.models import SocialError
+from yuki.admin.models import ReplyRuntimeConfig
+from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+from yuki.domain.conversations import ConversationScope
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
+from yuki.social.agent_adapter import invoke_social
+from yuki.social.db_models import SocialOperationModel
+from yuki.social.models import SocialError
 
 
 @pytest.mark.asyncio
@@ -29,7 +29,14 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
 ):
     env = await social_env(database, tmp_path)
     gateway = AsyncMock()
-    monkeypatch.setattr(env.service, "_call", gateway)
+    original = env.bot.call_api
+
+    async def call(action, **params):
+        if action.startswith("send_") or action.startswith("upload_"):
+            return await gateway(action, **params)
+        return await original(action, **params)
+
+    monkeypatch.setattr(env.bot, "call_api", call)
     invalid = (
         None,
         {},
@@ -63,13 +70,14 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
             {"text": "#62052>真实正文"},
             context,
         )
-        assert result["status"] == "succeeded" and result["delivered_text"] == "真实正文"
+        # Marker-looking ordinary text is the original send payload, not framing.
+        assert result["status"] == "succeeded" and result["delivered_text"] == "#62052>真实正文"
         assert result["delivered_text_available"] is True
         async with database.sessions() as session:
             stored = await session.get(SocialOperationModel, result["operation_id"])
             assert stored.event_id == result["event_id"]
             event = await session.get(ChatEventModel, stored.event_id)
-            assert event.content == "真实正文"
+            assert event.content == "#62052>真实正文"
         count = gateway.await_count
         assert (
             await env.service.execute("send_message", {"text": "#62052>真实正文"}, context)
@@ -84,7 +92,7 @@ async def test_strict_social_receipt_is_uncertain_without_resend_and_upload_stay
         replace(env.context, call_id="upload-no-message-id"),
     )
     assert uploaded["status"] == "succeeded"
-    assert uploaded["platform_reference"] is None and uploaded["delivered_text"] == ""
+    assert "platform_reference" not in uploaded and uploaded["delivered_text"] == ""
 
 
 @pytest.mark.asyncio
@@ -105,12 +113,12 @@ async def test_receipt_content_projection_uses_internal_event_and_checks_ownersh
         ConversationScope.group("80002", "20001"),
         ConversationScope.group("80001", "20002"),
     ):
-        unrelated = await env.service.writer.append(
+        unrelated = await seed_scoped_event(
+            env.service.writer,
             scope=scope,
             platform_message_id=f"unrelated-{scope.bot_user_id}-{scope.group_id}",
             sender_user_id=scope.bot_user_id,
             direction="outbound",
-            sender_is_bot=True,
             content="其他目标或账号",
             origin="social_tool",
             occurred_at=timestamp,
@@ -120,7 +128,7 @@ async def test_receipt_content_projection_uses_internal_event_and_checks_ownersh
         # pre-existing imported/corrupt ledger data to exercise read isolation.
         async with database.sessions.begin() as session:
             other = await session.get(ChatEventModel, unrelated.event.id)
-            other.platform_message_id = receipt["platform_reference"]
+            other.platform_message_id = actual.platform_message_id
         unrelated_ids.append(unrelated.event.id)
     assert await env.service.execute("send_message", args, env.context) == receipt
     async with database.sessions.begin() as session:
@@ -179,7 +187,7 @@ async def test_historical_or_deleted_event_reference_never_reconstructs_content_
 async def test_plugin_background_media_uses_only_real_target_without_actor(database, tmp_path):
     from tests.support.background_authority import approve_background_plugin
 
-    from yuki_plugin_sdk.models import NotificationTarget
+    from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
     env = await social_env(database, tmp_path)
     assert await env.router.cas_takeover_person(env.person) in {"taken", "unchanged"}
@@ -191,33 +199,31 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
         group_id="20001",
         creator_user_id="10001",
     )
+    from yuki.conversation.hydrate import ensure_canonical_conversation
+    from yuki.identity.canonical_repository import find_identity_binding
+
+    async with database.immediate_session() as session:
+        binding = await find_identity_binding(session, "10001")
+        private = await ensure_canonical_conversation(
+            session,
+            kind="private",
+            person_id=env.person,
+            identity_binding_id=binding.id,
+            presence_id=env.presence,
+            primary_scope_key="bot:80001:private:10001",
+        )
     await notifications.grant_target(
         plugin_id="test",
-        target=NotificationTarget(target_type="private", target_id="10001"),
-        bot_user_id="80001",
-        created_by_user_id="10001",
-    )
-    selector = SimpleNamespace(
-        select=AsyncMock(return_value=EmojiSelectionResult(emoji_id="emoji"))
-    )
-    repository = SimpleNamespace(
-        mark_used=AsyncMock(),
-        get=AsyncMock(
-            return_value=SimpleNamespace(
-                id="emoji",
-                relative_path="emoji.png",
-                description="笑脸",
-                mime_type="image/png",
-                animated=False,
-            )
+        target=NotificationTarget(
+            target_type="private", target_id=env.person, conversation_id=private.conversation_id
         ),
+        bot_user_id="80001",
+        created_by_user_id=env.person,
+        presence_id=env.presence,
     )
-    env.service.emoji_delivery = EmojiDeliveryService(
-        selector=selector,
-        repository=repository,
-        storage=SimpleNamespace(read=lambda _: b"offline-image"),
-    )
+    delivery, library = make_delivery(env)
     snapshot = SimpleNamespace(
+        reply=ReplyRuntimeConfig(0, 0, 1800, 20),
         emoji=SimpleNamespace(enabled=True),
         vision=SimpleNamespace(),
     )
@@ -225,25 +231,34 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
         (ConversationScope.group("80001", "20001"), "group"),
         (ConversationScope.private("80001", "10001"), "private"),
     ):
-        event = await env.service.writer.append_external(
-            scope=scope,
-            platform_message_id=f"plugin-{target_kind}",
-            source_plugin_id="test",
-            external_source="test",
-            external_event_key=f"media-{target_kind}",
-            external_event_type="notice",
-            external_payload={},
-            external_target_id=scope.group_id or scope.private_peer_user_id,
-            content="notice",
-            occurred_at=datetime.now(UTC),
+        publication = await notifications.publish(
+            plugin_id="test",
+            request=PublishNotificationRequest(
+                target=NotificationTarget(
+                    target_type=target_kind,
+                    target_id=env.space if scope.group_id else env.person,
+                    conversation_id=env.context.conversation_id
+                    if scope.group_id
+                    else private.conversation_id,
+                ),
+                event_key=f"media-{target_kind}",
+                event_type="notice",
+                payload={},
+                summary="notice",
+                occurred_at=datetime.now(UTC),
+                ask_agent=True,
+                agent_intent="Acknowledge this original publication.",
+                external_source="test",
+            ),
         )
+        source_event_id = publication.source_event_id
         async with database.sessions() as session:
-            row = await session.get(ChatEventModel, event.event.id)
+            row = await session.get(ChatEventModel, source_event_id)
             conversation_id = row.canonical_conversation_id
         runtime = SimpleNamespace(
             origin=TurnOrigin.PLUGIN_BACKGROUND,
             actor_context=None,
-            effective_trigger_event_id=event.event.id,
+            effective_trigger_event_id=source_event_id,
             effective_conversation_id=conversation_id,
             inbound=None,
             tools_closed=False,
@@ -263,7 +278,7 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
             try:
                 result = await invoke_social(env.service, "send_message", args, runtime)
                 assert result["status"] == "succeeded"
-                assert result["delivered_text"] == "Yuki已收到"
+                assert result["delivered_text"] == "#62052>Yuki已收到"
                 assert env.bot.calls[-1][0] == f"send_{target_kind}_msg"
                 count = len(env.bot.calls)
                 assert await invoke_social(env.service, "send_message", args, runtime) == result
@@ -283,24 +298,26 @@ async def test_plugin_background_media_uses_only_real_target_without_actor(datab
                     )
             finally:
                 current_invocation.reset(token)
-        usage = repository.mark_used.await_args.kwargs
-        assert usage["group_id"] == scope.group_id
-        assert usage["actor_user_id"] == scope.private_peer_user_id
-        assert usage["trigger_message_id"] == ""
-        assert repository.mark_used.await_count == (1 if target_kind == "group" else 2)
-        request = selector.select.await_args.args[0]
-        assert request.group_id == scope.group_id
-        assert request.private_peer_user_id == scope.private_peer_user_id
+        pending = await delivery.intents.pending()
+        intent = next(
+            item
+            for item in pending
+            if item.source["context"]["caused_by_event_id"] == source_event_id
+        )
+        assert intent.target.kind == ("space" if scope.group_id else "person")
+        await delivery._deliver(intent)
+        assert (await delivery._project(intent))["status"] == "succeeded"
+        assert library.select_calls == (1 if target_kind == "group" else 2)
 
 
 @pytest.mark.asyncio
 async def test_work_social_delivery_passes_seventeenth_message_and_split_without_replay(
     database, tmp_path, monkeypatch
 ):
-    from qq_ai_bot.runtime.work_activation import current_work_control
-    from qq_ai_bot.runtime.work_control import WorkControl
-    from qq_ai_bot.runtime.work_repository import WorkRepository
-    from qq_ai_bot.services.message_splitter import OutboundMessageSplitter
+    from yuki.runtime.work_activation import current_work_control
+    from yuki.runtime.work_control import WorkControl
+    from yuki.runtime.work_repository import WorkRepository
+    from yuki.services.message_splitter import OutboundMessageSplitter
 
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
@@ -335,7 +352,8 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
         current_work_control.reset(token)
         await repo.release(lease)
 
-    source_event = await env.service.writer.append(
+    source_event = await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="123",
         sender_user_id="10001",
@@ -348,7 +366,6 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
     quoted_context = replace(
         env.context,
         call_id="quoted-sequence",
-        visible_event_ids=frozenset({source_event.event.id}),
         runtime_snapshot=SimpleNamespace(
             reply=SimpleNamespace(delay_min_seconds=0, delay_max_seconds=0)
         ),
@@ -373,134 +390,22 @@ async def test_work_social_delivery_passes_seventeenth_message_and_split_without
 
 
 @pytest.mark.parametrize("target_kind", ["space", "person"])
-async def test_emoji_usage_follows_route_instead_of_inbound_scope(database, tmp_path, target_kind):
-    from qq_ai_bot.domain.conversations import ScopeType
-    from qq_ai_bot.domain.messages import (
-        AttachmentKind,
-        InboundMessage,
-        OutboundMedia,
-        OutboundMessage,
-        SenderIdentity,
-    )
-    from qq_ai_bot.emoji.models import EmojiPreparationStatus
-
+async def test_deferred_illustration_keeps_selected_target(database, tmp_path, target_kind):
     env = await social_env(database, tmp_path)
     await env.router.cas_takeover_person(env.person)
-    delivered = OutboundMessage(
-        media=(
-            OutboundMedia(
-                AttachmentKind.IMAGE,
-                b"image",
-                "image/png",
-                emoji_id="selected",
-            ),
-        )
-    )
-    delivery = SimpleNamespace(
-        prepare=AsyncMock(
-            return_value=SimpleNamespace(
-                status=EmojiPreparationStatus.READY,
-                message=delivered,
-            )
-        ),
-        record_send_accepted=AsyncMock(),
-        record_success=AsyncMock(),
-    )
-    env.service.emoji_delivery = delivery
-    inbound = InboundMessage(
-        message_id="different-source",
-        event_type="message",
-        scope_type=ScopeType.GROUP,
-        sender=SenderIdentity("1002"),
-        text="send elsewhere",
-        bot_user_id="80001",
-        group_id="3001",
-    )
-    context = replace(
-        env.context,
-        inbound=inbound,
-        runtime_snapshot=SimpleNamespace(emoji=SimpleNamespace(enabled=True)),
-    )
-    result = await env.service.execute(
-        "send_message",
-        {
-            "target": {
-                "kind": target_kind,
-                "target_id": env.space if target_kind == "space" else env.person,
-            },
-            "text": "sent",
-            "emoji": {"goal": "开心"},
-        },
-        context,
-    )
-    assert result["status"] == "succeeded"
-    usage = delivery.record_success.await_args.kwargs
-    assert usage["group_id"] == ("20001" if target_kind == "space" else None)
-    assert usage["private_peer_user_id"] == ("10001" if target_kind == "person" else None)
-    assert usage["trigger_message_id"] == "different-source"
-
-
-async def test_emoji_usage_resolves_canonical_owners_before_writer(database, tmp_path):
-    from sqlalchemy import event
-
-    from qq_ai_bot.emoji.db_models import EmojiAssetModel, EmojiUsageEventModel
-    from qq_ai_bot.emoji.repository import EmojiRepository
-
-    env = await social_env(database, tmp_path)
-    now = datetime.now(UTC)
-    async with database.immediate_session() as writer:
-        writer.add(
-            EmojiAssetModel(
-                id="used",
-                sha256="a" * 64,
-                relative_path="emoji.png",
-                image_format="png",
-                mime_type="image/png",
-                byte_size=1,
-                width=1,
-                height=1,
-                frame_count=1,
-                first_seen_at=now,
-                last_seen_at=now,
-                created_at=now,
-                updated_at=now,
-            )
-        )
-    in_writer = False
-
-    def observe(_connection, _cursor, statement, *_args):
-        nonlocal in_writer
-        sql = statement.lower()
-        if sql.startswith("begin immediate"):
-            in_writer = True
-        if sql.startswith("select") and any(
-            table in sql for table in ("persons", "spaces", "bindings")
-        ):
-            assert not in_writer, "identity resolution acquired the emoji writer"
-
-    def ended(_connection):
-        nonlocal in_writer
-        in_writer = False
-
-    engine = database.engine.sync_engine
-    event.listen(engine, "before_cursor_execute", observe)
-    event.listen(engine, "commit", ended)
-    event.listen(engine, "rollback", ended)
-    try:
-        repository = EmojiRepository(database)
-        for actor, group in (("10001", None), (None, "20001")):
-            await repository.mark_used(
-                "used", actor_user_id=actor, group_id=group, trigger_message_id="", source="agent"
-            )
-    finally:
-        event.remove(engine, "before_cursor_execute", observe)
-        event.remove(engine, "commit", ended)
-        event.remove(engine, "rollback", ended)
-    async with database.sessions() as reader:
-        usages = list(
-            await reader.scalars(select(EmojiUsageEventModel).order_by(EmojiUsageEventModel.id))
-        )
-        assert [(row.canonical_actor_person_id, row.canonical_space_id) for row in usages] == [
-            (env.person, None),
-            (None, env.space),
-        ]
+    delivery, _ = make_delivery(env)
+    selected_id = env.space if target_kind == "space" else env.person
+    arguments = {
+        "target": {"kind": target_kind, "target_id": selected_id},
+        "text": "sent",
+        "emoji": {"goal": "开心"},
+    }
+    result = await env.service.execute("send_message", arguments, env.context)
+    assert result["status"] == "succeeded" and result["emoji"]["status"] == "accepted"
+    intent = (await delivery.intents.pending())[0]
+    assert str(intent.target.id) == selected_id and intent.target.kind == target_kind
+    await delivery._deliver(intent)
+    projected = await delivery._project(intent)
+    assert projected["status"] == "succeeded"
+    receipt = await env.service.receipts.get(projected["operation_id"])
+    assert str(receipt.target.id) == selected_id and receipt.target.kind == target_kind

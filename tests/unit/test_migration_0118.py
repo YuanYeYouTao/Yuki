@@ -7,11 +7,10 @@ from uuid import uuid4
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
-from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversations
-from tests.support.social_identity_cases import social_env
+from tests.support.legacy_conversation_seed import frozen_social_env
 
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.sandbox.db_models import SandboxTaskRunModel
+from yuki.persistence.database import Database
+from yuki.sandbox.db_models import SandboxTaskRunModel
 
 QUERY = """EXPLAIN QUERY PLAN
 SELECT s.run_id FROM sandbox_task_runs s JOIN runtime_work w
@@ -30,8 +29,7 @@ def test_upgrade_indexes_original_waiting_runs_and_preserves_all_receipts(tmp_pa
         database = Database(url)
         try:
             if seed:
-                await seed_pre_0119_social_conversations(database)
-                env = await social_env(database, tmp_path)
+                env = await frozen_social_env(database)
                 now = datetime.now(UTC)
                 async with database.immediate_session() as writer:
                     for index in range(102):

@@ -6,20 +6,21 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
+from tests.support.event_seed import seed_event
 
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
 )
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.plugin_host.db_models import (
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.persistence.database import Database
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.plugin_host.db_models import (
     PluginBackgroundTurnJobModel,
     PluginInstallationModel,
     PluginNotificationOutboxModel,
 )
-from qq_ai_bot.plugin_host.notification_repository import (
+from yuki.plugin_host.notification_repository import (
     TURN_ERROR_LATER_HUMAN,
     TURN_ERROR_SUPERSEDED_COVERED,
     PluginNotificationRepository,
@@ -57,14 +58,8 @@ async def _seed_job(
             )
         )
     repository = PluginNotificationRepository(database)
-    target = NotificationTarget(target_type="private", target_id="1001")
-    await repository.grant_target(
-        plugin_id=_PLUGIN_ID,
-        target=target,
-        bot_user_id="8000",
-        created_by_user_id="1001",
-    )
-    await EventLedgerRepository(database).append(
+    source, _created = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id="human-before-external",
         scope_type=ScopeType.PRIVATE,
@@ -72,6 +67,18 @@ async def _seed_job(
         private_peer_user_id="1001",
         direction="inbound",
         content="before external",
+    )
+    target = NotificationTarget(
+        target_type="private",
+        target_id=source.author_person_id,
+        conversation_id=source.canonical_conversation_id,
+    )
+    await repository.grant_target(
+        plugin_id=_PLUGIN_ID,
+        target=target,
+        bot_user_id="8000",
+        created_by_user_id=source.author_person_id,
+        presence_id=source.ingress_presence_id,
     )
     receipt = await repository.publish(
         plugin_id=_PLUGIN_ID,
@@ -138,7 +145,8 @@ async def test_reset_source_is_terminal_before_claim(database: Database) -> None
 @pytest.mark.asyncio
 async def test_later_human_message_is_terminal_before_claim(database: Database) -> None:
     repository, _source_id, _conversation_id = await _seed_job(database)
-    await EventLedgerRepository(database).append(
+    await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id="human-after-external",
         scope_type=ScopeType.PRIVATE,
@@ -159,7 +167,8 @@ async def test_later_human_message_is_terminal_before_claim(database: Database) 
 async def test_message_history_filters_external_before_limit(database: Database) -> None:
     _repository, _source_id, _conversation_id = await _seed_job(database)
     ledger = EventLedgerRepository(database)
-    await ledger.append(
+    await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id="human-after-external",
         scope_type=ScopeType.PRIVATE,
@@ -181,7 +190,7 @@ async def test_message_history_filters_external_before_limit(database: Database)
         message_only=True,
     )
     assert [row.content for row in searched] == ["before external", "after external"]
-    with pytest.raises(ValueError, match="require a QQ"):
+    with pytest.raises(ValueError, match="require a conversation, owner, or time bound"):
         await ledger.search(keyword="x", limit=10, message_only=True)
 
 

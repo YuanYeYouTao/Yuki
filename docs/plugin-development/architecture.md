@@ -1,6 +1,6 @@
 # 架构
 
-Plugin API 3.5 把“可声明的扩展”和“可使用的运行时服务”分开：
+Plugin API 7.0 把“可声明的扩展”和“可使用的运行时服务”分开：
 
 ```text
 plugin.toml
@@ -17,8 +17,8 @@ plugin.toml
 ## SDK 与 Host
 
 - `yuki_plugin_sdk`：稳定、依赖轻的公开 Protocol、Pydantic 模型、枚举和测试 Fake。
-- `qq_ai_bot.plugin_host`：Host 私有实现，负责发现、批准、名称冲突、事件超时、数据隔离和权限校验。
-- 插件：只能依赖 SDK。不要导入 `qq_ai_bot`、访问 `_` 开头属性或保存 Host 内部对象。
+- `yuki.plugin_host`：Host 私有实现，负责发现、批准、名称冲突、事件超时、数据隔离和权限校验。
+- 插件：只能依赖 SDK。不要导入 `yuki`、访问 `_` 开头属性或保存 Host 内部对象。
 
 `register()` 得到的是声明型 `PluginRegistrar`，没有运行时 Facade；`start()` 才得到已绑定
 `plugin_id`、真实运行主体/场景和已批准权限的 `PluginContext`。SELF 不需要真人 Inbound；
@@ -38,8 +38,8 @@ plugin.toml
 - 历史只在 `plugin_agent_messages` 中，默认不读取 Yuki 主聊天、人物记忆或群记忆；
 - 不写入 `chat_events`；
 - 不向插件返回隐藏推理；
-- 能力始终取“插件声明 ∩ 管理员批准 ∩ 本轮请求”；
-- 插件会话永远不能伪造 `SUPERUSERS`。
+- 会话只调用已配置模型，不提供工具后端；Host 服务权限仍沿实际插件批准核验；
+- 插件会话永远不能伪造 Person 的超管资格。
 
 这不是第二套 Yuki 人格或管理员路由，而是插件拥有的隔离任务会话。完整用法见 [服务 Facade](service-facades.md)。
 
@@ -56,8 +56,7 @@ plugin.toml
 
 所有 Facade 都是能力边界，不是 Repository 的别名；插件永远不能获得 SQLAlchemy Session。
 
-独立会话创建、追加和重置在首次 DML 前解析 canonical owner、消息发送者与返回 DTO 的
-Binding 投影。投影只读取确定排序后的首个可展示绑定，不用它选择业务所有者。
+独立会话创建、追加和重置在首次 DML 前解析 canonical owner 与实际消息发送者；返回 DTO 直接保留内部 Person/Space，不通过 QQ 绑定投影重建所有者。SELF 或无 Person 的插件计算保留真实 group/plugin 作用域，不伪造人类发送者。
 追加的序号分配与消息写入仍在同一短事务内；身份拒绝不会消耗序号。
 插件 KV 的 CAS 同样先核验所有权并准备展示字段，再按原版本条件写入。
 
@@ -74,5 +73,5 @@ context 仅有 `get_config(key)` 和 `get_state(namespace, key)`，绑定自身�
 从原插件状态投影审核过的字段，不返回 Secret、私有 payload 或未来执行的冻结原文。
 Host 在 Manager lock/写事务外调用，工厂与 callback 最多 5 秒、JSON 结果最多 64 KiB，
 生命周期发生变化则拒绝旧投影。仍是可信 Python 插件合同，不能替代 OS 隔离。
-GitHub Monitor 的实现参考 `github_monitor/observation.py`；Host 不解释插件私有 KV。
+可参考独立 [GitHub Monitor 的 observation.py](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor/blob/main/github_monitor/observation.py)；Host 不解释插件私有 KV。
 

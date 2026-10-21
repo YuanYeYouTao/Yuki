@@ -10,17 +10,20 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 `UnifiedToolCatalog` 负责目录，`MainAgentContract.definitions()` 在部署初始化时收集
 主工具注册表与已批准插件，加入工作控制、子任务和 short_state；启用 Code 时再加入编排与只读目录工具，
 按名称排序并冻结完整名称、说明和参数 schema。重名声明直接报错。
+平台合同保持原能力，App/ACP 主会话另含只读 read_personal_entry；两者各有 revision。
+选择依据是 canonical Conversation 的 Binding.platform（app/acp 为个人入口，其余为平台入口），不按设备、消息正文
+或配置切换。启动一次冻结两套，Work 收到 App/ACP 补充仍沿原会话合同。
 
 `definitions()` 保留完整执行清单。默认 direct 模式的 `model_definitions()` 返回
 部署内冻结的完整工具清单，不加载 Code 引擎。显式启用 Code 时才使用固定直调集合：聊天、
 生命周期、记忆与历史、基础工作区、时间、终端与环境状态、联网、`execute_code` 和
-`lookup_tools`；包管理、服务管理、自动化和管理等其余能力经脚本调用。两个模式分别
-冻结声明，普通聊天、主动触发、自动化、插件主调用和持久续跑复用本部署的合同。
+`lookup_tools`；服务管理、自动化和管理等其余能力经脚本调用。包安装直接在同一终端执行。两个模式分别
+冻结声明；每个模式同时冻结平台入口与 App/ACP 主会话两套合同。普通聊天、主动触发、自动化、插件主调用和持久续跑按原会话绑定的平台选择合同。
 它不是按每条消息或每个用户生成的白名单。工具合同变更需重启并开启明确的新链。
-`get_chat_history_around` 只以必填的内部 `event_id` 定位当前会话账本；缺少编号或传入
+`query_chat_history(view=around)` 只以内部 `event_id` 定位当前会话账本；缺少编号或传入
 平台消息号会收到错误回执。声明变更随部署生成新的合同 revision，不沿用旧请求链。
 Provider 原生工具还有独立的协议和配置合同，不能只检查函数工具就声称整个请求相同。
-长期记忆的主 Agent 声明是统一 `search_memory`，事实和证据详情仍为独立工具；旧三个
+长期记忆的主 Agent 声明是统一 `search_memory`，详情统一为 `read_memory(view=fact/evidence)`，证据读取不记作已读事实；旧三个
 `get_*_memories` 执行入口已退出；已存回执只按原 call_id 读取，未知调用不取得重跑资格。插件只获 Person 或 Group 读权限时
 仍可使用 `search_memory`，后端按该次批准的 scope 限制候选和显式目标。
 
@@ -34,7 +37,22 @@ Capability Runtime 的执行集合不是模型声明的真源，也不能在请�
 Runner 请求只使用固定合同；后端刷新执行目录，不再生成按轮的动态工具声明。
 参数 schema 由现有 JSON Schema 库按其声明方言编译并核验，不因固定深度、节点数、
 正则长度或重复量词启发式隔离可编译的工具。真实编译错误仍沿原隔离回执返回；
-本地 `$ref` 可解析，远程引用不触发网络读取。
+本地 `$ref` 按 schema 自身资源作用域解析，标准本地 Registry 不提供远程检索。
+`examples`、`const` 等普通 JSON 资料不被当作 schema 或提升成根 `$defs`。
+
+`send_message` schema 4 的正文在原位置写 `@名字`，也可在 `@` 后留横向空白。
+名称取最长实际命中，同一 Account 的历史观察只算一个收件账号。真同名默认选择目标
+Conversation 中最近真实发言的账号，按原消息时间及内部事件 ID 排序；均无记录时按
+Account ID 稳定选择。指定账号可使用目录提供的 `@{account:UUID}`，不另传提及数组。
+该默认只选择正文中的收件账号，不用于选择 Person、发送入口或执行授权。
+未知名称或不可用的引用保留原文和 `@`。收件账号不因名字观察所属的旧归属阶段而失去
+提及资格；actor、来源和实际发送入口继续各核原授权。
+
+Main、SDK 消息与通知沿同一准备边界，先解析账号与原生布局，再接纳原操作。
+正文只查实际可能命中的名字及账号；只有去重后仍真同名时才批查候选最近发言。
+查询使用名字与真实消息索引，在写事务外完成；不补查平台或维护另一份活动表。
+同次发送的重复提及、拆条及原回执恢复复用已准备结果。原工具请求、位置快照、
+所选账号和发送回执各保原事实，不在恢复或 ACK 时重新选择最近发言者。
 
 ## 调用与效果
 
@@ -79,8 +97,8 @@ flowchart LR
 默认部署为 direct：不包含 Monty binding、worker 或 launcher，主 Agent 直接使用部署内固定完整工具清单。启用 Code 必须显式选择 codemode 镜像及配置；以下组合政策只用于已启用 Code 的固定合同。
 
 Code 模式冻结清单包含固定的 `execute_code` 和 `lookup_tools`（`yuki.codemode.api.v2`）。
-`terminal_exec`、`terminal_read`、`terminal_write`、`terminal_control`、`environment_status` 常驻固定直调视图；
-包管理和服务管理仍经 Code Mode。direct 模式声明部署内固定完整工具清单，不生成 ScriptApi 或加载 worker；模式变更只在合法新链应用。直调复用同一 Manager、来源权限、
+`terminal_exec`、`terminal_read`、`terminal_control`、`environment_status`、`external_agent` 常驻固定直调视图；
+服务登记经 Code Mode；安装和普通文件读写直接走同一管理员终端。direct 模式声明部署内固定完整工具清单，不生成 ScriptApi 或加载 worker；模式变更只在合法新链应用。直调复用同一 Manager、来源权限、
 原 request/run ID 和未知结果恢复，不建立宿主执行通道，也不自动重提 pending 命令。
 脚本里的 `await yuki_<工具名>({参数})` 是同一 canonical 工具的调用语法，由
 `codemode/api_projection.py` 从冻结声明确定性投影：参数 schema 为原件，名称编码可逆，
@@ -107,18 +125,19 @@ Code Mode 的累计 suspension、内存、并发、快照和时间限制继续�
 启用 Code 时，主 Agent 与工作者共享 `CODE_MODE_POLICY`：有效 Work 内多个步骤已知、无需模型逐步
 解释新证据时，默认用 Code Mode 编排批量读取、过滤汇总、确定性循环、串行操作与原回执
 检查。脚本内部核验回执并聚合，最后只返回必要结果、摘要、ID 和证据引用；完整子工具
-回执仍留在原 effect，不重复追加给模型。单个独立简单操作、语义判断、普通聊天与交付、
-接纳前澄清及生命周期控制可直接调用。不可用或失败如实报告，不机械包装每个直接工具。
+回执仍留在原 effect，不重复追加给模型。普通聊天与交付、接纳前澄清、语义判断及生命周期控制
+使用本轮已直接声明的工具；单个独立操作也按该声明选择，未直接声明的工具仍经目录和
+`execute_code` 调用，并保留已接纳 Work 的前提。不机械包装每个直接工具。
 pending 保留原 run_id，使用现有等待和恢复，不在脚本里忙轮询；未知效果不重做。
 已知读、算、写和读回校验尽量在同一程序按目标顺序完成，只读并发有界分批，避免一次
 gather 超过宿主队列。指引不硬编码当前部署的可调队列或并发数量。
 有依赖或副作用顺序的步骤逐步 await，不用并发预读或统一后写绕开顺序要求；
-stdout 同样是模型可见结果，不打印全量中间原文。Code Mode 不可用或程序失败时如实
-报告，只允许当前授权且本轮已声明的工具接续确认未派发的剩余步骤；权限拒绝、未知或 pending
+stdout 同样是模型可见结果，不打印全量中间原文。Code Mode 不可用或程序失败时先
+核对原回执，只允许当前授权且本轮已声明的工具接续确认未派发的剩余步骤；权限拒绝、未知或 pending
 效果不能通过切换工具绕过或重做。
-数值判断、字段分支和下一路径选择按已知规则在脚本内执行；数据依赖不是语义判断。
-单步例外指目标本身是独立单步，不能把多步目标拆小；其他工具失败也不证明 Code Mode
-不可用。联合编排验收与目标完成分别记录，未选择脚本的正确产物不算默认策略通过。
+数值判断、字段分支和下一路径选择按已知规则在脚本内执行，需要理解新内容时再交回模型。
+其他工具失败不证明 Code Mode 不可用。是否向人反馈按实际影响和原任务约定判断，
+不因切换调用方式额外发言。脚本函数使用目录返回的精确 `script_name`，不按原工具名自行拼接。
 这是静态编排指引，不按任务文本路由或改变参数 schema、执行授权、预算及并发围栏。
 工具说明变化自然产生新 manifest revision；旧快照仍须匹配原合同，不放宽恢复检查。
 
@@ -236,31 +255,59 @@ pause 与压缩尚未完成时不提前换链；媒体、来源与 CAS 在原派
 超大完整结果复用工具 artifact 文件存储，单对象最多 64 MiB、总登记容量默认 512 MiB。
 活动 Work 及仍活动 root 的 child 结果不受显示缓存 TTL 清理；终态至少保留七天，
 隐私删除释放其拥有的结果。清理先标记删除围栏、再删除文件、最后清理元数据，可恢复中断。
-工作区不可变文本分页使用字节偏移，跨 UTF-8 字符边界保留完整字符。
+普通文件读写、搜索和目录操作交给终端；不再声明八项通用工作区接口或公开 artifact CRUD。
 
 主合同版本 12 明确退出 MCP 声明，即使旧部署没有启用 MCP 工具也建立新的合同边界。旧任务复用原 journal、预算及效果回执，不重派原调用。
 
 通用 OneBot 操作不另写无人读取的诊断表 `agent_actions`；0117 删除该旧表。授权、Work effect 与实际发送回执继续由各自执行链保存。
 
-WorkspaceStore 的快照沿現行永久保留合同，不再暴露無生產者的 TTL 選項；既有 expires_at 列保留舊資料讀取與首次啟動轉換。物理儲存仍受原 512 MiB 總量、200 MiB 單檔與 1000 個物件容量限制。
+WorkspaceStore 保不可变发布、媒体、short_state、下载及实际引用清理；旧 expires_at 只保历史读取与转换。删除单文件200MiB、总量512MiB及1000对象的经验配额，沿真实磁盘与传输结果处理。私有工具结果库仍是独立来源和保留合同。
 
-## 合并转发历史读取
+## 共同账本历史与原生平台操作
 
-固定 `read_conversation_history` schema_version="2"，仍 result_cacheable=false。参数有 event_id
-key 时沿事件模式，必须是真正正整数；它与 operation_id 是冲突的两种 anchor。合法未用
-selector/limit 不改变原事件账号或裁剪 raw。旧 receipt/target 模式沿原解析与文字投影。
+固定的 read_conversation_history 读取授权的 canonical 账本；默认当前入口，显式
+conversation_id 选择原内部会话，人物/空间有多个入口时返回内部候选，不猜主动路由。
+event_id 只定位当前会话原事件；operation_id 按原来源的发送回执读取真实出站会话。
+委托 read_target_id 核原 owner，读取尊重现有 starts_after 与 keeper 边界。
+结果标明 coverage=observed，不冒充完整平台历史；平台离线不阻止账本读取。
 
-执行处由 current_invocation.runtime 取得 canonical Conversation、generation 与既有读授权，
-委托 read_target_id 只允许其原 owner。get_reply_event 核当前会话 keeper/message，
-reader 使用外层原 Presence 的固定 get_forward_msg；不新增探针、换号或任意管理 API。
+默认模型已退役任意 OneBot action、戳一戳和远端/raw 转发历史展开。原始 segments、
+历史真实工具结果、已付请求和旧回执保留，不因退役重写冻结内容或重派旧调用。
+新 read call 经当前授权读取事实，不以另一 call 的同参结果代替。原 call 和历史
+readonly alias 仍读自己的真实持久回执，不增加缓存失效总线。
 
-每个外层 forward segment 按位置成组，同 invocation 的同 locator 可复用一次实际读取，
-多 locator 沿原并行调用处理。响应先核 provider status/retcode，随后选择支持 envelope 中
-首个实际 list；空列表合法，原顺序、标量、null 和未知字段保留。部分失败保成功组，
-全失败返回真实顶层 error 并保分组状态；原取消传播。内层 forward 留作 raw，绝不自动展开。
+共同 Social 管内部目标、授权、预算、原操作 claim、账本与回执。GatewayProvider 的
+原生操作接口负责文字/媒体布局、参数、引用和响应。纯 plan_send 不执行网络请求，
+每项各有实际派发和持久回执；平台适配器不能内部多次发送却只返回一个成功。
+详见[平台适配与升级](platform-adapters.md)。
 
-实际读取的 locator/账号构成本次来源；正常文字/ASR/visual 派生及读完暂离线不清空结果。
-真正 generation/privacy/owner 授权失效沿原执行与发布围栏拒绝新正文，已发生回执保留。
-结果不附图片，完整 raw 沿共同预算/artifact 链处理；仅成功外置才有真实分页 handle。
-没有 store 或外置失败不声称保存全文，不添加固定节点/文本/递归经验帽，也不重写通用
-artifact、Work journal、原 Code consumer 或恢复别名。
+## 主会话的跨入口读取与发送
+
+read_personal_entry 只从本人 App/ACP 主会话按 binding_id 或 conversation_id 显式读取本人
+其他私聊账本，使用内部事件游标且最多 50 条。结果携带入口、会话及事件 ID；
+读取不改历史、generation 或 Main session。
+平台合同不声明该工具；执行处仍核真实 actor、来源个人 Binding 及目标私聊归属。
+
+send_message 的 person target 可带 binding_id。从 App/ACP 显式指定 person 目标必须明确绑定，缺失时返回 binding_required 与可选绑定；
+省略目标时仍回复当前个人 Conversation。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
+在派发事务复核绑定、Presence 和连接。结果 uncertain 不重发；出站记到真实目标入口，
+SocialOperation 的 source_conversation_id 仍是原主会话。文件说明沿同一绑定投递。
+
+## 精简后的领域入口
+
+Main 合同23保持每项固定名称、schema和顺序；direct为平台30/个人入口31项，Code完整32/33项、直调27/28项，批准插件另计。数量是本次实际装配结果，不是运行准入条件。
+
+- `terminal_exec/read/control` 共用原Manager/run/回执。control的input发送原样text；read的wait_seconds只观察，默认不等待，原终态completion与游标同时保留。环境默认无强制期限，显式期限按事实执行。
+- `external_agent(action=list/prompt/get/respond/cancel/close)` 通过 ACP 使用运维配置的 Agent。只有 prompt 在已接纳的原 Work 中登记新执行；peer 是可续用的原会话资源，run 是单次 prompt。查询、权限回答、取消和关闭可管理当前来源有权访问的原资源，不要求另接纳 Work。模型只见 agent_id 目录与原资源 ID，不接收启动命令或凭据。权限请求沿原 Work 私有输入提交后才确认协议游标，回答仍核原来源当前授权；外部输出是待核对材料，最终聊天交付继续走 Social。
+
+`external_agent.get` 使用 `run_id` 或原 `request_id` 二选一。首次 open 确认丢失时仍返回原
+prompt 请求及 resource_request_id；冷恢复沿原 Task 保留这些 ID。按 request_id 查询先核原
+Work/source owner，再读取原 prompt；尚查不到 prompt 时，只读查询原 peer 并嵌入 peer_resource，
+不把 peer 的资源 run_id 当作 prompt 执行，不自动 open 或重发未知 prompt。查回 peer 后可沿原
+owner 显式 close；未知事实继续保持未知。
+- `workspace_inspect/publish` 只负责原生媒体和不可变交付桥；普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。
+- `automation_query(view=list/get/completed/history/diagnose)` 复用原安全目录、人物终态、运行历史与创建审计；`automation_manage(action=create/update/pause/resume/cancel/run_now)` 沿原TaskSpec、owner、版本、创建键与调度回执。
+- `query_chat_history(view=recent/search/around)` 读取原Conversation；search使用start_at/end_at，around使用内部event_id及before/after条数。显式跨Conversation与App本人入口保持独立。
+- `read_memory(view=fact/evidence)` 保原scope与观察事实；`subagent_control(action=message)` 保原父子ID、ask/reply_to、运行中补充和resume区别。
+
+退役名称不接收新调用，也不注册新执行别名；旧已接受call/result_ref、参数hash、原ID、预算、unknown及原Provider输入继续只读恢复。工具声明变化只在合法新链生效。

@@ -15,27 +15,25 @@ from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
 from tests.unit.test_memory_mutation import _event, _service
 
-from qq_ai_bot.conversation.autonomy_db_models import AutonomyBindingModel, InitiativeRunModel
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.identity.db_models import SpaceBindingModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.enums import MemoryKind, MemoryScopeType, MemoryStatus, SelfMemoryVisibility
-from qq_ai_bot.memory.models import MemoryFactCreate
-from qq_ai_bot.memory.mutation.models import (
+from yuki.conversation.autonomy_db_models import AutonomyBindingModel, InitiativeRunModel
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.identity.db_models import SpaceBindingModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.enums import MemoryKind, MemoryScopeType, MemoryStatus, SelfMemoryVisibility
+from yuki.memory.models import MemoryFactCreate
+from yuki.memory.mutation.models import (
     MemoryDecisionActorType,
     MemoryMutationContext,
     MemoryMutationOperation,
     MemoryMutationRequest,
     MemoryMutationTarget,
 )
-from qq_ai_bot.memory.runtime.partition_lookup import DatabaseMemoryPartitionLookup
-from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
-from qq_ai_bot.memory.self_reflection.control import ReflectionControlRepository
-from qq_ai_bot.memory.self_reflection.db_models import InitiativeReflectionCursorModel
-from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-from qq_ai_bot.memory.self_reflection.service import SelfReflectionService
-from qq_ai_bot.memory.subjects import ResolvedSubject
-from qq_ai_bot.persistence.models import (
+from yuki.memory.self_reflection.control import ReflectionControlRepository
+from yuki.memory.self_reflection.db_models import InitiativeReflectionCursorModel
+from yuki.memory.self_reflection.repository import SelfReflectionRepository
+from yuki.memory.self_reflection.service import SelfReflectionService
+from yuki.memory.subjects import ResolvedSubject
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
     MemoryFactModel,
@@ -46,7 +44,7 @@ from qq_ai_bot.persistence.models import (
     MemorySelfReflectionStateModel,
     MemoryToolReceiptModel,
 )
-from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
+from yuki.tool_results.recorder import ToolReceiptRepository
 
 
 async def seed(database):
@@ -108,16 +106,12 @@ async def record(
     reflection_excerpt_characters=2000,
     **extra,
 ):
-    await ToolInvocationRepository(
+    await ToolReceiptRepository(
         database, reflection_excerpt_characters=reflection_excerpt_characters
-    ).record_invocation(
-        conversation_key=event.scope.key,
+    ).record_receipt(
         provider_id="core",
         tool_name="terminal_exec",
         success=True,
-        latency_seconds=0,
-        result_size=10,
-        artifact_created=False,
         error_category=None,
         initiative_run_id=run_id,
         execution_id="execution-1",
@@ -323,7 +317,7 @@ async def test_concurrent_reflection_claims_keep_one_original_run(
 
     with monkeypatch.context() as patch:
         if source_kind == "initiative":
-            from qq_ai_bot.memory.self_reflection import initiative
+            from yuki.memory.self_reflection import initiative
 
             resolve = initiative.resolve_self_origin
 
@@ -369,7 +363,7 @@ async def test_concurrent_reflection_claims_keep_one_original_run(
 async def test_initiative_claim_keeps_original_paid_window_after_unrelated_wal_commit(
     database, run_state
 ):
-    mutations, facts, initial, initiative_id = await seed(database)
+    mutations, _facts, initial, initiative_id = await seed(database)
     await record(database, initial, initiative_id, "original", result_excerpt="真实的原始工具来源")
     await finish(database, initiative_id)
     repository = SelfReflectionRepository(database)
@@ -377,7 +371,6 @@ async def test_initiative_claim_keeps_original_paid_window_after_unrelated_wal_c
     reflection = SelfReflectionService(
         settings=make_settings(database.url, self_memory_enabled=True),
         repository=repository,
-        facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
     )
@@ -512,70 +505,74 @@ async def test_reflection_transition_keeps_original_source_after_unrelated_wal_c
         assert [item.id for item in next_batch.events] == [tail.id]
 
 
-async def test_visible_self_input_keeps_all_local_facts_and_active_only_expiry(database):
-    _, facts, event, run_id = await seed(database)
+async def test_reflection_request_does_not_grow_with_old_self_memory(database):
+    from yuki.memory.self_reflection.models import SelfReflectionOutput
+    from yuki.model_runtime.models import ModelTask
+
+    mutations, facts, event, run_id = await seed(database)
     await record(database, event, run_id)
     await finish(database, run_id)
     (batch,) = await claim(database)
-    global_facts, local_facts = [], []
-    for visibility, bucket in (("global", global_facts), ("group", local_facts)):
+    provider = FakeLLMProvider(lambda _: '{"proposals":[],"episodes":[]}')
+    reflection = SelfReflectionService(
+        settings=make_settings(database.url, self_memory_enabled=True),
+        repository=SelfReflectionRepository(database),
+        mutations=mutations,
+        models=InjectedModelExecutor(provider),
+    )
+    assert await reflection.reflect(batch) == (0, 0)
+    before = provider.requests[-1]
+
+    for visibility in ("global", "group"):
         for index in range(21):
-            bucket.append(
-                await facts.remember(
-                    MemoryFactCreate(
-                        scope_type="self",
-                        visibility_type=visibility,
-                        visibility_group_id="3001" if visibility == "group" else None,
-                        memory_key=f"visible:{visibility}:{index}",
-                        category="test",
-                        content=f"{visibility} self fact {index}",
-                        source_type="explicit",
-                    )
+            fact = await facts.remember(
+                MemoryFactCreate(
+                    scope_type="self",
+                    visibility_type=visibility,
+                    visibility_group_id="3001" if visibility == "group" else None,
+                    memory_key=f"old:{visibility}:{index}",
+                    category="self_episode" if index % 2 else "self_fact",
+                    kind=MemoryKind.EPISODE if index % 2 else MemoryKind.FACT,
+                    content=f"旧记忆 {visibility} {index} " * 40,
+                    source_type="explicit",
                 )
             )
-    expired = datetime.now(UTC) - timedelta(days=1)
-    async with database.immediate_session() as session:
-        await session.execute(
-            update(MemoryFactModel)
-            .where(MemoryFactModel.id == global_facts[0].id)
-            .values(valid_until=expired)
-        )
-        await session.execute(
-            update(MemoryFactModel)
-            .where(MemoryFactModel.id == global_facts[1].id)
-            .values(status="contested", conflict_state="contested", valid_until=expired)
-        )
-        await session.execute(
-            update(MemoryFactModel)
-            .where(MemoryFactModel.id == local_facts[0].id)
-            .values(status="invalidated", invalidated_reason="expired", valid_until=expired)
-        )
-        await session.execute(
-            update(MemoryFactModel)
-            .where(MemoryFactModel.id == local_facts[1].id)
-            .values(status="superseded")
-        )
-        await session.execute(
-            update(MemoryFactModel)
-            .where(MemoryFactModel.id == global_facts[2].id)
-            .values(review_state="quarantined")
-        )
-        await session.execute(
-            update(SpaceBindingModel)
-            .where(SpaceBindingModel.space_id == batch.state.canonical_space_id)
-            .values(status="disabled")
-        )
-    reflection = object.__new__(SelfReflectionService)
-    reflection._facts = facts
-    visible = await reflection._visible_self_facts(batch)
-    expected = {f.id for f in (*global_facts, *local_facts)} - {
-        global_facts[0].id,
-        global_facts[2].id,
-        local_facts[1].id,
-    }
-    assert {f.id for f in visible} == expected
-    assert global_facts[-1].id in expected and local_facts[-1].id in expected
-    assert visible[-2].id == global_facts[1].id and visible[-1].id == local_facts[0].id
+            if index % 3:
+                async with database.sessions() as session, session.begin():
+                    row = await session.get(MemoryFactModel, fact.id)
+                    row.status = "invalidated" if index % 3 == 1 else "contested"
+                    row.invalidated_reason = "expired" if index % 3 == 1 else None
+                    if row.status == "contested":
+                        row.conflict_state = "contested"
+
+    old_memory_queries = []
+
+    def observe(_connection, _cursor, statement, *_args):
+        if statement.lstrip().upper().startswith("SELECT") and any(
+            table in statement.lower() for table in ("memory_facts", "memory_claim_candidates")
+        ):
+            old_memory_queries.append(statement)
+
+    sql_event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
+    try:
+        payload, _, _ = await reflection._input(batch)
+    finally:
+        sql_event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+    assert not old_memory_queries
+    # Exercise the real task serializer again with the same sources. This is a
+    # fresh offline model request, not a replay of the saved execution.
+    await reflection._structured.run(
+        task=ModelTask.MEMORY_SELF_REFLECTION,
+        instruction=before.messages[0].content,
+        structured_input=payload,
+        output_model=SelfReflectionOutput,
+    )
+    after = provider.requests[-1]
+    assert before.messages == after.messages
+    assert before.tools == after.tools and before.response_format == after.response_format
+    body = json.loads(after.messages[-1].content)
+    assert not {"self_facts", "existing_episodes", "self_candidates"} & body.keys()
+    assert body["tool_receipts"][0]["result_excerpt"] == "已生成并校验曲线绘图"
 
 
 async def test_reflection_health_uses_original_oldest_recent_cycle_baseline(database, monkeypatch):
@@ -628,7 +625,7 @@ async def test_reflection_health_uses_original_oldest_recent_cycle_baseline(data
         def now(cls, tz=None):
             return now
 
-    from qq_ai_bot.memory.self_reflection import control
+    from yuki.memory.self_reflection import control
 
     monkeypatch.setattr(control, "datetime", FixedDateTime)
     report = await ReflectionControlRepository(
@@ -660,7 +657,7 @@ async def test_mixed_recovery_prepares_full_tail_before_cursor_write_and_sees_st
         group_id="3001",
     )
     await repository.scan_new_events()
-    from qq_ai_bot.domain import audio
+    from yuki.domain import audio
 
     transcripts = []
     original_transcript = audio.transcript_context
@@ -780,21 +777,6 @@ async def test_committed_tool_receipt_does_not_need_a_live_group_binding(databas
 
 
 @pytest.mark.asyncio
-async def test_actorless_memory_scope_has_no_target_person_partition(database):
-    _, _, event, run_id = await seed(database)
-    turn = await TurnMemorySession.open_self_origin(
-        initiative_run_id=run_id,
-        canonical_conversation_id=event.canonical_conversation_id,
-        identity=event.scope,
-        partition_lookup=DatabaseMemoryPartitionLookup(database),
-    )
-    assert turn.scope.scope_type.value == "group"
-    assert turn.scope.scope_id == event.group_id
-    assert turn.scope.partition_key == f"group:{event.group_id}"
-    assert turn.contract.persistent_write_allowed
-
-
-@pytest.mark.asyncio
 async def test_silent_reflection_cursor_survives_restart_and_late_receipt(database):
     _, _, event, run_id = await seed(database)
     await record(database, event, run_id)
@@ -815,7 +797,7 @@ async def test_silent_reflection_cursor_survives_restart_and_late_receipt(databa
 async def test_silent_receipt_windows_keep_large_source_complete_and_remaining_source_pending(
     database,
 ):
-    mutations, facts, event, run_id = await seed(database)
+    mutations, _facts, event, run_id = await seed(database)
     for call, excerpt in (("large", "甲" * 8000), ("small", "乙" * 1000)):
         await record(
             database,
@@ -831,7 +813,6 @@ async def test_silent_receipt_windows_keep_large_source_complete_and_remaining_s
     reflection = SelfReflectionService(
         settings=make_settings(database.url),
         repository=repository,
-        facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
     )
@@ -854,7 +835,7 @@ async def test_silent_receipt_windows_keep_large_source_complete_and_remaining_s
 
 @pytest.mark.asyncio
 async def test_silent_original_receipt_window_retries_without_reselecting_new_budget(database):
-    mutations, facts, event, run_id = await seed(database)
+    mutations, _facts, event, run_id = await seed(database)
     for call, excerpt in (("first", "甲" * 1000), ("second", "乙" * 1000)):
         await record(database, event, run_id, call, result_excerpt=excerpt)
     await finish(database, run_id)
@@ -878,7 +859,6 @@ async def test_silent_original_receipt_window_retries_without_reselecting_new_bu
     reflection = SelfReflectionService(
         settings=make_settings(database.url),
         repository=repository,
-        facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
     )
@@ -998,7 +978,7 @@ async def test_actorless_reflection_uses_unified_mutation_and_readable_evidence(
 
 @pytest.mark.asyncio
 async def test_silent_service_episode_keeps_checkpoint_without_second_model_request(database):
-    mutations, facts, event, run_id = await seed(database)
+    mutations, _facts, event, run_id = await seed(database)
     await record(database, event, run_id)
     await finish(database, run_id)
     (batch,) = await claim(database)
@@ -1006,7 +986,7 @@ async def test_silent_service_episode_keeps_checkpoint_without_second_model_requ
     provider = FakeLLMProvider(
         responder=lambda _: json.dumps(
             {
-                "proposals": [{"operation": "noop", "evidence_refs": ["tool_1"]}],
+                "proposals": [],
                 "episodes": [
                     {
                         "passages": [
@@ -1025,20 +1005,19 @@ async def test_silent_service_episode_keeps_checkpoint_without_second_model_requ
     reflection = SelfReflectionService(
         settings=make_settings("sqlite+aiosqlite:///:memory:", self_memory_enabled=True),
         repository=repository,
-        facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
     )
-    projected, _, _, event_map, _ = await reflection._input(batch)
+    projected, event_map, _ = await reflection._input(batch)
     assert projected.source_kind == "initiative_tools" and not projected.events and not event_map
     assert projected.tool_receipts[0].occurred_at is not None
-    assert await reflection.reflect(batch) == (2, 1)
+    assert await reflection.reflect(batch) == (1, 1)
     async with database.sessions() as session:
         assert await session.scalar(select(func.count(MemoryEvidenceModel.id))) == 1
     request_count = len(provider.requests)
     # A crash between committed result/checkpoint and cursor acknowledgement is recovered.
     assert await repository.recover_interrupted(batch.run_id, "stale_processing") == "completed"
-    assert await reflection.reflect(batch) == (2, 1)
+    assert await reflection.reflect(batch) == (1, 1)
     assert len(provider.requests) == request_count
     assert await claim(database, "cycle-next") == ()
 
@@ -1052,23 +1031,20 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
     from tests.integration.test_self_automation_delivery import self_actor
     from tests.support.social_identity_cases import social_env
 
-    from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-    from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-    from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-    from qq_ai_bot.runtime.origin import TurnOrigin
-    from qq_ai_bot.runtime.work_activation import bind_work_activation
-    from qq_ai_bot.runtime.work_control import WorkControl
-    from qq_ai_bot.runtime.work_repository import WorkRepository
-    from qq_ai_bot.services.agent_tools import ToolRuntime
-    from qq_ai_bot.services.execution_sources import recover_self_source
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
-    from qq_ai_bot.workspace.short_state import ShortState
+    from yuki.conversation.hydrate import primary_alias_for_conversation
+    from yuki.conversation.scope import ConversationTurnSnapshot
+    from yuki.domain.conversations import ConversationScope, ScopeType
+    from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+    from yuki.runtime.origin import TurnOrigin
+    from yuki.runtime.work_activation import bind_work_activation
+    from yuki.runtime.work_control import WorkControl
+    from yuki.runtime.work_repository import WorkRepository
+    from yuki.services.agent_tools import ToolRuntime
+    from yuki.services.execution_sources import recover_self_source
+    from yuki.services.main_agent_contract import MainAgentContract
+    from yuki.workspace.short_state import ShortState
 
     env = await social_env(database, tmp_path)
-    async with database.sessions() as session:
-        binding_id = await session.scalar(
-            select(SpaceBindingModel.id).where(SpaceBindingModel.external_space_id == "20001")
-        )
     if multiple_bindings:
         async with database.sessions() as session, session.begin():
             session.add(
@@ -1095,8 +1071,8 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
         "evidence_quote": "member",
     }
     calls = [
-        ("get_group_members", {"limit": 10, "space_binding_id": binding_id}),
-        ("get_group_members", {"limit": 20, "space_binding_id": binding_id}),
+        ("get_group_members", {"limit": 10, "target_id": env.space}),
+        ("get_group_members", {"limit": 20, "target_id": env.space}),
         ("memory_change", write),
     ]
     results = []
@@ -1133,7 +1109,7 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
     chat = harness.processor._chat
     chat._tools.social_service = env.service
     chat._tools._memory_mutations = mutations
-    chat._tool_invocations = ToolInvocationRepository(database)
+    chat._tool_receipts = ToolReceiptRepository(database)
     chat.runtime.runner.main_contract = MainAgentContract(chat, ShortState(env.store))
     owner = WorkRepository(database)
     source = {
@@ -1157,17 +1133,26 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
     recovered = await recover_self_source(
         database, actor.conversation_id, source, request_id=item["id"]
     )
-    identity = ConversationScope.group("80001", "20001")
+    identity = ConversationScope.group(
+        "80001",
+        "20001",
+        platform=recovered.platform,
+        conversation_id=actor.conversation_id,
+        presence_id=actor.presence_id,
+    )
+    async with database.sessions() as session:
+        runtime_key = await primary_alias_for_conversation(session, actor.conversation_id)
+    assert runtime_key is not None
 
     async def validate():
         assert await owner.valid(lease)
 
     control = WorkControl(owner, lease, item["source_key"], source, validate)
     control.current = item
-    async with chat._turn_coordinator.background_turn(identity.key) as token:
+    async with chat._turn_coordinator.background_turn(runtime_key) as token:
         snapshot = ConversationTurnSnapshot(
             actor.conversation_id,
-            identity.key,
+            runtime_key,
             1,
             None,
             token.version,
@@ -1177,16 +1162,14 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
         async with bind_work_activation(control):
             result = await chat.generate_self_initiative(
                 trigger=recovered.trigger(),
-                runtime=await chat._runtime_config.snapshot(group_id="20001"),
+                runtime=await chat._runtime_config.snapshot(group_id=env.space),
                 turn_token=token,
                 turn_snapshot=snapshot,
                 before_model_request=validate,
                 source_runtime=ToolRuntime(
                     inbound=None,
                     actor_context=recovered.actor(item["id"]),
-                    gateway=None,
-                    allow_generic_onebot=False,
-                    conversation_key=identity.key,
+                    conversation_key=runtime_key,
                     execution_id=item["id"],
                     origin=TurnOrigin.SELF_INITIATIVE,
                     initiative_run_id=actor.initiative_run_id,
@@ -1223,7 +1206,9 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
     fact = await facts.get_fact(mutation.new_fact_id)
     evidence = await facts.list_evidence(fact.id)
-    assert fact.scope_type is MemoryScopeType.SELF and fact.visibility_group_id == "20001"
+    assert (
+        fact.scope_type is MemoryScopeType.SELF and fact.canonical_visibility_space_id == env.space
+    )
     assert (
         len(evidence) == 1
         and evidence[0].tool_receipt_id == receipt.id
@@ -1232,124 +1217,6 @@ async def test_main_self_memory_write_uses_original_tool_receipt_without_human_e
     assert (await owner.get(item["id"]))["state"] == "completed"
     assert not await owner.valid(lease)
     assert not any(name.startswith("send_") for name, _ in env.bot.calls)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["restore", "update_metadata"])
-async def test_reflection_model_reuses_restore_and_metadata_domain_operations(database, operation):
-    mutations, facts, event, run_id = await seed(database)
-    await record(database, event, run_id)
-    async with database.sessions() as session:
-        receipt = await session.scalar(select(MemoryToolReceiptModel))
-    context = MemoryMutationContext(
-        event=None,
-        conversation_key="self-test",
-        turn_origin="memory_self_reflection",
-        delegation_mode="self_reflection",
-        trigger_actor_user_id="",
-        executed_by_bot_user_id="",
-        decision_actor_type=MemoryDecisionActorType.REFLECTION,
-        decision_actor_id="yuki_self_reflection",
-        initiative_run_id=run_id,
-        evidence_tool_receipt_id=receipt.id,
-    )
-    target = ResolvedSubject(
-        MemoryScopeType.SELF, None, None, SelfMemoryVisibility.GROUP, None, "3001"
-    )
-    request = MemoryMutationRequest(
-        operation=MemoryMutationOperation.CREATE,
-        target=MemoryMutationTarget(subject_ref="self", scope_type=MemoryScopeType.SELF),
-        new_content="我用运行结果校验了曲线绘图。",
-        memory_key="self_fact:existing",
-        category="self_fact",
-        kind=MemoryKind.FACT,
-        evidence_quote="已生成并校验曲线绘图",
-    )
-    created = await mutations.mutate_resolved(request, context, target=target)
-    assert created.ok
-    if operation == "restore":
-        invalidated = await mutations.mutate_resolved(
-            request.model_copy(
-                update={
-                    "operation": MemoryMutationOperation.INVALIDATE,
-                    "fact_id": created.new_fact_id,
-                    "target": None,
-                    "new_content": None,
-                }
-            ),
-            context,
-            target=target,
-        )
-        assert invalidated.ok
-    await finish(database, run_id)
-    (batch,) = await claim(database)
-
-    def respond(request):
-        payload = json.loads(request.messages[-1].content)
-        fact = next(
-            item for item in payload["self_facts"] if item["memory_key"] == "self_fact:existing"
-        )
-        if operation == "restore":
-            assert fact["status"] == "invalidated"
-        return json.dumps(
-            {
-                "proposals": [
-                    {
-                        "operation": operation,
-                        "fact_ref": fact["ref"],
-                        "evidence_refs": ["tool_1"],
-                        "reason": "实际工具回执支持本次维护",
-                        "category": "self_reflection",
-                        "importance": 5,
-                        "confidence": 0.9,
-                    }
-                ]
-            }
-        )
-
-    provider = FakeLLMProvider(responder=respond)
-    repository = SelfReflectionRepository(database)
-    reflection = SelfReflectionService(
-        settings=make_settings(database.url, self_memory_enabled=True),
-        repository=repository,
-        facts=facts,
-        mutations=mutations,
-        models=InjectedModelExecutor(provider),
-    )
-    assert await reflection.reflect(batch) == (1, 1)
-    assert await reflection.reflect(batch) == (1, 1)
-    assert len(provider.requests) == 1
-    async with database.sessions() as session:
-        mutation = await session.scalar(
-            select(MemoryMutationReceiptModel).where(
-                MemoryMutationReceiptModel.requested_operation == operation
-            )
-        )
-        assert (
-            mutation is not None
-            and mutation.trigger_event_id is None
-            and mutation.initiative_run_id == run_id
-        )
-        assert (
-            await session.scalar(
-                select(func.count(MemoryMutationReceiptModel.id)).where(
-                    MemoryMutationReceiptModel.requested_operation == operation
-                )
-            )
-            == 1
-        )
-        assert await session.scalar(select(func.count(ChatEventModel.id))) == 1
-    result = await facts.get_fact(mutation.new_fact_id)
-    assert result.status is MemoryStatus.ACTIVE
-    if operation == "restore":
-        assert result.id == created.new_fact_id
-    else:
-        assert result.supersedes_id == created.new_fact_id
-        assert result.category == "self_reflection" and result.importance == 5
-    assert all(
-        item.tool_receipt_id == receipt.id and item.event_id is None
-        for item in await facts.list_evidence(result.id)
-    )
 
 
 @pytest.mark.asyncio
@@ -1409,7 +1276,7 @@ async def test_main_self_evidence_uses_actual_receipt_with_repeated_quote_and_pa
 @pytest.mark.asyncio
 @pytest.mark.parametrize("large_event", [False, True])
 async def test_incoming_reflection_keeps_complete_source_without_own_reply(database, large_event):
-    mutations, facts, _event_record, _ = await seed(database)
+    mutations, _facts, _event_record, _ = await seed(database)
     repository = SelfReflectionRepository(database)
     await repository.scan_new_events()
     content = "我觉得你很会倾听。" + ("这是一段完整反馈。" * 100 if large_event else "")
@@ -1442,7 +1309,6 @@ async def test_incoming_reflection_keeps_complete_source_without_own_reply(datab
     reflection = SelfReflectionService(
         settings=settings,
         repository=repository,
-        facts=facts,
         mutations=mutations,
         models=InjectedModelExecutor(provider),
     )
@@ -1542,7 +1408,7 @@ async def test_reflection_only_live_source_ranges_block_claim_and_cursor(databas
 async def test_isolated_receipt_windows_do_not_starve_later_initiatives(database):
     from sqlalchemy import insert
 
-    from qq_ai_bot.memory.self_reflection.db_models import InitiativeReflectionWindowModel
+    from yuki.memory.self_reflection.db_models import InitiativeReflectionWindowModel
 
     _, _, initial, old_id = await seed(database)
     await record(database, initial, old_id)

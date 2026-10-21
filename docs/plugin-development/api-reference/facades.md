@@ -2,6 +2,8 @@
 
 下列签名来自 `yuki_plugin_sdk.context`；所有方法都可能因权限、作用域、当前轮安全策略或功能关闭而拒绝。
 
+API 7.0 的普通 `user_id` / `group_id` / `target_id` 是内部 Person / Space ID；通知目标还可指定原 `conversation_id`。独立 QQ 扩展中的外部参数保留其明确传输语义，不能回流成业务所有者。
+
 ## Message
 
 ```python
@@ -43,18 +45,23 @@ memory.delete(memory_id) -> PluginResult
 
 ```
 
-`memory.search()` 在 Plugin API 3.5 内部复用主程序的 `MemoryRetriever`：插件作用域校验先确定
+`memory.search()` 在 Plugin API 7.0 内部复用主程序的 `MemoryRetriever`：插件作用域校验先确定
 真实人物或群，随后 FTS 与可选 Embedding 都只在该 SQL 硬过滤范围内召回，并由确定性 RRF
 融合。插件不能选择 Provider/profile、获取原始向量、提交 FTS 语法、通过关键词改变
 `subject_id`，也不会在无匹配时回退加载全部事实。返回记录只包含有界的
 `retrieval_reason`；`list_person()` / `list_group()` 仍用于确定性列表。Embedding 关闭或故障时
-自动保持词法行为；当前 Plugin API 版本由 SDK 的 `PLUGIN_API_VERSION` 定义，为 `3.5`。
+自动保持词法行为；当前 Plugin API 版本由 SDK 的 `PLUGIN_API_VERSION` 定义，为 `7.0`。
+
+返回记录的 `user_id` / `subject_user_id` 表示内部 Person，`group_id` 表示内部 Space；
+不适用的主体字段为 `None`。这些值可以直接交回同一授权范围的 `list_person()`、
+`list_group()`、`search(subject_id=...)` 或 People/Group Facade，不返回 QQ 兼容投影。
+`fact_id` 和 `memory_id` 标识原事实，与人物、群和平台账号 ID 分开。
 
 从 Yuki `3.0.0b2` 开始，`memory.update()` 会创建 explicit correction 新版本并让旧 fact 进入
 superseded，不原地改写旧正文；`memory.delete()` 会以
 `plugin_explicit_invalidation` 将事实标记为 invalidated，不物理删除事实、证据或状态历史。
 插件不能设置 authority、status、conflict_state、supersedes_id，也不能跨人物/群合并或解决
-冲突。这些写入语义保留在当前 Plugin API 3.5 中，不代表 Host 兼容旧 1.x 插件。
+冲突。这些写入语义保留在当前 Plugin API 7.0 中，不代表 Host 兼容旧 1.x 插件。
 
 Yuki 3.0.0 对 MemoryFacade 做了正式 contract freeze：稳定方法为 `list_person`、`list_group`、
 `search`、`add`、`update`、`delete`。插件不能访问原始向量、历史 rebuild、质量 fixture、全局
@@ -65,7 +72,7 @@ Yuki 3.0.0 对 MemoryFacade 做了正式 contract freeze：稳定方法为 `list
 ```python
 agent.result(work_id) -> PluginResult
 agent.resume(work_id, text, *, request_id) -> PluginResult
-agent.run(instruction, *, context_profile="none", allowed_capabilities=(),
+agent.run(instruction, *, context_profile="none",
           max_tool_calls=None, max_model_requests=None) -> PluginResult
 
 agent_sessions.create(CreateAgentSessionRequest) -> AgentSession
@@ -76,7 +83,8 @@ agent_sessions.close(session_id: UUID) -> AgentSession
 
 `agent.run` 复用真实 Host actor/source；无入站消息的 SELF 或定时来源同样进入 Main。
 同来源及参数读取原 Work 与结果，恢复保原来源、执行 ID、回执和预算；不同来源不会共用结果。
-当前真实 Person 的权限在执行处核验，SELF 保自身主体。已有 Work 上下文本身不禁用独立调用，
+当前真实 Person 的权限在执行处核验，SELF 保自身主体。主调用不再接收工具名子集；
+现有插件领域批准在执行处核验，旧 Work 不因退役名称失配而重建或重买。已有 Work 上下文本身不禁用独立调用，
 同会话已占用的执行租约沿原执行层处理。
 
 ## Web / HTTP / Vision / Media
@@ -89,6 +97,12 @@ vision.analyze_current_media(question="") -> PluginResult
 media.get_current() -> tuple[Mapping, ...]
 media.create_artifact(*, data, content_type, filename, ttl_seconds=86400) -> MediaArtifactHandle
 ```
+
+`media.get_current()` 包含当前／回复附件的通用类型、真实文件名、大小、MIME、尺寸、`is_sticker`、`sticker_format` 和 `preview_available`，同时保留原QQ `sub_type` 等事实；不返回平台 file_id、预览定位符、原始字节或Host路径。详见[媒体与视觉](../media-and-vision.md)。
+
+`web.search` 只返回供应商已有来源、内容和总结，不自动抓页或调用 Extract。
+`web.read` 明确读取选定的公开 URL，可使用历史链接；两者分别需要 `web.search`、
+`web.read` 批准，搜索权限不包含读页权限。
 
 `auth_secret` 只能引用 Manifest 已声明的 Secret。Host 仅在同源请求中注入 Bearer credential，跨源重定向会移除；响应只返回 ETag、Last-Modified、Retry-After、Link 和有限的 Rate Limit / request-id Header。
 
@@ -104,14 +118,15 @@ notifications.status() -> Mapping[str, int]
 
 后台发布不需要伪造当前用户调用，但只能投向 Host 已授权目标。外部事件以 canonical
 `external_event` 进入 EventLedger，不作为普通 user/assistant/system history；文字、媒体和可选
-Agent turn 由持久 Outbox 独立发送。当前通知只在其后台 turn 的不可信 current input 出现一次，
-常规会话不自动附加旧外部事件摘要；需要历史事实时由 Agent 显式检索。Grant 的增删仍要求真实 `SUPERUSERS` 调用上下文。
+Agent turn 由持久 Outbox 独立发送。当前通知只在其后台 turn 的 current input 出现一次，
+常规会话不自动附加旧外部事件摘要；需要历史事实时由 Agent 显式检索。Grant 的增删要求原 actor Person 的当前有效超管资格。
 
 `plugin_id + event_key + target` 只负责定位，Host 还会校验完整请求身份：`external_source`、
-`event_type`、时间、payload、summary、text、`ask_agent`、intent 与按顺序排列的媒体
-handle/SHA/expiry。完全相同的重试返回原 receipt；任一字段不同返回 `receipt_conflict`。已存在路径
-只读复用，不能给旧通知补 text、media 或 Agent job。插件必须在第一次 attempt 前确定请求；结果
-未知时只能重试字节等价请求。
+`event_type`、时间、payload、summary、text、`ask_agent`、intent 与按顺序排列的媒体 SHA。
+原位置的原 handle 使用原已接纳媒体证明；换用另一个 handle 时须证明内容 SHA 相同。媒体的当前
+有效期只约束首次接纳，过期或清理不否定原 receipt。请求内容冲突返回 `receipt_conflict`；
+已存在路径只读复用，不能给旧通知补 text、media 或 Agent job。插件必须在第一次 attempt 前
+确定请求；结果未知时沿原请求身份恢复。
 
 ## Automation
 

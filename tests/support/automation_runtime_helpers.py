@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from qq_ai_bot.automation.task_spec import TaskSpec
+from yuki.automation.task_spec import TaskSpec
 
 
 class FakeClock:

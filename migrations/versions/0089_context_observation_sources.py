@@ -3,7 +3,7 @@
 import sqlalchemy as sa
 from alembic import op
 
-from qq_ai_bot.conversation.observation_schema import (
+from yuki.conversation.observation_schema import (
     CONTEXT_SOURCE_TRIGGERS,
     RETIRED_ROLLUP_TRIGGERS,
 )

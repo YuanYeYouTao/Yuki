@@ -36,7 +36,8 @@ def _assert_native_setup(commands, platform, deployment):
     run = next(command for command in commands if command[0] == "run")
     for command in (pull, run):
         assert command[command.index("--platform") + 1] == platform
-        assert "ghcr.io/yuanyeyoutao/yuki-qqbot:9.8.7" in command
+        assert "ghcr.io/yuanyeyoutao/yuki:9.8.7" in command
+    assert run[run.index("--entrypoint") + 1] == "yuki"
     assert run[-3:] == ["setup", "--deployment-root", "/deploy"]
     assert not any(command[0] in {"up", "stop", "down", "restart"} for command in commands)
     assert (deployment / ".env").read_text(encoding="utf-8") == "USER_CONFIG=keep\n"

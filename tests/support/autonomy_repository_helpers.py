@@ -2,15 +2,16 @@
 
 from dataclasses import dataclass
 
-from qq_ai_bot.conversation.autonomy_binding import (
+from tests.support.canonical_identity import ensure_presence, ensure_space
+
+from yuki.conversation.autonomy_binding import (
     AutonomyBinding,
     InitiativeSource,
     InitiativeSourceKind,
 )
-from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-from qq_ai_bot.identity.canonical_repository import ensure_presence, ensure_space
-from qq_ai_bot.persistence.database import Database
+from yuki.conversation.autonomy_repository import AutonomyRepository
+from yuki.conversation.hydrate import ensure_canonical_conversation
+from yuki.persistence.database import Database
 
 
 @dataclass(frozen=True)

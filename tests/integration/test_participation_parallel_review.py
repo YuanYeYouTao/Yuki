@@ -7,6 +7,7 @@ from dataclasses import replace
 import pytest
 from sqlalchemy import update
 from tests.conftest import MemorySender
+from tests.support.event_seed import seed_scoped_event
 from tests.support.semantic_participation_host_helpers import (
     _choice,
     _event_and_route,
@@ -28,18 +29,19 @@ from tests.unit.test_ordinary_input_handoff import (
 from tests.unit.test_participation_ordinary_feedback import ordinary_backend
 from tests.unit.test_participation_pipeline_retirement import _relationship
 from yuki_participation.models import Snapshot
+from yuki_participation.observer import PROJECTION_REVISION
 from yuki_participation.participation import ParticipationCheckpoint
 from yuki_participation.self_report import SelfDelta, SelfReport
 
-from qq_ai_bot.conversation.ordinary_admission import OrdinaryAdmissionRepository
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.participation_feedback import admission_unit_binding
-from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
-from qq_ai_bot.services.turn_execution import _PrimaryDispatch
+from yuki.conversation.ordinary_admission import OrdinaryAdmissionRepository
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatMessage
+from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.services.participation_feedback import admission_unit_binding
+from yuki.services.turn_coordinator import HistorySourceChangedError
+from yuki.services.turn_execution import _PrimaryDispatch
 
 
 @pytest.mark.parametrize("exit_first", ["semantic", "quiet"])
@@ -91,7 +93,7 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
             return await complete(request)
 
         class DelayedObserver:
-            async def evaluate(self, snapshot):
+            async def evaluate(self, snapshot, **_kwargs):
                 snapshots.append(snapshot)
                 jev_started.set()
                 await release_jev.wait()
@@ -137,7 +139,7 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
             assert not main.done() and not review.done()
             frozen = snapshots[0].model_dump_json()
             assert snapshots[0].focus.ref.event_id == f"event:{b.id}"
-            assert snapshots[0].projection_revision == "semantic-state-v2"
+            assert snapshots[0].projection_revision == PROJECTION_REVISION
             assert any(hint.engage == "stay" for hint in snapshots[0].participation.units)
 
             if exit_first == "semantic":
@@ -190,7 +192,9 @@ async def test_inflight_main_and_jev_each_close_fast_path_without_replaying_main
 async def test_selected_same_main_input_survives_late_participation_exit(
     database, tmp_path, monkeypatch, late_exit
 ):
-    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "original-read"), "NO_REPLY"])
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "original-read"), "NO_REPLY"]
+    )
     env, harness, worker, message = await _scene(
         database, tmp_path, provider, reason="continuation"
     )
@@ -210,7 +214,8 @@ async def test_selected_same_main_input_survives_late_participation_exit(
                 .where(CanonicalSpaceModel.id == env.space)
                 .values(autonomous_enabled=True)
             )
-        prior = await env.service.writer.append(
+        prior = await seed_scoped_event(
+            env.service.writer,
             scope=message(0, "original exchange").scope(),
             platform_message_id="prior-participation-source",
             sender_user_id="10001",
@@ -284,7 +289,7 @@ async def test_selected_same_main_input_survives_late_participation_exit(
                     >= 2
                 )
                 binding = prepared.admission.binding
-                assert binding is not None and host.continuation_current(
+                assert binding is not None and await host.continuation_current(
                     binding, check_budget=False
                 )
                 if late_exit == "quiet":
@@ -319,7 +324,7 @@ async def test_selected_same_main_input_survives_late_participation_exit(
                         }
                     )
                     assert item.controller.apply_semantic_observation(observation)
-                assert not host.continuation_current(binding, check_budget=False)
+                assert not await host.continuation_current(binding, check_budget=False)
                 flipped = True
             return await publish(
                 repository,
@@ -361,7 +366,8 @@ async def test_selected_same_main_input_survives_late_participation_exit(
         provider.release[2].set()
         await asyncio.wait_for(_wait_for_worker(worker, key), 10)
         assert len(provider.requests) == 2 and await _work_count(database) == sender.calls == 0
-        later = await env.service.writer.append(
+        later = await seed_scoped_event(
+            env.service.writer,
             scope=message(3, "later unselected input").scope(),
             platform_message_id="later-unselected-source",
             sender_user_id="10001",

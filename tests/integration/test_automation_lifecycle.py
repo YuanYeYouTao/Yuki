@@ -11,29 +11,28 @@ import pytest
 from sqlalchemy import event, insert, select, update
 from tests.support.automation_runtime_helpers import FakeClock
 from tests.support.automation_unified_delivery_helpers import sent, setup_run
+from tests.support.canonical_identity import ensure_presence, ensure_space
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import Bot
 
-from qq_ai_bot.automation.gateway import OneBotAutomationGateway
-from qq_ai_bot.automation.models import AutomationStatus, RunStatus
-from qq_ai_bot.conversation.canonical_db_models import PersonActiveRouteModel, SpaceActiveRouteModel
-from qq_ai_bot.conversation.hydrate import bump_canonical_generation
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.canonical_repository import ensure_presence, ensure_space
-from qq_ai_bot.identity.db_models import SpaceBindingModel
-from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel, AutomationVersionModel
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.work_activation import bind_work_activation
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_recovery_schema import invocations
-from qq_ai_bot.runtime.work_scheduler import WorkScheduler
-from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
-from qq_ai_bot.runtime.work_wait import WorkWaitRepository
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.execution_sources import recover_automation_source
+from yuki.automation.models import AutomationStatus, RunStatus
+from yuki.conversation.canonical_db_models import PersonActiveRouteModel, SpaceActiveRouteModel
+from yuki.conversation.hydrate import bump_canonical_generation
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.db_models import SpaceBindingModel
+from yuki.persistence.models import AutomationModel, AutomationRunModel, AutomationVersionModel
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_activation import bind_work_activation
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_recovery_schema import invocations
+from yuki.runtime.work_scheduler import WorkScheduler
+from yuki.runtime.work_schema_v1 import effects, journal, work
+from yuki.runtime.work_wait import WorkWaitRepository
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.execution_sources import recover_automation_source
 
 
 def calls(*items):
@@ -167,7 +166,10 @@ async def test_paused_send_route_does_not_block_internal_main_read(
     assert sources[0].presence_id == case.row.canonical_presence_id
     assert sources[0].bot_user_id == case.row.bot_user_id
     assert sources[0].principal_kind == principal
-    assert sources[0].group_id == (None if delivery == "self_private" else "20001")
+    assert (
+        sources[0].group_id == "20001"
+    )  # execution keeps the original scene, independent of delivery
+    assert sources[0].space_id == case.env.space
     assert not sent(case.env)
     results = [message for message in case.provider.requests[1].messages if message.role == "tool"]
     assert len(results) == 1 and json.loads(results[0].content)["ok"]
@@ -231,7 +233,6 @@ async def test_self_next_occurrence_uses_current_generation_without_reopening_ol
             original["conversation_id"],
             json.loads(original["source_json"]),
             request_id=original["id"],
-            settings=case.settings,
         )
     await case.repository.settle_work_occurrences()
     assert (await case.repository.run_history(case.row.id))[0].status is RunStatus.CANCELLED
@@ -343,13 +344,11 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
             "instruction": step["arguments"]["instruction"],
         }
         recovered = await recover_automation_source(
-            database, state.id, source, request_id=execution_id, settings=case.settings
+            database, state.id, source, request_id=execution_id
         )
 
         async def validate(source=source, execution_id=execution_id):
-            await recover_automation_source(
-                database, state.id, source, request_id=execution_id, settings=case.settings
-            )
+            await recover_automation_source(database, state.id, source, request_id=execution_id)
 
         operations = [("task_control", {"action": "accept", "goal": source["instruction"]})]
         if step["id"] == "sent":
@@ -392,7 +391,7 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
                     content=source["instruction"],
                     identity=identity,
                     runtime=await case.chat._runtime_config.snapshot(
-                        user_id="10001", group_id="20001"
+                        user_id=case.env.person, group_id=case.env.space
                     ),
                     turn_token=token,
                     turn_snapshot=ConversationTurnSnapshot(
@@ -408,13 +407,6 @@ async def test_original_run_settles_only_its_saved_pending_work(database, tmp_pa
                     source_runtime=ToolRuntime(
                         inbound=None,
                         actor_context=recovered.actor(execution_id),
-                        allow_generic_onebot=False,
-                        gateway=OneBotAutomationGateway(
-                            bot_user_id="80001",
-                            automation_id=claimed.id,
-                            automation_run_id=run.id,
-                            router=case.env.router,
-                        ),
                         conversation_key=state.runtime_scope_key,
                         execution_id=execution_id,
                         origin=TurnOrigin.SCHEDULED_AUTOMATION,
@@ -771,8 +763,8 @@ async def test_ordinary_directory_does_not_parse_execution_payloads(database, tm
     from sqlalchemy import update
     from tests.support.automation_unified_delivery_helpers import setup_run
 
-    from qq_ai_bot.automation.models import AutomationStatus
-    from qq_ai_bot.persistence.models import AutomationModel
+    from yuki.automation.models import AutomationStatus
+    from yuki.persistence.models import AutomationModel
 
     case = await setup_run(database, tmp_path, delivery="none", mode="silent")
     async with database.immediate_session() as writer:
@@ -867,7 +859,7 @@ async def test_batch_claimers_accept_disjoint_sets_and_keep_running_and_versionl
 async def test_claim_parses_only_after_successful_commit(
     database, tmp_path, monkeypatch, unknown_commit
 ):
-    import qq_ai_bot.automation.repository as automation_repository
+    import yuki.automation.repository as automation_repository
 
     case = await setup_run(database, tmp_path, delivery="none", mode="silent")
     original_writer = database.immediate_session
@@ -917,16 +909,16 @@ async def test_equivalent_directory_match_reaches_the_actual_tail(database, tmp_
         "delivery": {"target": "current_group"},
     }
     for index in range(101):
-        await case.service.administer_create(
+        await case.service.create_task(
             {**requested, "goal": f"another target {index}"},
-            owner_id=case.env.person,
-            conversation_id=case.env.context.conversation_id,
+            actor=case.actor,
+            conversation_key="group:80001:20001",
             creation_source_key=f"directory:{index}",
         )
-    target = await case.service.administer_create(
+    target = await case.service.create_task(
         requested,
-        owner_id=case.env.person,
-        conversation_id=case.env.context.conversation_id,
+        actor=case.actor,
+        conversation_key="group:80001:20001",
         creation_source_key="directory:tail",
     )
     matches = await case.service.find_equivalent_directory_entries(requested, actor=case.actor)
@@ -947,7 +939,7 @@ async def test_automation_preflight_failure_records_one_blocked_occurrence(
 ):
     from unittest.mock import AsyncMock
 
-    from qq_ai_bot.automation.context import AutomationBindError
+    from yuki.automation.context import AutomationBindError
 
     case = await setup_run(database, tmp_path, mode="silent", max_runs=max_runs)
     category = {
@@ -957,12 +949,12 @@ async def test_automation_preflight_failure_records_one_blocked_occurrence(
     }[failure]
     if failure == "binding":
         monkeypatch.setattr(
-            "qq_ai_bot.automation.worker.bind_automation_conversation",
+            "yuki.automation.worker.bind_automation_conversation",
             AsyncMock(side_effect=AutomationBindError(category)),
         )
     elif failure == "authority":
         monkeypatch.setattr(
-            "qq_ai_bot.automation.worker.resolve_execution_identity",
+            "yuki.automation.worker.resolve_execution_identity",
             AsyncMock(side_effect=PermissionError(category)),
         )
     else:

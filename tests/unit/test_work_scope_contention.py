@@ -5,13 +5,15 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 
 import pytest
+from sqlalchemy import event as sql_event
 from sqlalchemy import select, update
+from tests.support.event_seed import seed_scoped_event
 from tests.support.projection_sql_counts import capture_sql
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import scope
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import scope
 
 
 def assert_read_only(statements):
@@ -125,6 +127,39 @@ async def test_concurrent_read_candidates_still_have_one_lease_owner(
     assert stored["owner"] == winners[0].owner
 
 
+async def test_acquire_uses_database_time_after_waiting_for_writer(database, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from sqlalchemy import func
+
+    env = await social_env(database, tmp_path)
+    repository = WorkRepository(database)
+    waiting = asyncio.Event()
+
+    def observe_begin(_connection, _cursor, statement, _parameters, _context, _many):
+        if statement == "BEGIN IMMEDIATE":
+            waiting.set()
+
+    monkeypatch.setattr("yuki.runtime.work_repository.time", SimpleNamespace(time=lambda: 0))
+    async with database.immediate_session():
+        sql_event.listen(database.engine.sync_engine, "before_cursor_execute", observe_begin)
+        candidate = asyncio.create_task(repository.acquire(env.context.conversation_id, 1))
+        try:
+            await asyncio.wait_for(waiting.wait(), 2)
+            assert not candidate.done()
+        finally:
+            sql_event.remove(database.engine.sync_engine, "before_cursor_execute", observe_begin)
+    lease = await asyncio.wait_for(candidate, 2)
+    assert lease is not None and await repository.valid(lease)
+    async with database.sessions() as reader:
+        remaining = await reader.scalar(
+            select(scope.c.lease_until - (func.julianday("now") - 2440587.5) * 86400).where(
+                scope.c.conversation_id == lease.conversation_id
+            )
+        )
+    assert 55 < remaining <= 60
+
+
 @pytest.mark.parametrize("operation", ["release", "renew"])
 async def test_cleanup_rechecks_fence_when_owner_changes_after_read(
     database, tmp_path, monkeypatch, operation
@@ -178,16 +213,17 @@ async def test_busy_scope_with_many_qualified_work_does_not_hide_independent_sco
     import json
     import time
 
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.persistence.models import ChatEventModel
-    from qq_ai_bot.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
-    from qq_ai_bot.runtime.work_control import WorkControl
-    from qq_ai_bot.runtime.work_scheduler import WorkScheduler
-    from qq_ai_bot.runtime.work_schema_v1 import work
+    from yuki.domain.conversations import ConversationScope
+    from yuki.persistence.models import ChatEventModel
+    from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
+    from yuki.runtime.work_control import WorkControl
+    from yuki.runtime.work_scheduler import WorkScheduler
+    from yuki.runtime.work_schema_v1 import work
 
     env = await social_env(database, tmp_path)
     ledger = ScopedEventLedgerUnitOfWork(database)
-    await ledger.append(
+    await seed_scoped_event(
+        ledger,
         scope=ConversationScope.private("80001", "10001"),
         platform_message_id="independent-private-source",
         sender_user_id="10001",

@@ -1,7 +1,7 @@
 # 语义参与 V6：宿主接入与验证边界
 
 2026-10-15。独立仓库：
-[Yuki-Semantic-Participation](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation)。
+[Yuki-Semantic-Participation](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation)。
 本文描述 SELF 接入与普通持续接话的合同。实现、验证和生产启用状态分别由交付记录证明；
 历史 T20 真实 QQ 集成验收不是本轮持续接话的验收结果。
 
@@ -11,11 +11,34 @@
 权限、接纳、Main Agent、steer、工具、工作恢复和发送。Jev 使用自己的观测协议，
 不生成聊天回复，也不构成第二个 Agent Runner。
 
+人物同一性查询从原checkpoint读取actor/target事实，再由Host按内部ID批量解析当前人物；`participation_actor_ids()`不评估参与资格、不重放belief，也不修改checkpoint。来源分页、水合及冷恢复不得为收集人物ID调用全局`participating_units()`；当前参与判定仍只在真实决策处计算。
+
+普通输入的 binding 准备复用入口已有的原事件与配置；场景在一次关联读取中解析原
+Conversation、Space、Binding 与接收 Presence。事件、场景及配置的准备在 Controller 应用锁外，
+取得锁后读取当前场景，不用准备期间的旧 generation 或路由覆盖新值。控制器应用、历史水合、
+冷加载唯一性和共享快照保存仍沿原锁，不据此宣称跨会话全部无等待。
+
+接纳反馈与普通自报批读真实已提交 admission 和当前来源，局部幂等恢复原输入，不重新扫描
+效果、读取配置或 hydrate 整页；缺少控制器时仍沿原路径冷恢复。admission 提交成功而派生
+反馈失败，也可由这份原 admission 局部恢复，不丢后来的合法 hint。quiet 在主响应观察返回前
+应用，必要的 Jev 观察排队和快照保存同步完成；未保存的 hint 不能仅凭 admission 重建。
+锁外准备遇关闭时沿原 store 生命周期退出，取消保存仍确认实际提交的 revision 后传播。
+
+绑定仍读取真实近窗历史，供新焦点冻结引用、讨论与 SELF 锚点。新发送已入账而后台尚未
+tick 时，Social 回执只能证明表达，不能制造尚未读取的事件 SourceRef；不能只投影当前输入
+就省略这份历史。原来源最终按本次 basis 核验，不在其前重复单查同一焦点。
+
 `SemanticParticipationService` 读取已提交的 canonical 群事件，按
 Conversation/generation 保存控制器快照。新观察只以真实人类事件为焦点，context 可包含真实人类和 SELF 发言；
 来源沿带版本的内部 event ID 传递。后台 Memory 扫描、seed 事件及 recall/contact 新候选已退出，
 Memory 仍由主 Agent 按需查询；
-目标人物只是交流对象，不是执行主体。来源正文和资料包均是不可信上下文，不能授予权限。
+目标人物只是交流对象，不是执行主体。观测正文保留原事件中按原位置还原的 `@名字`，
+与 Main 共用入账时的目标及名称快照；不在 JEV 侧再补查资料或把其他成员改称 Yuki。
+Host 从同一原 segments 复制窄 `EventMention` 到 `ScopedEvent.mentions`，保原顺序、重复、展示名、
+位置及可证明的 Account／Assignment／Person／Presence。普通文字中的 @ 不反造原生提及。
+新 Jev 请求使用 `semantic-state-v3`：人物随原作者共用当前同人投影，Account 在该请求内只用
+中性 aN 关联，Assignment／Presence UUID 留在本地原 Snapshot；不改变参与 target 或授予权限。
+原来源修订包含提及快照，旧未知位置保未知，旧已付 Snapshot 不补查或改写。
 观测和历史读取完成后才进入短接纳事务，事务中不等待 Jev、主模型或 QQ 网关。
 启动和运行期间会主动发现当前获准的群会话代次；即使 `/ai new` 后还没有新的群消息、
 新代次尚无 selector 行，也会建立控制器并按现行配置选择 owner。只读取新代次事件，
@@ -37,8 +60,9 @@ revision。有效 owner 只有 off、legacy、semantic：总开关关闭始终 o
 尚未建立互动时，单纯名字提及仍是优先观察线索，不等同于 `@`。
 Jev 判断为邀请/续聊且回应楼层留给 Yuki 时，即使无法归入已有讨论，
 Controller 可采用 Host 提供并核验的该作者新讨论单元。真人邀请和已有互动的续聊进入
-原 `USER_MESSAGE` 主入口；核验邀请即时尝试，普通续接与开放群聊的新机会复用
-原 worker 的去抖窗口，窗口为零时直接尝试。普通续接不创建自主 Work，也不逐条等待 Jev 评分。
+原 `USER_MESSAGE` 主入口；非直接输入的语义邀请、普通续接与开放群聊的新机会共用
+原 worker 的去抖窗口，窗口为零时直接尝试。邀请保留自己的 reason 和原 binding，
+显式 @ 等原直接入口保持即时。普通续接不创建自主 Work，也不逐条等待 Jev 评分。
 尚未开始的机会合并到较新来源；已开始的工作不会仅因后到消息被淘汰，后到输入沿原入口处理。
 原 Work/wait 的获准输入先于新机会分类尝试，逐条发布，不经过此去抖窗口；
 部分匹配保持原 wait，不开第二个普通 Main。新 ordinary writer 核当时的 require_mention，
@@ -63,7 +87,8 @@ stay 或自身发送不能推翻纠正。仅入场后 `NO_REPLY` 不自证持续
 运行中普通 Main 明确接纳的补充与原事件共用 activation；原排队 attempt 通过同一接纳记录
 退出，不按观察水位、最大事件号或发送正文消费其他机会。仅被看到的群史仍是观察。
 每个补充按自己的 binding 记录真人 input；原 Main 的发送和自报不广播给同 activation
-的其他来源。原 Work/wait、显式调用和语义邀请保持各自的即时接纳与交接入口。
+的其他来源。原 Work/wait 和显式调用保持各自的即时接纳与交接入口；自动语义邀请
+先向原 Work/wait 提供输入，未接纳时才进入同一普通 worker，不另建邀请队列。
 单元保留建立时的原来源 basis，新的 input_ref 与活动时间独立更新，不把每轮输入累积为
 后续入场的全部祖先依赖。每次真人 admission、效果关联和自报仍保留本次原来源；
 快速续接既核验建立来源，也核验当前输入，不能靠稳定 basis 放过已修订或撤回的最新输入。
@@ -102,6 +127,13 @@ stay 或自身发送不能推翻纠正。仅入场后 `NO_REPLY` 不自证持续
 
 ## SELF 主体与同一执行链
 
+人物归并经宿主准备的当前`actor_identity`关系参与独立库比较；库不读取Host数据库或平台账号，
+也不保存另一份人物所有权。原ScopedEvent、unit、FastInput、source revision、review覆盖和已付观察
+不改写。关系只作用于同Conversation/generation及真实讨论；quiet/stay沿原hint/source次序判定，
+迟到发送或旧stay不盖过较新quiet。未确认快路按实际source去重及各原review覆盖位置计算，
+未知进度仍为未知，不清零计数、不按根人物重建Main接纳键。准备时批读当前人物关系，
+writer沿同一会话复核真实身份，不缓存永久许可或把SELF放入人物桶。
+
 持久 `AcceptedInitiative` 是待派发事实，以 `initiative:<run_id>` 唯一关联原 Work。
 接纳后进程退出时，宿主重新核对原 Work；存在则接回，不重新创建任务、重置预算或重放发送。
 WorkScheduler 调用 `generate_self_initiative`，随后仍经过 `MainAgentTurnService`、
@@ -112,7 +144,7 @@ WorkScheduler 调用 `generate_self_initiative`，随后仍经过 `MainAgentTurn
 - `ConversationTurnSnapshot` 的内部事件 ID 与 initiative run 严格二选一。SELF 不制造
   `InboundMessage`，不使用假 QQ 消息、不借最近发言者或目标人物的权限。
 - 每次请求、工具执行和发送准备前校验原 run、Conversation generation、Space、Presence
-  及唯一有效 QQ Binding。发送使用接纳时原 Presence；主动发送路由切换不替换执行主体。
+  及其原群入口。发送使用接纳时原 Presence；主动发送路由切换不替换执行主体。
 - 控制器切换本身不取消已接纳工作；reset/generation 失效、原场景权限或 Presence 失效仍
   拒绝继续执行。终态迟到的真实效果可以入账，不能把终态改回运行或触发重新发送。
 
@@ -136,11 +168,15 @@ Jev 保留 Host 已提供的快照，实际请求容量错误沿原 Provider 失
 `NO_REPLY` 可以合法完成原 Work；`return_to_caller` 不生成面向某个真人的固定收尾通知。
 实际发送未知时保留 uncertain，不能据此重发或声称已发送。
 
-自主轮提示词先让 SELF 从当前时间、群聊历史、获准记忆和自己的兴趣寻找具体想说或想做的事；
-无新真人消息、无人在线不自动等于应当沉默。可自然开启话题、接续有意义的讨论、查询或推进
-自己的工作；确有后续目标时使用现有 SELF 自动化，原 Work 等信号时使用持久等待。
-不得把旧消息伪装成新请求、为凑发言复读或虚构在线对象。没有自然切入点时仍可 `NO_REPLY`；
-这只是主 Agent 的表达选择，不改变控制器机会函数、Host 接纳与发送授权。
+自主轮默认静默处理具体工作：按需核对已有 Work、待办、获准历史与记忆和工作区，跟进承诺、
+未完成事项、重要人物已表达的关切及事件进展，整理资料或推进研究、创作。发现与后续线索按需
+保存在原 Work 或工作区，可委派独立子任务；未来另开具体目标用 SELF 自动化，原 Work 等信号
+用持久等待。没有新变化但仍需跟进时，保存必要进展后登记 `wait`，而非直接返回 `NO_REPLY`；
+无其他结束决定的最终正文会结算当前 Work。SELF 自主工作及后台维护使用 `reporting=quiet`，不因阶段进展额外通报。
+没有需要继续的工作时安静结束，不因醒来或群里安静而开话题、打招呼、追问
+或找人聊天。已有任务需要反馈、约定提醒到期或重要变化确实需要对方知道或决定时，才按需
+显式发送。旧消息仍是历史，不变成新的请求。此行为指引不改变控制器机会函数、Host 接纳
+与发送授权；人物、主题及外部变化的持续观察能力仍取决于实际等待与事件接入合同。
 
 社会效果依据真实 SocialOperation 回执归属 run；单次 Work 不因分条或多次发送
 增加自主调用密度。确认公开发送使该 Work 产生一份等待回应的暴露；
@@ -159,7 +195,8 @@ Space，不能为语义关联改成某个人。普通发送通过原回执和入
 不只读取最近修改的尾页。游标只存在于进程内，不承担效果事实或跨代所有权。
 每页在显式读快照批读原 Work、Social/MemoryTool 回执、child 计量和全部已提交反馈；
 无变化时不申请 writer。新增反馈仍按原 64 effects/页原子提交，每 run 单轮页数有界，
-剩余回执下一巡回继续。准备快照升级竞争只有限重备数据库计划，不重跑原模型或发送。
+剩余回执下一巡回继续。准备快照升级竞争结束本次对账，后续巡回沿原 run/sequence 重读
+数据库计划，不重跑原模型或发送；每巡回分页工作量不等于失败重试次数上限。
 Host 提交后按原 scope/generation 聚合回放并保存一次控制器；冷加载也回放已有反馈。
 普通入场及 boundary 来源按当前核验阶段批读，跨外部等待重新核验，不缓存授权。
 冷加载先为本页未知入场来源建立版本，再批量核验，保持原逐事件 projection 顺序。
@@ -259,7 +296,7 @@ Memory 依赖只按明确 fact ID 核验 active、verified、有效时间、原�
 
 有限真实 Jev HTTP 验证使用合成样本，只检验协议、投影、延迟和分歧；期望由开发者编写，
 不是独立人工标注准确率，不能宣称改善了群聊。详细证据见独立库的
-[实现记录](https://github.com/YuanYeYouTao/Yuki-Semantic-Participation/blob/main/docs/implementation.md)。
+[实现记录](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/blob/main/docs/implementation.md)。
 T20 真实 QQ 小范围集成、长期群聊效果和生产负载仍未验收。代码合并与本地测试
 不能替代这些证据；后续上线另按确认的发布流程处理。
 
@@ -273,7 +310,7 @@ observed/predicted 支持分别计数；NO_REPLY 比例以选中 run 为分母�
 观测最近失败按有限错误类别和 HTTP 状态聚合；这是快照保留的历史事实，
 不代表当前仍故障或全生命周期错误率。成功后的健康和连续失败数独立清零。
 
-WebUI 的 Jev/Host 时间线沿[执行过程查看合同](execution-trace.md)保存新增的真实
+Jev/Host 的诊断沿[执行过程查看合同](execution-trace.md)保存新增的真实
 观察和接纳尝试，默认保留 30 天。该诊断不参与语义 apply、权限、proposal 或恢复；
 记录失败不会丢弃成功观察、再调用 Jev 或改变原重试/退避。完整概率与来源正文需
 独立 `control.execution.content.read`，元数据分页不加载正文；旧判定不猜测回填。
@@ -286,3 +323,9 @@ WebUI 的 Jev/Host 时间线沿[执行过程查看合同](execution-trace.md)保
 串行核验，避免新增 await 后产生重复控制器或用旧 revision 覆盖快照。
 
 控制器按真实会话与 generation 保留，不再以固定 32 个缓存槽拒绝其他会话的机会。旧 generation 在持有者退出后按既有流程保存并清退；并发推进仍使用现有 semaphore。
+
+新事件的讨论候选直接取有效历史，SELF 锚点优先，各自按原时间倒序保留；候选排序不计算全量参与状态。
+同一内部来源及 revision 已有投影时复用原 ScopedEvent，既有候选键和在途 Jev Snapshot 不重建。
+参与查询只返回来源、表达、意愿及纠偏进度，不附带无人读取的 belief 概率投影。
+自主机会评分及历史折叠仍使用真实 belief；同一次同步计算只解析一次参与检查点并按讨论/对象归集事实，
+这些局部数据不跨状态修改保留，不增加快照缓存、调用阈值或状态清空流程。

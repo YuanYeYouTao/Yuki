@@ -1,20 +1,21 @@
 import pytest
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.commands_and_chat_helpers import inbound
+from tests.support.event_seed import seed_scoped_event
 
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.domain.conversations import ConversationScope
+from yuki.llm.fake import FakeLLMProvider
+from yuki.runtime.work_repository import WorkConflict
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 
 
 @pytest.mark.asyncio
 async def test_actual_main_recovers_paid_public_compact_with_new_history(
     database, tmp_path, monkeypatch
 ):
-    import qq_ai_bot.services.context_compaction as compaction
+    import yuki.services.context_compaction as compaction
 
     provider = FakeLLMProvider(
         lambda request: (
@@ -30,7 +31,8 @@ async def test_actual_main_recovers_paid_public_compact_with_new_history(
     state = ShortState(WorkspaceStore(tmp_path / "actual-workspace"))
     chat.runtime.runner.main_contract = MainAgentContract(chat, state)
     scope = ConversationScope.private("9999", "1001")
-    await harness.scoped_events.append(
+    await seed_scoped_event(
+        harness.scoped_events,
         scope=scope,
         platform_message_id="old-public",
         sender_user_id="1001",
@@ -54,7 +56,8 @@ async def test_actual_main_recovers_paid_public_compact_with_new_history(
     first = await harness.processor.handle(command, MemorySender())
     assert first.reason == "turn_interrupted"
     assert len(provider.requests) == 1
-    await harness.scoped_events.append(
+    await seed_scoped_event(
+        harness.scoped_events,
         scope=scope,
         platform_message_id="new-public",
         sender_user_id="1001",

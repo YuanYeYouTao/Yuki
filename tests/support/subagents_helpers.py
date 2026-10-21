@@ -2,11 +2,12 @@
 
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.work_repository import WorkRepository
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.work_repository import WorkRepository
 
 
 async def stack(database, tmp_path):
+    database.subagents_enabled = True
     env = await social_env(database, tmp_path)
     repository = WorkRepository(database)
     lease = await repository.acquire(env.context.conversation_id, 1)

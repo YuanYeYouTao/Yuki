@@ -1,0 +1,234 @@
+"""Backend validation that prevents model-selected identity attribution."""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from datetime import datetime
+
+from yuki.memory.enums import (
+    MemoryAuthority,
+    MemoryClaimOperation,
+    MemoryEvidenceRelation,
+    MemoryScopeType,
+    MemorySourceType,
+)
+from yuki.memory.extraction import MemoryClaim
+from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
+from yuki.memory.subjects import SubjectResolutionContext, SubjectResolver
+from yuki.memory.temporal import MemoryTemporalResolver
+from yuki.persistence.repository_records import EventRecord
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedMemoryClaim:
+    operation: MemoryClaimOperation
+    fact: MemoryFactCreate
+    evidence: MemoryEvidenceCreate
+    subject_is_speaker: bool
+    occurred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryClaimValidationResult:
+    """A content-free explanation of one claim validation decision."""
+
+    claim: ValidatedMemoryClaim | None
+    reason_code: str
+
+    @property
+    def ok(self) -> bool:
+        return self.claim is not None
+
+
+class _MemoryClaimRejected(ValueError):
+    """Internal control flow carrying a stable, content-free reason code."""
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
+
+
+def normalize_memory_text(value: str) -> str:
+    """Flatten untrusted model/user text before persistence and prompt use."""
+
+    return " ".join(_CONTROL.sub(" ", value).split())
+
+
+class MemoryClaimValidator:
+    """Turn a claim into trusted persistence input or reject it without guessing."""
+
+    def __init__(
+        self,
+        resolver: SubjectResolver | None = None,
+        temporal: MemoryTemporalResolver | None = None,
+        *,
+        timezone_name: str = "Asia/Shanghai",
+    ) -> None:
+        self._resolver = resolver or SubjectResolver()
+        self._temporal = temporal or MemoryTemporalResolver()
+        self._timezone_name = timezone_name
+
+    def validate(
+        self,
+        claim: MemoryClaim,
+        event: EventRecord,
+        *,
+        subject_context: SubjectResolutionContext | None = None,
+    ) -> tuple[MemoryFactCreate, MemoryEvidenceCreate] | None:
+        validated = self.validate_claim(claim, event, subject_context=subject_context)
+        if validated is None:
+            return None
+        return validated.fact, validated.evidence
+
+    def validate_claim(
+        self,
+        claim: MemoryClaim,
+        event: EventRecord,
+        *,
+        subject_context: SubjectResolutionContext | None = None,
+    ) -> ValidatedMemoryClaim | None:
+        return self.validate_claim_result(
+            claim,
+            event,
+            subject_context=subject_context,
+        ).claim
+
+    def validate_claim_result(
+        self,
+        claim: MemoryClaim,
+        event: EventRecord,
+        *,
+        subject_context: SubjectResolutionContext | None = None,
+    ) -> MemoryClaimValidationResult:
+        """Validate one claim while preserving why a rejected claim was dropped."""
+
+        try:
+            validated = self._validate_claim(
+                claim,
+                event,
+                subject_context=subject_context,
+            )
+        except _MemoryClaimRejected as exc:
+            return MemoryClaimValidationResult(None, exc.reason_code)
+        return MemoryClaimValidationResult(validated, "validated")
+
+    def _validate_claim(
+        self,
+        claim: MemoryClaim,
+        event: EventRecord,
+        *,
+        subject_context: SubjectResolutionContext | None = None,
+    ) -> ValidatedMemoryClaim:
+        if not event.evidence_content.strip():
+            raise _MemoryClaimRejected("empty_event")
+        raw_quote = claim.evidence_quote.strip()
+        if not raw_quote or raw_quote not in event.evidence_content:
+            raise _MemoryClaimRejected("evidence_quote_not_in_event")
+        quote = normalize_memory_text(raw_quote)
+        resolved = self._resolver.resolve(
+            event,
+            subject_ref=claim.subject_ref,
+            scope_type=claim.scope_type,
+            context=subject_context,
+        )
+        if resolved is None:
+            raise _MemoryClaimRejected("subject_unresolved")
+        key = normalize_memory_text(claim.memory_key)
+        category = normalize_memory_text(claim.category)
+        content = normalize_memory_text(claim.content)
+        if not key or not category or not content:
+            raise _MemoryClaimRejected("incomplete_claim_fields")
+        kind = claim.kind
+        subject_is_speaker = (
+            resolved.canonical_subject_person_id
+            in (
+                subject_context.speaker_person_ids
+                if subject_context is not None
+                else ((event.author_person_id,) if event.author_person_id else ())
+            )
+            if resolved.canonical_subject_person_id is not None
+            else resolved.subject_user_id == event.sender_user_id
+        )
+        is_third_party = (
+            bool(resolved.canonical_subject_person_id or resolved.subject_user_id)
+            and not subject_is_speaker
+        )
+        if is_third_party and resolved.scope_type is not MemoryScopeType.PERSON_GROUP:
+            raise _MemoryClaimRejected("third_party_scope_not_person_group")
+        source_type = claim.source_type
+        if is_third_party:
+            source_type = MemorySourceType.AUTOMATIC
+            authority = MemoryAuthority.THIRD_PARTY
+        elif source_type is MemorySourceType.EXPLICIT:
+            authority = MemoryAuthority.EXPLICIT
+        elif resolved.scope_type is MemoryScopeType.GROUP:
+            authority = MemoryAuthority.GROUP_REPORT
+        else:
+            authority = MemoryAuthority.SELF_REPORT
+        try:
+            temporal = self._temporal.resolve(
+                mode=claim.temporal_mode,
+                valid_from=claim.valid_from,
+                valid_until=claim.valid_until,
+                occurred_at=event.occurred_at,
+                timezone_name=self._timezone_name,
+            )
+        except ValueError:
+            raise _MemoryClaimRejected("invalid_temporal_value") from None
+        fact = MemoryFactCreate(
+            scope_type=resolved.scope_type,
+            subject_user_id=resolved.subject_user_id,
+            group_id=resolved.group_id,
+            canonical_subject_person_id=resolved.canonical_subject_person_id,
+            canonical_subject_space_id=resolved.canonical_subject_space_id,
+            canonical_visibility_person_id=resolved.canonical_visibility_person_id,
+            canonical_visibility_space_id=resolved.canonical_visibility_space_id,
+            kind=kind,
+            memory_key=key,
+            category=category,
+            content=content,
+            importance=claim.importance,
+            confidence=claim.confidence,
+            source_type=source_type,
+            authority=authority,
+            valid_from=temporal.valid_from,
+            valid_until=temporal.valid_until,
+        )
+        relation = self._evidence_relation(
+            authority=authority,
+            source_type=source_type,
+        )
+        evidence = MemoryEvidenceCreate(
+            event_id=event.id,
+            source_speaker_user_id=event.sender_user_id,
+            relation=relation,
+            confidence=claim.confidence,
+            authority=authority,
+            excerpt=quote,
+        )
+        return ValidatedMemoryClaim(
+            operation=MemoryClaimOperation.ASSERT,
+            fact=fact,
+            evidence=evidence,
+            subject_is_speaker=subject_is_speaker,
+            occurred_at=event.occurred_at,
+        )
+
+    @staticmethod
+    def _evidence_relation(
+        *,
+        authority: MemoryAuthority,
+        source_type: MemorySourceType,
+    ) -> MemoryEvidenceRelation:
+        if source_type is MemorySourceType.REBUILD:
+            return MemoryEvidenceRelation.REBUILD
+        if source_type is MemorySourceType.EXPLICIT:
+            return MemoryEvidenceRelation.EXPLICIT_COMMAND
+        if authority is MemoryAuthority.THIRD_PARTY:
+            return MemoryEvidenceRelation.THIRD_PARTY_STATEMENT
+        if authority is MemoryAuthority.GROUP_REPORT:
+            return MemoryEvidenceRelation.GROUP_STATEMENT
+        return MemoryEvidenceRelation.SELF_STATEMENT

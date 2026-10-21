@@ -7,9 +7,8 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy.exc import OperationalError
 
-from qq_ai_bot.emoji.worker import EmojiWorker
-from qq_ai_bot.plugin_host.background_turns import PluginBackgroundTurnWorker
-from qq_ai_bot.plugin_host.notification_delivery import PluginNotificationOutboxWorker
+from yuki.plugin_host.background_turns import PluginBackgroundTurnWorker
+from yuki.plugin_host.notification_delivery import PluginNotificationOutboxWorker
 
 
 @pytest.mark.asyncio
@@ -20,7 +19,9 @@ async def test_worker_recovers_claim_and_admission_failures() -> None:
 
 async def _check_worker_recovers_claim_and_admission_failures(fail_claim):
     job = SimpleNamespace(id=7, attempts=1)
-    repository = SimpleNamespace(claim_turn=AsyncMock(), fail_turn=AsyncMock())
+    repository = SimpleNamespace(
+        claim_turn=AsyncMock(), fail_turn=AsyncMock(), reconcile_terminal_turns=AsyncMock()
+    )
     worker = PluginBackgroundTurnWorker(
         repository=repository,
         ledger=None,
@@ -57,7 +58,7 @@ async def _check_worker_recovers_claim_and_admission_failures(fail_claim):
 
 @pytest.mark.asyncio
 async def test_durable_workers_resume_after_database_lock() -> None:
-    for worker_type in [PluginNotificationOutboxWorker, EmojiWorker]:
+    for worker_type in [PluginNotificationOutboxWorker]:
         await _check_durable_workers_resume_after_database_lock(worker_type)
 
 

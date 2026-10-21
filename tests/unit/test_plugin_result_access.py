@@ -12,19 +12,20 @@ from tests.support.background_authority import approve_background_plugin
 from tests.support.fixed_contract_fixture import bind_main_contract
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult, ToolResultBudgeter
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel, ToolArtifactModel
-from qq_ai_bot.runtime.effect_outcomes import ResultCapture, current_result_capture
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.tool_results.access import ArtifactAccess
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.capabilities.results import ToolExecutionResult, ToolResultBudgeter
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel, ToolArtifactModel
+from yuki.runtime.effect_outcomes import ResultCapture, current_result_capture
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.trigger import ExternalEventTurnTrigger
+from yuki.services.agent_tools import ToolRuntime
+from yuki.social.db_models import SocialOperationModel
+from yuki.tool_results.access import ArtifactAccess
+from yuki.tool_results.artifacts import ToolArtifactRepository
+from yuki_plugin_sdk.models import NotificationTarget, PublishNotificationRequest
 
 
 @pytest.mark.parametrize(
@@ -36,25 +37,36 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
     env = await social_env(database, tmp_path)
     # Background sends now recheck the current installation and canonical
     # target grant at the actual Social claim, including this direct fixture.
-    await approve_background_plugin(
+    notifications = await approve_background_plugin(
         database,
         plugin_id="test.result-access",
         bot_user_id="80001",
         group_id="20001",
         creator_user_id="10001",
     )
-    scope = ConversationScope.group(env.bot.self_id, "20001")
-    external = await env.service.writer.append_external(
-        scope=scope,
-        platform_message_id="plugin-result-source",
-        source_plugin_id="test.result-access",
-        external_source="fixture",
-        external_event_key="one-original-event",
-        external_event_type="fixture.created",
-        external_payload={"id": "one-original-event"},
-        external_target_id="20001",
-        content="A plugin asks the main agent to acknowledge this update.",
-        occurred_at=datetime.now(UTC),
+    scope = ConversationScope.group(
+        env.bot.self_id,
+        "20001",
+        presence_id=env.presence,
+        conversation_id=env.context.conversation_id,
+    )
+    publication = await notifications.publish(
+        plugin_id="test.result-access",
+        request=PublishNotificationRequest(
+            target=NotificationTarget(
+                target_type="group",
+                target_id=env.space,
+                conversation_id=env.context.conversation_id,
+            ),
+            external_source="fixture",
+            event_key="one-original-event",
+            event_type="fixture.created",
+            payload={"id": "one-original-event"},
+            summary="A plugin asks the main agent to acknowledge this update.",
+            occurred_at=datetime.now(UTC),
+            ask_agent=True,
+            agent_intent="Acknowledge once with the send tool.",
+        ),
     )
     responses = iter(
         (
@@ -87,9 +99,9 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
     chat._tools.social_service = env.service
     store = ToolArtifactRepository(database, tmp_path / "tool-artifacts", retention_seconds=60)
     chat._tool_artifacts = store
-    event = await harness.ledger.get_event(external.event.id)
+    event = await harness.ledger.get_event(publication.source_event_id)
     state = await harness.conversation_scopes.get(scope)
-    config = await chat._runtime_config.snapshot(group_id="20001")
+    config = await chat._runtime_config.snapshot(group_id=env.space)
     actor_checks = []
     original = ToolRuntime.require_actor
 
@@ -101,10 +113,10 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
         return original(runtime)
 
     monkeypatch.setattr(ToolRuntime, "require_actor", require_actor)
-    async with chat._turn_coordinator.background_turn(scope.key) as token:
+    async with chat._turn_coordinator.background_turn(state.runtime_scope_key) as token:
         snapshot = ConversationTurnSnapshot(
             state.id,
-            scope.key,
+            state.runtime_scope_key,
             state.generation,
             event.id,
             token.version,
@@ -116,7 +128,7 @@ async def test_plugin_wakeup_send_receipt_only_requires_actor_for_actual_archive
                 plugin_id="test.result-access",
                 source_event_id=event.id,
                 target_type="group",
-                target_id="20001",
+                target_id=env.space,
                 agent_intent="Acknowledge once with the send tool.",
             ),
             identity=scope,
@@ -232,10 +244,10 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
 ):
     from tests.support.automation_unified_delivery_helpers import setup_run
 
-    from qq_ai_bot.automation.models import RunStatus
-    from qq_ai_bot.memory.enums import MemoryKind, MemoryScopeType, MemorySourceType
-    from qq_ai_bot.memory.models import MemoryFactCreate
-    from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+    from yuki.automation.models import RunStatus
+    from yuki.memory.enums import MemoryKind, MemoryScopeType, MemorySourceType
+    from yuki.memory.models import MemoryFactCreate
+    from yuki.tool_results.artifacts import ToolArtifactRepository
 
     case = await setup_run(
         database, tmp_path, delivery="none", mode="silent", work_enabled=work_enabled
@@ -264,7 +276,7 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
             tool_calls=(
                 ToolCall(
                     "original-fact",
-                    ToolFunction("get_memory_fact", json.dumps({"fact_id": fact.id})),
+                    ToolFunction("read_memory", json.dumps({"view": "fact", "fact_id": fact.id})),
                 ),
             ),
         )
@@ -285,17 +297,20 @@ async def test_scheduled_main_reads_complete_original_memory_fact_on_demand(
 
 
 @pytest.mark.parametrize("promoted", [False, True])
-async def test_scheduled_main_uses_current_permission_for_onebot_operation(
+async def test_scheduled_main_does_not_redeclare_retired_raw_tool_for_admin(
     database, tmp_path, promoted
 ):
     from tests.support.automation_unified_delivery_helpers import setup_run
 
-    from qq_ai_bot.automation.models import RunStatus
+    from yuki.automation.models import RunStatus
 
-    case = await setup_run(database, tmp_path, delivery="none", mode="silent", superusers_csv="")
+    case = await setup_run(database, tmp_path, delivery="none", mode="silent", privileged=False)
     if promoted:
-        case.settings.superusers_csv = "10001"
-        del case.settings.__dict__["superusers"]
+        from yuki.identity.db_models import CanonicalPersonModel
+
+        async with database.immediate_session() as writer:
+            person = await writer.get(CanonicalPersonModel, case.env.person)
+            person.is_superuser = True
     args = {"action": "get_status", "params": {}}
     case.provider._responder = lambda _: (
         ChatResponse(
@@ -313,6 +328,10 @@ async def test_scheduled_main_uses_current_permission_for_onebot_operation(
     assert result.status is RunStatus.SUCCEEDED
     reply = next(m for m in case.provider.requests[1].messages if m.role == "tool")
     rendered = json.loads(reply.content)
-    assert rendered["ok"] == promoted, rendered
-    assert sum(action == "get_status" for action, _ in case.env.bot.calls) == int(promoted)
+    assert not rendered["ok"] and rendered["error"] == "tool_not_declared", rendered
+    assert all(
+        "call_onebot_api" not in [tool.name for tool in request.tools]
+        for request in case.provider.requests
+    )
+    assert sum(action == "get_status" for action, _ in case.env.bot.calls) == 0
     assert await case.dispatch() == result and len(case.provider.requests) == 2

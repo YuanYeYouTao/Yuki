@@ -112,12 +112,15 @@ class CanonicalIdentityProjection(StrictModel):
 class CurrentMessage(CanonicalIdentityProjection):
     """Sanitized current-event projection, never a raw NoneBot event."""
 
+    platform: str = ""
+    author_kind: str | None = None
+    author_account_id: str | None = None
     message_id: str = Field(min_length=1, max_length=128)
     sender_user_id: str = Field(min_length=1, max_length=64)
     scope_type: str = Field(pattern=r"^(private|group)$")
     group_id: str | None = Field(default=None, max_length=64)
-    text: str = Field(default="", max_length=12_000)
-    mentioned_user_ids: tuple[str, ...] = Field(default=(), max_length=20)
+    text: str = ""
+    mentions: tuple[dict[str, JsonValue], ...] = ()
     received_at: datetime
 
 
@@ -130,29 +133,6 @@ class AdmissionSignalContext(CanonicalIdentityProjection):
     text_is_untrusted: bool = True
 
 
-class EmojiSelectionCandidate(StrictModel):
-    emoji_id: str = Field(min_length=8, max_length=64)
-    description: str = Field(default="", max_length=500)
-    emotion_tags: tuple[str, ...] = Field(default=(), max_length=30)
-    usage_scenarios: tuple[str, ...] = Field(default=(), max_length=30)
-    base_score: float
-
-
-class EmojiSelectionSignalContext(StrictModel):
-    goal: str = Field(default="", max_length=300)
-    emotion: str = Field(default="", max_length=100)
-    group_id: str | None = Field(default=None, max_length=64)
-    candidates: tuple[EmojiSelectionCandidate, ...] = Field(min_length=1, max_length=100)
-    text_is_untrusted: bool = True
-
-
-class EmojiSelectionSignal(StrictModel):
-    candidate_id: str = Field(min_length=8, max_length=64)
-    score_delta: float = Field(ge=-10, le=10)
-    reason: str = Field(min_length=1, max_length=300)
-    confidence: float = Field(ge=0, le=1)
-
-
 class PluginResourceLimits(StrictModel):
     background_tasks: int = Field(default=0, ge=0, le=64)
     http_concurrency: int = Field(default=1, ge=1, le=64)
@@ -161,7 +141,9 @@ class PluginResourceLimits(StrictModel):
 
 class NotificationTarget(StrictModel):
     target_type: Literal["group", "private"]
+    # Internal Person/Space identity. Transport account and chat IDs stay in adapters.
     target_id: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = None
 
 
 class PublishNotificationRequest(StrictModel):
@@ -194,6 +176,7 @@ class BackgroundTargetGrantView(StrictModel):
     bot_user_id: str = Field(min_length=1, max_length=64)
     enabled: bool
     created_by_user_id: str = Field(min_length=1, max_length=64)
+    conversation_id: str | None = None
 
 
 class MediaArtifactHandle(StrictModel):

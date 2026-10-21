@@ -1,0 +1,359 @@
+"""Live Memory V2 worker composed from the shared extraction and claim pipelines."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from datetime import UTC, datetime
+
+from yuki.config import Settings
+from yuki.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
+from yuki.memory.enums import (
+    MemoryRebuildJobOutcome,
+    MemorySourceType,
+)
+from yuki.memory.event_extractor import MemoryEventExtractor
+from yuki.memory.extraction import MemoryClaim
+from yuki.memory.job_claims import MemoryJobClaimLost
+from yuki.memory.models import MemoryJob
+from yuki.memory.mutation.service import MemoryMutationService
+from yuki.memory.repository import MemoryJobRepository
+from yuki.memory.service import MemoryFactService
+from yuki.memory.subjects import SubjectResolutionContext
+from yuki.memory.validation import MemoryClaimValidator
+from yuki.model_runtime.executor import ModelExecutor
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.runtime.observability import (
+    RuntimeTurnCorrelation,
+    bind_runtime_turn,
+    new_runtime_turn_id,
+)
+from yuki.runtime.origin import TurnOrigin
+from yuki.services.concurrency import ConcurrencyManager
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _MemoryJobResult:
+    outcome: MemoryRebuildJobOutcome
+    extracted: int = 0
+    validated: int = 0
+    applied: int = 0
+    rejection_reasons: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def result_category(self) -> str | None:
+        if self.outcome is not MemoryRebuildJobOutcome.ALL_REJECTED:
+            return None
+        if not self.rejection_reasons:
+            return "all_rejected"
+        return f"all_rejected:{self.rejection_reasons[0][0]}"
+
+
+class MemoryWorker:
+    """Extract one conversation micro-batch while committing every event independently."""
+
+    def __init__(
+        self,
+        *,
+        settings: Settings,
+        jobs: MemoryJobRepository,
+        facts: MemoryFactService,
+        ledger: EventLedgerRepository,
+        people: PeopleRepository | None = None,
+        model_executor: ModelExecutor,
+        concurrency: ConcurrencyManager,
+        validator: MemoryClaimValidator | None = None,
+        extractor: MemoryEventExtractor | None = None,
+        processor: MemoryClaimProcessor | None = None,
+        mutations: MemoryMutationService | None = None,
+    ) -> None:
+        self._settings = settings
+        self._jobs = jobs
+        self._facts = facts
+        self._ledger = ledger
+        models = model_executor
+
+        self._concurrency = concurrency
+        self.extractor = extractor or MemoryEventExtractor(
+            models,
+            concurrency,
+            people=people,
+            bot_display_name=settings.bot_display_name,
+            timezone=settings.default_timezone,
+        )
+        self.processor = processor or MemoryClaimProcessor(
+            settings=settings,
+            facts=facts,
+            validator=validator,
+        )
+        self.mutations = mutations or MemoryMutationService(
+            settings=settings,
+            facts=facts,
+            processor=self.processor,
+            ledger=ledger,
+        )
+        self._wake = asyncio.Event()
+        self._stop = asyncio.Event()
+        self._task: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.create_task(self._run(), name="memory-v2-worker")
+
+    async def close(self) -> None:
+        self._stop.set()
+        self._wake.set()
+        if self._task is not None:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+
+    async def enqueue(
+        self,
+        event_id: int,
+        conversation_key: str,
+        *,
+        content_characters: int = 0,
+    ) -> bool:
+        del content_characters
+        created, _batch_key = await self._jobs.enqueue_resolved(event_id, conversation_key)
+        if created:
+            # A wake is only a DB readiness check, not a model call. No process-local
+            # counters can survive an age-triggered batch and spuriously keep waking.
+            self._wake.set()
+        return created
+
+    async def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._wake.wait(), timeout=self._settings.memory_batch_seconds
+                )
+            except TimeoutError:
+                pass
+            self._wake.clear()
+            if not self._stop.is_set():
+                try:
+                    while await self.process_once():
+                        if self._stop.is_set():
+                            break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error(
+                        "memory_v2_worker_iteration_failed exception_category=%s",
+                        type(exc).__name__,
+                    )
+
+    async def process_once(self) -> int:
+        jobs = await self._jobs.claim_ready_batch(
+            limit=self._settings.memory_batch_max_events,
+            trigger_count=self._settings.memory_batch_trigger_count,
+            max_characters=self._settings.memory_batch_max_characters,
+            max_wait_seconds=self._settings.memory_batch_max_wait_seconds,
+        )
+        if not jobs:
+            return 0
+        correlation = RuntimeTurnCorrelation(new_runtime_turn_id(), TurnOrigin.SYSTEM_TASK)
+        with bind_runtime_turn(correlation):
+            return await self._process_jobs(jobs, correlation.turn_id)
+
+    async def _process_jobs(self, jobs: tuple[MemoryJob, ...], batch_id: str) -> int:
+        characters = sum(len(job.event.evidence_content) for job in jobs)
+        oldest = min(job.created_at for job in jobs)
+        age = max(0, int((datetime.now(UTC) - oldest.replace(tzinfo=UTC)).total_seconds()))
+        trigger = jobs[0].batch_trigger or "manual"
+        logger.info(
+            "memory_extraction_batch_started batch_id=%s trigger=%s events=%d characters=%d "
+            "oldest_age_seconds=%d",
+            batch_id,
+            trigger,
+            len(jobs),
+            characters,
+            age,
+        )
+        try:
+            first_event = jobs[0].event
+            context = await self._ledger.list_scope_before(
+                first_event.scope,
+                before_event_id=first_event.id,
+                limit=8,
+                message_only=True,
+            )
+            extracted = await self.extractor.extract_batch(
+                tuple(job.event for job in jobs),
+                context=context,
+                max_output_tokens=self._settings.memory_batch_max_output_tokens,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.error(
+                "memory_v2_batch_failed first_job_id=%d job_count=%d exception_category=%s",
+                jobs[0].id,
+                len(jobs),
+                type(exc).__name__,
+            )
+            for job in jobs:
+                await self._fail_job(job, exc)
+            return 0
+
+        known_event_ids = {job.event_id for job in jobs}
+        subject_contexts = dict(extracted.subject_contexts)
+        claims_by_event: defaultdict[int, list[MemoryClaim]] = defaultdict(list)
+        unknown_claims = 0
+        for anchored in extracted.output.claims:
+            if anchored.source_event_id not in known_event_ids:
+                unknown_claims += 1
+                continue
+            claims_by_event[anchored.source_event_id].append(anchored.claim)
+        if unknown_claims:
+            logger.warning(
+                "memory_v2_batch_unknown_source_events first_job_id=%d "
+                "job_count=%d rejected_claims=%d",
+                jobs[0].id,
+                len(jobs),
+                unknown_claims,
+            )
+
+        completed = 0
+        totals: Counter[str] = Counter()
+        for job in jobs:
+            try:
+                result = await self._process_claims(
+                    job,
+                    tuple(claims_by_event.get(job.event_id, ())),
+                    subject_context=subject_contexts.get(job.event_id),
+                )
+            except asyncio.CancelledError:
+                raise
+            except MemoryJobClaimLost:
+                logger.info("memory_v2_job_claim_lost job_id=%d", job.id)
+                continue
+            except Exception as exc:
+                logger.error(
+                    "memory_v2_job_failed job_id=%d event_id=%d exception_category=%s",
+                    job.id,
+                    job.event_id,
+                    type(exc).__name__,
+                )
+                await self._fail_job(job, exc)
+                continue
+            if result.outcome is MemoryRebuildJobOutcome.ALL_REJECTED:
+                logger.info(
+                    "memory_v2_job_all_rejected job_id=%d event_id=%d extracted=%d "
+                    "validated=%d applied=%d rejection_reasons=%s",
+                    job.id,
+                    job.event_id,
+                    result.extracted,
+                    result.validated,
+                    result.applied,
+                    dict(result.rejection_reasons),
+                )
+            totals.update(
+                {
+                    "extracted": result.extracted,
+                    "validated": result.validated,
+                    "applied": result.applied,
+                    "rejected": sum(count for _, count in result.rejection_reasons),
+                    result.outcome.value: 1,
+                }
+            )
+            try:
+                await self._jobs.complete(
+                    job,
+                    outcome=result.outcome,
+                    result_category=result.result_category,
+                )
+            except asyncio.CancelledError:
+                raise
+            except MemoryJobClaimLost:
+                logger.info("memory_v2_job_claim_lost job_id=%d", job.id)
+                continue
+            except Exception as exc:
+                logger.error(
+                    "memory_v2_job_completion_failed job_id=%d event_id=%d exception_category=%s",
+                    job.id,
+                    job.event_id,
+                    type(exc).__name__,
+                )
+                continue
+            completed += 1
+        logger.info(
+            "memory_extraction_batch_completed batch_id=%s completed=%d counts=%s",
+            batch_id,
+            completed,
+            dict(totals),
+        )
+        return completed
+
+    async def _process_claims(
+        self,
+        job: MemoryJob,
+        claims: tuple[MemoryClaim, ...],
+        *,
+        subject_context: SubjectResolutionContext | None = None,
+    ) -> _MemoryJobResult:
+        extracted_count = len(claims)
+        if not extracted_count:
+            return _MemoryJobResult(MemoryRebuildJobOutcome.NO_CLAIMS)
+        applied = 0
+        validated_count = 0
+        rejection_reasons: Counter[str] = Counter()
+        for claim in claims:
+            claim = claim.model_copy(update={"source_type": MemorySourceType.AUTOMATIC})
+            validation = self.processor.validate_result(
+                claim,
+                job.event,
+                subject_context=subject_context,
+            )
+            validated = validation.claim
+            if validated is None:
+                rejection_reasons[validation.reason_code] += 1
+                continue
+            validated_count += 1
+            result = await self.mutations.mutate_validated_claim(
+                validated,
+                MemoryProcessingContext(
+                    event=job.event,
+                ),
+                conversation_key=job.conversation_key,
+                job=job,
+            )
+            if result.ok and (result.new_fact_id is not None or result.old_fact_id is not None):
+                applied += 1
+                continue
+            reason_code = result.reason_code or result.outcome.value
+            rejection_reasons[reason_code] += 1
+        outcome = (
+            MemoryRebuildJobOutcome.CLAIMS_APPLIED
+            if applied
+            else MemoryRebuildJobOutcome.ALL_REJECTED
+        )
+        return _MemoryJobResult(
+            outcome=outcome,
+            extracted=extracted_count,
+            validated=validated_count,
+            applied=applied,
+            rejection_reasons=tuple(
+                sorted(rejection_reasons.items(), key=lambda item: (-item[1], item[0]))
+            ),
+        )
+
+    async def _fail_job(self, job: MemoryJob, exc: Exception) -> None:
+        try:
+            await self._jobs.fail(job, type(exc).__name__)
+        except asyncio.CancelledError:
+            raise
+        except MemoryJobClaimLost:
+            logger.info("memory_v2_job_claim_lost job_id=%d", job.id)
+        except Exception as fail_exc:
+            logger.error(
+                "memory_v2_job_failure_record_failed job_id=%d exception_category=%s",
+                job.id,
+                type(fail_exc).__name__,
+            )

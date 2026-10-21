@@ -9,14 +9,14 @@ from sqlalchemy import select
 from tests.support.work_compaction_capacity_helpers import _runtime, _session
 from tests.support.work_session import WorkSession, invoke_tool
 
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, ToolCall, ToolFunction
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.model_runtime.models import ModelExecutionPriority
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.services.turn_execution import TurnExecution
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.domain.messages import ChatMessage, ChatRequest, ToolCall, ToolFunction
+from yuki.llm.fake import FakeLLMProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.model_runtime.models import ModelExecutionPriority
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_schema_v1 import effects
+from yuki.services.turn_execution import TurnExecution
+from yuki.services.turn_transcript import TurnTranscript
 
 
 @pytest.mark.parametrize("restart_paid", [False, True])

@@ -4,12 +4,12 @@ from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import event, select, text, update
-from tests.unit.test_memory_rebuild import _event, _service
+from tests.unit.test_memory_rebuild import _admin, _event, _service
 
-from qq_ai_bot.memory.enums import MemoryRebuildRunStatus
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.repository import MemoryRebuildRepository
-from qq_ai_bot.persistence.models import MemoryRebuildItemModel, MemoryRebuildRunModel
+from yuki.memory.enums import MemoryRebuildRunStatus
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.repository import MemoryRebuildRepository
+from yuki.persistence.models import MemoryRebuildItemModel, MemoryRebuildRunModel
 
 
 def _observe(database):
@@ -25,7 +25,9 @@ def _observe(database):
 async def _seed(database, *, status="extracting", item_status="extracting"):
     _settings, ledger, _facts, provider, service = await _service(database)
     source = await _event(ledger, message_id=f"restart-source-{status}")
-    run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
+    run = await service.plan(
+        MemoryRebuildSelection(all_events=True), actor_user_id=await _admin(database)
+    )
     item_id, _claimed, _state = await service.repository.ensure_item(
         run.public_id, event_id=source.id, source_event_hash="original-source-hash"
     )

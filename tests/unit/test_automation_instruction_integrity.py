@@ -9,12 +9,12 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from tests.support.automation_unified_delivery_helpers import setup_run
 
-from qq_ai_bot.automation.models import DailySchedule, OnceSchedule, RunStatus
-from qq_ai_bot.automation.task_spec import TaskSpec, canonical_task_hash
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.persistence.models import AutomationModel, AutomationVersionModel
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.time.schedules import _resolve_local, initial_run_at, next_run_at
+from yuki.automation.models import DailySchedule, OnceSchedule, RunStatus
+from yuki.automation.task_spec import TaskSpec, canonical_task_hash
+from yuki.llm.gemini import GeminiProvider
+from yuki.persistence.models import AutomationModel, AutomationVersionModel
+from yuki.runtime.work_schema_v1 import work
+from yuki.time.schedules import _resolve_local, initial_run_at, next_run_at
 
 
 @pytest.fixture
@@ -160,7 +160,7 @@ def test_original_iana_gap_and_first_fold(local, expected):
 def test_declared_long_schedule_and_repeated_weekday_use_original_calendar(declaration):
     from pydantic import TypeAdapter
 
-    from qq_ai_bot.automation.models import Schedule
+    from yuki.automation.models import Schedule
 
     now = datetime(2026, 10, 11, tzinfo=UTC)
     schedule = TypeAdapter(Schedule).validate_python(declaration)

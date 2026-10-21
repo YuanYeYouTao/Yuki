@@ -202,7 +202,7 @@ class FakeMemoryFacade:
 class FakeAgentFacade:
     def __init__(self, response: str = "fake agent response") -> None:
         self.response = response
-        self.calls: list[tuple[str, tuple[str, ...]]] = []
+        self.calls: list[str] = []
 
     async def result(self, work_id: str) -> PluginResult:
         return PluginResult(ok=False, error_code="work_not_found_or_archived")
@@ -215,11 +215,10 @@ class FakeAgentFacade:
         instruction: str,
         *,
         context_profile: str = "none",
-        allowed_capabilities: tuple[str, ...] = (),
         max_tool_calls: int | None = None,
         max_model_requests: int | None = None,
     ) -> PluginResult:
-        self.calls.append((instruction, allowed_capabilities))
+        self.calls.append(instruction)
         return PluginResult(
             data={
                 "text": self.response,
@@ -227,56 +226,6 @@ class FakeAgentFacade:
                 "max_model_requests": max_model_requests,
             }
         )
-
-
-class FakeEmojiFacade:
-    def __init__(self) -> None:
-        self.assets: dict[str, dict[str, JsonValue]] = {}
-        self.queued: list[dict[str, str]] = []
-
-    async def list(
-        self, status: str | None = None, limit: int = 30
-    ) -> tuple[Mapping[str, JsonValue], ...]:
-        rows = tuple(self.assets.values())
-        if status is not None:
-            rows = tuple(row for row in rows if row.get("status") == status)
-        return rows[:limit]
-
-    async def get(self, emoji_id: str) -> Mapping[str, JsonValue] | None:
-        return self.assets.get(emoji_id)
-
-    async def search(self, query: str, limit: int = 20) -> tuple[Mapping[str, JsonValue], ...]:
-        needle = query.casefold()
-        return tuple(
-            row
-            for row in self.assets.values()
-            if needle in str(row.get("description", "")).casefold()
-        )[:limit]
-
-    async def collect_current(self) -> PluginResult:
-        return PluginResult(data={"collected": 0})
-
-    async def select(
-        self,
-        *,
-        goal: str,
-        emotion: str = "",
-        mode: str = "optional",
-        placement: str = "after_text",
-    ) -> PluginResult:
-        first = next(iter(self.assets.values()), None)
-        return PluginResult(data={"selected": first})
-
-    async def adopt(
-        self, emoji_id: str, *, scope_type: str = "global", scope_id: str = ""
-    ) -> PluginResult:
-        return PluginResult(data={"emoji_id": emoji_id, "adopted": True})
-
-    async def reject(self, emoji_id: str) -> PluginResult:
-        return PluginResult(data={"emoji_id": emoji_id, "status": "rejected"})
-
-    async def ban(self, emoji_id: str) -> PluginResult:
-        return PluginResult(data={"emoji_id": emoji_id, "status": "banned"})
 
 
 class FakeWebFacade:
@@ -319,6 +268,8 @@ class FakeVisionFacade:
 
 
 class FakeMediaFacade:
+    """Configurable public metadata, including native sticker/preview facts; never raw locators."""
+
     def __init__(self) -> None:
         self.current: list[dict[str, JsonValue]] = []
 
@@ -348,7 +299,7 @@ class FakeMediaFacade:
 class FakeNotificationFacade:
     def __init__(self) -> None:
         self.published: list[PublishNotificationRequest] = []
-        self.grants: dict[tuple[str, str], BackgroundTargetGrantView] = {}
+        self.grants: dict[tuple[str, str, str | None], BackgroundTargetGrantView] = {}
 
     async def publish(self, request: PublishNotificationRequest) -> NotificationPublishReceipt:
         self.published.append(request)
@@ -373,12 +324,16 @@ class FakeNotificationFacade:
             bot_user_id=bot_user_id or "test-bot",
             enabled=True,
             created_by_user_id="test-admin",
+            conversation_id=target.conversation_id,
         )
-        self.grants[(target.target_type, target.target_id)] = view
+        self.grants[(target.target_type, target.target_id, target.conversation_id)] = view
         return view
 
     async def revoke_target(self, target: NotificationTarget) -> bool:
-        return self.grants.pop((target.target_type, target.target_id), None) is not None
+        return (
+            self.grants.pop((target.target_type, target.target_id, target.conversation_id), None)
+            is not None
+        )
 
     async def list_grants(self) -> tuple[BackgroundTargetGrantView, ...]:
         return tuple(self.grants.values())
@@ -639,6 +594,6 @@ class FakeAgentSessionFacade:
         session = self.sessions.get(session_id)
         if session is None:
             raise ValueError("unknown plugin AI session")
-        if session.status is SessionStatus.CLOSED:
-            raise ValueError("plugin AI session is closed")
+        if session.status is not SessionStatus.ACTIVE:
+            raise ValueError(f"plugin AI session is {session.status.value}")
         return session

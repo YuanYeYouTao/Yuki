@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from qq_ai_bot.domain.messages import (
+from yuki.domain.messages import (
     ChatResponse,
     CitationOrigin,
     ModelResponseStatus,
@@ -17,15 +17,15 @@ from qq_ai_bot.domain.messages import (
     NativeToolType,
     ResponseCitation,
 )
-from qq_ai_bot.llm.base import LLMTimeoutError
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.model_runtime.models import ModelProfile, ModelProtocol
-from qq_ai_bot.web.base import WebSearchError
-from qq_ai_bot.web.bridge_state import BridgeState
-from qq_ai_bot.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
-from qq_ai_bot.web.native_bridge import NativeSearchBridge
-from qq_ai_bot.web.page_extractor import DirectPageExtractor
+from yuki.llm.base import LLMTimeoutError
+from yuki.llm.fake import FakeLLMProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.model_runtime.models import ModelProfile, ModelProtocol
+from yuki.web.base import WebSearchError
+from yuki.web.bridge_state import BridgeState
+from yuki.web.models import WebSearchRequest, WebSearchResponse, WebSearchSource
+from yuki.web.native_bridge import NativeSearchBridge
+from yuki.web.page_extractor import DirectPageExtractor
 
 
 def _profile(**updates):
@@ -85,7 +85,7 @@ def _bridge(tmp_path, response=None, **options):
 async def test_selected_profile_and_user_constraints_reach_only_search_request(tmp_path):
     invocations = SimpleNamespace(record=AsyncMock())
     bridge, provider = _bridge(tmp_path, invocations=invocations)
-    request = WebSearchRequest("  actual   query ", max_results=19, extract_max_results=0)
+    request = WebSearchRequest("  actual   query ", max_results=19)
     try:
         result = await bridge.search(request)
         sent = provider.requests[0]
@@ -169,6 +169,7 @@ async def test_only_matching_native_receipts_and_annotations_supply_sources(tmp_
         assert [source.url for source in result.sources] == [
             "https://example.com/annotation",
             "https://example.com/native",
+            "https://example.com/opened",
         ]
         assert result.sources[1].relevant_content == original
         assert result.partial_failure
@@ -267,7 +268,7 @@ async def test_unfinished_native_search_keeps_confirmed_sources_without_caching(
         await bridge.close()
 
 
-async def test_extraction_keeps_native_url_and_does_not_search(tmp_path):
+async def test_search_returns_native_evidence_without_fetching_and_read_is_explicit(tmp_path):
     extractor = _extractor()
     extractor.extract.return_value = WebSearchSource(
         "page",
@@ -279,46 +280,14 @@ async def test_extraction_keeps_native_url_and_does_not_search(tmp_path):
     )
     bridge, _ = _bridge(tmp_path, extractor=extractor)
     try:
-        result = await bridge.search(WebSearchRequest("query", extract_max_results=1))
+        result = await bridge.search(WebSearchRequest("query"))
         assert result.sources[0].url == "https://example.com/original"
-        assert result.sources[0].relevant_content == "page body"
+        assert result.sources[0].relevant_content == ""
+        extractor.extract.assert_not_awaited()
         await bridge.extract("https://example.com/read#fragment", "read query")
         assert extractor.extract.call_args.args == ("https://example.com/read", "read query")
         extractor.search.assert_not_called()
     finally:
-        await bridge.close()
-
-
-async def test_cancelled_parallel_extraction_joins_transport_cleanup(tmp_path):
-    entered, cancelled, release, cleaned = (asyncio.Event() for _ in range(4))
-    extractor = _extractor()
-
-    async def extract(*_):
-        entered.set()
-        try:
-            await asyncio.Event().wait()
-        finally:
-            cancelled.set()
-            await release.wait()
-            cleaned.set()
-
-    extractor.extract.side_effect = extract
-    bridge, _ = _bridge(tmp_path, extractor=extractor)
-    task = asyncio.create_task(bridge.search(WebSearchRequest("query", extract_max_results=1)))
-    try:
-        await asyncio.wait_for(entered.wait(), 2)
-        task.cancel()
-        await asyncio.wait_for(cancelled.wait(), 2)
-        task.cancel()
-        await asyncio.sleep(0)
-        assert not task.done()
-        release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert cleaned.is_set()
-    finally:
-        release.set()
-        await asyncio.gather(task, return_exceptions=True)
         await bridge.close()
 
 

@@ -4,7 +4,6 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime
 from itertools import pairwise
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -12,23 +11,33 @@ from tests.conftest import build_harness, make_settings
 
 # P10: explicit Invocation fixture contract; existing assertions are retained.
 from tests.support.agent_backend import StubAgentBackend
+from tests.support.canonical_identity import ensure_person, ensure_presence
+from tests.support.commands_and_chat_helpers import inbound
+from tests.support.event_seed import seed_scoped_event
 from tests.support.runtime_wire import install_wire
 from tests.support.social_identity_cases import social_env
 from tests.support.work_runner_helpers import case, run, tool
 from tests.support.workspace_snapshots import snapshot_bytes
 
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, ChatTool, ToolCall, ToolFunction
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel, IdentityBindingModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_activation import activate_work
-from qq_ai_bot.runtime.work_control import WorkControl, work_control_tools
-from qq_ai_bot.runtime.work_queries import WorkQueries
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.social.tools import social_tool_definitions
+from yuki.automation.models import TurnOrigin
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatMessage, ChatResponse, ChatTool, ToolCall, ToolFunction
+from yuki.identity.canonical_repository import ensure_account, replace_assignment
+from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
+from yuki.identity.person_identity import merge_persons
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_activation import activate_work
+from yuki.runtime.work_control import WorkControl, work_control_tools
+from yuki.runtime.work_queries import WorkQueries
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_session import WorkSession
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.execution_sources import recover_source
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.social.db_models import SocialOperationModel
+from yuki.social.models import SocialError
+from yuki.social.tools import social_tool_definitions
 
 DELIVERY_TOOLS = tuple(
     sorted((*work_control_tools(), *social_tool_definitions()), key=lambda tool: tool.name)
@@ -94,7 +103,8 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
     old = await repo.accept(lease, source_key="original", source=source, goal="draw a banana")
     await repo.checkpoint(lease, old["id"], None, messages=16)
     await repo.release(lease)
-    await env.service.writer.append(
+    await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="new-request",
         sender_user_id="10001",
@@ -201,7 +211,8 @@ async def test_independent_request_sends_once_and_caption_finishes_without_extra
             assert before["tools"] == after["tools"]
         assert captured[2][sequence][: len(captured[1][sequence])] == captured[1][sequence]
         # An explicit later resend is a new intent, even for the same artifact bytes.
-        await env.service.writer.append(
+        await seed_scoped_event(
+            env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
             platform_message_id="resend-request",
             sender_user_id="10001",
@@ -266,7 +277,7 @@ async def test_accept_handoff_is_atomic_and_recovery_does_not_block_old_work_for
 ):
     from tests.support.work_session import WorkSession
 
-    from qq_ai_bot.services.turn_transcript import TurnTranscript
+    from yuki.services.turn_transcript import TurnTranscript
 
     env = await social_env(database, tmp_path)
     repo = WorkRepository(database)
@@ -309,22 +320,14 @@ async def test_same_person_new_account_keeps_work_scope_and_queues_new_internal_
     now = datetime.now(UTC)
     async with database.immediate_session() as session:
         original = await session.scalar(select(ChatEventModel))
-        session.add(
-            IdentityBindingModel(
-                id=str(uuid4()),
-                person_id=env.person,
-                platform="qq",
-                external_account_id="11099",
-                display_name="same person",
-                status="active",
-                revision=1,
-                first_seen_at=now,
-                last_seen_at=now,
-                created_at=now,
-                updated_at=now,
-            )
+        account = await ensure_account(
+            session, "11099", platform="qq", display_name="same person", now=now
         )
-    appended = await env.service.writer.append(
+        await replace_assignment(
+            session, account, None, await session.get(CanonicalPersonModel, env.person), now=now
+        )
+    appended = await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.group("80001", "20001"),
         platform_message_id="other-binding-new-request",
         sender_user_id="11099",
@@ -379,17 +382,105 @@ async def test_same_person_new_account_keeps_work_scope_and_queues_new_internal_
         assert saved["trigger_event_id"] == latest.id
 
 
-@pytest.mark.asyncio
-async def test_retired_work_report_is_ignored_by_original_social_reader(database, tmp_path):
+async def test_person_merge_new_work_uses_new_event_identity_without_rewriting_original(
+    database, tmp_path
+):
     env = await social_env(database, tmp_path)
+    async with database.sessions() as reader:
+        original = await reader.scalar(select(ChatEventModel))
+    source = {
+        "origin": "user_message",
+        "principal_kind": "person",
+        "actor_person_id": env.person,
+        "actor_user_id": "10001",
+        "trigger_event_id": original.id,
+        "bot_user_id": env.bot.self_id,
+        "presence_id": env.presence,
+        "generation": 1,
+        "conversation_id": env.context.conversation_id,
+    }
+    repository = WorkRepository(database)
+    lease = await repository.acquire(env.context.conversation_id, 1)
+    old = await repository.accept(
+        lease, source_key="original-work", source=source, goal="original goal"
+    )
+
+    async def validate():
+        assert await repository.valid(lease)
+
+    control = WorkControl(repository, lease, old["source_key"], source, validate, current=old)
+    session = WorkSession(control, "merged-person")
+    control.session = session
+    await session.restore(TurnTranscript((ChatMessage(role="user", content=old["goal"]),)))
+    async with database.immediate_session() as writer:
+        current = await ensure_person(writer, "10002", display_name="merged person")
+        await merge_persons(writer, env.person, current)
+        new_presence = await ensure_presence(writer, "80002")
+    appended = await seed_scoped_event(
+        env.service.writer,
+        scope=ConversationScope.group("80002", "20001"),
+        platform_message_id="new-independent-after-merge",
+        sender_user_id="10002",
+        direction="inbound",
+        content="please start an independent second goal",
+    )
+    event = appended.event
+    message = replace(
+        inbound(
+            event.content, message_id=event.platform_message_id, user_id="10002", group_id="20001"
+        ),
+        bot_user_id="80002",
+        source_event_id=event.id,
+        conversation_id=env.context.conversation_id,
+        person_id=current,
+        space_id=env.space,
+        presence_id=new_presence,
+    )
+    harness = build_harness(database, make_settings(database.url), FakeLLMProvider())
+    chat = harness.processor._chat
+    key = env.context.conversation_id
+    with chat.runtime.bindings.bind(key, control):
+        item = await chat.stage_work_input(key, message, event.id)
+        assert item is not None
+        assert await chat.ready_work_input(key, item, event.content)
+        assert await control.take_inputs("actual-merged-input")
+        assert event.id in control.session.event_ids
+        assert control.source == source
+        response = json.loads(
+            await control.execute(
+                "task_control", {"action": "accept", "goal": "independent second goal"}, "next"
+            )
+        )
+    assert response["ok"], response
+    queued = await repository.get(response["queued_work_id"])
+    saved = json.loads(queued["source_json"])
+    assert saved["actor_person_id"] == event.author_person_id == current
+    assert saved["actor_user_id"] == event.sender_user_id == "10002"
+    assert saved["presence_id"] == event.ingress_presence_id == new_presence
+    assert saved["bot_user_id"] == event.bot_user_id == "80002"
+    assert saved["trigger_event_id"] == event.id
+    recovered = await recover_source(database, key, saved, request_id=queued["id"])
+    assert recovered.event_id == event.id
+    assert (await repository.get(old["id"]))["source_json"] == old["source_json"]
+    async with database.sessions() as reader:
+        kept = await reader.get(ChatEventModel, original.id)
+        assert kept.author_person_id == env.person
+    await repository.release(lease)
+
+
+@pytest.mark.asyncio
+async def test_retired_work_report_is_rejected_without_new_social_effect(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    original_calls = list(env.bot.calls)
     original = {
         "text": "原调用已发送",
         "work_report": {"kind": "retired", "reply_to_event_ids": [999999]},
     }
-    result = await env.service.execute("send_message", original, env.context)
-    assert result["status"] == "succeeded"
-    assert await env.service.execute("send_message", original, env.context) == result
-    assert len([name for name, _ in env.bot.calls if name == "send_group_msg"]) == 1
+    with pytest.raises(SocialError, match="invalid_message_arguments"):
+        await env.service.execute("send_message", original, env.context)
+    assert env.bot.calls == original_calls
+    async with database.sessions() as reader:
+        assert not list(await reader.scalars(select(SocialOperationModel)))
     schema = next(t for t in social_tool_definitions() if t.name == "send_message").parameters
     assert "work_report" not in schema["properties"]
 
@@ -411,8 +502,8 @@ async def test_file_sent_caption_unknown_can_explain_and_complete_without_reuplo
     env.bot.call_api = caption_disconnected
 
     async def execute_original(invocation):
-        from qq_ai_bot.capabilities.results import normalize_legacy_result
-        from qq_ai_bot.runtime.effect_outcomes import current_result_capture
+        from yuki.capabilities.results import normalize_legacy_result
+        from yuki.runtime.effect_outcomes import current_result_capture
 
         test_case.observed.append(invocation.call.function.name)
         receipt = await env.service.execute(
@@ -544,7 +635,7 @@ async def test_direct_memory_and_send_follow_original_order_without_work_admissi
 async def test_mixed_code_resource_yield_stops_later_calls_in_original_batch(
     database, tmp_path, monkeypatch
 ):
-    from qq_ai_bot.services.agent_runner import CODE_COMPOSITION_YIELDED
+    from yuki.services.agent_runner import CODE_COMPOSITION_YIELDED
 
     calls = (
         tool("execute_code", {"code": "# resource pause"}, "original-code"),

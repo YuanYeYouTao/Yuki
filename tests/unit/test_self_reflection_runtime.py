@@ -6,12 +6,12 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from qq_ai_bot.domain.messages import (
+from yuki.domain.messages import (
     ChatMessage,
     ChatRequest,
 )
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.model_runtime.request_accounting import (
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.model_runtime.request_accounting import (
     after_provider_request,
     before_provider_request,
 )
@@ -65,7 +65,7 @@ async def test_each_physical_transport_attempt_is_accounted():
             after_provider_request.reset(u)
     assert reserve.await_count == finish.await_count == 2
     assert finish.await_args_list[-1].args == ("completed", 3)
-    from qq_ai_bot.memory.self_reflection.reporting import deliver_report
+    from yuki.memory.self_reflection.reporting import deliver_report
 
     # A report receipt remains authoritative even if its original event is gone.
     prior = SimpleNamespace(

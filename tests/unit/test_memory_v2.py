@@ -8,32 +8,33 @@ from datetime import UTC, datetime
 import pytest
 from sqlalchemy.exc import IntegrityError
 from tests.conftest import make_settings
+from tests.support.event_seed import seed_event
 from tests.support.model_executor import InjectedModelExecutor
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
-from qq_ai_bot.llm.base import LLMProvider
-from qq_ai_bot.memory.enums import (
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import ChatRequest, ChatResponse
+from yuki.llm.base import LLMProvider
+from yuki.memory.enums import (
     MemoryClaimOperation,
     MemoryEvidenceRelation,
     MemoryKind,
     MemoryScopeType,
     MemorySourceType,
 )
-from qq_ai_bot.memory.extraction import (
+from yuki.memory.extraction import (
     BatchMemoryExtractionOutput,
     ExtractedMemoryClaim,
     MemoryExtractionOutput,
 )
-from qq_ai_bot.memory.models import MemoryEvidenceCreate, MemoryFactCreate
-from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.validation import MemoryClaimValidator
-from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.memory.models import MemoryEvidenceCreate, MemoryFactCreate
+from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
+from yuki.memory.service import MemoryFactService
+from yuki.memory.validation import MemoryClaimValidator
+from yuki.memory.worker import MemoryWorker
+from yuki.persistence.database import Database
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.persistence.repository_records import EventRecord
+from yuki.services.concurrency import ConcurrencyManager
 
 
 def _event(
@@ -137,7 +138,8 @@ async def _append_event(
     direction: str = "inbound",
     sender_is_bot: bool = False,
 ) -> EventRecord:
-    row, _ = await ledger.append(
+    row, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=message_id,
         scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,

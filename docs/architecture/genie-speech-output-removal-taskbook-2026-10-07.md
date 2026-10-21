@@ -9,7 +9,7 @@
 彻底退出当前 Genie 驱动的本地语音输出域，清理合成、声线、偏好、工具参数、SDK、管理入口、Worker、转换器、配置、专属持久化和发布流程。移除前的 `SPEECH_PROVIDER` 只接受 `genie`；保留名为通用 TTS 的空 service/facade 仍会保留已经退出的功能。
 
 - 不新增工具，不将删除改成常驻 disabled 工具、换名接口、Provider 自动替换或未来 TTS 占位框架。
-- 保留 Qwen ASR、入站/引用语音、转写、历史检索、FTS/Rollup/Memory 来源与权限；`src/qq_ai_bot/asr/` 不依赖 Genie。
+- 保留 Qwen ASR、入站/引用语音、转写、历史检索、FTS/Rollup/Memory 来源与权限；`src/yuki/asr/` 不依赖 Genie。
 - 保留文本、图片、表情和文件发送，以及通用 artifact、内部事件、原 Work/Automation/控制操作与实际投递回执。
 - 历史语音是真实历史；不全库删 `record`、不重写旧聊天、不把未知发送认成失败、不自动重新生成或改发文字。
 - `AttachmentKind.AUDIO` 仍用于入站语音。当前未找到非 Genie 主动 QQ 录音发送消费者，出站合成专属 AUDIO 分支可以在旧计划清退后删除；音频作为普通文件上传继续可用。
@@ -33,13 +33,13 @@
 
 ### 2.2 跨域依赖与本轮补齐项
 
-路径默认相对仓库根；`src/qq_ai_bot/` 下模块省略该前缀。实施时逐项检查真实剩余消费者，不能用 `speech/voice/record` 关键词做批量删除。
+路径默认相对仓库根；`src/yuki/` 下模块省略该前缀。实施时逐项检查真实剩余消费者，不能用 `speech/voice/record` 关键词做批量删除。
 
 | 范围 | 关键入口/关系 | 细化后的完成边界 |
 | --- | --- | --- |
 | 装配与 ORM | `application/modules/__init__.py` → `speech.py`；`persistence/metadata.py:35` → speech models；container 与四个 bundle | 删除实现同时撤去 exports、导入副作用和依赖注入；无表、无目录仍可启动 |
 | 工具合同与执行 | `social/tools.py` → `domain/messages.py:311` → `capabilities/provider.py:372`；`social/service.py:224,710,965` | 主合同与 send schema 分别版本化；三个过滤边界均不能吞退役字段 |
-| 旧投递恢复 | [work_delivery.py](../../src/qq_ai_bot/runtime/work_delivery.py) → [delivery_intents.py](../../src/qq_ai_bot/runtime/delivery_intents.py) → 原效果回执 | 原序列、hash、key 和预算保持；先对账，再对未派发部分做完整校验 |
+| 旧投递恢复 | [work_delivery.py](../../src/yuki/runtime/work_delivery.py) → [delivery_intents.py](../../src/yuki/runtime/delivery_intents.py) → 原效果回执 | 原序列、hash、key 和预算保持；先对账，再对未派发部分做完整校验 |
 | 历史与 ASR | `context_assembler.py:1256`、`persistence/models.py:229`、`asr/` | 历史 record→voice 展示及 ASR 转写保留；删除新合成路径不删旧事实 |
 | 插件独立发送 | `plugin_host/facades.py` 的 `_SpeechFacade`、SDK events/permissions/registrar | Social 清理不能替代插件原执行清退；API、插件 manifest 和精确批准一起更新 |
 | 配置与迁移 | `config.py:646`、`admin/config_specs_speech.py`、`speech/db_models.py`、冻结迁移 | 保留共享姓名 validator；按冻结形状识别合法 FK/CHECK/index，漂移在首次 DML 前拒绝 |
@@ -49,7 +49,7 @@
 
 ### G01：删除运行时合成域及普通聊天依赖
 
-- [x] 删除整个 `src/qq_ai_bot/speech/`（17 个 Python 文件）和 `application/modules/speech.py`，不留下空 bundle/client/provider。
+- [x] 删除整个 `src/yuki/speech/`（17 个 Python 文件）和 `application/modules/speech.py`，不留下空 bundle/client/provider。
 - [x] 清理 `container.py`、`application/modules/{persistence,conversation,automation,admin}.py` 的 speech 仓库、偏好、服务和管理注入；Automation 中仅保存的死注入直接删除。
 - [x] 同步删除 `application/modules/__init__.py` 的 `SpeechBundle/SpeechModule` 导入与 exports，以及 `persistence/metadata.py` 的 speech ORM 导入副作用；无 speech 实现时 import 整个应用和迁移 metadata 均不报错。
 - [x] 删除 `container.py` 的 speech startup/close/cleanup/events/health 分支，清理 `health.py` 的 speech 字段与访问。
@@ -129,7 +129,7 @@
 - [x] 删除 `speech.facade.v1`、`speech.tts_provider.v1`，以及没有实际实现消费者的 reserved `TTSProviderRegistration`、`register_tts_provider` 和 extension registry 分支。
 - [x] Plugin API 由 3.1 推进至下一版本（本基线建议 3.2），同步保留插件/示例、SDK 验证、发行验证与文档；旧版拒绝在导入前完成，不用兼容 shim。重新批准精确权限，保持原启用意图，不扩权。
 - [x] 本基线需同步三个保留插件 `github-monitor`、`subscription-monitor`、`io.github.yuanyeyoutao.kun-game` 和 `examples/plugins/com.example.echo` 的 manifest/代码；重新核实际声明及 Host 所需版本，不只改 SDK 常量。新增 API 迁移说明交代退役能力、批准失效与宿主挂载插件升级。
-- [x] 删除 `/ai voice` 的 enum、解析、管理动作、状态/help 和测试合成；删除 `qq-ai-bot-cli speech` 全部 parser/dispatch 与 prompt audit 中的专属语音样例。
+- [x] 删除 `/ai voice` 的 enum、解析、管理动作、状态/help 和测试合成；删除 `yuki speech` 全部 parser/dispatch 与 prompt audit 中的专属语音样例。
 - [x] 删除 Control Plane 的 `list_speech_profiles`、`mutate_speech`、SPEECH 资源、DTO、游标、端口、catalog、query/command/management 分支及导出。
 - [x] 删除 `control.speech.read/mutate` 现行注册与 WebUI 通用资源页中的音色列表和启停操作，保留其他配置/工具/资源页面。
 - [x] 历史控制审计中确有读取用途的 speech operation 分类仅保留读旧事实，不注册成可执行操作。

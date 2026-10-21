@@ -3,12 +3,12 @@
 import pytest
 from tests.support.semantic_participation_host_helpers import _event_and_route
 
-from qq_ai_bot.conversation.initiative_sources import source_revision
-from qq_ai_bot.conversation.ordinary_admission import (
+from yuki.conversation.initiative_sources import source_revision
+from yuki.conversation.ordinary_admission import (
     OrdinaryAdmissionRepository,
     OrdinaryParticipationBinding,
 )
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.event_repository import EventLedgerRepository
 
 
 def _prepare(repository, event, reason):

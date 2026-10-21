@@ -10,16 +10,17 @@ from sqlalchemy import select, update
 from tests.support.automation_unified_delivery_helpers import setup_run
 from tests.support.runtime_execution import make_child_executor
 
-from qq_ai_bot.automation.models import RunStatus
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.db_models import IdentityBindingModel, SpaceBindingModel
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_scheduler import SubagentScheduler
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.runtime.work_wait import WorkWaitRepository
-from qq_ai_bot.services.execution_sources import recover_execution_source
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.automation.models import RunStatus
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.canonical_repository import ensure_account, replace_assignment
+from yuki.identity.db_models import CanonicalPersonModel, SpaceBindingModel
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_scheduler import SubagentScheduler
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import work
+from yuki.runtime.work_wait import WorkWaitRepository
+from yuki.services.execution_sources import recover_execution_source
+from yuki.tool_results.artifacts import ToolArtifactRepository
 
 UPDATED_GOAL = "Check original scheduled history"
 
@@ -69,7 +70,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
                     tool_calls=(
                         ToolCall(
                             "read-original-history",
-                            ToolFunction("get_recent_chat_history", "{}"),
+                            ToolFunction("query_chat_history", '{"view": "recent"}'),
                         ),
                     ),
                 )
@@ -136,10 +137,18 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     )
     child = next(row for row in rows if json.loads(row["source_json"]).get("worker"))
     source = json.loads(child["source_json"])
+    assert child["parent_work_id"] == parent["id"]
+    assert source == {
+        **json.loads(parent["source_json"]),
+        "work_id": child["id"],
+        "parent_work_id": parent["id"],
+        "worker": True,
+    }
     assert source["automation_run_id"] == case.run.id
     assert source["origin"] == "scheduled_automation" and not source.get("trigger_event_id")
     assert not source.get("initiative_run_id")
     if principal == "person":
+        assert source["actor_person_id"] == case.env.person
         await case.env.router.cas_takeover_person(case.env.person)
     async with database.sessions() as session, session.begin():
         session.add(
@@ -156,25 +165,15 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             )
         )
         if principal == "person":
-            session.add(
-                IdentityBindingModel(
-                    id=str(uuid4()),
-                    person_id=case.env.person,
-                    platform="qq",
-                    external_account_id="10099",
-                    status="active",
-                    first_seen_at=case.clock.now(),
-                    last_seen_at=case.clock.now(),
-                    created_at=case.clock.now(),
-                    updated_at=case.clock.now(),
-                )
-            )
+            person = await session.get(CanonicalPersonModel, case.env.person)
+            assert person is not None
+            account = await ensure_account(session, "10099", platform="qq", now=case.clock.now())
+            await replace_assignment(session, account, None, person, now=case.clock.now())
     await recover_execution_source(
         database,
         child["conversation_id"],
         source,
         request_id=child["id"],
-        settings=case.settings,
     )
     if principal == "person":
         recovered = await recover_execution_source(
@@ -182,10 +181,9 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             child["conversation_id"],
             {**source, "actor_user_id": "old-derived-account"},
             request_id=child["id"],
-            settings=case.settings,
         )
         assert recovered.actor_person_id == source["actor_person_id"]
-        assert recovered.actor_user_id == "10001"
+        assert recovered.actor_user_id == "old-derived-account"
     for changed in (
         {"generation": source["generation"] + 1},
         {"automation_run_id": case.run.id + 1},
@@ -198,7 +196,6 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
                 child["conversation_id"],
                 {**source, **changed},
                 request_id=child["id"],
-                settings=case.settings,
             )
     async with database.sessions() as session, session.begin():
         await session.execute(
@@ -209,14 +206,14 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
             )
             .values(status="disabled")
         )
-    with pytest.raises(ValueError, match="task_space_binding_unavailable"):
-        await recover_execution_source(
-            database,
-            child["conversation_id"],
-            source,
-            request_id=child["id"],
-            settings=case.settings,
-        )
+    recovered = await recover_execution_source(
+        database,
+        child["conversation_id"],
+        source,
+        request_id=child["id"],
+    )
+    assert recovered.generation == source["generation"]
+    assert recovered.presence_id == source["presence_id"]
     async with database.sessions() as session, session.begin():
         await session.execute(
             update(SpaceBindingModel)
@@ -270,7 +267,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     await WorkWaitRepository(repository).deliver_due()
     from tests.support.runtime_execution import make_work_resumer
 
-    from qq_ai_bot.runtime.work_scheduler import WorkScheduler
+    from yuki.runtime.work_scheduler import WorkScheduler
 
     resumer = make_work_resumer(
         repository,
@@ -303,7 +300,7 @@ async def test_scheduled_child_runs_without_a_fabricated_message_or_initiative(
     unchanged_parent = await repository.get(parent["id"])
     assert unchanged_parent["state"] == "completed"
     assert unchanged_parent["model_requests"] == original_parent["model_requests"]
-    from qq_ai_bot.persistence.models import AutomationModel, AutomationRunModel
+    from yuki.persistence.models import AutomationModel, AutomationRunModel
 
     async with database.sessions() as session:
         assert (await session.get(AutomationRunModel, case.run.id)).status == "succeeded"
@@ -317,9 +314,9 @@ async def test_self_child_runs_and_continues_after_parent_and_original_initiativ
     from tests.support.fixed_contract_fixture import bind_main_contract
     from tests.unit.test_self_initiative_runtime import self_source
 
-    from qq_ai_bot.conversation.autonomy_db_models import InitiativeRunModel
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.runtime.work_budget_schema import budgets
+    from yuki.conversation.autonomy_db_models import InitiativeRunModel
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.runtime.work_budget_schema import budgets
 
     source, admissions, _ = await self_source(database)
 
@@ -359,6 +356,7 @@ async def test_self_child_runs_and_continues_after_parent_and_original_initiativ
         source=source,
         goal="inspect the original SELF scene",
     )
+    database.subagents_enabled = True
     workers = SubagentRepository(repository)
     identity = await workers.start(
         lease, parent["id"], "self-child", {"goal": "check independently"}
@@ -430,11 +428,11 @@ async def test_expired_worker_does_not_repurchase_response_lost_with_process(dat
     from tests.support.fixed_contract_fixture import bind_main_contract
     from tests.unit.test_self_initiative_runtime import self_source
 
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.runtime.subagent_schema import children
-    from qq_ai_bot.runtime.work_budget_schema import budgets
-    from qq_ai_bot.runtime.work_recovery_schema import recovery
-    from qq_ai_bot.runtime.work_schema_v1 import journal
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.runtime.subagent_schema import children
+    from yuki.runtime.work_budget_schema import budgets
+    from yuki.runtime.work_recovery_schema import recovery
+    from yuki.runtime.work_schema_v1 import journal
 
     source, _admissions, _binding = await self_source(database)
     repository = WorkRepository(database)
@@ -442,6 +440,7 @@ async def test_expired_worker_does_not_repurchase_response_lost_with_process(dat
     root = await repository.accept(
         lease, source_key=f"initiative:{source['initiative_run_id']}", source=source, goal="inspect"
     )
+    database.subagents_enabled = True
     workers = SubagentRepository(repository)
     identity = await workers.start(
         lease, root["id"], "paid-child", {"goal": "inspect independently"}
@@ -456,11 +455,11 @@ async def test_expired_worker_does_not_repurchase_response_lost_with_process(dat
         from tests.conftest import build_harness, make_settings
         from tests.support.fixed_contract_fixture import bind_main_contract
         from tests.support.runtime_execution import make_child_executor
-        from qq_ai_bot.domain.messages import ChatResponse
-        from qq_ai_bot.llm.fake import FakeLLMProvider
-        from qq_ai_bot.persistence.database import Database
-        from qq_ai_bot.runtime.work_repository import WorkRepository
-        from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+        from yuki.domain.messages import ChatResponse
+        from yuki.llm.fake import FakeLLMProvider
+        from yuki.persistence.database import Database
+        from yuki.runtime.work_repository import WorkRepository
+        from yuki.tool_results.artifacts import ToolArtifactRepository
 
         async def run():
             database = Database(sys.argv[1])
@@ -543,7 +542,7 @@ async def test_expired_worker_does_not_repurchase_response_lost_with_process(dat
         )
 
 
-@pytest.mark.parametrize("tool_name", ["get_recent_chat_history", "workspace_delete"])
+@pytest.mark.parametrize("tool_name", ["query_chat_history", "update_short_state"])
 async def test_actual_worker_tool_continues_after_nested_result_arrives(
     database, tmp_path, tool_name
 ):
@@ -551,12 +550,11 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
     from tests.support.fixed_contract_fixture import bind_main_contract
     from tests.unit.test_self_initiative_runtime import self_source
 
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.workspace.service import WorkspaceService
-    from qq_ai_bot.workspace.store import WorkspaceStore
+    from yuki.llm.fake import FakeLLMProvider
 
     source, _admissions, _binding = await self_source(database)
     repository = WorkRepository(database)
+    database.subagents_enabled = True
     workers = SubagentRepository(repository)
     lease = await repository.acquire(source["conversation_id"], source["generation"])
     root = await repository.accept(
@@ -567,15 +565,10 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
     await repository.release(lease)
     nested_lease = await workers.acquire(nested)
     assert nested_lease is not None
-    store = WorkspaceStore(tmp_path / "workspace")
-    original_file = tmp_path / "original.txt"
-    original_file.write_text("Checked temporary artifact.", encoding="utf-8")
-    with original_file.open("rb") as stream:
-        artifact = store.snapshot(stream.fileno(), "original.txt")
     args = (
-        {"artifact_id": artifact["artifact_id"], "expected_revision": artifact["revision"]}
-        if tool_name == "workspace_delete"
-        else {}
+        {"slot": 1, "text": "Checked original nested result."}
+        if tool_name == "update_short_state"
+        else {"view": "recent"}
     )
     observed = []
 
@@ -620,7 +613,6 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
     )
     bind_main_contract(harness, tmp_path)
     chat = harness.processor._chat
-    chat._tools.workspace_service = WorkspaceService(store)
     chat._tool_artifacts = ToolArtifactRepository(
         database, tmp_path / "artifacts", retention_seconds=60, max_artifact_bytes=100000
     )
@@ -636,9 +628,9 @@ async def test_actual_worker_tool_continues_after_nested_result_arrives(
     assert len(provider.requests) == 2
     assert (await repository.get(identity))["state"] == "completed"
     assert (await repository.get(nested))["state"] == "completed"
-    if tool_name == "workspace_delete":
-        assert observed[0]["data"]["deleted"] is True
-        assert not store.list()["items"]
+    if tool_name == "update_short_state":
+        state = chat.runtime.runner.main_contract.state.snapshot()
+        assert state[0]["text"] == "Checked original nested result."
 
 
 async def test_derived_automation_rechecks_original_superuser_before_actual_effect(
@@ -648,33 +640,14 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
 
     from tests.support.runtime_execution import make_work_resumer
 
-    from qq_ai_bot.automation.authority import PermissionLevel
-    from qq_ai_bot.automation.control_context import resolve_execution_identity
-    from qq_ai_bot.runtime.work_budget_schema import budgets
-    from qq_ai_bot.runtime.work_scheduler import WorkScheduler
+    from yuki.automation.authority import PermissionLevel
+    from yuki.automation.control_context import resolve_execution_identity
+    from yuki.runtime.work_budget_schema import budgets
+    from yuki.runtime.work_scheduler import WorkScheduler
 
-    case = await setup_run(
-        database, tmp_path, delivery="none", mode="silent", superusers_csv="10001"
-    )
+    case = await setup_run(database, tmp_path, delivery="none", mode="silent", privileged=True)
     settings = case.settings
-    settings.superusers_csv = "9001"
-    del settings.__dict__["superusers"]
     assert await case.env.router.cas_takeover_person(case.env.person) == "taken"
-    privileged_binding = str(uuid4())
-    async with database.immediate_session() as writer:
-        writer.add(
-            IdentityBindingModel(
-                id=privileged_binding,
-                person_id=case.env.person,
-                platform="qq",
-                external_account_id="9001",
-                status="active",
-                first_seen_at=case.clock.now(),
-                last_seen_at=case.clock.now(),
-                created_at=case.clock.now(),
-                updated_at=case.clock.now(),
-            )
-        )
 
     def respond(_request):
         if len(case.provider.requests) == 1:
@@ -698,8 +671,8 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
             )
         elif len(case.provider.requests) == 3:
             name, args = (
-                "call_onebot_api",
-                {"action": "get_status", "params": {}},
+                "update_short_state",
+                {"slot": 1, "text": "this original authority was revoked in flight"},
             )
         else:
             name, args = "task_control", {"action": "complete", "result": "checked"}
@@ -719,13 +692,13 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     async def complete(request):
         response = await original_complete(request)
         if len(case.provider.requests) == 3:
-            # Revoke the privileged account while the authorized request is
-            # in flight. The permanent Person and selected 10001 route stay.
+            # Revoke the Person qualification while the request is in flight.
+            # Its accounts and original execution scene remain unchanged.
             async with database.immediate_session() as writer:
                 await writer.execute(
-                    update(IdentityBindingModel)
-                    .where(IdentityBindingModel.id == privileged_binding)
-                    .values(status="disabled")
+                    update(CanonicalPersonModel)
+                    .where(CanonicalPersonModel.id == case.env.person)
+                    .values(is_superuser=False)
                 )
         return response
 
@@ -734,7 +707,7 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     first = await case.dispatch()
     assert first.status is RunStatus.SUCCEEDED
     assert len(case.provider.requests) == 2
-    assert "call_onebot_api" in {tool.name for tool in case.provider.requests[0].tools}
+    assert "update_short_state" in {tool.name for tool in case.provider.requests[0].tools}
     repository = WorkRepository(database)
     async with database.sessions() as reader:
         rows = list((await reader.execute(select(work))).mappings())
@@ -745,10 +718,8 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     async def capture_main(**kwargs):
         resumed_runtime.append(kwargs["source_runtime"])
         async with database.sessions() as reader:
-            account, permission = await resolve_execution_identity(
-                reader, settings, owner_id=case.env.person
-            )
-            assert account == "10001" and permission is PermissionLevel.SUPERUSER
+            account, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
+            assert account == "" and permission is PermissionLevel.SUPERUSER
         return await case.chat.generate_origin_turn(**kwargs)
 
     resumer = make_work_resumer(
@@ -769,7 +740,11 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     scheduler._last_reclaim = time.monotonic()
     await scheduler.drain_once()
     assert resumed_runtime[0].actor_is_superuser
-    assert not any(action == "get_status" for action, _ in case.env.bot.calls)
+    assert not any(action.startswith("send_") for action, _ in case.env.bot.calls)
+    assert not any(
+        item["text"] == "this original authority was revoked in flight"
+        for item in case.chat.runtime.runner.main_contract.state.snapshot()
+    )
     final = await repository.get(child["id"])
     assert final["state"] == "failed" and final["model_requests"] == 1
     assert len(case.provider.requests) == 3
@@ -777,10 +752,8 @@ async def test_derived_automation_rechecks_original_superuser_before_actual_effe
     original_parent = await repository.get(parent["id"])
     assert original_parent["state"] == "completed" and original_parent["model_requests"] == 2
     async with database.sessions() as reader:
-        account, permission = await resolve_execution_identity(
-            reader, settings, owner_id=case.env.person
-        )
-        assert account == "10001" and permission is PermissionLevel.USER
+        account, permission = await resolve_execution_identity(reader, owner_id=case.env.person)
+        assert account == "" and permission is PermissionLevel.USER
         assert (
             await reader.scalar(select(budgets.c.models).where(budgets.c.root_id == parent["id"]))
             == 3

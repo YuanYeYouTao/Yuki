@@ -7,12 +7,12 @@ import pytest
 from sqlalchemy import select
 from tests.support.work_runner_helpers import case, run, tool
 
-from qq_ai_bot.capabilities.results import normalize_legacy_result
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse
-from qq_ai_bot.runtime.effect_outcomes import current_result_capture
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_schema_v1 import effects
+from yuki.capabilities.results import normalize_legacy_result
+from yuki.domain.messages import ChatMessage, ChatResponse
+from yuki.runtime.effect_outcomes import current_result_capture
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_schema_v1 import effects
 
 
 def pairs(control):
@@ -161,7 +161,7 @@ async def test_response_recovery_continues_only_original_undispatched_suffix(
         return key == control.session.call_key("first-tail")
 
     if boundary == "before_t1":
-        execute_batch = probe.runner._execute_tool_batch_impl
+        execute_batch = probe.runner._execute_tool_batch
 
         async def interrupted_batch(pending, *args, **kwargs):
             nonlocal armed
@@ -170,7 +170,7 @@ async def test_response_recovery_continues_only_original_undispatched_suffix(
                 raise PaidResponseCrash()
             return await execute_batch(pending, *args, **kwargs)
 
-        monkeypatch.setattr(probe.runner, "_execute_tool_batch_impl", interrupted_batch)
+        monkeypatch.setattr(probe.runner, "_execute_tool_batch", interrupted_batch)
     elif boundary == "after_t1":
         admit = probe.repository.admit_dispatch
 

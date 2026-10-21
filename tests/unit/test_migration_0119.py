@@ -11,15 +11,15 @@ from uuid import uuid4
 from alembic import command
 from alembic.config import Config
 
-from qq_ai_bot.admin.config_service import RuntimeConfigService
-from qq_ai_bot.config import Settings
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.conversation.scope_repository import ConversationScopeRepository
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.schema_guard import require_canonical_schema
-from qq_ai_bot.services.context_assembler import ContextAssembler
+from yuki.admin.config_service import RuntimeConfigService
+from yuki.config import Settings
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.conversation.scope_repository import ConversationScopeRepository
+from yuki.domain.conversations import ConversationScope
+from yuki.persistence.database import Database
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.schema_guard import require_canonical_schema
+from yuki.services.context_assembler import ContextAssembler
 
 
 def _seed_0118(path, monkeypatch):
@@ -30,10 +30,20 @@ def _seed_0118(path, monkeypatch):
     identities = []
     with sqlite3.connect(path) as connection:
         connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute(
+            "INSERT INTO presences VALUES(?,'qq','test',1,1,1,?,?)",
+            (str(uuid4()), now, now),
+        )
         for index in range(3):
             person, conversation, alias, epoch = (str(uuid4()) for _ in range(4))
             identities.append(conversation)
             connection.execute("INSERT INTO persons VALUES(?,1,1,?,?)", (person, now, now))
+            connection.execute(
+                "INSERT INTO identity_bindings(id,person_id,platform,external_account_id,"
+                "display_name,status,revision,first_seen_at,last_seen_at,created_at,updated_at) "
+                "VALUES(?,?,'qq',?,'','active',1,?,?,?,?)",
+                (str(uuid4()), person, str(index), now, now, now, now),
+            )
             connection.execute(
                 "INSERT INTO canonical_conversations("
                 "id,kind,person_id,primary_alias_id,generation,starts_after_event_id,last_event_id,"
@@ -190,7 +200,7 @@ def test_scope_snapshot_reads_selected_checkpoint_and_all_raw_suffix(tmp_path, m
             assert tuple(row.id for row in prefix.raw_events) == (6,)
             settings = Settings(_env_file=None)
             runtime = await RuntimeConfigService(settings=settings, database=database).snapshot()
-            runtime = replace(runtime, context=replace(runtime.context, window_tokens=1))
+            runtime = replace(runtime, context=replace(runtime.context, compact_trigger_tokens=1))
             assembled = await ContextAssembler(
                 settings=settings,
                 ledger=EventLedgerRepository(database),

@@ -3,8 +3,18 @@
 Self Reflection 使用 canonical owner、内部事件范围与持久 run ID；不使用平台消息 ID
 登记工作。schema 0061 增加 cycle、实际请求账本、源批次重试和恢复检查点。
 schema 0067 扩展可信 SELF 工具来源；完整迁移按当前 Alembic 链执行。
-真实 QQ 社交效果单独验收，不由请求成功或队列排空推定。
+真实平台社交效果单独验收，不由请求成功或队列排空推定。
 实际线上版本以当前容器镜像与数据库迁移记录为准。
+
+人物和空间分别使用原内部 Person/Space，输入携原 Conversation、事件或执行身份；
+App/TG 来源不依赖 QQ Binding。账号换绑、同人合并、改名和新入口不会重写既有 batch 的归属。
+原人物流的扫描水位、run、Checkpoint、输入输出、请求预算和 mutation 回执继续使用原 raw Person/Space；
+不因同人合并拼接批次或重编已付输出。其它按需 Memory 查询的可见范围和本人权限按 Person 归并集合读取，
+source 与 visibility 分别核验；原事件、工具回执及执行身份始终保持原件。
+
+自省只根据本批新事件、实际工具回执、共享核心人格及必要衔接上下文创建新的 SELF 资料与经历。
+不加载已有 SELF facts、旧 Episode 或 pending candidate，也不承担旧事实维护。
+去重、合并、重组和冲突整理沿既有 Dream；Main、命令与管理入口仍可明确纠正、失效或恢复指定事实。
 
 ## 结构化生成
 
@@ -13,16 +23,22 @@ schema 0067 扩展可信 SELF 工具来源；完整迁移按当前 Alembic 链�
 复用通用 Provider 格式转换和原有请求预算；见[模型供应商合同](model-providers.md)。
 
 返回值通过 Pydantic、引用、范围、所有权与 mutation 校验。源证据必须来自输入中提供的
-真实事件或工具回执；同一 proposal 选择的多个来源都会保存，不只使用第一条。原事件正文
-仍是聊天引用的校验依据，人物名片和 ID 展示不会改写原凭据。Provider 明确报告输出截断时返回
+真实事件或工具回执；同一 proposal 选择的多个来源都会保存，不只使用第一条。
+引用按该输入的实际事件渲染或证据正文核验，包含已持久化的语音转写；人物名片和 ID 展示不会改写原凭据。
+Provider 明确报告输出截断时返回
 `output_budget_exhausted`，不凭 token 数达到配置值推断失败，不自动加预算。
 类别名称、importance、confidence 与解释文案
 不再构成后台价值准入门槛，不要求 subject_basis、retention 或 source_style 分类。
 
 稳定且不含具体人物隐私的 SELF fact、preference、reflection 和 principle 可使用 global；
 私聊产生的 SELF fact 保持 current scope，Episode 永不进入 global。正文可记录真实姓名、
-名片和 ID；名字和分类本身不赋予系统权限。输入复用现有可见记忆与 existing_episodes，
-不再另取 previous_episode 专属视图。
+名片和 ID；名字和分类本身不赋予系统权限。
+
+新输出只有待创建的 `proposals` 与按 `passages` 组织的 `episodes`，后端直接复用 CREATE。
+模型不再选择 operation、旧 fact 引用或候选裁决；没有内容时两个列表均可为空，正常推进本批水位。
+`context_events` 仅帮助理解，不进入新事实的来源映射；每条新记录仍须引用本批实际展示的事件或工具回执。
+普通提取只生成 Person、PersonGroup、Group 新事实，已退出 SELF 候选生产与裁决链，
+不会把用户对 Yuki 的评价绕成长期待裁决队列，也不会由普通 Worker 直接写 SELF。
 
 ## 调度与恢复
 
@@ -46,6 +62,21 @@ schema 0067 扩展可信 SELF 工具来源；完整迁移按当前 Alembic 链�
 
 mutation 的正常拒绝、重复与 no_change 是已处理终态；实际数据库、事务、检查点或
 未预期代码错误保留失败记录。恢复不重复调用已完成模型，也不重复执行已提交操作。
+保存的 ReflectionCheckpoint 先按原引用与来源核验，再完成尚未提交的 mutation；
+每日额度只限制新的实际 HTTP 请求，额度耗尽不封住原检查点的纯数据库收尾。
+原输出未持久化时不能由请求计数还原，也不能将其他提取任务描述成已有相同的输出检查点。
+
+新 ReflectionCheckpoint 只保存输出、真实 event/tool 映射及完成计数，不重复保存输入 payload、
+衔接 context、旧事实或候选列表。历史原件不迁成新输出：原纯 CREATE 与不产生变更的 noop/defer 可沿原位置读取，
+已提交项仍先查 `(run_id, result_kind, index)` 回执；未提交的旧候选接受或事实维护不会被解释为 CREATE。
+原隔离状态、付费输出、结果索引、来源和累计预算保留，不自动解隔离、重调模型或清空检查点。
+保留历史候选表、原证据、状态和 `candidates_staged` 历史结果，不恢复新的生产/裁决入口。
+显式人物遗忘仍按实际被擦除来源清退其候选正文；任一候选来源命中即清退该候选及关联证据，
+不按今日平台账号或同群范围猜测其他候选归属。
+同一遗忘准备快照按原事件、工具、fact/candidate 内部 ID 与原证据选出有关检查点，
+只清其敏感 JSON；保原 run、请求计数、状态、预算和已提交结果。旧 payload 的 context 仅沿
+程序首 envelope 中的内部事件号查明来源，不从正文、昵称或平台数字推断身份；新格式不保存该副本。
+来源擦除或原检查点改变后，迟到的模型输出、提交收尾不能重新写回旧正文。
 
 到期的真实来源不要求先有自身回复或工具回执；模型可以返回空结果，原始事件账本不变。
 
@@ -62,6 +93,7 @@ tool 和真实 tool call ID 去重；没有聊天发言也保留实际成功或�
 cycle、每日请求预算、检查点和原 run 恢复机制；管理输出以 receipt 范围显示，不将它们
 统计成聊天事件。已领取未完成窗口保护其源回执，完成后仍被 Memory evidence 引用的
 回执不会过期删除。未讲话的失败也可以参与判断，但仅能支持真实失败或尝试的经历。
+完整持久 evidence 不按输入样本数缩减，当前运行链不再启动 Evidence compaction 删源任务。
 
 回执清理每次先只读发现最多 500 个过期且未引用的候选，空页不取得写锁。
 短 DELETE 再核验过期时间、全部 Memory evidence 引用及未完成 initiative reflection 窗口，
@@ -74,6 +106,8 @@ tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来�
 不借最近发言者或目标人的身份准备上下文。纯工具自省经同一 MutationService 验证、
 冲突处理和原子回执写入；只能影响有相应证据的 SELF global/当前群范围，不能写私人事实。
 历史 run 证据可保留，不能因此恢复已失效 generation 的执行权限。
+显式人物遗忘按整个人物族清退实际私人资料和被擦除来源；主动 run 仅以人物作为 target 时清空目标引用，
+不删除其他作者正文、独立群 SELF 经历、原工具证据或原反馈，也不把目标身份当作继续写私人资料的许可。
 
 主生成仍复用同一 MainAgentTurnService、Runner 和固定完整工具声明。资料与 SELF run
 位于动态输入中，恢复读取原 journal；不把恢复时新检索到的记忆登记成旧投影已经曝光。
@@ -103,6 +137,8 @@ tool_receipt_id 非空索引；原 receipt、run 和证据仍是唯一事实来�
 
 升级沿当前迁移链与 Bot 发布流程，保留预算、mutation 和发送回执；回滚不能用旧数据库
 覆盖新记忆。本地来源和回执验证不能代替自然社交效果或人工语义准确率。
+旧镜像的检查点 reader 必填旧 payload/fact_map/candidate_map，不能直接读取新格式的未完成输出；
+代码回退前需核对这段原已付尾部并保留可读当前原件的恢复能力，不能靠重调模型或覆盖数据库回退。
 
 2026-10-09 的生产临时排空处理 236 批、2905 events，33 项写入，没有新增失败，
 有效积压为 0。227 个旧 generation 的 failed/waiting 批次曾阻挡 current generation 20

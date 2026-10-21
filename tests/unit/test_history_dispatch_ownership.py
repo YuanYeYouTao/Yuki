@@ -1,18 +1,21 @@
 """Only an admitted fresh composition may publish its ordinary input snapshot."""
 
 import json
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender, build_harness, make_settings
+from tests.support.event_seed import seed_scoped_event
+from tests.support.projection import projection_record
 from tests.support.runtime_execution import make_work_resumer
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import (
+from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import (
     ChatMessage,
     ChatResponse,
     InboundMessage,
@@ -20,15 +23,15 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.services.main_agent_turns import MainAgentTurnService
-from qq_ai_bot.services.turn_coordinator import HistorySourceChangedError
-from qq_ai_bot.services.turn_transcript import DispatchOrigin, TranscriptRequest, validating_request
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.work_repository import WorkRepository
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.services.main_agent_turns import MainAgentTurnService
+from yuki.services.turn_coordinator import HistorySourceChangedError
+from yuki.services.turn_transcript import DispatchOrigin, TranscriptRequest, validating_request
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 
 
 async def _scene(database, tmp_path, provider, *, request_limit=24, code_enabled=False):
@@ -97,7 +100,9 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
                 "",
                 0,
                 tool_calls=(
-                    ToolCall("resumed-history", ToolFunction("get_recent_chat_history", "{}")),
+                    ToolCall(
+                        "resumed-history", ToolFunction("query_chat_history", '{"view": "recent"}')
+                    ),
                     ToolCall(
                         "resumed-write",
                         ToolFunction(
@@ -117,14 +122,16 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     assert result.reason == "chat" and len(provider.requests) == 2
     repository = WorkRepository(database)
     async with database.sessions() as session:
-        saved = (await session.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            session, (await session.scalars(select(PromptProjectionModel))).one()
+        )
         original = (saved.epoch_id, saved.revision, saved.payload_json)
         assert saved.invalidated_reason is None
         assert "original-snapshot" not in saved.payload_json
         assert "private-work-result" not in saved.payload_json
         assert "no_active_work" not in saved.payload_json
-    from qq_ai_bot.runtime.work_activation import current_work_control
-    from qq_ai_bot.runtime.work_schema_v1 import effects, work
+    from yuki.runtime.work_activation import current_work_control
+    from yuki.runtime.work_schema_v1 import effects, work
 
     async with database.sessions() as session:
         identity = await session.scalar(select(work.c.id))
@@ -139,12 +146,14 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     chat.runtime.main_turns = MainAgentTurnService(
         chat._prompt_composer, chat.runtime.runner, database
     )
-    resolve = env.router.resolve_presence
+    from yuki.services import work_resume
+
+    activate = work_resume.activate_work
     observed = False
 
-    async def observe_before_work_binds(presence_id):
+    @asynccontextmanager
+    async def observe_before_work_binds(*args, **kwargs):
         nonlocal observed
-        resolved = await resolve(presence_id)
         if not observed:
             observed = True
             assert current_work_control.get() is None
@@ -158,9 +167,10 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
                 MemorySender(),
             )
             assert result.reason == "group_observed"
-        return resolved
+        async with activate(*args, **kwargs) as control:
+            yield control
 
-    monkeypatch.setattr(env.router, "resolve_presence", observe_before_work_binds)
+    monkeypatch.setattr(work_resume, "activate_work", observe_before_work_binds)
     wakeup = chat.generate_main_agent_wakeup
 
     async def wake_original(**kwargs):
@@ -196,7 +206,9 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     assert "new-unsubmitted-state" in serialized
     assert not any(message.tool_calls for message in provider.requests[2].messages)
     async with database.sessions() as session:
-        saved = (await session.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            session, (await session.scalars(select(PromptProjectionModel))).one()
+        )
         assert saved.epoch_id == original[0]
         original_records = json.loads(original[2])
         assert json.loads(saved.payload_json)[: len(original_records)] == original_records
@@ -211,7 +223,7 @@ async def test_real_work_restore_keeps_private_tail_out_of_ordinary_projection(
     async with database.sessions() as reader:
         receipts = (await reader.scalars(select(effects.c.receipt_json))).all()
     assert any(
-        (outcome := json.loads(receipt).get("outcome", {})).get("tool") == "get_recent_chat_history"
+        (outcome := json.loads(receipt).get("outcome", {})).get("tool") == "query_chat_history"
         and outcome.get("ok")
         for receipt in receipts
     )
@@ -242,7 +254,9 @@ async def _pending_composition(database, tmp_path):
 async def test_recovery_origin_does_not_invalidate_a_new_composition(database, tmp_path):
     _, composition = await _pending_composition(database, tmp_path)
     async with database.sessions() as session:
-        saved = (await session.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            session, (await session.scalars(select(PromptProjectionModel))).one()
+        )
         original = (saved.epoch_id, saved.revision, saved.payload_json)
     sequence = TranscriptRequest(
         messages=(ChatMessage(role="user", content="private restored task"),),
@@ -253,7 +267,9 @@ async def test_recovery_origin_does_not_invalidate_a_new_composition(database, t
     with validating_request(sequence):
         await composition.commit_projection()
     async with database.sessions() as session:
-        saved = (await session.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            session, (await session.scalars(select(PromptProjectionModel))).one()
+        )
         assert (saved.epoch_id, saved.revision, saved.payload_json) == original
         assert saved.invalidated_reason is None
 
@@ -274,7 +290,9 @@ async def test_recovery_origin_still_checks_source_authority(database, tmp_path)
 async def test_projection_rejects_changed_actual_dispatch(database, tmp_path):
     _, composition = await _pending_composition(database, tmp_path)
     async with database.sessions() as reader:
-        before = (await reader.scalars(select(PromptProjectionModel))).one()
+        before = await projection_record(
+            reader, (await reader.scalars(select(PromptProjectionModel))).one()
+        )
         original = (before.epoch_id, before.revision, before.payload_json)
     sequence = TranscriptRequest(
         messages=(*composition.messages[:-1], ChatMessage(role="user", content="changed dispatch")),
@@ -284,7 +302,9 @@ async def test_projection_rejects_changed_actual_dispatch(database, tmp_path):
     with validating_request(sequence):
         await composition.commit_projection()
     async with database.sessions() as session:
-        saved = (await session.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            session, (await session.scalars(select(PromptProjectionModel))).one()
+        )
         assert saved.invalidated_reason is None
         assert (saved.epoch_id, saved.revision, saved.payload_json) == original
         assert "changed dispatch" not in saved.payload_json
@@ -311,7 +331,9 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
     result = await harness.processor.handle(message, MemorySender())
     assert result.reason == "chat" and len(provider.requests) == 2
     async with database.sessions() as reader:
-        saved = (await reader.scalars(select(PromptProjectionModel))).one()
+        saved = await projection_record(
+            reader, (await reader.scalars(select(PromptProjectionModel))).one()
+        )
         original_epoch, original_key = saved.epoch_id, saved.view_key
         assert "original-snapshot" not in saved.payload_json
         original_event = await reader.scalar(
@@ -324,7 +346,9 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
         async with database.sessions() as writer, writer.begin():
             await writer.delete(await writer.get(ChatEventModel, original_event))
         async with database.sessions() as reader:
-            retired = await reader.get(PromptProjectionModel, original_key)
+            retired = await projection_record(
+                reader, await reader.get(PromptProjectionModel, original_key)
+            )
             assert retired.invalidated_reason == "deleted_event"
             assert retired.payload_json == "[]"
     elif boundary == "profile":
@@ -355,7 +379,10 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
     assert "current-safe-snapshot" in current_input
     assert "original-snapshot" not in current_input
     async with database.sessions() as reader:
-        rows = (await reader.scalars(select(PromptProjectionModel))).all()
+        rows = [
+            await projection_record(reader, row)
+            for row in (await reader.scalars(select(PromptProjectionModel))).all()
+        ]
         active = [row for row in rows if row.invalidated_reason is None]
         current = next(row for row in active if next_message.text in row.payload_json)
         if boundary == "deleted":
@@ -376,12 +403,13 @@ async def test_same_actor_new_turn_honors_snapshot_boundaries(
 async def test_recent_history_uses_configured_window_above_old_twenty_cap(database, tmp_path):
     from tests.unit.test_tool_effect_audit import active_work
 
-    from qq_ai_bot.domain.conversations import ConversationScope
+    from yuki.domain.conversations import ConversationScope
 
     env, owner, runtime = await active_work(database, tmp_path)
     scope = ConversationScope.group("80001", "20001")
     for index in range(30):
-        await env.service.writer.append(
+        await seed_scoped_event(
+            env.service.writer,
             scope=scope,
             platform_message_id=f"history-{index}",
             sender_user_id="10001",
@@ -397,7 +425,9 @@ async def test_recent_history_uses_configured_window_above_old_twenty_cap(databa
         scope_type=ScopeType.GROUP,
         runtime_config=await chat._runtime_config.snapshot(),
     )
-    result = (await chat._tools.execute("get_recent_chat_history", "{}", runtime)).model_payload()
+    result = (
+        await chat._tools.execute("query_chat_history", '{"view": "recent"}', runtime)
+    ).model_payload()
     assert result["ok"], result
     rows = result["data"]["events"]
     assert len(rows) == 25

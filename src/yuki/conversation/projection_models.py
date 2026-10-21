@@ -1,0 +1,82 @@
+"""Bounded, replaceable model-input views; the event ledger remains authoritative."""
+
+from datetime import datetime
+
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    event,
+    inspect,
+    text,
+)
+from sqlalchemy.engine import Connection
+from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.schema import MetaData
+
+from yuki.conversation.projection_chunks_schema import PROJECTION_TRIGGERS_CURRENT
+from yuki.persistence.models import Base
+
+
+class PromptProjectionModel(Base):
+    __tablename__ = "prompt_projections"
+    __table_args__ = (
+        CheckConstraint("revision >= 1 AND byte_size >= 2", name="ck_prompt_projection_size"),
+        Index(
+            "ix_prompt_projections_active_updated",
+            "updated_at",
+            "view_key",
+            "byte_size",
+            sqlite_where=text("invalidated_reason IS NULL"),
+        ),
+    )
+
+    view_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("canonical_conversations.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    starts_after_event_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    epoch_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    context_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    rebuild_reason: Mapped[str] = mapped_column(String(32), nullable=False)
+    invalidated_reason: Mapped[str | None] = mapped_column(String(32))
+    tail_ordinal: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    item_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    selected_summary_text: Mapped[str | None] = mapped_column(Text)
+    selected_summary_coverage: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    selected_summary_kind: Mapped[str | None] = mapped_column(String(32))
+    selected_summary_renderer: Mapped[int | None] = mapped_column(Integer)
+
+
+class PromptProjectionChunkModel(Base):
+    __tablename__ = "prompt_projection_chunks"
+    __table_args__ = (CheckConstraint("ordinal >= 1", name="ck_prompt_projection_chunk_ordinal"),)
+
+    view_key: Mapped[str] = mapped_column(
+        ForeignKey("prompt_projections.view_key", ondelete="CASCADE"), primary_key=True
+    )
+    epoch_id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    ordinal: Mapped[int] = mapped_column(Integer, primary_key=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+@event.listens_for(Base.metadata, "after_create")
+def install_projection_triggers(
+    metadata: MetaData, connection: Connection, **kwargs: object
+) -> None:
+    if connection.dialect.name == "sqlite" and inspect(connection).has_table("prompt_projections"):
+        for statement in PROJECTION_TRIGGERS_CURRENT.values():
+            connection.exec_driver_sql(
+                statement.replace("CREATE TRIGGER", "CREATE TRIGGER IF NOT EXISTS", 1)
+            )

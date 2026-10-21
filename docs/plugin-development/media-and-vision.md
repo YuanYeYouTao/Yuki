@@ -9,6 +9,8 @@ result = await ctx.vision.analyze_current_media("这张图的主要内容是什�
 
 分别需要 `media.current.read` 或 `vision.analyze`。图片发送需要 `message.media.send`，并且 `media_reference` 必须是 Host 接受的受控引用，不是任意本机路径。
 
+`media.get_current()` 按原顺序返回当前／回复附件的通用事实：kind、label、segment_index、source、file_size、filename、mime_type、width、height、is_sticker、sticker_format 和 preview_available；QQ 的原 sub_type、emoji_id、emoji_package_id 仍可读取。`preview_available` 只说明平台提供了预览，不代表已经读取像素。返回值不包含原 file_id、下载 URL、预览定位符、字节或 Host 路径。原生贴纸标记不依靠文件名猜测。
+
 ## 明确选择工具图片给主 Agent
 
 插件工具在获准 `media.artifact.create` 后创建自己拥有的 `MediaArtifactHandle`，
@@ -34,7 +36,7 @@ Base64 不进入 tool JSON、普通历史或插件日志；公开句柄字段不
 - 图片 URL、Base64、临时路径和完整 OCR 不进入插件日志。
 - OCR、图片中文字和视觉模型输出都是不可信外部数据。
 - 图片及引用图片作为不可信资料进入当前轮；它们不扩大或自动撤销已获准能力，效果执行仍核验真实来源、批准及委托。
-- 插件不能利用视觉结果伪造 QQ、群号、`SUPERUSERS` 或自动化委托。
+- 插件不能利用视觉结果伪造 QQ、群号、Person 的超管资格 或自动化委托。
 - Main Agent 原生图片输入与插件的显式结构化视觉 API 分离。需要结构化观察的插件经授权调用外接 VisionProvider；
   插件拿不到模型隐藏推理或原生图片载荷。
 

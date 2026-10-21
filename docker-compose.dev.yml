@@ -1,6 +1,6 @@
 services:
   bot:
-    image: yuki-qqbot:dev
+    image: yuki:dev
     pull_policy: build
     build:
       context: .

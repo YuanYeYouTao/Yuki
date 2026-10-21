@@ -11,25 +11,26 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import OperationalError
 from tests.conftest import make_settings
+from tests.support.canonical_identity import ensure_presence
 from tests.support.correctness_wire import wire
+from tests.support.event_seed import seed_event
 from tests.support.model_executor import InjectedModelExecutor
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatResponse, ToolCall, ToolFunction
-from qq_ai_bot.identity.canonical_repository import ensure_presence
-from qq_ai_bot.identity.db_models import (
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     IdentityBindingModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor
-from qq_ai_bot.memory.dream.db_models import (
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.claim_processor import MemoryClaimProcessor
+from yuki.memory.dream.db_models import (
     MemoryDreamOperationModel,
     MemoryDreamOperationResultModel,
 )
-from qq_ai_bot.memory.dream.models import (
+from yuki.memory.dream.models import (
     DreamAction,
     DreamOperationStatus,
     DreamOperationType,
@@ -37,19 +38,19 @@ from qq_ai_bot.memory.dream.models import (
     DreamRecomposeOutput,
     DreamRunMode,
 )
-from qq_ai_bot.memory.dream.repository import (
+from yuki.memory.dream.repository import (
     DreamCandidate,
     DreamCandidateLoad,
     DreamRepository,
     fact_signature,
 )
-from qq_ai_bot.memory.dream.service import DreamService
-from qq_ai_bot.memory.dream.worker import DreamWorker
-from qq_ai_bot.memory.embedding.codec import Float32VectorCodec
-from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile, EmbeddingVector
-from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
-from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
-from qq_ai_bot.memory.enums import (
+from yuki.memory.dream.service import DreamService
+from yuki.memory.dream.worker import DreamWorker
+from yuki.memory.embedding.codec import Float32VectorCodec
+from yuki.memory.embedding.models import EmbeddingProviderProfile, EmbeddingVector
+from yuki.memory.embedding.repository import MemoryEmbeddingRepository
+from yuki.memory.embedding.text import EmbeddingDocumentBuilder
+from yuki.memory.enums import (
     MemoryAuthority,
     MemoryConflictState,
     MemoryEvidenceRelation,
@@ -60,22 +61,22 @@ from qq_ai_bot.memory.enums import (
     MemoryStatus,
     SelfMemoryVisibility,
 )
-from qq_ai_bot.memory.models import (
+from yuki.memory.models import (
     MemoryEvidenceCreate,
     MemoryFact,
     MemoryFactCreate,
 )
-from qq_ai_bot.memory.mutation.service import DreamRecomposePlan, MemoryMutationService
-from qq_ai_bot.memory.partition import (
+from yuki.memory.mutation.service import DreamRecomposePlan, MemoryMutationService
+from yuki.memory.partition import (
     MemoryPartitionResolutionError,
     resolve_active_space_id,
     resolve_fact_canonical_owners,
 )
-from qq_ai_bot.memory.repository import MemoryFactRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.model_runtime.structured import StructuredTaskRunner
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.service import MemoryFactService
+from yuki.model_runtime.structured import StructuredTaskRunner
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryEmbeddingModel,
     MemoryEvidenceModel,
@@ -83,8 +84,8 @@ from qq_ai_bot.persistence.models import (
     MemoryFactRelationModel,
     MemoryMutationReceiptModel,
 )
-from qq_ai_bot.persistence.repositories import EventLedgerRepository, PeopleRepository
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.persistence.repositories import EventLedgerRepository, PeopleRepository
+from yuki.services.concurrency import ConcurrencyManager
 
 
 def _services(
@@ -122,7 +123,8 @@ async def _fact_with_evidence(
     kind: MemoryKind = MemoryKind.FACT,
     scope_type: MemoryScopeType = MemoryScopeType.PERSON_GROUP,
 ) -> MemoryFact:
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id="8000",
         platform_message_id=message_id,
         scope_type=ScopeType.GROUP,
@@ -243,7 +245,8 @@ async def test_candidate_provenance_includes_hidden_bot_and_cluster_preserves_or
     )
     async with database.immediate_session() as session:
         await ensure_presence(session, "88002")
-    hidden, _ = await ledger.append(
+    hidden, _ = await seed_event(
+        ledger,
         bot_user_id="88002",
         platform_message_id="hidden-other-bot",
         scope_type=ScopeType.GROUP,
@@ -804,7 +807,8 @@ async def test_recompose_is_atomic_partial_one_to_many_and_reversible(
         update={"memory_dream_evidence_per_fact": 1}
     )
     for index in range(1, evidence_count):
-        event, _ = await ledger.append(
+        event, _ = await seed_event(
+            ledger,
             bot_user_id="8000",
             platform_message_id=f"dream-recompose-evidence-{index}",
             scope_type=ScopeType.GROUP,

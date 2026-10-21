@@ -29,7 +29,7 @@ def project_version(root: Path) -> str:
         return str(tomllib.load(handle)["project"]["version"])
 
 
-def locked_project_version(root: Path, package_name: str = "qq-ai-bot") -> str:
+def locked_project_version(root: Path, package_name: str = "yuki") -> str:
     with (root / "uv.lock").open("rb") as handle:
         lock = tomllib.load(handle)
     matches = [
@@ -53,7 +53,7 @@ def validate_release_identity(root: Path, tag: str) -> str:
         "tag": tag_version,
         "pyproject": project_version(root),
         "runtime": _match_value(
-            root / "src/qq_ai_bot/__init__.py", _APP_VERSION_PATTERN, "runtime version"
+            root / "src/yuki/__init__.py", _APP_VERSION_PATTERN, "runtime version"
         ),
         "uv.lock": locked_project_version(root),
         "install.sh": _match_value(

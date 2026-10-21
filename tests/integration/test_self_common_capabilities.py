@@ -7,19 +7,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from tests.support.event_seed import seed_scoped_event
 from tests.support.semantic_participation_host_helpers import _event_and_route, _host, _item
 from tests.support.social_identity_cases import social_env
 from tests.unit.test_plugin_native_media import environment
 from yuki_participation.models import CandidateKind, Proposal
 
-from qq_ai_bot.capabilities.invocation import ToolInvocationContext, current_invocation
-from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.social.service import SocialContext
+from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+from yuki.conversation.autonomy_repository import AutonomyRepository
+from yuki.domain.conversations import ScopeType
+from yuki.domain.tool_actor import ToolActor
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.runtime.origin import TurnOrigin
+from yuki.services.agent_tools import ToolRuntime
+from yuki.social.service import SocialContext
 from yuki_plugin_sdk.models import TurnOrigin as SdkTurnOrigin
 from yuki_plugin_sdk.permissions import PluginPermission
 
@@ -48,17 +49,13 @@ async def self_actor(database, env, *, proposal_id="local-self-opportunity"):
         presence_id=env.presence,
         principal_kind="self",
         initiative_run_id=accepted.run.run_id,
+        space_id=env.space,
     )
 
 
 def runtime(actor, env):
-    async def call_api(action, params):
-        return await env.bot.call_api(action, **params)
-
     return ToolRuntime(
         inbound=None,
-        gateway=SimpleNamespace(call_api=call_api),
-        allow_generic_onebot=False,
         actor_context=actor,
         origin=actor.origin,
         initiative_run_id=actor.initiative_run_id,
@@ -73,7 +70,7 @@ def runtime(actor, env):
 
 
 @pytest.mark.asyncio
-async def test_self_mentions_poke_recall_and_receipt_history_use_original_social_backend(
+async def test_self_mentions_recall_and_receipt_history_use_original_social_backend(
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
@@ -83,23 +80,18 @@ async def test_self_mentions_poke_recall_and_receipt_history_use_original_social
         "send-with-mention",
         actor.conversation_id,
         person_refs={"known_person": env.person},
-        account_refs={"known_person": "10001"},
         space_id=env.space,
         origin=actor.origin.value,
         initiative_run_id=actor.initiative_run_id,
         presence_id=env.presence,
         actor=actor,
     )
-    arguments = {"text": "hello", "mentions": [{"subject_ref": "known_person"}]}
+    arguments = {"text": f"@{{account:{env.account}}} hello"}
     sent = await env.service.execute("send_message", arguments, context)
     assert sent["status"] == "succeeded"
     assert await env.service.execute("send_message", arguments, context) == sent
     sends = [params for action, params in env.bot.calls if action == "send_group_msg"]
     assert len(sends) == 1 and sends[0]["message"][0]["type"] == "at"
-    await env.service.execute(
-        "poke_person", {"subject_ref": "known_person"}, replace(context, call_id="poke")
-    )
-    assert env.bot.calls[-1] == ("send_poke", {"user_id": 10001, "group_id": 20001})
     operation = sent["operation_id"]
     receipt = await env.service.receipts.get(operation)
     assert receipt.event_id is not None
@@ -152,6 +144,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
         ),
         services=PluginFacadeServices(
             ledger=SimpleNamespace(_database=database, _writer=env.service.writer),
+            social=env.service,
             automation=automation,
         ),
     )
@@ -164,7 +157,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
             assert invocation.inbound is None and invocation.actor is actor
             assert invocation.origin.value == SdkTurnOrigin.SELF_INITIATIVE.value
             assert invocation.actor_user_id == ""
-            assert not host._is_real_superuser(invocation)
+            assert not await host._is_real_superuser(invocation)
             music = await host.onebot.send_music_card(provider="netease", resource_id="123")
             assert music.ok
             await host.automation.create_task(
@@ -173,7 +166,7 @@ async def test_self_sdk_media_music_and_schedule_use_true_actor_without_inbound(
         assert automation.create_task.await_args.kwargs["actor"] is actor
         receipt = await env.service.receipts.get(music.data["operation_id"])
         assert receipt.event_id is not None and receipt.status.value == "succeeded"
-        from qq_ai_bot.social.db_models import SocialOperationModel
+        from yuki.social.db_models import SocialOperationModel
 
         async with database.sessions() as session:
             saved = await session.get(SocialOperationModel, receipt.operation_id)
@@ -228,8 +221,8 @@ async def test_self_sdk_main_reads_original_result_and_keeps_real_sources_distin
 ):
     from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.runtime.work_repository import WorkRepository
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.runtime.work_repository import WorkRepository
 
     provider = FakeLLMProvider()
     env, harness, chat, _, _ = await _scene(database, tmp_path, provider)
@@ -250,7 +243,7 @@ async def test_self_sdk_main_reads_original_result_and_keeps_real_sources_distin
     )
     actor = await self_actor(database, env)
     source = replace(runtime(actor, env), runtime_config=await chat._runtime_config.snapshot())
-    from qq_ai_bot.plugin_host import main_turn
+    from yuki.plugin_host import main_turn
 
     original_backend = main_turn.MainAgentBackend
     actors = []
@@ -294,10 +287,10 @@ async def test_self_sdk_main_isolates_existing_work_and_reports_actual_scope_lea
 ):
     from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-    from qq_ai_bot.domain.conversations import ConversationScope
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.runtime.work_activation import activate_work, current_work_control
-    from qq_ai_bot.runtime.work_repository import WorkConflict, WorkRepository
+    from yuki.domain.conversations import ConversationScope
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.runtime.work_activation import activate_work, current_work_control
+    from yuki.runtime.work_repository import WorkConflict, WorkRepository
 
     provider = FakeLLMProvider(
         responder=lambda _: _tool("task_control", {"action": "complete", "result": "done"}, "done")
@@ -314,7 +307,8 @@ async def test_self_sdk_main_isolates_existing_work_and_reports_actual_scope_lea
     )
     actor = await self_actor(database, env)
     source = replace(runtime(actor, env), runtime_config=await chat._runtime_config.snapshot())
-    private = await env.service.writer.append(
+    private = await seed_scoped_event(
+        env.service.writer,
         scope=ConversationScope.private(actor.bot_user_id, "10001"),
         platform_message_id="independent-real-source",
         sender_user_id="10001",
@@ -360,10 +354,10 @@ async def test_self_sdk_main_isolates_existing_work_and_reports_actual_scope_lea
 async def test_self_sdk_main_resume_keeps_original_actor_source_and_work(database, tmp_path):
     from tests.unit.test_history_dispatch_ownership import _scene, _tool
 
-    from qq_ai_bot.llm.fake import FakeLLMProvider
-    from qq_ai_bot.plugin_host.main_turn import resume_plugin_work
-    from qq_ai_bot.runtime.work_repository import WorkRepository
-    from qq_ai_bot.runtime.work_wait import WorkWaitRepository
+    from yuki.llm.fake import FakeLLMProvider
+    from yuki.plugin_host.main_turn import resume_plugin_work
+    from yuki.runtime.work_repository import WorkRepository
+    from yuki.runtime.work_wait import WorkWaitRepository
 
     provider = FakeLLMProvider(
         responder=lambda _: _tool(

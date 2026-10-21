@@ -1,18 +1,16 @@
 """Explicit execution dependencies for runtime behavior fixtures."""
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
-from qq_ai_bot.adapters.onebot.sender import OneBotRouteSender
-from qq_ai_bot.config import Settings
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.runtime.activation_bindings import ActiveWorkBindings
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.sandbox.task_repository import SandboxTaskRepository
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.prompt_composer import PromptComposer
-from qq_ai_bot.services.subagent_execution import SubagentExecution, SubagentExecutionDependencies
-from qq_ai_bot.services.work_resume import WorkResumeDependencies, WorkResumer
+from yuki.config import Settings
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.runtime.activation_bindings import ActiveWorkBindings
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.sandbox.task_repository import SandboxTaskRepository
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.services.prompt_composer import PromptComposer
+from yuki.services.subagent_execution import SubagentExecution, SubagentExecutionDependencies
+from yuki.services.work_resume import WorkResumeDependencies, WorkResumer
 
 
 def make_work_resumer(
@@ -39,7 +37,6 @@ def make_work_resumer(
             ledger=ledger,
             conversation_scopes=scopes,
             turn_coordinator=turns,
-            presence_router=router,
             runtime_config=config,
             sandbox_tasks=sandbox_tasks or SandboxTaskRepository(repository.database),
             active_bindings=bindings or ActiveWorkBindings(),
@@ -81,21 +78,8 @@ def make_child_executor(
             static_messages=chat._prompt_composer.static_messages
             if hasattr(chat, "_prompt_composer")
             else PromptComposer(Settings(_env_file=None)).static_messages,
-            presence_router=router
-            or SimpleNamespace(
-                resolve_presence=AsyncMock(
-                    return_value=SimpleNamespace(
-                        connection=SimpleNamespace(snapshot="fixture", bot=None)
-                    )
-                )
-            ),
             lookup_plugin_host=lookup_plugin_host or (lambda _: None),
-            gateway_factory=lambda bot, group, target: OneBotRouteSender(
-                bot, group=group, target_id=target
-            ),
-            backend_factory=lambda runtime, allowed: MainAgentBackend(
-                chat, runtime, allowed_tools=allowed
-            ),
+            backend_factory=lambda runtime, host: MainAgentBackend(chat, runtime, plugin_host=host),
             web_capabilities=chat.web_capabilities,
         ),
     )

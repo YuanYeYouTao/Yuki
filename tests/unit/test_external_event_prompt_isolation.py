@@ -10,29 +10,38 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from tests.conftest import build_harness, make_settings
 
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.conversation.scope_models import ConversationCoverageError
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import ChatMessage, ChatRequest, InboundMessage, SenderIdentity
-from qq_ai_bot.domain.profiles import UserProfileSnapshot
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.model_runtime.executor import provider_cache_shape_diagnostics
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.context_assembler import (
+from yuki.automation.models import TurnOrigin
+from yuki.conversation.prompt_history import PromptHistorySource
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.conversation.scope_models import ConversationCoverageError
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.messages import ChatMessage, InboundMessage, SenderIdentity
+from yuki.domain.profiles import UserProfileSnapshot
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.context import MEMORY_GROUNDING_RULE
+from yuki.persistence.database import Database
+from yuki.persistence.event_repository import ConversationReadVersion
+from yuki.persistence.repository_records import EventRecord
+from yuki.prompting.contracts import core_contract
+from yuki.runtime.trigger import ExternalEventTurnTrigger
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.context_assembler import (
     AssembledContext,
     ContextAssembler,
     ContextMetrics,
     _HistoryPromptWindow,
 )
-from qq_ai_bot.services.prompt_composer import PromptComposer
+from yuki.services.prompt_composer import PromptComposer
 
 _OCCURRED = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
+# The user explicitly retained this search policy while revising the other guidance.
+_PUBLIC_INFORMATION_RULE = (
+    "公开信息只要可能变化、更新或过时，即使熟悉话题或对方说得肯定，也不等用户要求，"
+    "主动联网搜索最新可靠来源，核实后再作事实判断；不熟悉、拿不准或用户要求核实的公开"
+    "事实同样先查证，指定网页用受控读取。"
+)
 
 
 def _message(
@@ -70,6 +79,7 @@ def _external(
         id=event_id,
         bot_user_id="8000",
         platform_message_id=f"ext-{event_id}",
+        platform="qq",
         scope_type=ScopeType.PRIVATE,
         sender_user_id="8000",
         direction="external",
@@ -93,8 +103,40 @@ def _assembler(**overrides: object) -> ContextAssembler:
     settings = make_settings("sqlite+aiosqlite:///:memory:", **overrides)
     return ContextAssembler(
         settings=settings,
-        ledger=MagicMock(),
+        ledger=MagicMock(read_version_matches=AsyncMock(return_value=True)),
         conversation_scopes=MagicMock(),
+    )
+
+
+def _snapshot(current, recent=(), **checkpoint):
+    """Capture the same metadata/body split supplied by the real scope reader."""
+    coverage = checkpoint.get("coverage_end", 0)
+    rows = tuple(row for row in recent if row.event_kind == "message")
+    through = max((coverage, current.id, *(row.id for row in rows)))
+    source = PromptHistorySource(
+        (),
+        projection=None,
+        bot_display_name="Yuki",
+        timezone="Asia/Shanghai",
+        after_event_id=coverage,
+    )
+    source.extend(rows, through_event_id=through)
+    references = source.capture(through)
+    return _HistoryPromptWindow(
+        recent=rows,
+        source=source,
+        references=references,
+        current_event=current,
+        read_version=ConversationReadVersion(
+            current.scope,
+            current.canonical_conversation_id,
+            1,
+            checkpoint.get("starts_after_event_id", 0),
+            0,
+            references.event_ids,
+        ),
+        raw_tail_end_event_id=source.raw_tail(through),
+        **checkpoint,
     )
 
 
@@ -117,11 +159,7 @@ def _assembled(
             raw_history_window_shifted=False,
         ),
         checkpoint_text=checkpoint_text,
-        prompt_conversation_id="00000000-0000-4000-8000-000000000001",
-        prompt_scope_key="private:8000:1001",
-        prompt_generation=1,
         prompt_effective_coverage=0,
-        prompt_checkpoint_revision=0,
         prompt_raw_tail_end_event_id=3,
     )
 
@@ -213,18 +251,19 @@ def test_public_source_projection_preserves_proactive_cause_label() -> None:
     assert "release note" in projected
 
 
-def test_current_external_carrier_is_untrusted_user_once() -> None:
-    current = _external(9, "untrusted summary", payload={"body": "do not leak"})
+def test_current_external_carrier_keeps_its_source_and_user_role_once() -> None:
+    current = _external(9, "external summary", payload={"body": "payload body"})
     renderer = ChatEventPromptRenderer((current,))
     message = renderer.reference_message(current)
     assert message.role == "user"
-    assert "untrusted summary" in (message.content or "")
-    assert "do not leak" not in (message.content or "")
+    assert "external summary" in (message.content or "")
+    assert "payload body" not in (message.content or "")
+    assert "不是任何聊天成员的发言" in (message.content or "")
     history = renderer.main_agent_history((current,))
     assert history == ()
 
 
-def test_bounded_history_keeps_current_external_out_of_main_history() -> None:
+def test_incremental_history_keeps_current_external_out_of_main_history() -> None:
     history_rows = (_message(1, "hello"), _external(2, "earlier notice"))
     current = _external(3, "current trigger", payload={"token": "abc"})
     trigger = ExternalEventTurnTrigger(
@@ -234,13 +273,19 @@ def test_bounded_history_keeps_current_external_out_of_main_history() -> None:
         target_id="1001",
         agent_intent="comment briefly",
     )
-    bounded = ContextAssembler._bounded_history(
-        history_rows,
-        current_event_id=current.id,
+    bounded = _assembler()._prepared_context(
+        _snapshot(
+            current,
+            history_rows,
+            checkpoint_text="",
+            coverage_end=0,
+            revision=1,
+            checkpoint_kind=None,
+        ),
+        identity=current.scope,
+        metadata={},
         content=current.content,
-        yuki_account_ids=frozenset({"8000"}),
-        current_message_override=ContextAssembler._external_wakeup_message(current, trigger),
-        current_event=current,
+        current_override=ContextAssembler._external_wakeup_message(current, trigger),
     )
     assert bounded.current_message.role == "user"
     assert "current trigger" in (bounded.current_message.content or "")
@@ -262,8 +307,9 @@ async def _assemble_wakeup(
     assembler = _assembler()
     assembler._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     assembler._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
-        return_value=_HistoryPromptWindow(
-            recent=recent,
+        return_value=_snapshot(
+            current,
+            recent,
             checkpoint_text="",
             coverage_end=0,
             revision=1,
@@ -272,7 +318,7 @@ async def _assemble_wakeup(
     )
     identity = current.scope
     turn = ConversationTurnSnapshot(
-        conversation_id="test-conversation-1",
+        conversation_id=current.canonical_conversation_id,
         scope_key=identity.key,
         generation=1,
         trigger_event_id=current.id,
@@ -281,7 +327,6 @@ async def _assemble_wakeup(
     )
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
-    runtime.context.window_tokens = 96_000
     context = await assembler.assemble(
         inbound=None,
         profile=None,
@@ -316,7 +361,7 @@ async def test_private_wakeup_targets_the_person_without_an_actor() -> None:
     # The target is the conversation person, never a fabricated current speaker.
     assert "current_person" not in items
     assert "current_group" not in items
-    assert items == {"scene": "私聊"}
+    assert items == {"scene": "私聊", "platform": "qq"}
     # Automatic memory recall stays off; the agent must use memory tools explicitly.
 
 
@@ -385,8 +430,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
         ),
         _external(8, "old external event must not be replayed"),
     )
-    snapshot = _HistoryPromptWindow(
-        recent=recent,
+    checkpoint = dict(
         checkpoint_text="stable checkpoint before both current turns",
         coverage_end=5,
         revision=9,
@@ -395,7 +439,6 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     )
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
-    runtime.context.window_tokens = 96_000
 
     ordinary_event = replace(
         _message(10, "ordinary current turn"),
@@ -404,12 +447,12 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     ordinary = _assembler()
     ordinary._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     ordinary._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
-        return_value=snapshot
+        return_value=_snapshot(ordinary_event, recent, **checkpoint)
     )
     ordinary._ledger.get_event = AsyncMock(return_value=ordinary_event)
     ordinary_identity = ordinary_event.scope
     turn = ConversationTurnSnapshot(
-        conversation_id="test-conversation-1",
+        conversation_id=ordinary_event.canonical_conversation_id,
         scope_key=ordinary_identity.key,
         generation=1,
         trigger_event_id=ordinary_event.id,
@@ -443,7 +486,7 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     wakeup = _assembler()
     wakeup._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     wakeup._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
-        return_value=snapshot
+        return_value=_snapshot(external_event, recent, **checkpoint)
     )
     wakeup_context = await wakeup.assemble(
         inbound=None,
@@ -471,33 +514,26 @@ async def test_external_wakeup_assembles_the_same_stable_conversation_window() -
     assert (
         wakeup_context.checkpoint_text
         == ordinary_context.checkpoint_text
-        == snapshot.checkpoint_text
+        == checkpoint["checkpoint_text"]
     )
-    assert (
-        wakeup_context.prompt_conversation_id
-        == ordinary_context.prompt_conversation_id
-        == turn.conversation_id
-    )
-    assert wakeup_context.prompt_scope_key == ordinary_context.prompt_scope_key == turn.scope_key
-    assert wakeup_context.prompt_generation == ordinary_context.prompt_generation == turn.generation
+    assert wakeup_context.read_version.conversation_id == turn.conversation_id
+    assert ordinary_context.read_version.conversation_id == turn.conversation_id
+    assert wakeup_context.read_version.generation == turn.generation
+    assert ordinary_context.read_version.generation == turn.generation
     assert (
         wakeup_context.prompt_effective_coverage == ordinary_context.prompt_effective_coverage == 5
-    )
-    assert (
-        wakeup_context.prompt_checkpoint_revision
-        == ordinary_context.prompt_checkpoint_revision
-        == 9
     )
     assert wakeup_context.prompt_raw_tail_end_event_id == (
         ordinary_context.prompt_raw_tail_end_event_id
     )
-    assert wakeup_context.metadata_payload == {"scene": "私聊"}
+    assert wakeup_context.metadata_payload == {"scene": "私聊", "platform": "qq"}
     assert wakeup_context.current_message != ordinary_context.current_message
     assert "external_event_wakeup" in (wakeup_context.current_message.content or "")
 
 
-def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
-    settings = make_settings("sqlite+aiosqlite:///:memory:")
+@pytest.mark.parametrize("code_enabled", (False, True))
+def test_external_wakeup_uses_the_same_main_agent_prompt_program(code_enabled) -> None:
+    settings = make_settings("sqlite+aiosqlite:///:memory:", code_mode_enabled=code_enabled)
     composer = PromptComposer(settings)
     current = ChatMessage(role="user", content="[external] current summary")
     history = (ChatMessage(role="user", content="hello from a person"),)
@@ -507,7 +543,6 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
         metadata={"scene": "私聊"},
     )
     runtime = MagicMock()
-    runtime.context.window_tokens = 96_000
     composed = composer.compose(
         inbound=None,
         context=context,
@@ -530,9 +565,13 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     )
     assert "github-monitor" not in system_text
     assert "PushEvent" not in system_text
-    assert "【资料与查证】" in system_text
-    assert "当前请求不自动附带旧记忆" in system_text
-    assert "短记录是与人和群无关的全局短期资料" in system_text
+    for component in (
+        settings.system_prompt,
+        core_contract(code_enabled=settings.code_mode_enabled),
+        MEMORY_GROUNDING_RULE,
+    ):
+        assert system_text.count(component) == 1
+    assert system_text.count(_PUBLIC_INFORMATION_RULE) == 1
     assert tuple(item.content for item in composed.messages if item.role == "system") == tuple(
         item.content for item in ordinary.messages if item.role == "system"
     )
@@ -543,8 +582,7 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
         item.content or "" for item in composed.messages if item.role != "system"
     )
     assert history_blob.count("current summary") == 1
-    assert composed.metrics.conversation_prefix_hash
-    assert "hello from a person" not in composed.metrics.conversation_prefix_hash
+    assert _PUBLIC_INFORMATION_RULE not in history_blob
     repeat = composer.compose(
         inbound=None,
         context=context,
@@ -553,7 +591,6 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program() -> None:
     assert tuple((item.role, item.content) for item in repeat.messages) == tuple(
         (item.role, item.content) for item in composed.messages
     )
-    assert repeat.metrics.conversation_prefix_hash == composed.metrics.conversation_prefix_hash
     instructions, inputs = DeepSeekResponsesProvider(
         base_url="https://provider.invalid",
         api_key="",
@@ -581,7 +618,7 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
 ) -> None:
     from types import SimpleNamespace
 
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
+    from yuki.services.main_agent_contract import MainAgentContract
 
     provider = FakeLLMProvider(lambda _request: "ok")
     harness = build_harness(database, make_settings(database.url), provider)
@@ -589,7 +626,7 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
     chat.runtime.runner.main_contract = MainAgentContract(
         chat, SimpleNamespace(snapshot=lambda: [])
     )
-    runtime_config = await chat._runtime_config.snapshot(user_id="1001", group_id=None)
+    runtime_config = await chat._runtime_config.snapshot()
     stable_prefix = (
         ChatMessage(role="system", content="stable instructions"),
         ChatMessage(role="user", content="old user marker"),
@@ -602,13 +639,11 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
         sender=SenderIdentity(user_id="1001"),
         text="ordinary current",
         bot_user_id="8000",
+        yuki_account_ids=frozenset({"8000"}),
         conversation_id="conv-stable",
         presence_id="presence-stable",
-        yuki_account_ids=frozenset({"8000"}),
     )
     shared = {
-        "gateway": None,
-        "allow_generic_onebot": False,
         "conversation_key": "canonical:conv-stable:generation:1",
         "actor_is_superuser": False,
         "runtime_config": runtime_config,
@@ -663,79 +698,6 @@ async def test_external_wakeup_and_ordinary_turn_send_the_same_provider_shape(
     assert ordinary_request.reasoning_effort == wakeup_request.reasoning_effort
     assert ordinary_request.response_format == wakeup_request.response_format
     assert ordinary_request.structured_output == wakeup_request.structured_output
-    assert ordinary_request.request_shape_hash == wakeup_request.request_shape_hash
-    ordinary_shape = provider_cache_shape_diagnostics(
-        ordinary_request,
-        provider="fake",
-        model=ordinary_request.model,
-        profile_id="legacy",
-        protocol="chat_completions",
-    )
-    wakeup_shape = provider_cache_shape_diagnostics(
-        wakeup_request,
-        provider="fake",
-        model=wakeup_request.model,
-        profile_id="legacy",
-        protocol="chat_completions",
-    )
-    assert ordinary_shape == wakeup_shape
-    assert all(
-        len(value) == 64
-        for value in (
-            ordinary_shape.provider_shape_hash,
-            ordinary_shape.instructions_hash,
-            ordinary_shape.tools_hash,
-            ordinary_shape.input_prefix_hash,
-        )
-    )
-
-
-def test_provider_cache_shape_excludes_only_the_current_user_tail() -> None:
-    base = ChatRequest(
-        messages=(
-            ChatMessage(role="system", content="stable instructions"),
-            ChatMessage(role="user", content="stable history"),
-            ChatMessage(role="assistant", content="stable reply"),
-            ChatMessage(role="user", content="ordinary current tail"),
-        ),
-        model="deepseek-v4-flash",
-        temperature=None,
-        max_output_tokens=2_000,
-        thinking_enabled=True,
-    )
-
-    def diagnostics(request: ChatRequest):
-        return provider_cache_shape_diagnostics(
-            request,
-            provider="deepseek",
-            model=request.model,
-            profile_id="main",
-            protocol="responses",
-        )
-
-    baseline = diagnostics(base)
-    other_tail = diagnostics(
-        replace(
-            base,
-            messages=(*base.messages[:-1], ChatMessage(role="user", content="external wakeup")),
-        )
-    )
-    changed_history = diagnostics(
-        replace(
-            base,
-            messages=(
-                base.messages[0],
-                ChatMessage(role="user", content="different stable history"),
-                *base.messages[2:],
-            ),
-        )
-    )
-    changed_limits = diagnostics(replace(base, max_output_tokens=4_000))
-
-    assert baseline == other_tail
-    assert baseline.input_prefix_hash != changed_history.input_prefix_hash
-    assert baseline.provider_shape_hash != changed_history.provider_shape_hash
-    assert baseline.provider_shape_hash != changed_limits.provider_shape_hash
 
 
 @pytest.mark.asyncio
@@ -744,11 +706,9 @@ async def test_plugin_wakeup_can_end_without_creating_a_fake_reply(
 ) -> None:
     harness = build_harness(database, make_settings(database.url))
     chat = harness.processor._chat
-    runtime_config = await chat._runtime_config.snapshot(user_id="1001", group_id=None)
+    runtime_config = await chat._runtime_config.snapshot()
     runtime = ToolRuntime(
         inbound=None,
-        gateway=None,
-        allow_generic_onebot=False,
         conversation_key="canonical:conv-stable:generation:1",
         trigger_message_id="external-current",
         trigger_event_id=2,
@@ -771,9 +731,9 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     database: Database,
     tmp_path,
 ) -> None:
-    from qq_ai_bot.services.main_agent_contract import MainAgentContract
-    from qq_ai_bot.workspace.short_state import ShortState
-    from qq_ai_bot.workspace.store import WorkspaceStore
+    from yuki.services.main_agent_contract import MainAgentContract
+    from yuki.workspace.short_state import ShortState
+    from yuki.workspace.store import WorkspaceStore
 
     harness = build_harness(
         database, make_settings(database.url, agent_tool_result_max_characters=24000)
@@ -782,23 +742,20 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         harness.processor._chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     frozen = await contract.definitions()
-    frozen_around = next(item for item in frozen if item.name == "get_chat_history_around")
-    assert frozen_around.parameters["required"] == ["event_id"]
+    frozen_around = next(item for item in frozen if item.name == "query_chat_history")
+    assert frozen_around.parameters["required"] == ["view"]
+    assert "around" in frozen_around.parameters["properties"]["view"]["enum"]
+    assert "event_id" in frozen_around.parameters["properties"]
     assert "platform_message_id" not in frozen_around.parameters["properties"]
     assert contract.health()["frozen"] is True
     assert contract.revision
     tools = harness.processor._chat._tools
-    runtime_config = await harness.processor._chat._runtime_config.snapshot(
-        user_id="1001",
-        group_id=None,
-    )
+    runtime_config = await harness.processor._chat._runtime_config.snapshot()
     gateway = MagicMock()
     gateway.provider_id = "snowluma"
     gateway.call_api = AsyncMock(return_value={"messages": []})
     group_runtime = ToolRuntime(
         inbound=None,
-        gateway=gateway,
-        allow_generic_onebot=False,
         conversation_key="canonical:space-100:generation:1",
         trigger_message_id="external-current",
         trigger_event_id=2,
@@ -812,7 +769,9 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     )
     tools._memories.list_group = AsyncMock(return_value=())  # type: ignore[method-assign]
     tools._ledger.search = AsyncMock(return_value=())  # type: ignore[method-assign]
-    recent = (await tools.execute("get_recent_chat_history", "{}", group_runtime)).model_payload()
+    recent = (
+        await tools.execute("query_chat_history", '{"view": "recent"}', group_runtime)
+    ).model_payload()
     actual_record = EventRecord(
         id=123,
         visual_summary="",
@@ -828,20 +787,26 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     )
     tools._ledger.list_scope_around = AsyncMock(return_value=(actual_record, (), ()))
     around_tool = next(
-        tool for tool in tools.definitions(group_runtime) if tool.name == "get_chat_history_around"
+        tool for tool in tools.definitions(group_runtime) if tool.name == "query_chat_history"
     )
-    assert around_tool.parameters["required"] == ["event_id"]
+    assert around_tool.parameters["required"] == ["view"]
+    assert "around" in around_tool.parameters["properties"]["view"]["enum"]
+    assert "event_id" in around_tool.parameters["properties"]
     assert "platform_message_id" not in around_tool.parameters["properties"]
     invalid_history = (
         await tools.execute(
-            "get_chat_history_around", '{"platform_message_id":"history-attachment"}', group_runtime
+            "query_chat_history",
+            '{"view": "around", "platform_message_id": "history-attachment"}',
+            group_runtime,
         )
     ).model_payload()
     assert not invalid_history["ok"]
     assert tools._ledger.list_scope_around.await_count == 0
     actual_history = (
         await tools.execute(
-            "get_chat_history_around", json.dumps({"event_id": actual_record.id}), group_runtime
+            "query_chat_history",
+            json.dumps({"view": "around", "event_id": actual_record.id}),
+            group_runtime,
         )
     ).model_payload()
     assert actual_history["ok"]
@@ -850,12 +815,21 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     ]
     tools._ledger.list_scope_around = AsyncMock(return_value=(None, (), ()))
     around = (
-        await tools.execute("get_chat_history_around", '{"event_id":999}', group_runtime)
+        await tools.execute(
+            "query_chat_history", '{"view": "around", "event_id": 999}', group_runtime
+        )
     ).model_payload()
     scoped_search = (
         await tools.execute(
-            "search_chat_history",
-            '{"keyword":"release","user_id":"9999","group_id":"other-group"}',
+            "query_chat_history",
+            json.dumps(
+                {
+                    "view": "search",
+                    "keyword": "release",
+                    "person_id": "other-person",
+                    "space_id": "other-space",
+                }
+            ),
             group_runtime,
         )
     ).model_payload()
@@ -864,22 +838,30 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert recent["data"]["source"] == "ledger"
     assert recent["data"]["events"] == []
     assert around["error_code"] == "not_found"
-    assert scoped_search["error_code"] == "history_scope_denied"
+    assert scoped_search["ok"] is True and scoped_search["data"]["events"] == []
+    assert tools._ledger.search.await_args.kwargs["scope"].conversation_id == "space-100"
+    assert tools._ledger.search.await_args.kwargs["space_id"] == "other-space"
     valid_search = (
-        await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
+        await tools.execute(
+            "query_chat_history", '{"view": "search", "keyword": "release"}', group_runtime
+        )
     ).model_payload()
     assert valid_search["ok"] is True
     assert valid_search["data"] == {"events": [], "returned_count": 0, "truncated": False}
     tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 1000)] * 12)
     longer_search = (
-        await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
+        await tools.execute(
+            "query_chat_history", '{"view": "search", "keyword": "release"}', group_runtime
+        )
     ).model_payload()
     assert longer_search["ok"]
     assert longer_search["data"]["returned_count"] == 12
     assert not longer_search["data"]["truncated"]
     tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 2000)] * 20)
     bounded_search = (
-        await tools.execute("search_chat_history", '{"keyword":"release"}', group_runtime)
+        await tools.execute(
+            "query_chat_history", '{"view": "search", "keyword": "release"}', group_runtime
+        )
     ).model_payload()
     assert bounded_search["ok"]
     assert not bounded_search["data"]["truncated"]
@@ -887,8 +869,8 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     assert all(row["content"] == "x" * 2000 for row in bounded_search["data"]["events"])
     assert bounded_search["data"]["returned_count"] == len(bounded_search["data"]["events"])
     gateway.call_api.assert_not_awaited()
-    assert tools._ledger.search.await_args.kwargs["group_id"] == "group-100"
-    assert tools._ledger.search.await_args.kwargs["user_id"] is None
+    assert tools._ledger.search.await_args.kwargs["scope"].conversation_id == "space-100"
+    assert tools._ledger.search.await_args.kwargs["person_id"] is None
     assert "memory_change" not in {tool.name for tool in tools.definitions(group_runtime)}
 
 
@@ -906,8 +888,8 @@ def _covered_external_turn(
     assembler = _assembler()
     assembler._ensure_turn_generation = AsyncMock()  # type: ignore[method-assign]
     assembler._load_history_snapshot = AsyncMock(  # type: ignore[method-assign]
-        return_value=_HistoryPromptWindow(
-            recent=(),
+        return_value=_snapshot(
+            event,
             checkpoint_text=f"checkpoint already contains {marker}",
             coverage_end=coverage_end,
             revision=1,
@@ -916,7 +898,7 @@ def _covered_external_turn(
         )
     )
     turn = ConversationTurnSnapshot(
-        conversation_id="test-conversation-1",
+        conversation_id=event.canonical_conversation_id,
         scope_key="bot:8000:private:1001",
         generation=1,
         trigger_event_id=event.id,
@@ -925,7 +907,6 @@ def _covered_external_turn(
     )
     runtime = MagicMock()
     runtime.context.local_event_limit = 2_048
-    runtime.context.window_tokens = 96_000
     return assembler, event, turn, runtime
 
 

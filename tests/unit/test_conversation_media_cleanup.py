@@ -10,19 +10,21 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import event, insert, select, update
+from tests.support.event_seed import seed_event
 
-from qq_ai_bot.conversation import media_service
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.conversation.media_service import ConversationMediaError, ConversationMediaService
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import ChatImage
-from qq_ai_bot.persistence.models import ChatEventModel, ConversationMediaItemModel
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.image_preprocessor import ImagePreprocessor
+from yuki.conversation import media_service
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.conversation.media_service import ConversationMediaError, ConversationMediaService
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import ChatImage
+from yuki.persistence.models import ChatEventModel, ConversationMediaItemModel
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.image_preprocessor import ImagePreprocessor
 
 
 async def _cache(database, tmp_path, count=1):
-    source, _ = await EventLedgerRepository(database).append(
+    source, _ = await seed_event(
+        EventLedgerRepository(database),
         bot_user_id="8000",
         platform_message_id="cleanup-media",
         scope_type=ScopeType.PRIVATE,
@@ -210,7 +212,7 @@ async def test_selected_media_batches_frames_and_rechecks_real_sources(
         event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
     assert parses == 1
     assert not any("chat_events.content" in statement for statement in sql)
-    with pytest.raises(ConversationMediaError, match="attachment_scope_denied"):
+    with pytest.raises(ConversationMediaError, match="attachment_source_changed"):
         await service.validate_images((replace(images[0], conversation_id="other"),))
     async with database.immediate_session() as writer:
         if change == "generation":
@@ -237,7 +239,10 @@ async def test_selected_media_batches_frames_and_rechecks_real_sources(
                     )
                 )
             )
-    with pytest.raises(ConversationMediaError):
+    if change in {"hash", "keeper"}:
+        with pytest.raises(ConversationMediaError):
+            await service.validate_images(images)
+    else:
         await service.validate_images(images)
     service.resolver.resolve.assert_not_awaited()
     await service.close()

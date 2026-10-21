@@ -8,23 +8,24 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.sql.dml import Insert
 from tests.support.agent_backend import StubAgentBackend
+from tests.support.event_seed import seed_scoped_event
 from tests.support.work_runner_helpers import case, run, tool
 from tests.unit.test_subagent_lifecycle import worker_case
 
-from qq_ai_bot.capabilities.coordinator import CoordinatedToolResult
-from qq_ai_bot.capabilities.media import MediaResultText
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ChatResponse, ChatTool
-from qq_ai_bot.model_runtime.models import ModelCapability
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.effect_outcomes import current_result_capture
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_schema_v1 import effects, work
-from qq_ai_bot.runtime.work_session import WorkSession
-from qq_ai_bot.services.agent_runner import CODE_COMPOSITION_YIELDED
-from qq_ai_bot.services.turn_transcript import TurnTranscript
+from yuki.capabilities.coordinator import CoordinatedToolResult
+from yuki.capabilities.media import MediaResultText
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import ChatImage, ChatMessage, ChatResponse, ChatTool
+from yuki.model_runtime.models import ModelCapability
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.effect_outcomes import current_result_capture
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_schema_v1 import effects, work
+from yuki.runtime.work_session import WorkSession
+from yuki.services.agent_runner import CODE_COMPOSITION_YIELDED
+from yuki.services.turn_transcript import TurnTranscript
 
 
 class RegistrationCrash(BaseException):
@@ -61,7 +62,7 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
     probe = await case(database, tmp_path, [ChatResponse("", 0, tool_calls=calls)])
     probe.control.current = None
     probe.control.source_key = "truly-new-source"
-    execute = probe.runner._execute_tool_batch_impl
+    execute = probe.runner._execute_tool_batch
     armed = True
 
     async def interrupted(pending, *args, **kwargs):
@@ -71,14 +72,15 @@ async def test_first_registration_recovers_original_receipt_without_accepting_ne
             raise RegistrationCrash()
         return await execute(pending, *args, **kwargs)
 
-    monkeypatch.setattr(probe.runner, "_execute_tool_batch_impl", interrupted)
+    monkeypatch.setattr(probe.runner, "_execute_tool_batch", interrupted)
     with pytest.raises(RegistrationCrash):
         await run(probe)
     original_key = probe.control.session.call_key("first-accept")
     assert await probe.control.session.journal.effect_state(original_key) == "accepted"
     source = dict(probe.control.source)
     if new_trigger:
-        await probe.env.service.writer.append(
+        await seed_scoped_event(
+            probe.env.service.writer,
             scope=ConversationScope.group("80001", "20001"),
             platform_message_id="later-input",
             sender_user_id="10001",
@@ -241,7 +243,7 @@ async def test_new_response_may_reuse_provider_id_without_losing_its_undispatche
         ),
     )
     probe = await case(database, tmp_path, [first, second])
-    execute = probe.runner._execute_tool_batch_impl
+    execute = probe.runner._execute_tool_batch
     armed = True
 
     async def interrupted(pending, *args, **kwargs):
@@ -255,7 +257,7 @@ async def test_new_response_may_reuse_provider_id_without_losing_its_undispatche
             raise RegistrationCrash()
         return await execute(pending, *args, **kwargs)
 
-    monkeypatch.setattr(probe.runner, "_execute_tool_batch_impl", interrupted)
+    monkeypatch.setattr(probe.runner, "_execute_tool_batch", interrupted)
     with pytest.raises(RegistrationCrash):
         await run(probe)
     original_key = probe.control.session.call_key("same-id")
@@ -410,7 +412,7 @@ async def test_recovered_worker_defers_all_tool_media_across_another_code_segmen
     probe, executed, images = await _media_recovery_case(
         database, tmp_path, monkeypatch, new_image=True, code=True
     )
-    execute = probe.runner._execute_tool_batch_impl
+    execute = probe.runner._execute_tool_batch
     remaining_code_yields = 2
 
     async def code_boundary(pending, *args, **kwargs):
@@ -430,7 +432,7 @@ async def test_recovered_worker_defers_all_tool_media_across_another_code_segmen
     async def intercept(pending, backend, runtime, **kwargs):
         return await code_boundary(pending, backend, runtime=runtime, **kwargs)
 
-    monkeypatch.setattr(probe.runner, "_execute_tool_batch_impl", intercept)
+    monkeypatch.setattr(probe.runner, "_execute_tool_batch", intercept)
     for _segment in range(2):
         recovered, session, transcript = await _restore_worker_response(probe)
         assert (

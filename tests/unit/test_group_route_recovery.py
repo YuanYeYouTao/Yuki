@@ -6,40 +6,39 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 
+import httpx
 import pytest
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from tests.conftest import MemorySender, make_settings
+from tests.support.canonical_identity import ensure_person, ensure_presence, ensure_space
 
-from qq_ai_bot.admin.control_resolution import ControlAccess
-from qq_ai_bot.admin.models import ControlAuditRef
-from qq_ai_bot.container import ApplicationContainer
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.admin.control_resolution import ControlAccess
+from yuki.admin.models import ControlAuditRef
+from yuki.container import ApplicationContainer
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     ControlCommandReceiptModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
-from qq_ai_bot.conversation.hydrate import ensure_canonical_conversation
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.identity.canonical_repository import (
-    ensure_person,
-    ensure_presence,
-    ensure_space,
-    find_identity_binding,
-)
-from qq_ai_bot.identity.db_models import (
+from yuki.conversation.hydrate import ensure_canonical_conversation
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.gateway.providers.telegram import TelegramClient
+from yuki.identity.canonical_repository import create_presence, find_identity_binding
+from yuki.identity.db_models import (
     CanonicalPersonModel,
     CanonicalSpaceModel,
     PresenceModel,
     SpaceBindingModel,
 )
-from qq_ai_bot.identity.routing import RouteCandidate, RouteSendError
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import AdminOperationEventModel, ChatEventModel
-from qq_ai_bot.services.admin.group_recovery import GroupRecoveryService
+from yuki.identity.routing import RouteCandidate, RouteSendError
+from yuki.persistence.database import Database
+from yuki.persistence.models import AdminOperationEventModel, ChatEventModel
+from yuki.services.admin.group_recovery import GroupRecoveryService
 
 
 @dataclass
@@ -60,7 +59,9 @@ class Sender(MemorySender):
         self.bot = bot
 
 
-def message(text: str = "/ai on", *, message_id: str = "restore-1") -> InboundMessage:
+def message(
+    text: str = "/ai admin group current enable", *, message_id: str = "restore-1"
+) -> InboundMessage:
     return InboundMessage(
         message_id=message_id,
         event_type="message:group:normal",
@@ -200,7 +201,7 @@ async def test_superuser_on_recovers_legacy_pauses_and_commands_without_chat_sid
     sender = Sender(bot)
     hint = await app.processor.handle(message("/ai status"), sender)
     assert hint.reason == "group_route_paused"
-    assert "/ai on" in sender.messages[-1].text
+    assert "/ai admin group current enable" in sender.messages[-1].text
     result = await app.processor.handle(message(), sender)
     assert result.reason == "group_recovery"
     assert "恢复可用路由" in sender.messages[-1].text
@@ -231,14 +232,11 @@ async def test_superuser_on_recovers_legacy_pauses_and_commands_without_chat_sid
         "disabled_presence",
         "ineligible_presence",
         "disabled_person",
-        "image",
     ],
 )
 async def test_recovery_rejects_untrusted_or_unreachable_requests(
     database: Database, case: str
 ) -> None:
-    from qq_ai_bot.domain.messages import AttachmentKind, MessageAttachment
-
     app, bot, presence, space, binding = await stack(database)
     await pause(database, space, binding)
     request = message()
@@ -270,10 +268,6 @@ async def test_recovery_rejects_untrusted_or_unreachable_requests(
             person = await session.get(CanonicalPersonModel, actor.person_id)
             assert person is not None
             person.enabled = False
-    elif case == "image":
-        request = replace(
-            request, attachments=(MessageAttachment(kind=AttachmentKind.IMAGE, label="image"),)
-        )
     before = await state(database, space, binding)
     sender = Sender(bot)
     await app.processor.handle(request, sender)
@@ -348,7 +342,7 @@ async def test_recovery_audit_failure_rolls_back_routes_and_enable(
     async def fail_audit(*args: object, **kwargs: object) -> None:
         raise RuntimeError("audit unavailable")
 
-    monkeypatch.setattr("qq_ai_bot.services.admin.group_recovery.add_audit_event", fail_audit)
+    monkeypatch.setattr("yuki.services.admin.group_recovery.add_audit_event", fail_audit)
     with pytest.raises(RuntimeError, match="audit unavailable"):
         await app.processor.handle(message(), Sender(bot))
     assert await state(database, space, binding) == before
@@ -601,7 +595,7 @@ async def test_new_group_registration_rejects_untrusted_or_unproven_requests(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("change", ["connection", "presence_revision", "existing_owner"])
+@pytest.mark.parametrize("change", ["connection", "presence_disabled", "existing_owner"])
 async def test_new_group_registration_race_never_creates_or_replaces_owner(
     database: Database, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
@@ -609,8 +603,8 @@ async def test_new_group_registration_race_never_creates_or_replaces_owner(
     bot.groups |= {NEW_GROUP}
     original = app.presence_router.unbound_group_recovery_presence
 
-    async def raced(group_id: str) -> str:
-        candidate = await original(group_id)
+    async def raced(group_id: str, *, platform: str) -> str:
+        candidate = await original(group_id, platform=platform)
         if change == "connection":
             app.gateway_registry.disconnect(bot)
             app.gateway_registry.connect(
@@ -618,10 +612,10 @@ async def test_new_group_registration_race_never_creates_or_replaces_owner(
             )
         else:
             async with database.immediate_session() as session:
-                if change == "presence_revision":
+                if change == "presence_disabled":
                     row = await session.get(PresenceModel, presence)
                     assert row is not None
-                    row.revision += 1
+                    row.status = "disabled"
                 else:
                     space_id = await ensure_space(session, NEW_GROUP)
                     space = await session.get(CanonicalSpaceModel, space_id)
@@ -662,7 +656,7 @@ async def test_new_group_registration_audit_failure_rolls_back_identity_and_rout
     async def fail_audit(*args: object, **kwargs: object) -> None:
         raise RuntimeError("audit unavailable")
 
-    monkeypatch.setattr("qq_ai_bot.services.admin.group_recovery.add_audit_event", fail_audit)
+    monkeypatch.setattr("yuki.services.admin.group_recovery.add_audit_event", fail_audit)
     with pytest.raises(RuntimeError, match="audit unavailable"):
         await app.processor.handle(replace(message(), group_id=NEW_GROUP), Sender(bot))
     assert await new_group_binding(database) is None
@@ -683,9 +677,11 @@ async def test_new_group_original_control_request_recovers_receipt_and_rejects_r
 ) -> None:
     app, bot, presence, _space, _binding = await stack(database)
     bot.groups |= {NEW_GROUP}
-    access = ControlAccess(database, superuser_ids=frozenset({"9000"}))
-    principal = await access.principal_for_qq("9000")
-    context = access.context(principal, await access.space_target(NEW_GROUP))
+    access = ControlAccess(database)
+    principal = await access.recovery_principal("9000", platform="qq")
+    context = access.context(
+        principal, await access.recovery_space_target(NEW_GROUP, platform="qq")
+    )
     assert context.canonical_target.space_id is None
     connection_id = app.gateway_registry.resolve_active(presence).snapshot.connection_id
     audit = ControlAuditRef(
@@ -749,3 +745,209 @@ async def test_new_group_original_control_request_recovers_receipt_and_rejects_r
         assert (
             await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel)) == 1
         )
+
+
+@pytest.mark.asyncio
+async def test_recovery_with_attachment_uses_the_same_authorized_route(database):
+    from yuki.domain.messages import AttachmentKind, MessageAttachment
+
+    app, bot, _presence, space, binding = await stack(database)
+    await pause(database, space, binding)
+    request = replace(
+        message(), attachments=(MessageAttachment(kind=AttachmentKind.IMAGE, label="image"),)
+    )
+    sender = Sender(bot)
+    result = await app.processor.handle(request, sender)
+    assert result.reason == "group_recovery"
+    after = await state(database, space, binding)
+    assert after[1:3] == (False, False)
+    await app.close()
+
+
+@pytest.mark.parametrize("disconnect_unrelated", [False, True])
+async def test_group_recovery_depends_only_on_its_actual_platform_connection(
+    database, disconnect_unrelated
+):
+    app, bot, presence, space, binding = await stack(database)
+    entered, release = asyncio.Event(), asyncio.Event()
+    pending = None
+    try:
+        async with database.immediate_session() as session:
+            unrelated = await create_presence(
+                session, external_account_id="980077", platform="telegram", now=datetime.now(UTC)
+            )
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: httpx.Response(200))
+        ) as http:
+            telegram = TelegramClient("local-fixture", client=http)
+            telegram.self_id = "980077"
+            app.gateway_registry.connect(telegram, provider_id="telegram", presence_id=unrelated.id)
+            await pause(database, space, binding)
+            before = await state(database, space, binding)
+            original = bot.call_api
+
+            async def blocked(action, **kwargs):
+                entered.set()
+                await release.wait()
+                return await original(action, **kwargs)
+
+            bot.call_api = blocked
+            access = ControlAccess(database)
+            principal = await access.recovery_principal("9000", platform="qq")
+            context = access.context(
+                principal, await access.recovery_space_target("2001", platform="qq")
+            )
+            audit = ControlAuditRef(
+                user_id="9000",
+                bot_user_id="8000",
+                trigger_message_id="route-recovery",
+                conversation_key="bot:8000:group:2001",
+            )
+            connection = app.gateway_registry.resolve_active(presence).snapshot.connection_id
+            service = GroupRecoveryService(database, app.gateway_registry, app.presence_router)
+            pending = asyncio.create_task(
+                service.enable(
+                    context,
+                    presence_id=presence,
+                    connection_id=connection,
+                    audit=audit,
+                    event_type="message:group:normal",
+                )
+            )
+            await asyncio.wait_for(entered.wait(), 3)
+            if disconnect_unrelated:
+                app.gateway_registry.disconnect(telegram)
+            release.set()
+            assert await asyncio.wait_for(pending, 5)
+            after = await state(database, space, binding)
+            assert after[1:3] == (False, False)
+            assert after[3:5] == before[3:5]
+            assert after[7:] == before[7:]
+            async with database.sessions() as session:
+                assert (
+                    await session.scalar(
+                        select(func.count()).select_from(ControlCommandReceiptModel)
+                    )
+                    == 1
+                )
+                assert await session.scalar(select(func.count()).select_from(ChatEventModel)) == 0
+            app.gateway_registry.disconnect(telegram)
+    finally:
+        release.set()
+        if pending is not None:
+            await asyncio.gather(pending, return_exceptions=True)
+        await app.close()
+
+
+@pytest.mark.parametrize("change", ["connect", "disconnect", "revision", "selected_revision"])
+async def test_group_recovery_ignores_changes_outside_selected_entry_facts(
+    database, monkeypatch, change
+):
+    app, _bot, presence, space, binding = await stack(database)
+    unrelated = Bot("8001", groups=frozenset({"900099"}))
+    try:
+        async with database.immediate_session() as session:
+            unrelated_id = await ensure_presence(session, "8001")
+        if change != "connect":
+            app.gateway_registry.connect(
+                unrelated, provider_id="snowluma", presence_id=unrelated_id
+            )
+        await pause(database, space, binding)
+        before = await state(database, space, binding)
+        original = app.presence_router.group_recovery_candidate
+
+        async def change_unrelated_after_selection(binding_id):
+            candidate = await original(binding_id)
+            assert candidate.presence_id == presence
+            if change == "connect":
+                app.gateway_registry.connect(
+                    unrelated, provider_id="snowluma", presence_id=unrelated_id
+                )
+            elif change == "disconnect":
+                app.gateway_registry.disconnect(unrelated)
+            else:
+                async with database.immediate_session() as session:
+                    row = await session.get(
+                        PresenceModel, presence if change == "selected_revision" else unrelated_id
+                    )
+                    row.revision += 1
+            # This account is not a member of the target group. Repeating the
+            # actual selection proves its change did not alter the candidate.
+            assert await original(binding_id) == candidate
+            return candidate
+
+        monkeypatch.setattr(
+            app.presence_router, "group_recovery_candidate", change_unrelated_after_selection
+        )
+        access = ControlAccess(database)
+        principal = await access.recovery_principal("9000", platform="qq")
+        context = access.context(
+            principal, await access.recovery_space_target("2001", platform="qq")
+        )
+        audit = ControlAuditRef(
+            user_id="9000",
+            bot_user_id="8000",
+            trigger_message_id="unrelated-change",
+            conversation_key="bot:8000:group:2001",
+        )
+        connection = app.gateway_registry.resolve_active(presence).snapshot.connection_id
+        service = GroupRecoveryService(database, app.gateway_registry, app.presence_router)
+        assert await service.enable(
+            context,
+            presence_id=presence,
+            connection_id=connection,
+            audit=audit,
+            event_type="message:group:normal",
+        )
+        after = await state(database, space, binding)
+        assert after[1:3] == (False, False)
+        assert after[3:5] == before[3:5]
+        assert after[7:] == before[7:]
+        async with database.sessions() as session:
+            assert (
+                await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel))
+                == 1
+            )
+            assert (
+                await session.scalar(select(func.count()).select_from(AdminOperationEventModel))
+                == 1
+            )
+            assert await session.scalar(select(func.count()).select_from(ChatEventModel)) == 0
+    finally:
+        await app.close()
+
+
+@pytest.mark.parametrize("change", ["disabled", "ended", "ingest"])
+async def test_group_recovery_rechecks_selected_presence_facts(database, monkeypatch, change):
+    app, bot, presence, space, binding = await stack(database)
+    try:
+        await pause(database, space, binding)
+        before = await state(database, space, binding)
+        original = app.presence_router.group_recovery_candidate
+
+        async def revoke_selected_after_selection(binding_id):
+            candidate = await original(binding_id)
+            async with database.immediate_session() as session:
+                row = await session.get(PresenceModel, presence)
+                if change == "ingest":
+                    row.ingest_eligible = False
+                else:
+                    row.status = change
+            return candidate
+
+        monkeypatch.setattr(
+            app.presence_router, "group_recovery_candidate", revoke_selected_after_selection
+        )
+        await app.processor.handle(message(), Sender(bot))
+        assert await state(database, space, binding) == before
+        async with database.sessions() as session:
+            assert (
+                await session.scalar(select(func.count()).select_from(ControlCommandReceiptModel))
+                == 0
+            )
+            assert (
+                await session.scalar(select(func.count()).select_from(AdminOperationEventModel))
+                == 0
+            )
+    finally:
+        await app.close()

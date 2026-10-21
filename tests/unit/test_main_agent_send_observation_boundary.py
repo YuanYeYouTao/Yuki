@@ -7,16 +7,17 @@ import httpx
 import pytest
 from sqlalchemy import select
 from tests.conftest import MemorySender
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_current_activation_material import _saved
 from tests.unit.test_history_dispatch_ownership import _scene
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.effect_outcomes import execution_evidence
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.domain.conversations import ConversationScope
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.llm.gemini import GeminiProvider
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.effect_outcomes import execution_evidence
 
 
 def _gemini_reply(send_text=None):
@@ -76,12 +77,12 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
             receipt = await execute(name, args, context)
             if interleaved_events != "none" and name == "send_message" and not interleaved:
                 interleaved.append(True)
-                other = await env.service.writer.append(
+                other = await seed_scoped_event(
+                    env.service.writer,
                     scope=ConversationScope.group("80001", "20001"),
                     platform_message_id="other-execution-outbound",
                     sender_user_id="80001",
                     direction="outbound",
-                    sender_is_bot=True,
                     origin="social_tool",
                     content=foreign_text,
                 )
@@ -125,7 +126,8 @@ async def test_main_gemini_continues_after_send_without_repeating_its_ledger_ech
             record = await EventLedgerRepository(database).get_event(interleaved[1])
             original = ChatEventPromptRenderer([record]).reference_message(record)
             assert original.role == "assistant"
-            assert f"#{record.id}>" in original.content and "QQ:80001" in original.content
+            assert f"#{record.id}>" in original.content
+            assert f"presence:{record.author_presence_id}" in original.content
             observations = [
                 item
                 for item in continuation

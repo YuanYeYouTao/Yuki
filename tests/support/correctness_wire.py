@@ -1,24 +1,25 @@
 """Hermetic four-protocol wire fixtures migrated from the supplied correctness audit."""
 
 import json
+from contextvars import ContextVar
 
 import httpx
 
-from qq_ai_bot.llm.anthropic_messages import AnthropicMessagesProvider
-from qq_ai_bot.llm.gemini import GeminiProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
-from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.models import (
+from yuki.llm.anthropic_messages import AnthropicMessagesProvider
+from yuki.llm.gemini import GeminiProvider
+from yuki.llm.openai_compatible import OpenAICompatibleProvider
+from yuki.llm.openai_responses import OpenAIResponsesProvider
+from yuki.model_runtime.executor import TaskModelExecutor
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
     ModelRoute,
     ModelTask,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-from qq_ai_bot.model_runtime.routes import ModelRouter
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import ModelProfileCatalog
+from yuki.model_runtime.routes import ModelRouter
 
 KINDS = {
     "gemini": (GeminiProvider, "gemini", ModelProtocol.GEMINI),
@@ -119,8 +120,10 @@ def body(kind, reply, index=0):
 
 def wire(test_case, kind):
     captured = []
+    original_request = ContextVar("correctness_wire_original_request")
 
     def transport(req):
+        test_case.provider.requests.append(original_request.get())
         captured.append(json.loads(req.content))
         return httpx.Response(
             200,
@@ -143,8 +146,11 @@ def wire(test_case, kind):
     )
 
     async def complete(request):
-        test_case.provider.requests.append(request)
-        return await provider.complete(request)
+        token = original_request.set(request)
+        try:
+            return await provider.complete(request)
+        finally:
+            original_request.reset(token)
 
     test_case.provider.complete = complete
     profile = ModelProfile(

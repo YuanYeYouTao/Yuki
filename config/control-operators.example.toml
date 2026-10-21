@@ -1,11 +1,45 @@
-# Optional server-owned management policy. Never copy actual tokens into this file.
-# Set CONTROL_OPERATORS_FILE to the provisioned file; unset means no Web/CLI operator access.
-# Supply a separately generated credential (at least 32 characters) in the named environment variable.
+# Server-owned CLI management policy. Credentials stay in the named server environment variable.
+# Set CONTROL_OPERATORS_FILE=config/control-operators.toml after provisioning the actual file.
+# An operator is an independent deployment principal; it need not have a Person or a QQ account.
 [[operators]]
 principal_id = "ab4c2676-9434-40f2-8f67-8a90c0de7fc6"
 token_env = "YUKI_CONTROL_OPERATOR_TOKEN"
 enabled = true
 roles = ["operator"]
-# A role is descriptive. Grant each reviewed capability explicitly; no wildcard grants.
-capabilities = ["control.system.read", "control.health.read", "control.operation.read"]
-# Optional person_id must identify an existing canonical Person, never a QQ number.
+# Explicit capabilities for the implemented CLI /admin/v1 installation and recovery routes.
+# Review and remove unneeded entries for a narrower operator. Roles grant no capabilities.
+capabilities = [
+  "control.system.read",
+  "control.health.read",
+  "control.operation.read",
+  "control.config.read",
+  "control.config.mutate",
+  "control.config.file.content.read",
+  "control.config.file.mutate",
+  "control.plugin.read",
+  "control.plugin.mutate",
+  "control.plugin.config.content.read",
+  "control.plugin.config.mutate",
+  "control.work.read",
+  "control.work.mutate",
+  "control.execution.metadata.read",
+  "control.execution.content.read",
+  "identity.person.read",
+  "identity.person.create",
+  "identity.person.enable",
+  "identity.person.disable",
+  "identity.person.superuser",
+  "identity.person.forget",
+  "identity.person.merge",
+  "identity.person.rename",
+  "identity.binding.read",
+  "identity.binding.attach",
+  "identity.binding.enable",
+  "identity.binding.disable",
+  "identity.binding.transfer",
+  "identity.client.pair",
+  "identity.client.revoke",
+  "identity.presence.read",
+  "identity.presence.set_ingest",
+]
+# Optional person_id must identify an existing canonical Person; it does not grant a Person role.

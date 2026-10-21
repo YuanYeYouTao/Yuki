@@ -8,23 +8,23 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import event, func, select, update
 from tests.support.model_executor import InjectedModelExecutor
-from tests.unit.test_memory_rebuild import _event, _ExtractionProvider, _service
+from tests.unit.test_memory_rebuild import _admin, _event, _ExtractionProvider, _service
 from tests.unit.test_memory_v2 import _claim
 
-from qq_ai_bot.domain.messages import ChatResponse
-from qq_ai_bot.memory.enums import MemoryRebuildRunStatus
-from qq_ai_bot.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
-from qq_ai_bot.memory.rebuild.models import MemoryRebuildSelection
-from qq_ai_bot.memory.rebuild.worker import MemoryRebuildWorker
-from qq_ai_bot.memory.repository import MemoryJobRepository
-from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.persistence.models import (
+from yuki.domain.messages import ChatResponse
+from yuki.memory.enums import MemoryRebuildRunStatus
+from yuki.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
+from yuki.memory.rebuild.models import MemoryRebuildSelection
+from yuki.memory.rebuild.worker import MemoryRebuildWorker
+from yuki.memory.repository import MemoryJobRepository
+from yuki.memory.worker import MemoryWorker
+from yuki.persistence.models import (
     MemoryFactModel,
     MemoryJobModel,
     MemoryMutationReceiptModel,
     MemoryRebuildProposalModel,
 )
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.services.concurrency import ConcurrencyManager
 
 
 class _Provider(_ExtractionProvider):
@@ -72,13 +72,17 @@ async def test_close_during_real_busy_preserves_original_owner_and_committed_tru
         async with database.immediate_session() as session:
             await session.execute(update(MemoryJobModel).values(attempts=7))
     else:
-        run = await service.plan(MemoryRebuildSelection(all_events=True), actor_user_id="9000")
-        await service.start(run.public_id, actor_user_id="9000")
+        run = await service.plan(
+            MemoryRebuildSelection(all_events=True), actor_user_id=await _admin(database)
+        )
+        await service.start(run.public_id, actor_user_id=await _admin(database))
         worker = MemoryRebuildWorker(service, interval_seconds=0.01)
         assert await worker.process_once() == 1
         assert await worker.process_once() == 0
-        await service.set_review(run.public_id, "all", approved=True, actor_user_id="9000")
-        proposals = await service.review(run.public_id, actor_user_id="9000")
+        await service.set_review(
+            run.public_id, "all", approved=True, actor_user_id=await _admin(database)
+        )
+        proposals = await service.review(run.public_id, actor_user_id=await _admin(database))
         original_proposal_id = proposals[0].proposal_id
         original_statistics = await service.repository.statistics(run.public_id)
 
@@ -103,7 +107,7 @@ async def test_close_during_real_busy_preserves_original_owner_and_committed_tru
     await worker.start()
     try:
         if kind == "rebuild":
-            await service.commit(run.public_id, actor_user_id="9000")
+            await service.commit(run.public_id, actor_user_id=await _admin(database))
         await asyncio.wait_for(ready.wait(), timeout=5)
         async with database.immediate_session() as writer:
             # An independent connection holds the writer while the worker upgrades

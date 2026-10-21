@@ -11,45 +11,43 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import delete, func, select, update
 from tests.conftest import build_harness, make_settings
+from tests.support.canonical_identity import ensure_person, ensure_space
 from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_self_initiative_memory import record, seed
 
-from qq_ai_bot.capabilities import (
+from yuki.capabilities import (
     CapabilityTrustSource,
     InProcessToolProvider,
     ToolProviderRegistry,
 )
-from qq_ai_bot.capabilities.coordinator import ToolInvocationCoordinator
-from qq_ai_bot.capabilities.invocation import current_invocation, direct_invocations
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.conversation.canonical_db_models import (
+from yuki.capabilities.coordinator import ToolInvocationCoordinator
+from yuki.capabilities.invocation import current_invocation
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.conversation.canonical_db_models import (
     CanonicalConversationModel,
     SpaceActiveRouteModel,
     SpaceBindingIngestRouteModel,
 )
-from qq_ai_bot.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunction
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_space
-from qq_ai_bot.identity.db_models import SpaceBindingModel
-from qq_ai_bot.memory.partition import MemoryPartitionResolutionError
-from qq_ai_bot.persistence.diagnostic_writer import DiagnosticWriter
-from qq_ai_bot.persistence.models import ChatEventModel, MemoryToolReceiptModel, ToolInvocationModel
-from qq_ai_bot.persistence.people_repository import PeopleRepository
-from qq_ai_bot.runtime.observability import RuntimeTurnCorrelation, bind_runtime_turn
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.chat import ChatService
-from qq_ai_bot.services.invocation_service import defer_tool_audit
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.tool_results.recorder import ToolInvocationRepository
+from yuki.domain.messages import ChatMessage, ChatTool, ToolCall, ToolFunction
+from yuki.domain.tool_actor import ToolActor
+from yuki.execution_trace.db_models import ExecutionTraceStateModel
+from yuki.identity.db_models import SpaceBindingModel
+from yuki.memory.partition import MemoryPartitionResolutionError
+from yuki.persistence.models import ChatEventModel, MemoryToolReceiptModel
+from yuki.persistence.people_repository import PeopleRepository
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.chat import ChatService
+from yuki.services.invocation_service import defer_tool_audit
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.social.db_models import SocialOperationModel
+from yuki.tool_results.recorder import ToolReceiptRepository
 
 
 async def active_work(database, tmp_path, *, reporting=None):
@@ -72,8 +70,6 @@ async def active_work(database, tmp_path, *, reporting=None):
         source = await session.scalar(select(ChatEventModel))
     runtime = ToolRuntime(
         inbound=None,
-        gateway=None,
-        allow_generic_onebot=False,
         conversation_key="audit",
         trigger_event_id=source.id,
         actor_context=ToolActor(
@@ -136,7 +132,7 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
         conversation_key=runtime.conversation_key,
         current_group_id=actor.group_id,
         bot_user_id=actor.bot_user_id,
-        gateway=runtime.gateway,
+        gateway=None,
         runtime_config=runtime.runtime_config,
         allowed_capabilities=frozenset(),
         max_tool_calls=runtime.runtime_config.agent.max_tool_calls,
@@ -173,139 +169,16 @@ async def test_equal_sends_and_cross_response_ids_keep_distinct_social_operation
 
 
 async def invoke_audit(recorder, runtime, call_key, result='{"ok":true}'):
-    await ChatService._record_tool_invocation(
-        SimpleNamespace(_tool_invocations=recorder),
+    await ChatService._record_tool_receipt(
+        SimpleNamespace(_tool_receipts=recorder),
         runtime=runtime,
         provider_id="social",
         tool_name="send_message",
         success=True,
-        latency_seconds=0.1,
-        result_size=len(result),
-        artifact_created=False,
         error_category=None,
         result_excerpt=result,
         tool_call_id=call_key,
     )
-
-
-@pytest.mark.parametrize("queued", [False, True])
-async def test_social_success_and_original_work_call_survive_telemetry_failure(
-    database, tmp_path, monkeypatch, caplog, queued
-):
-    env, work, runtime = await active_work(database, tmp_path)
-    call = ToolCall("original-provider-call", ToolFunction("send_message", "{}"))
-    key = work.call_key(call.id)
-    writer = DiagnosticWriter() if queued else None
-    if writer is not None:
-        await writer.start()
-    recorder = ToolInvocationRepository(database, writer=writer)
-    audit_calls = []
-
-    async def fail_telemetry(*_args):
-        # This failure occurs after BOTH durable effect and sourced evidence commit.
-        async with database.sessions() as session:
-            assert await session.scalar(select(effects.c.state)) == "accepted"
-            assert await session.scalar(select(func.count(MemoryToolReceiptModel.id))) == 1
-        audit_calls.append(key)
-        raise RuntimeError("synthetic secondary failure")
-
-    monkeypatch.setattr(recorder, "_insert_telemetry", fail_telemetry)
-    dispatched = 0
-    chat = build_harness(database, make_settings(database.url)).processor._chat
-    chat._tool_invocations = recorder
-    runtime = replace(
-        runtime, runtime_config=await chat._runtime_config.snapshot(), space_id=env.space
-    )
-
-    async def dispatch(_name, _arguments, _runtime):
-        nonlocal dispatched
-        dispatched += 1
-        context = current_invocation.get()
-        assert context is not None
-        social = await env.service.execute(
-            "send_message",
-            {"target": {"kind": "space", "target_id": env.space}, "text": "confirmed"},
-            replace(
-                env.context, call_id=context.call_id, trigger_event_id=runtime.trigger_event_id
-            ),
-        )
-        assert social["status"] == "succeeded"
-        return ToolExecutionResult(ok=True, data=social)
-
-    registry = ToolProviderRegistry()
-    registry.register(
-        InProcessToolProvider(
-            provider_id="core",
-            source=CapabilityTrustSource.CORE,
-            definitions=lambda _: (ChatTool("send_message", "send", {"type": "object"}),),
-            execute=dispatch,
-        )
-    )
-    backend = MainAgentBackend(chat, runtime)
-    backend._catalog = registry.catalog(runtime)
-    backend._callable_tool_names = {"send_message"}
-    actor = runtime.actor_context
-    agent = AgentRuntime(
-        origin=actor.origin,
-        actor_user_id=actor.user_id,
-        actor_is_superuser=runtime.actor_is_superuser,
-        delegated_authority=None,
-        conversation_key=runtime.conversation_key,
-        current_group_id=actor.group_id,
-        bot_user_id=actor.bot_user_id,
-        gateway=runtime.gateway,
-        runtime_config=runtime.runtime_config,
-        allowed_capabilities=frozenset(),
-        max_tool_calls=runtime.runtime_config.agent.max_tool_calls,
-        max_model_requests=runtime.runtime_config.agent.max_model_requests,
-        work_control=work.control,
-    )
-
-    async def invoke():
-        result = await backend.execute_call(direct_invocations((call,), agent)[0])
-        assert audit_calls == []
-        return result
-
-    result = await invoke_tool(work, call, invoke)
-    if writer is not None:
-        await writer.close()
-        assert writer.failures == 1
-    assert "data" in json.loads(result), result
-    assert json.loads(result)["data"]["status"] == "succeeded"
-    assert await invoke_tool(work, call, invoke) == result
-    assert dispatched == 1 and audit_calls == [key]
-    async with database.sessions() as session:
-        effect = (await session.execute(select(effects))).mappings().one()
-        assert effect["effect_key"] == key and effect["state"] == "accepted"
-        assert json.loads(effect["receipt_json"])["result"] == result
-        social = await session.scalar(select(SocialOperationModel))
-        assert social.status == "succeeded" and social.tool_call_id == key
-        source = await session.scalar(select(MemoryToolReceiptModel))
-        assert source.trigger_event_id == runtime.trigger_event_id
-        assert source.canonical_space_id == env.space
-        assert source.canonical_person_id is None and source.tool_call_id == key
-    assert "coverage_incomplete=true" in caplog.text
-    assert "synthetic secondary failure" not in caplog.text
-    # Repair re-runs only the audit using the accepted result. It is idempotent
-    # and has no external dispatch or independent permanent retry queue.
-    await recorder.record_invocation(
-        conversation_key=runtime.conversation_key,
-        provider_id="core",
-        tool_name="send_message",
-        success=True,
-        latency_seconds=0,
-        result_size=len(result),
-        artifact_created=False,
-        error_category=None,
-        trigger_event_id=runtime.trigger_event_id,
-        bot_user_id=runtime.effective_bot_user_id,
-        canonical_conversation_id=runtime.conversation_id,
-        tool_call_id=key,
-        execution_id=runtime.effective_execution_id,
-        result_excerpt=result,
-    )
-    async with database.sessions() as session:
-        assert await session.scalar(select(func.count(MemoryToolReceiptModel.id))) == 1
 
 
 @pytest.mark.parametrize("mode", ["cancel_audit", "uncertain_accepted_commit"])
@@ -315,7 +188,7 @@ async def test_post_effect_cancel_or_uncertain_commit_never_runs_unconfirmed_aud
     _env, work, runtime = await active_work(database, tmp_path)
     call = ToolCall("original", ToolFunction("send_message", "{}"))
     audit = AsyncMock(side_effect=asyncio.CancelledError() if mode == "cancel_audit" else None)
-    recorder = SimpleNamespace(record_invocation=audit)
+    recorder = SimpleNamespace(record_receipt=audit)
     if mode == "uncertain_accepted_commit":
         original = work.control.repository.record_effect
 
@@ -340,10 +213,10 @@ async def test_post_effect_cancel_or_uncertain_commit_never_runs_unconfirmed_aud
 
 async def test_independent_sdk_audit_identity_error_still_propagates(database, tmp_path):
     _env, _work, runtime = await active_work(database, tmp_path)
-    recorder = SimpleNamespace(record_invocation=AsyncMock(side_effect=ValueError("source")))
+    recorder = SimpleNamespace(record_receipt=AsyncMock(side_effect=ValueError("source")))
     with pytest.raises(ValueError, match="source"):
         await invoke_audit(recorder, runtime, "sdk-call")
-    recorder.record_invocation.assert_awaited_once()
+    recorder.record_receipt.assert_awaited_once()
 
 
 @pytest.mark.parametrize("metadata_only", [False, True])
@@ -356,9 +229,7 @@ async def test_deferred_audit_cannot_refill_person_erased_before_accepted(
     source_id = runtime.trigger_event_id
     if metadata_only:
         runtime = replace(runtime, trigger_event_id=None)
-    writer = DiagnosticWriter()
-    await writer.start()
-    recorder = ToolInvocationRepository(database, writer=writer)
+    recorder = ToolReceiptRepository(database)
     call = ToolCall("original-erased-call", ToolFunction("send_message", "{}"))
     original = work.control.repository.record_effect
     dispatched = 0
@@ -379,7 +250,6 @@ async def test_deferred_audit_cannot_refill_person_erased_before_accepted(
         return "confirmed"
 
     result = await invoke_tool(work, call, invoke)
-    await writer.close()
     assert result == "confirmed" and dispatched == 1
     assert await work.journal.effect_result(work.call_key(call.id)) == result
     async with database.sessions() as session:
@@ -387,15 +257,14 @@ async def test_deferred_audit_cannot_refill_person_erased_before_accepted(
         assert await session.get(ChatEventModel, source_id) is not None
         assert await session.scalar(select(ExecutionTraceStateModel.privacy_generation)) == 1
         assert await session.scalar(select(func.count(MemoryToolReceiptModel.id))) == 0
-        assert await session.scalar(select(func.count(ToolInvocationModel.id))) == 0
 
 
 @pytest.mark.parametrize("after_prepare", [False, True])
-async def test_group_binding_move_cannot_reassign_original_event_receipt(
+async def test_group_binding_move_preserves_original_event_receipt_owner(
     database, tmp_path, monkeypatch, after_prepare
 ):
     env, work, runtime = await active_work(database, tmp_path)
-    recorder = ToolInvocationRepository(database)
+    recorder = ToolReceiptRepository(database)
     call = ToolCall("original-owner-call", ToolFunction("send_message", "{}"))
     sessions = database.sessions
     destination = None
@@ -419,7 +288,7 @@ async def test_group_binding_move_cannot_reassign_original_event_receipt(
             binding.space_id = destination
 
     if after_prepare:
-        record_invocation = recorder.record_invocation
+        record_receipt = recorder.record_receipt
 
         async def record_after_move(**kwargs):
             first = True
@@ -436,11 +305,11 @@ async def test_group_binding_move_cannot_reassign_original_event_receipt(
 
             monkeypatch.setattr(database, "sessions", moved_after_prepare)
             try:
-                await record_invocation(**kwargs)
+                await record_receipt(**kwargs)
             finally:
                 monkeypatch.setattr(database, "sessions", sessions)
 
-        monkeypatch.setattr(recorder, "record_invocation", record_after_move)
+        monkeypatch.setattr(recorder, "record_receipt", record_after_move)
 
     async def invoke():
         await invoke_audit(recorder, runtime, work.call_key(call.id))
@@ -463,66 +332,13 @@ async def test_group_binding_move_cannot_reassign_original_event_receipt(
             )
             == destination
         )
-        assert await session.scalar(select(func.count(MemoryToolReceiptModel.id))) == 0
-        assert await session.scalar(select(func.count(ToolInvocationModel.id))) == 0
+        receipt = (await session.scalars(select(MemoryToolReceiptModel))).one()
+        assert receipt.canonical_space_id == env.space
+        assert receipt.canonical_person_id is None
+        assert receipt.trigger_event_id == runtime.trigger_event_id
 
 
-async def test_tool_telemetry_queue_freezes_origin_and_rejects_privacy_erasure(database, tmp_path):
-    env = await social_env(database, tmp_path)
-    writer = DiagnosticWriter()
-    recorder = ToolInvocationRepository(database, writer=writer)
-    await writer.start()
-    release = asyncio.Event()
-    assert writer.submit("blocked", 0, release.wait)
-    with bind_runtime_turn(RuntimeTurnCorrelation("original-runtime", TurnOrigin.USER_MESSAGE)):
-        # Pure metadata has no event/Memory source and no synchronous INSERT.
-        async with database.immediate_session():
-            await asyncio.wait_for(
-                recorder.record_invocation(
-                    conversation_key="metadata",
-                    provider_id="core",
-                    tool_name="read",
-                    success=True,
-                    latency_seconds=0,
-                    result_size=1,
-                    artifact_created=False,
-                    error_category=None,
-                    canonical_conversation_id=env.context.conversation_id,
-                ),
-                timeout=1,
-            )
-    release.set()
-    await writer.close()
-    async with database.sessions() as session:
-        row = await session.scalar(select(ToolInvocationModel))
-        assert row.runtime_turn_id == "original-runtime"
-        assert row.canonical_conversation_id == env.context.conversation_id
-
-    writer = DiagnosticWriter()
-    recorder.writer = writer
-    await writer.start()
-    release = asyncio.Event()
-    assert writer.submit("blocked", 0, release.wait)
-    await recorder.record_invocation(
-        conversation_key="metadata",
-        provider_id="core",
-        tool_name="erased",
-        success=True,
-        latency_seconds=0,
-        result_size=1,
-        artifact_created=False,
-        error_category=None,
-        canonical_conversation_id=env.context.conversation_id,
-    )
-    async with database.sessions() as session, session.begin():
-        session.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
-    release.set()
-    await writer.close()
-    async with database.sessions() as session:
-        assert await session.scalar(select(func.count(ToolInvocationModel.id))) == 1
-
-
-@pytest.mark.parametrize("change", ["privacy", "owner_binding", "generation"])
+@pytest.mark.parametrize("change", ["privacy", "binding_disabled", "generation"])
 async def test_event_receipt_source_rechecked_atomically_after_read_prepare(
     database, tmp_path, monkeypatch, change
 ):
@@ -543,21 +359,18 @@ async def test_event_receipt_source_rechecked_atomically_after_read_prepare(
             async with original() as session, session.begin():
                 if change == "privacy":
                     session.add(ExecutionTraceStateModel(id=1, privacy_generation=1))
-                elif change == "owner_binding":
+                elif change == "binding_disabled":
                     await session.execute(update(SpaceBindingModel).values(status="disabled"))
                 else:
                     await session.execute(update(CanonicalConversationModel).values(generation=2))
 
     monkeypatch.setattr(database, "sessions", changed_after_prepare)
-    with pytest.raises(MemoryPartitionResolutionError, match="tool_receipt_source_changed"):
-        await ToolInvocationRepository(database).record_invocation(
-            conversation_key="source",
+
+    async def record_original_receipt():
+        await ToolReceiptRepository(database).record_receipt(
             provider_id="core",
             tool_name="terminal_exec",
             success=True,
-            latency_seconds=0,
-            result_size=1,
-            artifact_created=False,
             error_category=None,
             trigger_event_id=source.id,
             canonical_conversation_id=env.context.conversation_id,
@@ -566,9 +379,20 @@ async def test_event_receipt_source_rechecked_atomically_after_read_prepare(
             bot_user_id=env.bot.self_id,
             result_excerpt="verified source",
         )
+
+    if change == "binding_disabled":
+        await record_original_receipt()
+    else:
+        with pytest.raises(MemoryPartitionResolutionError, match="tool_receipt_source_changed"):
+            await record_original_receipt()
     async with original() as session:
-        assert await session.scalar(select(func.count(MemoryToolReceiptModel.id))) == 0
-        assert await session.scalar(select(func.count(ToolInvocationModel.id))) == 0
+        if change == "binding_disabled":
+            receipt = (await session.scalars(select(MemoryToolReceiptModel))).one()
+            assert receipt.canonical_space_id == env.space
+            assert receipt.canonical_person_id is None
+            assert receipt.trigger_event_id == source.id
+        else:
+            assert await session.scalar(select(func.count(MemoryToolReceiptModel.id))) == 0
 
 
 async def test_self_receipt_keeps_existing_call_key_and_refuses_erased_generation(database):

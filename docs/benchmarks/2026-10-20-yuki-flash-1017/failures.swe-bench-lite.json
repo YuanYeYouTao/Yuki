@@ -1,0 +1,2125 @@
+{
+  "definition": {
+    "type": "互斥主分类，依据官方tests_status的F2P/P2P列表；failure可含FAILED/ERROR/SKIPPED或未解析到指定测试，不能自动视为实际断言失败。",
+    "category_labels": {
+      "f2p_only": "目标FAIL_TO_PASS未全过，未记录PASS_TO_PASS失败",
+      "f2p_and_p2p": "FAIL_TO_PASS与PASS_TO_PASS均记录失败",
+      "p2p_only": "FAIL_TO_PASS全过，但PASS_TO_PASS未全过",
+      "unparseable_test_result": "测试结果打印中断，未得到可解析tests_status"
+    },
+    "cross_flags": "交叉注释不与主分类相加；官方infra0不证明不存在评测环境问题。"
+  },
+  "primary_category_counts": {
+    "f2p_only": 68,
+    "unparseable_test_result": 1,
+    "f2p_and_p2p": 7,
+    "p2p_only": 8
+  },
+  "cross_flags": [
+    {
+      "name": "official_ambiguous_no_tests_collected",
+      "ids": [
+        "pytest-dev__pytest-5221",
+        "pytest-dev__pytest-7220"
+      ],
+      "count": 2,
+      "interpretation": "官方classifier交叉标记，顶层并非零测试；不能从主分类中剔除，也不改分母。",
+      "evidence": [
+        {
+          "instance_id": "pytest-dev__pytest-5221",
+          "path": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pytest-dev__pytest-5221/test_output.txt",
+          "line_start": 3071,
+          "line_end": 3071,
+          "finding": "顶层collected173。"
+        },
+        {
+          "instance_id": "pytest-dev__pytest-5221",
+          "path": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pytest-dev__pytest-5221/test_output.txt",
+          "line_start": 8304,
+          "line_end": 8305,
+          "finding": "顶层8failed164passed1xfailed。"
+        },
+        {
+          "instance_id": "pytest-dev__pytest-7220",
+          "path": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pytest-dev__pytest-7220/test_output.txt",
+          "line_start": 3447,
+          "line_end": 3447,
+          "finding": "顶层collected12。"
+        },
+        {
+          "instance_id": "pytest-dev__pytest-7220",
+          "path": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pytest-dev__pytest-7220/test_output.txt",
+          "line_start": 3547,
+          "line_end": 3548,
+          "finding": "顶层1failed11passed。"
+        }
+      ]
+    },
+    {
+      "name": "p2p_failure_with_network_connection_or_fixture_symptoms",
+      "ids": [
+        "psf__requests-2317",
+        "psf__requests-2674",
+        "psf__requests-3362",
+        "psf__requests-863"
+      ],
+      "count": 4,
+      "interpretation": "交叉症状，包含外部服务/连接行为/fixture；不等同4个已证明环境根因，也不等同4个代码回归。"
+    },
+    {
+      "name": "official_test_patch_application_failure_observed",
+      "ids": [
+        "pallets__flask-4992"
+      ],
+      "count": 1,
+      "interpretation": "官方评分仍unresolved；仅交叉注释，不执行补丁清洗或重评。"
+    },
+    {
+      "name": "dependency_compatibility_symptom_example",
+      "ids": [
+        "pallets__flask-4045",
+        "psf__requests-3362"
+      ],
+      "count": 2,
+      "interpretation": "有证据的代表，不宣称穷尽所有环境问题。"
+    }
+  ],
+  "representative_evidence": [
+    {
+      "instance_id": "django__django-13321",
+      "observation": "局部修复和本地原测试通过，仍未覆盖官方目标行为：最终patch仅把b64decode移入try，官方要求的安全日志相关测试实际失败。",
+      "evidence": [
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-13321/test_output.txt",
+          "line_start": 39054,
+          "line_end": 39123,
+          "finding": "9项安全日志断言失败，no logs of level WARNING or higher triggered on django.security.SuspiciousSession；report目标F2P有18未通过。"
+        },
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/tasks/django__django-13321/trajectory.jsonl",
+          "line_start": 30,
+          "line_end": 33,
+          "finding": "真实工具回执为Ran384tests/OK；随后task_control complete声称该局部修复验证完成。未由此推断其他83题相同。"
+        }
+      ]
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-23913",
+      "observation": "目标F2P2项全过，但P2P test_warn_big_data_best_loc未收到预期警告。缺少干净基线复跑的独立确认，不能直接归因patch回归。",
+      "evidence": [
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-23913/test_output.txt",
+          "line_start": 27391,
+          "line_end": 27407,
+          "finding": "pytest.warns(UserWarning)处失败，未发预期警告。"
+        },
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-23913/test_output.txt",
+          "line_start": 27531,
+          "line_end": 27532,
+          "finding": "1 failed,103 passed,10 skipped。"
+        }
+      ]
+    },
+    {
+      "instance_id": "django__django-11905",
+      "observation": "测试结果打印中断，不能把report.patch_successfully_applied=false等同实际补丁应用失败。",
+      "evidence": [
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-11905/run_instance.log",
+          "line_start": 5,
+          "line_end": 14,
+          "finding": "agent patch三个文件均Applied cleanly。"
+        },
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-11905/test_output.txt",
+          "line_start": 37253,
+          "line_end": 37296,
+          "finding": "unittest打印错误→subTest.__str__→QuerySet.__repr__→isnull ValueError，最终没有parseable tests_status。"
+        }
+      ]
+    },
+    {
+      "instance_id": "pallets__flask-4992",
+      "observation": "官方测试补丁无法应用；实际21项测试全过，但预期P2P test_config_from_file_json没有出现。是缺失测试，不是已观察到该测试断言失败。agent patch也改了tests/test_config.py；冲突因果没有另行复跑确认。",
+      "evidence": [
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pallets__flask-4992/test_output.txt",
+          "line_start": 1946,
+          "line_end": 1947,
+          "finding": "error: tests/test_config.py: patch does not apply。"
+        },
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pallets__flask-4992/test_output.txt",
+          "line_start": 1954,
+          "line_end": 1986,
+          "finding": "collected21,21passed,exit0；报告P2P指定名称缺失。"
+        }
+      ]
+    },
+    {
+      "instance_id": "psf__requests-3362",
+      "observation": "同时存在fixture依赖错误与连接相关失败；不能把全部失败看成补丁功能错误。",
+      "evidence": [
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/psf__requests-3362/test_output.txt",
+          "line_start": 1144,
+          "line_end": 1153,
+          "finding": "recursive dependency involving fixture httpbin。"
+        },
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/psf__requests-3362/test_output.txt",
+          "line_start": 2294,
+          "line_end": 2294,
+          "finding": "fixture mocker not found。"
+        },
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/psf__requests-3362/test_output.txt",
+          "line_start": 3578,
+          "line_end": 3578,
+          "finding": "4failed,72passed,108errors。"
+        }
+      ]
+    },
+    {
+      "instance_id": "pallets__flask-4045",
+      "observation": "Werkzeug url_parse弃用警告被当成测试失败，存在依赖版本兼容症状，尚未隔离证明唯一根因。",
+      "evidence": [
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pallets__flask-4045/test_output.txt",
+          "line_start": 9602,
+          "line_end": 9602,
+          "finding": "Werkzeug url_parse DeprecationWarning。"
+        },
+        {
+          "source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pallets__flask-4045/test_output.txt",
+          "line_start": 10320,
+          "line_end": 10320,
+          "finding": "117failed,51passed,11errors。"
+        }
+      ]
+    }
+  ],
+  "limits": [
+    "未对84题逐一证明代码级根因；主分类是官方测试症状，不是模型能力归因。",
+    "环境或评分异常代表没有运行干净基线对照；不据此修正72%官方成绩。",
+    "未确认顶层零测试或顶层collection失败。"
+  ],
+  "cases": [
+    {
+      "instance_id": "astropy__astropy-7746",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 56,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/astropy__astropy-7746/report.json"
+    },
+    {
+      "instance_id": "django__django-11283",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 8,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-11283/report.json"
+    },
+    {
+      "instance_id": "django__django-11564",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 174,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-11564/report.json"
+    },
+    {
+      "instance_id": "django__django-11630",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 16,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-11630/report.json"
+    },
+    {
+      "instance_id": "django__django-11905",
+      "primary_category": "unparseable_test_result",
+      "test_counts": {},
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-11905/report.json"
+    },
+    {
+      "instance_id": "django__django-12125",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 45,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-12125/report.json"
+    },
+    {
+      "instance_id": "django__django-13158",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 29,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-13158/report.json"
+    },
+    {
+      "instance_id": "django__django-13220",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 4
+        },
+        "PASS_TO_PASS": {
+          "success": 1,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-13220/report.json"
+    },
+    {
+      "instance_id": "django__django-13321",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 337,
+          "failure": 18
+        },
+        "PASS_TO_PASS": {
+          "success": 0,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-13321/report.json"
+    },
+    {
+      "instance_id": "django__django-13448",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 7,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-13448/report.json"
+    },
+    {
+      "instance_id": "django__django-14155",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 3
+        },
+        "PASS_TO_PASS": {
+          "success": 89,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-14155/report.json"
+    },
+    {
+      "instance_id": "django__django-14411",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 83,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-14411/report.json"
+    },
+    {
+      "instance_id": "django__django-14534",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 1,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 118,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-14534/report.json"
+    },
+    {
+      "instance_id": "django__django-14667",
+      "primary_category": "f2p_and_p2p",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 28,
+          "failure": 1
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-14667/report.json"
+    },
+    {
+      "instance_id": "django__django-14730",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 119,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-14730/report.json"
+    },
+    {
+      "instance_id": "django__django-15252",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 34,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-15252/report.json"
+    },
+    {
+      "instance_id": "django__django-15320",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 160,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-15320/report.json"
+    },
+    {
+      "instance_id": "django__django-15695",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 123,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-15695/report.json"
+    },
+    {
+      "instance_id": "django__django-15819",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 18,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-15819/report.json"
+    },
+    {
+      "instance_id": "django__django-15996",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 51,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-15996/report.json"
+    },
+    {
+      "instance_id": "django__django-16820",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 2,
+          "failure": 5
+        },
+        "PASS_TO_PASS": {
+          "success": 203,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/django__django-16820/report.json"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-18869",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 4
+        },
+        "PASS_TO_PASS": {
+          "success": 3,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-18869/report.json"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-22711",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 91,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-22711/report.json"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-22835",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 24,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-22835/report.json"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-23299",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 192,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-23299/report.json"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-23476",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 104,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-23476/report.json"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-23563",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 136,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-23563/report.json"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-23913",
+      "primary_category": "p2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 2,
+          "failure": 0
+        },
+        "PASS_TO_PASS": {
+          "success": 100,
+          "failure": 1
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-23913/report.json"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-23987",
+      "primary_category": "p2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 1,
+          "failure": 0
+        },
+        "PASS_TO_PASS": {
+          "success": 42,
+          "failure": 1
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-23987/report.json"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-24265",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 16,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-24265/report.json"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-24334",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 770,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-24334/report.json"
+    },
+    {
+      "instance_id": "matplotlib__matplotlib-25079",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 253,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/matplotlib__matplotlib-25079/report.json"
+    },
+    {
+      "instance_id": "pallets__flask-4045",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 1,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 50,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pallets__flask-4045/report.json"
+    },
+    {
+      "instance_id": "pallets__flask-4992",
+      "primary_category": "p2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 1,
+          "failure": 0
+        },
+        "PASS_TO_PASS": {
+          "success": 17,
+          "failure": 1
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pallets__flask-4992/report.json"
+    },
+    {
+      "instance_id": "pallets__flask-5063",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 54,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pallets__flask-5063/report.json"
+    },
+    {
+      "instance_id": "psf__requests-2317",
+      "primary_category": "p2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 8,
+          "failure": 0
+        },
+        "PASS_TO_PASS": {
+          "success": 130,
+          "failure": 3
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/psf__requests-2317/report.json"
+    },
+    {
+      "instance_id": "psf__requests-2674",
+      "primary_category": "p2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 12,
+          "failure": 0
+        },
+        "PASS_TO_PASS": {
+          "success": 138,
+          "failure": 4
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/psf__requests-2674/report.json"
+    },
+    {
+      "instance_id": "psf__requests-3362",
+      "primary_category": "f2p_and_p2p",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 72,
+          "failure": 3
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/psf__requests-3362/report.json"
+    },
+    {
+      "instance_id": "psf__requests-863",
+      "primary_category": "p2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 4,
+          "failure": 0
+        },
+        "PASS_TO_PASS": {
+          "success": 59,
+          "failure": 1
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/psf__requests-863/report.json"
+    },
+    {
+      "instance_id": "pydata__xarray-3364",
+      "primary_category": "f2p_and_p2p",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 1,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 109,
+          "failure": 1
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pydata__xarray-3364/report.json"
+    },
+    {
+      "instance_id": "pydata__xarray-4248",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 18,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pydata__xarray-4248/report.json"
+    },
+    {
+      "instance_id": "pydata__xarray-4493",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 1689,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pydata__xarray-4493/report.json"
+    },
+    {
+      "instance_id": "pylint-dev__pylint-7228",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 10,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pylint-dev__pylint-7228/report.json"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-5221",
+      "primary_category": "f2p_and_p2p",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 1,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 163,
+          "failure": 7
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pytest-dev__pytest-5221/report.json"
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7220",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 11,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/pytest-dev__pytest-7220/report.json"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-10508",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 18,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/scikit-learn__scikit-learn-10508/report.json"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-10949",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 42,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/scikit-learn__scikit-learn-10949/report.json"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-14983",
+      "primary_category": "f2p_and_p2p",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 104,
+          "failure": 1
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/scikit-learn__scikit-learn-14983/report.json"
+    },
+    {
+      "instance_id": "scikit-learn__scikit-learn-25747",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 14,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/scikit-learn__scikit-learn-25747/report.json"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-10451",
+      "primary_category": "p2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 2,
+          "failure": 0
+        },
+        "PASS_TO_PASS": {
+          "success": 79,
+          "failure": 1
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sphinx-doc__sphinx-10451/report.json"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-7686",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 15,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sphinx-doc__sphinx-7686/report.json"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-7738",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 30,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sphinx-doc__sphinx-7738/report.json"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8273",
+      "primary_category": "f2p_and_p2p",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 1,
+          "failure": 2
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sphinx-doc__sphinx-8273/report.json"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8282",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 16,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sphinx-doc__sphinx-8282/report.json"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8474",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 4
+        },
+        "PASS_TO_PASS": {
+          "success": 436,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sphinx-doc__sphinx-8474/report.json"
+    },
+    {
+      "instance_id": "sphinx-doc__sphinx-8506",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 14,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sphinx-doc__sphinx-8506/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-11400",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 29,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-11400/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-11870",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 58,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-11870/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-11897",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 95,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-11897/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-12171",
+      "primary_category": "f2p_and_p2p",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 7,
+          "failure": 1
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-12171/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-13043",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 1,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-13043/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-13177",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 75,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-13177/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-13437",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 15,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-13437/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-13773",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 69,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-13773/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-13915",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 62,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-13915/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-14308",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 113,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-14308/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-14317",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 116,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-14317/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-15308",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 120,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-15308/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-16106",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 55,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-16106/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-16281",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 120,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-16281/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-16503",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 121,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-16503/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-16988",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 1,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 72,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-16988/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-18057",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 98,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-18057/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-18199",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 113,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-18199/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-18698",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 147,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-18698/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-19254",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 18,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-19254/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-20049",
+      "primary_category": "p2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 4,
+          "failure": 0
+        },
+        "PASS_TO_PASS": {
+          "success": 8,
+          "failure": 1
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-20049/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-20322",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 89,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-20322/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-20639",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 2
+        },
+        "PASS_TO_PASS": {
+          "success": 139,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-20639/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-21171",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 152,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-21171/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-22840",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 1,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 95,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-22840/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-23191",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 3,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-23191/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-24102",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 1,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 0,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-24102/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-24909",
+      "primary_category": "f2p_only",
+      "test_counts": {
+        "FAIL_TO_PASS": {
+          "success": 0,
+          "failure": 1
+        },
+        "PASS_TO_PASS": {
+          "success": 2,
+          "failure": 0
+        },
+        "FAIL_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        },
+        "PASS_TO_FAIL": {
+          "success": 0,
+          "failure": 0
+        }
+      },
+      "official_source_ref": "local-source/runs/swe-lite-test-full-capacity/evaluation/logs/run_evaluation/yuki-lite-test-full-capacity-20261020/yuki__deepseek-flash/sympy__sympy-24909/report.json"
+    }
+  ]
+}

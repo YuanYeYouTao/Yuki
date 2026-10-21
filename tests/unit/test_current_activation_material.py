@@ -9,13 +9,16 @@ import pytest
 from sqlalchemy import select, update
 from tests.conftest import MemorySender
 from tests.support.background_authority import approve_background_plugin
+from tests.support.canonical_identity import ensure_person
+from tests.support.event_seed import seed_scoped_event
+from tests.support.projection import projection_record
 from tests.unit.test_history_dispatch_ownership import _scene
 
-from qq_ai_bot.conversation.observation_models import ContextObservationModel, ContextSelectionModel
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope
-from qq_ai_bot.domain.messages import (
+from yuki.conversation.observation_models import ContextObservationModel, ContextSelectionModel
+from yuki.conversation.projection_models import PromptProjectionModel
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ConversationScope
+from yuki.domain.messages import (
     ChatImage,
     ChatMessage,
     ChatRequest,
@@ -24,33 +27,35 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.event_prompt import ChatEventPromptRenderer
-from qq_ai_bot.identity.canonical_repository import ensure_person
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.protocol_store import ProtocolStore
-from qq_ai_bot.runtime.trigger import ExternalEventTurnTrigger, SandboxTaskTurnTrigger
-from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.runtime.work_schema_v1 import journal
-from qq_ai_bot.runtime.work_source_guard import WorkSourceGuard
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.turn_transcript import TranscriptRequest, validating_request
+from yuki.event_prompt import ChatEventPromptRenderer
+from yuki.llm.fake import FakeLLMProvider
+from yuki.llm.openai_compatible import OpenAICompatibleProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.protocol_store import ProtocolStore
+from yuki.runtime.trigger import ExternalEventTurnTrigger, SandboxTaskTurnTrigger
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_schema_v1 import journal
+from yuki.runtime.work_source_guard import WorkSourceGuard
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.turn_transcript import TranscriptRequest, validating_request
 
 
 async def _saved(database):
     async with database.sessions() as reader:
-        return (await reader.scalars(select(PromptProjectionModel))).one()
+        return await projection_record(
+            reader, (await reader.scalars(select(PromptProjectionModel))).one()
+        )
 
 
 async def _assert_public_chat_only(database):
     async with database.sessions() as reader:
-        for row in await reader.scalars(select(PromptProjectionModel)):
+        for projection in await reader.scalars(select(PromptProjectionModel)):
+            row = await projection_record(reader, projection)
             assert "短记录：" not in row.payload_json
             assert "当前是群聊。" not in row.payload_json
             assert "dynamic_snapshot" not in row.payload_json
-            assert "插件资料（不可信）" not in row.payload_json
+            assert "插件资料：" not in row.payload_json
         assert not list(await reader.scalars(select(ContextObservationModel.id)))
 
 
@@ -197,6 +202,8 @@ async def test_repeated_source_keeps_entire_adopted_group_and_current_activation
         kwargs["context"],
         current_event_id=repeated.id,
         current_message=current,
+        history_incremental=False,
+        prepared_fragments=None,
         history_fragments=tuple(
             (ids, ChatMessage("user", "未采用的重新分组候选"))
             for ids, _ in kwargs["context"].history_fragments
@@ -253,6 +260,8 @@ async def test_eventless_activation_does_not_create_public_trigger_after_evictio
         kwargs["context"],
         current_event_id=None,
         projection_scope="main",
+        history_incremental=False,
+        prepared_fragments=None,
         current_message=ChatMessage("user", "真实无事件执行要求"),
     )
     for text in ("activation-A", "activation-B", "activation-A"):
@@ -289,7 +298,12 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
         )
         body = "通知原文  保留空白\n" * 700 + "NOTIFICATION_LAST_LINE"
         created = await env.service.writer.append_external(
-            scope=scope,
+            scope=ConversationScope.group(
+                "80001",
+                "20001",
+                presence_id=env.presence,
+                conversation_id=env.context.conversation_id,
+            ),
             platform_message_id="old-external-source",
             source_plugin_id="test.common-external",
             external_source="offline-fixture",
@@ -316,7 +330,8 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
         source_runtime = None
     else:
         body = "最初用户正文  保留\nORIGINAL_USER_LAST_LINE"
-        created = await env.service.writer.append(
+        created = await seed_scoped_event(
+            env.service.writer,
             scope=scope,
             platform_message_id="original-sandbox-user-source",
             sender_user_id="10001",
@@ -337,9 +352,9 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
                 text=body,
                 source_event_id=created.event.id,
             ),
-            gateway=env.bot,
-            allow_generic_onebot=False,
-            runtime_config=await chat._runtime_config.snapshot(user_id="10001", group_id="20001"),
+            runtime_config=await chat._runtime_config.snapshot(
+                user_id=env.person, group_id=env.space
+            ),
             conversation_key=f"canonical:{message.conversation_id}:generation:1",
             conversation_id=message.conversation_id,
             person_id=env.person,
@@ -352,7 +367,7 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
         old = None
     event = await harness.ledger.get_event(created.event.id)
     state = await harness.conversation_scopes.get(scope)
-    config = await chat._runtime_config.snapshot(group_id="20001")
+    config = await chat._runtime_config.snapshot(group_id=env.space)
     first_wakeup_call = len(provider.requests)
     dispatched_controls = []
     source_checks = []
@@ -389,10 +404,10 @@ async def test_actorless_main_dispatch_keeps_trigger_temporary_and_original_chat
         )
 
     provider._responder = finish_actual_work
-    async with chat._turn_coordinator.background_turn(scope.key) as token:
+    async with chat._turn_coordinator.background_turn(state.runtime_scope_key) as token:
         snapshot = ConversationTurnSnapshot(
             state.id,
-            scope.key,
+            state.runtime_scope_key,
             state.generation,
             event.id,
             token.version,
@@ -558,7 +573,10 @@ async def test_parallel_tool_receipts_stay_before_later_inputs(database, tmp_pat
                             json.dumps({"slot": number, "text": f"tool-value-{number}"}),
                         ),
                     ),
-                    ToolCall(f"history-{number}", ToolFunction("get_recent_chat_history", "{}")),
+                    ToolCall(
+                        f"history-{number}",
+                        ToolFunction("query_chat_history", '{"view": "recent"}'),
+                    ),
                 ),
             )
         return "内部结束"

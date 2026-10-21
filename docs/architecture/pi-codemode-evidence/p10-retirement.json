@@ -9,7 +9,7 @@
     "execute_code -> CodeModeDriver/Host -> same InvocationService/backend/control"
   ],
   "main_iteration_call_sites": [
-    "src/qq_ai_bot/services/turn_execution.py:366"
+    "src/yuki/services/turn_execution.py:366"
   ],
   "removed": [
     "production AgentRunner._run",
@@ -77,12 +77,12 @@
   ],
   "dynamic_fallback_sites": [],
   "source_sha256": {
-    "src/qq_ai_bot/services/agent_runner.py": "bcfb0de33c366231a36825fefbe979e6a30d987edb30519eaedc9680267f9f26",
-    "src/qq_ai_bot/services/turn_execution.py": "420cf1b390f5531c6637662cf5fbc374744245840612ca3eb381ca4ac7865958",
-    "src/qq_ai_bot/agent_core/loop.py": "ae70d4ddb208aa81163efa6e186757b4e8b962be7e59dc2c84afb914e34a3b1d",
-    "src/qq_ai_bot/agent_core/model_boundary.py": "7cad2e1bf064f88b39c50817b4ac9a22bc7071eeb524fd61cde4ef8d67eb5f94",
-    "src/qq_ai_bot/capabilities/coordinator.py": "98bf587227f0425bb582a3876d898c6d3e85a308c085470de974eb3e5c43b1c0",
-    "src/qq_ai_bot/services/subagent_execution.py": "2459f40afc78d9482ddea119dadf957b40a566310a5870b4ee1c98ac2b4252a2"
+    "src/yuki/services/agent_runner.py": "bcfb0de33c366231a36825fefbe979e6a30d987edb30519eaedc9680267f9f26",
+    "src/yuki/services/turn_execution.py": "420cf1b390f5531c6637662cf5fbc374744245840612ca3eb381ca4ac7865958",
+    "src/yuki/agent_core/loop.py": "ae70d4ddb208aa81163efa6e186757b4e8b962be7e59dc2c84afb914e34a3b1d",
+    "src/yuki/agent_core/model_boundary.py": "7cad2e1bf064f88b39c50817b4ac9a22bc7071eeb524fd61cde4ef8d67eb5f94",
+    "src/yuki/capabilities/coordinator.py": "98bf587227f0425bb582a3876d898c6d3e85a308c085470de974eb3e5c43b1c0",
+    "src/yuki/services/subagent_execution.py": "2459f40afc78d9482ddea119dadf957b40a566310a5870b4ee1c98ac2b4252a2"
   },
   "limits": [
     "AST inspection proves these sources; behavioral/entrypoint tests provide runtime evidence.",

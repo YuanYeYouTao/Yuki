@@ -12,14 +12,14 @@ from sqlalchemy import update
 from sqlalchemy.engine import make_url
 from tests.support.codemode_cases import environment, outer_call, requires_worker
 
-from qq_ai_bot.codemode.driver import CodeCompositionYield, CodeModeDriver
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.runtime.protocol_schema import objects
-from qq_ai_bot.runtime.protocol_store import ProtocolStore
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.codemode.driver import CodeCompositionYield, CodeModeDriver
+from yuki.persistence.database import Database
+from yuki.runtime.protocol_schema import objects
+from yuki.runtime.protocol_store import ProtocolStore
+from yuki.runtime.work_repository import WorkRepository
+from yuki.tool_results.artifacts import ToolArtifactRepository
 
-pytestmark = requires_worker
+pytestmark = [requires_worker, pytest.mark.native_worker]
 
 
 def snapshot(source: Path, destination: Path):

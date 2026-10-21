@@ -20,9 +20,9 @@ from tests.support.work_effect_results_helpers import execute
 from tests.support.work_runner_helpers import case
 from tests.support.work_session import WorkSession
 
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.codemode.api_projection import project
-from qq_ai_bot.codemode.driver import (
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.codemode.api_projection import project
+from yuki.codemode.driver import (
     ChildClass,
     CodeCompositionYield,
     CodeModeDriver,
@@ -30,15 +30,15 @@ from qq_ai_bot.codemode.driver import (
     _State,
     is_control_tool,
 )
-from qq_ai_bot.codemode.driver_types import EngineCall, EngineOutcome, HostCounters
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatMessage, ChatTool
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_tools import subagent_tools
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import scope
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.tool_results.artifacts import ToolArtifactRepository
+from yuki.codemode.driver_types import EngineCall, EngineOutcome, HostCounters
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import ChatMessage, ChatTool
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_tools import subagent_tools
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import scope
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.tool_results.artifacts import ToolArtifactRepository
 
 
 async def environment(database, tmp_path, *, reporting=None):
@@ -121,7 +121,9 @@ class FakeEngine:
         return FakeRun(self.arguments, self.calls)
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize(
     "action,ending",
     [
@@ -145,7 +147,7 @@ async def test_control_receipt_crash_restores_decision_and_valid_tail(
     if action == "accept":
         from sqlalchemy import select
 
-        from qq_ai_bot.persistence.models import ChatEventModel
+        from yuki.persistence.models import ChatEventModel
 
         async with database.sessions() as reader:
             event = await reader.scalar(
@@ -189,7 +191,7 @@ async def test_control_receipt_crash_restores_decision_and_valid_tail(
         await CodeModeDriver(env.host, outer).run()
     assert env.domain.log == before_log
     # Recreate the activation objects and use the real journal restore path.
-    from qq_ai_bot.runtime.work_control import WorkControl
+    from yuki.runtime.work_control import WorkControl
 
     old = env.control
     restored_control = WorkControl(
@@ -274,7 +276,9 @@ async def test_pending_owned_execution_allows_code_wait_condition(database, tmp_
     assert json.loads(child.receipt)["ok"] is True, "Code Mode must retain direct wait semantics"
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize(
     "action,state", [("cancel", "cancelled"), ("fail", "failed"), ("resume", "queued")]
 )
@@ -315,7 +319,9 @@ async def test_control_of_other_target_keeps_current_program(
         assert body["result"] == [True, 42]
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("action,ending", [("cancel", "cancelled"), ("fail", "failed")])
 async def test_real_current_revocation_after_completion_proposal_stops_tail(
     database, tmp_path, native, action, ending
@@ -342,7 +348,9 @@ async def test_real_current_revocation_after_completion_proposal_stops_tail(
     assert tools == root == 0
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 async def test_completion_proposal_survives_segment_yield_until_original_tail_settles(
     database, tmp_path, native
 ):
@@ -364,7 +372,7 @@ async def test_completion_proposal_survives_segment_yield_until_original_tail_se
     assert env.control.ending == "completed"
     assert env.control.current["state"] == "running"
     assert env.domain.log == [("lookup", {"q": "before completion"})]
-    from qq_ai_bot.runtime.work_control import WorkControl
+    from yuki.runtime.work_control import WorkControl
 
     old = env.control
     restored_control = WorkControl(
@@ -390,7 +398,9 @@ async def test_completion_proposal_survives_segment_yield_until_original_tail_se
     assert tools == root == 2 and restored.controls == []
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("action", ["cancel", "fail"])
 async def test_revoked_original_work_settles_pending_program_without_reopening_vm(
     database, tmp_path, native, action
@@ -422,7 +432,9 @@ async def test_revoked_original_work_settles_pending_program_without_reopening_v
     assert tools == root == 1
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("interrupt", [None, "receipt_crash", "segment_yield"])
 async def test_child_question_preserves_original_program_and_wait_on_restore(
     database, tmp_path, monkeypatch, native, interrupt
@@ -439,7 +451,7 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     lease = await workers.acquire(identity)
     assert lease is not None
     row = await parent_env.control.repository.get(identity)
-    from qq_ai_bot.runtime.work_control import WorkControl
+    from yuki.runtime.work_control import WorkControl
 
     async def validate():
         assert await parent_env.control.repository.valid(lease)
@@ -474,7 +486,7 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     )
     calls = [
         ("yuki_lookup", {"q": "first"}),
-        ("yuki_subagent_message", {"text": "Which artifact?", "ask": True}),
+        ("yuki_subagent_control", {"action": "message", "text": "Which artifact?", "ask": True}),
         ("yuki_workspace_write", {"path": "after question"}),
     ]
     if not native:
@@ -483,7 +495,8 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     outer = outer_call(
         env,
         "await yuki_lookup({'q':'first'})\n"
-        "q = await yuki_subagent_message({'text':'Which artifact?','ask':True})\n"
+        "q = await yuki_subagent_control({'action':'message',"
+        "'text':'Which artifact?','ask':True})\n"
         "await yuki_workspace_write({'path':'after question'})\n"
         "print('child tail completed')\n"
         "[q['ok'], q['data']['waiting_parent'], 6 * 7]",
@@ -497,7 +510,7 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
         async def save_then_crash(self, key, state, receipt, **kwargs):
             nonlocal crashed
             await original(self, key, state, receipt, **kwargs)
-            if receipt.get("outcome", {}).get("tool") == "subagent_message" and not crashed:
+            if receipt.get("outcome", {}).get("tool") == "subagent_control" and not crashed:
                 crashed = True
                 raise asyncio.CancelledError("crash after durable child question")
 
@@ -545,7 +558,7 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     questions = [
         row
         for row in rows.values()
-        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "subagent_message"
+        if json.loads(row["receipt_json"]).get("outcome", {}).get("tool") == "subagent_control"
     ]
     assert len(questions) == 1 and tools == 2
     _, parent_tools, root = await effect_rows(database, parent_env.control.current["id"])
@@ -556,7 +569,9 @@ async def test_child_question_preserves_original_program_and_wait_on_restore(
     assert control.current["state"] == "waiting_user"
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("crash", [False, True])
 @pytest.mark.parametrize("error", ["capability_not_allowed", "capability_no_longer_authorized"])
 async def test_single_tool_refusal_keeps_valid_tail_on_run_and_restore(
@@ -602,7 +617,7 @@ async def test_single_tool_refusal_keeps_valid_tail_on_run_and_restore(
         with pytest.raises(asyncio.CancelledError):
             await CodeModeDriver(env.host, outer).run()
         assert env.domain.log == []
-        from qq_ai_bot.runtime.work_control import WorkControl
+        from yuki.runtime.work_control import WorkControl
 
         old = env.control
         control = WorkControl(old.repository, old.lease, old.source_key, old.source, old.validate)
@@ -723,14 +738,16 @@ async def test_original_code_stop_and_changed_api_never_reopen_program(
     assert env.domain.log == []
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("unavailable", ["worker", "api", "backend"])
 async def test_runner_restores_original_program_with_unavailable_current_code_contract(
     database, tmp_path, native, unavailable
 ):
     from tests.support.codemode_runner_helpers import Backend
 
-    from qq_ai_bot.runtime.work_control import WorkControl
+    from yuki.runtime.work_control import WorkControl
 
     env = await environment(database, tmp_path)
     env.host.tool_limit = 1
@@ -800,7 +817,9 @@ async def test_runner_restores_original_program_with_unavailable_current_code_co
     assert backend is None or backend.log == []
 
 
-@pytest.mark.parametrize("native", [False, pytest.param(True, marks=requires_worker)])
+@pytest.mark.parametrize(
+    "native", [False, pytest.param(True, marks=[requires_worker, pytest.mark.native_worker])]
+)
 @pytest.mark.parametrize("revoked", ["generation", "lease"])
 async def test_actual_execution_source_revocation_stops_new_program_effects(
     database, tmp_path, native, revoked

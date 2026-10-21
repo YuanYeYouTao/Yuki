@@ -43,6 +43,7 @@ _FORBIDDEN_NAMES = frozenset(
         "model_profiles.toml",
         "system_prompt.md",
         "mcp.json",
+        "yuki.db",
         "qq_ai_bot.db",
     }
 )

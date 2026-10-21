@@ -1,28 +1,24 @@
 # Yuki 使用与运维帮助
 
-Yuki 3.9.0 的 Alembic head 为 `0119`，Plugin API 为 `3.5`，只支持 canonical runtime。永久 Yuki、
-Person、Binding、Space、Presence 和 canonical Conversation 的关系见
-[当前架构](architecture/canonical-runtime.md)。
+本页跟随 Yuki **4.0.0 开发基线**：Alembic head 为 `0143`，Plugin API 为 `7.0`。
+人物、账号、空间与会话的关系见[当前架构](architecture/canonical-runtime.md)，
+版本迁移见 [4.0 升级指南](upgrade-4.0.0.md)。
 
 ## 安装与启动
 
-Linux：
+现成部署包使用 [3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0)，
+安装器与配置步骤见[对应版本指南](upgrade-3.9.0.md)。4.0 当前提供源码开发基线，
+从 3.9 迁移见 [4.0 指南](upgrade-4.0.0.md)。
+
+源码开发先安装 Python 3.12 和 uv：
 
 ```bash
-chmod +x install.sh
-./install.sh
+uv sync --all-extras
+uv run yuki --help
 ```
 
-Windows PowerShell：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
-```
-
-两个安装器默认安装 `3.9.0`，正式镜像支持 `linux/amd64` 和 `linux/arm64`；部署包见
-[3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0)。引导配置会询问主模型、
-可选 Flash/Embedding/Web/Vision、QQ Provider、Plugin 与 Automation，不再配置 Genie。
-密钥输入不回显，程序不会在线试用 API key。
+命令入口统一为 `yuki`，服务进程使用 `yuki-bot`。引导配置填写模型连接、平台和插件；
+密钥输入不回显。
 
 日常运维：
 
@@ -63,126 +59,36 @@ SNOWLUMA_WEBUI_BIND_ADDRESS=127.0.0.1
 Provider 合同检查：
 
 ```bash
-docker compose exec bot qq-ai-bot-cli gateway doctor --provider snowluma
+docker compose exec bot yuki gateway doctor --provider snowluma
 ```
 
 doctor 是只读检查，不发送消息、不调用私有 action，也不输出凭据。
 
 ## 模型配置
 
-模型可在 WebUI 的「模型与用量」中配置，也可用 `qq-ai-bot-cli setup` 完成初始引导。
-WebUI 选择供应商和协议，直接填写 API Base URL、模型 ID 与 API Key，然后按用途选择模型连接。
-新输入的密钥保存在服务器私有文件，不会在页面回显；在线模型管理保存后热应用新连接与搜索后端，已开始的激活继续使用原固定 Profile。手工修改文件或启动环境时按页面提示与部署流程重新加载。
+使用 `yuki setup` 完成初始引导；后续在模型 TOML 中明确选择供应商、协议、
+API Base URL、模型与任务路由，通过 `admin model apply` 保存并热应用。
+新增密钥使用 `admin model secret set`，密钥进入服务器私有文件，不回显。
+连接配置与命令见[管理 API](architecture/admin-api.md)。
+
+验证一项新连接时：
+
+1. 用 `admin model show` 读取当前配置与 revision；先只修改主对话的路由。
+2. 通过 `admin model apply <file> --revision <revision>` 应用并确认返回的实际状态。
+3. 在明确授权的测试会话发送消息，按需测试图片与工具；用 `admin trace` 查询原轮次，
+   用 `model stats` 查看原调用记录。配置保存本身不调用模型。
+4. 需要恢复时，用同一入口将路由改回并确认应用。
+
 支持 Chat Completions、Responses、Claude Messages 和原生 Gemini GenerateContent；
-具体思考、工具、图片、结构化输出与缓存能力取决于供应商和模型。
-
-测试 Gemini 3.8 Flash：
-
-1. 在「模型与用量」选择「添加模型连接」，供应商选「Google Gemini」。页面预填
-   `gemini-3.8-flash`、`https://generativelanguage.googleapis.com/v1beta` 和原生 Gemini 协议。
-2. 在 API Key 输入框粘贴 Google 提供的密钥。先仅把「主对话」指向新连接，其他用途沿用现有模型。
-3. 点击「检查并保存」，确认页面提示已应用，再确认健康状态和实际已加载路由。
-4. 用明确授权的测试会话发一条文字消息，按需再测图片及工具。到「轨迹与审计」查看该轮的请求、响应、
-   工具与投递步骤；到「模型与用量」查看 Gemini 调用次数、输入/输出 Token 及缓存命中报告。
-5. 测试后若要恢复原路由，在 WebUI 将「主对话」选回原连接并保存，确认已应用。
-
-这套配置不会在保存时发出模型请求；真实模型效果、密钥有效性和上游可用性需第 4 步验证。
-Gemini 的 Google 搜索通过 `search_mode="bridge"` 的独立请求接入，主对话保留本地 `web_search` 工具；该连接与上游仍须实际支持搜索。Interactions、Live 和 TTS 尚未接入。用量是 Yuki 入账的调用，
-不是供应商账单；没有可靠单价时页面不估算费用。
-
-通用原则：
-
-- 不在聊天、日志、Issue 或 Git 中粘贴 API key。
-- Responses 请求默认不发送 `temperature`。
-- 思考与结构化模式沿显式 Profile/请求设置，不强制开启、设置最低档位或自动抬档。
-  各协议参数及真实能力见[模型供应商合同](architecture/model-providers.md)。
-- Web、Embedding 和 Vision 都是可选能力；不可用时应有界降级，不影响纯文本主路径。
-- secret 只能写入或查询“是否已配置”，不能通过控制面读回。
-
-修改启动环境或需重启的配置后先检查，沿用原项目名及全部 Compose 覆盖文件：
-
-```bash
-docker compose config --quiet
-docker compose up -d --no-deps --force-recreate bot
-docker compose logs --tail 200 bot
-```
-
-## Conversation 与群聊
-
-- 私聊 Conversation 属于 Person；同一 Person 的多个 QQ Binding 共用会话。
-- 群聊 Conversation 属于 Space；更换 Yuki Presence 不会产生新的群会话。
-- `/ai new` 重置当前 canonical Conversation 的上下文并取消其未结束的 Work。群内影响全部参与者，
-  仅超级管理员可用；私聊重置本人的会话。原始聊天、长期 Memory 与全局 short_state 保留。
-  它不会停止运行资料的 producer，也不会重置其他会话。
-- 群 ingest 路由决定哪个 Presence 处理某个外部群。路由暂停或不匹配时，消息在 Agent 和 Memory
-  之前失败关闭。
-- 切换账号时，不在当前账号群列表中的旧群只是暂时不可达，不应删除群设置或按共同群交集关闭。
-  切回旧账号后，未手动暂停的旧路由可继续使用。
-- 历史遗留的暂停路由可由超级管理员在**目标群内**单独发送 `/ai on` 恢复。该命令经过真实连接、
-  canonical 身份和实时群成员校验，在同一事务中启用群并修复必要的入站/发送路由，保留健康的
-  既有路由。不需要 `/ai new`，不会重置会话或记忆，也不进入聊天历史。
-  暂停群中的其他 `/ai` 命令只向超管提示恢复方法，不执行原命令；普通用户不能绕过路由围栏。
-  多个候选账号且没有健康接入 pin 时拒绝恢复；仅私聊发送 `/ai group <群号> on` 只修改群启用设置，
-  不能替代目标群的连接证明。
-- 当前事件回复优先使用 ingress 连接；自动化和主动通知读取持久路由。
-- @、reply 与 mention-only 消息从 OneBot `original_message` 保序投影；任一 Yuki Presence 都
-  被识别为 Yuki。
-
-会话 compact 替换 Main 已覆盖的输入窗口，原始 `chat_events` 与私有执行回执继续保存。
-公共检查点是不可信输入，不进入 Memory。手动 `/ai compact` 与自动整理共用当前 Main 路径。
-详见 [会话 Compact](architecture/conversation-compact.md)。
-
-## Memory
-
-Memory owner：
-
-- SELF：永久 Yuki 自身。
-- PERSON：永久 Person。
-- GROUP：永久 Space。
-- PERSON_GROUP：某 Person 与某 Space 的共同经历。
-
-结构化读取按后端记录的历史共同群关系授权：本人 Person 始终可读；他人 Person 需要直接历史
-共同群；Group 需要请求者的历史 membership；PersonGroup 需要双方都曾属于该群。退群、群停用、
-Provider 离线或 Presence 切换不会自动撤销这项历史关系。共同群授权允许读取 Person 中来自私聊的
-结构化事实，但不开放原始私聊、他人 evidence/private SELF，也不扩大 mutation 权限。群聊可直接
-查询其他历史共同群，私聊查询群记忆时必须指定群名或兼容 ID；同名歧义会要求澄清，无结果则正常
-返回空结果。
-
-普通自动提取按同一 canonical owner 聚合；达到 12 条、8,000 字符或最老事件等待一小时中的任一
-条件才领取。显式记住、纠正与删除仍立即执行；没有足够价值的新事实时 noop 是健康结果。只自动
-保留稳定事实、持续偏好及有意义的一次性共同经历。
-
-`memory_change.visibility` 只对 SELF 生效。PERSON、PERSON_GROUP 和 GROUP 目标若带合法的
-`current_scope` 或 `global` hint，会忽略该 hint 后继续授权与 mutation；非法 visibility 仍会
-被拒绝。Memory 事实保留 Evidence、authority、confidence、状态、冲突和版本链。
-
-同一 Person 的多个 Binding 共享偏好、人物记忆和历史。Yuki Presence 与第三方机器人不
-创建人物资料。`/ai forgetme` 按 Person 删除其拥有的数据，删除后旧 Binding 不再能读取其Memory。
-
-更多资料：
-
-- [Memory V2](architecture/memory-v2.md)
-- [Memory 变更](architecture/memory-change.md)
-- [Memory 质量运维](operations/memory-quality.md)
-- [Memory 重建](architecture/memory-v2-rebuild.md)
-
-## 接收语音
-
-私聊可以直接发送 QQ 语音。群聊仍按原有启用状态、@、引用和触发规则决定是否回复；
-不会把群里的每条语音都提交识别。触发回复的消息可以包含语音，也可以引用一条语音。
-Yuki 会根据转写内容回复，之后可以回忆或搜索这条语音。识别不成功会明确提示，不会猜测。
-
-`ASR_ENABLED` 控制入站和引用语音识别；Genie 合成及专属语音发送功能已退出，通用管理员 OneBot 接口仍遵守原权限合同。默认使用 `qwen3-asr-flash`，复用现有千问
-连接。缺少可用连接时会说明服务未配置。详见 [配置与验收](speech/recognition.md)。
-
-## 工具、权限与控制面
+思考、图片、工具、结构化输出与缓存取决于所选连接。真实密钥和上游可用性通过实际请求验证。
+Google 搜索沿显式搜索连接与 `search_mode="bridge"`，不根据消息内容暗中切换 Provider。
+用量是 Yuki 入账记录，不是供应商账单。
 
 主 Agent 在启动时冻结工具合同，执行处按当前 Principal 核验授权。默认 direct 模式直接声明部署内固定完整工具清单；显式启用 Code Mode 时，固定直调工具保留终端、联网搜索和网页读取，其余工具经 Code Mode 调用。
 Capability 决定 metadata、外部 ID、正文、mutation 与 destructive 操作的不同权限。
 
-Control Plane 提供 CLI、QQ command 和 WebUI 共用的 Query/Command 服务。WebUI
-把登录身份转换为 `ControlPrincipal` 与 `DecisionContext`，不直接访问 ORM、数据库或
-Gateway；当前功能边界见 [WebUI 合同](architecture/webui-console.md)。
+管理 CLI 通过 Bearer API 调用原领域服务，权限来自服务器 operator 声明；
+QQ 管理仍使用 `/ai`。当前范围见[管理 API](architecture/admin-api.md)。
 
 高风险边界：
 
@@ -194,11 +100,9 @@ Gateway；当前功能边界见 [WebUI 合同](architecture/webui-console.md)。
 在 QQ 中使用 `/ai help` 与 `/ai capabilities` 查看当前可用命令和能力；实际结果以当前
 Principal、会话和运行配置为准。
 
-## Plugin API 3.5
+## Plugin API 7.0
 
-当前 Host 只接受精确声明 Plugin API `3.5` 的插件。未发布的事件、未实现的 `runtime.config.read/write` 权限、Genie 专属接口与直接模型 LLMFacade 已移除；插件自己的配置仍使用 `plugin.config.read/write`，模型任务使用 `agent.run`。插件可以使用固定 primary `conversation_key`，也可读取可选的
-person、space、conversation 和 presence ID。插件不能自报超级管理员，也不能绕过
-Control Plane、Capability 或 Gateway Registry。
+当前 Host 只接受精确声明 Plugin API `7.0` 的插件。插件使用内部 Person、Space、Conversation ID，人物提及保留原位快照；插件配置仍使用 `plugin.config.read/write`，主 Agent 任务使用 `agent.run`。独立模型会话为 `plugin.agent_session.v2`，保留连续历史和真实模型请求预算。插件的实际权限由管理员批准和当前调用来源决定。
 
 插件发布的主动事件继续以独立 `external_event` 落账，不伪装成真人聊天。插件若请求 Yuki
 点评，只会创建可靠 WakeupRequest；Worker 加载该 canonical Conversation 与普通聊天完全相同的
@@ -212,35 +116,33 @@ compact 检查点、raw history、本轮资料、Prompt compiler、工具合同�
 - [Plugin 开发索引](plugin-development/index.md)
 - [架构](plugin-development/architecture.md)
 - [权限与安全](plugin-development/security.md)
-- [从旧 Plugin API 迁移](plugin-development/api-3.5-migration.md)
+- [迁移到 Plugin API 7.0](plugin-development/api-7.0-migration.md)
 
 ## Emoji 与 Vision
 
-- Emoji 资产有独立生命周期、审核和作用域；见 [Emoji 文档](emoji-system/architecture.md)。
+- 共享表情原件与可重建索引位于持久工作区，文字与后台配图共用 Social 及原回执；见[表情文档](emoji-system/architecture.md)。
 - Vision 是可选 Provider，失败时不会把任意外部 URL 当作可信媒体。
 
 这些扩展都服从同一 Principal、Capability、审计、路由和 canonical owner 规则。
 
 ## 数据与升级
 
-当前完整迁移链至 `0119`。`0098` 退役 MCP 状态，`0099` 冻结已提交摘要表示；`0100` 关联插件后台任务的原 Work，`0101` 将旧效果结果归一为明确 outcome 并保留原正文；`0102` 移除同 memory_key 单 active 的唯一索引，同 key 的独立事实可以共存。`0103`移除旧人物评分存储；`0104`删除无消费者的检查点配额记账、投递死字段及主动轮唯一占用；`0105`统一 Work 父子树并退役旧完成门槛；`0106`保留自动化的完整指令与原 run 恢复版本；`0107`增加实际查询索引。`0108`的资料差量缓存由`0109`清退，普通运行资料只用于当前激活，公共历史保留原聊天；`0110`将定时定义转为共同 Main 任务，保留原版本、到期 run、Work、预算和效果回执；`0111`删除 Memory 回执只接受 event/initiative 的封闭检查，无真人事件的 SELF 定时执行沿原发生、版本与 execution 记账。`0112`统一同一Conversation的公共历史，退出个人/SELF时区配置及公共笔记/观察摘要，原私有执行与引用保全。`0113`删除generation/reset时清除原观察及DAG的旧触发器，新会话仍取消旧来源的新执行并清公共历史，原件保留。历史 `0048` bridge 的来源限制仍有效，不能用版本号或
-手工 stamp 跳过来源校验。`0097` 退役四张 Genie 表及固定配置键，执行前必须核原
-Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当作纯缓存。
+当前 Alembic head 为 `0143`。正式 3.9.0 的 head 为 `0119`；4.0 新增 23 个迁移节点，涉及人物与账号归属、个人设备、插件会话、表情文件库和查询索引。迁移保留原事件、Work、预算、私有协议与执行回执，逐项变化见 [4.0 升级指南](upgrade-4.0.0.md)。
 
-`0114` 将旧群暂停状态迁入共同配置；`0115` 删除无消费者的反思诊断列；`0116` 退役旧 detached continuation claim；`0117` 删除无消费者的 OneBot 诊断日志；`0118` 为等待中的 sandbox run 建索引；`0119` 将有效公共检查点迁入既有 projection，退役旧 Rollup 表、等待与配置。原事件、Work、预算、journal、私有协议和执行回执保留。
+历史 `0048` bridge 仍按数据库真实来源处理，不能通过手工 stamp 跳过。`0097` 退役 Genie 表前需保全原 Work、发送回执及被引用音频；这些材料不是可随意删除的缓存。
 
 升级前停止实际写入本次数据库与备份目录的进程，并按同一时点备份：
 
-- `qq_ai_bot.db`
-- `qq_ai_bot.db-wal`
-- `qq_ai_bot.db-shm`
+- `yuki.db`
+- `yuki.db-wal`
+- `yuki.db-shm`
 - 配置、Compose 文件、镜像 digest 和 Provider 登录目录
 - 宿主插件、协议对象、工具 artifacts、持久 Work 证据及被引用音频
 
 `0097` 与 `0102` 明确拒绝丢失事实的 downgrade，优先向前修补。换回旧镜像不会恢复已删事实；恢复历史
 快照也不能覆盖升级后新消息、文件和回执。不要手工 stamp revision 或只恢复主 DB。
 当前权限清退、旧执行核对、冷备、插件 API 更新及切换步骤见
-[3.9.0 升级指南](upgrade-3.9.0.md)。
+[4.0.0 升级指南](upgrade-4.0.0.md)。
 
 ## 故障排查
 
@@ -248,13 +150,13 @@ Work/发送回执及被引用 WAV，保全专属事实；不能把生成表当�
 
 检查：
 
-1. Space 与 SpaceBinding 是否 enabled。
-2. SpaceBinding ingest route 是否 paused。
-3. 当前 Presence 是否为该外部群的唯一 ingest。
-4. 当前 QQ 是否仍是群成员，且 Provider 成员探针可用。
-5. 群策略是否要求 @，以及当前消息是否正确投影到 Yuki Presence。
+1. Space 是否启用，SpaceBinding 是否为 `active`。
+2. Yuki 账号的 AccountAssignment 是否为 `active`、允许 ingest，Provider 是否真实在线。
+3. 群 ingest 路由是否暂停，所指 Presence 是否与当前入站账号一致。
+4. 冷路由或恢复所需的群成员探针是否成功；已认证且同一路由的普通入站无需逐条重查。
+5. 当前群策略是否要求 @，原生提及是否指向当前 Yuki 账号。
 
-不要为“先能说话”而伪造旧 group/scope 行或随意改 Conversation generation。
+群内超级管理员可用 `/ai admin group current enable` 恢复当前群，具体行为见[身份与群接入合同](architecture/canonical-runtime.md)。按原内部编号查询路由与归属，不手工改库或复活已结束的账号阶段。
 
 ### Provider 已登录但没有连接
 
@@ -280,5 +182,4 @@ historical 0048 bridge。pre-3.8 数据库不能通过关闭检查强行启动�
 
 ## 发布与版本
 
-发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)，当前版本见
-[3.9.0 说明](releases/v3.9.0.md)，旧版本记录见 [3.8.1 说明](releases/v3.8.1.md)。正式镜像与 Release 由 tag 流水线核对版本身份及 main 祖先关系，构建后验证已发布镜像、部署包、release smoke 与匿名拉取；Quality 的源码、前端与测试结果另行核对。
+当前开发基线见 [4.0.0 说明](releases/v4.0.0.md)，正式下载版本见 [3.9.0 说明](releases/v3.9.0.md)。本次准备不发布 4.0 镜像。正式发布流程见 [版本化 Docker Release](operations/versioned-docker-release.md)：tag 流水线核对版本身份及 main 祖先关系，构建后验证镜像、部署包与 release smoke；PR 的 Quality 检查验证源码与测试。

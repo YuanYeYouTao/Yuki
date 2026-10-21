@@ -7,31 +7,32 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from tests.conftest import build_harness, make_settings
 from tests.support.codemode_cases import effect_rows, environment, outer_call, requires_worker
 
-from qq_ai_bot import __version__
-from qq_ai_bot.capabilities.invocation import direct_invocations
-from qq_ai_bot.codemode.driver import CodeModeDriver
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.plugin_host.capability_adapter import PluginCapabilityAdapter
-from qq_ai_bot.plugin_host.discovery import PluginDiscovery
-from qq_ai_bot.plugin_host.event_bus import PluginEventBus
-from qq_ai_bot.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
-from qq_ai_bot.plugin_host.facades import HostPluginContext, PluginFacadeServices
-from qq_ai_bot.plugin_host.loader import PluginLoader
-from qq_ai_bot.plugin_host.manager import PluginManager
-from qq_ai_bot.plugin_host.repository import PluginInstallationRepository
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.invocation_service import InvocationService
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki import __version__
+from yuki.capabilities.invocation import direct_invocations
+from yuki.codemode.driver import CodeModeDriver
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
+from yuki.persistence.database import Database
+from yuki.plugin_host.capability_adapter import PluginCapabilityAdapter
+from yuki.plugin_host.discovery import PluginDiscovery
+from yuki.plugin_host.event_bus import PluginEventBus
+from yuki.plugin_host.extension_registry import ExtensionKind, ExtensionRegistry
+from yuki.plugin_host.facades import HostPluginContext, PluginFacadeServices
+from yuki.plugin_host.loader import PluginLoader
+from yuki.plugin_host.manager import PluginManager
+from yuki.plugin_host.repository import PluginInstallationRepository
+from yuki.runtime.origin import TurnOrigin
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.invocation_service import InvocationService
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 from yuki_plugin_sdk.api import PLUGIN_API_VERSION
 
 
@@ -136,8 +137,6 @@ async def run(*, native_child=False):
                     event_type="message",
                     scope_type=ScopeType.PRIVATE,
                 ),
-                gateway=None,
-                allow_generic_onebot=False,
                 execution_id="offline-fixture",
                 runtime_config=await chat._runtime_config.snapshot(),
             )
@@ -305,6 +304,7 @@ async def test_approved_hot_upgrade_does_not_replace_frozen_binding():
     await run()
 
 
+@pytest.mark.native_worker
 @requires_worker
 async def test_hot_upgrade_refusal_keeps_native_child_and_work_receipt():
     await run(native_child=True)

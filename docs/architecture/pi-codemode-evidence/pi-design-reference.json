@@ -22,7 +22,7 @@
     "unchanged": true,
     "files": [
       {
-        "path": "src/qq_ai_bot/agent_core/__init__.py",
+        "path": "src/yuki/agent_core/__init__.py",
         "before": {
           "source_sha256": "68c4b00991154a708a3c044e97d2e72a270bf29e21ef9c314877485e6e646b54",
           "executable_ast_sha256": "25226268843ab3300ef131bb8e966073ba795ce562e6f6cee7378631a4e665ae"
@@ -33,7 +33,7 @@
         }
       },
       {
-        "path": "src/qq_ai_bot/agent_core/events.py",
+        "path": "src/yuki/agent_core/events.py",
         "before": {
           "source_sha256": "8792551561478a4df98482894fcc1740cd951849b2a7737b3a76a92bb53fdbb9",
           "executable_ast_sha256": "53f5d4b5a9890fe9a6211ac9a4b3bf35a164a8ea5238c6aa64870794250631b6"
@@ -44,7 +44,7 @@
         }
       },
       {
-        "path": "src/qq_ai_bot/agent_core/loop.py",
+        "path": "src/yuki/agent_core/loop.py",
         "before": {
           "source_sha256": "ae70d4ddb208aa81163efa6e186757b4e8b962be7e59dc2c84afb914e34a3b1d",
           "executable_ast_sha256": "85bd931aad57f01bbae25c286c8de32ce8fab60557c7678ab180fed05f2e98e6"
@@ -55,7 +55,7 @@
         }
       },
       {
-        "path": "src/qq_ai_bot/agent_core/model_boundary.py",
+        "path": "src/yuki/agent_core/model_boundary.py",
         "before": {
           "source_sha256": "7cad2e1bf064f88b39c50817b4ac9a22bc7071eeb524fd61cde4ef8d67eb5f94",
           "executable_ast_sha256": "b6e42430c398942e7f1e72d6f0a19b7a3d15e9a662d6f040a0ecca2ae6bfb3e0"
@@ -66,7 +66,7 @@
         }
       },
       {
-        "path": "src/qq_ai_bot/agent_core/state.py",
+        "path": "src/yuki/agent_core/state.py",
         "before": {
           "source_sha256": "d2a5efd28b610b56c80f339783c8806be23255427a7940303ca93e95d5c367f9",
           "executable_ast_sha256": "cf28dd2a50c6e4651d37faf74bda6a009ff014f406d2b9409bc9a6a72ed66f08"
@@ -77,7 +77,7 @@
         }
       },
       {
-        "path": "src/qq_ai_bot/agent_core/types.py",
+        "path": "src/yuki/agent_core/types.py",
         "before": {
           "source_sha256": "f492d9c4671002f517b498eddc83f24c7c50ddcc554663a5b6d226f24a872be6",
           "executable_ast_sha256": "48d0734095cf5b95e0a5676c84f343d3031b8e94b25a491df1911677f8b13525"
@@ -103,7 +103,7 @@
   "packaging": {
     "build_command": "uv build --offline --python .venv/bin/python --wheel --out-dir <task-owned temporary directory>",
     "wheel": {
-      "file": "qq_ai_bot-3.9.0-py3-none-any.whl",
+      "file": "yuki-3.9.0-py3-none-any.whl",
       "sha256": "f6cf705b5f9b7f3278c0a288cc27bbf06a3f033ee6ba960d28d3888f5e32f865",
       "bytes": 15026053,
       "packaged_pi_license": false,

@@ -7,14 +7,14 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import build_harness, make_settings
 
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.automation.tools import AutomationToolService
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
+from yuki.automation.models import TurnOrigin
+from yuki.automation.tools import AutomationToolService
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity, ToolCall, ToolFunction
+from yuki.domain.tool_actor import ToolActor
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.main_agent_backend import MainAgentBackend
 
 
 @pytest.fixture
@@ -37,8 +37,6 @@ async def query_environment(database):
     )
     runtime = ToolRuntime(
         inbound=inbound,
-        gateway=None,
-        allow_generic_onebot=False,
         runtime_config=config,
         conversation_key="query-test",
     )
@@ -48,7 +46,7 @@ async def query_environment(database):
 @pytest.mark.asyncio
 async def test_queries_do_not_require_automation_or_mutation_admission(query_environment):
     chat, runtime = query_environment
-    backend = MainAgentBackend(chat, runtime, allowed_tools=frozenset())
+    backend = MainAgentBackend(chat, runtime)
     for action in ("get", "list"):
         assert backend.work_query_allowed(action)
 
@@ -71,7 +69,7 @@ async def test_queries_require_trusted_internal_actor(query_environment):
 @pytest.mark.asyncio
 async def test_delegated_query_scope_and_closed_profiles_are_enforced(query_environment):
     chat, runtime = query_environment
-    delegated = MainAgentBackend(chat, runtime, allowed_tools=frozenset({"automation_get"}))
+    delegated = MainAgentBackend(chat, runtime)
     assert delegated.work_query_allowed("get")
     assert delegated.work_query_allowed("list")
     closed = MainAgentBackend(chat, replace(runtime, tools_closed=True))
@@ -157,8 +155,6 @@ async def test_runner_query_gate_refuses_before_domain_read_and_keeps_lifecycle(
             runtime,
             remaining_calls=8,
             max_parallel_calls=1,
-            reusable_results={},
-            cacheable_names=frozenset(),
             declared_names=frozenset({"task_control"}),
         )
 

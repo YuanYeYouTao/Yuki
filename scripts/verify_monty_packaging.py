@@ -23,7 +23,7 @@ if len(sys.argv) != 2 or sys.argv[1] not in {"direct", "application", "validatio
 role = sys.argv[1]
 root = Path("/opt/yuki-monty")
 if role == "direct":
-    from qq_ai_bot.config import Settings
+    from yuki.config import Settings
 
     assert find_spec("pydantic_monty") is None, "direct image contains Monty binding"
     assert not root.exists(), "direct image contains worker/launcher distribution"
@@ -115,8 +115,8 @@ report["packaged_pi_license"] = False
 if role == "application":
     from importlib.resources import files
 
-    from qq_ai_bot.codemode.engine_monty import PinnedWorker
-    from qq_ai_bot.services.agent_runner import AgentRunner
+    from yuki.codemode.engine_monty import PinnedWorker
+    from yuki.services.agent_runner import AgentRunner
 
     assert AgentRunner is not None
     worker = PinnedWorker(
@@ -126,12 +126,12 @@ if role == "application":
         artifacts["launcher"]["sha256"],
     )
     worker.verify()
-    assert not files("qq_ai_bot.agent_core").joinpath("Pi-LICENSE.txt").is_file()
+    assert not files("yuki.agent_core").joinpath("Pi-LICENSE.txt").is_file()
     with tempfile.TemporaryDirectory(prefix="yuki-packaging-") as temporary:
-        database_path = Path(temporary) / "qq_ai_bot.db"
+        database_path = Path(temporary) / "yuki.db"
         env = dict(os.environ, DATABASE_URL=f"sqlite+aiosqlite:///{database_path}")
         migration = subprocess.run(
-            ["/app/.venv/bin/qq-ai-bot-cli", "init-db"], env=env, capture_output=True, timeout=60
+            ["/app/.venv/bin/yuki", "init-db"], env=env, capture_output=True, timeout=60
         )
         if migration.returncode:
             raise AssertionError(migration.stderr.decode())
@@ -139,8 +139,6 @@ if role == "application":
             revision = db.execute("SELECT version_num FROM alembic_version").fetchone()[0]
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert not db.execute("PRAGMA foreign_key_check").fetchall()
-    assets = files("qq_ai_bot.webui").joinpath("assets")
-    assert assets.joinpath("index.html").is_file()
-    report.update(migration_head=revision, packaged_pi_license=False, built_webui=True)
+    report.update(migration_head=revision, packaged_pi_license=False)
 report["verdict"] = "packaging_passed_container_isolation_unavailable"
 print(json.dumps(report, indent=2))

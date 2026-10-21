@@ -14,22 +14,23 @@ import pytest
 from sqlalchemy import event, func, select, update
 from sqlalchemy.exc import OperationalError
 from tests.support.autonomy_repository_helpers import _accept, _enable, _scene
+from tests.support.sqlite_cost import capture_reads, read_vm_steps
 from yuki_participation.controller import Controller
 from yuki_participation.models import CandidateKind, Proposal, Scope, SourceRef, Support
 
-from qq_ai_bot.conversation.autonomy_binding import AutonomyOwner
-from qq_ai_bot.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
-from qq_ai_bot.conversation.autonomy_repository import AutonomyRepository
-from qq_ai_bot.conversation.self_initiative import validate_self_initiative
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_schema import budgets, children
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import journal, work
-from qq_ai_bot.services import participation_feedback
-from qq_ai_bot.services.participation_feedback import reconcile_page, sync_scope_effects
-from qq_ai_bot.services.semantic_participation import SemanticParticipationService
-from qq_ai_bot.social.db_models import SocialOperationModel
+from yuki.conversation.autonomy_binding import AutonomyOwner
+from yuki.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
+from yuki.conversation.autonomy_repository import AutonomyRepository
+from yuki.conversation.self_initiative import validate_self_initiative
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_schema import budgets, children
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import journal, work
+from yuki.services import participation_feedback
+from yuki.services.participation_feedback import reconcile_page, sync_scope_effects
+from yuki.services.semantic_participation import SemanticParticipationService
+from yuki.social.db_models import SocialOperationModel
 
 
 async def setup(database, *, owner=AutonomyOwner.SEMANTIC):
@@ -339,6 +340,7 @@ async def test_retained_wait_releases_new_opportunity_without_revoking_original_
 
 @pytest.mark.asyncio
 async def test_running_child_does_not_block_intrinsic_admission_while_parent_waits(database):
+    database.subagents_enabled = True
     service, _item, run, task = await setup(database)
     lease = await service.work.acquire(run.conversation_id, run.generation)
     workers = SubagentRepository(service.work)
@@ -539,6 +541,19 @@ async def test_worker_and_root_model_charges_are_paged_without_summing_budget_tw
             )
         )
         await session.execute(budgets.insert().values(root_id=task["id"], models=120, tools=0))
+    costs = []
+    for size in (16, 640):
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                work.insert(),
+                [{**task, "id": str(uuid4()), "source_key": str(uuid4())} for _ in range(size)],
+            )
+        with capture_reads(database) as queries:
+            async with database.sessions() as reader:
+                facts = await participation_feedback._read_facts(service, (run.run_id,), reader)
+        assert len(facts[0].model_refs) == 120
+        costs.append(read_vm_steps(database, queries))
+    assert costs[1] <= costs[0] * 4, costs
     await reconcile_page(service, (run,))
     assert len(item.controller.state.effects) == 120
     assert (

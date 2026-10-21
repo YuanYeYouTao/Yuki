@@ -2,13 +2,16 @@
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import SQLAlchemyError
 from tests.conftest import MemorySender
+from tests.support.canonical_identity import ensure_person
 from tests.unit.test_auto_reply_merge import (
     VOICE_REQUIREMENT,
     _admissions,
@@ -17,13 +20,12 @@ from tests.unit.test_auto_reply_merge import (
     _wait_for_worker,
 )
 
-from qq_ai_bot.asr.service import AudioInput
-from qq_ai_bot.conversation.initiative_sources import source_revision
-from qq_ai_bot.conversation.ordinary_admission import OrdinaryParticipationBinding
-from qq_ai_bot.conversation.projection_models import PromptProjectionModel
-from qq_ai_bot.domain.messages import (
+from yuki.asr.service import AudioInput
+from yuki.conversation.initiative_sources import source_revision
+from yuki.conversation.ordinary_admission import OrdinaryParticipationBinding
+from yuki.conversation.projection_models import PromptProjectionChunkModel
+from yuki.domain.messages import (
     AttachmentKind,
-    ChatImage,
     ChatResponse,
     MessageAttachment,
     OutboundMessage,
@@ -31,19 +33,17 @@ from qq_ai_bot.domain.messages import (
     ToolCall,
     ToolFunction,
 )
-from qq_ai_bot.identity.canonical_repository import ensure_person
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.memory.runtime.turn_session import TurnMemorySession
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.work_activation import current_work_control
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.services.attachment_inputs import NativeInput
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
+from yuki.llm.fake import FakeLLMProvider
+from yuki.memory.runtime.turn_session import TurnMemorySession
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_activation import current_work_control
+from yuki.runtime.work_schema_v1 import work
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.social.db_models import SocialOperationModel
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 
 A = "A：先看原来的问题"
 B = "B：补充一个背景"
@@ -76,7 +76,7 @@ class _PausedProvider(FakeLLMProvider):
             raise response
         return response
 
-    async def complete(self, request):
+    async def _complete(self, request):
         self.entered.append(request)
         control = current_work_control.get()
         self.controls.append((control is not None, control.current if control else None))
@@ -84,7 +84,7 @@ class _PausedProvider(FakeLLMProvider):
         if number in self.arrived:
             self.arrived[number].set()
             await self.release[number].wait()
-        return await super().complete(request)
+        return await super()._complete(request)
 
     async def wait(self, number):
         await asyncio.wait_for(self.arrived[number].wait(), 10)
@@ -116,8 +116,8 @@ async def _scene(
                 .values(require_mention=True)
             )
 
-        async def binding_for_event(event_id):
-            event = await harness.ledger.get_event(event_id)
+        async def binding_for_event(event_id, *, record=None, runtime=None):
+            event = record or await harness.ledger.get_event(event_id)
             return OrdinaryParticipationBinding(
                 env.context.conversation_id,
                 1,
@@ -134,7 +134,7 @@ async def _scene(
             SimpleNamespace(
                 continuation_for_event=continuation_for_event,
                 binding_for_event=binding_for_event,
-                continuation_current=lambda binding, *, check_budget=True: True,
+                continuation_current=AsyncMock(return_value=True),
                 on_ordinary_admitted=AsyncMock(),
             )
         )
@@ -161,7 +161,17 @@ async def _start_and_observe(
     assert (await harness.processor.handle(incoming or message(3, C), sender)).reason == (
         "ordinary_deferred"
     )
-    a, c = await _event(database, A), await _event(database, C)
+    a = await _event(database, A)
+    if incoming is None:
+        c = await _event(database, C)
+    else:
+        async with database.sessions() as reader:
+            c = await reader.scalar(
+                select(ChatEventModel).where(
+                    ChatEventModel.platform_message_id == incoming.message_id,
+                    ChatEventModel.direction == "inbound",
+                )
+            )
     assert [row.event_id for row in await _admissions(database)] == [a.id]
     assert worker._states[key].message.source_event_id == c.id
     provider.release[1].set()
@@ -200,7 +210,7 @@ async def test_observed_ordinary_input_joins_original_activation_without_work(
     database, tmp_path, reason, final, runtime_work_enabled
 ):
     provider = _PausedProvider(
-        [_tool("get_recent_chat_history", {}, "read"), ChatResponse(final, 0)]
+        [_tool("query_chat_history", {"view": "recent"}, "read"), ChatResponse(final, 0)]
     )
     _env, harness, worker, message = await _scene(
         database, tmp_path, provider, reason=reason, runtime_work_enabled=runtime_work_enabled
@@ -290,7 +300,7 @@ async def test_accepted_input_does_not_reactivate_and_duplicate_real_social_send
     # payload. No hash/cache suppresses it: the original admission owns C.
     provider = _PausedProvider(
         [
-            _tool("get_recent_chat_history", {}, "read"),
+            _tool("query_chat_history", {"view": "recent"}, "read"),
             _tool("send_message", {"text": ANSWER}, "answer"),
             "NO_REPLY",
             _tool("send_message", {"text": ANSWER}, "answer"),
@@ -324,8 +334,8 @@ async def test_other_members_public_input_keeps_original_execution_authority(
 ):
     provider = _PausedProvider(
         [
-            _tool("get_recent_chat_history", {}, "before-c"),
-            _tool("get_recent_chat_history", {}, "after-c"),
+            _tool("query_chat_history", {"view": "recent"}, "before-c"),
+            _tool("query_chat_history", {"view": "recent"}, "after-c"),
             "NO_REPLY",
         ]
     )
@@ -333,18 +343,21 @@ async def test_other_members_public_input_keeps_original_execution_authority(
         database,
         tmp_path,
         provider,
-        superusers_csv="10001" if a_is_superuser else "10002",
     )
     async with database.immediate_session() as writer:
         c_person = await ensure_person(writer, "10002")
+        actor = await writer.get(CanonicalPersonModel, env.person)
+        actor.is_superuser = a_is_superuser
+        other = await writer.get(CanonicalPersonModel, c_person)
+        other.is_superuser = not a_is_superuser
     incoming = replace(message(3, C), sender=SenderIdentity("10002"), person_id=c_person)
     tools = harness.processor._chat._tools
     chat = harness.processor._chat
     sessions = []
 
-    def open_memory_session(inbound, *, autonomous):
+    def open_memory_session(*, autonomous):
         assert not autonomous
-        session = TurnMemorySession.open(inbound=inbound, origin=TurnOrigin.USER_MESSAGE)
+        session = TurnMemorySession.open(origin=TurnOrigin.USER_MESSAGE)
         sessions.append(session)
         return session
 
@@ -376,7 +389,6 @@ async def test_other_members_public_input_keeps_original_execution_authority(
             assert runtime.effective_execution_id == f"event:{a.id}"
         assert runtimes[1].memory_session is runtimes[0].memory_session
         assert len(sessions) == 1 and runtimes[0].memory_session is sessions[0]
-        assert sessions[0].scope.partition_key == "group:20001"
         assert runtimes[1].memory_allowed_scopes == runtimes[0].memory_allowed_scopes
         assert await _work_count(database) == 0
     finally:
@@ -395,7 +407,9 @@ async def test_other_members_public_input_keeps_original_execution_authority(
 async def test_steered_voice_reuses_prepared_transcript_and_partial_failure(
     database, tmp_path, reason, source, runtime_work_enabled
 ):
-    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "read"), "NO_REPLY"])
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
+    )
     _env, harness, worker, message = await _scene(
         database, tmp_path, provider, reason=reason, runtime_work_enabled=runtime_work_enabled
     )
@@ -428,20 +442,19 @@ async def test_steered_voice_reuses_prepared_transcript_and_partial_failure(
         await worker.close()
 
 
-async def test_steered_image_and_quoted_attachment_remain_private_and_prepare_once(
-    database, tmp_path
-):
-    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "read"), "NO_REPLY"])
-    _env, harness, worker, message = await _scene(database, tmp_path, provider)
-    image = ChatImage("data:image/png;base64,c3ludGhldGlj", source="current")
-    document = "原引用附件的私有提取内容"
-    media = SimpleNamespace(
-        prepare=AsyncMock(return_value=NativeInput(images=(image,), documents=document))
+async def test_steered_attachments_add_private_indices_without_automatic_reads(database, tmp_path):
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
     )
-    harness.processor._native_images = media
+    _env, harness, worker, message = await _scene(database, tmp_path, provider)
     incoming = replace(
         message(3, C),
         attachments=(MessageAttachment(AttachmentKind.IMAGE, "image", file="fake.png"),),
+        segments=(
+            {"type": "text", "data": {"text": C}},
+            {"type": "image", "data": {"file": "fake.png", "name": "unread.png"}},
+        ),
+        reply_segments=({"type": "file", "data": {"file": "fake.txt", "name": "quoted.txt"}},),
         reply_text="看一下引用的文件",
         reply_attachments=(
             MessageAttachment(AttachmentKind.FILE, "file", source="reply", file="fake.txt"),
@@ -453,17 +466,15 @@ async def test_steered_image_and_quoted_attachment_remain_private_and_prepare_on
         )
         admissions = {row.event_id: row for row in await _admissions(database)}
         assert admissions[c.id].activation_id == admissions[a.id].activation_id
-        assert [item for message in provider.requests[1].messages for item in message.images] == [
-            image
-        ]
-        assert document in _plain(provider.requests[1])
-        assert "看一下引用的文件" in _plain(provider.requests[1])
-        assert media.prepare.await_count == 1 and len(provider.requests) == 2
+        assert not any(message.images for message in provider.requests[1].messages)
+        material = _plain(provider.requests[1])
+        assert C in material
+        assert "unread.png" in material and "quoted.txt" in material
+        assert '"origin":"reply_observed"' in material
+        assert len(provider.requests) == 2
         async with database.sessions() as reader:
-            public = list(await reader.scalars(select(PromptProjectionModel.payload_json)))
-        assert public and all(
-            document not in value and image.data_url not in value for value in public
-        )
+            public = list(await reader.scalars(select(PromptProjectionChunkModel.payload_json)))
+        assert public and all("本轮附件索引" not in value for value in public)
         assert await _work_count(database) == 0
     finally:
         await worker.close()
@@ -474,7 +485,7 @@ async def test_new_identical_input_after_last_admission_keeps_its_own_send(
 ):
     provider = _PausedProvider(
         [
-            _tool("get_recent_chat_history", {}, "read"),
+            _tool("query_chat_history", {"view": "recent"}, "read"),
             _tool("send_message", {"text": ANSWER}, "answer"),
             "NO_REPLY",
             _tool("send_message", {"text": ANSWER}, "answer"),
@@ -523,7 +534,9 @@ async def test_new_identical_input_after_last_admission_keeps_its_own_send(
 async def test_late_classification_does_not_claim_old_observation_or_replace_new_latest(
     database, tmp_path, monkeypatch
 ):
-    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "read"), "NO_REPLY"])
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
+    )
     _env, harness, worker, message = await _scene(
         database, tmp_path, provider, reason="continuation"
     )
@@ -580,7 +593,10 @@ async def test_accepted_input_is_not_reactivated_after_failure_or_cancellation(
     database, tmp_path, cancel
 ):
     provider = _PausedProvider(
-        [_tool("get_recent_chat_history", {}, "read"), RuntimeError("synthetic provider failure")]
+        [
+            _tool("query_chat_history", {"view": "recent"}, "read"),
+            RuntimeError("synthetic provider failure"),
+        ]
     )
     _env, harness, worker, message = await _scene(database, tmp_path, provider)
     sender = MemorySender()
@@ -616,7 +632,7 @@ async def test_work_accepted_during_original_round_keeps_real_mailbox_authorizat
     provider = _PausedProvider(
         [
             _tool("task_control", {"action": "accept", "goal": "处理原任务"}, "accept"),
-            _tool("get_recent_chat_history", {}, "read"),
+            _tool("query_chat_history", {"view": "recent"}, "read"),
             _tool("task_control", {"action": "complete", "result": "原任务结束"}, "complete"),
             "NO_REPLY",
         ],
@@ -668,12 +684,12 @@ async def test_work_accepted_during_original_round_keeps_real_mailbox_authorizat
 
 
 @pytest.mark.parametrize("entrance", ["direct", "semantic_invitation"])
-async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_original_route(
+async def test_direct_stays_immediate_and_invitation_joins_the_existing_worker(
     database, tmp_path, monkeypatch, entrance
 ):
     provider = _PausedProvider(
         [
-            _tool("get_recent_chat_history", {}, "read")
+            _tool("query_chat_history", {"view": "recent"}, "read")
             if entrance == "semantic_invitation"
             else "NO_REPLY",
             "NO_REPLY",
@@ -720,12 +736,10 @@ async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_origina
             )
         )
         if entrance == "semantic_invitation":
-            # Invitation promotion attempts now and retains its original busy
-            # result. It must not become a deferred opportunity or A's input.
-            assert (await pending).reason == "ordinary_busy_or_superseded"
+            assert (await pending).reason == "ordinary_deferred"
             d = await _event(database, "D：明确的新请求")
             assert await harness.processor.ordinary_admissions.get(d.id) is None
-            assert worker._states[key].message.source_event_id == c.id
+            assert worker._states[key].message.source_event_id == d.id
         else:
             # Direct input is admitted now; its model dispatch still obeys the
             # existing conversation lock.
@@ -737,7 +751,13 @@ async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_origina
         await provider.wait(2)
         assert "D：明确的新请求" in provider.entered[1].messages[-1].content
         if entrance == "semantic_invitation":
-            assert await harness.processor.ordinary_admissions.get(d.id) is None
+            admitted = await harness.processor.ordinary_admissions.get(d.id)
+            original_admission = await harness.processor.ordinary_admissions.get(
+                (await _event(database, A)).id
+            )
+            assert admitted.activation_id == original_admission.activation_id
+            assert admitted.reason == "semantic_invitation"
+            assert admitted.binding.event_id == d.id
         else:
             assert await harness.processor.ordinary_admissions.get(c.id) is None
         provider.release[2].set()
@@ -747,7 +767,9 @@ async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_origina
         assert len(provider.entered) == 2
         if entrance == "semantic_invitation":
             assert provider.entered[0].request_chain_id == provider.entered[1].request_chain_id
-            assert await harness.processor.ordinary_admissions.get(d.id) is None
+            assert (await harness.processor.ordinary_admissions.get(d.id)).reason == (
+                "semantic_invitation"
+            )
         else:
             assert provider.entered[0].request_chain_id != provider.entered[1].request_chain_id
             assert await harness.processor.ordinary_admissions.get(c.id) is None
@@ -760,22 +782,207 @@ async def test_explicit_call_during_active_ordinary_turn_keeps_immediate_origina
         await worker.close()
 
 
-async def test_source_changed_during_attachment_preparation_is_not_accepted_with_old_material(
-    database, tmp_path
+@pytest.mark.parametrize("failure", ["read", "save"])
+async def test_derived_participation_database_error_does_not_block_selected_request(
+    database, tmp_path, monkeypatch, failure
 ):
     provider = _PausedProvider([_tool("get_recent_chat_history", {}, "read"), "NO_REPLY"])
+    _env, harness, worker, message = await _scene(
+        database, tmp_path, provider, reason="continuation"
+    )
+    processor = harness.processor
+    sender = MemorySender()
+    try:
+        await processor.handle(message(1, A), sender)
+        await provider.wait(1)
+        key = next(iter(worker._states))
+        await processor.handle(message(2, C), sender)
+        c = await _event(database, C)
+        if failure == "save":
+            processor._participation.on_ordinary_admitted.side_effect = SQLAlchemyError(
+                "synthetic derived save failure"
+            )
+        else:
+            record_feedback = processor._record_ordinary_participation
+
+            async def fail_derived_read(event_id, binding):
+                if event_id != c.id:
+                    return await record_feedback(event_id, binding)
+                with monkeypatch.context() as scoped:
+                    scoped.setattr(
+                        processor.ordinary_admissions,
+                        "get",
+                        AsyncMock(side_effect=SQLAlchemyError("synthetic derived read failure")),
+                    )
+                    await record_feedback(event_id, binding)
+
+            monkeypatch.setattr(processor, "_record_ordinary_participation", fail_derived_read)
+        provider.release[1].set()
+        await provider.wait(2)
+        a = await _event(database, A)
+        admitted = await processor.ordinary_admissions.get(c.id)
+        assert (
+            admitted.activation_id == (await processor.ordinary_admissions.get(a.id)).activation_id
+        )
+        assert C in _plain(provider.entered[1])
+        provider.release[2].set()
+        await asyncio.wait_for(_wait_for_worker(worker, key), 10)
+        assert len(provider.entered) == 2
+        assert await _work_count(database) == sender.calls == 0
+    finally:
+        for release in provider.release.values():
+            release.set()
+        await worker.close()
+
+
+async def test_derived_participation_read_still_propagates_cancellation(
+    database, tmp_path, monkeypatch
+):
+    provider = _PausedProvider([], pauses=())
+    _env, harness, worker, _message = await _scene(
+        database, tmp_path, provider, reason="continuation"
+    )
+    monkeypatch.setattr(
+        harness.processor.ordinary_admissions,
+        "get",
+        AsyncMock(side_effect=asyncio.CancelledError),
+    )
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await harness.processor._record_ordinary_participation(1, None)
+        assert not provider.requests
+    finally:
+        await worker.close()
+
+
+async def test_pending_input_survives_envelope_eviction_and_context_observations(
+    database, tmp_path, monkeypatch
+):
+    provider = _PausedProvider(["NO_REPLY", "NO_REPLY"])
+    _env, harness, worker, message = await _scene(
+        database, tmp_path, provider, reason="continuation", runtime_work_enabled=False
+    )
+    processor = harness.processor
+    service = processor._participation
+    classify = service.continuation_for_event
+
+    async def classify_humans(event_id, *, check_budget=True):
+        record = await harness.ledger.get_event(event_id)
+        if record.content.startswith("仅观察"):
+            return None
+        return await classify(event_id, check_budget=check_budget)
+
+    monkeypatch.setattr(service, "continuation_for_event", classify_humans)
+    sender = MemorySender()
+    try:
+        await processor.handle(message(1, A), sender)
+        await provider.wait(1)
+        key = next(iter(worker._states))
+        await processor.handle(message(2, C), sender)
+        c = await _event(database, C)
+        for number in range(257):
+            observed = await processor.handle(message(3 + number, f"仅观察 {number}"), sender)
+            assert observed.reason == "group_observed"
+        assert worker._states[key].message.source_event_id == c.id
+        assert await processor.ordinary_admissions.get(c.id) is None
+        provider.release[1].set()
+        await provider.wait(2)
+        admitted = await processor.ordinary_admissions.get(c.id)
+        assert admitted is not None and admitted.reason == "continuation"
+        assert C in provider.entered[1].messages[-1].content
+        provider.release[2].set()
+        await asyncio.wait_for(_wait_for_worker(worker, key), 10)
+        assert len(provider.entered) == 2 and sender.calls == 0
+    finally:
+        for release in provider.release.values():
+            release.set()
+        await worker.close()
+
+
+async def test_background_invitation_waits_for_original_turn_without_losing_its_input(
+    database, tmp_path, monkeypatch
+):
+    provider = _PausedProvider(["NO_REPLY", "NO_REPLY"])
+    _env, harness, worker, message = await _scene(
+        database, tmp_path, provider, reason="continuation", runtime_work_enabled=False
+    )
+    processor = harness.processor
+    service = processor._participation
+    classify = service.continuation_for_event
+
+    async def before_observer(event_id, *, check_budget=True):
+        if (await harness.ledger.get_event(event_id)).content == C:
+            return None
+        return await classify(event_id, check_budget=check_budget)
+
+    monkeypatch.setattr(service, "continuation_for_event", before_observer)
+    sender = MemorySender()
+    original_turn = asyncio.create_task(processor.handle(message(1, A, mention=True), sender))
+    try:
+        await provider.wait(1)
+        assert (await processor.handle(message(2, C), sender)).reason == "group_observed"
+        c = await _event(database, C)
+        binding = await service.binding_for_event(c.id)
+        waiting = asyncio.Event()
+        conversation = processor._concurrency.conversation
+
+        @asynccontextmanager
+        async def handoff(conversation_key):
+            waiting.set()
+            async with conversation(conversation_key):
+                yield
+
+        monkeypatch.setattr(processor._concurrency, "conversation", handoff)
+        assert (
+            await processor.promote_committed_event(c.id, binding, reason="semantic_invitation")
+        ).reason == "ordinary_deferred"
+        await asyncio.wait_for(waiting.wait(), 10)
+        key = next(iter(worker._states))
+        assert await processor.ordinary_admissions.get(c.id) is None
+        # A repeated observer callback retains the same source and current window.
+        assert (
+            await processor.promote_committed_event(c.id, binding, reason="semantic_invitation")
+        ).reason == "ordinary_deferred"
+        provider.release[1].set()
+        assert (await original_turn).reason == "chat"
+        await provider.wait(2)
+        admitted = await processor.ordinary_admissions.get(c.id)
+        assert admitted.reason == "semantic_invitation" and admitted.binding == binding
+        assert provider.entered[0].request_chain_id != provider.entered[1].request_chain_id
+        provider.release[2].set()
+        await asyncio.wait_for(_wait_for_worker(worker, key), 10)
+        assert len(provider.entered) == 2 and sender.calls == 0
+    finally:
+        for release in provider.release.values():
+            release.set()
+        await asyncio.gather(original_turn, return_exceptions=True)
+        await worker.close()
+
+
+async def test_source_changed_during_attachment_metadata_read_is_not_accepted(
+    database, tmp_path, monkeypatch
+):
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
+    )
     _env, harness, worker, message = await _scene(database, tmp_path, provider)
     sender = MemorySender()
-    image = ChatImage("data:image/png;base64,b2xkLWltYWdl")
-    old_document = "仅属于编辑前附件的提取结果"
+    from yuki.services import processor as processor_module
 
-    async def prepare(incoming, *_args):
-        # A source edit while external preparation is running is not our own ASR
-        # publication. It cannot authorize the old prepared body under a new hash.
+    original_metadata = processor_module._attachment_metadata
+    old_metadata = []
+
+    async def prepare(incoming, record, selected_database):
+        metadata = await original_metadata(incoming, record, selected_database)
+        if not incoming.attachments:
+            return metadata
+        old_metadata.append(metadata)
+        # A true source edit during the current indexed metadata read cannot
+        # authorize its stale body under the replacement source revision.
         async with database.immediate_session() as writer:
             await writer.execute(
                 update(ChatEventModel)
-                .where(ChatEventModel.id == incoming.source_event_id)
+                .where(ChatEventModel.id == record.id)
                 .values(
                     content="C：编辑后的新要求，附件也已替换",
                     segments_json=json.dumps(
@@ -786,9 +993,9 @@ async def test_source_changed_during_attachment_preparation_is_not_accepted_with
                     ),
                 )
             )
-        return NativeInput(images=(image,), documents=old_document)
+        return metadata
 
-    harness.processor._native_images = SimpleNamespace(prepare=AsyncMock(side_effect=prepare))
+    monkeypatch.setattr(processor_module, "_attachment_metadata", prepare)
     incoming = replace(
         message(3, C),
         attachments=(MessageAttachment(AttachmentKind.IMAGE, "image", file="old.png"),),
@@ -810,17 +1017,12 @@ async def test_source_changed_during_attachment_preparation_is_not_accepted_with
         admitted = await harness.processor.ordinary_admissions.get(c_id)
         original = await harness.processor.ordinary_admissions.get(a_id)
         assert admitted is None or admitted.activation_id != original.activation_id
-        assert old_document not in _plain(provider.entered[1])
-        assert image not in [
-            item for message in provider.entered[1].messages for item in message.images
-        ]
+        assert old_metadata and old_metadata[0]
+        assert old_metadata[0] not in _plain(provider.entered[1])
         provider.release[2].set()
         await asyncio.wait_for(_wait_for_worker(worker, key), 10)
-        assert all(old_document not in _plain(request) for request in provider.requests)
-        assert all(
-            image not in [item for message in request.messages for item in message.images]
-            for request in provider.requests
-        )
+        assert all(old_metadata[0] not in _plain(request) for request in provider.requests)
+        assert not any(item.images for request in provider.requests for item in request.messages)
         assert await _work_count(database) == sender.calls == 0
     finally:
         await worker.close()
@@ -829,7 +1031,9 @@ async def test_source_changed_during_attachment_preparation_is_not_accepted_with
 async def test_source_changed_during_asr_does_not_publish_old_transcript_or_ordinary_input(
     database, tmp_path
 ):
-    provider = _PausedProvider([_tool("get_recent_chat_history", {}, "read"), "NO_REPLY"])
+    provider = _PausedProvider(
+        [_tool("query_chat_history", {"view": "recent"}, "read"), "NO_REPLY"]
+    )
     _env, harness, worker, message = await _scene(
         database, tmp_path, provider, reason="continuation"
     )

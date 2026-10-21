@@ -2,20 +2,21 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import select, update
+from tests.support.canonical_identity import ensure_person, ensure_presence
+from tests.support.event_seed import seed_event
 from tests.support.social_identity_cases import Bot, social_env
 
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_presence
-from qq_ai_bot.identity.db_models import IdentityBindingModel, PresenceModel
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.social.db_models import SocialOperationModel
-from qq_ai_bot.social.models import OperationStatus, SocialError, SocialTarget
-from qq_ai_bot.social.repository import SocialOperationRepository
-from qq_ai_bot.social.source_keys import social_call_key, social_source_key
+from yuki.domain.conversations import ScopeType
+from yuki.identity.canonical_repository import ensure_account, replace_assignment
+from yuki.identity.db_models import AccountModel, CanonicalPersonModel, IdentityBindingModel
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.social.db_models import SocialOperationModel
+from yuki.social.models import OperationStatus, SocialError, SocialTarget
+from yuki.social.repository import SocialOperationRepository
+from yuki.social.source_keys import social_call_key, social_source_key
 
 
 def test_source_digest_is_stable_and_includes_the_complete_identity():
@@ -127,25 +128,33 @@ async def test_contacts_page_people_instead_of_accounts_and_keep_exact_ambiguity
         second = await ensure_person(writer, "11002")
         first, last = sorted((env.person, second))
         await writer.execute(
-            update(IdentityBindingModel)
-            .where(IdentityBindingModel.person_id.in_((first, last)))
+            update(CanonicalPersonModel)
+            .where(CanonicalPersonModel.id.in_((first, last)))
             .values(display_name="same")
         )
-        for index in range(32):
-            writer.add(
-                IdentityBindingModel(
-                    id=str(uuid4()),
-                    person_id=first,
-                    platform="qq",
-                    external_account_id=str(918200000 + index),
-                    display_name="same",
-                    first_seen_at=now,
-                    last_seen_at=now,
-                    created_at=now,
-                    updated_at=now,
+        await writer.execute(
+            update(AccountModel)
+            .where(
+                AccountModel.id.in_(
+                    select(IdentityBindingModel.account_id).where(
+                        IdentityBindingModel.person_id.in_((first, last))
+                    )
                 )
             )
-    await EventLedgerRepository(database).append(
+            .values(display_name="platform nickname")
+        )
+        owner = await writer.get(CanonicalPersonModel, first)
+        for index in range(32):
+            account = await ensure_account(
+                writer,
+                str(918200000 + index),
+                platform="qq",
+                display_name="platform nickname",
+                now=now,
+            )
+            await replace_assignment(writer, account, None, owner, now=now)
+    await seed_event(
+        EventLedgerRepository(database),
         bot_user_id=env.bot.self_id,
         scope_type=ScopeType.GROUP,
         group_id="20001",
@@ -165,34 +174,17 @@ async def test_contacts_page_people_instead_of_accounts_and_keep_exact_ambiguity
 
 
 @pytest.mark.asyncio
-async def test_history_only_probes_the_selected_presence(database, tmp_path, monkeypatch):
+async def test_history_reads_canonical_ledger_without_probing_any_presence(database, tmp_path):
     env = await social_env(database, tmp_path)
     other = Bot("80002")
     async with database.immediate_session() as writer:
         second = await ensure_presence(writer, other.self_id)
     env.registry.connect(other, provider_id="snowluma", presence_id=second)
-    args = {"kind": "space", "target_id": env.space, "presence_id": env.presence}
-    result = await env.service.execute("read_conversation_history", args, env.context)
-    assert result["presence_id"] == env.presence and result["messages"] == []
-    assert not other.calls
-    assert any(action == "get_group_msg_history" for action, _ in env.bot.calls)
+    env.bot.calls.clear()
     result = await env.service.execute(
-        "read_conversation_history", {"kind": "space", "target_id": env.space}, env.context
+        "read_conversation_history", {"conversation_id": env.context.conversation_id}, env.context
     )
-    assert result["error"] == "presence_ambiguous"
-    assert {item["presence_id"] for item in result["presences"]} == {env.presence, second}
-    original_probe = env.service.router._probe
-
-    async def disable_later_presence(bot, group, account):
-        reachable = await original_probe(bot, group, account)
-        async with database.immediate_session() as writer:
-            await writer.execute(
-                update(PresenceModel)
-                .where(PresenceModel.id == max(env.presence, second))
-                .values(enabled=False)
-            )
-        return reachable
-
-    monkeypatch.setattr(env.service.router, "_probe", disable_later_presence)
-    routes = await env.service.router.accessible_group_connections(env.space)
-    assert [route.presence_id for route in routes] == [min(env.presence, second)]
+    assert result["source"] == "canonical_ledger" and result["coverage"] == "observed"
+    assert result["count"] == 1
+    assert result["messages"][0]["person_id"] == env.person
+    assert not env.bot.calls and not other.calls

@@ -1,29 +1,32 @@
 """Exercise the real provider serializers around deterministic runtime fixtures."""
 
 import json
+from contextvars import ContextVar
 from dataclasses import asdict
 
 import httpx
 
-from qq_ai_bot.llm.deepseek_responses import DeepSeekResponsesProvider
-from qq_ai_bot.llm.openai_compatible import OpenAICompatibleProvider
-from qq_ai_bot.model_runtime.executor import TaskModelExecutor
-from qq_ai_bot.model_runtime.models import (
+from yuki.llm.deepseek_responses import DeepSeekResponsesProvider
+from yuki.llm.openai_compatible import OpenAICompatibleProvider
+from yuki.model_runtime.executor import TaskModelExecutor
+from yuki.model_runtime.models import (
     ModelCapability,
     ModelProfile,
     ModelProtocol,
     ModelRoute,
     ModelTask,
 )
-from qq_ai_bot.model_runtime.pool import ModelClientPool
-from qq_ai_bot.model_runtime.profiles import ModelProfileCatalog
-from qq_ai_bot.model_runtime.routes import ModelRouter
+from yuki.model_runtime.pool import ModelClientPool
+from yuki.model_runtime.profiles import ModelProfileCatalog
+from yuki.model_runtime.routes import ModelRouter
 
 
 def install_wire(chat, fake, protocol, *, native=False):
     captured = []
+    original_request = ContextVar("runtime_wire_original_request")
 
     def transport(request):
+        fake.requests.append(original_request.get())
         captured.append(json.loads(request.content))
         response = fake._responder(fake.requests[-1])
         if protocol == "responses":
@@ -70,7 +73,7 @@ def install_wire(chat, fake, protocol, *, native=False):
         DeepSeekResponsesProvider if protocol == "responses" else OpenAICompatibleProvider
     )
     if native:
-        from qq_ai_bot.llm.openai_responses import OpenAIResponsesProvider
+        from yuki.llm.openai_responses import OpenAIResponsesProvider
 
         provider_type = OpenAIResponsesProvider
     provider = provider_type(
@@ -82,8 +85,11 @@ def install_wire(chat, fake, protocol, *, native=False):
     )
 
     async def complete(request):
-        fake.requests.append(request)
-        return await provider.complete(request)
+        token = original_request.set(request)
+        try:
+            return await provider.complete(request)
+        finally:
+            original_request.reset(token)
 
     fake.complete = complete
     profile = ModelProfile(

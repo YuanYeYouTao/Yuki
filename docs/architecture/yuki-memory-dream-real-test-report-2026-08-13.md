@@ -35,7 +35,7 @@
 部署前数据库备份：
 
 ```text
-/opt/yuki-qqbot/backups/qq_ai_bot-pre-dream-recompose-20260813-164800.db
+/opt/yuki-qqbot/backups/yuki-pre-dream-recompose-20260813-164800.db
 ```
 
 旧 Bot 镜像保留为：

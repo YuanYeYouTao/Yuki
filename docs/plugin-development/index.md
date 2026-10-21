@@ -1,17 +1,18 @@
-# Yuki Plugin API 3.5 开发手册
+# Yuki Plugin API 7.0 开发手册
 
 Yuki 通过独立的 `yuki_plugin_sdk` 声明扩展，由 Host 负责发现、批准、生命周期、权限裁剪和运行时 Facade。插件不能直接取得 `ApplicationContainer`、数据库 Session、NoneBot Bot、原始事件、完整设置或任何密钥集合。
 
-Plugin API `3.5` 删除没有实现的事件与运行时配置权限；Host 只加载精确声明 3.5 的插件。升级见 [API 3.5 迁移](api-3.5-migration.md)，更早接口变化见对应历史迁移。
+Plugin API `7.0` 的通用目标参数使用内部 Person/Space/Conversation ID；Host 只加载精确声明 7.0 的插件。升级见 [API 7.0 迁移](api-7.0-migration.md)，更早接口变化见对应历史迁移。
 
-插件 Prompt Fragment 会先由现有 `PromptRegistry` 校验，再作为一个 `context.plugins` 不可信贡献进入统一 Runtime Envelope；不会为每个插件重复一层系统包装。插件 Agent 会话通过 `ModelTask.PLUGIN_AGENT_SESSION` 使用显式模型路由。插件工具会被适配为带 namespace 的 `CapabilityDescriptor`；主 Agent 声明在部署内冻结；批准权限、调用来源和 effect/risk 在执行时核验，目录检索不改变已声明工具。改名不是安全策略。
+插件 Prompt Fragment 会先由现有 `PromptRegistry` 校验，再作为一个 `context.plugins` 资料贡献进入统一 Runtime Envelope；不会为每个插件重复一层系统包装。插件 Agent 会话通过 `ModelTask.PLUGIN_AGENT_SESSION` 使用显式模型路由。插件工具会被适配为带 namespace 的 `CapabilityDescriptor`；主 Agent 声明在部署内冻结；批准权限、调用来源和 effect/risk 在执行时核验，目录检索不改变已声明工具。改名不是安全策略。
 
 > **真实安全边界：**插件是运行在 Yuki 进程内的本地可信 Python 代码。权限系统治理的是官方 API 的访问，不是操作系统沙盒；恶意插件理论上仍能绕过约束。只安装管理员完全信任、审阅过源码的插件。
 
 ## 从这里开始
 
 - [10 分钟快速开始](quickstart.md)
-- [Plugin API 3.5 迁移](api-3.5-migration.md)
+- [Plugin API 7.0 迁移](api-7.0-migration.md)
+- [Plugin API 3.5 历史迁移](api-3.5-migration.md)
 - [Plugin API 3.4 历史迁移](api-3.4-migration.md)
 - [Plugin API 3.0 历史迁移](api-3.0-migration.md)
 - [Plugin API 2.0 历史迁移](api-2.0-migration.md)
@@ -45,11 +46,10 @@ Plugin API `3.5` 删除没有实现的事件与运行时配置权限；Host 只�
 - [Facade Protocol](api-reference/facades.md)
 - [Registrar Schema](api-reference/registrar.md)
 - [Result 与会话模型](api-reference/results.md)
-- [EmojiFacade 与选择信号](api-reference/emoji.md)
 
 仓库中的 [`com.example.echo`](../../examples/plugins/com.example.echo/README.md) 是可运行的无网络参考实现，覆盖工具、命令、事件、Prompt、配置和 KV，并说明共同 TaskSpec 的定时安排接口。
 
-订阅类插件可参考 [GitHub Monitor](../../plugins/github-monitor/README.md) 和
+订阅类插件可参考 [独立 GitHub Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) 和
 [Subscription Monitor](../../plugins/subscription-monitor/README.md)。后者展示如何轮询 feed、
 持久化增量事件，并将订阅条件交给统一主 Agent 判断，通过 `send_message` 通知。
 
@@ -58,10 +58,10 @@ Plugin API `3.5` 删除没有实现的事件与运行时配置权限；Host 只�
 | 标识 | 当前值 | 用途 |
 |---|---:|---|
 | Yuki | 以 `pyproject.toml` 为准 | 当前源码的 Host 产品版本 |
-| Plugin API | `3.5` | SDK 主兼容边界 |
+| Plugin API | `7.0` | SDK 主兼容边界 |
 | Event/Tool/Automation Schema | `1` | 单类载荷的结构版本 |
 | Feature | 如 `admission.signal.v1` | 运行时能力探测 |
 
 不要通过 Yuki 次版本号猜测功能。使用 `ctx.features.has(...)` 或 `require(...)`。
 
-当前合同见 [API 3.5 迁移](api-3.5-migration.md)；旧关系服务退役见 [API 3.4 迁移](api-3.4-migration.md)。
+当前合同见 [API 7.0 迁移](api-7.0-migration.md)；旧关系服务退役见 [API 3.4 迁移](api-3.4-migration.md)。

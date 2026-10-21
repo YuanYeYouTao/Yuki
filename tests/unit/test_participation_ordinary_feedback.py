@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import delete, func, select, update
 from tests.conftest import build_harness, make_settings
+from tests.support.event_seed import seed_event
 from tests.support.semantic_participation_host_helpers import (
     _event_and_route,
     _host,
@@ -17,27 +18,27 @@ from tests.support.semantic_participation_host_helpers import (
 from yuki_participation.controller import Controller
 from yuki_participation.participation import ParticipationCheckpoint
 
-from qq_ai_bot.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
-from qq_ai_bot.conversation.initiative_sources import source_revision
-from qq_ai_bot.conversation.ordinary_admission import (
+from yuki.conversation.autonomy_db_models import InitiativeFeedbackModel, InitiativeRunModel
+from yuki.conversation.initiative_sources import source_revision
+from yuki.conversation.ordinary_admission import (
     OrdinaryAdmissionRepository,
     OrdinaryParticipationBinding,
 )
-from qq_ai_bot.conversation.scope import ConversationTurnSnapshot
-from qq_ai_bot.domain.conversations import ConversationScope, ScopeType
-from qq_ai_bot.domain.messages import ChatMessage, ChatResponse, InboundMessage, SenderIdentity
-from qq_ai_bot.llm.fake import FakeLLMProvider
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.services.agent_tools import ToolRuntime
-from qq_ai_bot.services.main_agent_backend import MainAgentBackend
-from qq_ai_bot.services.participation_feedback import (
+from yuki.conversation.scope import ConversationTurnSnapshot
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.messages import ChatMessage, ChatResponse, InboundMessage, SenderIdentity
+from yuki.llm.fake import FakeLLMProvider
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.agent_tools import ToolRuntime
+from yuki.services.main_agent_backend import MainAgentBackend
+from yuki.services.participation_feedback import (
     _logical_social_effects,
     admission_unit_binding,
     sync_scope_effects,
 )
-from qq_ai_bot.social.db_models import SocialOperationModel
+from yuki.social.db_models import SocialOperationModel
 
 
 async def ordinary_backend(database, content, *, callback=None):
@@ -152,7 +153,8 @@ async def ordinary_expression(database, tmp_path, *, admission=True, status="suc
         assert item.controller.observe_unit_input(binding, source.ref)
     if not send:
         return host, item, event, None, None
-    own, _ = await host.app.ledger.append(
+    own, _ = await seed_event(
+        host.app.ledger,
         bot_user_id="8000",
         platform_message_id=str(uuid4()),
         scope_type=ScopeType.GROUP,
@@ -330,9 +332,9 @@ async def test_invalid_or_unbound_ordinary_send_cannot_invent_unit_mapping(
 
 
 async def test_ordinary_long_binding_metadata_preserves_original_source(database):
-    from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-    from qq_ai_bot.conversation.ordinary_admission import OrdinaryAdmissionConflict
-    from qq_ai_bot.persistence.repositories import EventLedgerRepository
+    from yuki.conversation.canonical_db_models import CanonicalConversationModel
+    from yuki.conversation.ordinary_admission import OrdinaryAdmissionConflict
+    from yuki.persistence.repositories import EventLedgerRepository
 
     event = await _event_and_route(database, EventLedgerRepository(database))
     async with database.sessions() as reader:

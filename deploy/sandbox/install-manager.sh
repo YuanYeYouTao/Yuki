@@ -14,7 +14,8 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 test "$(id -u)" = 0
-test -f /opt/yuki-sandbox/src/qq_ai_bot/sandbox/manager.py
+test -f /opt/yuki-sandbox/src/yuki/sandbox/manager.py
+test -f /opt/yuki-sandbox/src/yuki/sandbox/acp_peer.py
 python3 -c 'import sys; assert sys.version_info >= (3,12)'
 test -x /opt/yuki-sandbox/venv/bin/python
 /opt/yuki-sandbox/venv/bin/python -c 'import websockets; assert websockets.__version__ == "15.0.1"'
@@ -47,4 +48,4 @@ while [ ! -S /run/yuki-sandbox/manager.sock ] && [ "$attempt" -lt 30 ]; do
 done
 test -S /run/yuki-sandbox/manager.sock
 test "$(stat -c %g /run/yuki-sandbox/manager.sock)" = 10001
-echo 'Verify from Bot UID: docker compose exec --user 10001:10001 bot qq-ai-bot-cli setup environment-check'
+echo 'Verify from Bot UID: docker compose exec --user 10001:10001 bot yuki setup environment-check'

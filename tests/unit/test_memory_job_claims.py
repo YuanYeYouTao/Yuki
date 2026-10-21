@@ -10,36 +10,73 @@ import pytest
 from sqlalchemy import func, select, text
 from tests.conftest import make_settings
 from tests.support.model_executor import InjectedModelExecutor
+from tests.support.projection_sql_counts import capture_sql
 from tests.unit.test_memory_mutation import _service
 from tests.unit.test_memory_v2 import _append_event, _claim
 
-from qq_ai_bot.conversation.canonical_db_models import CanonicalConversationModel
-from qq_ai_bot.domain.messages import ChatRequest, ChatResponse
-from qq_ai_bot.llm.base import LLMProvider
-from qq_ai_bot.memory.claim_processor import MemoryProcessingContext
-from qq_ai_bot.memory.enums import MemoryRebuildJobOutcome
-from qq_ai_bot.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
-from qq_ai_bot.memory.job_claims import MemoryJobClaimLost
-from qq_ai_bot.memory.models import MemoryJob
-from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.worker import MemoryWorker
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.messages import ChatRequest, ChatResponse
+from yuki.llm.base import LLMProvider
+from yuki.memory.claim_processor import MemoryProcessingContext
+from yuki.memory.enums import MemoryRebuildJobOutcome
+from yuki.memory.extraction import BatchMemoryClaim, BatchMemoryExtractionOutput
+from yuki.memory.job_claims import MemoryJobClaimLost
+from yuki.memory.models import MemoryJob
+from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
+from yuki.memory.service import MemoryFactService
+from yuki.memory.worker import MemoryWorker
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     ChatEventModel,
     MemoryClaimCandidateModel,
     MemoryFactModel,
     MemoryJobModel,
     MemoryMutationReceiptModel,
 )
-from qq_ai_bot.persistence.repositories import EventLedgerRepository
-from qq_ai_bot.services.concurrency import ConcurrencyManager
+from yuki.persistence.repositories import EventLedgerRepository
+from yuki.services.concurrency import ConcurrencyManager
 
 
 class _ReclaimTime(datetime):
     @classmethod
     def now(cls, tz: tzinfo | None = None) -> datetime:
         return datetime.now(tz) + timedelta(minutes=6)
+
+
+async def test_duplicate_enqueue_returns_original_partition_without_waiting_for_writer(database):
+    event = await _append_event(EventLedgerRepository(database), message_id="enqueue-original")
+    jobs = MemoryJobRepository(database)
+    created, original_partition = await jobs.enqueue_resolved(event.id, "ignored-input-scope")
+    assert created
+    async with database.sessions() as reader:
+        before = (
+            (
+                await reader.execute(
+                    select(MemoryJobModel.__table__).where(MemoryJobModel.event_id == event.id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+    async with database.immediate_session():
+        with capture_sql(database) as statements:
+            assert await asyncio.wait_for(
+                jobs.enqueue_resolved(event.id, "another-input-scope"), 0.5
+            ) == (False, original_partition)
+        assert statements and all(
+            sql.lstrip().upper().startswith("SELECT") for sql, _ in statements
+        )
+    async with database.sessions() as reader:
+        after = (
+            (
+                await reader.execute(
+                    select(MemoryJobModel.__table__).where(MemoryJobModel.event_id == event.id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert after == before
 
 
 async def test_queue_health_preserves_owner_waiting_stale_and_failure_categories(
@@ -53,7 +90,7 @@ async def test_queue_health_preserves_owner_waiting_stale_and_failure_categories
         def now(cls, tz=None):
             return clock
 
-    monkeypatch.setattr("qq_ai_bot.memory.repository.datetime", FixedClock)
+    monkeypatch.setattr("yuki.memory.repository.datetime", FixedClock)
     ledger = EventLedgerRepository(database)
     events = [
         await _append_event(
@@ -117,7 +154,7 @@ async def test_queue_health_preserves_owner_waiting_stale_and_failure_categories
 async def _reclaim(jobs: MemoryJobRepository, monkeypatch: pytest.MonkeyPatch) -> MemoryJob:
     # Advance only the queue's clock: do not alter the original claimant's row/token.
     with monkeypatch.context() as patch:
-        patch.setattr("qq_ai_bot.memory.repository.datetime", _ReclaimTime)
+        patch.setattr("yuki.memory.repository.datetime", _ReclaimTime)
         (claimed,) = await jobs.claim()
     return claimed
 
@@ -193,7 +230,7 @@ async def test_stale_queue_transition_cannot_overwrite_new_owner(
         assert after[0] == "pending" and after[2] == 1 and after[5] == "CurrentError"
 
 
-@pytest.mark.parametrize("result_kind", ["fact", "candidate", "no_claims", "failure"])
+@pytest.mark.parametrize("result_kind", ["fact", "low_confidence_fact", "no_claims", "failure"])
 async def test_reclaim_during_extraction_discards_all_old_worker_results(
     database: Database,
     monkeypatch: pytest.MonkeyPatch,
@@ -216,7 +253,9 @@ async def test_reclaim_during_extraction_discards_all_old_worker_results(
                 else (
                     BatchMemoryClaim(
                         source_event_id=event.id,
-                        claim=_claim(confidence=0.5 if result_kind == "candidate" else 0.9),
+                        claim=_claim(
+                            confidence=0.5 if result_kind == "low_confidence_fact" else 0.9
+                        ),
                     ),
                 )
             )

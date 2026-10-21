@@ -12,24 +12,26 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from tests.conftest import make_settings
+from tests.support.canonical_identity import ensure_person, ensure_space
+from tests.support.event_seed import seed_event
 
-from qq_ai_bot.admin.audit import AdminAuditService
-from qq_ai_bot.admin.models import AdminActor
-from qq_ai_bot.automation.models import TurnOrigin
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.domain.messages import InboundMessage, SenderIdentity
-from qq_ai_bot.domain.tool_actor import ToolActor
-from qq_ai_bot.identity.canonical_repository import active_space_id_for, ensure_person, ensure_space
-from qq_ai_bot.identity.db_models import CanonicalSpaceModel
-from qq_ai_bot.memory.audit import MemoryAuditService
-from qq_ai_bot.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
-from qq_ai_bot.memory.embedding.fake import FakeEmbeddingProvider
-from qq_ai_bot.memory.embedding.jobs import MemoryEmbeddingJobRepository
-from qq_ai_bot.memory.embedding.models import EmbeddingProviderProfile
-from qq_ai_bot.memory.embedding.repository import MemoryEmbeddingRepository
-from qq_ai_bot.memory.embedding.text import EmbeddingDocumentBuilder
-from qq_ai_bot.memory.embedding.worker import MemoryEmbeddingWorker
-from qq_ai_bot.memory.enums import (
+from yuki.admin.audit import AdminAuditService
+from yuki.admin.models import AdminActor
+from yuki.automation.models import TurnOrigin
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.domain.tool_actor import ToolActor
+from yuki.identity.canonical_repository import find_space_binding
+from yuki.identity.db_models import CanonicalSpaceModel
+from yuki.memory.audit import MemoryAuditService
+from yuki.memory.claim_processor import MemoryClaimProcessor, MemoryProcessingContext
+from yuki.memory.embedding.fake import FakeEmbeddingProvider
+from yuki.memory.embedding.jobs import MemoryEmbeddingJobRepository
+from yuki.memory.embedding.models import EmbeddingProviderProfile
+from yuki.memory.embedding.repository import MemoryEmbeddingRepository
+from yuki.memory.embedding.text import EmbeddingDocumentBuilder
+from yuki.memory.embedding.worker import MemoryEmbeddingWorker
+from yuki.memory.enums import (
     MemoryAuthority,
     MemoryClaimOperation,
     MemoryConflictState,
@@ -41,14 +43,14 @@ from qq_ai_bot.memory.enums import (
     MemoryStatus,
     SelfMemoryVisibility,
 )
-from qq_ai_bot.memory.extraction import MemoryClaim
-from qq_ai_bot.memory.models import (
+from yuki.memory.extraction import MemoryClaim
+from yuki.memory.models import (
     MemoryEvidenceCreate,
     MemoryFactCreate,
     MemoryFactQuery,
     MemoryResolutionPlan,
 )
-from qq_ai_bot.memory.mutation.models import (
+from yuki.memory.mutation.models import (
     MemoryDecisionActorType,
     MemoryMutationAppliedOperation,
     MemoryMutationContext,
@@ -59,28 +61,28 @@ from qq_ai_bot.memory.mutation.models import (
     MemoryMutationTarget,
     SelfMemoryVisibilityMode,
 )
-from qq_ai_bot.memory.mutation.service import MemoryMutationService
-from qq_ai_bot.memory.quality.audit import MemoryProductionQualityAudit
-from qq_ai_bot.memory.quality.hygiene import MemoryProvenanceHygiene
-from qq_ai_bot.memory.repository import MemoryFactRepository, MemoryJobRepository
-from qq_ai_bot.memory.self_reflection.repository import SelfReflectionRepository
-from qq_ai_bot.memory.service import MemoryFactService
-from qq_ai_bot.memory.subjects import ResolvedSubject
-from qq_ai_bot.memory.validation import ValidatedMemoryClaim
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import (
+from yuki.memory.mutation.service import MemoryMutationService
+from yuki.memory.quality.audit import MemoryProductionQualityAudit
+from yuki.memory.quality.hygiene import MemoryProvenanceHygiene
+from yuki.memory.repository import MemoryFactRepository, MemoryJobRepository
+from yuki.memory.self_reflection.repository import SelfReflectionRepository
+from yuki.memory.service import MemoryFactService
+from yuki.memory.subjects import ResolvedSubject
+from yuki.memory.validation import ValidatedMemoryClaim
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
     MemoryEmbeddingJobModel,
     MemoryFactModel,
     MemoryMutationReceiptModel,
     MemoryToolReceiptModel,
 )
-from qq_ai_bot.persistence.repositories import (
+from yuki.persistence.repositories import (
     EventLedgerRepository,
     PeopleRepository,
 )
-from qq_ai_bot.persistence.repository_records import EventRecord
-from qq_ai_bot.services.admin.memory_admin import MemoryAdminService
-from qq_ai_bot.services.agent_tools import AgentToolService, ToolRuntime
+from yuki.persistence.repository_records import EventRecord
+from yuki.services.admin.memory_admin import MemoryAdminService
+from yuki.services.agent_tools import AgentToolService, ToolRuntime
 
 
 def _service(
@@ -251,7 +253,8 @@ async def _event(
             },
         },
     )
-    event, _ = await ledger.append(
+    event, _ = await seed_event(
+        ledger,
         bot_user_id=bot_user_id,
         platform_message_id=message_id,
         scope_type=ScopeType.GROUP if group_id else ScopeType.PRIVATE,
@@ -334,7 +337,7 @@ async def test_self_reflection_can_commit_tool_receipt_evidence(database: Databa
     )
     now = datetime.now(UTC)
     async with database.sessions() as session, session.begin():
-        canonical_space_id = await active_space_id_for(session, "3001")
+        canonical_space_id = (await find_space_binding(session, "3001")).space_id
         assert canonical_space_id is not None
         receipt = MemoryToolReceiptModel(
             canonical_space_id=canonical_space_id,
@@ -706,7 +709,7 @@ async def test_bot_event_cannot_become_user_memory_evidence(database: Database) 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("has_event_id", [True, False])
-async def test_agent_tool_and_worker_share_one_claim_receipt(
+async def test_agent_tool_and_worker_keep_independent_operation_receipts(
     database: Database, has_event_id: bool
 ) -> None:
     service, facts, ledger, processor = _service(database)
@@ -736,8 +739,6 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(
     )
     runtime = ToolRuntime(
         inbound=inbound,
-        gateway=None,
-        allow_generic_onebot=False,
         conversation_key="private:1001",
         trigger_message_id=event.platform_message_id,
         trigger_event_id=event.id if has_event_id else None,
@@ -802,9 +803,13 @@ async def test_agent_tool_and_worker_share_one_claim_receipt(
     )
 
     assert worker_result.ok
-    assert worker_result.deduplicated
-    assert worker_result.mutation_id == response["data"]["mutation_id"]
-    assert len(await facts.list_person("1001", limit=20)) == 1
+    assert not worker_result.deduplicated
+    assert worker_result.mutation_id != response["data"]["mutation_id"]
+    assert len(await facts.list_person("1001", limit=20)) == 2
+    replay = await service.mutate_validated_claim(
+        validated, MemoryProcessingContext(event=event), conversation_key="private:1001", job=job
+    )
+    assert replay.deduplicated and replay.mutation_id == worker_result.mutation_id
 
 
 @pytest.mark.asyncio
@@ -1475,6 +1480,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
             source_type=MemorySourceType.AUTOMATIC,
         )
     )
+    from tests.unit.test_memory_partition import _owners
+
+    people_ids, space_ids = await _owners(database)
     inbound = InboundMessage(
         message_id="member-read",
         event_type="message:group:normal",
@@ -1484,6 +1492,11 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         bot_user_id="8000",
         group_id="3001",
         mentioned_user_ids=("2002",),
+        mentioned_person_ids=(people_ids["2002"],),
+        person_id=people_ids["1001"],
+        space_id=space_ids["3001"],
+        conversation_id=current_group_event.canonical_conversation_id,
+        presence_id=current_group_event.ingress_presence_id,
     )
     tools = AgentToolService(
         settings=make_settings("sqlite+aiosqlite:///:memory:"),
@@ -1492,8 +1505,6 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     )
     runtime = ToolRuntime(
         inbound=inbound,
-        gateway=None,
-        allow_generic_onebot=False,
     )
     definitions = tools.definitions(runtime)
     assert not {"get_person_memories", "get_group_memories", "get_self_memories"} & {
@@ -1502,7 +1513,8 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     definition = next(tool for tool in definitions if tool.name == "search_memory")
     properties = definition.parameters["properties"]
     assert definition.parameters["required"] == ["query"]
-    assert set(properties) >= {"query", "target", "purpose", "entities"}  # type: ignore[arg-type]
+    assert set(properties) >= {"query", "target", "purpose"}
+    assert not {"entities", "preferred_kinds"} & set(properties)  # type: ignore[arg-type]
 
     global_search = (
         await tools.execute("search_memory", json.dumps({"query": "喜欢天文"}), runtime)
@@ -1546,7 +1558,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert inaccessible_fact.id not in historical_ids
     assert "memory_grounding_policy" not in historical_search
     # A historical canonical owner remains searchable after its transport Binding ends.
-    from qq_ai_bot.identity.db_models import IdentityBindingModel
+    from yuki.identity.db_models import IdentityBindingModel
 
     async with database.sessions() as session, session.begin():
         await session.execute(
@@ -1581,11 +1593,15 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     ).model_payload()
     assert group_only_fact.id in {row["fact_id"] for row in group_result["data"]["memories"]}
     assert (
-        await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), group_only)
+        await tools.execute(
+            "read_memory", json.dumps({"view": "fact", "fact_id": group_fact.id}), group_only
+        )
     ).model_payload()["error_code"] == "memory_not_found"
     assert (
         await tools.execute(
-            "get_memory_fact", json.dumps({"fact_id": group_only_fact.id}), group_only
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": group_only_fact.id}),
+            group_only,
         )
     ).model_payload()["ok"]
     strict_person_only = replace(person_only, memory_allowed_scopes=(MemoryScopeType.PERSON,))
@@ -1606,6 +1622,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
         presence_id="self-memory-presence",
         principal_kind="self",
         initiative_run_id="self-memory-run",
+        space_id=space_ids["3001"],
     )
     self_runtime = replace(
         runtime,
@@ -1622,22 +1639,35 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     ).model_payload()
     assert group_fact.id not in {row["fact_id"] for row in self_search["data"]["memories"]}
     assert (
-        await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), self_runtime)
-    ).model_payload()["error_code"] == "memory_not_found"
-    assert (
         await tools.execute(
-            "get_memory_fact", json.dumps({"fact_id": global_fact.id}), self_runtime
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": group_fact.id}),
+            self_runtime,
         )
     ).model_payload()["error_code"] == "memory_not_found"
     assert (
         await tools.execute(
-            "get_memory_fact", json.dumps({"fact_id": group_only_fact.id}), self_runtime
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": global_fact.id}),
+            self_runtime,
+        )
+    ).model_payload()["error_code"] == "memory_not_found"
+    assert (
+        await tools.execute(
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": group_only_fact.id}),
+            self_runtime,
         )
     ).model_payload()["ok"]
     assert (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "喜欢天文", "target": {"scope": "person", "user_id": "2002"}}),
+            json.dumps(
+                {
+                    "query": "喜欢天文",
+                    "target": {"scope": "person", "person_id": people_ids["2002"]},
+                }
+            ),
             group_only,
         )
     ).model_payload()["error_code"] == "permission_denied"
@@ -1647,7 +1677,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
             json.dumps(
                 {
                     "query": "喜欢天文",
-                    "target": {"scope": "person", "subject_ref": "member_2002"},
+                    "target": {"scope": "person", "subject_ref": f"member_{people_ids['2002']}"},
                 }
             ),
             runtime,
@@ -1658,7 +1688,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     denied_search = (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "喜欢围棋", "target": {"scope": "group", "group_id": "3002"}}),
+            json.dumps(
+                {"query": "喜欢围棋", "target": {"scope": "group", "space_id": space_ids["3002"]}}
+            ),
             runtime,
         )
     ).model_payload()
@@ -1666,22 +1698,22 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
 
     group_lookup = (
         await tools.execute(
-            "get_memory_fact",
-            json.dumps({"fact_id": group_fact.id}),
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": group_fact.id}),
             runtime,
         )
     ).model_payload()
     global_lookup = (
         await tools.execute(
-            "get_memory_fact",
-            json.dumps({"fact_id": global_fact.id}),
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": global_fact.id}),
             runtime,
         )
     ).model_payload()
     projected_lookup = (
         await tools.execute(
-            "get_memory_fact",
-            json.dumps({"fact_id": projected_fact.id}),
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": projected_fact.id}),
             runtime,
         )
     ).model_payload()
@@ -1693,19 +1725,25 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     # even after a Presence change. It never grants evidence or transitive access.
     private_runtime = replace(
         runtime,
-        inbound=replace(inbound, scope_type=ScopeType.PRIVATE, group_id=None, bot_user_id="8001"),
+        inbound=replace(
+            inbound, scope_type=ScopeType.PRIVATE, group_id=None, space_id=None, bot_user_id="8001"
+        ),
         actor_context=None,
     )
     evidence = (
         await tools.execute(
-            "get_memory_evidence", json.dumps({"fact_id": projected_fact.id}), private_runtime
+            "read_memory",
+            json.dumps({"view": "evidence", "fact_id": projected_fact.id}),
+            private_runtime,
         )
     ).model_payload()
     assert not evidence["ok"]
     background = (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "天文", "target": {"scope": "person", "user_id": "2002"}}),
+            json.dumps(
+                {"query": "天文", "target": {"scope": "person", "person_id": people_ids["2002"]}}
+            ),
             replace(private_runtime, origin=TurnOrigin.PLUGIN_BACKGROUND, actor_context=None),
         )
     ).model_payload()
@@ -1713,10 +1751,13 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     # still applies the same person and scope read authorization.
     assert background["ok"]
     await people.observe(user_id="2003", nickname="间接关系", group_id="3002")
+    people_ids, space_ids = await _owners(database)
     indirect = (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "天文", "target": {"scope": "person", "user_id": "2003"}}),
+            json.dumps(
+                {"query": "天文", "target": {"scope": "person", "person_id": people_ids["2003"]}}
+            ),
             private_runtime,
         )
     ).model_payload()
@@ -1724,7 +1765,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     unrelated_group = (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "群活动", "target": {"scope": "group", "group_id": "3002"}}),
+            json.dumps(
+                {"query": "群活动", "target": {"scope": "group", "space_id": space_ids["3002"]}}
+            ),
             private_runtime,
         )
     ).model_payload()
@@ -1732,7 +1775,9 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     historical_group = (
         await tools.execute(
             "search_memory",
-            json.dumps({"query": "群活动", "target": {"scope": "group", "group_id": "3001"}}),
+            json.dumps(
+                {"query": "群活动", "target": {"scope": "group", "space_id": space_ids["3001"]}}
+            ),
             private_runtime,
         )
     ).model_payload()
@@ -1740,7 +1785,7 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     assert {row["fact_id"] for row in historical_group["data"]["memories"]} == {group_only_fact.id}
 
     async with database.sessions() as session, session.begin():
-        old_space = await active_space_id_for(session, "3001")
+        old_space = (await find_space_binding(session, "3001")).space_id
         await session.execute(
             update(CanonicalSpaceModel)
             .where(CanonicalSpaceModel.id == old_space)
@@ -1751,18 +1796,28 @@ async def test_historical_social_read_policy_is_consistent_without_evidence_expa
     ).model_payload()
     assert complete_search["data"]["partial_reason"] == "semantic_not_configured"
     assert complete_search["data"]["partial_reason"] != "owner_projection_unavailable"
-    cross_group = replace(runtime, inbound=replace(inbound, group_id="3002"), actor_context=None)
+    cross_group = replace(
+        runtime,
+        inbound=replace(inbound, group_id="3002", space_id=space_ids["3002"]),
+        actor_context=None,
+    )
     assert (
-        await tools.execute("get_memory_fact", json.dumps({"fact_id": group_fact.id}), cross_group)
+        await tools.execute(
+            "read_memory", json.dumps({"view": "fact", "fact_id": group_fact.id}), cross_group
+        )
     ).model_payload()["ok"]
     private_runtime = replace(
         private_runtime,
-        runtime_config=await tools._runtime_config.snapshot(user_id="1001", group_id=None),
+        runtime_config=await tools._runtime_config.snapshot(
+            user_id=people_ids["1001"], group_id=None
+        ),
     )
     assert await people.delete_person("1001")
     forgotten = (
         await tools.execute(
-            "get_memory_fact", json.dumps({"fact_id": global_fact.id}), private_runtime
+            "read_memory",
+            json.dumps({"view": "fact", "fact_id": global_fact.id}),
+            private_runtime,
         )
     ).model_payload()
     assert not forgotten["ok"]

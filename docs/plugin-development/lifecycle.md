@@ -26,6 +26,8 @@ class Plugin:
 
 注册项会验证权限、Pydantic `extra='forbid'`、名称冲突和 Prompt 阶段。核心命令别名不可覆盖。
 
+安装定义和运行实例分开：批准后可注册定义并管理配置，`start` 才创建实际运行实例和可调用扩展。停用/启动失败保留已批准配置声明，不保留活动工具、命令或后台任务。定义查询不执行 `start`；更新 Manifest 或版本继续沿原发现与批准事实重新加载。
+
 ## `start`
 
 批准后 Host 才提供 `PluginContext`。可以读取配置、初始化私有 KV，并让 Host 调度已声明后台服务。应保持快速；超过 `PLUGIN_START_TIMEOUT_SECONDS` 会导致该插件启动失败。
@@ -39,7 +41,7 @@ class Plugin:
 ## 超时与失败
 
 - Hook 超时/异常：记录该 Hook 失败，聊天继续。
-- 后台服务失败：按声明的 `RestartPolicy` 和 Host 失败阈值处理。
+- 后台服务失败：只结束或按 `RestartPolicy` 重启出错的 runner，不停止其他服务或撤销插件工具。
 - 插件启动失败：仅禁用该插件。
 - 持久用户计划：必须使用 Automation，而不是后台 Task。
 

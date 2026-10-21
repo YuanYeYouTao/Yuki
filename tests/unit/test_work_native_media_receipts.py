@@ -12,19 +12,19 @@ from tests.support.work_session import WorkSession, invoke_tool
 from tests.unit.test_work_protocol_continuity import _control
 from tests.unit.test_work_source_guard import _guard
 
-from qq_ai_bot.admin.models import WorkStorageRuntimeConfig
-from qq_ai_bot.capabilities.media import MediaResultText, result_images
-from qq_ai_bot.capabilities.results import ToolExecutionResult
-from qq_ai_bot.domain.messages import ChatImage, ChatMessage, ToolCall, ToolFunction
-from qq_ai_bot.execution_trace.db_models import ExecutionTraceStateModel
-from qq_ai_bot.persistence.event_repository import EventLedgerRepository
-from qq_ai_bot.persistence.models import ChatEventModel
-from qq_ai_bot.runtime.effect_outcomes import current_result_capture
-from qq_ai_bot.runtime.protocol_schema import refs
-from qq_ai_bot.runtime.work_journal import JournalUnavailable
-from qq_ai_bot.runtime.work_repository import WorkConflict
-from qq_ai_bot.runtime.work_schema_v1 import effects
-from qq_ai_bot.services.turn_transcript import TurnTranscript, validating_request
+from yuki.admin.models import WorkStorageRuntimeConfig
+from yuki.capabilities.media import MediaResultText, result_images
+from yuki.capabilities.results import ToolExecutionResult
+from yuki.domain.messages import ChatImage, ChatMessage, ToolCall, ToolFunction
+from yuki.execution_trace.db_models import ExecutionTraceStateModel
+from yuki.persistence.event_repository import EventLedgerRepository
+from yuki.persistence.models import ChatEventModel
+from yuki.runtime.effect_outcomes import current_result_capture
+from yuki.runtime.protocol_schema import refs
+from yuki.runtime.work_journal import JournalUnavailable
+from yuki.runtime.work_repository import WorkConflict
+from yuki.runtime.work_schema_v1 import effects
+from yuki.services.turn_transcript import TurnTranscript, validating_request
 
 
 def _image(control, identity):
@@ -104,23 +104,28 @@ async def test_accepted_media_receipts_restore_before_paired_without_read_or_ree
         await invoke_tool(session, call, invoke, side_effecting=False)
     # Simulated crash: the last persisted journal is still response/pending.
     resumed = WorkSession(control, "result-test")
+    old_work = await control.repository.get(control.current["id"])
+    old_call_key = session.call_key(calls[0].id)
     restored = await resumed.restore(TurnTranscript(()))
     messages = restored.request().messages
-    assert [message.tool_call_id for message in messages if message.role == "tool"] == [
-        "one",
-        "two",
-    ]
+    assert not any(message.role == "tool" or message.tool_calls for message in messages)
+    assert any(
+        "one" in (message.content or "") and "two" in (message.content or "")
+        for message in messages
+    )
     assert [image for message in messages for image in message.images] == originals
     first_image = next(index for index, message in enumerate(messages) if message.images)
     assert all(message.role != "tool" for message in messages[first_image:])
 
-    async def forbidden():
-        pytest.fail("Accepted tool preparation must not execute or reread its source")
-
-    replay = await invoke_tool(resumed, calls[0], forbidden, side_effecting=False)
+    replay = await resumed.journal.effect_result(old_call_key)
     assert result_images(replay) == (originals[0],)
     assert invoked == ["one", "two"]
     assert control.tools_started == 2
+    current = await control.repository.get(control.current["id"])
+    assert current["id"] == old_work["id"]
+    assert current["parent_work_id"] == old_work["parent_work_id"]
+    assert current["source_json"] == old_work["source_json"]
+    assert current["tool_calls"] == old_work["tool_calls"]
     async with database.sessions() as reader:
         receipts = list(await reader.scalars(select(effects.c.receipt_json)))
         assert receipts and all("data:image/" not in receipt for receipt in receipts)
@@ -280,7 +285,7 @@ async def test_receipt_writer_publishes_only_prepared_metadata(database, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_dispatch_selected_history_image_adds_source_dependency(database):
+async def test_selected_tool_pixels_do_not_expand_the_context_history_read_set(database):
     ledger = EventLedgerRepository(database)
     initial = await _event_and_route(database, ledger)
     selected = await _event_and_route(database, ledger, content="selected attachment source")
@@ -292,17 +297,23 @@ async def test_dispatch_selected_history_image_adds_source_dependency(database):
         generation=control.lease.generation,
         source_event_id=selected.id,
         attachment_index=0,
+        content_hash=sha256(b"pixels").hexdigest(),
     )
     transcript = TurnTranscript((ChatMessage("user", images=(image,)),))
-    with validating_request(transcript.request()):
+    request = transcript.request()
+    with validating_request(request):
         assert await guard.check(control)
-    assert selected.id in guard.additional_events
+    assert request.messages[0].images == (image,)
+    assert request.messages[0].images[0].content_hash == sha256(b"pixels").hexdigest()
+    assert selected.id not in guard.additional_events
+    assert guard.version.visible_event_ids == (initial.id,)
     saved = guard.snapshot()
     async with database.sessions() as writer, writer.begin():
         await writer.execute(
             update(ChatEventModel).where(ChatEventModel.id == selected.id).values(content="erased")
         )
-    assert not await type(guard).restore(saved).check(control)
+    assert await type(guard).restore(saved).check(control)
     foreign = replace(image, conversation_id="other-conversation")
     with validating_request(TurnTranscript((ChatMessage("user", images=(foreign,)),)).request()):
-        assert not await guard.check(control)
+        assert await guard.check(control)
+    assert guard.snapshot() == saved

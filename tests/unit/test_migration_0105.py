@@ -10,23 +10,28 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Column, Integer, MetaData, Table, select, text
-from tests.support.legacy_conversation_seed import seed_pre_0119_social_conversations
+from tests.support.legacy_conversation_seed import (
+    frozen_social_env,
+    seed_legacy_person,
+    seed_legacy_space,
+)
 from tests.support.social_identity_cases import social_env
 
-from qq_ai_bot.automation.authority import DelegatedAuthority, PermissionLevel
-from qq_ai_bot.automation.repository import AutomationRepository
-from qq_ai_bot.control_plane.paging import PageRequest
-from qq_ai_bot.identity.canonical_repository import ensure_person, ensure_space
-from qq_ai_bot.persistence.control_automation_query import ControlAutomationQueryAdapter
-from qq_ai_bot.persistence.database import Database
-from qq_ai_bot.persistence.models import AutomationVersionModel, RuntimeConfigOverrideModel
-from qq_ai_bot.runtime.subagent_repository import SubagentRepository
-from qq_ai_bot.runtime.subagent_schema import children
-from qq_ai_bot.runtime.work_budget_schema import budgets
-from qq_ai_bot.runtime.work_recovery_schema import invocations
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.runtime.work_schema_v1 import effects, journal, work
-from qq_ai_bot.runtime.work_tree import budget_root_id
+from yuki.automation.authority import DelegatedAuthority, PermissionLevel
+from yuki.automation.repository import AutomationRepository
+from yuki.persistence.database import Database
+from yuki.persistence.models import (
+    AutomationStepRunModel,
+    AutomationVersionModel,
+    RuntimeConfigOverrideModel,
+)
+from yuki.runtime.subagent_repository import SubagentRepository
+from yuki.runtime.subagent_schema import children
+from yuki.runtime.work_budget_schema import budgets
+from yuki.runtime.work_recovery_schema import invocations
+from yuki.runtime.work_repository import WorkRepository
+from yuki.runtime.work_schema_v1 import effects, journal, work
+from yuki.runtime.work_tree import budget_root_id
 
 # Historical 0087 schema belongs to this upgrade fixture, not live runtime metadata.
 automation_budgets = Table(
@@ -40,8 +45,9 @@ automation_budgets = Table(
 )
 
 
-def test_0106_query_migration_removes_retired_overrides_without_removing_other_config(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("target_revision", ["0107", "head"])
+def test_0107_query_migration_removes_retired_overrides_without_removing_other_config(
+    tmp_path, monkeypatch, target_revision
 ):
     url = f"sqlite+aiosqlite:///{(tmp_path / 'queries.db').as_posix()}"
     monkeypatch.setenv("DATABASE_URL", url)
@@ -52,14 +58,15 @@ def test_0106_query_migration_removes_retired_overrides_without_removing_other_c
         database = Database(url)
         try:
             async with database.immediate_session() as writer:
-                person = await ensure_person(writer, "10001")
-                space = await ensure_space(writer, "20001")
+                person = await seed_legacy_person(writer, "10001")
+                space = await seed_legacy_space(writer, "20001")
                 now = datetime.now(UTC)
-                for scope, person_id, space_id, key in (
-                    ("global", None, None, "memory.max_referenced_targets"),
-                    ("user", person, None, "memory.max_referenced_targets"),
-                    ("group", None, space, "memory.max_referenced_targets"),
-                    ("global", None, None, "context.window_tokens"),
+                for scope, person_id, space_id, key, value in (
+                    ("global", None, None, "memory.max_referenced_targets", "5"),
+                    ("user", person, None, "memory.max_referenced_targets", "5"),
+                    ("group", None, space, "memory.max_referenced_targets", "5"),
+                    ("global", None, None, "context.window_tokens", "60000"),
+                    ("global", None, None, "llm.max_output_tokens", "16384"),
                 ):
                     writer.add(
                         RuntimeConfigOverrideModel(
@@ -67,7 +74,7 @@ def test_0106_query_migration_removes_retired_overrides_without_removing_other_c
                             scope_type=scope,
                             canonical_person_id=person_id,
                             canonical_space_id=space_id,
-                            value_json="60000" if key.startswith("context.") else "5",
+                            value_json=value,
                             value_type="integer",
                             apply_mode="hot",
                             created_at=now,
@@ -79,16 +86,17 @@ def test_0106_query_migration_removes_retired_overrides_without_removing_other_c
             await database.close()
 
     asyncio.run(seed())
-    command.upgrade(config, "head")
+    command.upgrade(config, target_revision)
 
     async def verify():
         database = Database(url)
         try:
             async with database.sessions() as reader:
                 rows = (await reader.scalars(select(RuntimeConfigOverrideModel))).all()
-                assert [(row.config_key, row.value_json) for row in rows] == [
-                    ("context.window_tokens", "60000")
-                ]
+                expected = [("llm.max_output_tokens", "16384")]
+                if target_revision == "0107":
+                    expected.append(("context.window_tokens", "60000"))
+                assert sorted((row.config_key, row.value_json) for row in rows) == sorted(expected)
                 assert not list(await reader.execute(text("PRAGMA foreign_key_check")))
         finally:
             await database.close()
@@ -114,8 +122,7 @@ def test_fresh_and_0104_upgrade_preserve_work_identity_source_receipts_and_budge
     async def seed_0104():
         database = Database(url)
         try:
-            await seed_pre_0119_social_conversations(database)
-            env = await social_env(database, tmp_path)
+            env = await frozen_social_env(database)
             async with database.immediate_session() as session:
                 for identity, parent, state, checkpoint in (
                     (
@@ -264,6 +271,7 @@ def test_fresh_and_0104_upgrade_preserve_work_identity_source_receipts_and_budge
                     lease, source_key="new-root", source={}, goal="new work"
                 )
                 derived = await repository.derive(lease, parent["id"], "new-derived", "new subgoal")
+                database.subagents_enabled = True
                 identity = await SubagentRepository(repository).start(
                     lease, derived["id"], "new-worker", {"goal": "new worker"}
                 )
@@ -314,8 +322,7 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
     async def seed():
         database = Database(url)
         try:
-            await seed_pre_0119_social_conversations(database)
-            env = await social_env(database, tmp_path)
+            env = await frozen_social_env(database)
             authority = DelegatedAuthority(
                 creator_user_id="10001",
                 bot_user_id="80001",
@@ -499,11 +506,14 @@ def test_0105_upgrade_keeps_missing_original_version_and_new_admission_freezes_c
                         select(automation_budgets).where(automation_budgets.c.run_id == admitted.id)
                     )
                 ).first()
-            audits = await ControlAutomationQueryAdapter(database.sessions).list_automation_steps(
-                PageRequest(), automation_id=1
-            )
-            assert [item.resource_id for item in audits.items] == ["1"]
-            assert audits.items[0].fields["run_id"] == 1
+            async with database.sessions() as reader:
+                audits = list(
+                    await reader.scalars(
+                        select(AutomationStepRunModel).where(AutomationStepRunModel.run_id == 1)
+                    )
+                )
+                assert [item.id for item in audits] == [1]
+                assert audits[0].run_id == 1
             assert (await repository.get(1)).run_count == 3
         finally:
             await database.close()

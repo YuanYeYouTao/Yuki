@@ -8,13 +8,13 @@ from sqlalchemy import event, func, select, update
 from tests.unit.test_dream_plan_transactions import create, sources, specs
 from tests.unit.test_memory_writer_boundaries import other_writer_and_read_only
 
-from qq_ai_bot.memory.dream import repository as dream_repository
-from qq_ai_bot.memory.dream.db_models import (
+from yuki.memory.dream import repository as dream_repository
+from yuki.memory.dream.db_models import (
     MemoryDreamClusterModel,
     MemoryDreamOperationModel,
     MemoryDreamRunModel,
 )
-from qq_ai_bot.memory.dream.models import (
+from yuki.memory.dream.models import (
     DreamOperationType,
     DreamOutput,
     DreamPlanStatistics,

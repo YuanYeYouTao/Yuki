@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import update
+from tests.support.event_seed import seed_event
 from tests.support.self_initiative_memory_quality_helpers import reflection_fact
 from tests.support.semantic_participation_host_helpers import (
     _event_and_route,
@@ -19,18 +20,18 @@ from tests.unit.test_participation_feedback import social
 from yuki_participation.models import CandidateKind, Proposal, Snapshot, SourceRef, Support
 from yuki_participation.self_report import SelfDelta, SelfReport
 
-from qq_ai_bot.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
-from qq_ai_bot.conversation.initiative_sources import memory_revision
-from qq_ai_bot.domain.conversations import ScopeType
-from qq_ai_bot.memory.self_origin import read_self_initiative_facts
-from qq_ai_bot.persistence.models import MemoryEvidenceModel, MemoryFactModel
-from qq_ai_bot.runtime.work_schema_v1 import work
-from qq_ai_bot.services.participation_feedback import (
+from yuki.conversation.autonomy_binding import InitiativeSource, InitiativeSourceKind
+from yuki.conversation.initiative_sources import memory_revision
+from yuki.domain.conversations import ScopeType
+from yuki.memory.self_origin import read_self_initiative_facts
+from yuki.persistence.models import MemoryEvidenceModel, MemoryFactModel
+from yuki.runtime.work_schema_v1 import work
+from yuki.services.participation_feedback import (
     admission_unit_binding,
     reconcile_page,
     sync_scope_effects,
 )
-from qq_ai_bot.social.db_models import SocialOperationModel
+from yuki.social.db_models import SocialOperationModel
 
 
 @pytest.mark.parametrize("accepted", [False, True])
@@ -97,7 +98,8 @@ async def test_expired_legacy_pending_queries_original_admission_before_retireme
                     .values(state="waiting_user", model_requests=2)
                 )
             receipt = await social(database, run, "synthetic-old-send")
-            own, _ = await host.app.ledger.append(
+            own, _ = await seed_event(
+                host.app.ledger,
                 bot_user_id=event.bot_user_id,
                 platform_message_id=str(uuid4()),
                 scope_type=ScopeType.GROUP,
@@ -155,7 +157,8 @@ async def test_expired_legacy_pending_queries_original_admission_before_retireme
             await reconcile_page(host, (run,))
             assert len(state.effects) == 3
 
-            reply, _ = await host.app.ledger.append(
+            reply, _ = await seed_event(
+                host.app.ledger,
                 bot_user_id=event.bot_user_id,
                 platform_message_id=str(uuid4()),
                 scope_type=ScopeType.GROUP,
@@ -266,7 +269,10 @@ async def test_legacy_ordinary_memory_basis_uses_current_exact_authorized_source
         await host._hydrate(restored)
         await host._validate_boundaries(restored)
         assert (await host._sources_current(restored, (ref,)))[ref]
-        assert restored.controller._binding_valid(unit)
+        assert any(
+            current.binding == unit
+            for current in restored.controller.participating_units(time.time())
+        )
         assert ref.event_id not in restored.controller.state.events
         assert (await host.ordinary.current(a.id)).binding == binding
 
@@ -284,7 +290,10 @@ async def test_legacy_ordinary_memory_basis_uses_current_exact_authorized_source
             assert memory_revision(await facts.get_fact(fact_id)) == digest
         await host._validate_boundaries(restored)
         assert restored.controller.state.invalidated[ref.event_id] >= ref.revision
-        assert not restored.controller._binding_valid(unit)
+        assert all(
+            current.binding != unit
+            for current in restored.controller.participating_units(time.time())
+        )
         # The old admission is a real receipt, even when its derived unit exits.
         assert (await host.ordinary.get(a.id)).activation_id == prepared.admission.activation_id
     finally:

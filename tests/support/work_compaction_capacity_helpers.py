@@ -8,17 +8,17 @@ from tests.conftest import build_harness, make_settings
 from tests.support.social_identity_cases import social_env
 from tests.support.work_session import WorkSession
 
-from qq_ai_bot.domain.messages import (
+from yuki.domain.messages import (
     ChatMessage,
 )
-from qq_ai_bot.runtime.origin import TurnOrigin
-from qq_ai_bot.runtime.work_control import WorkControl
-from qq_ai_bot.runtime.work_repository import WorkRepository
-from qq_ai_bot.services.agent_runner import AgentRuntime
-from qq_ai_bot.services.main_agent_contract import MainAgentContract
-from qq_ai_bot.services.turn_transcript import TurnTranscript
-from qq_ai_bot.workspace.short_state import ShortState
-from qq_ai_bot.workspace.store import WorkspaceStore
+from yuki.runtime.origin import TurnOrigin
+from yuki.runtime.work_control import WorkControl
+from yuki.runtime.work_repository import WorkRepository
+from yuki.services.agent_runner import AgentRuntime
+from yuki.services.main_agent_contract import MainAgentContract
+from yuki.services.turn_transcript import TurnTranscript
+from yuki.workspace.short_state import ShortState
+from yuki.workspace.store import WorkspaceStore
 
 
 async def _session(database, tmp_path, *, worker=False):
@@ -34,7 +34,8 @@ async def _session(database, tmp_path, *, worker=False):
         lease, source_key="capacity-test", source=control.source, goal="prepare an artifact"
     )
     if worker:
-        from qq_ai_bot.runtime.subagent_repository import SubagentRepository
+        database.subagents_enabled = True
+        from yuki.runtime.subagent_repository import SubagentRepository
 
         children = SubagentRepository(repository)
         identity = await children.start(
