@@ -1124,19 +1124,19 @@ requires-dist = [
     { name = "types-defusedxml", marker = "extra == 'dev'", specifier = ">=0.7,<1" },
     { name = "types-jsonschema", marker = "extra == 'dev'", specifier = ">=4.23,<5" },
     { name = "tzdata", specifier = ">=2025.2" },
-    { name = "yuki-semantic-participation", url = "https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/archive/31d76872320ed8e04fdad70c89f0149d3c9ae3ac.tar.gz" },
+    { name = "yuki-semantic-participation", url = "https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/archive/438f204f9ebe2b8c1b698b68c0f1b3ac8b4facef.tar.gz" },
 ]
 provides-extras = ["dev"]
 
 [[package]]
 name = "yuki-semantic-participation"
 version = "0.1.0"
-source = { url = "https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/archive/31d76872320ed8e04fdad70c89f0149d3c9ae3ac.tar.gz" }
+source = { url = "https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/archive/438f204f9ebe2b8c1b698b68c0f1b3ac8b4facef.tar.gz" }
 dependencies = [
     { name = "httpx" },
     { name = "pydantic" },
 ]
-sdist = { hash = "sha256:4b9252d76b0eabb9a6362d1727d4a90eb52c794707304a1dd0d607b4942ae9f9" }
+sdist = { hash = "sha256:326abbe0a8fc184a222a4af311707249a50805642d0a2743f80e3d6795950eee" }
 
 [package.metadata]
 requires-dist = [

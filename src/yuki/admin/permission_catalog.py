@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import IntEnum, StrEnum
 from typing import Literal
 
 from yuki.admin.config_registry import ConfigRegistry
 from yuki.admin.models import ConfigSpec
-from yuki.config import Settings
 from yuki.domain.messages import InboundMessage
 from yuki.domain.tool_actor import ToolActor
 from yuki.services.commands.help import ADMIN_ACTIONS, ADMIN_READ_ACTIONS, ADMIN_SUBACTIONS
@@ -395,7 +394,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         kind=CapabilityKind.COMMAND,
         category="chat",
         display_name="连接测试",
-        description="通过确定性 /ai ping 命令检查 {bot_name} 响应。",
+        description="通过确定性 /ai ping 命令检查服务响应。",
         minimum_level=PermissionLevel.USER,
         mutating=False,
         target_scopes=("current_conversation",),
@@ -405,7 +404,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         kind=CapabilityKind.COMMAND,
         category="identity",
         display_name="查看本人身份",
-        description="通过确定性 /ai whoami 命令查看 {bot_name} 识别到的本人资料。",
+        description="通过确定性 /ai whoami 命令查看识别到的本人资料。",
         minimum_level=PermissionLevel.USER,
         mutating=False,
         target_scopes=("self",),
@@ -437,9 +436,9 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         id="command:automation.list:global",
         kind=CapabilityKind.COMMAND,
         category="automation",
-        display_name="列出 Yuki 自动化",
+        display_name="列出自动化",
         description=(
-            "读取带创建者身份的 Yuki 全局自动化任务简表；读取不授予修改权限，"
+            "读取带创建者身份的全局自动化任务简表；读取不授予修改权限，"
             "普通用户只能管理自己的任务，超级管理员可以管理全部任务。"
         ),
         minimum_level=PermissionLevel.USER,
@@ -462,7 +461,7 @@ _BASE_SELF_SERVICE_CAPABILITIES = (
         id="command:automation.get:global",
         kind=CapabilityKind.COMMAND,
         category="automation",
-        display_name="查看 Yuki 自动化",
+        display_name="查看自动化",
         description=(
             "自然语言工具可按稳定 ID 查看包含创建者身份的任务安全摘要；"
             "/ai automation show 对普通用户保持 owner 范围，超级管理员可查看全部任务。"
@@ -564,8 +563,8 @@ _MEMORY_LIFECYCLE_CAPABILITIES = (
             ("maintenance.run", "运行记忆维护", "立即运行一次有界的本地生命周期维护。", True),
             (
                 "self-reflection.run",
-                "运行 {bot_name} 自省",
-                "立即运行一次有界的 {bot_name} Self Reflection。",
+                "运行自省",
+                "立即运行一次有界的 Self Reflection。",
                 True,
             ),
             ("dream.plan", "规划 Memory Dream", "保存一次全库 Dream 快照计划。", True),
@@ -585,10 +584,8 @@ class PermissionCatalogService:
     def __init__(
         self,
         *,
-        settings: Settings,
         config_registry: ConfigRegistry | None = None,
     ) -> None:
-        self._bot_display_name = settings.bot_display_name
         self._config_registry = config_registry or ConfigRegistry()
         self._descriptors = self._build_descriptors()
         ids = [descriptor.id for descriptor in self._descriptors]
@@ -653,15 +650,8 @@ class PermissionCatalogService:
 
     def _build_descriptors(self) -> tuple[CapabilityDescriptor, ...]:
         descriptors = [
-            replace(
-                descriptor,
-                display_name=descriptor.display_name.format(bot_name=self._bot_display_name),
-                description=descriptor.description.format(bot_name=self._bot_display_name),
-            )
-            for descriptor in (
-                *_BASE_SELF_SERVICE_CAPABILITIES,
-                *_MEMORY_LIFECYCLE_CAPABILITIES,
-            )
+            *_BASE_SELF_SERVICE_CAPABILITIES,
+            *_MEMORY_LIFECYCLE_CAPABILITIES,
         ]
         descriptors.extend(self._self_service_descriptors())
         existing = {descriptor.id for descriptor in descriptors}

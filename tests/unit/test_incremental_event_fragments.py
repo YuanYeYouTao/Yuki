@@ -36,7 +36,7 @@ def _original_grouping(renderer, rows):
         key = (
             message.role,
             identity,
-            renderer._row_display_name(row),
+            row.sender_display_name,
             prompt_origin_class(row),
             row.caused_by_event_id,
         )

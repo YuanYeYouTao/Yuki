@@ -14,7 +14,7 @@ from yuki.workspace.store import WorkspaceError, WorkspaceStore
 STATE_TOOL = ChatTool(
     name="update_short_state",
     description=(
-        "更新 Yuki 全局短期记录，不按人或群分区、授权。有效内容按当前状态提供，无须翻工作区文件。"
+        "更新全局短期记录，不按人或群分区、授权。有效内容按当前状态提供，无须翻工作区文件。"
         "最多三条，24 小时过期，读取不续期；空 text 删除该槽。"
         "想好数字、约定下一步等需要跨会话延续的事情，必须先成功写入再说记住了或想好了。"
         "slot 为 1 到 3，更新只返回该槽的实际内容。"

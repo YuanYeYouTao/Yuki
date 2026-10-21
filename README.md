@@ -77,6 +77,8 @@ SWE Lite 覆盖真实仓库的 issue 修复；Terminal-Bench 涵盖编译、系�
 | [Yuki-Kun-Game](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) | 独立养鲲游戏插件 |
 | [Yuki-GitHub-Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) | 独立 GitHub 仓库监控插件 |
 
+角色设定使用一份可自由编辑的 `character/SOUL.md`，角色名称在资料中独立修改。空人格也可运行；工具、权限和任务规则由程序维护。升级现有部署请先按[单 SOUL 升级说明](docs/operations/soul-deployment-20261022.md)显式整理原件并初始化角色名称。
+
 ## 安装与升级
 
 使用现成部署包，可从 [3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0) 下载，按 [3.9.0 安装与升级指南](docs/upgrade-3.9.0.md)配置。它的镜像为 `ghcr.io/yuanyeyoutao/yuki-qqbot:3.9.0`，提供 Linux amd64 和 arm64。

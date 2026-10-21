@@ -52,11 +52,11 @@ class PromptComposer:
         self._registry = prompt_registry or PromptRegistry()
         self._compiler = PromptCompiler()
 
-    def _static_contributions(self) -> tuple[PromptContribution, ...]:
+    def static_contributions(self) -> tuple[PromptContribution, ...]:
         return (
             static_text(
                 "core.persona",
-                self._settings.system_prompt,
+                self._settings.character_prompt,
                 channel=PromptChannel.PERSONA,
                 priority=100,
             ),
@@ -76,7 +76,7 @@ class PromptComposer:
 
     def static_messages(self) -> tuple[ChatMessage, ...]:
         return self._compiler.compile(
-            PromptProgram(contributions=self._static_contributions())
+            PromptProgram(contributions=self.static_contributions())
         ).messages
 
     def compose(
@@ -87,8 +87,9 @@ class PromptComposer:
         runtime: RuntimeConfigSnapshot,
         include_plugin_context: bool = True,
         short_state: list[dict[str, Any]] | None = None,
+        static: tuple[PromptContribution, ...] | None = None,
     ) -> PromptComposition:
-        contributions: list[PromptContribution] = [*self._static_contributions()]
+        contributions = list(self.static_contributions() if static is None else static)
         state = project_short_state(short_state or [])
         if state:
             contributions.append(

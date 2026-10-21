@@ -83,7 +83,6 @@ class MemoryWorker:
             models,
             concurrency,
             people=people,
-            bot_display_name=settings.bot_display_name,
             timezone=settings.default_timezone,
         )
         self.processor = processor or MemoryClaimProcessor(

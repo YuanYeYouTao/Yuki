@@ -3,6 +3,18 @@
 个人入口使用原 Bot HTTP 服务的 `/client/v1`。operator 与个人设备使用不同凭据，
 设备凭据解析当前 Person，但保留原设备与 App 入口，不具有管理或设备执行器权限。公开服务沿部署提供 HTTPS。
 
+## 角色资料与单 SOUL
+
+`GET /meta` 公开当前角色名称、API revision `6` 和实际能力声明，不推断未实现的客户端功能。
+设备读取 `GET /character`；获准 owner 使用 `PATCH /character`，按原 UUID 和 profile revision 修改名称等资料。
+owner 资格归 Person，账号转交不转交角色编辑权；operator 通过独立管理入口授权。
+
+`GET /character/soul`、`PUT /character/soul` 和 `POST /character/soul/reload` 只处理同一份 `SOUL_FILE`。
+保存使用原 UUID、文件 hash CAS 和原子替换；写入与当前生效 hash 分别报告。
+空正文合法，`{{name}}` 只在装配时精确展开。改名或改人格影响后续合法新激活，原已付输入和历史保持原件。
+SDK 的 SOUL 受控写在确认丢失后先查原 UUID，恢复仍用原 payload；不把一般未知外部效果重新派发。
+旧双文档路径与 key 不保留。安装、旧草稿整理与权限见[升级说明](../operations/soul-deployment-20261022.md)。
+
 ## 配对与账号绑定
 
 第一台设备可由 operator 执行 `yuki admin person create`，再执行

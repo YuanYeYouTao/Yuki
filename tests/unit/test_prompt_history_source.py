@@ -20,7 +20,6 @@ def _source(rows, fragments):
     source = PromptHistorySource(
         (),
         projection=_projection(fragments),
-        bot_display_name="Yuki",
         timezone="Asia/Shanghai",
         after_event_id=0,
     )

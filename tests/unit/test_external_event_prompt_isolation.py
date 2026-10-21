@@ -116,7 +116,6 @@ def _snapshot(current, recent=(), **checkpoint):
     source = PromptHistorySource(
         (),
         projection=None,
-        bot_display_name="Yuki",
         timezone="Asia/Shanghai",
         after_event_id=coverage,
     )
@@ -222,7 +221,7 @@ def test_proactive_history_groups_by_origin_and_cause_without_changing_body() ->
         (7,),
     ]
     first_episode = rendered[1][2].content or ""
-    assert "[20:00:03｜Yuki主动消息｜由外部事件 #2 触发｜source=github｜type=PullRequestEvent]" in (
+    assert "[20:00:03｜主动消息｜由外部事件 #2 触发｜source=github｜type=PullRequestEvent]" in (
         first_episode
     )
     assert "first proactive part" in first_episode
@@ -566,7 +565,7 @@ def test_external_wakeup_uses_the_same_main_agent_prompt_program(code_enabled) -
     assert "github-monitor" not in system_text
     assert "PushEvent" not in system_text
     for component in (
-        settings.system_prompt,
+        settings.character_prompt,
         core_contract(code_enabled=settings.code_mode_enabled),
         MEMORY_GROUNDING_RULE,
     ):

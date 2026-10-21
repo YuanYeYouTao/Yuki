@@ -41,6 +41,14 @@ def test_source_free_release_archives_match_the_loose_assets(tmp_path):
         assert archive.read(f"{archive_root}/docker-compose.yml") == compose
         assert not any(name.startswith(f"{archive_root}/src/") for name in archive.namelist())
         assert f"{archive_root}/.env" not in archive.namelist()
+        assert (
+            archive.read(f"{archive_root}/config/SOUL.md") == (ROOT / "config/SOUL.md").read_bytes()
+        )
+        assert not any(
+            name.startswith(f"{archive_root}/character/") and name.endswith(".md")
+            for name in archive.namelist()
+        )
+        assert f"{archive_root}/SOUL-Deployment.md" in archive.namelist()
     with tarfile.open(tmp_path / f"{archive_root}.tar.gz", "r:gz") as archive:
         member = archive.extractfile(f"{archive_root}/docker-compose.yml")
         assert member is not None and member.read() == compose
@@ -52,3 +60,14 @@ def test_release_bundle_rejects_both_real_ledger_filenames(filename):
     files = tracked_files(ROOT) | {f"plugins/unintended-data/{filename}"}
     with pytest.raises(BundleBuildError, match="forbidden bundle path"):
         select_bundle_files(files, project_version(ROOT))
+
+
+def test_private_character_originals_and_drafts_are_not_selected_for_release():
+    files = tracked_files(ROOT) | {
+        "character/SOUL.md",
+        "character/private-draft.md",
+        "character/old-original.md",
+    }
+    selected = select_bundle_files(files, project_version(ROOT))
+    assert not any(path.startswith("character/") for path in selected)
+    assert selected["config/SOUL.md"] == "config/SOUL.md"

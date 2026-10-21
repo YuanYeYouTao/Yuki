@@ -29,6 +29,8 @@ CONTROL_CAPABILITY_IDS: Final[frozenset[str]] = frozenset(
         "control.execution.metadata.read",
         "control.group.mutate",
         "control.health.read",
+        "control.character.read",
+        "control.character.mutate",
         "control.memory.content.read",
         "control.memory.dream",
         "control.memory.maintenance",

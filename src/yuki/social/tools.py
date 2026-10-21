@@ -93,7 +93,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         ),
         tool(
             "find_contacts",
-            "查找 Yuki 可联系的人或群。名称歧义必须澄清；成员名单出现不等于认识。",
+            "查找可联系的人或群。名称歧义必须澄清；成员名单出现不等于认识。",
             {
                 **selector,
                 "kind": {"type": "string", "enum": ["person", "space"]},
@@ -179,7 +179,7 @@ def social_tool_definitions() -> tuple[ChatTool, ...]:
         ),
         tool(
             "recall_own_message",
-            "撤回真实账本中的 Yuki 消息；必须由原发送账号执行，新账号不能代撤回。",
+            "撤回真实账本中自己发送的消息；必须由原发送账号执行，新账号不能代撤回。",
             {
                 "event_id": {"type": "integer", "minimum": 1},
             },

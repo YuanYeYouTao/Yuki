@@ -1207,7 +1207,7 @@ def _automation_directory_entry(
         creator=AutomationCreatorIdentity(
             person_id=row[-1],
             external_account_id=record.creator_user_id,
-            display_name="Yuki / SELF" if record.creator_kind == "self" else display_name or None,
+            display_name="SELF" if record.creator_kind == "self" else display_name or None,
             kind=record.creator_kind,
         ),
     )

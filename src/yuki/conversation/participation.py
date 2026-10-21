@@ -115,7 +115,7 @@ class LocalAutonomousParticipationPolicy:
         self,
         *,
         threshold: int = 80,
-        bot_aliases: tuple[str, ...] = ("yuki", "由纪"),
+        bot_aliases: tuple[str, ...],
     ) -> None:
         if not 0 <= threshold <= 100:
             raise ValueError("threshold must be between 0 and 100")

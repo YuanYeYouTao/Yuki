@@ -108,7 +108,7 @@ Read old terminal/APT/Python/external-agent results by their original request/ru
 | ASR | Explicitly select `chat_completions` or `audio_transcriptions`; the model name does not select the protocol |
 | Stickers | Remove the retired `emoji_replacement` route, obsolete emoji overrides and `VISION_MAX_RETRIES`; retain other profiles, vision/ASR connections and secrets |
 
-`SYSTEM_PROMPT_FILE` refers to a real deployment file. Back it up and update it alongside the current contract: changing source or an example does not replace a mounted file. See the [quiet-SELF prompt delivery material](operations/system-prompt-quiet-self-initiative-20261018.md). Preserve custom persona content while updating general speaking, tool and persistent-work rules. Previously paid requests remain unchanged.
+Current source uses one user-owned `character/SOUL.md`, selected by `SOUL_FILE`. Explicitly choose the desired persona from the previous deployment, initialize the character name and remove retired prompt settings using the [SOUL upgrade procedure](operations/soul-deployment-20261022.md). The public template is only for explicit initialization; an empty SOUL remains empty. Runtime rules come from the program. Previously paid requests remain unchanged.
 
 ## 7. Verify the upgraded deployment
 

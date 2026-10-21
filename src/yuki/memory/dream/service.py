@@ -948,8 +948,7 @@ class DreamService:
         instruction = _INSTRUCTION
         if self_memory:
             instruction += (
-                f"\n【{self._settings.bot_display_name} 共享核心人格】\n"
-                f"{self._settings.bot_persona}\n"
+                "\n【角色身份与人格参考】\n" + self._settings.character_prompt + "\n"
                 "SELF 新正文保持第一人称和这一人格的自然口吻；人格只影响口吻，"
                 "不应让你倾向于保留本可合并的碎片。"
             )

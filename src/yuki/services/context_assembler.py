@@ -70,7 +70,6 @@ class AssembledContext:
     history_event_fragments: tuple[tuple[tuple[int, ...], ChatMessage], ...] = ()
     current_event_id: int | None = None
     projection_scope: str = ""
-    history_bot_display_name: str = "Yuki"
     history_timezone: str = "Asia/Shanghai"
     projection_snapshot: ProjectionSnapshot | None = None
     history_incremental: bool = False
@@ -169,7 +168,6 @@ class ContextAssembler:
         prepared = frozen.extend_history(grouped, individual)
         renderer = ChatEventPromptRenderer(
             references=references,
-            bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
         )
         current = current_override or (
@@ -204,7 +202,6 @@ class ContextAssembler:
             history_event_fragments=individual,
             current_event_id=current_id,
             projection_scope=projection_scope,
-            history_bot_display_name=self._settings.bot_display_name,
             history_timezone=self._settings.default_timezone,
             projection_snapshot=snapshot.projection,
             history_incremental=True,
@@ -237,7 +234,6 @@ class ContextAssembler:
         if read_history:
             loaded = await self._scopes.prepare_prompt_snapshot(
                 scope,
-                bot_display_name=self._settings.bot_display_name,
                 timezone=self._settings.default_timezone,
             )
             snapshot = self._history_window(scope, loaded)
@@ -259,7 +255,6 @@ class ContextAssembler:
             ),
             read_version=version,
             history_timezone=self._settings.default_timezone,
-            history_bot_display_name=self._settings.bot_display_name,
         )
 
     async def assemble(
@@ -445,7 +440,6 @@ class ContextAssembler:
             scope,
             before_event_id=before_event_id,
             expected_turn=turn,
-            bot_display_name=self._settings.bot_display_name,
             timezone=self._settings.default_timezone,
             trigger_event_id=trigger_event_id,
         )

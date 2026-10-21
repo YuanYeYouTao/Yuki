@@ -32,6 +32,54 @@ async def read(client: httpx.AsyncClient, path: str, **params: Any) -> Any:
     return response.json()["data"]
 
 
+async def _character_write(
+    client: httpx.AsyncClient, method: str, path: str, payload: dict[str, Any]
+) -> dict[str, Any]:
+    identity = payload["request_id"]
+    try:
+        response = await client.request(method, f"/admin/v1/{path}", json=payload)
+        if response.status_code >= 500:
+            raise RuntimeError(
+                f"request {identity} unconfirmed; query `admin operation {identity}`"
+            )
+        response.raise_for_status()
+    except httpx.TransportError as exc:
+        raise RuntimeError(
+            f"request {identity} unconfirmed; query `admin operation {identity}`"
+        ) from exc
+    return dict(response.json()["data"])
+
+
+async def character_mutation(
+    client: httpx.AsyncClient, *, request_id: str | None = None, **fields: Any
+) -> dict[str, Any]:
+    return await _character_write(
+        client, "PATCH", "character", {"request_id": request_id or str(uuid4()), **fields}
+    )
+
+
+async def soul_mutation(
+    client: httpx.AsyncClient,
+    *,
+    request_id: str | None = None,
+    content: str | None = None,
+    expected_revision: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {"request_id": request_id or str(uuid4())}
+    if content is not None:
+        payload.update(
+            content=content,
+            expected_revision=expected_revision
+            or (await read(client, "character/soul"))["revision"],
+        )
+    return await _character_write(
+        client,
+        "PUT" if content is not None else "POST",
+        "character/soul" if content is not None else "character/soul/reload",
+        payload,
+    )
+
+
 async def mutate(
     client: httpx.AsyncClient,
     path: str,

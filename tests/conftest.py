@@ -47,6 +47,12 @@ from yuki.vision.base import VisionProvider
 from yuki.web.base import WebSearchProvider
 
 
+@pytest.fixture(autouse=True)
+def selected_test_soul(monkeypatch):
+    """Select public test data explicitly; production never falls back to a preset."""
+    monkeypatch.setenv("SOUL_FILE", str(Path(__file__).resolve().parents[1] / "config/SOUL.md"))
+
+
 class MemorySender:
     """Record outbound messages and optionally fail every send."""
 
@@ -99,7 +105,9 @@ def make_settings(database_url: str, **overrides: object) -> Settings:
         "daily_chat_message_delay_max_seconds": 0,
     }
     values.update(overrides)
-    return Settings.model_validate(values)
+    settings = Settings.model_validate(values)
+    settings.apply_character_name("Yuki", revision=1)
+    return settings
 
 
 def build_harness(
@@ -255,7 +263,6 @@ def build_harness(
             models,
             concurrency,
             people=profiles,
-            bot_display_name=settings.bot_display_name,
             timezone=settings.default_timezone,
         ),
         processor=claim_processor,
@@ -275,9 +282,7 @@ def build_harness(
         memory_admin=memory_admin,
         preference_admin=PreferenceAdminService(memory_mutations=memory_admin, audit=audit),
         config_admin=ConfigAdminService(runtime_config),
-        permission_catalog=PermissionCatalogService(
-            settings=settings, config_registry=runtime_config.registry
-        ),
+        permission_catalog=PermissionCatalogService(config_registry=runtime_config.registry),
         vision_service=vision,
         turn_coordinator=turn_coordinator,
     )

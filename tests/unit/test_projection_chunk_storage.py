@@ -162,7 +162,7 @@ async def test_replacement_stores_current_bytes_and_retires_old_chunks_not_prove
 
 def _source(projection=None):
     return PromptHistorySource(
-        (), projection=projection, bot_display_name="Yuki", timezone="UTC", after_event_id=0
+        (), projection=projection, timezone="UTC", after_event_id=0
     )
 
 

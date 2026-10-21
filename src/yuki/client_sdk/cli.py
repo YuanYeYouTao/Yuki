@@ -28,6 +28,8 @@ def add_client_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         ),
     )
     commands = parser.add_subparsers(dest="client_action", required=True)
+    schema = commands.add_parser("openapi", help="导出当前程序实际实现的个人 API 合同")
+    schema.add_argument("--output", type=Path, required=True)
     pair = commands.add_parser("pair")
     pair.add_argument("--code-env", default="YUKI_CLIENT_CODE")
     pair.add_argument("--label", required=True)
@@ -63,6 +65,11 @@ def add_client_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
 
 
 async def client_command(args: argparse.Namespace) -> int:
+    if args.client_action == "openapi":
+        from yuki.client_api.openapi import export_openapi
+
+        export_openapi(args.output)
+        return 0
     async with httpx.AsyncClient(timeout=30, trust_env=False) as http:
         if args.client_action == "pair":
             code = os.getenv(args.code_env, "")

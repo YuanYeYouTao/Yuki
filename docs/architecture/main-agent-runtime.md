@@ -53,10 +53,14 @@ legacy/semantic 自主机会均以正式 SELF 来源进入这条执行链；
 
 当前场景只用简短的群聊/私聊说明，不预取称呼全集、记忆引用或关系评分。短期记录只展示当前有内容的 slot/text，写入只需要 slot/text，返回本次槽位结果；清空和到期仍沿原存储语义处理。插件资料保留实际来源。
 
-`Settings` 从 `SYSTEM_PROMPT_FILE` 读取人设正文；`PromptComposer` 将其与
-`prompting.contracts.core_contract`、Memory grounding 合成静态系统段。
-人设文件保留身份、性格、关系、喜好与语气示例；分条与前缀、默认聊天表达、
-正式任务表达、查证及自主工作等通用规则统一放在 `core_contract`，示例文件不再重复保存。
+`Settings` 从唯一 `SOUL_FILE` 读取用户人格原件，名称取当前 `character_profile` 的已提交资料。
+`PromptComposer` 将最小角色身份、SOUL、`prompting.contracts.core_contract` 和 Memory grounding
+合成稳定系统段。SOUL 是自由 Markdown，精确展开 `{{name}}`，空正文只省略人格段。
+性格、关系、喜好、动作/旁白偏好和虚构语气示例归 SOUL；工具、统一发送、Work、回执与
+自主触发语义归程序规则。Main、SELF、自动化与子 Agent 复用相同入口。
+角色资料改名或 SOUL 编辑/reload 后，合法新激活使用新值；当前工具往返及原协议请求保持原材料。
+工具说明使用中性角色称谓，不因改名重建 manifest；历史只认原事件名称快照，不用当前角色名补造旧名。
+桌面与 CLI 共用单 SOUL 读写/重载合同，详见[SOUL 管理与升级](../operations/soul-deployment-20261022.md)。
 Main 的系统约束、
 插件资料、外部事件、聊天历史、附件、网页结果和 compact 检查点不再附加概括性“不可信”
 提醒；原事件类型、来源、内部身份及 `<runtime_context>` 的程序资料标签仍按原载体保留。

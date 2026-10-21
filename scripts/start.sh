@@ -3,6 +3,9 @@ set -eu
 
 mkdir -p /app/data
 mkdir -p /app/workspace /app/social-transfer
+mkdir -p /app/character
+chown -R bot:bot /app/character
+chmod 750 /app/character
 chown bot:bot /app/workspace /app/social-transfer
 chmod 755 /app/social-transfer
 chown -R bot:bot /app/data

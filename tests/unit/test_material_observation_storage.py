@@ -537,8 +537,8 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
     runtime.mkdir()
     shutil.copy("alembic.ini", runtime)
     shutil.copytree("migrations", runtime / "migrations")
-    (runtime / "config").mkdir()
-    shutil.copy("config/persona.md", runtime / "config/persona.md")
+    (runtime / "character").mkdir()
+    shutil.copy("config/SOUL.md", runtime / "character/SOUL.md")
     protocol_body = b"original protocol"
     protocol_key = hashlib.sha256(protocol_body).hexdigest()
     protocol_file = runtime / "data/work-protocol" / protocol_key[:2] / protocol_key[2:]
@@ -591,6 +591,7 @@ def test_installed_cli_upgrades_copy_without_repository_pythonpath(tmp_path, mon
     cli = Path(sys.executable).parent / ("yuki.exe" if os.name == "nt" else "yuki")
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)
+    env["SOUL_FILE"] = str(runtime / "character/SOUL.md")
     env["DATABASE_URL"] = f"sqlite+aiosqlite:///{copied.as_posix()}"
     result = subprocess.run(
         [str(cli), "init-db"], cwd=runtime, env=env, capture_output=True, text=True, check=False

@@ -364,7 +364,6 @@ class PluginFacadeServices:
     """Private dependency bundle; never returned through PluginContext."""
 
     approval_revision: str = ""
-    bot_display_name: str = "Yuki"
     ledger: EventLedgerRepository | None = None
     social: SocialService | None = None
     people: PeopleRepository | None = None

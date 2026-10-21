@@ -104,7 +104,8 @@ class MainAgentContract:
                         # 14: retired MCP and fixed direct view, discovery and full execution API.
                         # 19: lifecycle decisions settle after the original tool round.
                         # 25: Account mentions and prepared parts replace retired dispatch.
-                        "version": 25,
+                        # 27: role-independent descriptions and the single SOUL contract.
+                        "version": 27,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

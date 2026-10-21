@@ -159,7 +159,7 @@ def _extract_segments(
                 kind, marker, name = "all", "[提及全体成员]", "全体成员"
             elif target in yuki_account_ids:
                 mentions_yuki = True
-                kind, marker, name = "yuki", "[提及Yuki]", str(data.get("name") or "")
+                kind, marker, name = "yuki", "[提及Agent]", str(data.get("name") or "")
             elif target.isdecimal():
                 if target not in seen_user_ids:
                     seen_user_ids.add(target)

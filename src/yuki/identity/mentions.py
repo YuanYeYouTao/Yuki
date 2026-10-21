@@ -88,7 +88,7 @@ async def resolve_message_mentions(
             )
             or (cards.get(account.id, "") if current_names_apply and account else "")
             or (account.display_name if current_names_apply and account else "")
-            or ("Yuki" if is_yuki else "未识别成员")
+            or ("Agent" if is_yuki else "未识别成员")
         )
         resolved.append(
             replace(

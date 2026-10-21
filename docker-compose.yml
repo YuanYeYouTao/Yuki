@@ -25,6 +25,7 @@ services:
       APP_PORT: 8080
       DATABASE_URL: sqlite+aiosqlite:////app/data/yuki.db
       MODEL_PROFILES_FILE: /app/webui-config/model_profiles.toml
+      SOUL_FILE: /app/character/SOUL.md
       WORKSPACE_DIRECTORY: /app/workspace
       CONVERSATION_MEDIA_CACHE_DIRECTORY: /app/data/conversation-media-cache
       SOCIAL_TRANSFER_DIRECTORY: /app/social-transfer
@@ -39,6 +40,7 @@ services:
       - "8080"
     volumes:
       - ./data:/app/data
+      - ./character:/app/character
       - ./workspace:/app/workspace
       - ./social-transfer:/app/social-transfer
       - /run/yuki-sandbox:/run/yuki-sandbox:ro

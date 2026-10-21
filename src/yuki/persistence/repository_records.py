@@ -145,7 +145,7 @@ class EventRecord:
         if nickname:
             return nickname
         if self.author_kind == AuthorKind.YUKI.value:
-            return "Yuki"
+            return "Agent"
         if self.author_kind == AuthorKind.EXTERNAL_BOT.value:
             return "external bot"
         if self.author_kind == AuthorKind.SYSTEM.value:

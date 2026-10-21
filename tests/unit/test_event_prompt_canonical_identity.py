@@ -82,7 +82,7 @@ def test_human_and_yuki_with_same_native_number_keep_their_original_authors() ->
     renderer = ChatEventPromptRenderer((human, yuki))
 
     assert renderer.render_reference_event(human).startswith(f"[成员|person:{PERSON_A}]\n")
-    assert renderer.render_reference_event(yuki).startswith(f"[Yuki|presence:{PRESENCE_A}]\n")
+    assert renderer.render_reference_event(yuki).startswith(f"[Agent|presence:{PRESENCE_A}]\n")
 
 
 def test_different_yuki_presences_are_not_collapsed_by_the_same_native_number() -> None:

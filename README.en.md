@@ -77,6 +77,8 @@ The persistent workspace is a separately deployed Linux environment with Bash, P
 | [Yuki-Kun-Game](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game) | Standalone Kun game plugin |
 | [Yuki-GitHub-Monitor](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor) | Standalone GitHub repository monitor plugin |
 
+Character preferences live in one editable `character/SOUL.md`; the character name is maintained separately. An empty SOUL is valid, and runtime, tool and authorization rules remain in the program. Existing deployments must explicitly select their persona and initialize the name using the [SOUL upgrade procedure](docs/operations/soul-deployment-20261022.md).
+
 ## Install and upgrade
 
 For a packaged deployment, download the [3.9.0 Release](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0) and follow its [installation and upgrade guide](docs/upgrade-3.9.0.md). Its image is `ghcr.io/yuanyeyoutao/yuki-qqbot:3.9.0`, for Linux amd64 and arm64.

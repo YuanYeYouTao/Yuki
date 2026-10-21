@@ -127,6 +127,11 @@ try {
                 Path = (Join-Path $InstallDir ".yuki\backups")
                 Permission = "${Identity}:(OI)(CI)F"
                 Recurse = $true
+            },
+            @{
+                Path = (Join-Path $InstallDir "character")
+                Permission = "${Identity}:(OI)(CI)F"
+                Recurse = $true
             }
         )
         foreach ($Target in $PrivateTargets) {

@@ -338,7 +338,6 @@ class ChatService:
                 source=CapabilityTrustSource.CORE,
                 definitions=core_definitions,
                 execute=core_execute,
-                bot_aliases=self._settings.bot_aliases,
             )
         )
         if self._tool_artifacts is not None:

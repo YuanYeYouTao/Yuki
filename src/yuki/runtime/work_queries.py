@@ -60,7 +60,7 @@ class WorkQueries:
                 creator.label("creator_user_id"),
                 person_root_id(person).label("creator_person_id"),
                 case(
-                    (principal == "self", "Yuki / SELF"),
+                    (principal == "self", "SELF"),
                     else_=CanonicalPersonModel.display_name,
                 ).label("creator_display_name"),
                 case(

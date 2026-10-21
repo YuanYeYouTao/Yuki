@@ -114,6 +114,7 @@ class MainAgentTurnService:
         ordinary_inputs: OrdinaryContextReader | None = None,
     ) -> PromptComposition:
         with self.executions.track():
+            static = self._composer.static_contributions()
             contract = self._runner.main_contract
             state = await asyncio.to_thread(contract.state.snapshot) if contract else None
 
@@ -124,6 +125,7 @@ class MainAgentTurnService:
                     runtime=runtime,
                     include_plugin_context=include_plugin_context,
                     short_state=state,
+                    static=static,
                 )
 
             if (
@@ -349,7 +351,6 @@ class MainAgentTurnService:
                     )
                 renderer = ChatEventPromptRenderer(
                     rows,
-                    bot_display_name=context.history_bot_display_name,
                     timezone=context.history_timezone,
                 )
                 # Individual event fragments preserve arrival order when directed

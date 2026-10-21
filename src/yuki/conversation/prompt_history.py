@@ -78,7 +78,6 @@ class PromptHistorySource:
         stamp: tuple[object, ...],
         *,
         projection: ProjectionSnapshot | None,
-        bot_display_name: str,
         timezone: str,
         after_event_id: int,
     ) -> None:
@@ -98,7 +97,7 @@ class PromptHistorySource:
         self._metadata_bytes = 0
         self._group_bytes = 0
         self._published = projection.fragments if projection is not None else None
-        self._bot_display_name, self._timezone = bot_display_name, timezone
+        self._timezone = timezone
 
     @property
     def estimated_bytes(self) -> int:
@@ -149,9 +148,7 @@ class PromptHistorySource:
         return True
 
     def extend(self, rows: tuple[EventRecord, ...], *, through_event_id: int) -> None:
-        renderer = ChatEventPromptRenderer(
-            rows, bot_display_name=self._bot_display_name, timezone=self._timezone
-        )
+        renderer = ChatEventPromptRenderer(rows, timezone=self._timezone)
         metadata = []
         for row in rows:
             if row.id in self._positions:
@@ -280,7 +277,6 @@ class PromptHistorySource:
     ) -> tuple[tuple[EventFragment, ...], tuple[EventFragment, ...]]:
         renderer = ChatEventPromptRenderer(
             references=references,
-            bot_display_name=self._bot_display_name,
             timezone=self._timezone,
         )
         fresh = {row.id: row for row in rows if row.id != current_event_id}

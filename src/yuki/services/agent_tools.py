@@ -420,7 +420,6 @@ class AgentToolService:
             database=ledger._database,
         )
         self._permission_catalog = permission_catalog or PermissionCatalogService(
-            settings=settings,
             config_registry=self._runtime_config.registry,
         )
         self.social_service: Any = None
@@ -436,12 +435,11 @@ class AgentToolService:
         return {"work_id": control.current["id"]} if control and control.current else {}
 
     def definitions(self, runtime: ToolRuntime) -> tuple[ChatTool, ...]:
-        bot_name = self._settings.bot_display_name
         tools = [
             ChatTool(
                 name="get_my_capabilities",
                 description=(
-                    f"给 {bot_name} 当前模型轮内部查询原执行主体能够修改、管理和读取的权限。"
+                    "给当前模型轮内部查询原执行主体能够修改、管理和读取的权限。"
                     "用于查询可修改的配置、管理操作及读取范围；"
                     "按问题整理返回内容；"
                     "默认 summary，具体问题用 focused+category/query，需要完整目录用 full。"
@@ -544,13 +542,13 @@ class AgentToolService:
                     description=(
                         "依据真实入站证据或 SELF 原执行本轮工具回执，创建、纠正、撤销、恢复、"
                         "争议、合并、改归属或更新长期记忆。SELF 只能写自己的记忆；"
-                        f"不能把 {bot_name} 自己的输出当证据，也不能编造真人事件。"
+                        "不能把自己的输出当证据，也不能编造真人事件。"
                         "target.subject_ref 可使用 current_speaker、current_group、"
                         "member_{person_id} 等本轮可验证成员引用，或"
                         "replied_message_author；正文中的当前群姓名使用 named_member 并填写"
-                        f" subject_name；{bot_name} 自我记忆使用 self + self。"
+                        " subject_name；自我记忆使用 self + self。"
                         "自我记忆仅在功能开启时，依据本轮真实用户消息或 SELF 工具回执，"
-                        f"记录 {bot_name} 自己的判断和经历。SELF 的 visibility"
+                        "记录自己的判断和经历。SELF 的 visibility"
                         "只能用 current_scope 或 global；global 只适合抽象偏好、反思和原则，"
                         "私聊原始经历只能保存为当前私聊可见，不能提升为 global。"
                         "工具回执中的 applied_operation 和 outcome"
@@ -2276,13 +2274,6 @@ class AgentToolService:
         return max(0, min(int(value), maximum))
 
     def _event_json(self, row: Any) -> dict[str, Any]:
-        display_name = row.sender_display_name
-        if (
-            row.author_is_yuki()
-            and not row.sender_group_card.strip()
-            and not row.sender_nickname.strip()
-        ):
-            display_name = self._settings.bot_display_name
         return {
             "id": row.id,
             "event_kind": row.event_kind,
@@ -2292,7 +2283,7 @@ class AgentToolService:
             "presence_id": row.author_presence_id,
             "sender_nickname": row.sender_nickname,
             "sender_group_card": row.sender_group_card,
-            "sender_display_name": display_name,
+            "sender_display_name": row.sender_display_name,
             "scope": row.scope_type.value,
             "conversation_id": row.canonical_conversation_id,
             "direction": row.direction,

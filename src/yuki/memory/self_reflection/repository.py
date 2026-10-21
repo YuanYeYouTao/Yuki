@@ -430,7 +430,6 @@ class SelfReflectionRepository:
         context_events: int = 4,
         force: bool = False,
         cycle_id: str | None = None,
-        bot_display_name: str = "Yuki",
         timezone: str = "Asia/Shanghai",
     ) -> tuple[SelfReflectionBatch, ...]:
         from yuki.memory.self_reflection.initiative import claim_initiative
@@ -567,7 +566,6 @@ class SelfReflectionRepository:
 
                 renderer = ChatEventPromptRenderer(
                     tuple(_event_record(r) for r in candidate_rows),
-                    bot_display_name=bot_display_name,
                     timezone=timezone,
                 )
                 event_rows: list[ChatEventModel] = []
