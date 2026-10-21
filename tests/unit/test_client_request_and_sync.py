@@ -249,7 +249,7 @@ async def test_reference_watch_ignores_future_hints_and_fields_then_reconnects_t
         # The only protocol fixture is the newer server's additional hint/fields.
         # Identity, sync, snapshots and request recovery remain the real backend.
         yield (
-            'event: future_contract_hint\n'
+            "event: future_contract_hint\n"
             'data: {"main":{"conversation_id":"hint-is-not-a-fact"},"future":[1,2]}\n\n'
         )
         async with aclosing(original(self, principal, active=active)) as stream:

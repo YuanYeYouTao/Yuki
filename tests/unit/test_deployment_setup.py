@@ -84,7 +84,10 @@ def test_new_setup_writes_selected_profiles_without_retired_gateway_artifacts(
     monkeypatch.chdir(tmp_path)
     answers = iter(
         (
-            "", "", "", "",  # initial character, desktop preset and public URL
+            "",
+            "",
+            "",
+            "",  # initial character, desktop preset and public URL
             "chat_completions",
             "openai_compatible",
             "https://api.example.com/v1",
@@ -440,7 +443,10 @@ def test_native_setup_commits_provider_search_without_tavily(
     monkeypatch.chdir(tmp_path)
     answers = iter(
         (
-            "", "", "", "",  # initial character, desktop preset and public URL
+            "",
+            "",
+            "",
+            "",  # initial character, desktop preset and public URL
             "12345",
             protocol,
             *([provider] if protocol in {"responses", "chat_completions"} else []),

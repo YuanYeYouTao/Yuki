@@ -696,7 +696,9 @@ class MainAgentBackend(AgentToolBackend):
                 arguments = {}
             if isinstance(arguments, dict) and arguments.get("action") in {"list", "get"}:
                 return replace(
-                    descriptor, risk=CapabilityRisk.READ, effect=CapabilityEffect.READ_STATE,
+                    descriptor,
+                    risk=CapabilityRisk.READ,
+                    effect=CapabilityEffect.READ_STATE,
                     parallel_safe=True,
                 )
         resolver = getattr(descriptor.binding, "target_descriptor", None)
