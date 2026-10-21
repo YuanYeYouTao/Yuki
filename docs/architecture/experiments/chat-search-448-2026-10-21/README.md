@@ -10,6 +10,8 @@
 | B：完整 gram 的候选局部性 | `scoped_grams_probe.py` / `scoped_grams_results.json`、`scope_and_probe.py` / `scope_and_probe.json` | Python 3.12.14、SQLite 3.53.1，内存库；目标 Conversation 恒定 200 条，其他 Conversation 从 99 增至 999。 |
 | B：离线切换机制 | `offline_switch_probe.py` / `offline_switch_probe.json` | FTS 重命名、shadow 对象及缺表触发器的最小机制实验。 |
 
+10-22 任务书终审已删除强制影子交换：全程停写时直接装载最终命名 FTS，完成后记录最终迁移版本即可。离线切换探针仅保原机制证据，不是实施要求；本轮未改脚本或重跑旧结果。
+
 A 使用当前相关列、索引和查询谓词，省略无关列、CHECK/FK 及应用写触发器；不是完整生产 schema。A 的 scope gram 仅保存探针词，不用于估算完整索引大小或写成本。B 生成其合成正文的完整 1/2/3-gram，但没有接入真实 ASR/OpenCC、授权或同步 writer。
 
 ## 主要结果
