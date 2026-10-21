@@ -35,6 +35,7 @@ async def serve(root: Path, database_url: str, port: int, suppress_hints: bool) 
         ),
         database=database,
     )
+    await app.character.initialize("Yuki")
 
     scripted = iter(
         (
