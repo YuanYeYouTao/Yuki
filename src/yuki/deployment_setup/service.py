@@ -146,6 +146,8 @@ def prepare_operator_configuration(paths: SetupPaths, environment: dict[str, str
                         "control.config.mutate",
                         "control.config.file.content.read",
                         "control.config.file.mutate",
+                        "control.character.read",
+                        "control.character.mutate",
                         "control.plugin.read",
                         "control.plugin.mutate",
                         "control.plugin.config.content.read",

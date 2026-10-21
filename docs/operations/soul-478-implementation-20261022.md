@@ -1,12 +1,12 @@
 # #478 单 SOUL 与角色名称实施记录
 
-日期：2026-10-22。任务与原证据见[任务书](../architecture/Yuki-478-SOUL人格边界与角色名称统一重构任务书-2026-10-22.md)。本页随实施更新，源码、本地验证、CI、合并与线上各认实际结果。
+日期：2026-10-22。任务与原证据见[任务书](../architecture/Yuki-478-SOUL人格边界与角色名称统一重构任务书-2026-10-22.md)。本页保留实现提交前审查和验证记录；最终CI、联合合并、生产切换及清理结果见[交付记录](https://github.com/YuanYeYouTao/Yuki/pull/490#issuecomment-6326508861)，各认实际结果。
 
 ## 当前范围
 
 后端从 `main@62bbacec` 独立实施，复用桌面分支的必要角色资料/授权和文件发布语义，没有整体合入电脑与执行器等无关功能。参与库另提 [PR #24](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/pull/24)，宿主固定实现提交 `438f204f9ebe2b8c1b698b68c0f1b3ac8b4facef`。独立 Desktop 已完成单 SOUL 编辑及真实 Electron 场景验证，公开合同固定后端 `d76cd794a678626d997476e450f2c0cceb3ebacf`；旧草稿采用显式选源导出，不保留运行时旧 key 分发或导入。客户端 [PR #2](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/2) 已提交，最终 CI 仍在收尾。
 
-用户已授权待本轮及 #448 相关 PR 均准备后联合合并上线；当前未合并、未部署，也未调用付费模型或发送真实平台测试消息。
+用户已授权本轮及 #448 相关 PR 准备后联合合并上线。下文的未决状态均为提交前快照，不能替代上方交付记录；本次验证未调用付费模型或发送真实平台测试消息。
 
 ## 已落源码
 
@@ -39,7 +39,7 @@
 12. 个人 SSE 原来不报告角色资料、owner与SOUL变化，桌面第二设备无法及时刷新。复用原 commit_hints/sync 差分，SOUL事实只对 owner 提供，不读文件、不新增轮询或缓存。
 13. SOUL首次读失败归入原unknown恢复，保原UUID/receipt；不读旧路径。公开OpenAPI导出显式固定LF，避免平台换行导致真实合同hash不一致。
 
-## 已完成的局部验证
+## 提交前验证记录
 
 以下为不同时间/范围的实际运行，存在重叠，不将数量相加冒充一套全量结果。
 
@@ -54,6 +54,7 @@
 - 全源 Linux 目标 Mypy检查642文件通过，Ruff通过；后续改动仍按最终head重核。
 - Desktop实际Electron两项场景通过：配对、空SOUL保存、Main强杀后草稿恢复；另一设备改名即时刷新、SOUL冲突保本地草稿和原CAS、撤销owner后隐藏编辑器。
 - 5项持久恢复新回归及关联边界组97项通过；历史名回归3项、插件锁外准备回归1项、角色含遗忘和SSE回归组通过。
+- 新operator初始化与示例补明角色读写能力，既有operator不自动扩权；部署/操作者相关53项通过。
 - 真实空数据库完成冻结迁移及显式角色初始化，重复初始化保持同一ID、名称和revision。未用测试 `create_schema()` 代替这项演练。
 
 Linux旧head集成752通过、5个旧断言/未初始化角色的测试失败，均已修正；旧unit3184通过、22个迁移准备错误已定位为测试session选源时序。改为session显式选定公开测试SOUL，并使0145测试区分冻结终点与当前head；31项迁移/启动回归中原4个head断言修正后相关18项通过。未添加运行时默认或旧字段。Windows整套集成723通过，另有已纠正断言、长路径和POSIX依赖失败，不能冒称全绿。
@@ -68,11 +69,11 @@ Linux旧head集成752通过、5个旧断言/未初始化角色的测试失败，
 | S02–S03 | `config.py`、SOUL模板和CharacterRepository：唯一原件、空人格、精确变量、当前名称投影 |
 | S04–S06 | PromptComposer与历史/提及/目录全消费者、参与库PR24；实际Main/SELF/自动化/子Agent与后台请求回归 |
 | S07 | 角色/SOUL个人与管理API、CLI/SDK、公开API6和原请求回执；原文件写入/生效分开 |
-| S08 | Desktop单编辑器、明确导出旧草稿、固定合同与实际Electron验证；客户端PR #2已提交 |
+| S08 | Desktop单编辑器、明确导出旧草稿、固定合同与实际Electron验证；客户端PR #2及五平台CI已通过 |
 | S09 | 安装/挂载/打包与显式升级已实现；真实线上143一致副本联合升级演练进行中 |
 | S10 | 开发约束、现行Main/Compact/API文档、README中英和升级说明已更新 |
 | S11 | 四轮计划复审及实现后交叉审查完成；最终全量CI、联合合并和线上仍待实际结果 |
 
-## 后续交付
+## 联合交付边界
 
-完成 Desktop 单 SOUL、固定接口合同与本地草稿/未决命令转换，提交各仓 PR；等待 #448，按实际最终主线重审冲突、迁移链、受影响测试与 CI，再联合合并。生产切换按现有 Bot-only、备份及引用核对流程执行，保原数据库、文件、工作区、回执与无关服务；健康和自然流量证据另记。
+后端[PR #490](https://github.com/YuanYeYouTao/Yuki/pull/490)、历史[PR #489](https://github.com/YuanYeYouTao/Yuki/pull/489)、Desktop[PR #2](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/2)与参与库[PR #24](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/pull/24)联合交付。目标Host4.0还需删除实际启用插件的旧版本上限，见Kun[PR #4](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game/pull/4)和GitHubMonitor[PR #2](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor/pull/2)；其代码与权限不变，新manifest沿原控制面按原批准集合重新核准，不手改hash。生产切换按现有 Bot-only、备份及引用核对流程执行，保原数据库、文件、工作区、回执与无关服务；健康和自然流量证据另记。

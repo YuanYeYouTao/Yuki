@@ -47,6 +47,10 @@ docker compose up -d bot
 ## 编辑与文件权限
 
 owner 或获准 operator 使用现有角色入口编辑单 SOUL，或直接修改文件后显式 reload。
+operator 读取需显式声明 `control.character.read`，修改、重载及授予 owner 需
+`control.character.mutate`。新部署的完整 operator 示例包含这两项；既有 operator 不自动扩权，
+维护者在自己的 `CONTROL_OPERATORS_FILE` 中明确选择。通过
+`yuki admin character owner grant <Person ID>` 授予指定人物编辑资格，账号转移不转交该资格。
 编辑版本和原请求回执用于报告真实写入与生效结果；空 SOUL 不会自动填回模板。
 文件读取失败如实报告，不改读其他路径。
 
