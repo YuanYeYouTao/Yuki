@@ -179,7 +179,7 @@ Presence ID 有界读取并在写事务前完成实时成员核验，要求唯�
 GatewayConnection 只存在于进程内 Registry。Registry 保存 Provider、Presence、连接句柄、能力、
 健康状态和 ConnectionGeneration；连接对象、token、Cookie 和 QQ 登录数据不进入数据库。
 
-Yuki 不再支持 NapCat，当前内置 SnowLuma QQ/OneBot v11、原生 Telegram 与进程内 App Provider。既有 GatewayProvider、
+Yuki 不再支持 NapCat，当前内置 SnowLuma QQ/OneBot v11、原生 Telegram、飞书/Lark 与进程内 App Provider。既有 GatewayProvider、
 GatewayConnectionProfile、Catalog、Registry 和 ProviderOneBotAdapter 继续承载可替换网关，
 provider 标识仍是通用字符串，不把业务核心改成品牌专用逻辑：
 
@@ -223,7 +223,7 @@ Plugin API 当前为 `7.0`，Host 只加载 API 与已批准 manifest 精确匹�
 当前管理入口沿同一个 Bot 的领域服务：
 
 ```text
-QQ / Telegram / App → MessageProcessor → Main / Work / Social / Memory / Workspace
+QQ / Telegram / Feishu / Lark / App → MessageProcessor → Main / Work / Social / Memory / Workspace
 operator CLI → Admin API ────────────────┘
 ```
 
