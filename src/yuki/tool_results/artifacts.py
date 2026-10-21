@@ -26,7 +26,7 @@ from yuki.persistence.database import Database
 from yuki.persistence.models import (
     ToolArtifactModel,
 )
-from yuki.tool_results.access import ArtifactAccess
+from yuki.tool_results.access import ArtifactAccess, ArtifactRead
 
 _PRIVATE_MEDIA_TYPE = "application/x-yuki-prepared-images"
 
@@ -216,10 +216,20 @@ class ToolArtifactRepository:
         work_id: str | None = None,
         effect_key: str | None = None,
         access: ArtifactAccess | None = None,
+        source_event_ids: tuple[int, ...] = (),
+        source_privacy_generation: int | None = None,
     ) -> str:
         from yuki.runtime.effect_outcomes import current_result_capture
 
         capture = current_result_capture.get()
+        if capture is not None:
+            source_event_ids = tuple(dict.fromkeys((*source_event_ids, *capture.source_event_ids)))
+            if capture.source_privacy_generation is not None:
+                source_privacy_generation = (
+                    capture.source_privacy_generation
+                    if source_privacy_generation is None
+                    else min(source_privacy_generation, capture.source_privacy_generation)
+                )
         if capture is not None and capture.work_id and capture.effect_key and work_id is None:
             work_id, effect_key = capture.work_id, capture.effect_key
         handle = uuid.uuid4().hex
@@ -241,7 +251,13 @@ class ToolArtifactRepository:
                 )
                 or 0
             )
-        access_json = access.encode(privacy) if access is not None else None
+        if source_privacy_generation is not None:
+            privacy = source_privacy_generation
+        source = json.loads(access.encode(privacy)) if access is not None else {}
+        if source_event_ids:
+            source["source_event_ids"] = list(source_event_ids)
+            source["privacy_generation"] = privacy
+        access_json = json.dumps(source, sort_keys=True) if source else None
         await asyncio.to_thread(self._root.mkdir, parents=True, exist_ok=True)
         async with self._storage_lock:
             async with self._database.sessions() as reader:
@@ -255,24 +271,23 @@ class ToolArtifactRepository:
             # Cancellation can arrive after COMMIT: bounded orphan maintenance
             # owns unregistered files; never unlink a potentially durable ref here.
             async with self._database.immediate_session() as session:
-                if access is not None:
+                if access is not None or source_event_ids:
                     if (
-                        not await session.scalar(
+                        access is not None
+                        and not await session.scalar(
                             select(CanonicalConversationModel.id).where(
                                 CanonicalConversationModel.id == access.conversation_id,
                                 CanonicalConversationModel.generation == access.generation,
                             )
                         )
-                        or int(
-                            await session.scalar(
-                                select(ExecutionTraceStateModel.privacy_generation).where(
-                                    ExecutionTraceStateModel.id == 1
-                                )
+                    ) or int(
+                        await session.scalar(
+                            select(ExecutionTraceStateModel.privacy_generation).where(
+                                ExecutionTraceStateModel.id == 1
                             )
-                            or 0
                         )
-                        != privacy
-                    ):
+                        or 0
+                    ) != privacy:
                         raise ValueError("artifact_source_changed")
                 if work_id is not None:
                     from yuki.runtime.work_schema_v1 import work
@@ -398,6 +413,13 @@ class ToolArtifactRepository:
             byte_size = row.byte_size
             digest = row.sha256
             media_type = row.media_type
+            source = json.loads(row.access_json) if row.access_json else {}
+            source_event_ids = tuple(source.get("source_event_ids", ()))
+            source_privacy = source.get("privacy_generation")
+
+        def sourced(data: dict[str, object]) -> dict[str, object]:
+            return ArtifactRead(data, source_event_ids, source_privacy)
+
         if media_type == _PRIVATE_MEDIA_TYPE and access is None:
             return _artifact_error("artifact_not_authorized", "图片 Artifact 需要原读取授权")
         file_path = (self._root / relative).resolve()
@@ -458,13 +480,15 @@ class ToolArtifactRepository:
         if operation == "image":
             return _artifact_error("artifact_not_image", "该 Artifact 没有原生图片结果")
         if operation == "text":
-            return _read_text_artifact(
-                handle_id,
-                content,
-                offset=offset,
-                limit=limit,
-                query=query,
-                max_characters=max_characters,
+            return sourced(
+                _read_text_artifact(
+                    handle_id,
+                    content,
+                    offset=offset,
+                    limit=limit,
+                    query=query,
+                    max_characters=max_characters,
+                )
             )
         if operation not in {"inspect", "get", "search"}:
             return _artifact_error(
@@ -491,37 +515,43 @@ class ToolArtifactRepository:
             "tool_name": tool_name,
         }
         if operation == "inspect":
-            return _inspect_json(
+            return sourced(
+                _inspect_json(
+                    resolved,
+                    path=path,
+                    offset=offset,
+                    limit=min(limit, item_limit) if item_limit is not None else limit,
+                    base=base,
+                    max_characters=max_characters,
+                )
+            )
+        if operation == "get":
+            return sourced(
+                _get_json(
+                    resolved,
+                    path=path,
+                    offset=offset,
+                    limit=limit
+                    if isinstance(resolved, str)
+                    else min(limit, item_limit)
+                    if item_limit is not None
+                    else limit,
+                    base=base,
+                    max_characters=max_characters,
+                )
+            )
+        if not query:
+            return _artifact_error("artifact_query_required", "search 操作必须提供 query")
+        return sourced(
+            _search_json(
                 resolved,
                 path=path,
+                query=query,
                 offset=offset,
                 limit=min(limit, item_limit) if item_limit is not None else limit,
                 base=base,
                 max_characters=max_characters,
             )
-        if operation == "get":
-            return _get_json(
-                resolved,
-                path=path,
-                offset=offset,
-                limit=limit
-                if isinstance(resolved, str)
-                else min(limit, item_limit)
-                if item_limit is not None
-                else limit,
-                base=base,
-                max_characters=max_characters,
-            )
-        if not query:
-            return _artifact_error("artifact_query_required", "search 操作必须提供 query")
-        return _search_json(
-            resolved,
-            path=path,
-            query=query,
-            offset=offset,
-            limit=min(limit, item_limit) if item_limit is not None else limit,
-            base=base,
-            max_characters=max_characters,
         )
 
     def _orphan_candidates(self, cutoff: float) -> list[tuple[Path, tuple[int, int, int]]]:

@@ -151,6 +151,10 @@ class ChatEventModel(Base):
             sqlite_where=text("direction = 'inbound' AND author_kind = 'person'"),
         ),
         Index("ix_chat_events_canonical_conversation_id", "canonical_conversation_id"),
+        Index(
+            "ix_chat_events_conversation_author", "canonical_conversation_id", "author_person_id"
+        ),
+        Index("ix_chat_events_conversation_occurred", "canonical_conversation_id", "occurred_at"),
         Index("ix_chat_events_caused_by_event_id", "caused_by_event_id"),
         Index("ix_chat_events_reply_to_event_id", "reply_to_event_id"),
         Index(
@@ -203,6 +207,7 @@ class ChatEventModel(Base):
             "suppression_status != 'duplicate' OR utterance_fingerprint IS NOT NULL",
             name="ck_chat_events_duplicate_fingerprint",
         ),
+        {"sqlite_autoincrement": True},
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -885,6 +890,9 @@ class MemoryToolReceiptModel(Base):
     tool_call_id: Mapped[str | None] = mapped_column(String(255))
     execution_id: Mapped[str | None] = mapped_column(String(255))
     source_call_key: Mapped[str | None] = mapped_column(String(64))
+    source_event_ids_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
     bot_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
     canonical_person_id: Mapped[str | None] = mapped_column(
         String(36),

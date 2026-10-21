@@ -194,19 +194,29 @@ async def test_live_history_uses_current_row_even_after_previous_owner_is_forgot
         assert await PeopleRepository(database).delete_person_id(env.person)
     else:
         original = await env.service.execute(
-            "read_conversation_history", {"operation_id": receipt["operation_id"]}, env.context
+            "query_chat_history",
+            {
+                "view": "recent",
+                "event_kind": "all",
+                "target": {"operation_id": receipt["operation_id"]},
+            },
+            env.context,
         )
         assert original["source"] == "canonical_ledger"
-        assert all("new owner's message" not in item["content"] for item in original["messages"])
+        assert all("new owner's message" not in item["content"] for item in original["events"])
     env.bot.calls.clear()
     result = await env.service.execute(
-        "read_conversation_history",
-        {"conversation_id": new_event.canonical_conversation_id},
+        "query_chat_history",
+        {
+            "view": "recent",
+            "event_kind": "all",
+            "target": {"conversation_id": new_event.canonical_conversation_id},
+        },
         env.context,
     )
-    assert [item["event_id"] for item in result["messages"]] == [new_event.id]
-    assert "new owner's message" in result["messages"][0]["content"]
-    assert "[提及1001]" not in result["messages"][0]["content"]
+    assert [item["event_id"] for item in result["events"]] == [new_event.id]
+    assert "new owner's message" in result["events"][0]["content"]
+    assert "[提及1001]" not in result["events"][0]["content"]
     assert env.bot.calls == []
 
 

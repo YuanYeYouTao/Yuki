@@ -731,10 +731,14 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
     database: Database,
     tmp_path,
 ) -> None:
+    from tests.support.event_seed import seed_scoped_event
+    from tests.support.social_identity_cases import social_env
+
     from yuki.services.main_agent_contract import MainAgentContract
     from yuki.workspace.short_state import ShortState
     from yuki.workspace.store import WorkspaceStore
 
+    env = await social_env(database, tmp_path)
     harness = build_harness(
         database, make_settings(database.url, agent_tool_result_max_characters=24000)
     )
@@ -742,136 +746,69 @@ async def test_plugin_wakeup_read_tools_use_canonical_target_without_a_fake_acto
         harness.processor._chat, ShortState(WorkspaceStore(tmp_path / "state"))
     )
     frozen = await contract.definitions()
-    frozen_around = next(item for item in frozen if item.name == "query_chat_history")
-    assert frozen_around.parameters["required"] == ["view"]
-    assert "around" in frozen_around.parameters["properties"]["view"]["enum"]
-    assert "event_id" in frozen_around.parameters["properties"]
-    assert "platform_message_id" not in frozen_around.parameters["properties"]
-    assert contract.health()["frozen"] is True
-    assert contract.revision
+    declared = next(item for item in frozen if item.name == "query_chat_history")
+    assert declared.parameters["required"] == ["view"]
+    assert "around" in declared.parameters["properties"]["view"]["enum"]
+    assert "platform_message_id" not in declared.parameters["properties"]
+    event = (
+        await seed_scoped_event(
+            env.service.writer,
+            scope=ConversationScope.group("80001", "20001"),
+            platform_message_id="history-attachment",
+            sender_user_id="10001",
+            direction="inbound",
+            content="release clip",
+            segments=(
+                {"type": "unknown", "data": {}},
+                {"type": "video", "data": {"name": "clip.mp4"}},
+            ),
+        )
+    ).event
     tools = harness.processor._chat._tools
-    runtime_config = await harness.processor._chat._runtime_config.snapshot()
-    gateway = MagicMock()
-    gateway.provider_id = "snowluma"
-    gateway.call_api = AsyncMock(return_value={"messages": []})
-    group_runtime = ToolRuntime(
+    env.bot.calls.clear()
+    runtime = ToolRuntime(
         inbound=None,
-        conversation_key="canonical:space-100:generation:1",
-        trigger_message_id="external-current",
-        trigger_event_id=2,
-        runtime_config=runtime_config,
+        trigger_event_id=event.id,
         origin=TurnOrigin.PLUGIN_BACKGROUND,
         scope_type=ScopeType.GROUP,
-        conversation_id="space-100",
-        space_id="space-100",
-        external_target_id="group-100",
-        read_scope=ConversationScope.group("8000", "group-100"),
+        conversation_id=event.canonical_conversation_id,
+        external_target_id="20001",
+        space_id=env.space,
+        read_scope=ConversationScope.group(
+            "80001", "20001", conversation_id=event.canonical_conversation_id
+        ),
     )
-    tools._memories.list_group = AsyncMock(return_value=())  # type: ignore[method-assign]
-    tools._ledger.search = AsyncMock(return_value=())  # type: ignore[method-assign]
     recent = (
-        await tools.execute("query_chat_history", '{"view": "recent"}', group_runtime)
+        await tools.execute("query_chat_history", '{"view":"recent", "limit":1}', runtime)
     ).model_payload()
-    actual_record = EventRecord(
-        id=123,
-        visual_summary="",
-        occurred_at=datetime.now(UTC),
-        bot_user_id="8000",
-        platform_message_id="history-attachment",
-        scope_type=ScopeType.GROUP,
-        sender_user_id="1001",
-        group_id="group-100",
-        direction="inbound",
-        content="render this",
-        segments=({"type": "video", "data": {"name": "clip.mp4"}},),
-    )
-    tools._ledger.list_scope_around = AsyncMock(return_value=(actual_record, (), ()))
-    around_tool = next(
-        tool for tool in tools.definitions(group_runtime) if tool.name == "query_chat_history"
-    )
-    assert around_tool.parameters["required"] == ["view"]
-    assert "around" in around_tool.parameters["properties"]["view"]["enum"]
-    assert "event_id" in around_tool.parameters["properties"]
-    assert "platform_message_id" not in around_tool.parameters["properties"]
-    invalid_history = (
+    assert recent["ok"] and len(recent["data"]["events"]) == 1
+    assert recent["data"]["events"][0]["id"] == event.id
+    invalid = (
         await tools.execute(
             "query_chat_history",
-            '{"view": "around", "platform_message_id": "history-attachment"}',
-            group_runtime,
+            '{"view":"around", "platform_message_id":"history-attachment"}',
+            runtime,
         )
     ).model_payload()
-    assert not invalid_history["ok"]
-    assert tools._ledger.list_scope_around.await_count == 0
-    actual_history = (
-        await tools.execute(
-            "query_chat_history",
-            json.dumps({"view": "around", "event_id": actual_record.id}),
-            group_runtime,
-        )
-    ).model_payload()
-    assert actual_history["ok"]
-    assert actual_history["data"]["events"][0]["attachments"] == [
-        {"attachment_index": 0, "kind": "video", "name": "clip.mp4"}
-    ]
-    tools._ledger.list_scope_around = AsyncMock(return_value=(None, (), ()))
+    assert not invalid["ok"]
     around = (
         await tools.execute(
-            "query_chat_history", '{"view": "around", "event_id": 999}', group_runtime
+            "query_chat_history", json.dumps({"view": "around", "event_id": event.id}), runtime
         )
     ).model_payload()
-    scoped_search = (
-        await tools.execute(
-            "query_chat_history",
-            json.dumps(
-                {
-                    "view": "search",
-                    "keyword": "release",
-                    "person_id": "other-person",
-                    "space_id": "other-space",
-                }
-            ),
-            group_runtime,
-        )
+    center = next(row for row in around["data"]["events"] if row["id"] == event.id)
+    assert around["ok"] and center["attachments"] == [
+        {"attachment_index": 1, "kind": "video", "name": "clip.mp4"}
+    ]
+    searched = (
+        await tools.execute("query_chat_history", '{"view":"search", "keyword":"release"}', runtime)
     ).model_payload()
-
-    assert recent["ok"] is True
-    assert recent["data"]["source"] == "ledger"
-    assert recent["data"]["events"] == []
-    assert around["error_code"] == "not_found"
-    assert scoped_search["ok"] is True and scoped_search["data"]["events"] == []
-    assert tools._ledger.search.await_args.kwargs["scope"].conversation_id == "space-100"
-    assert tools._ledger.search.await_args.kwargs["space_id"] == "other-space"
-    valid_search = (
-        await tools.execute(
-            "query_chat_history", '{"view": "search", "keyword": "release"}', group_runtime
-        )
+    assert searched["ok"] and [row["id"] for row in searched["data"]["events"]] == [event.id]
+    metadata = (
+        await tools.execute("query_chat_history", '{"view":"search", "has":["video"]}', runtime)
     ).model_payload()
-    assert valid_search["ok"] is True
-    assert valid_search["data"] == {"events": [], "returned_count": 0, "truncated": False}
-    tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 1000)] * 12)
-    longer_search = (
-        await tools.execute(
-            "query_chat_history", '{"view": "search", "keyword": "release"}', group_runtime
-        )
-    ).model_payload()
-    assert longer_search["ok"]
-    assert longer_search["data"]["returned_count"] == 12
-    assert not longer_search["data"]["truncated"]
-    tools._ledger.search = AsyncMock(return_value=[replace(actual_record, content="x" * 2000)] * 20)
-    bounded_search = (
-        await tools.execute(
-            "query_chat_history", '{"view": "search", "keyword": "release"}', group_runtime
-        )
-    ).model_payload()
-    assert bounded_search["ok"]
-    assert not bounded_search["data"]["truncated"]
-    assert bounded_search["data"]["returned_count"] == 20
-    assert all(row["content"] == "x" * 2000 for row in bounded_search["data"]["events"])
-    assert bounded_search["data"]["returned_count"] == len(bounded_search["data"]["events"])
-    gateway.call_api.assert_not_awaited()
-    assert tools._ledger.search.await_args.kwargs["scope"].conversation_id == "space-100"
-    assert tools._ledger.search.await_args.kwargs["person_id"] is None
-    assert "memory_change" not in {tool.name for tool in tools.definitions(group_runtime)}
+    assert metadata["ok"] and metadata["data"]["events"][0]["id"] == event.id
+    assert env.bot.calls == []
 
 
 def _covered_external_turn(

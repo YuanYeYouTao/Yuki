@@ -129,12 +129,13 @@ class Database:
 
     @staticmethod
     async def _create_fts_schema(connection: Any) -> None:
-        """Create external-content FTS indexes used by isolated test databases."""
+        """Create the current history index and the independent Memory FTS."""
 
-        from yuki.asr.schema import CHAT_FTS_0055
+        from yuki.persistence.history_search_index import CREATE_HISTORY_FTS, DELETE_HISTORY_TRIGGER
 
         statements = (
-            *CHAT_FTS_0055,
+            CREATE_HISTORY_FTS,
+            DELETE_HISTORY_TRIGGER,
             """
             CREATE VIRTUAL TABLE IF NOT EXISTS memory_facts_fts USING fts5(
                 content,

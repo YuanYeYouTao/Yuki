@@ -1,0 +1,9 @@
+{
+  "python": "3.12.13 (main, Jul 18 2026, 17:08:38) [MSC v.1944 64 bit (AMD64)]",
+  "sqlite": "3.53.1",
+  "source_head": "31507101",
+  "scope": "synthetic related-DDL query-shape experiment; no production data",
+  "vm_limit": "progress handler counts VDBE instructions, not virtual-table internal doclist work",
+  "timing": "three warm-cache repeats; not production latency",
+  "full_index_limit": "scope_postings stores selected terms only; no full gram storage/write claim"
+}

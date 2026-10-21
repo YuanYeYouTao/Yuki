@@ -1,0 +1,40 @@
+{
+  "snapshot_schema": "0143",
+  "completed_schema": "0145",
+  "runtime": "original production image with isolated new source and OpenCC overlay; network none; no active Bot",
+  "sqlite": "3.46.1",
+  "opencc": "1.4.2",
+  "original_image": "ghcr.io/yuanyeyoutao/yuki:ops-bad36219d5a7",
+  "original_fields_hashes_compared_equal_for_tables": {
+    "runtime_work": 861,
+    "runtime_work_effects": 1493,
+    "persons": 69,
+    "accounts": 76,
+    "account_assignments": 75,
+    "chat_events": 108419,
+    "canonical_conversations": 25,
+    "canonical_event_receipts": 94884,
+    "social_operation_receipts": 26321
+  },
+  "integrity_check": "ok",
+  "foreign_key_check": [],
+  "index_rows": 103559,
+  "sqlite_sequence": 114063,
+  "fts_page_bytes": 34746368,
+  "actual_source_literal_queries_passed": 12,
+  "before_hash_and_upgrade_wall_seconds": 118.379,
+  "source_sha256": {
+    "migrations/versions/0144_history_search_structure.py": "ce700875ef16c1a05f461761b0ce9795c22ab9cffef944ee93a8003e0ab9aac7",
+    "migrations/versions/0145_history_search_complete.py": "d4c4253307960d5ebe0ca4c2b46fc99c36c98361e684f2a726a751a954e3f095",
+    "src/yuki/persistence/history_search.py": "13bf7121c9f1fdc53b63abd617586c01f1f5ebc70fc2725d16408bb3d8c9fc43",
+    "src/yuki/persistence/history_search_index.py": "0979c3ed57780ed06432f2b4265808ab9c346313ce1c153c814306a3bb58daa2"
+  },
+  "evidence": "Summary transcribed from completed check outputs in this session. No private database is archived.",
+  "notes": [
+    "Original fields were hashed before/after migration; all compared equal.",
+    "Full integrity and foreign-key assertions passed before schema and index counts were printed.",
+    "A later broad dbstat LIKE scan was stopped after these checks; finish used equality for actual FTS shadow tables.",
+    "Validation source snapshot and production Bot are independent. Production schema/container were not replaced.",
+    "Temporary remote copies and logs were absent on later inspection; this summary does not claim who removed them."
+  ]
+}

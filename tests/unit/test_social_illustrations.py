@@ -93,7 +93,9 @@ async def test_text_returns_while_selection_never_finishes(database, tmp_path):
             assert long_description not in events[1].content
             assert long_description not in events[1].segments_json
             assert "开心" in events[1].content and "开心" in events[1].segments_json
-        history = await env.service.execute("read_conversation_history", {}, env.context)
+        history = await env.service.execute(
+            "query_chat_history", {"view": "recent", "event_kind": "all"}, env.context
+        )
         rendered = json.dumps(history, ensure_ascii=False)
         assert long_description not in rendered and "开心" in rendered
     finally:

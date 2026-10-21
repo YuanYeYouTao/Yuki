@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable, Mapping
-from typing import Protocol
+from typing import Literal, Protocol
 
 from yuki_plugin_sdk.events import EventEnvelope
 from yuki_plugin_sdk.features import FeatureRegistry
@@ -30,7 +30,15 @@ class MessageFacade(Protocol):
 
     async def get_recent(self, limit: int = 20) -> tuple[CurrentMessage, ...]: ...
 
-    async def search_history(self, query: str, limit: int = 20) -> tuple[CurrentMessage, ...]: ...
+    async def search_history(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        cursor: int | None = None,
+        match: Literal["all", "any", "phrase"] = "all",
+        exclude: tuple[str, ...] = (),
+    ) -> tuple[CurrentMessage, ...]: ...
 
     async def send_text(self, text: str) -> PluginResult: ...
 

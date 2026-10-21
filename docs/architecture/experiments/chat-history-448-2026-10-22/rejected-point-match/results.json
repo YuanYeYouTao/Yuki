@@ -1,0 +1,511 @@
+{
+  "environment": {
+    "python": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+    "sqlite": "3.53.1"
+  },
+  "limits": "Actual ORM query SQL on actual current schema; synthetic one-Conversation text; VM does not include all FTS internal doclist work. Timing is warmed local SQL only, excludes matching/output. Not production acceptance.",
+  "rows": {
+    "5000": {
+      "recent": {
+        "events": 20,
+        "has_more": true,
+        "vm_approx": 1100,
+        "sql_ms_min": 0.3198999911546707,
+        "plan": [
+          [
+            7,
+            0,
+            118,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid>?)"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.id > ? ORDER BY chat_events.id DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "7af26456-5550-4036-bf6b-6507e995702f",
+          "keeper",
+          "message",
+          0,
+          21,
+          0
+        ]
+      },
+      "deep_recent": {
+        "events": 20,
+        "has_more": true,
+        "vm_approx": 1200,
+        "sql_ms_min": 0.16859965398907661,
+        "plan": [
+          [
+            7,
+            0,
+            79,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid>? AND rowid<?)"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.id > ? AND chat_events.id < ? ORDER BY chat_events.id DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "7af26456-5550-4036-bf6b-6507e995702f",
+          "keeper",
+          "message",
+          0,
+          1000,
+          21,
+          0
+        ]
+      },
+      "common_text": {
+        "events": 20,
+        "has_more": true,
+        "vm_approx": 1500,
+        "sql_ms_min": 0.8791000582277775,
+        "plan": [
+          [
+            8,
+            0,
+            152,
+            "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+          ],
+          [
+            16,
+            0,
+            39,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_history_fts JOIN chat_events ON chat_events.id = chat_history_fts.rowid \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_history_fts.rowid > ? AND chat_history_fts MATCH ? ORDER BY chat_history_fts.rowid DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "7af26456-5550-4036-bf6b-6507e995702f",
+          "keeper",
+          "message",
+          0,
+          "((\"c7af2645655504036bf6b6507e995702fg3x636f6d\" AND \"c7af2645655504036bf6b6507e995702fg3x6f6d6d\" AND \"c7af2645655504036bf6b6507e995702fg3x6d6d6f\" AND \"c7af2645655504036bf6b6507e995702fg3x6d6f6e\"))",
+          21,
+          0
+        ]
+      },
+      "common_early_date": {
+        "events": 10,
+        "has_more": false,
+        "vm_approx": 5600,
+        "sql_ms_min": 5.478300154209137,
+        "plan": [
+          [
+            8,
+            0,
+            146,
+            "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:=M1"
+          ],
+          [
+            12,
+            0,
+            0,
+            "LIST SUBQUERY 1"
+          ],
+          [
+            15,
+            12,
+            85,
+            "SEARCH chat_events USING INDEX ix_chat_events_conversation_occurred (canonical_conversation_id=? AND occurred_at>? AND occurred_at<?)"
+          ],
+          [
+            47,
+            0,
+            39,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+          ],
+          [
+            101,
+            0,
+            0,
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_history_fts JOIN chat_events ON chat_events.id = chat_history_fts.rowid \nWHERE chat_history_fts.rowid IN (SELECT chat_events.id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.occurred_at >= ? AND chat_events.occurred_at < ? AND chat_events.id > ?) AND chat_history_fts MATCH ? ORDER BY chat_history_fts.rowid DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "7af26456-5550-4036-bf6b-6507e995702f",
+          "keeper",
+          "message",
+          "2026-09-01 00:00:00.000000",
+          "2026-09-01 00:00:10.000000",
+          0,
+          "((\"c7af2645655504036bf6b6507e995702fg3x636f6d\" AND \"c7af2645655504036bf6b6507e995702fg3x6f6d6d\" AND \"c7af2645655504036bf6b6507e995702fg3x6d6d6f\" AND \"c7af2645655504036bf6b6507e995702fg3x6d6f6e\"))",
+          21,
+          0
+        ]
+      },
+      "common_absent_date": {
+        "events": 0,
+        "has_more": false,
+        "vm_approx": 100,
+        "sql_ms_min": 0.06349990144371986,
+        "plan": [
+          [
+            8,
+            0,
+            146,
+            "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:=M1"
+          ],
+          [
+            12,
+            0,
+            0,
+            "LIST SUBQUERY 1"
+          ],
+          [
+            15,
+            12,
+            85,
+            "SEARCH chat_events USING INDEX ix_chat_events_conversation_occurred (canonical_conversation_id=? AND occurred_at>? AND occurred_at<?)"
+          ],
+          [
+            47,
+            0,
+            39,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+          ],
+          [
+            101,
+            0,
+            0,
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_history_fts JOIN chat_events ON chat_events.id = chat_history_fts.rowid \nWHERE chat_history_fts.rowid IN (SELECT chat_events.id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.occurred_at >= ? AND chat_events.occurred_at < ? AND chat_events.id > ?) AND chat_history_fts MATCH ? ORDER BY chat_history_fts.rowid DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "7af26456-5550-4036-bf6b-6507e995702f",
+          "keeper",
+          "message",
+          "2026-08-29 00:00:00.000000",
+          "2026-08-30 00:00:00.000000",
+          0,
+          "((\"c7af2645655504036bf6b6507e995702fg3x636f6d\" AND \"c7af2645655504036bf6b6507e995702fg3x6f6d6d\" AND \"c7af2645655504036bf6b6507e995702fg3x6d6d6f\" AND \"c7af2645655504036bf6b6507e995702fg3x6d6f6e\"))",
+          21,
+          0
+        ]
+      },
+      "common_dense_author": {
+        "events": 20,
+        "has_more": true,
+        "vm_approx": 2104100,
+        "sql_ms_min": 2375.0360999256372,
+        "plan": [
+          [
+            8,
+            0,
+            146,
+            "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:=M1"
+          ],
+          [
+            12,
+            0,
+            0,
+            "LIST SUBQUERY 1"
+          ],
+          [
+            14,
+            12,
+            118,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid>?)"
+          ],
+          [
+            38,
+            0,
+            39,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+          ],
+          [
+            92,
+            0,
+            0,
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_history_fts JOIN chat_events ON chat_events.id = chat_history_fts.rowid \nWHERE chat_history_fts.rowid IN (SELECT chat_events.id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.author_person_id IN (?) AND chat_events.id > ?) AND chat_history_fts MATCH ? ORDER BY chat_history_fts.rowid DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "7af26456-5550-4036-bf6b-6507e995702f",
+          "keeper",
+          "message",
+          "2703cba5-fb50-4f9a-bd67-f7c17bacfe09",
+          0,
+          "((\"c7af2645655504036bf6b6507e995702fg3x636f6d\" AND \"c7af2645655504036bf6b6507e995702fg3x6f6d6d\" AND \"c7af2645655504036bf6b6507e995702fg3x6d6d6f\" AND \"c7af2645655504036bf6b6507e995702fg3x6d6f6e\"))",
+          21,
+          0
+        ]
+      },
+      "late_around_empty": {
+        "events": 0,
+        "has_more": false,
+        "vm_approx": 0,
+        "sql_ms_min": 0.09540002793073654,
+        "plan": [
+          [
+            7,
+            0,
+            118,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid>?)"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.id > ? ORDER BY chat_events.id ASC\n LIMIT ? OFFSET ?",
+        "params": [
+          "7af26456-5550-4036-bf6b-6507e995702f",
+          "keeper",
+          "message",
+          5001,
+          21,
+          0
+        ]
+      }
+    },
+    "20000": {
+      "recent": {
+        "events": 20,
+        "has_more": true,
+        "vm_approx": 1100,
+        "sql_ms_min": 0.15849992632865906,
+        "plan": [
+          [
+            7,
+            0,
+            138,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid>?)"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.id > ? ORDER BY chat_events.id DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "a03650dd-cdfa-4c5b-934e-6bc39a3618e7",
+          "keeper",
+          "message",
+          0,
+          21,
+          0
+        ]
+      },
+      "deep_recent": {
+        "events": 20,
+        "has_more": true,
+        "vm_approx": 1200,
+        "sql_ms_min": 0.161800067871809,
+        "plan": [
+          [
+            7,
+            0,
+            98,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid>? AND rowid<?)"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.id > ? AND chat_events.id < ? ORDER BY chat_events.id DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "a03650dd-cdfa-4c5b-934e-6bc39a3618e7",
+          "keeper",
+          "message",
+          0,
+          1000,
+          21,
+          0
+        ]
+      },
+      "common_text": {
+        "events": 20,
+        "has_more": true,
+        "vm_approx": 2400,
+        "sql_ms_min": 1.0037003085017204,
+        "plan": [
+          [
+            8,
+            0,
+            152,
+            "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:M1>"
+          ],
+          [
+            16,
+            0,
+            40,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_history_fts JOIN chat_events ON chat_events.id = chat_history_fts.rowid \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_history_fts.rowid > ? AND chat_history_fts MATCH ? ORDER BY chat_history_fts.rowid DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "a03650dd-cdfa-4c5b-934e-6bc39a3618e7",
+          "keeper",
+          "message",
+          0,
+          "((\"ca03650ddcdfa4c5b934e6bc39a3618e7g3x636f6d\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6f6d6d\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6d6d6f\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6d6f6e\"))",
+          21,
+          0
+        ]
+      },
+      "common_early_date": {
+        "events": 10,
+        "has_more": false,
+        "vm_approx": 14300,
+        "sql_ms_min": 17.280100379139185,
+        "plan": [
+          [
+            8,
+            0,
+            146,
+            "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:=M1"
+          ],
+          [
+            12,
+            0,
+            0,
+            "LIST SUBQUERY 1"
+          ],
+          [
+            15,
+            12,
+            105,
+            "SEARCH chat_events USING INDEX ix_chat_events_conversation_occurred (canonical_conversation_id=? AND occurred_at>? AND occurred_at<?)"
+          ],
+          [
+            47,
+            0,
+            40,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+          ],
+          [
+            101,
+            0,
+            0,
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_history_fts JOIN chat_events ON chat_events.id = chat_history_fts.rowid \nWHERE chat_history_fts.rowid IN (SELECT chat_events.id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.occurred_at >= ? AND chat_events.occurred_at < ? AND chat_events.id > ?) AND chat_history_fts MATCH ? ORDER BY chat_history_fts.rowid DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "a03650dd-cdfa-4c5b-934e-6bc39a3618e7",
+          "keeper",
+          "message",
+          "2026-09-01 00:00:00.000000",
+          "2026-09-01 00:00:10.000000",
+          0,
+          "((\"ca03650ddcdfa4c5b934e6bc39a3618e7g3x636f6d\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6f6d6d\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6d6d6f\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6d6f6e\"))",
+          21,
+          0
+        ]
+      },
+      "common_absent_date": {
+        "events": 0,
+        "has_more": false,
+        "vm_approx": 100,
+        "sql_ms_min": 0.060200225561857224,
+        "plan": [
+          [
+            8,
+            0,
+            146,
+            "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:=M1"
+          ],
+          [
+            12,
+            0,
+            0,
+            "LIST SUBQUERY 1"
+          ],
+          [
+            15,
+            12,
+            105,
+            "SEARCH chat_events USING INDEX ix_chat_events_conversation_occurred (canonical_conversation_id=? AND occurred_at>? AND occurred_at<?)"
+          ],
+          [
+            47,
+            0,
+            40,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+          ],
+          [
+            101,
+            0,
+            0,
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_history_fts JOIN chat_events ON chat_events.id = chat_history_fts.rowid \nWHERE chat_history_fts.rowid IN (SELECT chat_events.id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.occurred_at >= ? AND chat_events.occurred_at < ? AND chat_events.id > ?) AND chat_history_fts MATCH ? ORDER BY chat_history_fts.rowid DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "a03650dd-cdfa-4c5b-934e-6bc39a3618e7",
+          "keeper",
+          "message",
+          "2026-08-29 00:00:00.000000",
+          "2026-08-30 00:00:00.000000",
+          0,
+          "((\"ca03650ddcdfa4c5b934e6bc39a3618e7g3x636f6d\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6f6d6d\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6d6d6f\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6d6f6e\"))",
+          21,
+          0
+        ]
+      },
+      "common_dense_author": {
+        "events": 20,
+        "has_more": true,
+        "vm_approx": 25904500,
+        "sql_ms_min": 33325.46589989215,
+        "plan": [
+          [
+            8,
+            0,
+            146,
+            "SCAN chat_history_fts VIRTUAL TABLE INDEX 192:=M1"
+          ],
+          [
+            12,
+            0,
+            0,
+            "LIST SUBQUERY 1"
+          ],
+          [
+            14,
+            12,
+            138,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid>?)"
+          ],
+          [
+            38,
+            0,
+            40,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid=?)"
+          ],
+          [
+            92,
+            0,
+            0,
+            "USE TEMP B-TREE FOR ORDER BY"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_history_fts JOIN chat_events ON chat_events.id = chat_history_fts.rowid \nWHERE chat_history_fts.rowid IN (SELECT chat_events.id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.author_person_id IN (?) AND chat_events.id > ?) AND chat_history_fts MATCH ? ORDER BY chat_history_fts.rowid DESC\n LIMIT ? OFFSET ?",
+        "params": [
+          "a03650dd-cdfa-4c5b-934e-6bc39a3618e7",
+          "keeper",
+          "message",
+          "21a34431-9d9d-422d-bcdb-9c493f4f5270",
+          0,
+          "((\"ca03650ddcdfa4c5b934e6bc39a3618e7g3x636f6d\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6f6d6d\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6d6d6f\" AND \"ca03650ddcdfa4c5b934e6bc39a3618e7g3x6d6f6e\"))",
+          21,
+          0
+        ]
+      },
+      "late_around_empty": {
+        "events": 0,
+        "has_more": false,
+        "vm_approx": 0,
+        "sql_ms_min": 0.09460002183914185,
+        "plan": [
+          [
+            7,
+            0,
+            138,
+            "SEARCH chat_events USING INTEGER PRIMARY KEY (rowid>?)"
+          ]
+        ],
+        "sql": "SELECT chat_events.id, chat_events.bot_user_id, chat_events.platform_message_id, chat_events.scope_type, chat_events.group_id, chat_events.private_peer_user_id, chat_events.sender_user_id, chat_events.sender_nickname, chat_events.sender_group_card, chat_events.direction, chat_events.event_kind, chat_events.source_plugin_id, chat_events.external_source, chat_events.external_event_key, chat_events.external_event_type, chat_events.external_resume_wait, chat_events.external_payload_json, chat_events.external_target_id, chat_events.content, chat_events.visual_summary, chat_events.audio_transcript, chat_events.segments_json, chat_events.reply_to_message_id, chat_events.reply_to_event_id, chat_events.origin, chat_events.automation_id, chat_events.automation_run_id, chat_events.occurred_at, chat_events.observed_at, chat_events.canonical_event_id, chat_events.canonical_conversation_id, chat_events.author_account_id, chat_events.author_kind, chat_events.author_person_id, chat_events.author_presence_id, chat_events.ingress_presence_id, chat_events.utterance_fingerprint, chat_events.suppression_status, chat_events.ingress_provider, chat_events.ingress_gateway_instance_id, chat_events.caused_by_event_id \nFROM chat_events \nWHERE chat_events.canonical_conversation_id = ? AND (chat_events.suppression_status IS NULL OR chat_events.suppression_status = ?) AND chat_events.event_kind = ? AND chat_events.id > ? ORDER BY chat_events.id ASC\n LIMIT ? OFFSET ?",
+        "params": [
+          "a03650dd-cdfa-4c5b-934e-6bc39a3618e7",
+          "keeper",
+          "message",
+          20001,
+          21,
+          0
+        ]
+      }
+    }
+  }
+}

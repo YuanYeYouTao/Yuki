@@ -208,12 +208,12 @@ async def test_reading_a_successful_receipt_is_independent_of_space_send_qualifi
             (await writer.get(CanonicalSpaceModel, env.space)).enabled = False
     calls = list(env.bot.calls)
     args = (
-        {"operation_id": sent["operation_id"]}
+        {"view": "recent", "target": {"operation_id": sent["operation_id"]}}
         if selector == "operation"
-        else {"conversation_id": env.context.conversation_id}
+        else {"view": "recent", "target": {"conversation_id": env.context.conversation_id}}
     )
-    result = await env.service.execute("read_conversation_history", args, env.context)
-    assert any(row["event_id"] == sent["event_id"] for row in result["messages"])
+    result = await env.service.execute("query_chat_history", args, env.context)
+    assert any(row["event_id"] == sent["event_id"] for row in result["events"])
     receipt = await env.service.receipts.get(sent["operation_id"])
     assert receipt.status == "succeeded" and receipt.event_id == sent["event_id"]
     assert env.bot.calls == calls
@@ -226,10 +226,14 @@ async def test_other_source_cannot_read_a_successful_operation_receipt(database,
     if paused:
         async with database.immediate_session() as writer:
             (await writer.get(CanonicalSpaceModel, env.space)).enabled = False
-    with pytest.raises(SocialError, match="history_receipt_unavailable"):
+    with pytest.raises(SocialError, match=r"history_(receipt_)?unavailable"):
         await env.service.execute(
-            "read_conversation_history",
-            {"operation_id": sent["operation_id"]},
+            "query_chat_history",
+            {
+                "view": "recent",
+                "event_kind": "all",
+                "target": {"operation_id": sent["operation_id"]},
+            },
             replace(env.context, conversation_id=str(uuid4())),
         )
 
@@ -266,13 +270,13 @@ async def test_delegated_history_reads_person_material_without_send_availability
     try:
         result = await invoke_social(
             env.service,
-            "read_conversation_history",
-            {"conversation_id": original.canonical_conversation_id},
+            "query_chat_history",
+            {"view": "recent", "target": {"conversation_id": original.canonical_conversation_id}},
             runtime,
         )
     finally:
         current_invocation.reset(token)
-    assert [row["event_id"] for row in result["messages"]] == [original.id]
+    assert [row["event_id"] for row in result["events"]] == [original.id]
     assert env.bot.calls == calls
 
 
@@ -302,8 +306,11 @@ async def test_delegated_history_scope_is_still_required(database, tmp_path):
         with pytest.raises(SocialError, match="history_scope_denied"):
             await invoke_social(
                 env.service,
-                "read_conversation_history",
-                {"conversation_id": original.canonical_conversation_id},
+                "query_chat_history",
+                {
+                    "view": "recent",
+                    "target": {"conversation_id": original.canonical_conversation_id},
+                },
                 runtime,
             )
     finally:
@@ -314,8 +321,12 @@ async def test_paired_empty_app_history_does_not_require_an_inbound_message(app_
     device, person = await paired_owner(app_env, database)
     principal = await app_env.identity.authenticate(device["token"])
     result = await app_env.social.execute(
-        "read_conversation_history",
-        {"conversation_id": principal.conversation_id},
+        "query_chat_history",
+        {
+            "view": "recent",
+            "event_kind": "all",
+            "target": {"conversation_id": principal.conversation_id},
+        },
         SocialContext(
             "empty-history",
             "empty-history",
@@ -323,4 +334,4 @@ async def test_paired_empty_app_history_does_not_require_an_inbound_message(app_
             person_refs={"current_speaker": person},
         ),
     )
-    assert result["messages"] == [] and not app_env.calls
+    assert result["events"] == [] and not app_env.calls

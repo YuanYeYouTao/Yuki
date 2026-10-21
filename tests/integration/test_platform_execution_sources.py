@@ -141,7 +141,7 @@ async def test_app_plugin_main_uses_real_person_without_qq_reinterpretation(
             result = await host.agent.run("use the current App source")
         assert result.ok, result.model_dump()
         assert len(env.provider.requests) == before + 1
-        assert any(t.name == "read_personal_entry" for t in env.provider.requests[-1].tools)
+        assert any(t.name == "query_chat_history" for t in env.provider.requests[-1].tools)
     finally:
         await host.close_host_resources()
 
@@ -345,9 +345,9 @@ async def test_app_child_keeps_entry_contract_and_runs_without_connection_gate(
     child = await repository.get(child_id)
     assert child["state"] == "completed"
     assert len(env.provider.requests) == before + 2
-    full = await contract.definitions("app")
+    full = await contract.definitions()
     if code_enabled:
-        assert "read_personal_entry" in contract.app_script_api.schemas
+        assert "query_chat_history" in contract.script_api.schemas
         assert "read_personal_entry" not in contract.script_api.schemas
     else:
         assert tuple(snapshots[0].tools) == full

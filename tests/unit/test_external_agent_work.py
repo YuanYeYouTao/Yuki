@@ -687,22 +687,23 @@ async def test_fixed_main_and_code_contract_exposes_generic_agent_without_operat
 
     app, *_ = await _deployment(database, tmp_path, FakeLLMProvider(), code_enabled=code_enabled)
     try:
-        for entry in ("platform", "app"):
-            full = await app.main_agent_contract.definitions(entry)
-            direct = await app.main_agent_contract.model_definitions(entry)
-            external = next(tool for tool in direct if tool.name == "external_agent")
-            assert external.parameters["properties"]["action"]["enum"] == [
-                "list",
-                "prompt",
-                "get",
-                "respond",
-                "cancel",
-                "close",
-            ]
-            assert not {"command", "argv", "env", "cwd"} & external.parameters["properties"].keys()
-            print(
-                f"mode={'code' if code_enabled else 'direct'} entry={entry} "
-                f"full={len(full)} direct={len(direct)}"
-            )
+        contract = app.main_agent_contract
+        full = await contract.definitions()
+        direct = await contract.model_definitions()
+        external = next(tool for tool in direct if tool.name == "external_agent")
+        assert external == next(tool for tool in full if tool.name == "external_agent")
+        assert external.parameters["properties"]["action"]["enum"] == [
+            "list",
+            "prompt",
+            "get",
+            "respond",
+            "cancel",
+            "close",
+        ]
+        assert not {"command", "argv", "env", "cwd"} & external.parameters["properties"].keys()
+        if code_enabled:
+            assert contract.script_api.schemas["external_agent"] == external.parameters
+        else:
+            assert contract.script_api is None
     finally:
         assert not await app.lifecycle._close_entries(app.lifecycle._entries)

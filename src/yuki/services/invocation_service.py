@@ -284,6 +284,9 @@ class InvocationService:
             if parent_capture is not None and capture.outcome is not None:
                 parent_capture.outcome = capture.outcome
                 parent_capture.artifact_handle = capture.artifact_handle
+                parent_capture.observe_sources(
+                    capture.source_event_ids, capture.source_privacy_generation
+                )
         if capture.outcome is None:
             raise TypeError("live tool execution did not publish a typed outcome")
         evidence = receipt_evidence(capture.outcome)

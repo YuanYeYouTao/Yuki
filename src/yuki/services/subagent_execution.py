@@ -54,7 +54,7 @@ class SubagentExecutionDependencies:
     sandbox_tasks: SandboxTaskRepository
     sandbox_client: SandboxClient
     runner: AgentRunner
-    load_tools: Callable[[str], Awaitable[tuple[ChatTool, ...]]]
+    load_tools: Callable[[], Awaitable[tuple[ChatTool, ...]]]
     open_memory: Callable[..., Any]
     open_self_memory: Callable[..., Awaitable[Any]]
     static_messages: Callable[[], tuple[ChatMessage, ...]]
@@ -83,7 +83,7 @@ class SubagentExecution:
 
     async def prepare(self) -> None:
         if self.definitions is None:
-            self.definitions = await self.services.load_tools("platform")
+            self.definitions = await self.services.load_tools()
         contract = self.services.runner.main_contract
         self.script_api = contract.script_api if contract is not None else None
 
@@ -328,17 +328,8 @@ class SubagentExecution:
                     )
                     runner = self.services.runner
                     contract = runner.main_contract
-                    entry = (
-                        await contract.entry_for(recovered.conversation_id)
-                        if contract
-                        else "platform"
-                    )
-                    definitions = await self.services.load_tools(entry)
-                    script_api = (
-                        (contract.app_script_api if entry == "app" else contract.script_api)
-                        if contract is not None
-                        else None
-                    )
+                    definitions = await self.services.load_tools()
+                    script_api = contract.script_api if contract is not None else None
                     backend = self.services.backend_factory(tool_runtime, host)
                     brief = json.loads(child["brief_json"])
                     brief.update(

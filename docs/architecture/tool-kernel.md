@@ -10,18 +10,17 @@ Tool Kernel 分开管理工具目录、固定声明与执行授权。主 Agent �
 `UnifiedToolCatalog` 负责目录，`MainAgentContract.definitions()` 在部署初始化时收集
 主工具注册表与已批准插件，加入工作控制、子任务和 short_state；启用 Code 时再加入编排与只读目录工具，
 按名称排序并冻结完整名称、说明和参数 schema。重名声明直接报错。
-平台合同保持原能力，App/ACP 主会话另含只读 read_personal_entry；两者各有 revision。
-选择依据是 canonical Conversation 的 Binding.platform（app/acp 为个人入口，其余为平台入口），不按设备、消息正文
-或配置切换。启动一次冻结两套，Work 收到 App/ACP 补充仍沿原会话合同。
+所有入口共用一份声明、revision 与 Code 投影。平台、App/ACP、SELF、插件和工作者的真实
+actor、Conversation、设备来源及委托在执行处核验，不为选择声明查询入口或建立个人工具副本。
 
 `definitions()` 保留完整执行清单。默认 direct 模式的 `model_definitions()` 返回
 部署内冻结的完整工具清单，不加载 Code 引擎。显式启用 Code 时才使用固定直调集合：聊天、
 生命周期、记忆与历史、基础工作区、时间、终端与环境状态、联网、`execute_code` 和
 `lookup_tools`；服务管理、自动化和管理等其余能力经脚本调用。包安装直接在同一终端执行。两个模式分别
-冻结声明；每个模式同时冻结平台入口与 App/ACP 主会话两套合同。普通聊天、主动触发、自动化、插件主调用和持久续跑按原会话绑定的平台选择合同。
+冻结声明；普通聊天、主动触发、自动化、插件主调用和持久续跑共用本部署合同。
 它不是按每条消息或每个用户生成的白名单。工具合同变更需重启并开启明确的新链。
-`query_chat_history(view=around)` 只以内部 `event_id` 定位当前会话账本；缺少编号或传入
-平台消息号会收到错误回执。声明变更随部署生成新的合同 revision，不沿用旧请求链。
+`query_chat_history(view=around)` 以内部 `event_id` 定位实际目标会话账本；原 operation 目标未传
+event_id 时使用原回执锚点，其他目标需明确内部编号。声明变更随部署生成新的合同 revision，不沿用旧请求链。
 Provider 原生工具还有独立的协议和配置合同，不能只检查函数工具就声称整个请求相同。
 长期记忆的主 Agent 声明是统一 `search_memory`，详情统一为 `read_memory(view=fact/evidence)`，证据读取不记作已读事实；旧三个
 `get_*_memories` 执行入口已退出；已存回执只按原 call_id 读取，未知调用不取得重跑资格。插件只获 Person 或 Group 读权限时
@@ -265,10 +264,10 @@ WorkspaceStore 保不可变发布、媒体、short_state、下载及实际引用
 
 ## 共同账本历史与原生平台操作
 
-固定的 read_conversation_history 读取授权的 canonical 账本；默认当前入口，显式
-conversation_id 选择原内部会话，人物/空间有多个入口时返回内部候选，不猜主动路由。
-event_id 只定位当前会话原事件；operation_id 按原来源的发送回执读取真实出站会话。
-委托 read_target_id 核原 owner，读取尊重现有 starts_after 与 keeper 边界。
+统一 `query_chat_history(view=recent/search/around)` 读取授权的 canonical 账本；默认当前入口，
+显式内部目标选择原会话。人物/空间有多个入口时返回授权范围内的候选，不猜主动路由。
+`event_id` 定位实际范围内原事件；`operation_id` 沿原发送回执定位真实出站会话及原锚点。
+委托 `read_target_id` 核原 owner，读取尊重既有 starts_after 与 keeper 边界。
 结果标明 coverage=observed，不冒充完整平台历史；平台离线不阻止账本读取。
 
 默认模型已退役任意 OneBot action、戳一戳和远端/raw 转发历史展开。原始 segments、
@@ -283,10 +282,10 @@ readonly alias 仍读自己的真实持久回执，不增加缓存失效总线�
 
 ## 主会话的跨入口读取与发送
 
-read_personal_entry 只从本人 App/ACP 主会话按 binding_id 或 conversation_id 显式读取本人
-其他私聊账本，使用内部事件游标且最多 50 条。结果携带入口、会话及事件 ID；
-读取不改历史、generation 或 Main session。
-平台合同不声明该工具；执行处仍核真实 actor、来源个人 Binding 及目标私聊归属。
+`query_chat_history` 从合格本人 App/ACP 来源按内部 Binding 或 Conversation 显式读取本人
+私聊账本，允许选择当前入口。执行处核真实 actor、来源个人 Binding 及目标归属；其他来源
+继续沿自己的实际范围，不能借本人 UUID 取得个人全历史。读取不修改历史、generation 或
+Main session。分页、搜索及原回执的细节见[聊天记录读取](chat-history.md)。
 
 send_message 的 person target 可带 binding_id。从 App/ACP 显式指定 person 目标必须明确绑定，缺失时返回 binding_required 与可选绑定；
 省略目标时仍回复当前个人 Conversation。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
@@ -295,7 +294,8 @@ SocialOperation 的 source_conversation_id 仍是原主会话。文件说明沿�
 
 ## 精简后的领域入口
 
-Main 合同23保持每项固定名称、schema和顺序；direct为平台30/个人入口31项，Code完整32/33项、直调27/28项，批准插件另计。数量是本次实际装配结果，不是运行准入条件。
+Main 合同26保持每项固定名称、schema和顺序，各入口共用一份冻结声明及 Code 投影。
+direct 与可选 Code 模式各按实际装配收集工具，批准插件纳入同一合同；工具数量不作运行准入条件。
 
 - `terminal_exec/read/control` 共用原Manager/run/回执。control的input发送原样text；read的wait_seconds只观察，默认不等待，原终态completion与游标同时保留。环境默认无强制期限，显式期限按事实执行。
 - `external_agent(action=list/prompt/get/respond/cancel/close)` 通过 ACP 使用运维配置的 Agent。只有 prompt 在已接纳的原 Work 中登记新执行；peer 是可续用的原会话资源，run 是单次 prompt。查询、权限回答、取消和关闭可管理当前来源有权访问的原资源，不要求另接纳 Work。模型只见 agent_id 目录与原资源 ID，不接收启动命令或凭据。权限请求沿原 Work 私有输入提交后才确认协议游标，回答仍核原来源当前授权；外部输出是待核对材料，最终聊天交付继续走 Social。
@@ -307,7 +307,7 @@ Work/source owner，再读取原 prompt；尚查不到 prompt 时，只读查询
 owner 显式 close；未知事实继续保持未知。
 - `workspace_inspect/publish` 只负责原生媒体和不可变交付桥；普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。
 - `automation_query(view=list/get/completed/history/diagnose)` 复用原安全目录、人物终态、运行历史与创建审计；`automation_manage(action=create/update/pause/resume/cancel/run_now)` 沿原TaskSpec、owner、版本、创建键与调度回执。
-- `query_chat_history(view=recent/search/around)` 读取原Conversation；search使用start_at/end_at，around使用内部event_id及before/after条数。显式跨Conversation与App本人入口保持独立。
+- `query_chat_history(view=recent/search/around)` 读取原 Conversation；search 使用 start_at/end_at，around 使用内部 event_id 及 before/after 条数。内部目标解析与共享读取内核统一，入口授权认各自真实来源。
 - `read_memory(view=fact/evidence)` 保原scope与观察事实；`subagent_control(action=message)` 保原父子ID、ask/reply_to、运行中补充和resume区别。
 
 退役名称不接收新调用，也不注册新执行别名；旧已接受call/result_ref、参数hash、原ID、预算、unknown及原Provider输入继续只读恢复。工具声明变化只在合法新链生效。

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import or_
@@ -89,6 +89,13 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
     occurred = _row_value(row, "occurred_at")
     if isinstance(occurred, str):
         occurred = datetime.fromisoformat(occurred)
+    observed = _row_value(row, "observed_at")
+    if isinstance(observed, str):
+        observed = datetime.fromisoformat(observed)
+    if observed is not None:
+        observed = (
+            observed.replace(tzinfo=UTC) if observed.tzinfo is None else observed.astimezone(UTC)
+        )
     scope_type = _row_value(row, "scope_type")
     return EventRecord(
         id=int(_row_value(row, "id")),
@@ -106,6 +113,7 @@ def _event_record(row: ChatEventModel | Mapping[str, Any]) -> EventRecord:
         audio_transcript=str(_row_value(row, "audio_transcript") or ""),
         segments=segments,
         occurred_at=occurred,
+        observed_at=observed,
         group_id=_row_value(row, "group_id"),
         private_peer_user_id=_row_value(row, "private_peer_user_id"),
         reply_to_message_id=_row_value(row, "reply_to_message_id"),

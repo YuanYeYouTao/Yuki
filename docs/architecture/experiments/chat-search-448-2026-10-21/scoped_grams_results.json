@@ -1,0 +1,424 @@
+{
+  "environment": {
+    "python": "3.12.14",
+    "sqlite": "3.53.1",
+    "platform": "Windows-11-10.0.22631-SP0",
+    "storage": ":memory:",
+    "target_scope_rows": 200,
+    "repeats": 20
+  },
+  "limitations": [
+    "Synthetic candidate locality and local wall times only; not production acceptance.",
+    "No VDBE count is a proof of FTS internal posting/page work.",
+    "Ledger predicate counting is a separate instrumented execution, excluded from timing.",
+    "No OpenCC, ASR, source authorization, WAL, real disk I/O, or concurrent writers modeled."
+  ],
+  "cases": [
+    {
+      "scopes": 100,
+      "events": 20000,
+      "target_scope_rows": 200,
+      "modes": {
+        "global": {
+          "build_seconds": 0.622869,
+          "index_allocated_bytes": 2568192,
+          "queries": {
+            "京": {
+              "posting_candidates_total": 20000,
+              "returned_count": 21,
+              "median_ms": 0.368,
+              "ledger_scope_predicate_evaluations": 2100,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "预算": {
+              "posting_candidates_total": 20000,
+              "returned_count": 21,
+              "median_ms": 0.3931,
+              "ledger_scope_predicate_evaluations": 2100,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "仅外域": {
+              "posting_candidates_total": 19800,
+              "returned_count": 0,
+              "median_ms": 2.6434,
+              "ledger_scope_predicate_evaluations": 19800,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "三千北京": {
+              "posting_candidates_total": 20000,
+              "returned_count": 21,
+              "median_ms": 0.48095,
+              "ledger_scope_predicate_evaluations": 2100,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            }
+          },
+          "rowid_lookup_without_match": [
+            [
+              1
+            ]
+          ]
+        },
+        "scoped": {
+          "build_seconds": 1.015317,
+          "index_allocated_bytes": 5812224,
+          "queries": {
+            "京": {
+              "posting_candidates_total": 200,
+              "returned_count": 21,
+              "median_ms": 0.0186,
+              "ledger_scope_predicate_evaluations": 21,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "预算": {
+              "posting_candidates_total": 200,
+              "returned_count": 21,
+              "median_ms": 0.0192,
+              "ledger_scope_predicate_evaluations": 21,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "仅外域": {
+              "posting_candidates_total": 0,
+              "returned_count": 0,
+              "median_ms": 0.00835,
+              "ledger_scope_predicate_evaluations": 0,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "三千北京": {
+              "posting_candidates_total": 200,
+              "returned_count": 21,
+              "median_ms": 0.03195,
+              "ledger_scope_predicate_evaluations": 21,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            }
+          },
+          "rowid_lookup_without_match": [
+            [
+              1
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "scopes": 1000,
+      "events": 200000,
+      "target_scope_rows": 200,
+      "modes": {
+        "global": {
+          "build_seconds": 6.265129,
+          "index_allocated_bytes": 17440768,
+          "queries": {
+            "京": {
+              "posting_candidates_total": 200000,
+              "returned_count": 21,
+              "median_ms": 3.44295,
+              "ledger_scope_predicate_evaluations": 21000,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "预算": {
+              "posting_candidates_total": 200000,
+              "returned_count": 21,
+              "median_ms": 3.1829,
+              "ledger_scope_predicate_evaluations": 21000,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "仅外域": {
+              "posting_candidates_total": 199800,
+              "returned_count": 0,
+              "median_ms": 29.5814,
+              "ledger_scope_predicate_evaluations": 199800,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "三千北京": {
+              "posting_candidates_total": 200000,
+              "returned_count": 21,
+              "median_ms": 6.38895,
+              "ledger_scope_predicate_evaluations": 21000,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            }
+          },
+          "rowid_lookup_without_match": [
+            [
+              1
+            ]
+          ]
+        },
+        "scoped": {
+          "build_seconds": 11.970205,
+          "index_allocated_bytes": 65515520,
+          "queries": {
+            "京": {
+              "posting_candidates_total": 200,
+              "returned_count": 21,
+              "median_ms": 0.0229,
+              "ledger_scope_predicate_evaluations": 21,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "预算": {
+              "posting_candidates_total": 200,
+              "returned_count": 21,
+              "median_ms": 0.0231,
+              "ledger_scope_predicate_evaluations": 21,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "仅外域": {
+              "posting_candidates_total": 0,
+              "returned_count": 0,
+              "median_ms": 0.0105,
+              "ledger_scope_predicate_evaluations": 0,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            },
+            "三千北京": {
+              "posting_candidates_total": 200,
+              "returned_count": 21,
+              "median_ms": 0.03615,
+              "ledger_scope_predicate_evaluations": 21,
+              "query_plan": [
+                [
+                  5,
+                  0,
+                  156,
+                  "SCAN ft VIRTUAL TABLE INDEX 192:M1"
+                ],
+                [
+                  10,
+                  0,
+                  45,
+                  "SEARCH ev USING INTEGER PRIMARY KEY (rowid=?)"
+                ]
+              ]
+            }
+          },
+          "rowid_lookup_without_match": [
+            [
+              1
+            ]
+          ]
+        }
+      }
+    }
+  ],
+  "delete_cases": [
+    {
+      "secure_delete_option": false,
+      "before": [
+        [
+          1,
+          null
+        ]
+      ],
+      "after_match": [],
+      "after_rowid": [],
+      "vocab_after": [],
+      "token_literal_remains_in_ft_data": true
+    },
+    {
+      "secure_delete_option": true,
+      "before": [
+        [
+          1,
+          null
+        ]
+      ],
+      "after_match": [],
+      "after_rowid": [],
+      "vocab_after": [],
+      "token_literal_remains_in_ft_data": true
+    }
+  ]
+}

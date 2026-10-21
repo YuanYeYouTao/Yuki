@@ -214,7 +214,8 @@ PERSON_GROUP 表示某 Person 在某 Space 中的共同经历。证据保留真�
 Person 按原永久身份与当前同人关系核权限，纯内部工作无需当前账号或发送路由。发送由共同 Social 按明确目标和当前路由处理，
 触发群与 Presence 不构成额外的发送目标菜单。路由暂停只控制实际发送，不阻止内部 Main 工作。
 
-Plugin API 当前为 `7.0`，Host 只加载 API 与已批准 manifest 精确匹配的插件。兼容键仍使用 primary
+Plugin API 当前为 `7.1`，Host 加载同主版本且所需次版本不高于 Host 的插件；已批准 manifest
+仍需精确匹配。兼容键仍使用 primary
 `conversation_key`，SDK 还可读取可选的 person、space、conversation 和 presence ID。
 插件不能伪造管理员、绕过 Capability 或直接选择任意 GatewayConnection。
 

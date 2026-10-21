@@ -9,13 +9,15 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 from tests.support.event_seed import seed_scoped_event
 
-from yuki.domain.conversations import ConversationScope
+from yuki.domain.conversations import ConversationScope, ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
 from yuki.identity.db_models import CanonicalPersonModel, CanonicalSpaceModel
 from yuki.identity.write_settings import (
     IdentityWriteSettings,
     configure_identity_write_settings,
     identity_write_settings,
 )
+from yuki.persistence.history_search import compile_match, prepare_query
 from yuki.persistence.models import ChatEventModel, MemoryFactModel
 from yuki.persistence.scoped_event_uow import ScopedEventLedgerUnitOfWork
 
@@ -123,9 +125,13 @@ async def test_copied_fts_triggers_follow_original_insert_edit_and_delete(databa
                 bool(
                     await reader.scalar(
                         text(
-                            "SELECT rowid FROM chat_events_fts WHERE chat_events_fts MATCH :query"
+                            "SELECT rowid FROM chat_history_fts WHERE chat_history_fts MATCH :query"
                         ),
-                        {"query": search},
+                        {
+                            "query": compile_match(
+                                original.event.canonical_conversation_id, prepare_query(search)
+                            )
+                        },
                     )
                 )
                 is expected
@@ -141,28 +147,49 @@ async def test_copied_fts_triggers_follow_original_insert_edit_and_delete(databa
                 )
                 is expected
             )
+    await writer.update_platform_message(
+        original.event.id,
+        InboundMessage(
+            message_id="fixture-fts-original",
+            event_type="message",
+            scope_type=ScopeType.GROUP,
+            sender=SenderIdentity("1001"),
+            text="geology-edited",
+            bot_user_id="8000",
+            group_id="2001",
+        ),
+        presence_id=original.event.ingress_presence_id,
+        edited_at=now,
+        revision=1,
+    )
     async with database.immediate_session() as session:
-        await session.execute(
-            update(ChatEventModel)
-            .where(ChatEventModel.id == original.event.id)
-            .values(content="geology-edited")
-        )
         await session.execute(
             update(MemoryFactModel)
             .where(MemoryFactModel.id == fact_id)
             .values(content="geology-memory")
         )
+    searches = (
+        (
+            "chat_history_fts",
+            lambda word: compile_match(
+                original.event.canonical_conversation_id, prepare_query(word)
+            ),
+        ),
+        ("memory_facts_fts", lambda word: word),
+    )
     async with database.sessions() as reader:
-        for table in ("chat_events_fts", "memory_facts_fts"):
+        for table, query in searches:
             assert (
                 await reader.scalar(
-                    text(f"SELECT rowid FROM {table} WHERE {table} MATCH 'astronomy'")
+                    text(f"SELECT rowid FROM {table} WHERE {table} MATCH :query"),
+                    {"query": query("astronomy")},
                 )
                 is None
             )
             assert (
                 await reader.scalar(
-                    text(f"SELECT rowid FROM {table} WHERE {table} MATCH 'geology'")
+                    text(f"SELECT rowid FROM {table} WHERE {table} MATCH :query"),
+                    {"query": query("geology")},
                 )
                 is not None
             )
@@ -170,10 +197,11 @@ async def test_copied_fts_triggers_follow_original_insert_edit_and_delete(databa
         await session.execute(delete(ChatEventModel).where(ChatEventModel.id == original.event.id))
         await session.execute(delete(MemoryFactModel).where(MemoryFactModel.id == fact_id))
     async with database.sessions() as reader:
-        for table in ("chat_events_fts", "memory_facts_fts"):
+        for table, query in searches:
             assert (
                 await reader.scalar(
-                    text(f"SELECT rowid FROM {table} WHERE {table} MATCH 'geology'")
+                    text(f"SELECT rowid FROM {table} WHERE {table} MATCH :query"),
+                    {"query": query("geology")},
                 )
                 is None
             )

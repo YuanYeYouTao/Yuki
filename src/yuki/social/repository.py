@@ -388,6 +388,12 @@ class SocialOperationRepository:
                 status=status.value,
                 platform_reference=platform_reference,
                 event_id=event_id,
+                original_event_id=event_id,
+                original_conversation_id=select(ChatEventModel.canonical_conversation_id)
+                .where(ChatEventModel.id == event_id)
+                .scalar_subquery()
+                if event_id is not None
+                else None,
                 error_category=error_category,
                 updated_at=datetime.now(UTC),
             )
@@ -528,6 +534,8 @@ class SocialOperationRepository:
                 "status": row.status,
                 "target": {"kind": row.target_kind, "id": row.target_id},
                 "event_id": row.event_id,
+                "original_event_id": row.original_event_id,
+                "original_conversation_id": row.original_conversation_id,
                 "error_category": row.error_category,
             }
 
@@ -677,6 +685,8 @@ class SocialOperationRepository:
             presence_id=row.presence_id,
             platform_reference=row.platform_reference,
             event_id=row.event_id,
+            original_event_id=row.original_event_id,
+            original_conversation_id=row.original_conversation_id,
             error_category=row.error_category,
             payload_hash=row.payload_hash,
             prepared=json.loads(row.prepared_json) if row.prepared_json is not None else None,

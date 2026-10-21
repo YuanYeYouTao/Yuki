@@ -1,0 +1,324 @@
+{
+  "python": "3.12.15",
+  "sqlite": "3.46.1",
+  "history_search_sha256": "13bf7121c9f1fdc53b63abd617586c01f1f5ebc70fc2725d16408bb3d8c9fc43",
+  "vm_excludes_fts_internal_work": true,
+  "results": {
+    "5000": {
+      "unhinted:metadata": {
+        "events": 5000,
+        "page_limit": 21,
+        "pages_exhausted": 239,
+        "verified_rows": 5000,
+        "matches": 0,
+        "elapsed_ms": 30.32021100034399,
+        "approx_vm_quantum_1000": 84000,
+        "first_and_deep_plans": [
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+            ]
+          ],
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid>? AND rowid<?)"
+            ]
+          ]
+        ]
+      },
+      "unhinted:repeated_fts_in": {
+        "events": 5000,
+        "page_limit": 21,
+        "pages_exhausted": 239,
+        "verified_rows": 5000,
+        "matches": 0,
+        "elapsed_ms": 429.1345930000716,
+        "approx_vm_quantum_1000": 13904000,
+        "first_and_deep_plans": [
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid=?)"
+            ],
+            [
+              13,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              15,
+              13,
+              0,
+              "SCAN chat_history_fts VIRTUAL TABLE INDEX 0:M1"
+            ]
+          ],
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid=?)"
+            ],
+            [
+              11,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              13,
+              11,
+              0,
+              "SCAN chat_history_fts VIRTUAL TABLE INDEX 0:M1"
+            ]
+          ]
+        ]
+      },
+      "held_author_index:metadata": {
+        "events": 5000,
+        "page_limit": 21,
+        "pages_exhausted": 239,
+        "verified_rows": 5000,
+        "matches": 0,
+        "elapsed_ms": 21.494417999747384,
+        "approx_vm_quantum_1000": 84000,
+        "first_and_deep_plans": [
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+            ]
+          ],
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid>? AND rowid<?)"
+            ]
+          ]
+        ]
+      },
+      "held_author_index:repeated_fts_in": {
+        "events": 5000,
+        "page_limit": 21,
+        "pages_exhausted": 239,
+        "verified_rows": 5000,
+        "matches": 0,
+        "elapsed_ms": 503.8987679999991,
+        "approx_vm_quantum_1000": 13895000,
+        "first_and_deep_plans": [
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid=?)"
+            ],
+            [
+              13,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              15,
+              13,
+              0,
+              "SCAN chat_history_fts VIRTUAL TABLE INDEX 0:M1"
+            ]
+          ],
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid=?)"
+            ],
+            [
+              13,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              15,
+              13,
+              0,
+              "SCAN chat_history_fts VIRTUAL TABLE INDEX 0:M1"
+            ]
+          ]
+        ]
+      }
+    },
+    "20000": {
+      "unhinted:metadata": {
+        "events": 20000,
+        "page_limit": 21,
+        "pages_exhausted": 953,
+        "verified_rows": 20000,
+        "matches": 0,
+        "elapsed_ms": 95.27415700040365,
+        "approx_vm_quantum_1000": 337000,
+        "first_and_deep_plans": [
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+            ]
+          ],
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid>? AND rowid<?)"
+            ]
+          ]
+        ]
+      },
+      "unhinted:repeated_fts_in": {
+        "events": 20000,
+        "page_limit": 21,
+        "pages_exhausted": 953,
+        "verified_rows": 20000,
+        "matches": 0,
+        "elapsed_ms": 6702.613710000151,
+        "approx_vm_quantum_1000": 219799000,
+        "first_and_deep_plans": [
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid=?)"
+            ],
+            [
+              13,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              15,
+              13,
+              0,
+              "SCAN chat_history_fts VIRTUAL TABLE INDEX 0:M1"
+            ]
+          ],
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid=?)"
+            ],
+            [
+              11,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              13,
+              11,
+              0,
+              "SCAN chat_history_fts VIRTUAL TABLE INDEX 0:M1"
+            ]
+          ]
+        ]
+      },
+      "held_author_index:metadata": {
+        "events": 20000,
+        "page_limit": 21,
+        "pages_exhausted": 953,
+        "verified_rows": 20000,
+        "matches": 0,
+        "elapsed_ms": 86.45605099991371,
+        "approx_vm_quantum_1000": 337000,
+        "first_and_deep_plans": [
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid>?)"
+            ]
+          ],
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid>? AND rowid<?)"
+            ]
+          ]
+        ]
+      },
+      "held_author_index:repeated_fts_in": {
+        "events": 20000,
+        "page_limit": 21,
+        "pages_exhausted": 953,
+        "verified_rows": 20000,
+        "matches": 0,
+        "elapsed_ms": 8082.8851630003555,
+        "approx_vm_quantum_1000": 219761000,
+        "first_and_deep_plans": [
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid=?)"
+            ],
+            [
+              13,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              15,
+              13,
+              0,
+              "SCAN chat_history_fts VIRTUAL TABLE INDEX 0:M1"
+            ]
+          ],
+          [
+            [
+              5,
+              0,
+              0,
+              "SEARCH chat_events USING INDEX ix_chat_events_conversation_author (canonical_conversation_id=? AND author_person_id=? AND rowid=?)"
+            ],
+            [
+              13,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              15,
+              13,
+              0,
+              "SCAN chat_history_fts VIRTUAL TABLE INDEX 0:M1"
+            ]
+          ]
+        ]
+      }
+    }
+  }
+}

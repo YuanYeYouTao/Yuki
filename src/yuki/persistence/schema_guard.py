@@ -25,6 +25,7 @@ def canonical_schema_revision(root: Path | None = None) -> str:
 
 
 _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
+    "chat_history_fts": frozenset({"tokens"}),
     "chat_event_artifact_refs": frozenset({"event_id", "artifact_id", "version"}),
     "canonical_event_receipts": frozenset(
         {"ingress_account_id", "transport_namespace", "ingress_presence_id"}
@@ -168,6 +169,8 @@ _REQUIRED_COLUMNS: Mapping[str, frozenset[str]] = {
         {
             "id",
             "event_id",
+            "original_event_id",
+            "original_conversation_id",
             "source_turn_id",
             "tool_call_id",
             "payload_hash",
@@ -309,7 +312,10 @@ async def require_canonical_schema(database_url: str) -> None:
                 if statement.startswith("CREATE TRIGGER")
             }
 
+            from yuki.persistence.history_search_index import DELETE_HISTORY_TRIGGER
+
             for name, expected in {
+                "chat_history_fts_ad": DELETE_HISTORY_TRIGGER,
                 **PROJECTION_TRIGGERS_CURRENT,
                 **ARTIFACT_REFERENCE_TRIGGERS,
                 **protocol_triggers,

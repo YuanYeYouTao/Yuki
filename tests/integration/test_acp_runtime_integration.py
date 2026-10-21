@@ -11,6 +11,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy import func, select
 from tests.integration.test_current_material_main_contract import _deployment
+from tests.support.event_seed import seed_scoped_event
 from tests.unit.test_admin_operator_access import operator_file
 from tests.unit.test_client_api import bearer
 from tests.unit.test_client_sdk import DropAcknowledgement
@@ -19,14 +20,18 @@ from yuki.admin_api.http import attach_admin_api
 from yuki.client_api.http import attach_client_api
 from yuki.client_sdk import Outbox, PersonalClient
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
+from yuki.domain.conversations import ConversationScope
 from yuki.domain.messages import ChatResponse, ToolCall, ToolFunction
+from yuki.domain.tool_actor import ToolActor
 from yuki.identity.canonical_repository import replace_assignment
-from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel, PresenceModel
 from yuki.llm.fake import FakeLLMProvider
 from yuki.persistence.models import ChatEventModel
+from yuki.runtime.origin import TurnOrigin
 from yuki.runtime.work_control import WorkControl
 from yuki.runtime.work_repository import WorkRepository
 from yuki.runtime.work_schema_v1 import inputs
+from yuki.social.service import SocialContext
 
 
 def sent_reply(request):
@@ -221,7 +226,8 @@ async def test_two_sessions_share_original_person_and_fixed_tools_without_sharin
     requests = env.provider.requests
     assert len(requests) == 4
     assert requests[0].tools == requests[2].tools
-    assert "read_personal_entry" in {tool.name for tool in requests[0].tools}
+    assert "query_chat_history" in {tool.name for tool in requests[0].tools}
+    assert "read_personal_entry" not in {tool.name for tool in requests[0].tools}
     assert "FIRST_SESSION_ONLY" not in str(requests[2].messages)
     assert "SECOND_SESSION_ONLY" not in str(requests[0].messages)
     app_me = await env.http.get("/client/v1/me", headers=bearer(env.device["token"]))
@@ -635,3 +641,96 @@ async def test_original_acp_credentials_do_not_create_a_new_author_after_assignm
             event.content,
         ) == original_fact
         assert event.author_person_id == old_person
+
+
+async def test_acp_history_requires_confirmed_outbound_and_keeps_deleted_keyset_boundaries(
+    acp_runtime, database
+):
+    env = acp_runtime
+    session = await new_session(env)
+    request_id = str(uuid4())
+    submitted = await env.http.post(
+        "/client/v1/messages",
+        headers=selected(env, session),
+        json={"request_id": request_id, "text": "Send one confirmed ACP reply"},
+    )
+    assert submitted.status_code == 200, submitted.text
+    original = await settled(env, session, request_id)
+    visible_ids = [original["event_id"], *original["result_event_ids"]]
+    assert len(visible_ids) == 2
+    principal = await env.app.client_api.identity.authenticate(
+        env.device["token"], conversation_id=session["session_id"]
+    )
+    async with database.sessions() as reader:
+        presence = await reader.get(PresenceModel, principal.presence_id)
+        scope = ConversationScope.private(
+            presence.external_account_id,
+            principal.external_account_id,
+            platform="acp",
+            presence_id=presence.id,
+            conversation_id=principal.conversation_id,
+            thread_id=principal.thread_id,
+        )
+    for index in range(63):
+        added = await seed_scoped_event(
+            env.app.scoped_events,
+            scope=scope,
+            platform_message_id=f"acp-history-{index}",
+            sender_user_id=principal.external_account_id,
+            direction="inbound",
+            content=f"Accepted ACP input {index}",
+        )
+        visible_ids.append(added.event.id)
+    pending = await seed_scoped_event(
+        env.app.scoped_events,
+        scope=scope,
+        platform_message_id="acp-unconfirmed-outbound",
+        sender_user_id=scope.bot_user_id,
+        direction="outbound",
+        content="No successful Social delivery receipt exists for this row",
+    )
+    actor = ToolActor(
+        user_id=principal.external_account_id,
+        bot_user_id=scope.bot_user_id,
+        group_id=None,
+        origin=TurnOrigin.USER_MESSAGE,
+        instruction="Read this original ACP entry",
+        event_id=original["event_id"],
+        person_id=principal.person_id,
+        conversation_id=principal.conversation_id,
+        presence_id=principal.presence_id,
+        platform="acp",
+    )
+    history = await env.app.social_service.execute(
+        "query_chat_history",
+        {"view": "recent", "order": "oldest", "limit": 100},
+        SocialContext("acp-history", "query", principal.conversation_id, actor=actor),
+    )
+    assert [item["event_id"] for item in history["events"]] == visible_ids
+    assert pending.event.id not in history.source_event_ids
+
+    async def page(**query):
+        response = await env.http.get(
+            f"/client/v1/conversations/{principal.conversation_id}/events",
+            headers=selected(env, session),
+            params=query,
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["data"]
+
+    first = await page(limit=60)
+    assert [item["event_id"] for item in first["items"]] == visible_ids[:60]
+    assert first["has_more"] is True
+    rest = await page(after=first["next_after"], limit=60)
+    assert [item["event_id"] for item in rest["items"]] == visible_ids[60:]
+    assert rest["has_more"] is False
+    newest = await page(before=pending.event.id + 1, limit=2)
+    assert [item["event_id"] for item in newest["items"]] == visible_ids[-2:]
+    assert newest["next_before"] == visible_ids[-2]
+    async with database.immediate_session() as writer:
+        boundary = await writer.get(ChatEventModel, newest["next_before"])
+        await writer.delete(boundary)
+    older = await page(before=newest["next_before"], limit=2)
+    assert [item["event_id"] for item in older["items"]] == visible_ids[-4:-2]
+    assert older["next_before"] == visible_ids[-4]
+    assert len(env.provider.requests) == 2

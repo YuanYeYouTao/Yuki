@@ -96,8 +96,8 @@ async def test_self_mentions_recall_and_receipt_history_use_original_social_back
     receipt = await env.service.receipts.get(operation)
     assert receipt.event_id is not None
     await env.service.execute(
-        "read_conversation_history",
-        {"operation_id": operation},
+        "query_chat_history",
+        {'view': 'recent', 'event_kind': 'all', 'target': {'operation_id': operation}},
         replace(context, call_id="history"),
     )
     await env.service.execute(

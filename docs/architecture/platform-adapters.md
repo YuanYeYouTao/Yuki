@@ -61,7 +61,7 @@ Telegram 使用 `sendChatAction(action=typing)`，保真实 chat 与 topic，每
 
 `send_message` 共用参数表达文字、图片、文件、真实提及和内部事件引用。平台计划可以拆为数项；部分成功分别保留，结果未知不自动重发。App 文件及说明原子交付；QQ 上传与附言分别确认；Telegram 按实际文本和 caption 限制生成原生派发。
 
-`read_conversation_history` 只读取授权的内部账本。默认当前入口；多入口候选返回内部 Conversation ID，由调用者选择。原 operation 可读取其真实出站会话，但不能冒领其他来源的回执。`get_group_members` 返回已观察人物，`coverage=observed` 不代表完整平台名册。查询不隐式请求远端历史、展开合并转发或刷新平台群名单。
+`query_chat_history` 只读取授权的内部账本。默认当前入口；多入口候选返回内部 Conversation ID，由调用者选择。原 operation 可读取其真实出站会话和原回执锚点，但不能冒领其他来源的回执。`get_group_members` 返回已观察人物，`coverage=observed` 不代表完整平台名册。查询不隐式请求远端历史、展开合并转发或刷新平台群名单。
 
 默认模型的任意 OneBot action、戳一戳和远端/raw 历史入口已退役。独立批准的 QQ SDK 传输扩展保留明确的 QQ 边界，不能替代通用发送出口。历史已执行工具和回执继续可读。
 
@@ -85,7 +85,7 @@ TG 与 QQ 使用同一份平台 Main 工具合同，默认 direct 为 29 项；�
 | --- | --- |
 | `send_message` | 原生文字、图片和文件；真实提及、内部事件引用、topic 与 caption 由适配器转换，每次派发保原回执。 |
 | `recall_own_message` | 内部出站事件定位原发送 Presence，再执行 `deleteMessage`，当前主动账号不能替代原账号。 |
-| `query_chat_history` / `read_conversation_history` | 授权内部事件账本；已观察范围，不查询 Telegram 服务器完整历史。 |
+| `query_chat_history` | 授权内部事件账本；已观察范围，不查询 Telegram 服务器完整历史。 |
 | `find_contacts` / `get_group_members` | 内部人物、群与已观察成员目录；不冒充 TG 完整成员列表。 |
 | `inspect_conversation_attachment` / `save_conversation_attachment_to_workspace` | 原事件附件与真实接收账号；命中缓存可离线使用，原生文件未缓存时才经原账号 `getFile` 下载字节。 |
 | 记忆、终端、工作区、搜索、任务、子 Agent 与自动化 | 共用领域服务、内部执行和来源，不复制 TG 专属工具；仍需各功能正常配置与真实权限。 |
@@ -96,7 +96,7 @@ TG 与 QQ 使用同一份平台 Main 工具合同，默认 direct 为 29 项；�
 
 迁移顺序为 `0122` 会话入口、`0123` Memory 操作身份、`0124` 通知 Conversation、`0126` 监控目标、`0127` Rebuild 原 canonical 目标与 `0128` 通知原媒体 handle。保留既有库、挂载和配置，运行真实随包迁移；不能 `stamp` 跳过，也不能覆盖旧库来回退代码。
 
-当前 Plugin API 为 **7.0**，Main 合同随固定声明生成新 revision，Code API 仍为 `yuki.codemode.api.v2`。插件的 Person/Space 参数使用内部 ID，通知可明确原 Conversation；同名参数旧的裸平台号语义不能静默沿用，身份升级见 [API 4.0 迁移](../plugin-development/api-4.0-migration.md)，旧表情 facade 退役见 [API 5.0 迁移](../plugin-development/api-5.0-migration.md)。原位置提及快照见 [API 6.0 迁移](../plugin-development/api-6.0-migration.md)，当前独立Session无效参数退役见 [API 7.0 迁移](../plugin-development/api-7.0-migration.md)。旧 frozen 请求、checkpoint、通知 source、outbox 和回执不改写成新调用。迁移 0141 一次替换双归属表，保原 UUID 和原 Work；使用退役工具合同的私有链只读封存，在现有新链边界以当前合同继续，不保旧执行器。
+当前 Plugin API 为 **7.1**，Main 合同随固定声明生成新 revision，Code API 仍为 `yuki.codemode.api.v2`。插件的 Person/Space 参数使用内部 ID，通知可明确原 Conversation；同名参数旧的裸平台号语义不能静默沿用，身份升级见 [API 4.0 迁移](../plugin-development/api-4.0-migration.md)，旧表情 facade 退役见 [API 5.0 迁移](../plugin-development/api-5.0-migration.md)。原位置提及快照见 [API 6.0 迁移](../plugin-development/api-6.0-migration.md)，独立 Session 无效参数退役见 [API 7.0 迁移](../plugin-development/api-7.0-migration.md)，历史查询可选扩展见 [API 7.1 迁移](../plugin-development/api-7.1-migration.md)。旧 frozen 请求、checkpoint、通知 source、outbox 和回执不改写成新调用。迁移 0141 一次替换双归属表，保原 UUID 和原 Work；使用退役工具合同的私有链只读封存，在现有新链边界以当前合同继续，不保旧执行器。
 
 监控旧状态只按真实历史 grant 迁移。来源未知、存在歧义或目标合并冲突时，完整保留源 JSON 并报告具体升级问题，不能创建空状态覆盖它，也不能用今天的同数字账号猜 owner。监控迁移保原游标、源指纹、正文、notification/source_event ID、状态和已接受投递，不能重新抓取或重发代替恢复。
 

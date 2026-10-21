@@ -1,4 +1,4 @@
-# Yuki Plugin API 7.0 开发手册
+# Yuki Plugin API 7.1 开发手册
 
 Yuki 通过独立的 `yuki_plugin_sdk` 声明扩展，由 Host 负责发现、批准、生命周期、权限裁剪和运行时 Facade。插件不能直接取得 `ApplicationContainer`、数据库 Session、NoneBot Bot、原始事件、完整设置或任何密钥集合。
 
@@ -11,7 +11,8 @@ Plugin API `7.0` 的通用目标参数使用内部 Person/Space/Conversation ID�
 ## 从这里开始
 
 - [10 分钟快速开始](quickstart.md)
-- [Plugin API 7.0 迁移](api-7.0-migration.md)
+- [Plugin API 7.1 迁移](api-7.1-migration.md)
+- [Plugin API 7.0 历史迁移](api-7.0-migration.md)
 - [Plugin API 3.5 历史迁移](api-3.5-migration.md)
 - [Plugin API 3.4 历史迁移](api-3.4-migration.md)
 - [Plugin API 3.0 历史迁移](api-3.0-migration.md)

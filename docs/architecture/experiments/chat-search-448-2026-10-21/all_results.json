@@ -1,0 +1,4027 @@
+{
+  "metadata": {
+    "python": "3.12.13 (main, Jul 18 2026, 17:08:38) [MSC v.1944 64 bit (AMD64)]",
+    "sqlite": "3.53.1",
+    "source_head": "31507101",
+    "scope": "synthetic related-DDL query-shape experiment; no production data",
+    "vm_limit": "progress handler counts VDBE instructions, not virtual-table internal doclist work",
+    "timing": "three warm-cache repeats; not production latency",
+    "full_index_limit": "scope_postings stores selected terms only; no full gram storage/write claim"
+  },
+  "runs": [
+    {
+      "rows": 50000,
+      "conversations": 100,
+      "target_rows": 500,
+      "deep_cursor": [
+        "2026-01-01 00:00:41.000000",
+        12500
+      ],
+      "results": [
+        {
+          "name": "baseline_scope_time_first",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              29,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 9000,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            50000,
+            49900,
+            49800
+          ],
+          "median_ms_warm": 0.31349994242191315
+        },
+        {
+          "name": "baseline_short_absent",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "无"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              32,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 6000,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.1604999415576458
+        },
+        {
+          "name": "baseline_short_common",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              32,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 10600,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            50000,
+            49900,
+            49800
+          ],
+          "median_ms_warm": 0.25720009580254555
+        },
+        {
+          "name": "current_fts_common_global",
+          "sql": "WITH search_bounds AS MATERIALIZED (SELECT (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 1) AS first_id,(SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id DESC LIMIT 1) AS last_id) SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM chat_events_fts WHERE chat_events_fts MATCH ? AND rowid>=(SELECT first_id FROM search_bounds) AND rowid<=(SELECT last_id FROM search_bounds)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "\"共同词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              88,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 6"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN chat_events_fts VIRTUAL TABLE INDEX 0:M2><"
+            ],
+            [
+              14,
+              8,
+              0,
+              "SCALAR SUBQUERY 4"
+            ],
+            [
+              18,
+              14,
+              0,
+              "MATERIALIZE search_bounds"
+            ],
+            [
+              20,
+              18,
+              0,
+              "SCAN CONSTANT ROW"
+            ],
+            [
+              23,
+              18,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              29,
+              23,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              50,
+              18,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              56,
+              50,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              82,
+              14,
+              64,
+              "SCAN search_bounds"
+            ],
+            [
+              91,
+              8,
+              0,
+              "SCALAR SUBQUERY 5"
+            ],
+            [
+              96,
+              91,
+              216,
+              "SCAN search_bounds"
+            ],
+            [
+              107,
+              8,
+              0,
+              "REUSE SUBQUERY 4"
+            ],
+            [
+              111,
+              8,
+              0,
+              "REUSE SUBQUERY 5"
+            ],
+            [
+              144,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 1006800,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            50000,
+            49900,
+            49800
+          ],
+          "median_ms_warm": 10.078699793666601
+        },
+        {
+          "name": "current_fts_absent_global",
+          "sql": "WITH search_bounds AS MATERIALIZED (SELECT (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 1) AS first_id,(SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id DESC LIMIT 1) AS last_id) SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM chat_events_fts WHERE chat_events_fts MATCH ? AND rowid>=(SELECT first_id FROM search_bounds) AND rowid<=(SELECT last_id FROM search_bounds)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "\"不存在词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              88,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 6"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN chat_events_fts VIRTUAL TABLE INDEX 0:M2><"
+            ],
+            [
+              14,
+              8,
+              0,
+              "SCALAR SUBQUERY 4"
+            ],
+            [
+              18,
+              14,
+              0,
+              "MATERIALIZE search_bounds"
+            ],
+            [
+              20,
+              18,
+              0,
+              "SCAN CONSTANT ROW"
+            ],
+            [
+              23,
+              18,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              29,
+              23,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              50,
+              18,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              56,
+              50,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              82,
+              14,
+              64,
+              "SCAN search_bounds"
+            ],
+            [
+              91,
+              8,
+              0,
+              "SCALAR SUBQUERY 5"
+            ],
+            [
+              96,
+              91,
+              216,
+              "SCAN search_bounds"
+            ],
+            [
+              107,
+              8,
+              0,
+              "REUSE SUBQUERY 4"
+            ],
+            [
+              111,
+              8,
+              0,
+              "REUSE SUBQUERY 5"
+            ],
+            [
+              144,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 200,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.01819990575313568
+        },
+        {
+          "name": "indexed_scope_time_first",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 200,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            50000,
+            49900,
+            49800
+          ],
+          "median_ms_warm": 0.012699980288743973
+        },
+        {
+          "name": "indexed_short_absent",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "无"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 4000,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.17170002683997154
+        },
+        {
+          "name": "indexed_short_common",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 300,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            50000,
+            49900,
+            49800
+          ],
+          "median_ms_warm": 0.01620035618543625
+        },
+        {
+          "name": "keyset_rowvalue_deep",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND (ce.occurred_at,ce.id)<(?,?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "2026-01-01 00:00:41.000000",
+            12500
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              93,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=? AND occurred_at<?)"
+            ]
+          ],
+          "vm_steps_approx": 400,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            12400,
+            12300,
+            12200
+          ],
+          "median_ms_warm": 0.013899989426136017
+        },
+        {
+          "name": "keyset_or_deep",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND (ce.occurred_at<? OR (ce.occurred_at=? AND ce.id<?)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "2026-01-01 00:00:41.000000",
+            "2026-01-01 00:00:41.000000",
+            12500
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 3700,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            12400,
+            12300,
+            12200
+          ],
+          "median_ms_warm": 0.10750023648142815
+        },
+        {
+          "name": "offset_deep",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21 OFFSET ?",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            375
+          ],
+          "plan": [
+            [
+              8,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 2400,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            12500,
+            12400,
+            12300
+          ],
+          "median_ms_warm": 0.026300083845853806
+        },
+        {
+          "name": "family_in_subquery",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (SELECT id FROM persons WHERE id=(SELECT coalesce(merged_into_person_id,id) FROM persons WHERE id=?) OR merged_into_person_id=(SELECT coalesce(merged_into_person_id,id) FROM persons WHERE id=?)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "p0"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ],
+            [
+              17,
+              0,
+              0,
+              "LIST SUBQUERY 3"
+            ],
+            [
+              20,
+              17,
+              86,
+              "SCAN persons"
+            ],
+            [
+              26,
+              17,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              31,
+              26,
+              39,
+              "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?)"
+            ],
+            [
+              48,
+              17,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              53,
+              48,
+              39,
+              "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?)"
+            ],
+            [
+              70,
+              17,
+              0,
+              "CREATE BLOOM FILTER"
+            ]
+          ],
+          "vm_steps_approx": 7700,
+          "vm_quantum": 100,
+          "returned": 15,
+          "first_ids": [
+            38700,
+            38600,
+            38500
+          ],
+          "median_ms_warm": 0.19720010459423065
+        },
+        {
+          "name": "family_in_literal",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "p1",
+            "p2",
+            "p3"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              72,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              48,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 200,
+          "vm_quantum": 100,
+          "returned": 15,
+          "first_ids": [
+            38700,
+            38600,
+            38500
+          ],
+          "median_ms_warm": 0.017600134015083313
+        },
+        {
+          "name": "family_per_author_top21_union",
+          "sql": "SELECT * FROM (SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21)) ORDER BY occurred_at DESC,id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p1",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p3"
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              0,
+              "MERGE (UNION ALL)"
+            ],
+            [
+              6,
+              4,
+              0,
+              "LEFT"
+            ],
+            [
+              9,
+              6,
+              0,
+              "MERGE (UNION ALL)"
+            ],
+            [
+              11,
+              9,
+              0,
+              "LEFT"
+            ],
+            [
+              13,
+              11,
+              0,
+              "CO-ROUTINE (subquery-1)"
+            ],
+            [
+              18,
+              13,
+              52,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              36,
+              11,
+              33,
+              "SCAN (subquery-1)"
+            ],
+            [
+              49,
+              11,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ],
+            [
+              57,
+              9,
+              0,
+              "RIGHT"
+            ],
+            [
+              59,
+              57,
+              0,
+              "CO-ROUTINE (subquery-3)"
+            ],
+            [
+              64,
+              59,
+              52,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              82,
+              57,
+              33,
+              "SCAN (subquery-3)"
+            ],
+            [
+              95,
+              57,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ],
+            [
+              129,
+              4,
+              0,
+              "RIGHT"
+            ],
+            [
+              132,
+              129,
+              0,
+              "MERGE (UNION ALL)"
+            ],
+            [
+              134,
+              132,
+              0,
+              "LEFT"
+            ],
+            [
+              136,
+              134,
+              0,
+              "CO-ROUTINE (subquery-5)"
+            ],
+            [
+              141,
+              136,
+              52,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              159,
+              134,
+              33,
+              "SCAN (subquery-5)"
+            ],
+            [
+              172,
+              134,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ],
+            [
+              180,
+              132,
+              0,
+              "RIGHT"
+            ],
+            [
+              182,
+              180,
+              0,
+              "CO-ROUTINE (subquery-7)"
+            ],
+            [
+              187,
+              182,
+              52,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              205,
+              180,
+              33,
+              "SCAN (subquery-7)"
+            ],
+            [
+              218,
+              180,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 900,
+          "vm_quantum": 100,
+          "returned": 15,
+          "first_ids": [
+            38700,
+            38600,
+            38500
+          ],
+          "median_ms_warm": 0.02400018274784088
+        },
+        {
+          "name": "family_force_scope_time",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce INDEXED BY ix_probe_scope_time WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "p1",
+            "p2",
+            "p3"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 6000,
+          "vm_quantum": 100,
+          "returned": 15,
+          "first_ids": [
+            38700,
+            38600,
+            38500
+          ],
+          "median_ms_warm": 0.13940036296844482
+        },
+        {
+          "name": "indexed_fts_common_global",
+          "sql": "WITH search_bounds AS MATERIALIZED (SELECT (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 1) AS first_id,(SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id DESC LIMIT 1) AS last_id) SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM chat_events_fts WHERE chat_events_fts MATCH ? AND rowid>=(SELECT first_id FROM search_bounds) AND rowid<=(SELECT last_id FROM search_bounds)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "\"共同词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              88,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 6"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN chat_events_fts VIRTUAL TABLE INDEX 0:M2><"
+            ],
+            [
+              14,
+              8,
+              0,
+              "SCALAR SUBQUERY 4"
+            ],
+            [
+              18,
+              14,
+              0,
+              "MATERIALIZE search_bounds"
+            ],
+            [
+              20,
+              18,
+              0,
+              "SCAN CONSTANT ROW"
+            ],
+            [
+              23,
+              18,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              29,
+              23,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              50,
+              18,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              56,
+              50,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              82,
+              14,
+              64,
+              "SCAN search_bounds"
+            ],
+            [
+              91,
+              8,
+              0,
+              "SCALAR SUBQUERY 5"
+            ],
+            [
+              96,
+              91,
+              216,
+              "SCAN search_bounds"
+            ],
+            [
+              107,
+              8,
+              0,
+              "REUSE SUBQUERY 4"
+            ],
+            [
+              111,
+              8,
+              0,
+              "REUSE SUBQUERY 5"
+            ],
+            [
+              144,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 1007000,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            50000,
+            49900,
+            49800
+          ],
+          "median_ms_warm": 11.212199926376343
+        },
+        {
+          "name": "has_image_json",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND EXISTS (SELECT 1 FROM json_each(ce.segments_json) AS segment WHERE json_extract(segment.value,'$.type')='image') ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              7,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ],
+            [
+              16,
+              0,
+              0,
+              "SCAN segment EXISTS VIRTUAL TABLE INDEX 1:"
+            ]
+          ],
+          "vm_steps_approx": 4600,
+          "vm_quantum": 100,
+          "returned": 20,
+          "first_ids": [
+            50000,
+            47500,
+            45000
+          ],
+          "median_ms_warm": 0.23160036653280258
+        },
+        {
+          "name": "has_image_media_pk",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND EXISTS (SELECT 1 FROM conversation_media_items AS m WHERE m.source_event_id=ce.id AND m.kind='image' AND m.source_snapshot_json IS NULL) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              8,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ],
+            [
+              17,
+              0,
+              39,
+              "SEARCH m EXISTS USING INDEX sqlite_autoindex_conversation_media_items_1 (source_event_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 3700,
+          "vm_quantum": 100,
+          "returned": 20,
+          "first_ids": [
+            50000,
+            47500,
+            45000
+          ],
+          "median_ms_warm": 0.07010018453001976
+        },
+        {
+          "name": "around_three_bounded_union",
+          "sql": "SELECT DISTINCT id FROM (SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id<? ORDER BY ce.id DESC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id>? ORDER BY ce.id ASC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id<? ORDER BY ce.id DESC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id>? ORDER BY ce.id ASC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id<? ORDER BY ce.id DESC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id>? ORDER BY ce.id ASC LIMIT 6)) ORDER BY id",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            100,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            100,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            25000,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            25000,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            50000,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            50000
+          ],
+          "plan": [
+            [
+              2,
+              0,
+              0,
+              "CO-ROUTINE (subquery-12)"
+            ],
+            [
+              3,
+              2,
+              0,
+              "COMPOUND QUERY"
+            ],
+            [
+              4,
+              3,
+              0,
+              "LEFT-MOST SUBQUERY"
+            ],
+            [
+              6,
+              4,
+              0,
+              "CO-ROUTINE (subquery-1)"
+            ],
+            [
+              11,
+              6,
+              57,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ],
+            [
+              32,
+              4,
+              42,
+              "SCAN (subquery-1)"
+            ],
+            [
+              38,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              40,
+              38,
+              0,
+              "CO-ROUTINE (subquery-3)"
+            ],
+            [
+              45,
+              40,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              66,
+              38,
+              42,
+              "SCAN (subquery-3)"
+            ],
+            [
+              72,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              74,
+              72,
+              0,
+              "CO-ROUTINE (subquery-5)"
+            ],
+            [
+              79,
+              74,
+              57,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ],
+            [
+              100,
+              72,
+              42,
+              "SCAN (subquery-5)"
+            ],
+            [
+              106,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              108,
+              106,
+              0,
+              "CO-ROUTINE (subquery-7)"
+            ],
+            [
+              113,
+              108,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              134,
+              106,
+              42,
+              "SCAN (subquery-7)"
+            ],
+            [
+              140,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              142,
+              140,
+              0,
+              "CO-ROUTINE (subquery-9)"
+            ],
+            [
+              147,
+              142,
+              57,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ],
+            [
+              168,
+              140,
+              42,
+              "SCAN (subquery-9)"
+            ],
+            [
+              174,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              176,
+              174,
+              0,
+              "CO-ROUTINE (subquery-11)"
+            ],
+            [
+              181,
+              176,
+              93,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              202,
+              174,
+              42,
+              "SCAN (subquery-11)"
+            ],
+            [
+              214,
+              0,
+              68,
+              "SCAN (subquery-12)"
+            ],
+            [
+              217,
+              0,
+              0,
+              "USE TEMP B-TREE FOR DISTINCT"
+            ]
+          ],
+          "vm_steps_approx": 5300,
+          "vm_quantum": 100,
+          "returned": 24,
+          "first_ids": [
+            200,
+            300,
+            400
+          ],
+          "median_ms_warm": 0.05379971116781235
+        },
+        {
+          "name": "around_bad_minmax_scan",
+          "sql": "SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id BETWEEN ? AND ? ORDER BY ce.id",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            100,
+            50000
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              57,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ]
+          ],
+          "vm_steps_approx": 6600,
+          "vm_quantum": 100,
+          "returned": 500,
+          "first_ids": [
+            100,
+            200,
+            300
+          ],
+          "median_ms_warm": 0.3534001298248768
+        },
+        {
+          "name": "fts_scope_posting_intersection",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM scoped_fts WHERE scoped_fts MATCH ?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "scope_key : \"7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2\" AND content : \"共同词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              88,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN scoped_fts VIRTUAL TABLE INDEX 0:M3"
+            ],
+            [
+              45,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 16700,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            50000,
+            49900,
+            49800
+          ],
+          "median_ms_warm": 2.9890998266637325
+        },
+        {
+          "name": "fts_scope_posting_absent",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM scoped_fts WHERE scoped_fts MATCH ?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "scope_key : \"7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2\" AND content : \"不存在词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              88,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN scoped_fts VIRTUAL TABLE INDEX 0:M3"
+            ],
+            [
+              45,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 2900,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.4569999873638153
+        },
+        {
+          "name": "btree_scoped_short_common",
+          "sql": "SELECT event_id,occurred_at FROM scope_postings WHERE conversation_id=? AND term=? ORDER BY occurred_at DESC,event_id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共"
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              55,
+              "SEARCH scope_postings USING PRIMARY KEY (conversation_id=? AND term=?)"
+            ]
+          ],
+          "vm_steps_approx": 100,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            50000,
+            49900,
+            49800
+          ],
+          "median_ms_warm": 0.014999881386756897
+        },
+        {
+          "name": "btree_scoped_short_absent",
+          "sql": "SELECT event_id,occurred_at FROM scope_postings WHERE conversation_id=? AND term=? ORDER BY occurred_at DESC,event_id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "无"
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              55,
+              "SEARCH scope_postings USING PRIMARY KEY (conversation_id=? AND term=?)"
+            ]
+          ],
+          "vm_steps_approx": 0,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.003300141543149948
+        },
+        {
+          "name": "btree_scoped_short_deep",
+          "sql": "SELECT event_id,occurred_at FROM scope_postings WHERE conversation_id=? AND term=? AND (occurred_at,event_id)<(?,?) ORDER BY occurred_at DESC,event_id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共",
+            "2026-01-01 00:00:41.000000",
+            12500
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              47,
+              "SEARCH scope_postings USING PRIMARY KEY (conversation_id=? AND term=? AND (occurred_at,event_id)<(?,?))"
+            ]
+          ],
+          "vm_steps_approx": 200,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            12400,
+            12300,
+            12200
+          ],
+          "median_ms_warm": 0.015900004655122757
+        }
+      ],
+      "db_bytes": 60059648
+    },
+    {
+      "rows": 200000,
+      "conversations": 100,
+      "target_rows": 2000,
+      "deep_cursor": [
+        "2026-01-01 00:02:46.000000",
+        49800
+      ],
+      "results": [
+        {
+          "name": "baseline_scope_time_first",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              29,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 36000,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            200000,
+            199900,
+            199800
+          ],
+          "median_ms_warm": 1.8273997120559216
+        },
+        {
+          "name": "baseline_short_absent",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "无"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              32,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 24000,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.7679001428186893
+        },
+        {
+          "name": "baseline_short_common",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              32,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 42100,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            200000,
+            199900,
+            199800
+          ],
+          "median_ms_warm": 1.0261000134050846
+        },
+        {
+          "name": "current_fts_common_global",
+          "sql": "WITH search_bounds AS MATERIALIZED (SELECT (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 1) AS first_id,(SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id DESC LIMIT 1) AS last_id) SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM chat_events_fts WHERE chat_events_fts MATCH ? AND rowid>=(SELECT first_id FROM search_bounds) AND rowid<=(SELECT last_id FROM search_bounds)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "\"共同词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              90,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 6"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN chat_events_fts VIRTUAL TABLE INDEX 0:M2><"
+            ],
+            [
+              14,
+              8,
+              0,
+              "SCALAR SUBQUERY 4"
+            ],
+            [
+              18,
+              14,
+              0,
+              "MATERIALIZE search_bounds"
+            ],
+            [
+              20,
+              18,
+              0,
+              "SCAN CONSTANT ROW"
+            ],
+            [
+              23,
+              18,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              29,
+              23,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              50,
+              18,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              56,
+              50,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              82,
+              14,
+              64,
+              "SCAN search_bounds"
+            ],
+            [
+              91,
+              8,
+              0,
+              "SCALAR SUBQUERY 5"
+            ],
+            [
+              96,
+              91,
+              216,
+              "SCAN search_bounds"
+            ],
+            [
+              107,
+              8,
+              0,
+              "REUSE SUBQUERY 4"
+            ],
+            [
+              111,
+              8,
+              0,
+              "REUSE SUBQUERY 5"
+            ],
+            [
+              144,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 4032600,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            200000,
+            199900,
+            199800
+          ],
+          "median_ms_warm": 76.55500015243888
+        },
+        {
+          "name": "current_fts_absent_global",
+          "sql": "WITH search_bounds AS MATERIALIZED (SELECT (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 1) AS first_id,(SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id DESC LIMIT 1) AS last_id) SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM chat_events_fts WHERE chat_events_fts MATCH ? AND rowid>=(SELECT first_id FROM search_bounds) AND rowid<=(SELECT last_id FROM search_bounds)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "\"不存在词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              90,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 6"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN chat_events_fts VIRTUAL TABLE INDEX 0:M2><"
+            ],
+            [
+              14,
+              8,
+              0,
+              "SCALAR SUBQUERY 4"
+            ],
+            [
+              18,
+              14,
+              0,
+              "MATERIALIZE search_bounds"
+            ],
+            [
+              20,
+              18,
+              0,
+              "SCAN CONSTANT ROW"
+            ],
+            [
+              23,
+              18,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              29,
+              23,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              50,
+              18,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              56,
+              50,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              82,
+              14,
+              64,
+              "SCAN search_bounds"
+            ],
+            [
+              91,
+              8,
+              0,
+              "SCALAR SUBQUERY 5"
+            ],
+            [
+              96,
+              91,
+              216,
+              "SCAN search_bounds"
+            ],
+            [
+              107,
+              8,
+              0,
+              "REUSE SUBQUERY 4"
+            ],
+            [
+              111,
+              8,
+              0,
+              "REUSE SUBQUERY 5"
+            ],
+            [
+              144,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 200,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.02530030906200409
+        },
+        {
+          "name": "indexed_scope_time_first",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              132,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 200,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            200000,
+            199900,
+            199800
+          ],
+          "median_ms_warm": 0.01309998333454132
+        },
+        {
+          "name": "indexed_short_absent",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "无"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              132,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 16000,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 1.1369003914296627
+        },
+        {
+          "name": "indexed_short_common",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              132,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 300,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            200000,
+            199900,
+            199800
+          ],
+          "median_ms_warm": 0.017600134015083313
+        },
+        {
+          "name": "keyset_rowvalue_deep",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND (ce.occurred_at,ce.id)<(?,?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "2026-01-01 00:02:46.000000",
+            49800
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              112,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=? AND occurred_at<?)"
+            ]
+          ],
+          "vm_steps_approx": 400,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            49700,
+            49600,
+            49500
+          ],
+          "median_ms_warm": 0.015200115740299225
+        },
+        {
+          "name": "keyset_or_deep",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND (ce.occurred_at<? OR (ce.occurred_at=? AND ce.id<?)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "2026-01-01 00:02:46.000000",
+            "2026-01-01 00:02:46.000000",
+            49800
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              132,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 13800,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            49700,
+            49600,
+            49500
+          ],
+          "median_ms_warm": 0.4120999947190285
+        },
+        {
+          "name": "offset_deep",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21 OFFSET ?",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            1500
+          ],
+          "plan": [
+            [
+              8,
+              0,
+              132,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 9200,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            49800,
+            49700,
+            49600
+          ],
+          "median_ms_warm": 0.0692000612616539
+        },
+        {
+          "name": "family_in_subquery",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (SELECT id FROM persons WHERE id=(SELECT coalesce(merged_into_person_id,id) FROM persons WHERE id=?) OR merged_into_person_id=(SELECT coalesce(merged_into_person_id,id) FROM persons WHERE id=?)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "p0"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              132,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ],
+            [
+              17,
+              0,
+              0,
+              "LIST SUBQUERY 3"
+            ],
+            [
+              20,
+              17,
+              86,
+              "SCAN persons"
+            ],
+            [
+              26,
+              17,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              31,
+              26,
+              39,
+              "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?)"
+            ],
+            [
+              48,
+              17,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              53,
+              48,
+              39,
+              "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?)"
+            ],
+            [
+              70,
+              17,
+              0,
+              "CREATE BLOOM FILTER"
+            ]
+          ],
+          "vm_steps_approx": 10600,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            192300,
+            192200,
+            192100
+          ],
+          "median_ms_warm": 0.38320012390613556
+        },
+        {
+          "name": "family_in_literal",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "p1",
+            "p2",
+            "p3"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              87,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              48,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 600,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            192300,
+            192200,
+            192100
+          ],
+          "median_ms_warm": 0.027600210160017014
+        },
+        {
+          "name": "family_per_author_top21_union",
+          "sql": "SELECT * FROM (SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21)) ORDER BY occurred_at DESC,id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p1",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p3"
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              0,
+              "MERGE (UNION ALL)"
+            ],
+            [
+              6,
+              4,
+              0,
+              "LEFT"
+            ],
+            [
+              9,
+              6,
+              0,
+              "MERGE (UNION ALL)"
+            ],
+            [
+              11,
+              9,
+              0,
+              "LEFT"
+            ],
+            [
+              13,
+              11,
+              0,
+              "CO-ROUTINE (subquery-1)"
+            ],
+            [
+              18,
+              13,
+              67,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              36,
+              11,
+              53,
+              "SCAN (subquery-1)"
+            ],
+            [
+              49,
+              11,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ],
+            [
+              57,
+              9,
+              0,
+              "RIGHT"
+            ],
+            [
+              59,
+              57,
+              0,
+              "CO-ROUTINE (subquery-3)"
+            ],
+            [
+              64,
+              59,
+              67,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              82,
+              57,
+              53,
+              "SCAN (subquery-3)"
+            ],
+            [
+              95,
+              57,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ],
+            [
+              129,
+              4,
+              0,
+              "RIGHT"
+            ],
+            [
+              132,
+              129,
+              0,
+              "MERGE (UNION ALL)"
+            ],
+            [
+              134,
+              132,
+              0,
+              "LEFT"
+            ],
+            [
+              136,
+              134,
+              0,
+              "CO-ROUTINE (subquery-5)"
+            ],
+            [
+              141,
+              136,
+              67,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              159,
+              134,
+              53,
+              "SCAN (subquery-5)"
+            ],
+            [
+              172,
+              134,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ],
+            [
+              180,
+              132,
+              0,
+              "RIGHT"
+            ],
+            [
+              182,
+              180,
+              0,
+              "CO-ROUTINE (subquery-7)"
+            ],
+            [
+              187,
+              182,
+              67,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              205,
+              180,
+              53,
+              "SCAN (subquery-7)"
+            ],
+            [
+              218,
+              180,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 1900,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            192300,
+            192200,
+            192100
+          ],
+          "median_ms_warm": 0.04220008850097656
+        },
+        {
+          "name": "family_force_scope_time",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce INDEXED BY ix_probe_scope_time WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "p1",
+            "p2",
+            "p3"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              132,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 8700,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            192300,
+            192200,
+            192100
+          ],
+          "median_ms_warm": 0.25240005925297737
+        },
+        {
+          "name": "indexed_fts_common_global",
+          "sql": "WITH search_bounds AS MATERIALIZED (SELECT (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 1) AS first_id,(SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id DESC LIMIT 1) AS last_id) SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM chat_events_fts WHERE chat_events_fts MATCH ? AND rowid>=(SELECT first_id FROM search_bounds) AND rowid<=(SELECT last_id FROM search_bounds)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "\"共同词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              90,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 6"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN chat_events_fts VIRTUAL TABLE INDEX 0:M2><"
+            ],
+            [
+              14,
+              8,
+              0,
+              "SCALAR SUBQUERY 4"
+            ],
+            [
+              18,
+              14,
+              0,
+              "MATERIALIZE search_bounds"
+            ],
+            [
+              20,
+              18,
+              0,
+              "SCAN CONSTANT ROW"
+            ],
+            [
+              23,
+              18,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              29,
+              23,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              50,
+              18,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              56,
+              50,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              82,
+              14,
+              64,
+              "SCAN search_bounds"
+            ],
+            [
+              91,
+              8,
+              0,
+              "SCALAR SUBQUERY 5"
+            ],
+            [
+              96,
+              91,
+              216,
+              "SCAN search_bounds"
+            ],
+            [
+              107,
+              8,
+              0,
+              "REUSE SUBQUERY 4"
+            ],
+            [
+              111,
+              8,
+              0,
+              "REUSE SUBQUERY 5"
+            ],
+            [
+              144,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 4032800,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            200000,
+            199900,
+            199800
+          ],
+          "median_ms_warm": 73.57369968667626
+        },
+        {
+          "name": "has_image_json",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND EXISTS (SELECT 1 FROM json_each(ce.segments_json) AS segment WHERE json_extract(segment.value,'$.type')='image') ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              7,
+              0,
+              132,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ],
+            [
+              16,
+              0,
+              0,
+              "SCAN segment EXISTS VIRTUAL TABLE INDEX 1:"
+            ]
+          ],
+          "vm_steps_approx": 4600,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            200000,
+            197500,
+            195000
+          ],
+          "median_ms_warm": 0.40480028837919235
+        },
+        {
+          "name": "has_image_media_pk",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND EXISTS (SELECT 1 FROM conversation_media_items AS m WHERE m.source_event_id=ce.id AND m.kind='image' AND m.source_snapshot_json IS NULL) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              8,
+              0,
+              132,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ],
+            [
+              17,
+              0,
+              42,
+              "SEARCH m EXISTS USING INDEX sqlite_autoindex_conversation_media_items_1 (source_event_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 3700,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            200000,
+            197500,
+            195000
+          ],
+          "median_ms_warm": 0.12989994138479233
+        },
+        {
+          "name": "around_three_bounded_union",
+          "sql": "SELECT DISTINCT id FROM (SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id<? ORDER BY ce.id DESC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id>? ORDER BY ce.id ASC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id<? ORDER BY ce.id DESC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id>? ORDER BY ce.id ASC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id<? ORDER BY ce.id DESC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id>? ORDER BY ce.id ASC LIMIT 6)) ORDER BY id",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            100,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            100,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            100000,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            100000,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            200000,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            200000
+          ],
+          "plan": [
+            [
+              2,
+              0,
+              0,
+              "CO-ROUTINE (subquery-12)"
+            ],
+            [
+              3,
+              2,
+              0,
+              "COMPOUND QUERY"
+            ],
+            [
+              4,
+              3,
+              0,
+              "LEFT-MOST SUBQUERY"
+            ],
+            [
+              6,
+              4,
+              0,
+              "CO-ROUTINE (subquery-1)"
+            ],
+            [
+              11,
+              6,
+              74,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ],
+            [
+              32,
+              4,
+              42,
+              "SCAN (subquery-1)"
+            ],
+            [
+              38,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              40,
+              38,
+              0,
+              "CO-ROUTINE (subquery-3)"
+            ],
+            [
+              45,
+              40,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              66,
+              38,
+              42,
+              "SCAN (subquery-3)"
+            ],
+            [
+              72,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              74,
+              72,
+              0,
+              "CO-ROUTINE (subquery-5)"
+            ],
+            [
+              79,
+              74,
+              74,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ],
+            [
+              100,
+              72,
+              42,
+              "SCAN (subquery-5)"
+            ],
+            [
+              106,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              108,
+              106,
+              0,
+              "CO-ROUTINE (subquery-7)"
+            ],
+            [
+              113,
+              108,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              134,
+              106,
+              42,
+              "SCAN (subquery-7)"
+            ],
+            [
+              140,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              142,
+              140,
+              0,
+              "CO-ROUTINE (subquery-9)"
+            ],
+            [
+              147,
+              142,
+              74,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ],
+            [
+              168,
+              140,
+              42,
+              "SCAN (subquery-9)"
+            ],
+            [
+              174,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              176,
+              174,
+              0,
+              "CO-ROUTINE (subquery-11)"
+            ],
+            [
+              181,
+              176,
+              112,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              202,
+              174,
+              42,
+              "SCAN (subquery-11)"
+            ],
+            [
+              214,
+              0,
+              68,
+              "SCAN (subquery-12)"
+            ],
+            [
+              217,
+              0,
+              0,
+              "USE TEMP B-TREE FOR DISTINCT"
+            ]
+          ],
+          "vm_steps_approx": 16500,
+          "vm_quantum": 100,
+          "returned": 24,
+          "first_ids": [
+            200,
+            300,
+            400
+          ],
+          "median_ms_warm": 0.25380030274391174
+        },
+        {
+          "name": "around_bad_minmax_scan",
+          "sql": "SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id BETWEEN ? AND ? ORDER BY ce.id",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            100,
+            200000
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              74,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ]
+          ],
+          "vm_steps_approx": 26100,
+          "vm_quantum": 100,
+          "returned": 2000,
+          "first_ids": [
+            100,
+            200,
+            300
+          ],
+          "median_ms_warm": 2.4206996895372868
+        },
+        {
+          "name": "fts_scope_posting_intersection",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM scoped_fts WHERE scoped_fts MATCH ?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "scope_key : \"7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2\" AND content : \"共同词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              90,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN scoped_fts VIRTUAL TABLE INDEX 0:M3"
+            ],
+            [
+              45,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 58600,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            200000,
+            199900,
+            199800
+          ],
+          "median_ms_warm": 5.973799619823694
+        },
+        {
+          "name": "fts_scope_posting_absent",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM scoped_fts WHERE scoped_fts MATCH ?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "scope_key : \"7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2\" AND content : \"不存在词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              90,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN scoped_fts VIRTUAL TABLE INDEX 0:M3"
+            ],
+            [
+              45,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 3600,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.29269978404045105
+        },
+        {
+          "name": "btree_scoped_short_common",
+          "sql": "SELECT event_id,occurred_at FROM scope_postings WHERE conversation_id=? AND term=? ORDER BY occurred_at DESC,event_id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共"
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              55,
+              "SEARCH scope_postings USING PRIMARY KEY (conversation_id=? AND term=?)"
+            ]
+          ],
+          "vm_steps_approx": 100,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            200000,
+            199900,
+            199800
+          ],
+          "median_ms_warm": 0.012299977242946625
+        },
+        {
+          "name": "btree_scoped_short_absent",
+          "sql": "SELECT event_id,occurred_at FROM scope_postings WHERE conversation_id=? AND term=? ORDER BY occurred_at DESC,event_id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "无"
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              55,
+              "SEARCH scope_postings USING PRIMARY KEY (conversation_id=? AND term=?)"
+            ]
+          ],
+          "vm_steps_approx": 0,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.0033997930586338043
+        },
+        {
+          "name": "btree_scoped_short_deep",
+          "sql": "SELECT event_id,occurred_at FROM scope_postings WHERE conversation_id=? AND term=? AND (occurred_at,event_id)<(?,?) ORDER BY occurred_at DESC,event_id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共",
+            "2026-01-01 00:02:46.000000",
+            49800
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              47,
+              "SEARCH scope_postings USING PRIMARY KEY (conversation_id=? AND term=? AND (occurred_at,event_id)<(?,?))"
+            ]
+          ],
+          "vm_steps_approx": 200,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            49700,
+            49600,
+            49500
+          ],
+          "median_ms_warm": 0.015999656170606613
+        }
+      ],
+      "db_bytes": 242262016
+    },
+    {
+      "rows": 400000,
+      "conversations": 100,
+      "target_rows": 4000,
+      "deep_cursor": [
+        "2026-01-01 00:05:33.000000",
+        99900
+      ],
+      "results": [
+        {
+          "name": "baseline_scope_time_first",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              29,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 72000,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            400000,
+            399900,
+            399800
+          ],
+          "median_ms_warm": 3.9035999216139317
+        },
+        {
+          "name": "baseline_short_absent",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "无"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              32,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 48000,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 3.033100161701441
+        },
+        {
+          "name": "baseline_short_common",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              32,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 84100,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            400000,
+            399900,
+            399800
+          ],
+          "median_ms_warm": 4.345899913460016
+        },
+        {
+          "name": "current_fts_common_global",
+          "sql": "WITH search_bounds AS MATERIALIZED (SELECT (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 1) AS first_id,(SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id DESC LIMIT 1) AS last_id) SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM chat_events_fts WHERE chat_events_fts MATCH ? AND rowid>=(SELECT first_id FROM search_bounds) AND rowid<=(SELECT last_id FROM search_bounds)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "\"共同词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              90,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 6"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN chat_events_fts VIRTUAL TABLE INDEX 0:M2><"
+            ],
+            [
+              14,
+              8,
+              0,
+              "SCALAR SUBQUERY 4"
+            ],
+            [
+              18,
+              14,
+              0,
+              "MATERIALIZE search_bounds"
+            ],
+            [
+              20,
+              18,
+              0,
+              "SCAN CONSTANT ROW"
+            ],
+            [
+              23,
+              18,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              29,
+              23,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              50,
+              18,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              56,
+              50,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              82,
+              14,
+              64,
+              "SCAN search_bounds"
+            ],
+            [
+              91,
+              8,
+              0,
+              "SCALAR SUBQUERY 5"
+            ],
+            [
+              96,
+              91,
+              216,
+              "SCAN search_bounds"
+            ],
+            [
+              107,
+              8,
+              0,
+              "REUSE SUBQUERY 4"
+            ],
+            [
+              111,
+              8,
+              0,
+              "REUSE SUBQUERY 5"
+            ],
+            [
+              144,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 8067100,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            400000,
+            399900,
+            399800
+          ],
+          "median_ms_warm": 139.45910008624196
+        },
+        {
+          "name": "current_fts_absent_global",
+          "sql": "WITH search_bounds AS MATERIALIZED (SELECT (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 1) AS first_id,(SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id DESC LIMIT 1) AS last_id) SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM chat_events_fts WHERE chat_events_fts MATCH ? AND rowid>=(SELECT first_id FROM search_bounds) AND rowid<=(SELECT last_id FROM search_bounds)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "\"不存在词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              90,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 6"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN chat_events_fts VIRTUAL TABLE INDEX 0:M2><"
+            ],
+            [
+              14,
+              8,
+              0,
+              "SCALAR SUBQUERY 4"
+            ],
+            [
+              18,
+              14,
+              0,
+              "MATERIALIZE search_bounds"
+            ],
+            [
+              20,
+              18,
+              0,
+              "SCAN CONSTANT ROW"
+            ],
+            [
+              23,
+              18,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              29,
+              23,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              50,
+              18,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              56,
+              50,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              82,
+              14,
+              64,
+              "SCAN search_bounds"
+            ],
+            [
+              91,
+              8,
+              0,
+              "SCALAR SUBQUERY 5"
+            ],
+            [
+              96,
+              91,
+              216,
+              "SCAN search_bounds"
+            ],
+            [
+              107,
+              8,
+              0,
+              "REUSE SUBQUERY 4"
+            ],
+            [
+              111,
+              8,
+              0,
+              "REUSE SUBQUERY 5"
+            ],
+            [
+              144,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 200,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.02039968967437744
+        },
+        {
+          "name": "indexed_scope_time_first",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              142,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 200,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            400000,
+            399900,
+            399800
+          ],
+          "median_ms_warm": 0.01400010660290718
+        },
+        {
+          "name": "indexed_short_absent",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "无"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              142,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 32100,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 2.4839998222887516
+        },
+        {
+          "name": "indexed_short_common",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND instr(ce.content,?)>0 ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              142,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 300,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            400000,
+            399900,
+            399800
+          ],
+          "median_ms_warm": 0.020300038158893585
+        },
+        {
+          "name": "keyset_rowvalue_deep",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND (ce.occurred_at,ce.id)<(?,?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "2026-01-01 00:05:33.000000",
+            99900
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              122,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=? AND occurred_at<?)"
+            ]
+          ],
+          "vm_steps_approx": 400,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            99800,
+            99600,
+            99500
+          ],
+          "median_ms_warm": 0.017200130969285965
+        },
+        {
+          "name": "keyset_or_deep",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND (ce.occurred_at<? OR (ce.occurred_at=? AND ce.id<?)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "2026-01-01 00:05:33.000000",
+            "2026-01-01 00:05:33.000000",
+            99900
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              142,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 27300,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            99800,
+            99600,
+            99500
+          ],
+          "median_ms_warm": 0.9136996231973171
+        },
+        {
+          "name": "offset_deep",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21 OFFSET ?",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            3000
+          ],
+          "plan": [
+            [
+              8,
+              0,
+              142,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 18200,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            99900,
+            99800,
+            99600
+          ],
+          "median_ms_warm": 0.14160014688968658
+        },
+        {
+          "name": "family_in_subquery",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (SELECT id FROM persons WHERE id=(SELECT coalesce(merged_into_person_id,id) FROM persons WHERE id=?) OR merged_into_person_id=(SELECT coalesce(merged_into_person_id,id) FROM persons WHERE id=?)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "p0"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              122,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              11,
+              0,
+              0,
+              "LIST SUBQUERY 3"
+            ],
+            [
+              13,
+              11,
+              86,
+              "SCAN persons"
+            ],
+            [
+              19,
+              11,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              24,
+              19,
+              39,
+              "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?)"
+            ],
+            [
+              41,
+              11,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              46,
+              41,
+              39,
+              "SEARCH persons USING INDEX sqlite_autoindex_persons_1 (id=?)"
+            ],
+            [
+              88,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 1900,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            397100,
+            397000,
+            396900
+          ],
+          "median_ms_warm": 0.03979960456490517
+        },
+        {
+          "name": "family_in_literal",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "p1",
+            "p2",
+            "p3"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              96,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              48,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 700,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            397100,
+            397000,
+            396900
+          ],
+          "median_ms_warm": 0.030800234526395798
+        },
+        {
+          "name": "family_per_author_top21_union",
+          "sql": "SELECT * FROM (SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21) UNION ALL SELECT * FROM (SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id=? ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21)) ORDER BY occurred_at DESC,id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p1",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p3"
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              0,
+              "MERGE (UNION ALL)"
+            ],
+            [
+              6,
+              4,
+              0,
+              "LEFT"
+            ],
+            [
+              9,
+              6,
+              0,
+              "MERGE (UNION ALL)"
+            ],
+            [
+              11,
+              9,
+              0,
+              "LEFT"
+            ],
+            [
+              13,
+              11,
+              0,
+              "CO-ROUTINE (subquery-1)"
+            ],
+            [
+              18,
+              13,
+              76,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              36,
+              11,
+              59,
+              "SCAN (subquery-1)"
+            ],
+            [
+              49,
+              11,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ],
+            [
+              57,
+              9,
+              0,
+              "RIGHT"
+            ],
+            [
+              59,
+              57,
+              0,
+              "CO-ROUTINE (subquery-3)"
+            ],
+            [
+              64,
+              59,
+              76,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              82,
+              57,
+              59,
+              "SCAN (subquery-3)"
+            ],
+            [
+              95,
+              57,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ],
+            [
+              129,
+              4,
+              0,
+              "RIGHT"
+            ],
+            [
+              132,
+              129,
+              0,
+              "MERGE (UNION ALL)"
+            ],
+            [
+              134,
+              132,
+              0,
+              "LEFT"
+            ],
+            [
+              136,
+              134,
+              0,
+              "CO-ROUTINE (subquery-5)"
+            ],
+            [
+              141,
+              136,
+              76,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              159,
+              134,
+              59,
+              "SCAN (subquery-5)"
+            ],
+            [
+              172,
+              134,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ],
+            [
+              180,
+              132,
+              0,
+              "RIGHT"
+            ],
+            [
+              182,
+              180,
+              0,
+              "CO-ROUTINE (subquery-7)"
+            ],
+            [
+              187,
+              182,
+              76,
+              "SEARCH ce USING INDEX ix_probe_scope_author_time (canonical_conversation_id=? AND author_person_id=?)"
+            ],
+            [
+              205,
+              180,
+              59,
+              "SCAN (subquery-7)"
+            ],
+            [
+              218,
+              180,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 2200,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            397100,
+            397000,
+            396900
+          ],
+          "median_ms_warm": 0.05520042032003403
+        },
+        {
+          "name": "family_force_scope_time",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce INDEXED BY ix_probe_scope_time WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.author_person_id IN (?,?,?,?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "p0",
+            "p1",
+            "p2",
+            "p3"
+          ],
+          "plan": [
+            [
+              5,
+              0,
+              142,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 8100,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            397100,
+            397000,
+            396900
+          ],
+          "median_ms_warm": 0.2712998539209366
+        },
+        {
+          "name": "indexed_fts_common_global",
+          "sql": "WITH search_bounds AS MATERIALIZED (SELECT (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 1) AS first_id,(SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id DESC LIMIT 1) AS last_id) SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM chat_events_fts WHERE chat_events_fts MATCH ? AND rowid>=(SELECT first_id FROM search_bounds) AND rowid<=(SELECT last_id FROM search_bounds)) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "\"共同词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              90,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 6"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN chat_events_fts VIRTUAL TABLE INDEX 0:M2><"
+            ],
+            [
+              14,
+              8,
+              0,
+              "SCALAR SUBQUERY 4"
+            ],
+            [
+              18,
+              14,
+              0,
+              "MATERIALIZE search_bounds"
+            ],
+            [
+              20,
+              18,
+              0,
+              "SCAN CONSTANT ROW"
+            ],
+            [
+              23,
+              18,
+              0,
+              "SCALAR SUBQUERY 1"
+            ],
+            [
+              29,
+              23,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              50,
+              18,
+              0,
+              "SCALAR SUBQUERY 2"
+            ],
+            [
+              56,
+              50,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              82,
+              14,
+              64,
+              "SCAN search_bounds"
+            ],
+            [
+              91,
+              8,
+              0,
+              "SCALAR SUBQUERY 5"
+            ],
+            [
+              96,
+              91,
+              216,
+              "SCAN search_bounds"
+            ],
+            [
+              107,
+              8,
+              0,
+              "REUSE SUBQUERY 4"
+            ],
+            [
+              111,
+              8,
+              0,
+              "REUSE SUBQUERY 5"
+            ],
+            [
+              144,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 8067300,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            400000,
+            399900,
+            399800
+          ],
+          "median_ms_warm": 140.55510004982352
+        },
+        {
+          "name": "has_image_json",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND EXISTS (SELECT 1 FROM json_each(ce.segments_json) AS segment WHERE json_extract(segment.value,'$.type')='image') ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              7,
+              0,
+              142,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ],
+            [
+              16,
+              0,
+              0,
+              "SCAN segment EXISTS VIRTUAL TABLE INDEX 1:"
+            ]
+          ],
+          "vm_steps_approx": 4600,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            400000,
+            397500,
+            395000
+          ],
+          "median_ms_warm": 0.29980018734931946
+        },
+        {
+          "name": "has_image_media_pk",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND EXISTS (SELECT 1 FROM conversation_media_items AS m WHERE m.source_event_id=ce.id AND m.kind='image' AND m.source_snapshot_json IS NULL) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2"
+          ],
+          "plan": [
+            [
+              8,
+              0,
+              142,
+              "SEARCH ce USING INDEX ix_probe_scope_time (canonical_conversation_id=?)"
+            ],
+            [
+              17,
+              0,
+              42,
+              "SEARCH m EXISTS USING INDEX sqlite_autoindex_conversation_media_items_1 (source_event_id=?)"
+            ]
+          ],
+          "vm_steps_approx": 3700,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            400000,
+            397500,
+            395000
+          ],
+          "median_ms_warm": 0.09959982708096504
+        },
+        {
+          "name": "around_three_bounded_union",
+          "sql": "SELECT DISTINCT id FROM (SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id<? ORDER BY ce.id DESC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id>? ORDER BY ce.id ASC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id<? ORDER BY ce.id DESC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id>? ORDER BY ce.id ASC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id<? ORDER BY ce.id DESC LIMIT 6) UNION ALL SELECT * FROM (SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id>? ORDER BY ce.id ASC LIMIT 6)) ORDER BY id",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            100,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            100,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            200000,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            200000,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            400000,
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            400000
+          ],
+          "plan": [
+            [
+              2,
+              0,
+              0,
+              "CO-ROUTINE (subquery-12)"
+            ],
+            [
+              3,
+              2,
+              0,
+              "COMPOUND QUERY"
+            ],
+            [
+              4,
+              3,
+              0,
+              "LEFT-MOST SUBQUERY"
+            ],
+            [
+              6,
+              4,
+              0,
+              "CO-ROUTINE (subquery-1)"
+            ],
+            [
+              11,
+              6,
+              83,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ],
+            [
+              32,
+              4,
+              42,
+              "SCAN (subquery-1)"
+            ],
+            [
+              38,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              40,
+              38,
+              0,
+              "CO-ROUTINE (subquery-3)"
+            ],
+            [
+              45,
+              40,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              66,
+              38,
+              42,
+              "SCAN (subquery-3)"
+            ],
+            [
+              72,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              74,
+              72,
+              0,
+              "CO-ROUTINE (subquery-5)"
+            ],
+            [
+              79,
+              74,
+              83,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ],
+            [
+              100,
+              72,
+              42,
+              "SCAN (subquery-5)"
+            ],
+            [
+              106,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              108,
+              106,
+              0,
+              "CO-ROUTINE (subquery-7)"
+            ],
+            [
+              113,
+              108,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              134,
+              106,
+              42,
+              "SCAN (subquery-7)"
+            ],
+            [
+              140,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              142,
+              140,
+              0,
+              "CO-ROUTINE (subquery-9)"
+            ],
+            [
+              147,
+              142,
+              83,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ],
+            [
+              168,
+              140,
+              42,
+              "SCAN (subquery-9)"
+            ],
+            [
+              174,
+              3,
+              0,
+              "UNION ALL"
+            ],
+            [
+              176,
+              174,
+              0,
+              "CO-ROUTINE (subquery-11)"
+            ],
+            [
+              181,
+              176,
+              122,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+            ],
+            [
+              202,
+              174,
+              42,
+              "SCAN (subquery-11)"
+            ],
+            [
+              214,
+              0,
+              68,
+              "SCAN (subquery-12)"
+            ],
+            [
+              217,
+              0,
+              0,
+              "USE TEMP B-TREE FOR DISTINCT"
+            ]
+          ],
+          "vm_steps_approx": 31500,
+          "vm_quantum": 100,
+          "returned": 24,
+          "first_ids": [
+            200,
+            300,
+            400
+          ],
+          "median_ms_warm": 0.30880002304911613
+        },
+        {
+          "name": "around_bad_minmax_scan",
+          "sql": "SELECT ce.id FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id BETWEEN ? AND ? ORDER BY ce.id",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            100,
+            400000
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              83,
+              "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>? AND rowid<?)"
+            ]
+          ],
+          "vm_steps_approx": 52100,
+          "vm_quantum": 100,
+          "returned": 4000,
+          "first_ids": [
+            100,
+            200,
+            300
+          ],
+          "median_ms_warm": 4.096700344234705
+        },
+        {
+          "name": "fts_scope_posting_intersection",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM scoped_fts WHERE scoped_fts MATCH ?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "scope_key : \"7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2\" AND content : \"共同词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              90,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN scoped_fts VIRTUAL TABLE INDEX 0:M3"
+            ],
+            [
+              45,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 117800,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            400000,
+            399900,
+            399800
+          ],
+          "median_ms_warm": 13.825600035488605
+        },
+        {
+          "name": "fts_scope_posting_absent",
+          "sql": "SELECT ce.id,ce.occurred_at FROM chat_events AS ce WHERE ce.canonical_conversation_id=? AND ce.id>0 AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' AND ce.id IN (SELECT rowid FROM scoped_fts WHERE scoped_fts MATCH ?) ORDER BY ce.occurred_at DESC,ce.id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "scope_key : \"7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2\" AND content : \"不存在词\""
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              90,
+              "SEARCH ce USING INTEGER PRIMARY KEY (rowid=?)"
+            ],
+            [
+              8,
+              0,
+              0,
+              "LIST SUBQUERY 1"
+            ],
+            [
+              10,
+              8,
+              156,
+              "SCAN scoped_fts VIRTUAL TABLE INDEX 0:M3"
+            ],
+            [
+              45,
+              0,
+              0,
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          ],
+          "vm_steps_approx": 7700,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.9634001180529594
+        },
+        {
+          "name": "btree_scoped_short_common",
+          "sql": "SELECT event_id,occurred_at FROM scope_postings WHERE conversation_id=? AND term=? ORDER BY occurred_at DESC,event_id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共"
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              55,
+              "SEARCH scope_postings USING PRIMARY KEY (conversation_id=? AND term=?)"
+            ]
+          ],
+          "vm_steps_approx": 100,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            400000,
+            399900,
+            399800
+          ],
+          "median_ms_warm": 0.012699980288743973
+        },
+        {
+          "name": "btree_scoped_short_absent",
+          "sql": "SELECT event_id,occurred_at FROM scope_postings WHERE conversation_id=? AND term=? ORDER BY occurred_at DESC,event_id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "无"
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              55,
+              "SEARCH scope_postings USING PRIMARY KEY (conversation_id=? AND term=?)"
+            ]
+          ],
+          "vm_steps_approx": 0,
+          "vm_quantum": 100,
+          "returned": 0,
+          "first_ids": [],
+          "median_ms_warm": 0.003300141543149948
+        },
+        {
+          "name": "btree_scoped_short_deep",
+          "sql": "SELECT event_id,occurred_at FROM scope_postings WHERE conversation_id=? AND term=? AND (occurred_at,event_id)<(?,?) ORDER BY occurred_at DESC,event_id DESC LIMIT 21",
+          "args": [
+            "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+            "共",
+            "2026-01-01 00:05:33.000000",
+            99900
+          ],
+          "plan": [
+            [
+              4,
+              0,
+              47,
+              "SEARCH scope_postings USING PRIMARY KEY (conversation_id=? AND term=? AND (occurred_at,event_id)<(?,?))"
+            ]
+          ],
+          "vm_steps_approx": 200,
+          "vm_quantum": 100,
+          "returned": 21,
+          "first_ids": [
+            99800,
+            99600,
+            99500
+          ],
+          "median_ms_warm": 0.01569977030158043
+        }
+      ],
+      "db_bytes": 485646336
+    }
+  ]
+}
