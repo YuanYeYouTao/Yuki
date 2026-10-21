@@ -619,7 +619,13 @@ class ApplicationContainer:
                 poll_interval=settings.telegram_poll_interval_seconds,
             )
         client_works = ClientWorks(self.client_api.identity, client_gateways)
-        client_views = ClientViews(self.client_api.identity, client_works, self.models.traces)
+        client_views = ClientViews(
+            self.client_api.identity,
+            client_works,
+            self.models.traces,
+            character=self.character,
+            soul=self.soul,
+        )
         client_files = ClientFiles(
             ConversationUploads(self.client_api.identity, self.conversation_media),
             client_views,

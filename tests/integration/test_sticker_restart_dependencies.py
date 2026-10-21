@@ -76,6 +76,7 @@ class Fixture:
         ),
         database=database,
     )
+    await app.character.initialize("Restart fixture")
     bridge = LocalDirectoryBridge(tmp_path / "manager-workspace", app.workspace_service.store)
 
     async def manager_read_or_file(method, arguments, *, request_id, **_kwargs):

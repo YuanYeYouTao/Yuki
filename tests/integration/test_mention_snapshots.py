@@ -143,7 +143,7 @@ async def test_retired_presence_is_member_and_quote_keeps_accepted_names(databas
     assert reply.message.mentions_bot
     assert reply.message.reply_to_event_id == recorded.event.id
     assert reply.message.reply_text == "@card-1002旧问题"
-    assert reply.message.text == "@新群名片现在的问题 @Yuki 以及纯文字@Yuki"
+    assert reply.message.text == "@新群名片现在的问题 @Agent 以及纯文字@Yuki"
     assert reply.message.mentions[1].person_id is None
     assert reply.message.mentions[1].presence_id == retired_id
     assert reply.message.mentions[0].person_id != old_person
@@ -308,7 +308,7 @@ async def test_missing_name_uses_local_source_display_only_without_claiming_old_
     native = current_message(group_event(Message([MessageSegment.at(8001)]), message_id=802))
     native = replace(native, received_at=recorded.event.occurred_at + timedelta(seconds=1))
     admitted = await resolver.pre_admit(bot, native)
-    assert admitted.message.text == "@Yuki"
+    assert admitted.message.text == "@Agent"
     assert admitted.message.mentions_bot
     assert admitted.message.mentions[0].person_id is None
     async with database.sessions() as session:

@@ -60,6 +60,11 @@ class PromptComposer:
                 channel=PromptChannel.PERSONA,
                 priority=100,
             ),
+            *self.invariant_contributions(),
+        )
+
+    def invariant_contributions(self) -> tuple[PromptContribution, ...]:
+        return (
             static_text(
                 "core.contract",
                 core_contract(code_enabled=self._settings.code_mode_enabled),
@@ -73,6 +78,12 @@ class PromptComposer:
                 priority=96,
             ),
         )
+
+    def invariant_messages(self) -> tuple[ChatMessage, ...]:
+        """Technical recovery compatibility; SOUL remains in the original transcript."""
+        return self._compiler.compile(
+            PromptProgram(contributions=self.invariant_contributions())
+        ).messages
 
     def static_messages(self) -> tuple[ChatMessage, ...]:
         return self._compiler.compile(

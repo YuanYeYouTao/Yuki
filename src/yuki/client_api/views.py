@@ -11,6 +11,8 @@ from typing import Any
 from sqlalchemy import func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from yuki.character.repository import CharacterRepository, is_character_owner
+from yuki.character.soul import CharacterSoul
 from yuki.client_api.errors import ClientError
 from yuki.client_api.identity import ClientIdentityService, ClientPrincipal
 from yuki.client_api.works import ClientWorks, work_access
@@ -47,8 +49,12 @@ class ClientViews:
         identity: ClientIdentityService,
         works: ClientWorks,
         traces: TraceRecorder | None = None,
+        *,
+        character: CharacterRepository | None = None,
+        soul: CharacterSoul | None = None,
     ) -> None:
         self.identity, self.works, self.traces = identity, works, traces
+        self.character, self.soul = character, soul
         self.database = identity.database
 
     async def _entries(
@@ -256,13 +262,28 @@ class ClientViews:
                     .where(work_access(principal.person_id))
                 )
             ).all()
-            return {
+            result: dict[str, Any] = {
                 "conversations": entries,
                 "works": [{"work_id": row.id, "revision": row.revision} for row in rows],
                 "activity": await self._activities(
                     session, tuple(item["conversation_id"] for item in entries)
                 ),
             }
+            if self.character is not None:
+                current = await self.character.current(session)
+                owner = await is_character_owner(session, principal.person_id)
+                hint: dict[str, Any] = {
+                    "id": current.id,
+                    "revision": current.revision,
+                    "is_owner": owner,
+                }
+                if owner and self.soul is not None:
+                    hint["soul"] = {
+                        "revision": self.soul.revision,
+                        "active_revision": self.soul.settings.active_soul_revision,
+                    }
+                result["character"] = hint
+            return result
 
     async def stream(self, principal: ClientPrincipal) -> AsyncIterator[str]:
         queue = self.database.commit_hints.subscribe()
@@ -290,6 +311,8 @@ class ClientViews:
                     if not queue.get_nowait():
                         return
                 current = await self.sync(principal)
+                if current.get("character") != previous.get("character"):
+                    yield frame("character", current["character"])
                 for category, key, event_kind in (
                     ("conversations", "conversation_id", "conversation"),
                     ("works", "work_id", "work"),

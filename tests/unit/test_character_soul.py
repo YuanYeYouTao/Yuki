@@ -1,5 +1,7 @@
 """Actual SQLite, file publication, HTTP ownership and hot activation."""
 
+import asyncio
+import json
 from uuid import uuid4
 
 import httpx
@@ -11,6 +13,8 @@ from tests.unit.test_client_identity import code_for
 from yuki.character.repository import CharacterRepository
 from yuki.character.soul import CharacterSoul, document_revision
 from yuki.client_api.http import ClientApi, attach_client_api
+from yuki.client_api.views import ClientViews
+from yuki.client_api.works import ClientWorks
 
 
 @pytest.fixture
@@ -46,6 +50,54 @@ async def test_empty_soul_survives_file_hot_activation_and_original_receipt(char
     assert replay.json()["data"]["replay"] is True
     cold = make_settings(settings.database_url, soul_file=path)
     assert cold.soul == "" and cold.active_soul_revision == settings.active_soul_revision
+
+
+async def test_character_hints_follow_commits_and_hide_soul_after_owner_revocation(character):
+    client, repo, soul, settings, principal, _path = character
+    views = ClientViews(repo.identity, ClientWorks(repo.identity, {}), character=repo, soul=soul)
+    stream = views.stream(principal)
+
+    def decode(frame):
+        fields = dict(line.split(": ", 1) for line in frame.strip().splitlines())
+        return fields["event"], json.loads(fields["data"])
+
+    kind, initial = decode(await anext(stream))
+    assert kind == "sync" and initial["character"]["is_owner"]
+    assert initial["character"]["soul"]["active_revision"] == settings.active_soul_revision
+    assert "content" not in json.dumps(initial["character"])
+    pending = asyncio.create_task(anext(stream))
+    renamed = await client.patch(
+        "/client/v1/character",
+        json={
+            "request_id": str(uuid4()),
+            "expected_revision": 1,
+            "display_name": "Updated",
+        },
+    )
+    assert renamed.status_code == 200
+    kind, changed = decode(await asyncio.wait_for(pending, 2))
+    assert kind == "character" and changed["revision"] == 2
+    pending = asyncio.create_task(anext(stream))
+    saved = await client.put(
+        "/client/v1/character/soul",
+        json={
+            "request_id": str(uuid4()),
+            "expected_revision": settings.active_soul_revision,
+            "content": "private replacement",
+        },
+    )
+    assert saved.status_code == 200
+    kind, changed = decode(await asyncio.wait_for(pending, 2))
+    assert kind == "character" and changed["soul"]["revision"] > 0
+    assert "private replacement" not in json.dumps(changed)
+    pending = asyncio.create_task(anext(stream))
+    await repo.set_owner(str(uuid4()), principal.person_id, str(uuid4()), granted=False)
+    kind, changed = decode(await asyncio.wait_for(pending, 2))
+    assert kind == "character" and changed["is_owner"] is False
+    assert "soul" not in changed
+    assert (await client.get("/client/v1/character/soul")).status_code == 403
+    assert (await views.sync(principal))["character"] == changed
+    await stream.aclose()
 
 
 async def test_forgetting_an_owner_without_accounts_removes_its_grant(character):
