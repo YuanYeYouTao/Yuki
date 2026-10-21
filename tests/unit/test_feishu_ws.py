@@ -189,7 +189,11 @@ async def test_reconnect_uses_new_endpoint_and_connection_callbacks_without_repl
     assert transitions[-1] == "disconnected"
 
 
-async def test_actual_async_websocket_accepts_event_ack_without_debug_secret_leak(caplog):
+async def test_actual_async_websocket_accepts_event_ack_without_debug_secret_leak(
+    caplog, monkeypatch
+):
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
     caplog.set_level(logging.DEBUG)
     acked = asyncio.Event()
     handler = AsyncMock()

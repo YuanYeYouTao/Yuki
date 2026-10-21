@@ -280,6 +280,8 @@ async def test_native_group_control_uses_current_person_without_main(
 async def test_real_websocket_reconnect_updates_registry_for_original_presence(
     feishu_env, monkeypatch
 ):
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
     env = feishu_env
     env.registry.disconnect(env.client)
     connections = 0
