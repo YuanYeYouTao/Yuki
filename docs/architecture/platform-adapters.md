@@ -6,7 +6,7 @@
 
 ## 同一个领域运行时
 
-QQ、Telegram 和个人客户端共用身份、事件账本、Main、Work、Memory、自动化与插件 Host。后续平台继续实现同一 `GatewayProvider`，加入已有 `GatewayProviderCatalog`；不复制领域服务，不在公共服务里增加平台名称分支。
+QQ、Telegram、飞书、Lark 和个人客户端共用身份、事件账本、Main、Work、Memory、自动化与插件 Host。后续平台继续实现同一 `GatewayProvider`，加入已有 `GatewayProviderCatalog`；不复制领域服务，不在公共服务里增加平台名称分支。
 
 Provider 提供真实连接资料、入站投影和 `PlatformSocialOperations`。发送计划 `plan_send` 是无 I/O 的协议布局，每一项对应 Social 原操作下的一个实际派发与持久回执。`send` 每次只执行一项；原生长度限制、mentions、引用、文件上传及响应解析由适配器完成。公共 Social 管授权、原来源、预算、claim、事件和回执。媒体接口 `PlatformMediaGateway` 同样只在边界解析平台文件，并返回真实字节及媒体类型。
 
@@ -79,7 +79,7 @@ Bot 必须具备实际群权限及所需可见性。未收到的消息不属于�
 
 ### 固定工具的 Telegram 适配范围
 
-TG 与 QQ 使用同一份平台 Main 工具合同，默认 direct 为 29 项；不按当前平台动态增删声明。
+TG 与 QQ 使用同一份平台 Main 工具合同，内置 direct 工具完整装配时为 30 项，不含批准插件；联网等功能的装配条件会影响实际数量，以部署冻结清单为准。不按当前平台动态增删声明。
 
 | 工具 | Telegram 路径与范围 |
 | --- | --- |
@@ -91,6 +91,20 @@ TG 与 QQ 使用同一份平台 Main 工具合同，默认 direct 为 29 项；�
 | 记忆、终端、工作区、搜索、任务、子 Agent 与自动化 | 共用领域服务、内部执行和来源，不复制 TG 专属工具；仍需各功能正常配置与真实权限。 |
 
 `get_my_capabilities` 查询当前主体的权限和配置能力，不代表 Telegram 机器人管理员权限探测。原生协议离线回归不等于已有真实 TG 账号收发验收；Token、实际网络、群权限与自然运行分别核对。
+
+## 飞书与 Lark 接入
+
+企业自建应用机器人使用原生长连接接收事件，HTTP OpenAPI 执行收发和媒体操作，无需公网回调。`FEISHU_APP_ID` 与 `FEISHU_APP_SECRET` 同时配置后启动；都为空时不启动，只填写一项会报告配置错误。`FEISHU_DOMAIN` 明确选择飞书的 `https://open.feishu.cn` 或 Lark 的 `https://open.larksuite.com`，按对应平台保存账号与连接。部署步骤和权限见[飞书与 Lark](../operations/feishu.zh-CN.md)。
+
+入站正文、原生提及、引用、附件和话题投影到共同 `InboundMessage`，经同一 Processor 和 canonical 入账。平台确认等待入账或明确忽略，不等待模型回答。重投读取原事件，不重新启动 Main；当前只订阅 `im.message.receive_v1`，未接入官方消息编辑推送，不承诺自动更新已观察历史。人物关联沿原 AccountAssignment，应用范围的原生 ID 不直接充当跨平台 Person ID。
+
+文字、图片和文件继续由 `send_message` 交付；原生布局和引用由 Provider 转换，消息派发与部分结果保留原 Social 回执。普通图片与已有图库配图继续使用共同媒体路径。飞书原生贴纸保留类型与平台标识，普通资源接口无法取得其字节，因此不进入入站表情自动收藏。卡片交互、文档、日历、表格和群管理不在本轮聊天入口范围内。
+
+私聊、群和话题沿原入口分别保存历史。话题的共同 `thread_id` 保存原 root 消息 ID（`om_...`），供原生 reply endpoint 使用；平台话题 ID（`omt_...`）、root 和 parent 原值保留在 `feishu_thread` segment，不将 `omt_...` 当作消息 ID 调用 reply。普通引用不另建话题。
+
+群普通消息的可见性取决于应用权限：仅有群 @ 权限时只会接到 @ 消息；自然参与需 `im:message.group_msg` 及管理员批准，接入层不另加 `requireMention` 过滤。飞书/Lark 使用同一份固定平台工具合同；不提供原生输入状态时，Activity 返回无实现。
+
+各原生平台的命令读取共用 `parse_message_command`，允许在开头真实提及 Yuki 后书写 `/ai` 命令或配置前缀。只在后续确为命令/前缀时跳过这些 Bot 提及；普通文字、普通 `@名字` 和其他成员提及保持原语义。此投影不改入站消息、提及位置或账本正文，停用群的恢复命令也沿同一读取方式。
 
 ## 从已有数据升级
 

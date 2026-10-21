@@ -13,6 +13,7 @@
 | [开发约束](development-contract.md) | 删除优先、身份/授权、恢复、事务和交付原则 |
 | [Canonical runtime](canonical-runtime.md) | Yuki、Person、Space、Presence、Conversation 与网关 |
 | [平台适配与升级](platform-adapters.md) | 公共领域、原生传输、新平台入口与既有数据迁移 |
+| [飞书与 Lark 接入](../operations/feishu.zh-CN.md) | 企业自建应用、长连接、群消息权限与媒体 |
 | [个人客户端 API](client-api.md) | 设备身份、消息、Work 接续、SSE、文件与参考客户端 |
 | [主 Agent](main-agent-runtime.md) | 统一循环、Work 控制、恢复、预算和交付 |
 | [Tool Kernel](tool-kernel.md) | 固定完整清单、direct / Code Mode、目录与执行授权 |
