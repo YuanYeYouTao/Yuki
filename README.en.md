@@ -94,7 +94,7 @@ uv run yuki --help
 
 The CLI is `yuki` and the server entry point is `yuki-bot`. See the [4.0 upgrade guide](docs/upgrade-4.0.0.en.md) for migration from 3.9. QQ uses SnowLuma; Telegram or personal-client-only setups need no QQ account.
 
-The 4.0 database head is **0143**, Plugin API is **7.0**, and the main tool manifest is **25**. Back up the database, configuration, plugins and working files before migrating and updating plugins. This preparation updates source and documentation; a 4.0 image has not been published.
+The 4.0.0 release baseline is schema **0143**, Plugin API **7.0**, and manifest **25**. Subsequent #448 development unifies chat-history reads with schema **0145**, Plugin API **7.1**, and manifest **26**. Stop business writers while upgrading the text index, then start the Bot after conversion completes. Back up the database, configuration, plugins and working files first. See the [current history contract](docs/architecture/chat-history.md) and [implementation record](docs/operations/chat-history-448-implementation-20261022.md).
 
 ## Architecture and development
 
@@ -114,7 +114,7 @@ uv run pytest
 | [Benchmark report](docs/benchmarks/2026-10-20-yuki-flash-1017/SUMMARY.en.md) | Full evaluations, usage, cache accounting and per-task data |
 | [Canonical runtime](docs/architecture/canonical-runtime.md) | People, accounts, spaces and conversations |
 | [Conversation compact](docs/architecture/conversation-compact.md) | Long conversations and task context |
-| [Plugin API 7.0](docs/plugin-development/index.md) | Plugin development and SDK |
+| [Plugin API 7.1](docs/plugin-development/index.md) | Plugin development and SDK |
 | [Persistent subagents](docs/architecture/persistent-subagents.md) | Task trees, parent-child questions and recovery |
 | [CHANGELOG](CHANGELOG.md) | Earlier versions |
 

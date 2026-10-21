@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
@@ -89,6 +89,7 @@ class EventRecord:
     caused_by_event_id: int | None = None
     caused_by_external_source: str | None = None
     caused_by_external_event_type: str | None = None
+    observed_at: datetime | None = None
 
     @property
     def scope(self) -> ConversationScope:
@@ -169,3 +170,14 @@ class MediaAnalysisRecord:
     observation_json: str
     created_at: datetime
     expires_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class HistoryPage:
+    """One ID-ordered read page and separately labelled neighboring events."""
+
+    events: tuple[EventRecord, ...]
+    has_more: bool
+    next_cursor: int | None
+    matched_fields: dict[int, tuple[str, ...]] = field(default_factory=dict)
+    context: tuple[EventRecord, ...] = ()

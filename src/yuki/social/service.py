@@ -957,12 +957,12 @@ class SocialService:
                 if choice is not None:
                     return choice
         await self._validate_self_context(context)
-        if name != "send_message":
+        if name not in {"send_message", "query_chat_history"}:
             await self._validate_person_context(context)
-        if name == "read_conversation_history":
+        if name == "query_chat_history":
             from yuki.social.history import read_history
 
-            return await read_history(self, args, context)
+            return await read_history(self.database, args, context)
         if name == "find_contacts":
             kind = str(args.get("kind", "person"))
             items: list[dict[str, Any]]
@@ -1439,6 +1439,9 @@ class SocialService:
                     raise SocialError("unknown_transport_effect")
             confirmed = True
             appended = None
+            from yuki.persistence.history_search import prepare_terms
+
+            prepared_terms = await asyncio.to_thread(prepare_terms, content or "")
             with model_detail("social_settlement"):
                 async with self.database.immediate_session() as session:
                     from yuki.social.confirmed_content import content_sources_retained
@@ -1478,6 +1481,7 @@ class SocialService:
                             sender_user_id=route.sender_account_id,
                             direction="outbound",
                             content=content,
+                            prepared_terms=prepared_terms,
                             segments=ledger_segments if ledger_segments is not None else (),
                             origin=context.origin,
                             caused_by_event_id=context.caused_by_event_id,

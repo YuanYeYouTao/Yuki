@@ -18,6 +18,18 @@ class ResultCapture:
     outcome: ToolExecutionResult | None = None
     artifact_handle: str | None = None
     evidence: dict[str, Any] | None = None
+    source_event_ids: tuple[int, ...] = ()
+    source_privacy_generation: int | None = None
+
+    def observe_sources(self, event_ids: tuple[int, ...], privacy: int | None) -> None:
+        """Retain the original read dependencies across composed child calls."""
+        self.source_event_ids = tuple(dict.fromkeys((*self.source_event_ids, *event_ids)))
+        if event_ids and privacy is not None:
+            self.source_privacy_generation = (
+                privacy
+                if self.source_privacy_generation is None
+                else min(privacy, self.source_privacy_generation)
+            )
 
 
 current_result_capture: ContextVar[ResultCapture | None] = ContextVar(
@@ -212,6 +224,14 @@ def execution_evidence(
             else {}
         ),
         "executed": body.get("executed", True),
+        **(
+            {
+                "source_event_ids": list(outcome.source_event_ids),
+                "source_privacy_generation": outcome.source_privacy_generation,
+            }
+            if outcome.source_event_ids
+            else {}
+        ),
         **(
             {"observed_event_ids": list(dict.fromkeys(observed_event_ids))}
             if observed_event_ids

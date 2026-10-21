@@ -226,7 +226,12 @@ async def test_main_history_search_archives_original_requested_page(
                         ToolFunction(
                             "query_chat_history",
                             json.dumps(
-                                {"view": "search", "keyword": "history-needle", "limit": 101}
+                                {
+                                    "view": "search",
+                                    "keyword": "history-needle",
+                                    "order": "oldest",
+                                    "limit": 101,
+                                }
                             ),
                         ),
                     ),
@@ -247,7 +252,7 @@ async def test_main_history_search_archives_original_requested_page(
     page = await store.read(manifest["artifact_handle"], limit=1000000, max_characters=1000000)
     original = json.loads(page["content"])
     assert original["data"]["returned_count"] == 101
-    assert original["data"]["truncated"] is False
+    assert original["data"]["has_more"] is False
     assert [row["content"] for row in original["data"]["events"]] == originals
     assert not [action for action, _ in case.env.bot.calls if action.startswith("send_")]
 

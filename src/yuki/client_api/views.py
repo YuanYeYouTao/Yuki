@@ -19,7 +19,9 @@ from yuki.execution_trace.db_models import ExecutionTraceEntryModel
 from yuki.execution_trace.recorder import TraceRecorder
 from yuki.identity.db_models import IdentityBindingModel
 from yuki.identity.person_identity import person_family_condition
+from yuki.persistence.event_view import event_view
 from yuki.persistence.models import ChatEventModel
+from yuki.persistence.repositories import EventLedgerRepository
 from yuki.runtime.work_schema_v1 import work
 from yuki.social.db_models import SocialOperationModel
 
@@ -37,42 +39,6 @@ async def personal_conversation(
     if row is None:
         raise ClientError("not_found")
     return row
-
-
-def public_event(row: ChatEventModel, binding: IdentityBindingModel) -> dict[str, Any]:
-    attachments = []
-    for segment in json.loads(row.segments_json):
-        if segment["type"] in {"image", "audio", "record", "video", "file"}:
-            data = segment.get("data", {})
-            attachments.append(
-                {
-                    "kind": segment["type"],
-                    **{
-                        key: data[key]
-                        for key in (
-                            "media_id",
-                            "artifact_id",
-                            "version",
-                            "filename",
-                            "mime_type",
-                            "size",
-                        )
-                        if key in data
-                    },
-                }
-            )
-    return {
-        "event_id": row.id,
-        "conversation_id": row.canonical_conversation_id,
-        "binding_id": binding.id,
-        "platform": binding.platform,
-        "direction": row.direction,
-        "author_kind": row.author_kind,
-        "text": row.content,
-        "origin": row.origin,
-        "created_at": row.observed_at.isoformat(),
-        "attachments": attachments,
-    }
 
 
 class ClientViews:
@@ -158,7 +124,7 @@ class ClientViews:
         before: int | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
-        if not 1 <= limit <= 50 or after < 0 or (before is not None and before < 1):
+        if type(limit) is not int or limit < 1 or after < 0 or (before is not None and before < 1):
             raise ClientError("validation_error")
         async with self.database.sessions() as session:
             await session.execute(text("BEGIN"))
@@ -166,13 +132,9 @@ class ClientViews:
             conversation = await personal_conversation(session, principal.person_id, identity)
             binding = await session.get(IdentityBindingModel, conversation.identity_binding_id)
             assert binding is not None
-            query = select(ChatEventModel).where(
-                ChatEventModel.canonical_conversation_id == identity,
-                ChatEventModel.suppression_status == "keeper",
-                ChatEventModel.id > after,
-            )
+            predicates: tuple[Any, ...] = ()
             if binding.platform == "acp":
-                query = query.where(
+                predicates = (
                     or_(
                         ChatEventModel.direction == "inbound",
                         select(SocialOperationModel.id)
@@ -182,21 +144,38 @@ class ClientViews:
                             ChatEventModel.direction == "outbound",
                         )
                         .exists(),
-                    )
+                    ),
                 )
-            if before is not None:
-                query = query.where(ChatEventModel.id < before).order_by(ChatEventModel.id.desc())
-            else:
-                query = query.order_by(ChatEventModel.id)
-            rows = list(await session.scalars(query.limit(limit + 1)))
-            selected = rows[:limit]
+            page = await EventLedgerRepository(self.database).query_history(
+                session=session,
+                conversation_id=identity,
+                event_kind="all",
+                after_event_id=after,
+                before_event_id=before,
+                order="recent" if before is not None else "oldest",
+                limit=limit,
+                predicates=predicates,
+            )
+            selected = list(page.events)
+            next_after = max((row.id for row in selected), default=after)
+            next_before = min((row.id for row in selected), default=before)
             if before is not None:
                 selected.reverse()
+            facts = [event_view(row) for row in selected]
             return {
-                "items": [public_event(row, binding) for row in selected],
-                "has_more": len(rows) > limit,
-                "next_after": selected[-1].id if selected else after,
-                "next_before": selected[0].id if selected else before,
+                "items": [
+                    {
+                        **fact,
+                        "text": row.content,
+                        "binding_id": binding.id,
+                        "platform": binding.platform,
+                        "created_at": fact["observed_at"],
+                    }
+                    for row, fact in zip(selected, facts, strict=True)
+                ],
+                "has_more": page.has_more,
+                "next_after": next_after,
+                "next_before": next_before,
                 "latest_event_id": conversation.last_event_id,
                 "generation": conversation.generation,
                 "revision": conversation.prompt_source_revision,

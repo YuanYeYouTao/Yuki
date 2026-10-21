@@ -12,7 +12,7 @@ from tests.support.social_identity_cases import social_env
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel
 from yuki.services.agent_tools import ToolRuntime
@@ -43,8 +43,8 @@ async def test_same_person_multiple_entries_require_original_conversation(databa
     env.registry.disconnect(env.bot)
     env.bot.calls.clear()
     result = await env.service.execute(
-        "read_conversation_history",
-        {"kind": "person", "target_id": env.person},
+        "query_chat_history",
+        {"view": "recent", "event_kind": "all", "target": {"person_id": env.person}},
         env.context,
     )
     assert result["error"] == "conversation_ambiguous"
@@ -53,13 +53,17 @@ async def test_same_person_multiple_entries_require_original_conversation(databa
         second.canonical_conversation_id,
     }
     result = await env.service.execute(
-        "read_conversation_history",
-        {"conversation_id": second.canonical_conversation_id},
+        "query_chat_history",
+        {
+            "view": "recent",
+            "event_kind": "all",
+            "target": {"conversation_id": second.canonical_conversation_id},
+        },
         env.context,
     )
     assert result["source"] == "canonical_ledger"
-    assert [row["event_id"] for row in result["messages"]] == [second.id]
-    assert result["messages"][0]["person_id"] == env.person
+    assert [row["event_id"] for row in result["events"]] == [second.id]
+    assert result["events"][0]["person_id"] == env.person
     assert env.bot.calls == []
 
 
@@ -71,25 +75,39 @@ async def test_receipt_and_delegated_history_keep_actual_source_grants(database,
     env.bot.calls.clear()
     with pytest.raises(SocialError, match="history_receipt_unavailable"):
         await env.service.execute(
-            "read_conversation_history", {"operation_id": receipt["operation_id"]}, context
+            "query_chat_history",
+            {
+                "view": "recent",
+                "event_kind": "all",
+                "target": {"operation_id": receipt["operation_id"]},
+            },
+            context,
         )
-    with pytest.raises(SocialError, match="history_scope_denied"):
-        await env.service.execute(
-            "read_conversation_history", {"event_id": receipt["event_id"]}, context
-        )
+    unavailable = await env.service.execute(
+        "query_chat_history", {"view": "around", "event_id": receipt["event_id"]}, context
+    )
+    assert unavailable["anchor_status"] == "unavailable" and not unavailable["events"]
     token = current_invocation.set(
         ToolInvocationContext(SimpleNamespace(read_target_id=env.person), call_id="delegated")
     )
     try:
         with pytest.raises(SocialError, match="history_scope_denied"):
-            await env.service.execute("read_conversation_history", {}, env.context)
+            await env.service.execute(
+                "query_chat_history", {"view": "recent", "event_kind": "all"}, env.context
+            )
     finally:
         current_invocation.reset(token)
     env.registry.disconnect(env.bot)
     original = await env.service.execute(
-        "read_conversation_history", {"operation_id": receipt["operation_id"]}, env.context
+        "query_chat_history",
+        {
+            "view": "recent",
+            "event_kind": "all",
+            "target": {"operation_id": receipt["operation_id"]},
+        },
+        env.context,
     )
-    assert any(row["event_id"] == receipt["event_id"] for row in original["messages"])
+    assert any(row["event_id"] == receipt["event_id"] for row in original["events"])
     assert env.bot.calls == []
 
 
@@ -103,9 +121,11 @@ async def test_history_respects_existing_reset_boundary(database, tmp_path):
         conversation = await session.get(CanonicalConversationModel, env.context.conversation_id)
         conversation.starts_after_event_id = source.id
     env.bot.calls.clear()
-    result = await env.service.execute("read_conversation_history", {}, env.context)
-    assert [row["event_id"] for row in result["messages"]] == [sent["event_id"]]
-    assert "after reset" in result["messages"][0]["content"]
+    result = await env.service.execute(
+        "query_chat_history", {"view": "recent", "event_kind": "all"}, env.context
+    )
+    assert [row["event_id"] for row in result["events"]] == [sent["event_id"]]
+    assert "after reset" in result["events"][0]["content"]
     assert env.bot.calls == []
 
 
@@ -127,16 +147,15 @@ async def test_history_discovers_original_entries_after_person_merge(
     ).event
     async with database.immediate_session() as session:
         target = await ensure_person(session, "10002")
-        original_binding = await session.scalar(
-            select(IdentityBindingModel.id).where(IdentityBindingModel.person_id == env.person)
-        )
         if source_disabled:
             (await session.get(CanonicalPersonModel, env.person)).enabled = False
         await merge_persons(session, env.person, target)
     env.registry.disconnect(env.bot)
     env.bot.calls.clear()
     entries = await env.service.execute(
-        "read_conversation_history", {"kind": "person", "target_id": target}, env.context
+        "query_chat_history",
+        {"view": "recent", "event_kind": "all", "target": {"person_id": target}},
+        env.context,
     )
     assert entries["error"] == "conversation_ambiguous"
     assert {row["conversation_id"] for row in entries["conversations"]} == {
@@ -144,13 +163,17 @@ async def test_history_discovers_original_entries_after_person_merge(
         other.canonical_conversation_id,
     }
     result = await env.service.execute(
-        "read_conversation_history",
-        {"kind": "person", "target_id": target, "binding_id": original_binding},
+        "query_chat_history",
+        {
+            "view": "recent",
+            "event_kind": "all",
+            "target": {"conversation_id": original.canonical_conversation_id},
+        },
         env.context,
     )
     assert result["conversation_id"] == original.canonical_conversation_id
     assert result["target_id"] == target
-    assert result["messages"][0]["person_id"] == env.person
+    assert result["events"][0]["person_id"] == env.person
     assert env.bot.calls == []
 
 
@@ -169,9 +192,6 @@ async def test_delegated_history_keeps_same_person_scope_after_merge(database, t
     async with database.immediate_session() as session:
         target = await ensure_person(session, "10002")
         foreign = await ensure_person(session, "1003")
-        original_binding = await session.scalar(
-            select(IdentityBindingModel.id).where(IdentityBindingModel.person_id == env.person)
-        )
         if grant == "current":
             (await session.get(CanonicalPersonModel, env.person)).enabled = False
         await merge_persons(session, env.person, target)
@@ -187,12 +207,12 @@ async def test_delegated_history_keeps_same_person_scope_after_merge(database, t
     try:
         result = await invoke_social(
             env.service,
-            "read_conversation_history",
-            {"kind": "person", "target_id": target, "binding_id": original_binding},
+            "query_chat_history",
+            {"view": "recent", "target": {"conversation_id": original.canonical_conversation_id}},
             runtime,
         )
         assert result["conversation_id"] == original.canonical_conversation_id
-        assert result["messages"][0]["person_id"] == env.person
+        assert result["events"][0]["person_id"] == env.person
         with pytest.raises(SocialError, match="history_scope_denied"):
             await invoke_social(
                 env.service, "find_contacts", {"kind": "person", "target_id": foreign}, runtime
@@ -200,8 +220,8 @@ async def test_delegated_history_keeps_same_person_scope_after_merge(database, t
         with pytest.raises(SocialError, match="history_scope_denied"):
             await invoke_social(
                 env.service,
-                "read_conversation_history",
-                {"conversation_id": env.context.conversation_id},
+                "query_chat_history",
+                {"view": "recent", "target": {"conversation_id": env.context.conversation_id}},
                 runtime,
             )
     finally:

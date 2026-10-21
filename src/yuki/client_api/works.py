@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -422,9 +423,14 @@ class ClientWorks:
                 if admitted.dropped:
                     raise ClientError("unauthenticated")
 
+                from yuki.persistence.history_search import prepare_terms
+
+                prepared_terms = await asyncio.to_thread(prepare_terms, admitted.message.text)
+
                 async def record_input(
                     writer: AsyncSession,
                     source: IngressPreAdmit = admitted,
+                    input_terms: tuple[str, ...] = prepared_terms,
                     input_lease: WorkLease | None = lease,
                     request_principal: ClientPrincipal = principal,
                     request_gateway: AppGateway = gateway,
@@ -466,7 +472,11 @@ class ClientWorks:
                         if waiting and input_lease is None:
                             return None
                         appended = await request_gateway.processor._canonical_uow.append_inbound(
-                            source.message, source, session=writer, origin="work_input"
+                            source.message,
+                            source,
+                            session=writer,
+                            origin="work_input",
+                            prepared_terms=input_terms,
                         )
                         payload = {
                             "text": body,

@@ -195,6 +195,8 @@ class ToolReceiptRecorder(Protocol):
         tool_call_id: str | None = None,
         execution_id: str | None = None,
         audit_source: tuple[str, int, int] | None = None,
+        source_event_ids: tuple[int, ...] = (),
+        source_privacy_generation: int | None = None,
     ) -> None: ...
 
 
@@ -417,6 +419,7 @@ class ChatService:
                         tool_name=_ARTIFACT_READER_NAME,
                     )
                 from yuki.capabilities.media import result_images
+                from yuki.tool_results.access import ArtifactRead
 
                 return ToolExecutionResult(
                     ok=True,
@@ -425,6 +428,12 @@ class ChatService:
                     mutation_committed=False,
                     provider_id=_ARTIFACT_PROVIDER_ID,
                     tool_name=_ARTIFACT_READER_NAME,
+                    source_event_ids=result.source_event_ids
+                    if isinstance(result, ArtifactRead)
+                    else (),
+                    source_privacy_generation=result.source_privacy_generation
+                    if isinstance(result, ArtifactRead)
+                    else None,
                 )
 
             registry.register(
@@ -937,6 +946,13 @@ class ChatService:
         from yuki.services.invocation_service import defer_tool_audit, tool_audit_source
 
         audit_source = tool_audit_source(tool_call_id) if tool_call_id is not None else None
+        from yuki.runtime.effect_outcomes import current_result_capture
+
+        capture = current_result_capture.get()
+        source_event_ids = capture.source_event_ids if capture is not None else ()
+        source_privacy_generation = (
+            capture.source_privacy_generation if capture is not None else None
+        )
 
         async def record() -> None:
             assert self._tool_receipts is not None
@@ -957,6 +973,8 @@ class ChatService:
                 tool_call_id=tool_call_id,
                 execution_id=runtime.effective_execution_id,
                 audit_source=audit_source,
+                source_event_ids=source_event_ids,
+                source_privacy_generation=source_privacy_generation,
             )
 
         if tool_call_id is None or not defer_tool_audit(tool_call_id, record):
@@ -1068,9 +1086,7 @@ class ChatService:
                     runtime=runtime,
                 ),
                 current_work_control.get(),
-                recovery_contract=await self.runtime.main_turns.recovery_contract(
-                    runtime, turn_snapshot.conversation_id
-                ),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
             )
         current = self._with_input_material(
             context.current_message, attachment_text=attachment_text
@@ -1365,9 +1381,7 @@ class ChatService:
                     runtime=runtime,
                 ),
                 current_work_control.get(),
-                recovery_contract=await self.runtime.main_turns.recovery_contract(
-                    runtime, turn_snapshot.conversation_id
-                ),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
             )
             composition = await self.runtime.main_turns.compose(
                 inbound=None,
@@ -1484,9 +1498,7 @@ class ChatService:
                     external_trigger=trigger,
                 ),
                 current_work_control.get(),
-                recovery_contract=await self.runtime.main_turns.recovery_contract(
-                    runtime, turn_snapshot.conversation_id
-                ),
+                recovery_contract=await self.runtime.main_turns.recovery_contract(runtime),
             )
             composition = await self.runtime.main_turns.compose(
                 inbound=None,

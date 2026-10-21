@@ -2,7 +2,7 @@
 
 开发先读[共同开发约束](development-contract.md)，再读涉及模块。以下是当前源码合同；发现源码不符合合同，记录具体缺口，不把历史设计或验收结论当成现行实现。
 
-本入口跟随 **4.0.0 开发基线**；当前源码迁移 head 为 `0147`、Plugin API 为 `7.0`、Main 固定工具合同为 `25`、Code API 为 `yuki.codemode.api.v2`。本版变化和完整 PR 清单见 [4.0.0 发布说明](../releases/v4.0.0.md)，迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
+本入口跟随 **4.0.0 后续开发**；当前源码迁移 head 为 `0147`、Plugin API 为 `7.1`、Main 固定工具合同为 `27`、Code API 为 `yuki.codemode.api.v2`。#448 的共享读取、唯一索引与停写升级见[聊天记录读取](chat-history.md)，实施和交付分开记录于[实施记录](../operations/chat-history-448-implementation-20261022.md)。4.0.0 正式范围和完整 PR 清单仍见 [4.0.0 发布说明](../releases/v4.0.0.md)，前版迁移见 [4.0 升级指南](../upgrade-4.0.0.md)，两套完整评测见 [benchmark 报告](../benchmarks/2026-10-20-yuki-flash-1017/README.md)。#455 的 ACP 方向 A 复用现有个人身份、Main/Work/Social 和原回执，见[个人 API](client-api.md#acp-方向-a)与[原任务书两轮审查](Yuki-控制面重构与多客户端接入任务书-2026-10-14.md#10-455-两轮审查与实施)。前阶段见[299实施记录](Yuki-299与多平台解耦实施记录-2026-10-16.md)和[453实施与验证](Yuki-453人物解耦实施与验证-2026-10-17.md)。历史发行见[3.9.0 发布说明](../releases/v3.9.0.md)。
 
 提及定点查询、真实重名默认与迁移验证见[0142 修复记录](../operations/mention-resolution-0142.md)。其他 SQLite 热查询的原扫描证据见[10-20 只读审计](../operations/sqlite-query-scan-audit-20261020.md)，0143 修复、两轮终审与交付见[逐项修复记录](../operations/backend-audit-remediation-20261020.md)。
 
@@ -20,6 +20,7 @@
 | [Provider 输出](provider-output-boundary.md) | 思考、正文、真实工具调用与显式发送 |
 | [持久工作者](persistent-subagents.md) | 子任务生命周期、Main 完整能力、真实来源恢复与根预算 |
 | [工具结果](tool-results.md) | 结果预算、共享 artifact、媒体和证据 |
+| [聊天记录读取](chat-history.md) | 共享 ID 页、字面搜索、原回执锚点与离线索引升级 |
 | [会话 Compact](conversation-compact.md) | 独立整理触发值、Profile 硬容量、公共检查点、私有执行尾部与已付恢复 |
 | [聊天媒体](chat-media-workspace.md) | 附件索引、缓存、工作区提升与发送 |
 | [Memory](memory-v2.md) | 独立事实、证据、读取和写入权限 |
@@ -30,7 +31,7 @@
 | [管理控制面](control-plane-foundation.md) | 管理主体、装配、原回执与领域服务 |
 | [管理 API](admin-api.md) | Bearer operator、管理 CLI、原回执与领域服务 |
 | [执行过程](execution-trace.md) | 实际模型请求、工具、消息与投递的限期查询 |
-| [插件架构](../plugin-development/architecture.md) | Plugin API 7.0、Host、SDK 与隔离插件会话 |
+| [插件架构](../plugin-development/architecture.md) | Plugin API 7.1、Host、SDK 与隔离插件会话 |
 | [持久环境](../operations/persistent-environment.zh-CN.md) | 工作区、终端、Manager 与交付 |
 | [Code Mode 运维](../operations/pi-codemode-operations.md) | 可选构建、隔离、原数据和切换 |
 | [独立原生搜索](../deepseek-search-bridge.md) | 独立搜索连接、三种原生协议、网页提取与升级 |
@@ -38,6 +39,8 @@
 ## 设计报告与后续计划
 
 - [10-22 #478 SOUL人格边界与角色名称统一重构任务书](Yuki-478-SOUL人格边界与角色名称统一重构任务书-2026-10-22.md)：以 Diana 单 SOUL 为主参考，计划删除双人格文件、旧配置和占位符，统一可热改角色名称、模块消费边界及桌面单文档合同；同步参与库名称硬编码、历史/固定工具与缓存约束。删除重构优先，不保留旧行为兼容；已按授权实施，源码、本地验证与联合交付见[实施记录](../operations/soul-478-implementation-20261022.md)。
+- [#448 聊天记录检索增强任务书](Yuki-448聊天记录检索增强任务书-2026-10-16.md)：三工具与双 manifest 合一、共享 ID 页与事实提取、单张会话前缀 gram FTS，停写直接装载最终结构。已进入实施与验证；14 项任务、12 项删除和 46 项案例的交付状态见[实施记录](../operations/chat-history-448-implementation-20261022.md)，不以历史计划代替当前源码合同。
+
 - [10-19 人物合并、账号归属与提及统一重构任务书](Yuki-人物合并账号归属与提及统一重构任务书-2026-10-19.md)：按 Account、Person 同人关系与唯一 Assignment 重做统一设计，真正替换 Binding／Presence 双归属表；三种关系原语贯通账号操作，资料主体、原 actor、权限与回执分别认真实事实。收录 31 项身份／提及缺口及 9 项独立控制问题；终审定为一次不可逆升级，删除旧执行合同及兼容入口，只留 Account 精确提及；原任务身份与回执保留、Work 新链接续，平台原生语义和布局留现有适配器；补可用索引的查询形状、SQL分页、批量准备及短writer边界，新增第三平台、硬切与性能验收。当前仅调查和任务书，尚未实施。
 - [10-19 #163表情目录、索引与异步配图任务书](Yuki-163表情目录索引与异步配图重构任务书-2026-10-19.md)：复用已下载媒体直接收藏到持久表情目录，删除旧偷图/分类采用/池管理链；终端可检索索引、文字先发与独立Social配图回执，入站原件统一共享沙箱缓存、Main 按需读取。已按授权实施中；五轮删除审查、三轮实现后复审及交付见[实施记录](../operations/sticker-163-implementation-20261019.md)。
 - [10-18 控制面人物授权与管理命令重构任务书](Yuki-控制面人物授权与管理命令重构任务书-2026-10-18.md)：超级管理员资格归 Person，删除 QQ 名单反推授权；重构共同管理操作与聊天命令，收拢停用恢复、对象发现、插件配置、密钥轮换、ACP/SDK 和只读鉴权等本轮缺口。已按授权实施；代码、五轮复审及实际验证见[实施记录](../operations/person-admin-control-plane-20261018.md)，生产未变。

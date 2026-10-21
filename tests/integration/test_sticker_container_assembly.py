@@ -53,11 +53,11 @@ async def test_offline_container_starts_freezes_tools_and_closes_sticker_resourc
         assert app.emoji_delivery.running
         delivery_task = app.emoji_delivery._task
         platform = await app.main_agent_contract.definitions()
-        personal = await app.main_agent_contract.definitions("app")
+        personal = await app.main_agent_contract.definitions()
         revision = app.main_agent_contract.revision
-        assert {tool.name for tool in personal} - {tool.name for tool in platform} == {
-            "read_personal_entry"
-        }
+        assert personal == platform
+        assert "query_chat_history" in {tool.name for tool in platform}
+        assert "read_personal_entry" not in {tool.name for tool in platform}
         assert ("execute_code" in {tool.name for tool in platform}) == code_enabled
         message = next(tool for tool in platform if tool.name == "send_message")
         declared_message = next(

@@ -148,7 +148,13 @@ async def test_old_transport_alias_never_redirects_new_binding_reads_or_writes(d
         version, rows = await ledger.read_scope_context(second, limit=20)
         assert [row.id for row in rows] == expected
         assert await ledger.read_version_matches(version)
-        assert [row.id for row in await ledger.search(keyword="needle", scope=second)] == expected
+        page = await ledger.query_history(
+            conversation_id=state.id,
+            starts_after_event_id=state.starts_after_event_id,
+            keyword="needle",
+            order="oldest",
+        )
+        assert [row.id for row in page.events] == expected
         turn = ConversationTurnSnapshot(
             state.id, state.runtime_scope_key, 1, event.id, 1, second.key
         )

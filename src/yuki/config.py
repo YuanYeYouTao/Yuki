@@ -263,7 +263,6 @@ class Settings(BaseSettings):
     conversation_effect_gate_timeout_seconds: float = Field(default=30.0, gt=0)
     conversation_history_around_before: int = Field(default=6, ge=0)
     conversation_history_around_after: int = Field(default=6, ge=0)
-    conversation_history_around_limit: int = Field(default=24, ge=1)
     reply_hard_max_messages: int = 10
 
     # Local in-process plugins.  Approval is API governance, not a Python sandbox.

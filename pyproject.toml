@@ -27,6 +27,7 @@ dependencies = [
     "yuki-semantic-participation @ https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/archive/438f204f9ebe2b8c1b698b68c0f1b3ac8b4facef.tar.gz",
     "tomlkit>=0.13,<1",
     "agent-client-protocol==0.12.1",
+    "opencc==1.4.2",
 ]
 
 [project.optional-dependencies]

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import unicodedata
 from collections.abc import Awaitable, Callable, Mapping
 from datetime import UTC, datetime
+from functools import lru_cache
+from typing import TYPE_CHECKING, Literal
 from uuid import UUID, uuid4
 
 from yuki_plugin_sdk.events import EventEnvelope
@@ -26,6 +29,9 @@ from yuki_plugin_sdk.sessions import (
     SessionStatus,
 )
 
+if TYPE_CHECKING:
+    from opencc import OpenCC
+
 
 class FakeMessageFacade:
     def __init__(self, current: CurrentMessage | None = None) -> None:
@@ -43,12 +49,58 @@ class FakeMessageFacade:
         return self.reply
 
     async def get_recent(self, limit: int = 20) -> tuple[CurrentMessage, ...]:
-        return tuple(self.recent[-limit:])
+        return await self.search_history("", limit)
 
-    async def search_history(self, query: str, limit: int = 20) -> tuple[CurrentMessage, ...]:
-        needle = query.casefold()
-        matches = (message for message in self.recent if needle in message.text.casefold())
-        return tuple(matches)[-limit:]
+    async def search_history(
+        self,
+        query: str,
+        limit: int = 20,
+        *,
+        cursor: int | None = None,
+        match: Literal["all", "any", "phrase"] = "all",
+        exclude: tuple[str, ...] = (),
+    ) -> tuple[CurrentMessage, ...]:
+        if type(limit) is not int or limit < 1 or match not in {"all", "any", "phrase"}:
+            raise ValueError("invalid history query")
+        if cursor is not None and (type(cursor) is not int or cursor <= 0):
+            raise ValueError("cursor must be a positive internal event ID")
+
+        def fold(value: str) -> str:
+            value = unicodedata.normalize("NFKC", value).casefold()
+            return " ".join(unicodedata.normalize("NFKC", value).split())
+
+        words = [fold(query)] if match == "phrase" else fold(query).split()
+        converter = _history_converter()
+        terms = [(word, converter.convert(word)) for word in words if word]
+        excluded = [(word, converter.convert(word)) for value in exclude if (word := fold(value))]
+
+        def contains(term: tuple[str, str], fields: tuple[tuple[str, str], ...]) -> bool:
+            return any(term[0] in base or term[1] in simplified for base, simplified in fields)
+
+        selected = []
+        for message in reversed(self.recent):
+            if cursor is not None and (message.event_id is None or message.event_id >= cursor):
+                continue
+            raw_fields = (
+                message.content if message.content is not None else message.text,
+                *(
+                    str(item["text"])
+                    for item in message.asr
+                    if item.get("source", "current") == "current"
+                ),
+            )
+            fields = tuple(
+                (value, converter.convert(value)) for raw in raw_fields if (value := fold(raw))
+            )
+            found = [contains(term, fields) for term in terms]
+            if (terms and not (any(found) if match == "any" else all(found))) or any(
+                contains(term, fields) for term in excluded
+            ):
+                continue
+            selected.append(message)
+            if len(selected) == limit:
+                break
+        return tuple(reversed(selected))
 
     async def send_text(self, text: str) -> PluginResult:
         self.sent.append(text)
@@ -597,3 +649,10 @@ class FakeAgentSessionFacade:
         if session.status is not SessionStatus.ACTIVE:
             raise ValueError(f"plugin AI session is {session.status.value}")
         return session
+
+
+@lru_cache(maxsize=1)
+def _history_converter() -> OpenCC:
+    from opencc import OpenCC
+
+    return OpenCC("t2s")

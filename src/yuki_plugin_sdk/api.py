@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import re
 
-PLUGIN_API_VERSION = "7.0"
+PLUGIN_API_VERSION = "7.1"
 _API_VERSION = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 
 DEFAULT_FEATURES: frozenset[str] = frozenset(
     {
         "message.normalized.v1",
+        "message.history.v2",
         "message.current.mentions.v2",
         "prompt.fragment.v1",
         "admission.signal.v1",
@@ -22,8 +23,9 @@ DEFAULT_FEATURES: frozenset[str] = frozenset(
 
 
 def is_api_compatible(requested: str, host: str = PLUGIN_API_VERSION) -> bool:
-    """Load only the exact SDK contract implemented by this Host."""
-
-    requested = requested.strip()
-    host = host.strip()
-    return _API_VERSION.fullmatch(requested) is not None and requested == host
+    """A Host satisfies earlier additive contracts in its own major version."""
+    wanted = _API_VERSION.fullmatch(requested.strip())
+    available = _API_VERSION.fullmatch(host.strip())
+    return bool(
+        wanted and available and wanted[1] == available[1] and int(wanted[2]) <= int(available[2])
+    )

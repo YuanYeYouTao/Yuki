@@ -1,4 +1,4 @@
-"""Network-free reference plugin for Yuki Plugin API 7.0."""
+"""Network-free reference plugin for Yuki Plugin API 7.1."""
 
 from __future__ import annotations
 

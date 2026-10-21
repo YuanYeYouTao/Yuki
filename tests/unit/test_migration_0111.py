@@ -126,13 +126,27 @@ def test_0111_preserves_original_receipts_and_accepts_execution_sources(tmp_path
                 "runtime_work_effects",
                 "runtime_automation_cursors",
             )
+            async with database.sessions() as reader:
+                # Later migrations may append source facts; preserve every
+                # original field without treating those additions as data loss.
+                original_columns = {
+                    name: ",".join(
+                        f'"{row[1]}"'
+                        for row in await reader.execute(text(f'PRAGMA table_info("{name}")'))
+                    )
+                    for name in tables
+                }
 
             async def snapshot():
                 async with database.sessions() as reader:
                     return {
                         name: [
                             tuple(row)
-                            for row in await reader.execute(text(f"SELECT * FROM {name}"))
+                            for row in await reader.execute(
+                                text(
+                                    f'SELECT {original_columns[name]} FROM "{name}" ORDER BY rowid'
+                                )
+                            )
                         ]
                         for name in tables
                     }

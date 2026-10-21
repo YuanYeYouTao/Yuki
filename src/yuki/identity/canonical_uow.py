@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import Callable
@@ -56,6 +57,8 @@ from yuki.identity.receipt_compat import (
 )
 from yuki.identity.routing import PresenceRouter
 from yuki.persistence.database import Database
+from yuki.persistence.history_search import prepare_terms
+from yuki.persistence.history_search_index import replace_event
 from yuki.persistence.models import ChatEventModel
 from yuki.persistence.repository_helpers import _event_record
 from yuki.persistence.repository_records import EventRecord
@@ -207,6 +210,7 @@ class CanonicalIngressUnitOfWork:
         new_generation: bool = False,
         session: AsyncSession | None = None,
         origin: str = "user_message",
+        prepared_terms: tuple[str, ...] | None = None,
     ) -> ScopedAppendResult:
         if admitted.dropped or admitted.presence_id is None or admitted.conversation_id is None:
             raise CanonicalIdentityError("unclassified")
@@ -248,6 +252,8 @@ class CanonicalIngressUnitOfWork:
             if admitted.connection_id is None or admitted.gateway_instance_id is None:
                 raise CanonicalIdentityError("unclassified")
         canonical_event_id = _new_id()
+        if prepared_terms is None:
+            prepared_terms = await asyncio.to_thread(prepare_terms, message.text)
 
         async def append(session: AsyncSession) -> ScopedAppendResult:
             observed_message, apply_accounts = await prepare_message_account_observations(
@@ -403,6 +409,14 @@ class CanonicalIngressUnitOfWork:
                 observation()
             session.add(row)
             await session.flush()
+            await replace_event(
+                session,
+                row.id,
+                conversation_id,
+                prepared_terms,
+                author_person_id=row.author_person_id,
+                author_kind=row.author_kind,
+            )
             event = _event_record(row)
             await touch_canonical_watermarks(
                 session,

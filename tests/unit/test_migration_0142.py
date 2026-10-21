@@ -53,8 +53,8 @@ def original(original_template, tmp_path, monkeypatch):
     return path, url
 
 
-def _rows(connection, table):
-    return connection.execute(f'SELECT * FROM "{table}" ORDER BY rowid').fetchall()
+def _rows(connection, table, columns):
+    return connection.execute(f'SELECT {columns} FROM "{table}" ORDER BY rowid').fetchall()
 
 
 def _name(connection, account, stage, scope, name, first, last, *, kind="nickname"):
@@ -127,7 +127,17 @@ def test_upgrade_merges_only_identical_name_owners_and_preserves_original_facts(
             "VALUES(?,'original-turn','original-call',?,'send_message',?,'person',?,?,'prepared',?,?,1,?)",
             (str(uuid4()), conversation, "a" * 64, person, presence, first, last, prepared),
         )
-        before = {table: _rows(connection, table) for table in PROTECTED}
+        # Compare every original field through head; newly added receipt source
+        # columns are separate facts rather than mutations of the old payload.
+        original_columns = {
+            table: ",".join(
+                f'"{row[1]}"' for row in connection.execute(f'PRAGMA table_info("{table}")')
+            )
+            for table in PROTECTED
+        }
+        before = {
+            table: _rows(connection, table, original_columns[table]) for table in PROTECTED
+        }
     command.upgrade(Config("alembic.ini"), "head")
     with closing(sqlite3.connect(path)) as connection:
         merged = connection.execute(
@@ -154,7 +164,7 @@ def test_upgrade_merges_only_identical_name_owners_and_preserves_original_facts(
             "SELECT id FROM account_name_observations WHERE name=''"
         ).fetchall()
         for table in PROTECTED:
-            assert _rows(connection, table) == before[table]
+            assert _rows(connection, table, original_columns[table]) == before[table]
         assert not connection.execute("PRAGMA foreign_key_check").fetchall()
         with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
             _name(connection, account, stage, None, "Ice", first, last)

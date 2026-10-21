@@ -26,10 +26,9 @@ _RESIDENT_YUKI_TOOLS = (
     frozenset(
         {
             "find_contacts",
+            "query_chat_history",
             "send_message",
             "get_group_members",
-            "read_conversation_history",
-            "read_personal_entry",
             "recall_own_message",
             "inspect_conversation_attachment",
             "save_conversation_attachment_to_workspace",
@@ -58,14 +57,8 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         for name in WORKSPACE_TOOLS
     },
     "find_contacts": ("social.contacts", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
-    "read_personal_entry": ("social.entry.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "send_message": ("social.send", CapabilityEffect.PLATFORM_SEND, CapabilityRisk.MUTATE),
     "get_group_members": ("social.members", CapabilityEffect.EXTERNAL_READ, CapabilityRisk.READ),
-    "read_conversation_history": (
-        "social.history",
-        CapabilityEffect.EXTERNAL_READ,
-        CapabilityRisk.READ,
-    ),
     "recall_own_message": (
         "social.recall",
         CapabilityEffect.PLATFORM_MUTATE,
@@ -81,7 +74,7 @@ _CORE_METADATA: dict[str, tuple[str, CapabilityEffect, CapabilityRisk]] = {
         CapabilityEffect.READ_STATE,
         CapabilityRisk.READ,
     ),
-    "query_chat_history": ("memory.history", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
+    "query_chat_history": ("social.history", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "read_memory": ("memory.read", CapabilityEffect.READ_STATE, CapabilityRisk.READ),
     "search_memory": (
         "memory.search",

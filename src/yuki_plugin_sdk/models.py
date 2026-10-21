@@ -112,6 +112,17 @@ class CanonicalIdentityProjection(StrictModel):
 class CurrentMessage(CanonicalIdentityProjection):
     """Sanitized current-event projection, never a raw NoneBot event."""
 
+    event_id: int | None = None
+    event_kind: str = "message"
+    occurred_at: datetime | None = None
+    observed_at: datetime | None = None
+    sender_nickname: str = ""
+    sender_group_card: str = ""
+    reply_to_event_id: int | None = None
+    attachments: tuple[dict[str, JsonValue], ...] = ()
+    asr: tuple[dict[str, JsonValue], ...] = ()
+    author_presence_id: str | None = None
+    ingress_presence_id: str | None = None
     platform: str = ""
     author_kind: str | None = None
     author_account_id: str | None = None
@@ -120,6 +131,7 @@ class CurrentMessage(CanonicalIdentityProjection):
     scope_type: str = Field(pattern=r"^(private|group)$")
     group_id: str | None = Field(default=None, max_length=64)
     text: str = ""
+    content: str | None = None
     mentions: tuple[dict[str, JsonValue], ...] = ()
     received_at: datetime
 

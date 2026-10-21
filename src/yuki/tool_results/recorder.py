@@ -74,6 +74,8 @@ class ToolReceiptRepository:
         tool_call_id: str | None = None,
         execution_id: str | None = None,
         audit_source: tuple[str, int, int] | None = None,
+        source_event_ids: tuple[int, ...] = (),
+        source_privacy_generation: int | None = None,
     ) -> None:
         # Without an original source there is no Memory evidence to persist.
         if initiative_run_id is None and principal_kind != "self" and trigger_event_id is None:
@@ -108,6 +110,8 @@ class ToolReceiptRepository:
                     or 0
                 )
             )
+            if source_event_ids and source_privacy_generation is not None:
+                privacy_generation = min(privacy_generation, source_privacy_generation)
             if initiative_run_id is not None or principal_kind == "self":
                 from yuki.memory.self_origin import (
                     resolve_self_origin,
@@ -306,6 +310,7 @@ class ToolReceiptRepository:
                 tool_call_id=tool_call_id,
                 execution_id=execution_id,
                 source_call_key=key,
+                source_event_ids_json=json.dumps(list(source_event_ids)),
                 provider_id=provider_id[:128],
                 tool_name=tool_name[:255],
                 success=success,

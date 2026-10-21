@@ -449,9 +449,7 @@ async def _execute_plugin_main_turn(
                         runtime=runtime.runtime_config,
                     ),
                     current_work_control.get(),
-                    recovery_contract=await main.recovery_contract(
-                        runtime.runtime_config, runtime.canonical_conversation_id
-                    ),
+                    recovery_contract=await main.recovery_contract(runtime.runtime_config),
                 )
             except WorkInputsPreparing:
                 active = cast("WorkControl", current_work_control.get())

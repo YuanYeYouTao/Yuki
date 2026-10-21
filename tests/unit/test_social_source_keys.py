@@ -182,9 +182,15 @@ async def test_history_reads_canonical_ledger_without_probing_any_presence(datab
     env.registry.connect(other, provider_id="snowluma", presence_id=second)
     env.bot.calls.clear()
     result = await env.service.execute(
-        "read_conversation_history", {"conversation_id": env.context.conversation_id}, env.context
+        "query_chat_history",
+        {
+            "view": "recent",
+            "event_kind": "all",
+            "target": {"conversation_id": env.context.conversation_id},
+        },
+        env.context,
     )
     assert result["source"] == "canonical_ledger" and result["coverage"] == "observed"
-    assert result["count"] == 1
-    assert result["messages"][0]["person_id"] == env.person
+    assert result["returned_count"] == 1
+    assert result["events"][0]["person_id"] == env.person
     assert not env.bot.calls and not other.calls

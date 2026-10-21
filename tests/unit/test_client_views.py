@@ -91,11 +91,13 @@ async def test_snapshot_and_keysets_read_only_own_private_entries(app_env, datab
             f"/client/v1/activity?conversation_id={identity}", headers=bearer(device["token"])
         )
         assert response.status_code == 404
-    invalid = await env.client.get(
-        f"/client/v1/conversations/{principal.conversation_id}/events?limit=51",
+    expanded = await env.client.get(
+        f"/client/v1/conversations/{original.row['conversation_id']}/events?limit=51",
         headers=bearer(device["token"]),
     )
-    assert invalid.status_code == 422
+    assert expanded.status_code == 200, expanded.text
+    assert [item["event_id"] for item in expanded.json()["data"]["items"]] == event_ids
+    assert expanded.json()["data"]["has_more"] is False
     assert await original.repository.get(original.row["id"]) == original.row
     async with database.sessions() as session:
         assert (await find_identity_binding(session, "1001")).person_id == person

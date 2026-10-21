@@ -261,7 +261,7 @@ Yuki 已退役 MCP，本轮只接受空 `mcpServers`，非空显式返回不支�
 
 ## 控制面重构后的个人入口
 
-App/ACP 共用个人工具视图（Main 合同23）、原 Work 普通回答匹配与显式 Binding 路由；每个 ACP Conversation 独立。按 Binding 读取个人入口遇到多个 Conversation 时返回真实候选，调用者使用已有 conversation_id 明确选择，不任意读取首条。
+App/ACP 与其他 Main 入口共用固定工具合同26，执行处核本人来源；保留原 Work 普通回答匹配与显式 Binding 路由，每个 ACP Conversation 独立。按 Binding 读取个人入口遇到多个 Conversation 时返回真实候选，调用者使用已有 conversation_id 明确选择，不任意读取首条。
 
 Person 的管理员资格直接保存于人物，但个人设备正文仍不解析 `/ai admin` 或插件直达命令。真正管理走既有 operator/平台命令入口。鉴权不再写设备 last_used_at；GET/事件读取与初始 SSE sync 的调用链为只读，仍即时核当前撤销、人物启停与入口归属。
 

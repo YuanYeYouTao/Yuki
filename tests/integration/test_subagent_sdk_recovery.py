@@ -201,7 +201,9 @@ async def test_sdk_message_child_keeps_original_plugin_origin_and_delegation(dat
         if count == 4:
             results.append(json.loads(request.messages[-1].content))
             return _tool(
-                "read_conversation_history", {"kind": "space", "target_id": other_space}, "other"
+                "query_chat_history",
+                {"view": "recent", "event_kind": "all", "target": {"space_id": other_space}},
+                "other",
             )
         if count == 5:
             results.append(json.loads(request.messages[-1].content))

@@ -448,15 +448,12 @@ async def test_original_work_continues_across_devices_tools_and_two_cold_runtime
             "Use Taipei" in (item.content or "") for call in observed for item in call.messages
         )
         assert all(
-            ("read_personal_entry" in {tool.name for tool in call.tools}) == (entry == "app")
+            "query_chat_history" in {tool.name for tool in call.tools}
+            and "read_personal_entry" not in {tool.name for tool in call.tools}
             for call in observed
         )
         async with database.sessions() as session:
-            expected_manifest = (
-                app.main_agent_contract.app_revision
-                if entry == "app"
-                else app.main_agent_contract.revision
-            )
+            expected_manifest = app.main_agent_contract.revision
             saved_calls = [
                 json.loads(body)["invocation"]
                 for body in await session.scalars(

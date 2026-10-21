@@ -18,10 +18,11 @@ from collections.abc import Awaitable, Callable, Iterable, Mapping
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 from uuid import UUID
 
 from pydantic import PrivateAttr
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from yuki.adapters.onebot.sender import parse_onebot_send_receipt
@@ -930,33 +931,43 @@ class _MessageFacade:
         return _record_message(record) if record is not None else None
 
     async def get_recent(self, limit: int = 20) -> tuple[CurrentMessage, ...]:
-        invocation = self._host._require(PluginPermission.MESSAGE_HISTORY_READ)
-        assert invocation is not None
-        ledger = _require_service(self._host._services.ledger, "message history")
-        scope = invocation.scope()
-        rows = await ledger.list_scope_recent(
-            scope,
-            limit=_bounded_limit(limit),
-            message_only=True,
-        )
-        return tuple(_record_message(row) for row in rows)
+        return await self.search_history("", limit=limit)
 
     async def search_history(
         self,
         query: str,
         limit: int = 20,
+        *,
+        cursor: int | None = None,
+        match: Literal["all", "any", "phrase"] = "all",
+        exclude: tuple[str, ...] = (),
     ) -> tuple[CurrentMessage, ...]:
         invocation = self._host._require(PluginPermission.MESSAGE_HISTORY_READ)
         assert invocation is not None
         ledger = _require_service(self._host._services.ledger, "message history")
-        keyword = _bounded_text(query, maximum=400, field_name="query")
-        rows = await ledger.search(
-            keyword=keyword,
-            scope=invocation.scope(),
-            limit=_bounded_limit(limit),
-            message_only=True,
+        from yuki.conversation.canonical_db_models import CanonicalConversationModel
+        from yuki.services.history_query import HistoryQuery
+
+        request = HistoryQuery(
+            keyword=query, limit=limit, cursor=cursor, match=match, exclude=exclude
         )
-        return tuple(_record_message(row) for row in rows)
+
+        async with ledger._database.sessions() as session:
+            await session.execute(text("BEGIN"))
+            conversation = await session.get(CanonicalConversationModel, invocation.conversation_id)
+            if conversation is None:
+                raise PluginPermissionError("message conversation is unavailable")
+            page = await ledger.query_history(
+                session=session,
+                conversation_id=conversation.id,
+                starts_after_event_id=conversation.starts_after_event_id,
+                limit=request.limit or 20,
+                cursor=request.cursor,
+                keyword=request.keyword,
+                match=request.match,
+                exclude=request.exclude,
+            )
+        return tuple(_record_message(row) for row in reversed(page.events))
 
     async def send_text(self, text: str) -> PluginResult:
         invocation = self._host._invocation()
@@ -2847,6 +2858,7 @@ def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
     projection = projection_from_inbound(inbound)
     return CurrentMessage(
         platform=inbound.platform,
+        event_id=inbound.source_event_id,
         author_kind=inbound.author_kind,
         author_account_id=inbound.author_account_id,
         message_id=inbound.message_id,
@@ -2854,6 +2866,7 @@ def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
         scope_type=inbound.scope_type.value,
         group_id=inbound.group_id,
         text=inbound.text,
+        content=inbound.text,
         mentions=mention_snapshots(snapshot_mention_segments(inbound.segments, inbound.mentions)),
         received_at=inbound.received_at,
         **projection.sdk_fields(),
@@ -2861,6 +2874,9 @@ def _current_message(inbound: InboundMessage | None) -> CurrentMessage | None:
 
 
 def _record_message(record: Any) -> CurrentMessage:
+    from yuki.persistence.event_view import event_view
+
+    facts = event_view(record)
     projection = projection_from_event(record)
     return CurrentMessage(
         platform=record.platform,
@@ -2870,9 +2886,21 @@ def _record_message(record: Any) -> CurrentMessage:
         sender_user_id=record.sender_user_id,
         scope_type=record.scope_type.value,
         group_id=record.group_id,
-        text=record.content,
+        text=record.evidence_content,
+        content=record.content,
+        event_id=record.id,
+        event_kind=record.event_kind,
+        occurred_at=record.occurred_at,
+        observed_at=record.observed_at or record.occurred_at,
+        sender_nickname=record.sender_nickname,
+        sender_group_card=record.sender_group_card,
+        reply_to_event_id=record.reply_to_event_id,
+        attachments=tuple(facts["attachments"]),
+        asr=tuple(facts["asr"]),
+        author_presence_id=record.author_presence_id,
+        ingress_presence_id=record.ingress_presence_id,
         mentions=mention_snapshots(record.segments),
-        received_at=record.occurred_at,
+        received_at=record.observed_at or record.occurred_at,
         **projection.sdk_fields(),
     )
 

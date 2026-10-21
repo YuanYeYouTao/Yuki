@@ -87,19 +87,16 @@ class MainAgentTurnService:
             )
         )
 
-    async def recovery_contract(
-        self, runtime: RuntimeConfigSnapshot, conversation_id: str | None = None
-    ) -> str | None:
+    async def recovery_contract(self, runtime: RuntimeConfigSnapshot) -> str | None:
         contract = self._runner.main_contract
         if contract is None:
             return None
-        entry = await contract.entry_for(conversation_id)
         return self._runner.work_contract(
             runtime,
             self._composer.static_messages(),
-            await contract.model_definitions(entry),
-            script_api=contract.app_script_api if entry == "app" else contract.script_api,
-            manifest_revision=contract.app_revision if entry == "app" else contract.revision,
+            await contract.model_definitions(),
+            script_api=contract.script_api,
+            manifest_revision=contract.revision,
         )
 
     async def compose(

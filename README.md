@@ -94,7 +94,7 @@ uv run yuki --help
 
 当前命令统一为 `yuki`，服务入口为 `yuki-bot`。从 3.9 迁移的步骤见 [4.0 升级指南](docs/upgrade-4.0.0.md)。QQ 使用 SnowLuma；仅使用 Telegram 或个人客户端时，无需配置 QQ 账号。
 
-4.0 的数据库 head 为 **0143**，Plugin API 为 **7.0**，主工具 manifest 为 **25**。升级前备份数据库、配置、插件和工作文件，按目标版本完成迁移及插件适配。当前发布准备仅更新源码和文档，4.0 镜像尚未发布。
+4.0.0 发布基线为 schema **0143**、Plugin API **7.0**、manifest **25**。后续开发的 #448 统一聊天记录读取使用 schema **0145**、Plugin API **7.1**、manifest **26**；从旧库升级需要停业务写入，完成正文索引转换后再启动 Bot。升级前备份数据库、配置、插件和工作文件，详见[现行历史读取合同](docs/architecture/chat-history.md)与[实施记录](docs/operations/chat-history-448-implementation-20261022.md)。
 
 ## 架构与开发
 
@@ -114,7 +114,7 @@ uv run pytest
 | [Benchmark 报告](docs/benchmarks/2026-10-20-yuki-flash-1017/README.md) | 两套全量评测、用量、缓存与逐题数据 |
 | [Canonical runtime](docs/architecture/canonical-runtime.md) | 人物、账号、空间和会话 |
 | [会话 Compact](docs/architecture/conversation-compact.md) | 长会话和执行上下文整理 |
-| [Plugin API 7.0](docs/plugin-development/index.md) | 插件开发与 SDK |
+| [Plugin API 7.1](docs/plugin-development/index.md) | 插件开发与 SDK |
 | [持久子 Agent](docs/architecture/persistent-subagents.md) | 任务树、父子问答和恢复 |
 | [CHANGELOG](CHANGELOG.md) | 历史版本变化 |
 

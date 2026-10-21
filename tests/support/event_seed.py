@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -106,6 +107,13 @@ async def seed_scoped_event(
             session=session,
             **fields,
         )
+
+    from yuki.persistence.history_search import prepare_terms
+    from yuki.persistence.history_search_index import replace_event
+
+    history_terms = await asyncio.to_thread(
+        prepare_terms, content, fields.get("audio_transcript", "")
+    )
 
     # These fixtures explicitly prove today's seeded owner even when their
     # historical event time predates the fixture's Assignment. Native ingress
@@ -222,6 +230,14 @@ async def seed_scoped_event(
             )
         )
         await active.flush()
+        await replace_event(
+            active,
+            row.id,
+            conversation.id,
+            history_terms,
+            author_person_id=row.author_person_id,
+            author_kind=row.author_kind,
+        )
         await touch_canonical_watermarks(active, conversation.id, event_id=row.id)
         await index_event_media(
             active,

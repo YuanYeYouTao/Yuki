@@ -2,7 +2,7 @@
 FROM ghcr.io/astral-sh/uv:0.11.31 AS uv
 
 FROM rust:1.96.0-slim AS rust
-FROM python:3.12-slim AS monty
+FROM python:3.12-slim-trixie AS monty
 COPY --from=rust /usr/local/cargo /usr/local/cargo
 COPY --from=rust /usr/local/rustup /usr/local/rustup
 COPY --from=uv /uv /uvx /bin/
@@ -18,7 +18,7 @@ RUN bash /build/scripts/build_monty_distribution.sh /build/distribution /usr/loc
 COPY scripts/export_monty_notices.py /build/scripts/
 RUN bash /build/scripts/build_monty_distribution.sh /build/distribution /usr/local/bin/python notices
 
-FROM python:3.12-slim AS builder
+FROM python:3.12-slim-trixie AS builder
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never
@@ -26,6 +26,7 @@ WORKDIR /app
 COPY --from=uv /uv /uvx /bin/
 COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN uv sync --frozen --no-dev --no-install-project
+RUN /app/.venv/bin/python -c "import sqlite3; c=sqlite3.connect(':memory:'); c.execute(\"CREATE VIRTUAL TABLE f USING fts5(tokens, content='', contentless_delete=1, detail=none, tokenize='ascii')\"); c.execute(\"INSERT INTO f(rowid,tokens) VALUES(1,'capability')\"); c.execute('DELETE FROM f WHERE rowid=1')"
 COPY src ./src
 RUN uv sync --frozen --no-dev --no-editable
 FROM builder AS builder-code
@@ -34,7 +35,7 @@ FROM builder AS builder-code
 COPY --from=monty /build/distribution/wheels /opt/monty-wheels
 RUN uv pip install --python /app/.venv/bin/python --no-deps /opt/monty-wheels/*.whl
 
-FROM python:3.12-slim AS runtime-base
+FROM python:3.12-slim-trixie AS runtime-base
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1

@@ -1,0 +1,290 @@
+[
+  {
+    "rows": 50000,
+    "anchor": 25000,
+    "variant": "duplicated_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      0,
+      25000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        93,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 1693,
+    "ids": [
+      25100,
+      25200,
+      25300,
+      25400,
+      25500,
+      25600
+    ]
+  },
+  {
+    "rows": 50000,
+    "anchor": 25000,
+    "variant": "single_max_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      25000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        93,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 102,
+    "ids": [
+      25100,
+      25200,
+      25300,
+      25400,
+      25500,
+      25600
+    ]
+  },
+  {
+    "rows": 50000,
+    "anchor": 50000,
+    "variant": "duplicated_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      0,
+      50000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        93,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 2518,
+    "ids": []
+  },
+  {
+    "rows": 50000,
+    "anchor": 50000,
+    "variant": "single_max_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      50000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        93,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 17,
+    "ids": []
+  },
+  {
+    "rows": 200000,
+    "anchor": 100000,
+    "variant": "duplicated_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      0,
+      100000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        112,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 5443,
+    "ids": [
+      100100,
+      100200,
+      100300,
+      100400,
+      100500,
+      100600
+    ]
+  },
+  {
+    "rows": 200000,
+    "anchor": 100000,
+    "variant": "single_max_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      100000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        112,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 102,
+    "ids": [
+      100100,
+      100200,
+      100300,
+      100400,
+      100500,
+      100600
+    ]
+  },
+  {
+    "rows": 200000,
+    "anchor": 200000,
+    "variant": "duplicated_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      0,
+      200000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        112,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 10018,
+    "ids": []
+  },
+  {
+    "rows": 200000,
+    "anchor": 200000,
+    "variant": "single_max_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      200000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        112,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 17,
+    "ids": []
+  },
+  {
+    "rows": 400000,
+    "anchor": 200000,
+    "variant": "duplicated_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      0,
+      200000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        122,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 10443,
+    "ids": [
+      200100,
+      200200,
+      200300,
+      200400,
+      200500,
+      200600
+    ]
+  },
+  {
+    "rows": 400000,
+    "anchor": 200000,
+    "variant": "single_max_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      200000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        122,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 102,
+    "ids": [
+      200100,
+      200200,
+      200300,
+      200400,
+      200500,
+      200600
+    ]
+  },
+  {
+    "rows": 400000,
+    "anchor": 400000,
+    "variant": "duplicated_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      0,
+      400000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        122,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 20018,
+    "ids": []
+  },
+  {
+    "rows": 400000,
+    "anchor": 400000,
+    "variant": "single_max_lower",
+    "sql": "SELECT ce.id FROM chat_events ce INDEXED BY ix_chat_events_canonical_conversation_id WHERE ce.canonical_conversation_id=? AND ce.id>? AND (ce.suppression_status IS NULL OR ce.suppression_status='keeper') AND ce.event_kind='message' ORDER BY ce.id ASC LIMIT 6",
+    "args": [
+      "7eff0cc3-0c2e-5d13-aa2b-dda99d19b8b2",
+      400000
+    ],
+    "plan": [
+      [
+        5,
+        0,
+        122,
+        "SEARCH ce USING INDEX ix_chat_events_canonical_conversation_id (canonical_conversation_id=? AND rowid>?)"
+      ]
+    ],
+    "vm_steps_exact": 17,
+    "ids": []
+  }
+]

@@ -34,6 +34,8 @@ class ToolExecutionResult:
     metadata: dict[str, Any] | None = None
     evidence_state: dict[str, Any] | None = None
     memory_grounding_policy: str | None = None
+    source_event_ids: tuple[int, ...] = ()
+    source_privacy_generation: int | None = None
     images: tuple[ChatImage, ...] = field(default=(), repr=False)
 
     def __post_init__(self) -> None:
@@ -51,7 +53,11 @@ class ToolExecutionResult:
 
     def model_payload(self) -> dict[str, Any]:
         # Do not even copy pixels while building a public textual projection.
-        payload = {f.name: getattr(self, f.name) for f in fields(self) if f.name != "images"}
+        payload = {
+            f.name: getattr(self, f.name)
+            for f in fields(self)
+            if f.name not in {"images", "source_event_ids", "source_privacy_generation"}
+        }
         if not self.uncertain:
             payload.pop("uncertain")
         if isinstance(self.data, dict) and isinstance(self.data.get("executed"), bool):
@@ -76,6 +82,8 @@ class ToolArtifactWriter(Protocol):
         media_type: str,
         retention_seconds: int | None = None,
         access: ArtifactAccess | None = None,
+        source_event_ids: tuple[int, ...] = (),
+        source_privacy_generation: int | None = None,
     ) -> str: ...
 
     async def read(
@@ -131,6 +139,13 @@ class ToolResultBudgeter:
 
         capture = current_result_capture.get()
         if capture is not None:
+            capture.observe_sources(result.source_event_ids, result.source_privacy_generation)
+            if capture.source_event_ids:
+                result = replace(
+                    result,
+                    source_event_ids=capture.source_event_ids,
+                    source_privacy_generation=capture.source_privacy_generation,
+                )
             capture.outcome = result
             if self._artifacts is None:
                 from yuki.runtime.work_activation import current_work_control
@@ -228,6 +243,8 @@ class ToolResultBudgeter:
                     media_type="application/json",
                     retention_seconds=self._artifact_retention_seconds,
                     access=access,
+                    source_event_ids=result.source_event_ids,
+                    source_privacy_generation=result.source_privacy_generation,
                 )
             except OSError:
                 # Optional presentation storage cannot reverse the original effect.

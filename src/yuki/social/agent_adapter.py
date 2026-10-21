@@ -7,7 +7,6 @@ from typing import Any
 from pydantic import ValidationError
 
 from yuki.capabilities.invocation import current_invocation
-from yuki.identity.person_identity import same_person_id
 from yuki.identity.routing import RouteSendError
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.origin import TurnOrigin
@@ -102,21 +101,33 @@ async def invoke_social(
             raise SocialError(exc.category) from exc
         except ValidationError as exc:
             raise SocialError("invalid_message_arguments") from exc
-    if getattr(runtime, "read_target_id", None) is not None and name in {
-        "read_conversation_history",
-        "find_contacts",
-    }:
-        # This grant is constructed by the Host, independently of the send route.
-        # Sharing the implementation never grants arbitrary cross-conversation reads.
+    if getattr(runtime, "read_target_id", None) is not None and name == "query_chat_history":
+        actor = runtime.actor_context
+        invocation = current_invocation.get()
+        if invocation is None or runtime.tools_closed:
+            raise SocialError("missing_read_scope")
+        context = SocialContext(
+            turn_id=f"{runtime.effective_conversation_id}:{runtime.effective_execution_id}",
+            call_id=invocation.call_id,
+            conversation_id=runtime.effective_conversation_id or "",
+            space_id=runtime.space_id,
+            person_refs={"current_speaker": actor.person_id}
+            if actor is not None and actor.person_id
+            else {},
+            actor=actor,
+            origin=runtime.origin.value,
+        )
+        return await service.execute(name, arguments, context)
+    if getattr(runtime, "read_target_id", None) is not None and name == "find_contacts":
+        from yuki.identity.person_identity import same_person_id
+
         scope = runtime.read_scope
         target_id = runtime.read_target_id
         invocation = current_invocation.get()
-        if not target_id or invocation is None or runtime.tools_closed:
+        if scope is None or invocation is None or runtime.tools_closed:
             raise SocialError("missing_read_scope")
         kind = "space" if scope.group_id else "person"
-        if "event_id" not in arguments and (
-            arguments.get("operation_id") or arguments.get("kind", kind) != kind
-        ):
+        if arguments.get("kind", kind) != kind:
             raise SocialError("history_scope_denied")
         context = SocialContext(
             turn_id=f"{runtime.effective_conversation_id}:{runtime.effective_execution_id}",
@@ -125,17 +136,14 @@ async def invoke_social(
             space_id=target_id if kind == "space" else None,
             person_refs={"current_speaker": target_id} if kind == "person" else {},
         )
-        if name == "read_conversation_history" and "event_id" in arguments:
-            return await service.execute(name, arguments, context)
         selected = dict(arguments)
         if any(selected.get(key) for key in ("target_id", "subject_ref", "display_name")):
             target = await service.target(kind, selected, context, validate=False)
-            if str(target.id) != target_id:
-                async with service.database.sessions() as session:
-                    if kind != "person" or not await same_person_id(
-                        session, str(target.id), target_id
-                    ):
-                        raise SocialError("history_scope_denied")
+            async with service.database.sessions() as session:
+                if str(target.id) != target_id and (
+                    kind != "person" or not await same_person_id(session, str(target.id), target_id)
+                ):
+                    raise SocialError("history_scope_denied")
         selected.pop("subject_ref", None)
         selected.pop("display_name", None)
         selected.update(kind=kind, target_id=target_id)
@@ -157,7 +165,7 @@ async def invoke_social(
     inbound = runtime.inbound
     actor = runtime.require_actor()
     refs = {"current_speaker": actor.person_id} if actor.person_id is not None else {}
-    if name in {"read_conversation_history", "find_contacts"}:
+    if name == "find_contacts":
         for index, person_id in enumerate(actor.mentioned_person_ids, 1):
             refs[f"mentioned_user_{index}"] = person_id
         if actor.mentioned_person_ids:

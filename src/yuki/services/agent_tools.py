@@ -66,8 +66,8 @@ from yuki.sandbox.environment_tools import SANDBOX_TOOLS, is_execution
 from yuki.services.context_boundary import ContextBoundaryReader
 from yuki.services.context_compaction import PublicCompactContext
 from yuki.services.evidence_state import evidence_state
+from yuki.services.history_query import HISTORY_TOOL_DESCRIPTION, HistoryQuery, history_schema
 from yuki.services.turn_coordinator import TurnToken
-from yuki.time.formatting import local_iso
 from yuki.web.base import WebSearchError, WebSearchProvider, normalize_public_url
 from yuki.web.models import (
     WebMode,
@@ -459,27 +459,9 @@ class AgentToolService:
             ChatTool(
                 name="query_chat_history",
                 result_cacheable=False,
-                description=(
-                    "读取当前 Conversation 的授权账本：recent 取近期消息，search 按 keyword、"
-                    "内部 Person/Space 和 start_at/end_at 时间查原话；"
-                    "around 按内部 event_id 取前后记录。"
-                    "不调用平台补查，不接受平台消息号。before/after 是 around 的消息条数。"
-                ),
-                parameters=_object_schema(
-                    {
-                        "view": {"type": "string", "enum": ["recent", "search", "around"]},
-                        "keyword": {"type": "string"},
-                        "person_id": {"type": "string"},
-                        "space_id": {"type": "string"},
-                        "start_at": {"type": "string", "description": "ISO 8601 起点"},
-                        "end_at": {"type": "string", "description": "ISO 8601 终点"},
-                        "limit": {"type": "integer", "minimum": 1},
-                        "event_id": {"type": "integer", "minimum": 1},
-                        "before": {"type": "integer", "minimum": 0},
-                        "after": {"type": "integer", "minimum": 0},
-                    },
-                    required=("view",),
-                ),
+                description=HISTORY_TOOL_DESCRIPTION,
+                parameters=history_schema(),
+                schema_version="2",
             ),
             ChatTool(
                 name="search_memory",
@@ -760,14 +742,12 @@ class AgentToolService:
                 )
             )
         from yuki.sandbox.client import sandbox_tools
-        from yuki.services.personal_entry_tool import ENTRY_TOOL
         from yuki.social.tools import social_tool_definitions
         from yuki.workspace.service import workspace_tools
 
         return (
             *tools,
             *social_tool_definitions(),
-            ENTRY_TOOL,
             *workspace_tools(),
             *sandbox_tools(),
         )
@@ -899,18 +879,6 @@ class AgentToolService:
                         )
                         return self._result(error=category, detail=detail)
 
-                if name == "read_personal_entry":
-                    from yuki.services.personal_entry_tool import read_entry
-                    from yuki.social.models import SocialError
-
-                    try:
-                        data = await read_entry(self._ledger._database, runtime, arguments)
-                        return self._result(data=data, error=data.get("error"))
-                    except SocialError as exc:
-                        return self._result(
-                            error=str(exc), detail="仅 App/ACP 个人会话可读取本人其他私聊入口"
-                        )
-
                 if name in {tool.name for tool in social_tool_definitions()}:
                     from yuki.social.agent_adapter import invoke_social
                     from yuki.social.models import SocialError
@@ -937,8 +905,6 @@ class AgentToolService:
                                     if social_result.get("error") == "binding_required"
                                     else "读取账号不明确；从 presences 选择 presence_id，勿换号试读"
                                     if social_result.get("error") == "presence_ambiguous"
-                                    else "网关读取失败，保留已取得的分组状态"
-                                    if name == "read_conversation_history"
                                     else "文件已发送成功，附带文字未确认发送；不要重发文件"
                                     if social_result.get("error") == "file_sent_caption_unconfirmed"
                                     else "部分分条已确认发送；不要重发已成功的分条"
@@ -1007,14 +973,7 @@ class AgentToolService:
                 if name == "get_my_capabilities":
                     return self._my_capabilities(arguments, runtime)
                 if name == "query_chat_history":
-                    view = arguments.get("view")
-                    if view == "recent":
-                        return await self._recent_history(runtime)
-                    if view == "search":
-                        return await self._search(arguments, runtime)
-                    if view == "around":
-                        return await self._history_around(arguments, runtime)
-                    return self._result(error="invalid_arguments", detail="未知 history view")
+                    return await self._query_history(arguments, runtime)
                 if name == "search_memory":
                     result = await self._search_memory(arguments, runtime)
                     return await self._capture_memory_tool_result(result, runtime)
@@ -1038,10 +997,10 @@ class AgentToolService:
                 await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
                 return self._result(error=exc.code, detail="记忆检索失败", retryable=True)
             except SQLAlchemyError:
-                logger.exception("memory_tool_database_failure tool=%s", name)
+                logger.exception("agent_tool_database_failure tool=%s", name)
                 await self._record_memory_tool_outcome(runtime, "infrastructure_failure")
                 return self._result(
-                    error="database_failure", detail="数据库事务未提交", retryable=True
+                    error="database_failure", detail="数据库操作失败", retryable=True
                 )
             except (TypeError, ValueError) as exc:
                 if name in _OBSERVED_MEMORY_READS:
@@ -1111,82 +1070,50 @@ class AgentToolService:
             actor_is_superuser=runtime.actor_is_superuser,
         )
 
-    async def _recent_history(self, runtime: ToolRuntime) -> ToolExecutionResult:
-        rows = await self._ledger.list_scope_recent(
-            runtime.conversation_scope(),
-            limit=self._settings.recent_history_tool_limit,
-            message_only=True,
-        )
-        return self._result(
-            data={"source": "ledger", "events": [self._event_json(row) for row in rows]}
-        )
-
-    async def _search(self, arguments: dict[str, Any], runtime: ToolRuntime) -> ToolExecutionResult:
-        keyword = arguments.get("keyword")
-        if not isinstance(keyword, str) or not keyword.strip():
-            return self._result(error="invalid_keyword", detail="keyword 必须是非空字符串")
-        rows = await self._ledger.search(
-            keyword=keyword,
-            scope=runtime.conversation_scope(),
-            person_id=self._optional_string(arguments.get("person_id")),
-            space_id=self._optional_string(arguments.get("space_id")),
-            after=self._parse_time(arguments.get("start_at")),
-            before=self._parse_time(arguments.get("end_at")),
-            limit=int(arguments.get("limit", 20)),
-            message_only=True,
-        )
-        events = [self._event_json(row) for row in rows]
-        return self._result(
-            data={"events": events, "returned_count": len(events), "truncated": False}
-        )
-
-    async def _history_around(
-        self,
-        arguments: dict[str, Any],
-        runtime: ToolRuntime,
+    async def _query_history(
+        self, arguments: dict[str, Any], runtime: ToolRuntime
     ) -> ToolExecutionResult:
-        event_id = arguments.get("event_id")
-        if isinstance(event_id, bool) or not isinstance(event_id, int) or event_id <= 0:
-            return self._result(error="invalid_event_id", detail="event_id 必须是正整数")
-        if "platform_message_id" in arguments:
-            return self._result(error="invalid_target", detail="本地账本只接受 event_id")
-        scope = runtime.conversation_scope()
-        max_before = self._settings.conversation_history_around_before
-        max_after = self._settings.conversation_history_around_after
-        total_limit = self._settings.conversation_history_around_limit
+        from yuki.social.agent_adapter import invoke_social
+        from yuki.social.models import SocialError
+
+        query = HistoryQuery.model_validate(arguments)
+        defaults = {
+            "limit": self._settings.recent_history_tool_limit,
+            "before": self._settings.conversation_history_around_before,
+            "after": self._settings.conversation_history_around_after,
+        }
+        selected = query.model_dump(mode="json", exclude_none=True)
+        for key, value in defaults.items():
+            selected.setdefault(key, value)
         try:
-            before = self._optional_bounded_int(
-                arguments.get("before"), default=max_before, maximum=max_before
-            )
-            after = self._optional_bounded_int(
-                arguments.get("after"), default=max_after, maximum=max_after
-            )
-        except ValueError:
-            return self._result(error="invalid_radius", detail="before/after 必须是整数")
-        if before + after + 1 > total_limit:
-            extra = before + after + 1 - total_limit
-            reduce_before = min(before, extra)
-            before -= reduce_before
-            extra -= reduce_before
-            after = max(0, after - extra)
-        center, earlier, later = await self._ledger.list_scope_around(
-            scope,
-            event_id=event_id,
-            before=before,
-            after=after,
-            message_only=True,
-        )
-        if center is None:
-            return self._result(error="not_found", detail="当前会话找不到这条消息")
-        events = (*earlier, center, *later)
-        return self._result(
-            data={
-                "source": "ledger",
-                "center_event_id": center.id,
-                "before": len(earlier),
-                "after": len(later),
-                "events": [self._event_json(row) for row in events],
-            }
+            if (
+                self.social_service is not None
+                and runtime.origin is not TurnOrigin.PLUGIN_BACKGROUND
+            ):
+                data = await invoke_social(
+                    self.social_service, "query_chat_history", selected, runtime
+                )
+            else:
+                from yuki.social.history import read_history
+                from yuki.social.service import SocialContext
+
+                context = SocialContext(
+                    turn_id=runtime.effective_execution_id,
+                    call_id="history",
+                    conversation_id=runtime.effective_conversation_id or "",
+                    actor=runtime.actor_context,
+                    space_id=runtime.space_id,
+                    origin=runtime.origin.value,
+                )
+                data = await read_history(
+                    self._ledger._database, selected, context, runtime=runtime
+                )
+        except SocialError as exc:
+            return self._result(error=str(exc), detail="无法读取所选历史范围")
+        return replace(
+            self._result(data=data, error=data.get("error")),
+            source_event_ids=getattr(data, "source_event_ids", ()),
+            source_privacy_generation=getattr(data, "source_privacy_generation", None),
         )
 
     async def _search_memory(
@@ -2264,46 +2191,6 @@ class AgentToolService:
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError("limit must be an integer")
         return max(1, min(int(value), maximum))
-
-    @staticmethod
-    def _optional_bounded_int(value: Any, *, default: int, maximum: int) -> int:
-        if value is None:
-            return default
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError("count must be an integer")
-        return max(0, min(int(value), maximum))
-
-    def _event_json(self, row: Any) -> dict[str, Any]:
-        return {
-            "id": row.id,
-            "event_kind": row.event_kind,
-            "author_kind": row.author_kind,
-            "source": row.origin,
-            "person_id": row.author_person_id,
-            "presence_id": row.author_presence_id,
-            "sender_nickname": row.sender_nickname,
-            "sender_group_card": row.sender_group_card,
-            "sender_display_name": row.sender_display_name,
-            "scope": row.scope_type.value,
-            "conversation_id": row.canonical_conversation_id,
-            "direction": row.direction,
-            "content": row.perceived_content,
-            "attachments": [
-                {
-                    "attachment_index": index,
-                    "kind": segment["type"],
-                    "name": str(segment["data"].get("name", ""))[:200],
-                }
-                for index, segment in enumerate(
-                    segment
-                    for segment in row.segments
-                    if isinstance(segment, dict)
-                    and segment.get("type") in {"image", "video", "file", "audio", "record"}
-                    and isinstance(segment.get("data"), dict)
-                )
-            ],
-            "occurred_at": local_iso(row.occurred_at, self._settings.default_timezone),
-        }
 
     def _result(
         self,
