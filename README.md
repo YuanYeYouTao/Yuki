@@ -22,13 +22,13 @@
 
 </div>
 
-Yuki 是一个开源、自托管的社会化 AI Agent。她通过 QQ、Telegram 和个人客户端参与对话，记住人物、偏好和共同经历，也能在持久 Linux 环境里处理文件、运行程序、维护项目和执行定时任务。人物身份、记忆与任务由自己的数据库保存，更换模型、账号或网关后可以继续使用。
+Yuki 是一个开源、自托管的社会化 AI Agent。她通过 QQ、Telegram、飞书、Lark 和个人客户端参与对话，记住人物、偏好和共同经历，也能在持久 Linux 环境里处理文件、运行程序、维护项目和执行定时任务。人物身份、记忆与任务由自己的数据库保存，更换模型、账号或网关后可以继续使用。
 
 **当前开发基线为 4.0.0，正式下载版本为 [3.9.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0)。** 4.0 把多平台和个人客户端放进同一套后端：聊天、SELF 自主行动、定时任务、插件和长任务续跑使用共同 Main，人物资料和记忆跟着人走，各个聊天入口保留自己的对话。
 
 ## 4.0 这一版
 
-- **从 QQ 走向多平台和个人客户端。** QQ、Telegram、App API 与 ACP 服务共用身份、记忆、工具和任务。个人设备可以配对、发送附件、接收事件、查看任务，并向已有任务补充信息；桌面项目 [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) 单独维护。旧管理 WebUI 已退出，管理使用 CLI 和 `/ai admin`。
+- **从 QQ 走向多平台和个人客户端。** QQ、Telegram、飞书、Lark、App API 与 ACP 服务共用身份、记忆、工具和任务。飞书和 Lark 使用企业自建应用的长连接，支持单聊、群聊和话题，接入方式见[配置说明](docs/operations/feishu.zh-CN.md)。个人设备可以配对、发送附件、接收事件、查看任务，并向已有任务补充信息；桌面项目 [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) 单独维护。旧管理 WebUI 已退出，管理使用 CLI 和 `/ai admin`。
 - **把人物和账号分开。** 同一个人可以关联多个账号，也可以没有平台账号。同人合并、账号转交、暂停和解绑分别处理；改昵称或换账号不会把旧消息、记忆和任务改归别人。超级管理员资格属于人物。
 - **让终端承担日常工作。** 普通文件、项目和依赖直接由持久终端操作，支持交互输入、后台执行、查询和取消。direct 与可选 Code Mode 使用同一套工具和执行后端。
 - **长任务继续沿原记录推进。** Work 保存目标、父子关系、模型请求、工具执行与交付记录。新消息可以补充当前工作；重启后查询原执行，接着处理已经发生的结果。Main Compact 整理长会话和执行上下文，沿用当前模型。
@@ -92,7 +92,7 @@ uv sync --all-extras
 uv run yuki --help
 ```
 
-当前命令统一为 `yuki`，服务入口为 `yuki-bot`。从 3.9 迁移的步骤见 [4.0 升级指南](docs/upgrade-4.0.0.md)。QQ 使用 SnowLuma；仅使用 Telegram 或个人客户端时，无需配置 QQ 账号。
+当前命令统一为 `yuki`，服务入口为 `yuki-bot`。从 3.9 迁移的步骤见 [4.0 升级指南](docs/upgrade-4.0.0.md)。QQ 使用 SnowLuma；仅使用飞书、Lark、Telegram 或个人客户端时，无需配置 QQ 账号。
 
 4.0.0 发布基线为 schema **0143**、Plugin API **7.0**、manifest **25**。后续开发的 #448 统一聊天记录读取使用 schema **0145**、Plugin API **7.1**、manifest **26**；从旧库升级需要停业务写入，完成正文索引转换后再启动 Bot。升级前备份数据库、配置、插件和工作文件，详见[现行历史读取合同](docs/architecture/chat-history.md)与[实施记录](docs/operations/chat-history-448-implementation-20261022.md)。
 
@@ -113,6 +113,7 @@ uv run pytest
 | [4.0.0 发布说明](docs/releases/v4.0.0.md) | 主要功能、修复、兼容性变化和完整 PR 清单 |
 | [Benchmark 报告](docs/benchmarks/2026-10-20-yuki-flash-1017/README.md) | 两套全量评测、用量、缓存与逐题数据 |
 | [Canonical runtime](docs/architecture/canonical-runtime.md) | 人物、账号、空间和会话 |
+| [飞书与 Lark 接入](docs/operations/feishu.zh-CN.md) | 自建应用、群消息权限、长连接和媒体 |
 | [会话 Compact](docs/architecture/conversation-compact.md) | 长会话和执行上下文整理 |
 | [Plugin API 7.1](docs/plugin-development/index.md) | 插件开发与 SDK |
 | [持久子 Agent](docs/architecture/persistent-subagents.md) | 任务树、父子问答和恢复 |

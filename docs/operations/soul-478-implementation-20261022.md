@@ -4,7 +4,7 @@
 
 ## 当前范围
 
-后端从 `main@62bbacec` 独立实施，复用桌面分支的必要角色资料/授权和文件发布语义，没有整体合入电脑与执行器等无关功能。参与库另提 [PR #24](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/pull/24)，宿主固定实现提交 `438f204f9ebe2b8c1b698b68c0f1b3ac8b4facef`。独立 Desktop 已完成单 SOUL 编辑及真实 Electron 场景验证，公开合同固定后端 `d76cd794a678626d997476e450f2c0cceb3ebacf`；旧草稿采用显式选源导出，不保留运行时旧 key 分发或导入。客户端 [PR #2](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/2) 已提交，最终 CI 仍在收尾。
+后端从 `main@62bbacec` 独立实施，复用桌面分支的必要角色资料/授权和文件发布语义，没有整体合入电脑与执行器等无关功能。参与库另提 [PR #24](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/pull/24)，宿主固定实现提交 `438f204f9ebe2b8c1b698b68c0f1b3ac8b4facef`。独立 Desktop 已完成单 SOUL 编辑及真实 Electron 场景验证，公开合同固定后端 `06b9378f07a565b67122eebd79e080e0ecf4835e`；旧草稿采用显式选源导出，不保留运行时旧 key 分发或导入。客户端 [PR #2](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/2) 已提交，五平台 CI 已通过。
 
 用户已授权本轮及 #448 相关 PR 准备后联合合并上线。下文的未决状态均为提交前快照，不能替代上方交付记录；本次验证未调用付费模型或发送真实平台测试消息。
 
@@ -56,6 +56,8 @@
 - 5项持久恢复新回归及关联边界组97项通过；历史名回归3项、插件锁外准备回归1项、角色含遗忘和SSE回归组通过。
 - 新operator初始化与示例补明角色读写能力，既有operator不自动扩权；部署/操作者相关53项通过。
 - 真实空数据库完成冻结迁移及显式角色初始化，重复初始化保持同一ID、名称和revision。未用测试 `create_schema()` 代替这项演练。
+- 最终合流纳入飞书/Lark [PR #491](https://github.com/YuanYeYouTao/Yuki/pull/491)，保持实际内部身份、原 Presence 和统一 Social 回执；容器测试显式初始化角色，未恢复旧 Settings 字段。飞书相关81项、角色/平台组合30项通过。
+- 生产143一致副本真实迁移到147用时112.75秒，13组原字段逐行hash及数量不变。迁移后9个变更/新FTS影子表定点quick_check、FTS integrity-check、原外键定义和实际12条literal检索通过；整库迁移后quick_check因I/O耗时被中止，未完成，不能记为通过。另准备上线前143完整验证备份。
 
 Linux旧head集成752通过、5个旧断言/未初始化角色的测试失败，均已修正；旧unit3184通过、22个迁移准备错误已定位为测试session选源时序。改为session显式选定公开测试SOUL，并使0145测试区分冻结终点与当前head；31项迁移/启动回归中原4个head断言修正后相关18项通过。未添加运行时默认或旧字段。Windows整套集成723通过，另有已纠正断言、长路径和POSIX依赖失败，不能冒称全绿。
 
@@ -76,4 +78,4 @@ Linux旧head集成752通过、5个旧断言/未初始化角色的测试失败，
 
 ## 联合交付边界
 
-后端[PR #490](https://github.com/YuanYeYouTao/Yuki/pull/490)、历史[PR #489](https://github.com/YuanYeYouTao/Yuki/pull/489)、Desktop[PR #2](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/2)与参与库[PR #24](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/pull/24)联合交付。目标Host4.0还需删除实际启用插件的旧版本上限，见Kun[PR #4](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game/pull/4)和GitHubMonitor[PR #2](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor/pull/2)；其代码与权限不变，新manifest沿原控制面按原批准集合重新核准，不手改hash。生产切换按现有 Bot-only、备份及引用核对流程执行，保原数据库、文件、工作区、回执与无关服务；健康和自然流量证据另记。
+后端[PR #490](https://github.com/YuanYeYouTao/Yuki/pull/490)、历史[PR #489](https://github.com/YuanYeYouTao/Yuki/pull/489)、飞书/Lark[PR #491](https://github.com/YuanYeYouTao/Yuki/pull/491)、Desktop[PR #2](https://github.com/Institute-of-Agent-Life/Yuki-Desktop/pull/2)与参与库[PR #24](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/pull/24)联合交付。目标Host4.0还需删除实际启用插件的旧版本上限，见Kun[PR #4](https://github.com/Institute-of-Agent-Life/Yuki-Kun-Game/pull/4)和GitHubMonitor[PR #2](https://github.com/Institute-of-Agent-Life/Yuki-GitHub-Monitor/pull/2)；其代码与权限不变，新manifest沿原控制面按原批准集合重新核准，不手改hash。生产切换按现有 Bot-only、备份及引用核对流程执行，保原数据库、文件、工作区、回执与无关服务；健康和自然流量证据另记。

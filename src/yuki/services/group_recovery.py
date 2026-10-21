@@ -17,7 +17,7 @@ from yuki.identity.routing import PresenceRouter, RouteSendError
 from yuki.persistence.database import Database
 from yuki.services.admin.group_recovery import GroupRecoveryService
 from yuki.services.commands.group import parse_group_command
-from yuki.services.policies import CommandName, parse_command
+from yuki.services.policies import CommandName, parse_message_command
 
 
 class NativeGroupRecovery:
@@ -42,7 +42,7 @@ class NativeGroupRecovery:
             or message.sender.is_bot
         ):
             return None, ""
-        command, argument, _triggered = parse_command(message.text, self._settings.ai_prefix)
+        command, argument, _triggered = parse_message_command(message, self._settings.ai_prefix)
         return command, argument
 
     def is_enable_request(self, message: InboundMessage) -> bool:

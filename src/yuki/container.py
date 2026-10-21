@@ -91,6 +91,8 @@ class ApplicationContainer:
         runtime_config: RuntimeConfigService | None = None,
         vision_provider: VisionProvider | None = None,
     ) -> None:
+        if bool(settings.feishu_app_id) != bool(settings.feishu_app_secret.get_secret_value()):
+            raise ValueError("FEISHU_APP_ID and FEISHU_APP_SECRET must be configured together")
         self.settings = settings
         self.started_at = time.monotonic()
         self.lifecycle = LifecycleRegistry()
@@ -618,6 +620,23 @@ class ApplicationContainer:
                 TelegramClient(settings.telegram_bot_token.get_secret_value()),
                 poll_interval=settings.telegram_poll_interval_seconds,
             )
+        self.feishu_gateway = None
+        if settings.feishu_app_id:
+            from yuki.gateway.providers.feishu import FeishuClient
+            from yuki.gateway.providers.feishu_ingress import FeishuGateway
+
+            self.feishu_gateway = FeishuGateway(
+                database=self.database,
+                registry=self.gateway_registry,
+                router=self.presence_router,
+                processor=self.processor,
+                writer=self.scoped_events,
+                client=FeishuClient(
+                    settings.feishu_app_id,
+                    settings.feishu_app_secret.get_secret_value(),
+                    domain=settings.feishu_domain,
+                ),
+            )
         client_works = ClientWorks(self.client_api.identity, client_gateways)
         client_views = ClientViews(
             self.client_api.identity,
@@ -899,6 +918,13 @@ class ApplicationContainer:
                 start=self.telegram_gateway.start,
                 close=self.telegram_gateway.close,
                 health=self.telegram_gateway.health,
+            )
+        if self.feishu_gateway is not None:
+            self.lifecycle.register(
+                "feishu_gateway",
+                start=self.feishu_gateway.start,
+                close=self.feishu_gateway.close,
+                health=self.feishu_gateway.health,
             )
         self.lifecycle.register("application_event", start=self._publish_started)
         self.lifecycle.register(

@@ -78,6 +78,32 @@ def parse_command(text: str, ai_prefix: str) -> tuple[CommandName | None, str, b
     return None, remainder, triggered
 
 
+def message_command_text(message: InboundMessage, ai_prefix: str = "") -> str:
+    """Project command text after native Bot mentions without rewriting the source."""
+
+    cursor = 0
+    yuki_ids = message.yuki_account_ids | ({message.bot_user_id} if message.bot_user_id else set())
+    for mention in message.mentions:
+        if message.text[cursor : mention.text_start].strip():
+            break
+        if mention.kind != "yuki" and mention.target_user_id not in yuki_ids:
+            break
+        cursor = mention.text_end
+    if cursor:
+        remainder = message.text[cursor:]
+        if parse_command(remainder, ai_prefix)[2]:
+            return remainder
+    return message.text
+
+
+def parse_message_command(
+    message: InboundMessage, ai_prefix: str
+) -> tuple[CommandName | None, str, bool]:
+    """Read a command after leading native Bot mentions, retaining the original message."""
+
+    return parse_command(message_command_text(message, ai_prefix), ai_prefix)
+
+
 def replies_to_bot(
     message: InboundMessage,
     *,
@@ -105,7 +131,7 @@ def evaluate_message(
         return PolicyDecision(False, reason="bot_message")
 
     command, content, prefix_triggered = (
-        parse_command(message.text, settings.ai_prefix)
+        parse_message_command(message, settings.ai_prefix)
         if commands_enabled
         else (None, message.text, False)
     )

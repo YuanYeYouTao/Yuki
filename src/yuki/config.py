@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr = SecretStr("")
     telegram_poll_interval_seconds: float = Field(default=1.0, gt=0)
 
+    feishu_app_id: str = ""
+    feishu_app_secret: SecretStr = SecretStr("")
+    feishu_domain: Literal["https://open.feishu.cn", "https://open.larksuite.com"] = (
+        "https://open.feishu.cn"
+    )
+
     onebot_access_token: str = ""
     enabled_groups_csv: str = Field(default="", validation_alias="ENABLED_GROUPS")
     ignored_bot_users_csv: str = Field(default="", validation_alias="IGNORED_BOT_USERS")

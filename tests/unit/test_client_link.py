@@ -5,12 +5,14 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
 from sqlalchemy import func, select
 from tests.conftest import MemorySender, build_harness, make_settings
 from tests.support.client_identity import client_identity_service
 from tests.unit.test_canonical_ingress import _Bot, _message, _stack
 
 from yuki.client_api.db_models import ClientLinkCodeModel
+from yuki.domain.messages import MessageMention
 from yuki.identity.canonical_repository import find_identity_binding
 from yuki.identity.db_models import CanonicalPersonModel, IdentityBindingModel
 from yuki.identity.person_identity import current_person_id
@@ -30,7 +32,8 @@ async def stack(database):
     return registry, bot, identities, target.person_id, code["code"]
 
 
-async def test_first_unseen_account_links_without_new_person_ledger_or_main(database):
+@pytest.mark.parametrize("native_at", [False, True])
+async def test_first_unseen_account_links_without_new_person_ledger_or_main(database, native_at):
     registry, bot, identities, target, code = await stack(database)
     harness = build_harness(database, make_settings(database.url))
     harness.processor._client_links = ClientLinkCommands(identities, registry)
@@ -40,16 +43,54 @@ async def test_first_unseen_account_links_without_new_person_ledger_or_main(data
     sender.bot = bot
     async with database.sessions() as session:
         count = await session.scalar(select(func.count(CanonicalPersonModel.id)))
-    result = await harness.processor.handle(
-        _message(message_id="link-first", user_id="45454545", text=f"/ai link {code}"), sender
-    )
+    incoming = _message(message_id="link-first", user_id="45454545", text=f"/ai link {code}")
+    if native_at:
+        incoming = replace(
+            incoming,
+            text="@Renamed " + incoming.text,
+            mentions_bot=True,
+            mentions=(MessageMention("yuki", 0, 0, 8, "8000", display_name="Renamed"),),
+        )
+    source = incoming.text, incoming.mentions
+    result = await harness.processor.handle(incoming, sender)
     assert result.reason == "client_link" and sender.calls == 1
     forbidden.assert_not_awaited()
     assert not harness.provider.requests
+    assert (incoming.text, incoming.mentions) == source
     async with database.sessions() as session:
         assert await session.scalar(select(func.count(CanonicalPersonModel.id))) == count
         assert await session.scalar(select(func.count(ChatEventModel.id))) == 0
         assert (await find_identity_binding(session, "45454545")).person_id == target
+
+
+async def test_native_bot_address_without_argument_issues_a_real_link_code(database):
+    registry, bot, identities, person, _ = await stack(database)
+    handler = ClientLinkCommands(identities, registry)
+    incoming = replace(
+        _message(message_id="native-issue", text="@Renamed /ai link"),
+        mentions_bot=True,
+        mentions=(MessageMention("yuki", 0, 0, 8, "8000", display_name="Renamed"),),
+    )
+    assert handler.is_request(incoming)
+    response = await handler.execute(bot, incoming)
+    assert response.startswith("绑定码：")
+    async with database.sessions() as session:
+        issued = await session.scalar(
+            select(ClientLinkCodeModel).where(ClientLinkCodeModel.issuer_source == "qq")
+        )
+        assert issued is not None and issued.person_id == person and issued.used_at is None
+        assert await session.scalar(select(func.count(ChatEventModel.id))) == 0
+
+
+@pytest.mark.parametrize("native_member", [False, True])
+def test_literal_or_other_member_address_is_not_a_link_request(native_member):
+    incoming = _message(message_id="literal-link", text="@Renamed /ai link")
+    if native_member:
+        incoming = replace(
+            incoming,
+            mentions=(MessageMention("member", 0, 0, 8, "45454545", display_name="Renamed"),),
+        )
+    assert not ClientLinkCommands(None, None).is_request(incoming)
 
 
 async def test_authenticated_merge_preserves_old_source_and_reused_code_writes_nothing(

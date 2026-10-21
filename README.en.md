@@ -22,13 +22,13 @@
 
 </div>
 
-Yuki is an open-source, self-hosted social AI agent. She joins conversations through QQ, Telegram and personal clients, remembers people and shared experiences, and uses a persistent Linux environment to work with files, run programs, maintain projects and carry out scheduled tasks. Identity, memory and tasks live in your own database and can continue across changes of model, account or gateway.
+Yuki is an open-source, self-hosted social AI agent. She joins conversations through QQ, Telegram, Feishu, Lark and personal clients, remembers people and shared experiences, and uses a persistent Linux environment to work with files, run programs, maintain projects and carry out scheduled tasks. Identity, memory and tasks live in your own database and can continue across changes of model, account or gateway.
 
 **The development baseline is 4.0.0; the stable download is [3.9.0](https://github.com/YuanYeYouTao/Yuki/releases/tag/v3.9.0).** Version 4.0 brings platforms and personal clients into one backend. Chat, SELF initiative, schedules, plugins and task resumption share Main. Profiles and memories belong to people, while each conversation entry keeps its own history.
 
 ## What changes in 4.0
 
-- **More ways to reach the same Yuki.** QQ, Telegram, the personal API and ACP share identity, memory, tools and tasks. Personal devices can pair, send attachments, receive events, inspect work and add instructions to an existing task. [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) is maintained separately. The old management WebUI is retired; administration uses the CLI and `/ai admin`.
+- **More ways to reach the same Yuki.** QQ, Telegram, Feishu, Lark, the personal API and ACP share identity, memory, tools and tasks. Feishu and Lark use a custom app's long connection for direct messages, groups and threads; see the [setup guide](docs/operations/feishu.zh-CN.md). Personal devices can pair, send attachments, receive events, inspect work and add instructions to an existing task. [Yuki Desktop](https://github.com/Institute-of-Agent-Life/Yuki-Desktop) is maintained separately. The old management WebUI is retired; administration uses the CLI and `/ai admin`.
 - **People and accounts are separate.** A person can own several accounts or none. Merging the same person, transferring an account, pausing it and unlinking it have distinct meanings. Renaming or reassigning an account preserves the original ownership of past messages, memories and tasks. Superuser status belongs to the person.
 - **A terminal for everyday work.** Files, projects and dependencies are handled directly in the persistent terminal, with interactive input, background execution, inspection and cancellation. Direct mode and optional Code Mode share tools and execution services.
 - **Tasks continue from their records.** Work retains goals, parent-child relationships, model requests, tool runs and delivery records. New messages can update ongoing work. Recovery reads the original execution, and Main Compact uses the current model to condense long conversations and task context.
@@ -92,7 +92,7 @@ uv sync --all-extras
 uv run yuki --help
 ```
 
-The CLI is `yuki` and the server entry point is `yuki-bot`. See the [4.0 upgrade guide](docs/upgrade-4.0.0.en.md) for migration from 3.9. QQ uses SnowLuma; Telegram or personal-client-only setups need no QQ account.
+The CLI is `yuki` and the server entry point is `yuki-bot`. See the [4.0 upgrade guide](docs/upgrade-4.0.0.en.md) for migration from 3.9. QQ uses SnowLuma; Feishu, Lark, Telegram or personal-client-only setups need no QQ account.
 
 The 4.0.0 release baseline is schema **0143**, Plugin API **7.0**, and manifest **25**. Subsequent #448 development unifies chat-history reads with schema **0145**, Plugin API **7.1**, and manifest **26**. Stop business writers while upgrading the text index, then start the Bot after conversion completes. Back up the database, configuration, plugins and working files first. See the [current history contract](docs/architecture/chat-history.md) and [implementation record](docs/operations/chat-history-448-implementation-20261022.md).
 
@@ -113,6 +113,7 @@ uv run pytest
 | [4.0.0 release notes](docs/releases/v4.0.0.en.md) | Features, fixes, compatibility changes and the complete PR ledger |
 | [Benchmark report](docs/benchmarks/2026-10-20-yuki-flash-1017/SUMMARY.en.md) | Full evaluations, usage, cache accounting and per-task data |
 | [Canonical runtime](docs/architecture/canonical-runtime.md) | People, accounts, spaces and conversations |
+| [Feishu and Lark setup](docs/operations/feishu.zh-CN.md) | Custom apps, message permissions, long connections and media |
 | [Conversation compact](docs/architecture/conversation-compact.md) | Long conversations and task context |
 | [Plugin API 7.1](docs/plugin-development/index.md) | Plugin development and SDK |
 | [Persistent subagents](docs/architecture/persistent-subagents.md) | Task trees, parent-child questions and recovery |
