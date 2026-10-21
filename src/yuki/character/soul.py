@@ -278,7 +278,10 @@ class CharacterSoul:
             )
             if original is not None:
                 return original
-            original_bytes, _modified = await _media_io(_source, self.settings.soul_file)
+            try:
+                original_bytes, _modified = await _media_io(_source, self.settings.soul_file)
+            except OSError as exc:
+                raise ClientError("unknown") from exc
             current_revision = document_revision(original_bytes)
             revision = document_revision(data)
             if current_revision != expected_revision and (created or current_revision != revision):

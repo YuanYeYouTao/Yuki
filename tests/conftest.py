@@ -47,10 +47,14 @@ from yuki.vision.base import VisionProvider
 from yuki.web.base import WebSearchProvider
 
 
-@pytest.fixture(autouse=True)
-def selected_test_soul(monkeypatch):
+@pytest.fixture(scope="session", autouse=True)
+def selected_test_soul():
     """Select public test data explicitly; production never falls back to a preset."""
-    monkeypatch.setenv("SOUL_FILE", str(Path(__file__).resolve().parents[1] / "config/SOUL.md"))
+    with pytest.MonkeyPatch.context() as environment:
+        environment.setenv(
+            "SOUL_FILE", str(Path(__file__).resolve().parents[1] / "config/SOUL.md")
+        )
+        yield
 
 
 class MemorySender:

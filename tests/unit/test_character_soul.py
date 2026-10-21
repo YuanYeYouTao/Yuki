@@ -211,6 +211,60 @@ async def test_written_but_lost_file_ack_resumes_the_same_request(character, mon
     assert settings.soul == "Recovered"
 
 
+async def test_missing_selected_soul_keeps_original_request_for_file_recovery(
+    character, monkeypatch
+):
+    from sqlalchemy import select
+
+    from yuki.conversation.canonical_db_models import ControlCommandReceiptModel
+
+    client, repository, _soul, settings, _principal, path = character
+    original = (await client.get("/client/v1/character/soul")).json()["data"]
+    retained = path.with_suffix(".retained")
+    path.rename(retained)
+    for variable, name in (
+        ("SYSTEM_PROMPT_FILE", "system_prompt.md"),
+        ("BOT_PERSONA_FILE", "persona.md"),
+    ):
+        old = path.parent / name
+        old.write_text("Must not use this old source", encoding="utf-8")
+        monkeypatch.setenv(variable, str(old))
+    request = {
+        "request_id": str(uuid4()),
+        "expected_revision": original["revision"],
+        "content": "Recovered selected SOUL",
+    }
+    unknown = await client.put("/client/v1/character/soul", json=request)
+    assert unknown.status_code == 409 and unknown.json() == {"problem": {"code": "unknown"}}
+    assert settings.active_soul_revision == original["active_revision"]
+    assert settings.soul == retained.read_bytes().decode("utf-8")
+    async with repository.database.sessions() as session:
+        receipt = (
+            await session.scalars(
+                select(ControlCommandReceiptModel).where(
+                    ControlCommandReceiptModel.request_id == request["request_id"]
+                )
+            )
+        ).one()
+        receipt_id, payload_hash = receipt.id, receipt.payload_hash
+        assert receipt.status == "running"
+    retained.rename(path)
+    recovered = await client.put("/client/v1/character/soul", json=request)
+    assert recovered.status_code == 200, recovered.text
+    assert path.read_bytes() == b"Recovered selected SOUL"
+    assert settings.soul == "Recovered selected SOUL"
+    async with repository.database.sessions() as session:
+        receipt = (
+            await session.scalars(
+                select(ControlCommandReceiptModel).where(
+                    ControlCommandReceiptModel.request_id == request["request_id"]
+                )
+            )
+        ).one()
+        assert receipt.id == receipt_id and receipt.payload_hash == payload_hash
+        assert receipt.status == "succeeded"
+
+
 async def test_sdk_recovers_its_original_unknown_soul_write(character, tmp_path, monkeypatch):
     from yuki.character import soul as module
     from yuki.client_sdk import ClientProblem, Outbox, PersonalClient

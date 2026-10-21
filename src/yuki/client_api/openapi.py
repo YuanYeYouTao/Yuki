@@ -26,4 +26,5 @@ def export_openapi(path: Path) -> None:
     path.write_text(
         json.dumps(client_openapi(), ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
+        newline="\n",
     )
