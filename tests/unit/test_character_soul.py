@@ -48,6 +48,27 @@ async def test_empty_soul_survives_file_hot_activation_and_original_receipt(char
     assert cold.soul == "" and cold.active_soul_revision == settings.active_soul_revision
 
 
+async def test_forgetting_an_owner_without_accounts_removes_its_grant(character):
+    from sqlalchemy import select
+    from tests.unit.test_person_authority import person as new_person
+
+    from yuki.character.db_models import CharacterOwnerGrantModel
+    from yuki.identity.canonical_repository import forget_person_by_id
+
+    _client, repository, _soul, _settings, _principal, _path = character
+    person = await new_person(repository.database)
+    await repository.set_owner(str(uuid4()), person, str(uuid4()), granted=True)
+    async with repository.database.immediate_session() as session:
+        await forget_person_by_id(session, person)
+    async with repository.database.sessions() as session:
+        assert (
+            await session.scalar(
+                select(CharacterOwnerGrantModel).where(CharacterOwnerGrantModel.person_id == person)
+            )
+            is None
+        )
+
+
 async def test_name_commit_replay_never_restores_an_old_name(character):
     client, repository, _soul, settings, _principal, _path = character
     original = await repository.current()

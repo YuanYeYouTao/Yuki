@@ -30,7 +30,9 @@ class CharacterProfileModel(Base):
 class CharacterOwnerGrantModel(Base):
     __tablename__ = "character_owner_grants"
 
-    person_id: Mapped[str] = mapped_column(ForeignKey("persons.id"), primary_key=True)
+    person_id: Mapped[str] = mapped_column(
+        ForeignKey("persons.id", ondelete="CASCADE"), primary_key=True
+    )
     granted_by_principal: Mapped[str] = mapped_column(String(36))
     granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

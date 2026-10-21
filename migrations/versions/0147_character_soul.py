@@ -33,7 +33,12 @@ def upgrade() -> None:
     )
     op.create_table(
         "character_owner_grants",
-        sa.Column("person_id", sa.String(36), sa.ForeignKey("persons.id"), primary_key=True),
+        sa.Column(
+            "person_id",
+            sa.String(36),
+            sa.ForeignKey("persons.id", ondelete="CASCADE"),
+            primary_key=True,
+        ),
         sa.Column("granted_by_principal", sa.String(36), nullable=False),
         sa.Column("granted_at", sa.DateTime(timezone=True), nullable=False),
         sa.Column("revoked_at", sa.DateTime(timezone=True)),

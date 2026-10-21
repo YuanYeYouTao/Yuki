@@ -89,6 +89,11 @@ async def serve(root: Path, state_file: Path, port: int, base_path: str) -> None
                 operator_id, owner_id, str(uuid4()), granted=False
             )
 
+        @api.post("/__test/shutdown")
+        async def shutdown() -> dict:
+            server.should_exit = True
+            return {"ok": True}
+
         http = FastAPI()
         http.mount(base_path or "/", api)
         with socket.socket() as listener:

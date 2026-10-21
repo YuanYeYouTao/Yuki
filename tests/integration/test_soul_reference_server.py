@@ -114,6 +114,8 @@ async def test_soul_reference_process_uses_real_owners_files_and_personal_views(
                 assert (
                     await client.get("client/v1/character/soul", headers=second)
                 ).status_code == 403
+                assert (await client.post("__test/shutdown")).json() == {"ok": True}
+                assert await asyncio.wait_for(process.wait(), 10) == 0
         finally:
             if process.returncode is None:
                 process.terminate()
