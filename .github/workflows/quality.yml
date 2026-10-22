@@ -36,7 +36,7 @@ jobs:
       - run: uv sync --frozen --all-extras --python 3.12
       - name: Install media dependencies
         run: |
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo sed -i 's|^URIs:.*|URIs: https://archive.ubuntu.com/ubuntu/|' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update
           sudo apt-get install -y ffmpeg
       - run: ffmpeg -version && ffprobe -version
@@ -66,7 +66,7 @@ jobs:
       - run: uv sync --frozen --all-extras --python 3.12
       - name: Install isolation and media dependencies
         run: |
-          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/sources.list.d/ubuntu.sources
+          sudo sed -i 's|^URIs:.*|URIs: https://archive.ubuntu.com/ubuntu/|' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update
           sudo apt-get install -y bubblewrap apparmor-utils ffmpeg
       - name: Build the pinned native distribution

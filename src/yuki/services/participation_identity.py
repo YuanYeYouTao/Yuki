@@ -23,6 +23,14 @@ async def actor_identity(
 ) -> Callable[[str], str]:
     ids = set(additional)
     ids.update(item.controller.participation_actor_ids())
+    for event in item.controller.state.events.values():
+        if event.kind == "human":
+            ids.update((event.author, event.target))
+            resolved = item.controller.resolved_unit(event)
+            if resolved is not None:
+                ids.add(resolved.target)
+    for boundary in item.controller.state.boundaries.values():
+        ids.update((boundary.author, boundary.target))
     async with optional_session(service.database, session, write=False) as reader:
         roots = await current_person_ids(reader, ids)
     return lambda actor: roots.get(actor, actor)

@@ -28,6 +28,7 @@ def _runtime(host, item, source):
             conversation_id=item.scene.conversation_id, generation=item.scene.generation
         ),
         effective_trigger_event_id=source.id,
+        visible_event_ids=frozenset(),
     )
 
 
@@ -165,7 +166,8 @@ async def test_concurrent_cold_hints_restore_one_owner_and_do_not_resurrect_afte
         )
         unit = next(iter(checkpoint.units.values()))
         assert unit.hint.delta.engage == "quiet" and unit.hint.response_id == "local-quiet"
-        assert tuple(restored.observation.queue.pending) == (unit.input_ref.event_id,)
+        assert not restored.observation.queue.pending
+        assert not host._observer.calls
         await host.close()
         await _hint(host, runtime)
         assert host._sessions == {} and host._store is None
@@ -243,7 +245,8 @@ async def test_hint_cancellation_keeps_actual_saved_revision_and_quiet_before_pr
             restored.controller.state.host_checkpoint["participation_v1"]
         )
         assert next(iter(checkpoint.units.values())).hint.delta.engage == "quiet"
-        assert tuple(restored.observation.queue.pending) == (f"event:{source.id}",)
+        assert not restored.observation.queue.pending
+        assert not host._observer.calls
     finally:
         acknowledge.set()
         await asyncio.gather(task, return_exceptions=True)
@@ -280,7 +283,7 @@ async def test_warm_hint_recovers_committed_input_when_admission_feedback_was_no
         assert unit.hint.run_ref == prepared.admission.activation_id
         assert unit.hint.source == unit.input_ref
         assert item.controller.state.events[unit.input_ref.event_id].source_order == source.id
-        assert len(unit.fast_inputs) == 1
+        assert unit.continuation_refs == (unit.input_ref,)
         await _hint(host, runtime)
         await host.on_ordinary_admitted(binding, prepared.admission)
         assert (

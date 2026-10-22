@@ -23,7 +23,6 @@
   "source_social_weight": 2.0,
   "source_opening_seconds": 4.0,
   "source_opening_floor": 0.1,
-  "continuation_review_span": 4,
   "activity_decay_seconds": 60.0,
   "activity_increment": 0.1,
   "social_context_decay_seconds": 14400.0,

@@ -581,6 +581,10 @@ class MainAgentBackend(AgentToolBackend):
         if permission is not None:
             host._require(permission, require_invocation=False)
 
+    async def participation_context(self, runtime: AgentRuntime) -> dict[str, Any] | None:
+        reader = self._service.participation_runtime_context
+        return await reader(self._request_runtime()) if reader is not None else None
+
     async def observe_response(self, response: Any, runtime: AgentRuntime) -> None:
         """Apply sparse own-state evidence, using the original main-turn binding."""
         from yuki_participation.self_report import SelfReport, extract_tail
@@ -601,7 +605,12 @@ class MainAgentBackend(AgentToolBackend):
                     else self._response_sequence
                 )
                 try:
-                    await observe_main(self._runtime, sequence, response, delta)
+                    await observe_main(
+                        replace(self._runtime, visible_event_ids=runtime.visible_event_ids),
+                        sequence,
+                        response,
+                        delta,
+                    )
                 except Exception as exc:
                     # Own-state is derived evidence. A failed checkpoint does not
                     # invalidate a delivered message or justify replaying the turn.

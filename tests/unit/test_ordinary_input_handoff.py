@@ -127,7 +127,7 @@ async def _scene(
                 "group",
             )
 
-        async def continuation_for_event(event_id, *, check_budget=True):
+        async def continuation_for_event(event_id):
             return await binding_for_event(event_id), reason
 
         harness.processor.set_participation(
@@ -545,11 +545,11 @@ async def test_late_classification_does_not_claim_old_observation_or_replace_new
     original = service.continuation_for_event
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def classify(event_id, *, check_budget=True):
+    async def classify(event_id):
         if (await harness.ledger.get_event(event_id)).content == C:
             entered.set()
             await release.wait()
-        return await original(event_id, check_budget=check_budget)
+        return await original(event_id)
 
     monkeypatch.setattr(service, "continuation_for_event", classify)
     pending = None
@@ -717,8 +717,8 @@ async def test_direct_stays_immediate_and_invitation_joins_the_existing_worker(
         service = harness.processor._participation
         classify = service.continuation_for_event
 
-        async def invitation(event_id, *, check_budget=True):
-            binding, reason = await classify(event_id, check_budget=check_budget)
+        async def invitation(event_id):
+            binding, reason = await classify(event_id)
             if (await harness.ledger.get_event(event_id)).content == "D：明确的新请求":
                 return binding, "semantic_invitation"
             return binding, reason
@@ -866,11 +866,11 @@ async def test_pending_input_survives_envelope_eviction_and_context_observations
     service = processor._participation
     classify = service.continuation_for_event
 
-    async def classify_humans(event_id, *, check_budget=True):
+    async def classify_humans(event_id):
         record = await harness.ledger.get_event(event_id)
         if record.content.startswith("仅观察"):
             return None
-        return await classify(event_id, check_budget=check_budget)
+        return await classify(event_id)
 
     monkeypatch.setattr(service, "continuation_for_event", classify_humans)
     sender = MemorySender()
@@ -909,11 +909,16 @@ async def test_background_invitation_waits_for_original_turn_without_losing_its_
     processor = harness.processor
     service = processor._participation
     classify = service.continuation_for_event
+    invited = False
 
-    async def before_observer(event_id, *, check_budget=True):
+    async def before_observer(event_id):
         if (await harness.ledger.get_event(event_id)).content == C:
-            return None
-        return await classify(event_id, check_budget=check_budget)
+            return (
+                (await service.binding_for_event(event_id), "semantic_invitation")
+                if invited
+                else None
+            )
+        return await classify(event_id)
 
     monkeypatch.setattr(service, "continuation_for_event", before_observer)
     sender = MemorySender()
@@ -923,6 +928,7 @@ async def test_background_invitation_waits_for_original_turn_without_losing_its_
         assert (await processor.handle(message(2, C), sender)).reason == "group_observed"
         c = await _event(database, C)
         binding = await service.binding_for_event(c.id)
+        invited = True
         waiting = asyncio.Event()
         conversation = processor._concurrency.conversation
 

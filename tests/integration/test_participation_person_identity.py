@@ -6,12 +6,20 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import httpx
+import pytest
+from sqlalchemy import event as sql_event
 from sqlalchemy import select
+from sqlalchemy import update as sql_update
 from tests.conftest import make_settings
 from tests.integration.test_telegram_runtime import telegram_env as telegram_env
 from tests.integration.test_telegram_runtime import update
 from tests.support.event_seed import seed_event
-from tests.support.semantic_participation_host_helpers import _host, _item
+from tests.support.semantic_participation_host_helpers import (
+    _event_and_route,
+    _host,
+    _item,
+    _observation,
+)
 from tests.unit.test_participation_pipeline_retirement import _relationship
 from yuki_participation.models import Effect, Snapshot, SourceRef
 from yuki_participation.observer import JevObserver
@@ -140,7 +148,10 @@ async def test_merged_new_actor_has_one_original_admission_and_cold_progress_aft
             ]["actor"]
             == a.author_person_id
         )
-        assert sum(len(unit["fast_inputs"]) for unit in before["units"].values()) == 1
+        admitted_ref = item.controller.state.events[f"event:{b.id}"].ref
+        assert [ref for unit in before["units"].values() for ref in unit["continuation_refs"]] == [
+            admitted_ref.model_dump(mode="json")
+        ]
         c = await append(host, a, "1003")
         await merge(database, b.author_person_id, c.author_person_id)
         await host._save(item)
@@ -151,7 +162,12 @@ async def test_merged_new_actor_has_one_original_admission_and_cold_progress_aft
         assert restored.controller.state.host_checkpoint["participation_v1"] == before
         identity = await actor_identity(host, restored)
         current = restored.controller.participating_units(time.time(), actor_identity=identity)
-        assert len(current) == 1 and current[0].unconfirmed_inputs == 1
+        assert len(current) == 1
+        assert [
+            ref
+            for unit in restored.controller._participation_checkpoint().units.values()
+            for ref in unit.continuation_refs
+        ] == [admitted_ref]
         assert (await host.ordinary.get(a.id)).activation_id == accepted_a.admission.activation_id
         assert (await host.ordinary.get(b.id)).activation_id == accepted_b.admission.activation_id
         assert not host._observer.calls
@@ -304,6 +320,87 @@ async def test_native_telegram_participation_reads_real_internal_space_configura
         assert item.scene.platform == "telegram" and item.scene.group_id != item.scene.space_id
         binding = await host.binding_for_event(event.id)
         assert binding is not None and binding.event_id == event.id
+        assert not host._observer.calls
+    finally:
+        await host.close()
+
+
+@pytest.mark.parametrize("retired_stop_event", [False, True])
+async def test_unadmitted_same_person_invitation_keeps_release_after_newer_source_withdrawal(
+    database, tmp_path, retired_stop_event
+):
+    host, _ = await _host(database, tmp_path)
+    actual_config(host)
+    try:
+        a = await _event_and_route(database, host.app.ledger, content="synthetic stop")
+        item = await _item(host, a)
+
+        async def interpret(row, interaction, sequence):
+            await _item(host, row)
+            focus = item.controller.state.events[f"event:{row.id}"]
+            identity = await actor_identity(host, item)
+            snapshot = item.controller.freeze_observation(
+                Snapshot(
+                    scope=item.scene.scope,
+                    focus=focus,
+                    context=(),
+                    sequence=sequence,
+                    issued_at=time.time(),
+                ),
+                actor_identity=identity,
+            )
+            assert item.controller.apply_semantic_observation(
+                _observation(snapshot, act=interaction), actor_identity=identity
+            )
+            return focus
+
+        stop = await interpret(a, "ask_yuki_stop", 1)
+        b = await append(host, a, "1002", reply=a.id)
+        await merge(database, a.author_person_id, b.author_person_id)
+        invitation_b = await interpret(b, "invite_yuki", 2)
+        boundary = item.controller.state.boundaries[stop.ref.event_id]
+        assert not boundary.group_wide and boundary.released_by == invitation_b.ref
+
+        c = await append(host, a, "1003", reply=a.id)
+        await merge(database, b.author_person_id, c.author_person_id)
+        invitation_c = await interpret(c, "invite_yuki", 3)
+        assert item.controller.state.boundaries[stop.ref.event_id].released_by == invitation_c.ref
+        assert not item.controller.participation_actor_ids()
+        for row in (a, b, c):
+            assert await host.ordinary.get(row.id) is None
+        if retired_stop_event:
+            # The finite event window may retire the original event while its
+            # actual stop boundary and SeenSource remain retained facts.
+            item.controller.state.events.pop(stop.ref.event_id)
+
+        statements = []
+
+        def capture(_connection, _cursor, statement, _parameters, _context, _many):
+            statements.append(statement)
+
+        sql_event.listen(database.engine.sync_engine, "before_cursor_execute", capture)
+        try:
+            identity = await actor_identity(host, item)
+        finally:
+            sql_event.remove(database.engine.sync_engine, "before_cursor_execute", capture)
+        assert len(statements) == 1
+        assert {identity(row.author_person_id) for row in (a, b, c)} == {c.author_person_id}
+
+        async with database.immediate_session() as writer:
+            await writer.execute(
+                sql_update(ChatEventModel)
+                .where(ChatEventModel.id == c.id)
+                .values(suppression_status="duplicate", utterance_fingerprint="f" * 64)
+            )
+        assert not (await host._sources_current(item, (invitation_c.ref,)))[invitation_c.ref]
+        remaining = item.controller.state.boundaries[stop.ref.event_id]
+        assert remaining.released_by == invitation_b.ref
+        assert item.controller.state.events[invitation_b.ref.event_id].author == b.author_person_id
+        assert remaining.author == a.author_person_id
+        for row in (a, b, c):
+            assert (
+                await host.app.ledger.get_event(row.id)
+            ).author_person_id == row.author_person_id
         assert not host._observer.calls
     finally:
         await host.close()

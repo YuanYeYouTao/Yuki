@@ -309,6 +309,9 @@ class ChatService:
         )
         self._event_publisher = event_publisher
         self.observe_main_response: Callable[..., Awaitable[None]] | None = None
+        self.participation_runtime_context: (
+            Callable[[ToolRuntime], Awaitable[dict[str, Any] | None]] | None
+        ) = None
 
     def set_automation_tools(self, service: AutomationToolProvider) -> None:
         """Attach scheduling tools without introducing a second Agent."""

@@ -592,6 +592,8 @@ async def test_default_client_uses_standard_http_proxy_without_direct_fallback(
 def test_cli_loads_only_standard_http_environment(tmp_path, monkeypatch):
     from yuki.acp_adapter import cli
 
+    # The CLI writes directly to os.environ; keep dotenv additions local to this test.
+    monkeypatch.setattr(os, "environ", os.environ.copy())
     monkeypatch.chdir(tmp_path)
     for key in tuple(os.environ):
         if key.upper() in {
