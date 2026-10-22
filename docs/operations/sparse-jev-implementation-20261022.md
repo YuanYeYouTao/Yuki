@@ -86,6 +86,12 @@ SQL 读取按原 admission 主键、当前人物批读及当前有限参与状�
 
 Windows 默认平台的 mypy 会报既有 Linux 专用 API 缺失；本轮使用 `--platform linux` 核对与正式 Linux CI 相同的类型目标。自然群聊收束、真实 JEV 语义准确率、线上延迟、token 和缓存命中率仍未验收，不从合成调用次数推算。
 
+## GitHub CI 跟进
+
+实现提交 `56b96ef7` 的静态检查、3337 项单元测试和 821 项集成测试均通过。Native 首轮未进入构建：APT 通过 `mirror+file:/etc/apt/apt-mirrors.txt` 继续选取 Azure，95 MB 依赖下载持续约 20 分钟；原工作流仅替换 `ubuntu.sources` 中的 Azure URL，没有命中镜像列表 URI。单独重跑 Native 后进一步定位原因，没有将取消的作业当成通过。
+
+测试矩阵和 Native 的两处安装脚本直接将 Ubuntu 的 `URIs:` 指向官方 HTTPS 源，删除无效的字符串替换，不增加镜像选择、条件分支或失败兜底。该 CI 修正提交仍需在 GitHub 完整检查通过后合并；不以旧提交的通过结果替代新提交 CI。
+
 ## 交付
 
 Host 分支为 `codex/sparse-jev-runtime-20261022`，以固定新参与库提交交付；配套[参与库 PR #25](https://github.com/Institute-of-Agent-Life/Yuki-Semantic-Participation/pull/25)保持开放。Host GitHub CI 由该分支 PR 运行，不以本地 Windows 回归代替 Ubuntu 完整检查或 Native 检查。
