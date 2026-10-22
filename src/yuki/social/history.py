@@ -9,13 +9,11 @@ from sqlalchemy import or_, select, text
 from yuki.capabilities.invocation import current_invocation
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.execution_trace.db_models import ExecutionTraceStateModel
-from yuki.gateway.local_clients import LOCAL_CLIENT_PLATFORMS
 from yuki.identity.db_models import IdentityBindingModel, SpaceBindingModel
 from yuki.identity.person_identity import (
     current_person_id,
     person_enabled_condition,
     person_family_condition,
-    same_person_id,
 )
 from yuki.persistence.database import Database
 from yuki.persistence.event_view import event_view
@@ -56,34 +54,11 @@ async def read_history(
             select(person_enabled_condition(actor_id))
         ):
             raise SocialError("permission_denied")
-        source_binding = (
-            await session.get(IdentityBindingModel, source.identity_binding_id)
-            if source.identity_binding_id
-            else None
-        )
-        personal_source = bool(
-            actor_id
-            and source.kind == "private"
-            and source.person_id
-            and source_binding is not None
-            and source_binding.platform in LOCAL_CLIENT_PLATFORMS
-            and (
-                actor_id == source.person_id
-                or await same_person_id(session, actor_id, source.person_id)
-            )
-        )
         selector = (
             request.target.model_dump(exclude_none=True, mode="json") if request.target else {}
         )
         allowed = getattr(runtime, "read_target_id", None)
         granted_scope = getattr(runtime, "read_scope", None)
-        selected_subject = selector.get("person_id") or selector.get("space_id")
-        if allowed is not None and selected_subject is not None:
-            if selected_subject != allowed and (
-                "person_id" not in selector
-                or not await same_person_id(session, selected_subject, allowed)
-            ):
-                raise SocialError("history_scope_denied")
         anchor = None
         operation = None
         original_event_id = None
@@ -148,61 +123,57 @@ async def read_history(
             conversation_id = original_conversation_id
         elif "conversation_id" in selector:
             conversation_id = selector["conversation_id"]
-        elif selector:
-            query = (
-                select(CanonicalConversationModel, IdentityBindingModel, SpaceBindingModel)
-                .outerjoin(
-                    IdentityBindingModel,
-                    CanonicalConversationModel.identity_binding_id == IdentityBindingModel.id,
-                )
-                .outerjoin(
-                    SpaceBindingModel,
-                    CanonicalConversationModel.space_binding_id == SpaceBindingModel.id,
-                )
+        elif selector or request.view == "search":
+            conversation_id = None
+        elif request.view == "around" and request.event_id is not None:
+            original = await session.get(ChatEventModel, request.event_id)
+            conversation_id = (
+                original.canonical_conversation_id
+                if original is not None
+                else context.conversation_id
             )
-            if "person_id" in selector:
-                query = query.where(
-                    person_family_condition(
-                        CanonicalConversationModel.person_id, selector["person_id"]
-                    )
-                )
-            elif "space_id" in selector:
-                query = query.where(CanonicalConversationModel.space_id == selector["space_id"])
-            else:
-                if not personal_source:
-                    raise SocialError("main_entry_required")
-                query = query.where(
-                    CanonicalConversationModel.identity_binding_id == selector["binding_id"],
-                    CanonicalConversationModel.kind == "private",
-                    person_family_condition(CanonicalConversationModel.person_id, actor_id),
-                )
-            if allowed is not None and granted_scope is not None and granted_scope.conversation_id:
-                query = query.where(CanonicalConversationModel.id == granted_scope.conversation_id)
-            entries = (await session.execute(query.order_by(CanonicalConversationModel.id))).all()
-            if len(entries) != 1:
-                return HistoryResult(
-                    error="conversation_ambiguous" if entries else "history_unavailable",
-                    conversations=[
-                        {
-                            "conversation_id": entry.id,
-                            "kind": entry.kind,
-                            "presence_id": entry.entry_presence_id,
-                            "binding_id": personal.id if personal else space.id if space else None,
-                            "platform": personal.platform
-                            if personal
-                            else space.platform
-                            if space
-                            else None,
-                            "thread_id": entry.thread_id,
-                        }
-                        for entry, personal, space in entries
-                    ],
-                )
-            conversation_id = entries[0][0].id
         else:
             conversation_id = context.conversation_id
-        conversation = await session.get(CanonicalConversationModel, conversation_id)
-        if conversation is None:
+        query = (
+            select(CanonicalConversationModel, IdentityBindingModel, SpaceBindingModel)
+            .outerjoin(
+                IdentityBindingModel,
+                CanonicalConversationModel.identity_binding_id == IdentityBindingModel.id,
+            )
+            .outerjoin(
+                SpaceBindingModel,
+                CanonicalConversationModel.space_binding_id == SpaceBindingModel.id,
+            )
+        )
+        if conversation_id is not None:
+            query = query.where(CanonicalConversationModel.id == conversation_id)
+        elif "person_id" in selector:
+            query = query.where(
+                person_family_condition(CanonicalConversationModel.person_id, selector["person_id"])
+            )
+        elif "space_id" in selector:
+            query = query.where(CanonicalConversationModel.space_id == selector["space_id"])
+        elif "binding_id" in selector:
+            query = query.where(
+                or_(
+                    CanonicalConversationModel.identity_binding_id == selector["binding_id"],
+                    CanonicalConversationModel.space_binding_id == selector["binding_id"],
+                )
+            )
+        # A read delegation limits the whole query, independently of target spelling.
+        if allowed is not None:
+            query = query.where(
+                or_(
+                    person_family_condition(CanonicalConversationModel.person_id, allowed),
+                    CanonicalConversationModel.space_id == allowed,
+                )
+            )
+            if granted_scope is not None and granted_scope.conversation_id:
+                query = query.where(CanonicalConversationModel.id == granted_scope.conversation_id)
+        elif runtime is not None and getattr(runtime, "origin", None) == "plugin_background":
+            query = query.where(CanonicalConversationModel.id == context.conversation_id)
+        entries = (await session.execute(query.order_by(CanonicalConversationModel.id))).all()
+        if not entries:
             if operation is not None:
                 return HistoryResult(
                     operation_id=operation.id,
@@ -221,49 +192,37 @@ async def read_history(
                         "status": receipt_anchor_status,
                     },
                 )
+            if allowed is not None or (
+                runtime is not None and getattr(runtime, "origin", None) == "plugin_background"
+            ):
+                raise SocialError("history_scope_denied")
             raise SocialError("history_unavailable")
-        if (
-            runtime is not None
-            and getattr(runtime, "origin", None) == "plugin_background"
-            and getattr(runtime, "read_target_id", None) is None
-            and conversation.id != context.conversation_id
-        ):
-            raise SocialError("history_scope_denied")
-        allowed = getattr(runtime, "read_target_id", None)
-        if allowed is not None:
-            subject = conversation.person_id or conversation.space_id
-            if subject != allowed and (
-                conversation.kind != "private"
-                or subject is None
-                or not await same_person_id(session, subject, allowed)
-            ):
-                raise SocialError("history_scope_denied")
-            scope = getattr(runtime, "read_scope", None)
-            if (
-                scope is not None
-                and scope.conversation_id
-                and scope.conversation_id != conversation.id
-            ):
-                raise SocialError("history_scope_denied")
-        personal_target = bool(
-            personal_source
-            and conversation.kind == "private"
-            and conversation.person_id
-            and (
-                actor_id == conversation.person_id
-                or await same_person_id(session, str(actor_id), conversation.person_id)
-            )
-        )
-        floor = 0 if personal_target else conversation.starts_after_event_id
-        binding = (
-            await session.get(IdentityBindingModel, conversation.identity_binding_id)
-            if conversation.identity_binding_id
-            else None
-        )
+        sources = {
+            entry.id: {
+                "conversation_id": entry.id,
+                "platform": personal.platform if personal else space.platform if space else None,
+                "scope": "private" if entry.kind == "private" else "group",
+                "conversation_name": personal.display_name
+                if personal
+                else space.display_name
+                if space
+                else "",
+                "binding_id": personal.id if personal else space.id if space else None,
+                "presence_id": entry.entry_presence_id,
+                "thread_id": entry.thread_id,
+                "person_id": entry.person_id,
+                "space_id": entry.space_id,
+            }
+            for entry, personal, space in entries
+        }
+        conversation = entries[0][0] if len(entries) == 1 else None
+        conversation_ids = tuple(sources)
         predicates: tuple[Any, ...] = ()
-        if binding is not None and binding.platform == "acp":
+        acp_ids = tuple(key for key, value in sources.items() if value["platform"] == "acp")
+        if acp_ids:
             predicates = (
                 or_(
+                    ChatEventModel.canonical_conversation_id.not_in(acp_ids),
                     ChatEventModel.direction == "inbound",
                     select(SocialOperationModel.id)
                     .where(
@@ -277,8 +236,7 @@ async def read_history(
         ledger = EventLedgerRepository(database)
         common: dict[str, Any] = dict(
             session=session,
-            conversation_id=conversation.id,
-            starts_after_event_id=floor,
+            conversation_id=conversation_ids,
             event_kind=request.event_kind,
             predicates=predicates,
         )
@@ -291,17 +249,22 @@ async def read_history(
             event_id = request.event_id or original_event_id
             if event_id is None:
                 raise ValueError("around requires event_id")
-            # An original receipt grants only its own anchor, never another old ID.
-            special = anchor if anchor is not None and event_id == anchor.id else None
-            if operation is not None and anchor is None and event_id == original_event_id:
+            event = await session.get(ChatEventModel, event_id)
+            center_conversation_id = (
+                event.canonical_conversation_id
+                if event is not None and event.canonical_conversation_id in sources
+                else None
+            )
+            if center_conversation_id is None or (
+                operation is not None and anchor is None and event_id == original_event_id
+            ):
                 center, earlier, later = None, (), ()
             else:
                 center, earlier, later = await ledger.history_around(
-                    **common,
+                    **{**common, "conversation_id": center_conversation_id},
                     event_id=event_id,
                     before=(request.before or 0) if request.view == "around" else 0,
                     after=(request.after or 0) if request.view == "around" else 0,
-                    anchor_event=special,
                 )
             records = (*earlier, *((center,) if center else ()), *later)
             payload = dict(
@@ -342,27 +305,41 @@ async def read_history(
             neighbours = page.context
             matched_fields = page.matched_fields
             payload = dict(has_more=page.has_more, next_cursor=page.next_cursor)
-        rows = [event_view(row) for row in records]
+
+        def render(row: EventRecord) -> dict[str, Any]:
+            source = sources[str(row.canonical_conversation_id)]
+            return {
+                **event_view(row),
+                "platform": source["platform"],
+                "conversation_name": source["conversation_name"],
+                "thread_id": source["thread_id"],
+            }
+
+        rows = [render(row) for row in records]
         result = HistoryResult(
             source="canonical_ledger",
             coverage="observed",
-            conversation_id=conversation.id,
-            generation=conversation.generation,
-            platform=binding.platform if binding is not None else None,
-            binding_id=binding.id if binding is not None else None,
-            target_id=(await current_person_id(session, conversation.person_id))
-            if conversation.person_id
-            else conversation.space_id,
-            kind="person" if conversation.kind == "private" else "space",
+            conversation_id=conversation.id if conversation is not None else None,
             events=rows,
             returned_count=len(rows),
             order=request.order,
             start_at=request.start_at.isoformat() if request.start_at else None,
             end_at=request.end_at.isoformat() if request.end_at else None,
             matched_fields={str(key): list(value) for key, value in matched_fields.items()},
-            context=[event_view(row) for row in neighbours],
+            context=[render(row) for row in neighbours],
             **payload,
         )
+        if conversation is not None:
+            entry_source = sources[conversation.id]
+            result["platform"] = entry_source["platform"]
+            result["binding_id"] = entry_source["binding_id"]
+            result["target_id"] = (
+                await current_person_id(session, conversation.person_id)
+                if conversation.person_id
+                else conversation.space_id
+            )
+            result["generation"] = conversation.generation
+            result["kind"] = "person" if conversation.kind == "private" else "space"
         source_records = (*records, *neighbours)
         if operation is not None:
             result["operation_id"] = operation.id
@@ -374,7 +351,10 @@ async def read_history(
                 receipt_record = next((row for row in source_records if row.id == anchor.id), None)
                 if receipt_record is None:
                     receipt_record, _earlier, _later = await ledger.history_around(
-                        **common, event_id=anchor.id, before=0, after=0, anchor_event=anchor
+                        **{**common, "conversation_id": original_conversation_id},
+                        event_id=anchor.id,
+                        before=0,
+                        after=0,
                     )
                 if receipt_record is None:
                     receipt_anchor_status = "unavailable"
@@ -386,9 +366,15 @@ async def read_history(
             }
             displayed_ids = {row.id for row in source_records}
             if receipt_record is not None and receipt_record.id not in displayed_ids:
-                result["receipt_anchor"]["event"] = event_view(receipt_record)
+                result["receipt_anchor"]["event"] = render(receipt_record)
                 source_records = (*source_records, receipt_record)
         result.source_event_ids = tuple(dict.fromkeys(row.id for row in source_records))
+        result["sources"] = [
+            sources[identity]
+            for identity in dict.fromkeys(
+                str(row.canonical_conversation_id) for row in source_records
+            )
+        ]
         result.source_privacy_generation = (
             await session.scalar(
                 select(ExecutionTraceStateModel.privacy_generation).where(

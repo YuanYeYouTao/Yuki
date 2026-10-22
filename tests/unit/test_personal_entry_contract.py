@@ -45,9 +45,7 @@ async def read_personal_history(database, runtime, args):
     )
 
 
-async def test_one_contract_freezes_once_and_app_model_reads_own_other_entry(
-    app_env, database
-):
+async def test_one_contract_freezes_once_and_app_model_reads_own_other_entry(app_env, database):
     env = app_env
     device, person = await owner(env, database)
     original = await seeded(env, database)
@@ -119,29 +117,30 @@ async def test_one_contract_freezes_once_and_app_model_reads_own_other_entry(
     assert await original.repository.get(original.row["id"]) == original.row
 
 
-async def test_execution_requires_main_and_own_private_target(app_env, database):
+async def test_app_and_qq_sources_select_the_same_stored_binding_history(app_env, database):
     env = app_env
     device, person = await owner(env, database)
     own = await seeded(env, database)
-    await seeded(env, database, account="1002")
+    other = await seeded(env, database, account="1002")
     await seeded(env, database, group=True)
     principal = await env.identity.authenticate(device["token"])
     runtime = SimpleNamespace(
         effective_conversation_id=principal.conversation_id,
         require_actor=lambda: SimpleNamespace(person_id=person),
     )
-    # A qualified local source can explicitly select its own current entry.
     result = await read_personal_history(
         database, runtime, {"conversation_id": principal.conversation_id}
     )
     assert result["conversation_id"] == principal.conversation_id
     async with database.sessions() as session:
         other_binding = await find_identity_binding(session, "1002")
-    unavailable = await read_personal_history(database, runtime, {"binding_id": other_binding.id})
-    assert unavailable["error"] == "history_unavailable"
+    app_result = await read_personal_history(database, runtime, {"binding_id": other_binding.id})
+    assert app_result["conversation_id"] == other.row["conversation_id"]
+    assert [event["event_id"] for event in app_result["events"]] == [other.event.id]
     runtime.effective_conversation_id = own.row["conversation_id"]
-    with pytest.raises(SocialError, match="main_entry_required"):
-        await read_personal_history(database, runtime, {"binding_id": other_binding.id})
+    qq_result = await read_personal_history(database, runtime, {"binding_id": other_binding.id})
+    assert qq_result == app_result
+    assert not env.calls
 
 
 @pytest.mark.parametrize("receipt", [{"message_id": "confirmed"}, {}])

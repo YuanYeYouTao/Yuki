@@ -105,7 +105,8 @@ class MainAgentContract:
                         # 25: Account mentions and prepared parts replace retired dispatch.
                         # 26: one history tool and one entry-independent manifest.
                         # 27: role-independent descriptions and the single SOUL contract.
-                        "version": 27,
+                        # 28: permanent cross-entry history with explicit source labels.
+                        "version": 28,
                         "mode": self.mode,
                         "code_api": CODE_API_REVISION,
                         "direct_names": sorted(DIRECT_TOOL_NAMES),

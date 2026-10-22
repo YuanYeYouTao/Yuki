@@ -61,7 +61,7 @@ Telegram 使用 `sendChatAction(action=typing)`，保真实 chat 与 topic，每
 
 `send_message` 共用参数表达文字、图片、文件、真实提及和内部事件引用。平台计划可以拆为数项；部分成功分别保留，结果未知不自动重发。App 文件及说明原子交付；QQ 上传与附言分别确认；Telegram 按实际文本和 caption 限制生成原生派发。
 
-`query_chat_history` 只读取授权的内部账本。默认当前入口；多入口候选返回内部 Conversation ID，由调用者选择。原 operation 可读取其真实出站会话和原回执锚点，但不能冒领其他来源的回执。`get_group_members` 返回已观察人物，`coverage=observed` 不代表完整平台名册。查询不隐式请求远端历史、展开合并转发或刷新平台群名单。
+`query_chat_history` 读取当前获准的已入账永久账本，不受 `/ai new` 上下文起点或 App/ACP 来源门槛限制。recent 默认当前 Conversation，search 未给 target 时检索所有获准入口；Person/Space/Binding 对应多个入口时直接合查，around 未给 target 时按内部 event_id 定位原 Conversation。结果保每条 conversation_id/platform/scope/thread_id，并给可读会话名的 sources 目录，不拼接自动上下文。原 operation 可读取其真实出站会话和原回执锚点，但不能冒领其他来源的回执。`get_group_members` 返回已观察人物，`coverage=observed` 不代表完整平台名册。查询不隐式请求远端历史、展开合并转发或刷新平台群名单。
 
 默认模型的任意 OneBot action、戳一戳和远端/raw 历史入口已退役。独立批准的 QQ SDK 传输扩展保留明确的 QQ 边界，不能替代通用发送出口。历史已执行工具和回执继续可读。
 

@@ -21,4 +21,4 @@ if messages:
     older = await ctx.messages.search_history("", cursor=messages[0].event_id)
 ```
 
-查询只读并沿原调用授权和当前 Conversation floor；索引中的会话前缀不授予读取资格。旧回执和已付请求继续保原 ID、参数和真实结果，不重新执行退役工具。
+查询只读并沿原调用的真实委托与 Conversation 范围，读取完整已入账历史，不继承 `/ai new` 的上下文 floor；App/ACP 平台身份不另授或限制历史读取资格。SDK 当前 Conversation 方法不因此扩为无委托的全库读取；Main 工具的跨入口查询与来源目录见[聊天记录读取](../architecture/chat-history.md)。索引中的会话前缀不授予读取资格。旧回执和已付请求继续保原 ID、参数和真实结果，不重新执行退役工具。

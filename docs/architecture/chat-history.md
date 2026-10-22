@@ -6,20 +6,28 @@ Main 使用 `query_chat_history(view=recent/search/around)`。Social、个人入
 
 ## 范围与页
 
-默认当前真实 Conversation，显式目标认内部 ID；有多个实际候选时只返回当前有权读取的候选。
-平台入口保原 floor、keeper 及委托范围，合格本人 App/ACP 来源可显式读自己的私聊全历史。
+显式查询读取 Yuki 实际参与并已入账、当前真实来源获准读取的完整原账本，覆盖各平台。
+目标认内部 ID，Binding、Person、Space 和 Conversation 使用同一读取授权，不要求 App/ACP 来源。
+当前 actor、委托范围、插件批准、keeper 及隐私沿原合同；每条结果保留原 Conversation、平台和作者来源。
+`/ai new` 只清理聊天上下文，不删除永久账本或截断显式查询；自动上下文的 starts_after、
+FrozenFragments 与 generation 继续沿原上下文和原执行合同管理。
+recent 未指定 target 时浏览当前 Conversation；search 未指定 target 时一次检索所有当前获准的已入账
+Conversation，不按平台名单枚举。显式 Person、Space 或 Binding 可选择多个真实入口，直接在该集合内
+查询，不要求模型逐个挑选候选。around 未指定 target 时由内部 event_id 定位原 Conversation。
+结果的 sources 给出可读会话名与来源目录；每条事件保 conversation_id、platform、scope 和 thread_id。
+跨入口命中作为有来源的工具证据返回，不拼接各 Conversation 的自动上下文。
 人物筛选使用原作者 Person 的当前同人族；账号转移、改名、解绑或无账号不改写旧作者。
 
 `operation_id` 沿原发送回执定位。`SocialOperation.event_id` 是存活 FK，原事件和 Conversation 另存永久事实；
-原件删除后返回 missing 与原效果状态，不能用 recent 或后来消息代替。只有该回执自己的原锚点
-享有原授权的定点读取；另传锚点仍须满足普通读取范围。
+原件删除后返回 missing 与原效果状态，不能用 recent 或后来消息代替。回执继续核原来源归属，
+另传锚点按其真实 Conversation 和当前读取授权定位，不借回执扩大委托范围。
 
-页按内部整数事件 ID 排序，用 N+1 真实命中证明 has_more，next_cursor 指最后返回的命中。
+单会话与跨会话页均按内部整数事件 ID 排序，用 N+1 真实命中证明 has_more，next_cursor 指最后返回的命中。
 recent 向较小 ID、oldest 向较大 ID 前进；删除页尾不妨碍续读。页间实时变化可改变后页，不另设
 签名、epoch 或静态导出协议。SQLite 原生 AUTOINCREMENT 保证事件 ID 在删末尾或清空后仍不复用。
 limit 为正整数，没有 50/100 条经验上限；before/after 配置只作缺省值，不截断显式请求。
 
-邻文沿同一 Conversation、event_kind、floor 和授权，按各锚点 ID 分别有界读取。邻文不继承
+邻文沿各锚点原 Conversation、event_kind 和读取授权，按锚点 ID 分别有界读取。邻文不继承
 关键词、作者、日期和媒体筛选；与 matches 去重后标记 context，不扫描远隔锚点之间的整段。
 Artifact 的 offset 只翻阅一次调用已经保存的载荷，聊天 cursor 才查询下一批原事件。
 

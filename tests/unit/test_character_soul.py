@@ -52,7 +52,9 @@ async def test_empty_soul_survives_file_hot_activation_and_original_receipt(char
     assert cold.soul == "" and cold.active_soul_revision == settings.active_soul_revision
 
 
-async def test_character_hints_follow_commits_and_hide_soul_after_owner_revocation(character):
+async def test_character_hints_follow_commits_and_hide_soul_after_owner_revocation(
+    character, monkeypatch
+):
     client, repo, soul, settings, principal, _path = character
     views = ClientViews(repo.identity, ClientWorks(repo.identity, {}), character=repo, soul=soul)
     stream = views.stream(principal)
@@ -77,18 +79,42 @@ async def test_character_hints_follow_commits_and_hide_soul_after_owner_revocati
     assert renamed.status_code == 200
     kind, changed = decode(await asyncio.wait_for(pending, 2))
     assert kind == "character" and changed["revision"] == 2
+
+    file_written, activate = asyncio.Event(), asyncio.Event()
+    apply_soul, sync = soul._activate, views.sync
+
+    async def paused_activation(*args, **kwargs):
+        file_written.set()
+        await activate.wait()
+        return await apply_soul(*args, **kwargs)
+
+    async def written_snapshot(actor):
+        await file_written.wait()
+        return await sync(actor)
+
+    monkeypatch.setattr(soul, "_activate", paused_activation)
+    monkeypatch.setattr(views, "sync", written_snapshot)
     pending = asyncio.create_task(anext(stream))
-    saved = await client.put(
-        "/client/v1/character/soul",
-        json={
-            "request_id": str(uuid4()),
-            "expected_revision": settings.active_soul_revision,
-            "content": "private replacement",
-        },
+    saving = asyncio.create_task(
+        client.put(
+            "/client/v1/character/soul",
+            json={
+                "request_id": str(uuid4()),
+                "expected_revision": settings.active_soul_revision,
+                "content": "private replacement",
+            },
+        )
     )
+    kind, written = decode(await asyncio.wait_for(pending, 2))
+    activate.set()
+    saved = await saving
     assert saved.status_code == 200
-    kind, changed = decode(await asyncio.wait_for(pending, 2))
-    assert kind == "character" and changed["soul"]["revision"] > 0
+    assert kind == "character" and written["soul"]["revision"] > 0
+    assert written["soul"]["active_revision"] == initial["character"]["soul"]["active_revision"]
+    assert "private replacement" not in json.dumps(written)
+    kind, changed = decode(await asyncio.wait_for(anext(stream), 2))
+    assert kind == "character" and changed["soul"]["revision"] > written["soul"]["revision"]
+    assert changed["soul"]["active_revision"] == saved.json()["data"]["active_revision"]
     assert "private replacement" not in json.dumps(changed)
     pending = asyncio.create_task(anext(stream))
     await repo.set_owner(str(uuid4()), principal.person_id, str(uuid4()), granted=False)
