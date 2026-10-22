@@ -2,6 +2,7 @@
 
 import asyncio
 import io
+import json
 import os
 import threading
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from yuki.emoji.delivery import EmojiDeliveryService
 from yuki.emoji.library import EmojiLibrary
 from yuki.emoji.media import extension
 from yuki.emoji.sticker_index import StickerIndex
+from yuki.sandbox.client import SandboxClient
 from yuki.sandbox.persistent import PersistentManager
 from yuki.workspace.service import WorkspaceService
 
@@ -179,3 +181,47 @@ async def test_manager_restart_publication_unknown_is_never_failed_or_replayed(
     replay = await case.env.service.execute("send", ARGS, case.env.context)
     assert replay["status"] == "succeeded" and replay["emoji"]["status"] == "unknown"
     assert sum(method.startswith("send_") for method, _ in case.env.bot.calls) == 1
+
+
+async def test_lost_publication_ack_keeps_background_intent_unknown_without_resending(
+    manual_library, tmp_path
+):
+    case = manual_library
+    asset = await case.first_library.select("happy", platform="qq")
+    intent = await case.first.intents.select(case.intent.id, asset.model_dump(mode="json"))
+    socket = tmp_path / "publication.sock"
+    requests = []
+    handlers = set()
+
+    async def accept(reader, writer):
+        current = asyncio.current_task()
+        handlers.add(current)
+        try:
+            request = json.loads(await reader.readline())
+            requests.append(request)
+            assert request["method"] == "workspace_publish"
+            result = await case.owner.manager.handle(request)
+            assert result["artifact_id"] == asset.id
+            # The Manager has published and persisted success; only its acknowledgement is lost.
+        finally:
+            writer.close()
+            await writer.wait_closed()
+            handlers.discard(current)
+
+    server = await asyncio.start_unix_server(accept, str(socket))
+    case.first_library.workspace.sandbox = SandboxClient(socket)
+    try:
+        await case.first._deliver(intent)
+        result = await case.first.project(case.env.context)
+        assert result["status"] == "unknown"
+        assert result["error"] == "file_mutation_unknown_read_current_version"
+        assert len(requests) == 1 and len(case.env.store.list()["items"]) == 1
+        assert await case.first.intents.pending() == ()
+        calls = len(case.env.bot.calls)
+        replay = await case.env.service.execute("send", ARGS, case.env.context)
+        assert replay["status"] == "succeeded" and replay["emoji"]["status"] == "unknown"
+        assert len(case.env.bot.calls) == calls and len(requests) == 1
+    finally:
+        server.close()
+        await server.wait_closed()
+        await asyncio.gather(*tuple(handlers), return_exceptions=True)

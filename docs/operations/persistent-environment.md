@@ -2,7 +2,7 @@
 
 [中文](persistent-environment.zh-CN.md)
 
-Yuki shares one Linux environment, `/home/yuki` and `/workspace` across people and groups. Ordinary persistent files do not expire. `short_state` remains a separate expiring hint area. Directories, files and full logs are not automatically added to context. The Bot's `./workspace:/app/workspace` stores artifacts/short state; terminal files live under the host's `/var/lib/yuki-sandbox/home/workspace`, exposed as `/workspace` through the original home mount. Explicit publication and attachment import connect these stores.
+Yuki shares one Linux environment, `/home/yuki` and `/workspace` across people and groups. Ordinary persistent files do not expire. `short_state` remains a separate expiring hint area. Directories, files and full logs are not automatically added to context. The Bot's `./workspace:/app/workspace` stores artifacts/short state; terminal files live under the host's `/var/lib/yuki-sandbox/home/workspace`, exposed as `/workspace` through the original home mount. Sending freezes an immutable delivery snapshot from an ordinary file; inbound attachments copy directly from the shared cache to the working directory.
 
 ## Runtime and tools
 

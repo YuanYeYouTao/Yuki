@@ -29,7 +29,6 @@ from yuki.services.image_preprocessor import ImagePreprocessor
 from yuki.services.media_resolver import MediaResolutionError, MediaResolver, PreparedAttachment
 from yuki.vision.models import MediaReference
 from yuki.workspace.service import WorkspaceService
-from yuki.workspace.store import WorkspaceError
 
 
 @pytest.fixture
@@ -421,10 +420,10 @@ async def test_original_save_request_cannot_be_reused_for_a_different_copy(admit
         "save_conversation_attachment_to_workspace", args, request_id="original-save"
     )
     changed = {**args, field: env.event.id + 1 if field == "event_id" else "another.png"}
-    with pytest.raises(WorkspaceError, match="idempotency_conflict"):
-        await env.workspace.execute(
-            "save_conversation_attachment_to_workspace", changed, request_id="original-save"
-        )
+    result = await env.workspace.execute(
+        "save_conversation_attachment_to_workspace", changed, request_id="original-save"
+    )
+    assert result["error"] == "idempotency_conflict"
     assert (env.files / "selected.png").read_bytes() == env.data
     assert not (env.files / "another.png").exists() and len(env.calls) == 1
 

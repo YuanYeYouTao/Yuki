@@ -852,9 +852,12 @@ class PersistentManager:
                     args["destination"],
                 ):
                     return {"error": "idempotency_conflict"}
+                result = stored["result"]
+                if result.get("error") == "file_mutation_unknown_read_current_version":
+                    result["uncertain"] = True
                 return {
                     "found": True,
-                    "result": {**stored["result"], "external_untrusted": True},
+                    "result": {**result, "external_untrusted": True},
                     "external_untrusted": True,
                 }
         if method not in {"workspace_publish", "workspace_copy"} or not isinstance(request_id, str):
@@ -899,11 +902,14 @@ class PersistentManager:
                     result = json.loads(row["result"])
                     if method == "workspace_copy":
                         result = result["result"]
+                    if result.get("error") == "file_mutation_unknown_read_current_version":
+                        result["uncertain"] = True
                     return {**result, "external_untrusted": True}
             if not read:
                 pending = {
                     "error": "file_mutation_unknown_read_current_version",
                     "retryable": False,
+                    "uncertain": True,
                 }
                 if method == "workspace_copy":
                     pending = {

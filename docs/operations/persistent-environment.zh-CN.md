@@ -2,7 +2,7 @@
 
 [English](persistent-environment.md)
 
-Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人物或群划分，普通持久文件不自动过期。`short_state` 仍是独立、有期限的短提示；目录、文件和完整执行日志不自动载入上下文。Bot 的 `./workspace:/app/workspace` 是 artifact/short_state 库；终端文件在宿主 `/var/lib/yuki-sandbox/home/workspace`，经原家目录挂载显示为环境内 `/workspace`。两者通过显式发布和附件导入衔接。
+Yuki 全局共用一个 Linux 环境、`/home/yuki` 和 `/workspace`，不按人物或群划分，普通持久文件不自动过期。`short_state` 仍是独立、有期限的短提示；目录、文件和完整执行日志不自动载入上下文。Bot 的 `./workspace:/app/workspace` 是 artifact/short_state 库；终端文件在宿主 `/var/lib/yuki-sandbox/home/workspace`，经原家目录挂载显示为环境内 `/workspace`。工作文件在发送时冻结为不可变交付快照，入站附件从共享缓存直接复制到普通工作区。
 
 所有会话的临时媒体共用 `/inputs/media-cache`，它是 Bot 原缓存目录的同一份只读挂载，不在 2 GiB HOME 中再复制一份。Bot 仍是唯一写入和到期清理 owner；媒体到期后由原清理器删除，普通工作文件、已收藏表情和不可变 artifact 不随它清理。Main 可直接用终端读取、复制到 `/workspace` 或表情目录自由编辑，也可用`workspace_inspect` 选读或 `send(path="/inputs/media-cache/...")` 发送；Host 复用原安全 FD 桥，不跟随模型写的链接访问宿主文件。临时媒体的全局共享由用户明确授权，不再声称终端读取受当前 Conversation 限制。
 

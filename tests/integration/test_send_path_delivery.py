@@ -1,5 +1,6 @@
 """Path sends freeze once, and all delivery facts follow the actual transport plan."""
 
+import asyncio
 import json
 import os
 from types import SimpleNamespace
@@ -210,6 +211,39 @@ async def test_restart_between_freeze_and_social_uses_original_snapshot(
         with pytest.raises(SocialError, match="idempotency_conflict"):
             await env.service.execute("send", args | {"path": "/workspace/other.txt"}, env.context)
         assert sum(action == "upload_group_file" for action, _ in env.bot.calls) == 1
+    finally:
+        await manager.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="Manager safe file FDs require POSIX")
+async def test_unconfirmed_publication_remains_unknown_without_platform_send(
+    database, tmp_path, monkeypatch
+):
+    env = await social_env(database, tmp_path)
+    manager = attach_manager(env, tmp_path)
+    source = manager.files.root / "report.txt"
+    source.write_bytes(b"selected report")
+    original = manager.file_operation
+
+    def interrupted(method, values):
+        original(method, values)
+        raise asyncio.CancelledError("manager interrupted after snapshot publication")
+
+    monkeypatch.setattr(manager, "file_operation", interrupted)
+    args = {"path": "/workspace/report.txt", "attachment_kind": "file"}
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await env.service.execute("send", args, env.context)
+        source.unlink()
+
+        def no_reopen(*args, **kwargs):
+            raise AssertionError("an unknown original publication is not dispatched again")
+
+        monkeypatch.setattr(manager, "file_operation", no_reopen)
+        result = await env.service.execute("send", args, env.context)
+        assert result["status"] == "uncertain" and result["uncertain"] is True
+        assert result["error"] == "file_mutation_unknown_read_current_version"
+        assert not any(action.startswith("upload_") for action, _ in env.bot.calls)
     finally:
         await manager.close()
 

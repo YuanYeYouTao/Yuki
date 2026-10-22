@@ -164,6 +164,8 @@ class EmojiLibrary:
             expected_version=digest,
             source_key=source_key,
         )
+        if metadata.get("error"):
+            raise WorkspaceError(str(metadata["error"]))
         result = await self._index(
             "catalog",
             platform=platform,
@@ -215,6 +217,12 @@ class EmojiLibrary:
                 source_key=f"sticker:{asset.platform}:{asset.sha256}",
                 request_id=f"sticker-publish:{request_id}",
             )
+            if metadata.get("error"):
+                raise WorkspaceError(
+                    "file_mutation_unknown_read_current_version"
+                    if metadata.get("uncertain")
+                    else str(metadata["error"])
+                )
         return {
             **metadata,
             "mime_type": asset.mime_type,

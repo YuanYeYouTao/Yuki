@@ -117,11 +117,13 @@ class WorkspaceService:
                     request_id=request_id,
                 )
                 if prior.get("error"):
-                    raise WorkspaceError(str(prior["error"]))
+                    return (
+                        {**prior, "uncertain": True}
+                        if prior["error"] == "sandbox_unavailable"
+                        else prior
+                    )
                 if prior.get("found"):
                     result: dict[str, Any] = prior["result"]
-                    if result.get("error"):
-                        raise WorkspaceError(str(result["error"]))
                     return result
             media = self.conversation_media
             if media is None:
@@ -213,8 +215,6 @@ class WorkspaceService:
             },
             request_id=request_id,
         )
-        if result.get("error"):
-            raise WorkspaceError(str(result["error"]))
         return result
 
     async def publish_for_send(
@@ -241,6 +241,4 @@ class WorkspaceService:
             },
             request_id=request_id,
         )
-        if result.get("error"):
-            raise WorkspaceError(str(result["error"]))
         return result

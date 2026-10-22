@@ -294,11 +294,11 @@ class SocialService:
         context: SocialContext,
         target: SocialTarget,
         prior: SocialReceipt | None,
-    ) -> UUID:
+    ) -> dict[str, Any]:
         if prior is not None and prior.prepared is not None:
             frozen = prior.prepared.get("artifact")
             if frozen is not None:
-                return UUID(frozen["artifact_id"])
+                return cast(dict[str, Any], frozen)
         if self.workspace_service is None:
             raise SocialError("artifact_transport_unavailable")
         from yuki.workspace.store import WorkspaceError
@@ -324,7 +324,7 @@ class SocialService:
             )
         except WorkspaceError as exc:
             raise SocialError(str(exc)) from exc
-        return UUID(metadata["artifact_id"])
+        return metadata
 
     async def _binding_choice(
         self, args: dict[str, Any], context: SocialContext
@@ -1199,13 +1199,14 @@ class SocialService:
                     "emoji": illustration,
                 }
             if message.path is not None:
-                message = message.model_copy(
-                    update={
-                        "artifact_id": await self._path_artifact(
-                            message, args, context, target, prior
-                        )
+                published = await self._path_artifact(message, args, context, target, prior)
+                if published.get("error"):
+                    return {
+                        **published,
+                        "status": "uncertain" if published.get("uncertain") else "failed",
+                        "target": target.model_dump(mode="json"),
                     }
-                )
+                message = message.model_copy(update={"artifact_id": UUID(published["artifact_id"])})
             if message.artifact_id is not None:
                 if self.workspace is None:
                     raise SocialError("artifact_transport_unavailable")

@@ -5,11 +5,23 @@ import hashlib
 import json
 import os
 import threading
+from types import SimpleNamespace
 
 import pytest
+from tests.conftest import make_settings
 
+from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
+from yuki.capabilities.models import CapabilityEffect
+from yuki.capabilities.results import resolve_mutation_commit
+from yuki.domain.conversations import ScopeType
+from yuki.domain.messages import InboundMessage, SenderIdentity
+from yuki.memory.repository import MemoryFactRepository
+from yuki.memory.service import MemoryFactService
+from yuki.persistence.repositories import EventLedgerRepository
 from yuki.sandbox.client import SandboxClient
 from yuki.sandbox.persistent import PersistentManager
+from yuki.services.agent_tools import AgentToolService, ToolRuntime
+from yuki.workspace.service import WorkspaceService
 from yuki.workspace.store import WorkspaceStore
 
 pytestmark = pytest.mark.skipif(
@@ -44,6 +56,37 @@ def copy_input(cache, *, name="original.txt", destination="target.txt", key="att
         "source_key": key,
     }
     return args, content
+
+
+async def save_tool_result(database, workspace, request_id):
+    tools = AgentToolService(
+        settings=make_settings(database.url),
+        ledger=EventLedgerRepository(database),
+        memories=MemoryFactService(MemoryFactRepository(database)),
+    )
+    tools.workspace_service = workspace
+    runtime = ToolRuntime(
+        inbound=InboundMessage(
+            "trigger",
+            "message:private:normal",
+            ScopeType.PRIVATE,
+            SenderIdentity("1001"),
+            "save the file",
+            bot_user_id="8000",
+        ),
+        execution_id="execution-test",
+        conversation_id="conversation-test",
+        target_presence_id="presence-test",
+    )
+    token = current_invocation.set(ToolInvocationContext(runtime, request_id))
+    try:
+        return await tools.execute(
+            "save_conversation_attachment_to_workspace",
+            json.dumps({"event_id": 101, "attachment_index": 0, "destination": "target.txt"}),
+            runtime,
+        )
+    finally:
+        current_invocation.reset(token)
 
 
 async def test_completed_copy_replays_before_source_or_destination_access(tmp_path, monkeypatch):
@@ -94,7 +137,7 @@ async def test_completed_copy_replays_before_source_or_destination_access(tmp_pa
 
 
 async def test_copy_interrupted_after_write_keeps_unknown_without_overwriting_user_file(
-    tmp_path, monkeypatch
+    database, tmp_path, monkeypatch
 ):
     manager, cache = manager_at(tmp_path)
     args, content = copy_input(cache)
@@ -116,14 +159,44 @@ async def test_copy_interrupted_after_write_keeps_unknown_without_overwriting_us
         monkeypatch.setattr(manager, "file_operation", original)
         result = await manager.file_request("workspace_copy", args, "interrupted-copy")
         assert result["error"] == "file_mutation_unknown_read_current_version"
-        assert result["retryable"] is False and calls == ["workspace_copy"]
+        assert result["retryable"] is False and result["uncertain"] is True
+        assert calls == ["workspace_copy"]
         found = await manager.file_request(
             "workspace_copy_result",
             {"source_key": args["source_key"], "destination": args["destination"]},
             "interrupted-copy",
         )
         assert found["found"] is True and found["result"]["error"] == result["error"]
+        workspace = WorkspaceService(manager.store)
+        workspace.sandbox = SimpleNamespace(execute=manager.file_request)
+        outcome = await save_tool_result(database, workspace, "interrupted-copy")
+        assert outcome.ok is False and outcome.error_code == result["error"]
+        assert outcome.data == result and outcome.uncertain is True
+        assert outcome.mutation_committed is None
+        assert (
+            resolve_mutation_commit(outcome, SimpleNamespace(effect=CapabilityEffect.WRITE_STATE))
+            is None
+        )
         assert (manager.files.root / "target.txt").read_bytes() == b"later user content"
+        assert calls == ["workspace_copy"]
+    finally:
+        await manager.close()
+
+
+async def test_save_cannot_turn_unavailable_receipt_query_into_confirmed_no_write(
+    database, tmp_path
+):
+    manager, cache = manager_at(tmp_path)
+    args, content = copy_input(cache)
+    try:
+        await manager.file_request("workspace_copy", args, "original-copy")
+        assert (manager.files.root / "target.txt").read_bytes() == content
+        workspace = WorkspaceService(manager.store)
+        workspace.sandbox = SandboxClient(tmp_path / "offline-manager.sock")
+        outcome = await save_tool_result(database, workspace, "original-copy")
+        assert outcome.ok is False and outcome.error_code == "sandbox_unavailable"
+        assert outcome.uncertain is True and outcome.mutation_committed is None
+        assert (manager.files.root / "target.txt").read_bytes() == content
     finally:
         await manager.close()
 
