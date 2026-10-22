@@ -265,9 +265,14 @@ async def test_telegram_host_continuation_quiet_keeps_topics_independent(
         ):
             record = await env.harness.ledger.get_event(identity)
             prepared = host.ordinary.prepare(record, 1, 2, binding, reason=reason)
+            continuation = await host.prepare_continuation(binding)
 
-            async def allowed(session, source=prepared, original_reason=reason):
-                return await processor._ordinary_admission_allowed(source, original_reason, session)
+            async def allowed(
+                session, source=prepared, original_reason=reason, continuation=continuation
+            ):
+                return await processor._ordinary_admission_allowed(
+                    source, original_reason, session, continuation=continuation
+                )
 
             assert await host.ordinary.commit(prepared, admission_allowed=allowed) is expected
         assert await host.ordinary.get(next_ids[0]) is None
