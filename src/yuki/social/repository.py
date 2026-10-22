@@ -576,7 +576,7 @@ class SocialOperationRepository:
         elif prepared is not None and "parts" in prepared:
             # Current direct sends freeze their complete one-part transport plan.
             # A Work reservation describes ownership, not another caption send.
-            pass
+            result["parts"] = parts
         elif planned_file_parts is not None:
             result["file"] = parts[0]
             if planned_file_parts > 1:
