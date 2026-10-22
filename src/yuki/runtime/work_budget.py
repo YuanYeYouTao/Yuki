@@ -19,22 +19,11 @@ async def charge(session: AsyncSession, identity: str, *, models: int, tools: in
     if not models and not tools:
         return
     root = await budget_root_id(session, identity)
-    current = (
-        await session.execute(
-            select(
-                work.c.model_requests,
-                work.c.tool_calls,
-            ).where(work.c.id == root)
-        )
-    ).one()
     await session.execute(
         insert(budgets)
-        .values(
-            root_id=root,
-            models=current.model_requests,
-            tools=current.tool_calls,
-            model_limit=None,
-            tool_limit=None,
+        .from_select(
+            ("root_id", "models", "tools"),
+            select(work.c.id, work.c.model_requests, work.c.tool_calls).where(work.c.id == root),
         )
         .on_conflict_do_nothing(index_elements=[budgets.c.root_id])
     )

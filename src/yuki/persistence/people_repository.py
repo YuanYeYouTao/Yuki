@@ -48,7 +48,6 @@ from yuki.domain.audio import parse_transcripts, serialize_transcripts
 from yuki.domain.conversations import ConversationScope, ScopeType
 from yuki.domain.profiles import UserProfileSnapshot
 from yuki.identity.canonical_repository import (
-    bindings_for_person,
     external_id,
     find_identity_binding,
     forget_person_by_id,
@@ -452,7 +451,12 @@ class PeopleRepository:
                 return ()
             person_ids = await person_family_ids(session, person_id)
             ownership = tuple(
-                BindingOwnership.of(item) for item in await bindings_for_person(session, person_id)
+                BindingOwnership.of(item)
+                for item in await session.scalars(
+                    select(IdentityBindingModel).where(
+                        IdentityBindingModel.person_id.in_(person_ids)
+                    )
+                )
             )
             private_ids = tuple(
                 await session.scalars(

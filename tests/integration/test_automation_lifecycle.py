@@ -725,6 +725,41 @@ async def test_unowned_interrupted_occurrence_records_unknown_once_without_model
     assert not case.provider.requests and not sent(case.env)
 
 
+@pytest.mark.parametrize("source_available", [True, False])
+async def test_run_creation_lost_commit_ack_settles_original_occurrence_without_dispatch(
+    database, tmp_path, monkeypatch, source_available
+):
+    from sqlalchemy.ext.asyncio import AsyncSession
+
+    case = await setup_run(database, tmp_path, mode="silent")
+    if not source_available:
+        from yuki.identity.db_models import CanonicalPersonModel
+
+        async with database.immediate_session() as writer:
+            person = await writer.get(CanonicalPersonModel, case.env.person)
+            person.enabled = False
+    create_run = case.repository.create_run
+    commit = AsyncSession.commit
+
+    async def lost_ack(session):
+        await commit(session)
+        raise ValueError("original_run_commit_ack_lost")
+
+    async def create_with_lost_ack(*args, **kwargs):
+        with monkeypatch.context() as fault:
+            fault.setattr(AsyncSession, "commit", lost_ack)
+            return await create_run(*args, **kwargs)
+
+    monkeypatch.setattr(case.repository, "create_run", create_with_lost_ack)
+    case.clock.advance(2)
+    original = await case.dispatch()
+    assert original is not None and original.status is RunStatus.UNCERTAIN
+    assert original.error_category == "ValueError"
+    assert (await case.repository.get(case.row.id)).run_count == 1
+    assert await case.dispatch() == original
+    assert not case.provider.requests and not sent(case.env)
+
+
 @pytest.mark.asyncio
 async def test_claim_lease_starts_after_competing_writer_releases(database, tmp_path, monkeypatch):
     from contextlib import asynccontextmanager

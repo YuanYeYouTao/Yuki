@@ -9,7 +9,7 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import event, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -25,6 +25,8 @@ from yuki.persistence.metadata import Base
 from yuki.persistence.sqlite_connection import SQLiteConnection
 
 if TYPE_CHECKING:
+    from sqlalchemy.engine import Connection
+
     from yuki.admin.models import WorkStorageRuntimeConfig
     from yuki.persistence.sqlite_diagnostics import SQLiteDiagnostics
     from yuki.sandbox.client import SandboxClient
@@ -115,7 +117,6 @@ class Database:
         self._ensure_sqlite_parent(url)
         self.engine: AsyncEngine = create_async_engine(
             url,
-            pool_pre_ping=True,
             **({"async_creator": self._connect_sqlite} if url.startswith("sqlite+") else {}),
         )
         self.sqlite_diagnostics: SQLiteDiagnostics | None = None
@@ -157,12 +158,55 @@ class Database:
     async def read_session(self) -> AsyncIterator[AsyncSession]:
         """Own a reader without auto-commit; caller-owned sessions keep their mode."""
         session = self._sessions(autoflush=False)
+        driver: SQLiteConnection | None = None
+        cancellation: asyncio.CancelledError | None = None
+        failure: BaseException | None = None
         try:
-            yield session
-        finally:
-            _, cancellation = await _complete(session.close())
+            connection, cancellation = await _complete(session.connection())
+            owned_driver = cast(
+                "Connection", connection.sync_connection
+            ).connection.driver_connection
+            if isinstance(owned_driver, SQLiteConnection):
+                driver = owned_driver
             if cancellation is not None:
                 raise cancellation
+            yield session
+        except BaseException as original:
+            failure = original
+            if isinstance(original, asyncio.CancelledError):
+                cancellation = cancellation or original
+        finally:
+            try:
+                if driver is not None and driver.physical_exit is not None:
+                    _, cancelled = await _complete(session.invalidate())
+                    cancellation = cancellation or cancelled
+                _, cancelled = await _complete(session.close())
+                cancellation = cancellation or cancelled
+            except BaseException as cleanup:
+                if failure is None:
+                    failure = cleanup
+                else:
+                    failure.add_note(f"reader_close_failed:{type(cleanup).__name__}")
+                try:
+                    _, cancelled = await _complete(session.invalidate())
+                    cancellation = cancellation or cancelled
+                except BaseException as invalidation:
+                    failure.add_note(f"invalidation_failed:{type(invalidation).__name__}")
+            finally:
+                if driver is not None and driver.physical_exit is not None:
+                    try:
+                        _, cancelled = await _complete(driver.physical_exit)
+                        cancellation = cancellation or cancelled
+                    except BaseException as cleanup:
+                        self._writer_failure = cleanup
+                        if failure is None:
+                            failure = cleanup
+                        else:
+                            failure.add_note(f"invalidation_failed:{type(cleanup).__name__}")
+        if cancellation is not None:
+            raise cancellation from failure
+        if failure is not None:
+            raise failure
 
     @staticmethod
     def _configure_sqlite_connection(
@@ -310,10 +354,11 @@ class Database:
                 self._record_timing(
                     "writer_connection_acquisition", time.monotonic() - connection_started
                 )
-                raw, cancelled = await _complete(connection.get_raw_connection())
-                cancellation = cancellation or cancelled
-                if isinstance(raw.driver_connection, SQLiteConnection):
-                    driver = raw.driver_connection
+                owned_driver = cast(
+                    "Connection", connection.sync_connection
+                ).connection.driver_connection
+                if isinstance(owned_driver, SQLiteConnection):
+                    driver = owned_driver
                 if cancellation is not None:
                     raise cancellation
                 transaction_started = time.monotonic()

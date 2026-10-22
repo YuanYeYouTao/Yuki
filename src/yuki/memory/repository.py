@@ -34,7 +34,12 @@ from yuki.memory.enums import (
     MemoryStatus,
     SelfMemoryVisibility,
 )
-from yuki.memory.job_claims import MemoryJobClaimLost, memory_job_claim_conditions
+from yuki.memory.job_claims import (
+    MemoryJobClaimLost,
+    PreparedJobClaim,
+    commit_job_claims,
+    memory_job_claim_conditions,
+)
 from yuki.memory.models import (
     MemoryEntityTarget,
     MemoryEvidence,
@@ -58,7 +63,6 @@ from yuki.memory.partition import (
 from yuki.memory.projections import project_memory_fact_rows
 from yuki.memory.temporal_filter import strict_time_conditions
 from yuki.persistence.database import Database
-from yuki.persistence.job_claims import PreparedJobClaim, commit_job_claims
 from yuki.persistence.models import (
     ChatEventModel,
     MemoryEvidenceModel,
@@ -2073,7 +2077,6 @@ class MemoryJobRepository:
                             {
                                 "status": MemoryJobStatus.FAILED.value,
                                 "error_category": "legacy_event_replay",
-                                "updated_at": now,
                             },
                         )
                     )
@@ -2086,7 +2089,6 @@ class MemoryJobRepository:
                                 {
                                     "status": MemoryJobStatus.FAILED.value,
                                     "error_category": "missing_canonical_owner",
-                                    "updated_at": now,
                                 },
                             )
                         )
@@ -2094,7 +2096,7 @@ class MemoryJobRepository:
                 prepared.append(
                     PreparedJobClaim(
                         *prior,
-                        {"status": MemoryJobStatus.PROCESSING.value, "updated_at": now},
+                        {"status": MemoryJobStatus.PROCESSING.value},
                         row.event_id
                         if row.processing_source == MemoryProcessingSource.LIVE.value
                         else None,
@@ -2118,8 +2120,12 @@ class MemoryJobRepository:
                         event=_event_record(event),
                     )
                 )
-        accepted = await commit_job_claims(self._database, MemoryJobModel, prepared)
-        return tuple(job for job in jobs if job.id in accepted)
+        accepted = await commit_job_claims(self._database, prepared)
+        return tuple(
+            job.model_copy(update={"updated_at": accepted[job.id]})
+            for job in jobs
+            if job.id in accepted
+        )
 
     async def claim_ready_batch(
         self,
@@ -2252,7 +2258,6 @@ class MemoryJobRepository:
                             {
                                 "status": MemoryJobStatus.FAILED.value,
                                 "error_category": "legacy_event_replay",
-                                "updated_at": claimed_at,
                             },
                         )
                     )
@@ -2265,7 +2270,6 @@ class MemoryJobRepository:
                                 {
                                     "status": MemoryJobStatus.FAILED.value,
                                     "error_category": "missing_canonical_owner",
-                                    "updated_at": claimed_at,
                                 },
                             )
                         )
@@ -2277,7 +2281,7 @@ class MemoryJobRepository:
                 prepared.append(
                     PreparedJobClaim(
                         *prior,
-                        {"status": MemoryJobStatus.PROCESSING.value, "updated_at": claimed_at},
+                        {"status": MemoryJobStatus.PROCESSING.value},
                         row.event_id
                         if row.processing_source == MemoryProcessingSource.LIVE.value
                         else None,
@@ -2302,8 +2306,12 @@ class MemoryJobRepository:
                         batch_trigger=str(owner_ready[3]),
                     )
                 )
-        accepted = await commit_job_claims(self._database, MemoryJobModel, prepared)
-        return tuple(job for job in jobs if job.id in accepted)
+        accepted = await commit_job_claims(self._database, prepared)
+        return tuple(
+            job.model_copy(update={"updated_at": accepted[job.id]})
+            for job in jobs
+            if job.id in accepted
+        )
 
     async def complete(
         self,

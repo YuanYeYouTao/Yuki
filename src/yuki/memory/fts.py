@@ -356,13 +356,10 @@ class SQLiteMemoryFTSIndex:
         return MemoryIndexHealth(**{key: int(row[key]) for key in row})
 
     async def rebuild(self) -> MemoryIndexHealth:
-        try:
-            async with self._database.immediate_session() as session:
-                await session.execute(
-                    text("INSERT INTO memory_facts_fts(memory_facts_fts) VALUES ('rebuild')")
-                )
-        except DatabaseError as exc:
-            raise MemoryRetrievalError("memory_index_unavailable") from exc
+        async with self._database.immediate_session() as session:
+            await session.execute(
+                text("INSERT INTO memory_facts_fts(memory_facts_fts) VALUES ('rebuild')")
+            )
         health = await self.health()
         if not health.healthy:
             raise MemoryRetrievalError("memory_index_inconsistent")

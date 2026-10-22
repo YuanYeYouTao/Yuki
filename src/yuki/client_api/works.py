@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Iterable, Mapping
 from typing import Any
 from uuid import uuid4
@@ -32,6 +33,8 @@ from yuki.runtime.work_recovery_schema import deliveries
 from yuki.runtime.work_repository import TERMINAL, WorkLease, WorkRepository
 from yuki.runtime.work_schema_v1 import effects, inputs, work
 from yuki.social.db_models import SocialOperationModel
+
+logger = logging.getLogger(__name__)
 
 
 def _values(values: Iterable[Any]) -> Any:
@@ -415,6 +418,7 @@ class ClientWorks:
         canonical_event_id = str(uuid4())
         while True:
             lease = None
+            outcome: dict[str, Any] | ClientError | None = None
             try:
                 async with self.database.read_session() as reader:
                     principal = await self.identity.require_principal(reader, principal)
@@ -558,20 +562,43 @@ class ClientWorks:
                         )
                         return {**result, "replay": False}
 
-                try:
-                    async with self.database.immediate_session() as writer:
-                        outcome = await record_input(writer)
-                except ObservationChanged as exc:
-                    if write_failure_committed(exc) is not False:
+                async with self.database.immediate_session() as writer:
+                    outcome = await record_input(writer)
+            except BaseException as original_error:
+                if lease is not None:
+                    try:
+                        await self.repository.release(lease)
+                    except asyncio.CancelledError:
                         raise
+                    except Exception as cleanup_error:
+                        original_error.add_note(
+                            f"client input lease release failed: {type(cleanup_error).__name__}"
+                        )
+                if (
+                    isinstance(original_error, ObservationChanged)
+                    and write_failure_committed(original_error) is False
+                ):
                     continue
+                raise
+            else:
+                if lease is not None:
+                    try:
+                        await self.repository.release(lease)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as cleanup_error:
+                        if outcome is None:
+                            raise
+                        # The original input, event and UUID receipt are committed.
+                        # This short borrowed lease can expire without replaying them.
+                        logger.warning(
+                            "client_work_input_lease_release_failed category=%s",
+                            type(cleanup_error).__name__,
+                        )
                 if isinstance(outcome, ClientError):
                     raise outcome
                 if outcome is not None:
                     return outcome
-            finally:
-                if lease is not None:
-                    await self.repository.release(lease)
 
     async def cancel(
         self, principal: ClientPrincipal, identity: str, request_id: str, revision: int

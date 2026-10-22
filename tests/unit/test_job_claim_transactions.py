@@ -23,6 +23,54 @@ from yuki.services.concurrency import ConcurrencyManager
 
 
 @pytest.mark.parametrize("kind", ["memory", "memory_batch"])
+async def test_memory_claim_lease_starts_after_waiting_for_the_writer(
+    database, monkeypatch, kind
+):
+    identity = await append_user_event(database, message_id="queued-claim-clock")
+    repository = MemoryJobRepository(database)
+    assert await repository.enqueue(identity, "private:1001")
+    module = importlib.import_module("yuki.memory.repository")
+    uow = importlib.import_module("yuki.persistence.unit_of_work")
+    instant = datetime.now(UTC)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return instant if tz is not None else instant.replace(tzinfo=None)
+
+    monkeypatch.setattr(module, "datetime", Clock)
+    monkeypatch.setattr(uow, "datetime", Clock)
+    prepared = asyncio.Event()
+    original = module.commit_job_claims
+
+    async def prepared_claim(*args):
+        prepared.set()
+        return await original(*args)
+
+    monkeypatch.setattr(module, "commit_job_claims", prepared_claim)
+
+    async def claim():
+        if kind == "memory_batch":
+            return await repository.claim_ready_batch(
+                limit=10, trigger_count=1, max_characters=8000, max_wait_seconds=3600
+            )
+        return await repository.claim()
+
+    async with database.immediate_session():
+        pending = asyncio.create_task(claim())
+        await asyncio.wait_for(prepared.wait(), 3)
+        instant += timedelta(minutes=6)
+    (job,) = await pending
+    assert job.updated_at.replace(tzinfo=UTC) == instant
+    assert not await claim(), "a freshly admitted claim must not already be stale"
+    await repository.complete(job)
+    async with database.read_session() as reader:
+        persisted = await reader.get(MemoryJobModel, job.id)
+        assert persisted.status == "done" and persisted.attempts == job.attempts == 0
+        assert persisted.event_id == identity
+
+
+@pytest.mark.parametrize("kind", ["memory", "memory_batch"])
 @pytest.mark.parametrize("stale_processing", [False, True])
 async def test_claim_prepares_without_writer_and_competing_claims_are_disjoint(
     database, monkeypatch, kind, stale_processing

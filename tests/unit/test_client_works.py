@@ -1,5 +1,6 @@
 """Personal inputs retain original Work identity and commit all three facts together."""
 
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -22,6 +23,7 @@ from yuki.conversation.canonical_db_models import (
 )
 from yuki.domain.conversations import ConversationScope
 from yuki.identity.canonical_repository import find_identity_binding
+from yuki.persistence.database import write_failure_committed
 from yuki.persistence.event_repository import ConversationReadVersion
 from yuki.persistence.models import ChatEventModel
 from yuki.runtime.work_budget_schema import budgets
@@ -32,6 +34,68 @@ from yuki.social.db_models import SocialOperationModel
 
 admin = admin_fixture
 app_env = app_fixture
+
+
+@pytest.mark.parametrize("business", ["success", "failure", "cancelled"])
+async def test_input_release_failure_keeps_original_commit_or_exception(
+    app_env, database, monkeypatch, business
+):
+    env = app_env
+    device, _ = await owner(env, database)
+    original = await seeded(env, database, state="waiting_user")
+    principal = await env.identity.authenticate(device["token"])
+    api = ClientWorks(env.identity, env.gateway)
+    request = str(uuid4())
+    release = api.repository.release
+    writer = database.immediate_session
+    release_error = OSError("release transaction rolled back")
+
+    @asynccontextmanager
+    async def rollback_release():
+        async with writer() as session:
+            yield session
+            raise release_error
+
+    async def release_with_rollback(lease):
+        with monkeypatch.context() as patch:
+            patch.setattr(database, "immediate_session", rollback_release)
+            await release(lease)
+
+    monkeypatch.setattr(api.repository, "release", release_with_rollback)
+    business_error = (
+        asyncio.CancelledError("original cancellation")
+        if business == "cancelled"
+        else RuntimeError("original input failure")
+    )
+    if business != "success":
+        record = env.identity.receipts.record_personal_command
+
+        async def fail_after_original_receipt(*args, **kwargs):
+            await record(*args, **kwargs)
+            raise business_error
+
+        monkeypatch.setattr(
+            env.identity.receipts, "record_personal_command", fail_after_original_receipt
+        )
+        with pytest.raises(type(business_error)) as raised:
+            await api.submit(principal, original.row["id"], request, "original requirement")
+        assert raised.value is business_error
+        if business == "failure":
+            assert any("lease release failed" in note for note in business_error.__notes__)
+    else:
+        result = await api.submit(principal, original.row["id"], request, "original requirement")
+        replay = await api.submit(principal, original.row["id"], request, "original requirement")
+        assert replay == {**result, "replay": True}
+    assert write_failure_committed(release_error) is False
+    async with database.read_session() as reader:
+        count = await reader.scalar(
+            select(func.count(ControlCommandReceiptModel.principal_id)).where(
+                ControlCommandReceiptModel.request_id == request
+            )
+        )
+        assert count == (1 if business == "success" else 0)
+        assert await reader.scalar(select(func.count(inputs.c.id))) == count
+    assert not env.calls
 
 
 async def test_new_input_checks_current_actor_without_decoding_private_work_source(

@@ -77,6 +77,7 @@ from yuki.memory.mutation.models import (
     MemoryMutationContext,
     MemoryMutationOperation,
     MemoryMutationOutcome,
+    MemoryMutationReceipt,
     MemoryMutationRequest,
     MemoryMutationRequestBasis,
     MemoryMutationResult,
@@ -243,14 +244,26 @@ class MemoryMutationService:
             return None
         receipt = await self._receipts.find(
             idempotency_key=_fingerprint({"operation_id": context.operation_id}),
-            claim_fingerprint="",
         )
         if receipt is None:
             return None
-        if receipt.claim_fingerprint != _request_fingerprint(request, context):
-            return self._rejected(request.operation, "memory_operation_payload_conflict")
+        return self._original_result(
+            receipt,
+            claim_fingerprint=_request_fingerprint(request, context),
+            operation=request.operation,
+        )
+
+    def _original_result(
+        self,
+        receipt: MemoryMutationReceipt,
+        *,
+        claim_fingerprint: str,
+        operation: MemoryMutationOperation,
+    ) -> MemoryMutationResult:
+        if receipt.claim_fingerprint != claim_fingerprint:
+            return self._rejected(operation, "memory_operation_payload_conflict")
         return MemoryMutationResult.from_receipt(
-            receipt, deduplicated=True, requested_operation=request.operation
+            receipt, deduplicated=True, requested_operation=operation
         )
 
     @staticmethod
@@ -355,7 +368,6 @@ class MemoryMutationService:
         ).hexdigest()
         existing = await self._receipts.find(
             idempotency_key=fingerprint,
-            claim_fingerprint=fingerprint,
             session=session,
         )
         if existing is not None:
@@ -1405,13 +1417,12 @@ class MemoryMutationService:
         context = prepared.context
         existing = await self._receipts.find(
             idempotency_key=prepared.idempotency_key,
-            claim_fingerprint=prepared.claim_fingerprint,
         )
         if existing is not None:
-            return MemoryMutationResult.from_receipt(
+            return self._original_result(
                 existing,
-                deduplicated=True,
-                requested_operation=request.operation,
+                claim_fingerprint=prepared.claim_fingerprint,
+                operation=request.operation,
             )
         evidence_sources = (prepared.evidence, *additional_evidence)
         async with self._facts.repository.database.read_session() as source_session:
@@ -1471,14 +1482,13 @@ class MemoryMutationService:
         async def apply(session: AsyncSession) -> MemoryMutationResult:
             duplicate = await self._receipts.find(
                 idempotency_key=prepared.idempotency_key,
-                claim_fingerprint=prepared.claim_fingerprint,
                 session=session,
             )
             if duplicate is not None:
-                return MemoryMutationResult.from_receipt(
+                return self._original_result(
                     duplicate,
-                    deduplicated=True,
-                    requested_operation=request.operation,
+                    claim_fingerprint=prepared.claim_fingerprint,
+                    operation=request.operation,
                 )
             from yuki.runtime.effect_outcomes import current_result_capture
 
@@ -1634,16 +1644,15 @@ class MemoryMutationService:
             try:
                 duplicate = await self._receipts.find(
                     idempotency_key=prepared.idempotency_key,
-                    claim_fingerprint=prepared.claim_fingerprint,
                 )
             except BaseException as verification_error:
                 raise exc from verification_error
             if isinstance(exc, asyncio.CancelledError) or duplicate is None:
                 raise
-            return MemoryMutationResult.from_receipt(
+            return self._original_result(
                 duplicate,
-                deduplicated=True,
-                requested_operation=request.operation,
+                claim_fingerprint=prepared.claim_fingerprint,
+                operation=request.operation,
             )
         if not result.deduplicated:
             await self._schedule_embedding_after_commit(result.new_fact_id)
@@ -1891,7 +1900,6 @@ class MemoryMutationService:
         target_fingerprint = _fingerprint(target_payload)
         existing = await self._receipts.find(
             idempotency_key=idempotency_key,
-            claim_fingerprint=claim_fingerprint,
         )
         if existing is not None:
             return MemoryMutationResult.from_receipt(
@@ -1906,7 +1914,6 @@ class MemoryMutationService:
         async def apply(session: AsyncSession) -> MemoryMutationResult:
             duplicate = await self._receipts.find(
                 idempotency_key=idempotency_key,
-                claim_fingerprint=claim_fingerprint,
                 session=session,
             )
             if duplicate is not None:
@@ -1982,7 +1989,6 @@ class MemoryMutationService:
             try:
                 duplicate = await self._receipts.find(
                     idempotency_key=idempotency_key,
-                    claim_fingerprint=claim_fingerprint,
                 )
             except BaseException as verification_error:
                 raise exc from verification_error

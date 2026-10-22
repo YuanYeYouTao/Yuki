@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from contextlib import closing
 from importlib.metadata import version
 from importlib.util import find_spec
 from pathlib import Path
@@ -135,7 +136,7 @@ if role == "application":
         )
         if migration.returncode:
             raise AssertionError(migration.stderr.decode())
-        with sqlite3.connect(database_path) as db:
+        with closing(sqlite3.connect(database_path)) as db:
             revision = db.execute("SELECT version_num FROM alembic_version").fetchone()[0]
             assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
             assert not db.execute("PRAGMA foreign_key_check").fetchall()

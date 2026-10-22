@@ -8,6 +8,7 @@ from sqlalchemy import select
 from tests.support.canonical_identity import ensure_person
 from tests.support.event_seed import seed_scoped_event
 from tests.support.memory_identity import transfer_account
+from tests.support.person_merge import merge_persons
 from tests.support.social_identity_cases import social_env
 from tests.unit.test_client_identity import code_for
 from tests.unit.test_rebuild_receipt_finalization import _seed
@@ -237,3 +238,15 @@ async def test_forget_gate_scope_does_not_cancel_previous_owner_group_work(datab
         current = await find_identity_binding(reader, "1001", platform="qq")
     scopes = await PeopleRepository(database).affected_conversation_scopes(current.person_id)
     assert all(scope.group_id != "2002" for scope in scopes)
+
+
+async def test_forget_gate_covers_legacy_mentions_of_every_merged_person(database):
+    async with database.immediate_session() as writer:
+        source = await ensure_person(writer, "1001")
+        target = await ensure_person(writer, "1002")
+    event = await append(database, "old native mention", account="1003", group=True)
+    async with database.immediate_session() as writer:
+        await merge_persons(writer, source, target)
+
+    scopes = await PeopleRepository(database).affected_conversation_scopes(target)
+    assert any(scope.conversation_id == event.canonical_conversation_id for scope in scopes)

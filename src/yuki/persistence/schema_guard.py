@@ -254,6 +254,14 @@ class CanonicalSchemaError(RuntimeError):
 
 async def require_canonical_schema(database_url: str) -> None:
     """Validate the bundled version and metadata without scanning business data."""
+    from yuki.persistence.database import _complete
+
+    _, cancellation = await _complete(_check_canonical_schema(database_url))
+    if cancellation is not None:
+        raise cancellation
+
+
+async def _check_canonical_schema(database_url: str) -> None:
 
     if not database_url.startswith("sqlite+aiosqlite:///"):
         raise CanonicalSchemaError("Yuki supports only its canonical SQLite schema")

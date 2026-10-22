@@ -12,6 +12,7 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from yuki.config import Settings
+from yuki.persistence.database import _complete
 from yuki.persistence.metadata import Base
 
 config = context.config
@@ -121,6 +122,12 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     """Create an async engine and run its synchronous migration callback."""
+    _, cancellation = await _complete(_run_async_migrations())
+    if cancellation is not None:
+        raise cancellation
+
+
+async def _run_async_migrations() -> None:
 
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),

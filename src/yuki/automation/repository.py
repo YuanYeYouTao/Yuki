@@ -879,6 +879,7 @@ class AutomationRepository:
         self,
         *,
         run_id: int | None = None,
+        occurrence: tuple[int, datetime] | None = None,
         error_category: str = "main_activation_interrupted",
     ) -> None:
         """Close unowned original occurrences without dispatching any effects."""
@@ -901,6 +902,12 @@ class AutomationRepository:
                         AutomationRunModel.status == RunStatus.RUNNING.value,
                         ~owned,
                         AutomationRunModel.id == run_id if run_id is not None else true(),
+                        and_(
+                            AutomationRunModel.automation_id == occurrence[0],
+                            AutomationRunModel.scheduled_for == _aware_utc(occurrence[1]),
+                        )
+                        if occurrence is not None
+                        else true(),
                     )
                 )
             ).all()

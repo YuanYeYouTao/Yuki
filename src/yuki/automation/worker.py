@@ -112,6 +112,7 @@ class AutomationWorker:
     async def _process_guarded(self, automation: AutomationRecord) -> None:
         worker_id = automation.claimed_by
         assert worker_id is not None
+        assert automation.next_run_at is not None
 
         async def renew() -> bool:
             return await self._repository.renew_claim(
@@ -130,9 +131,14 @@ class AutomationWorker:
                 clock=lambda: self._time.clock.now().timestamp(),
             ):
                 await self._process(automation)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
+        except BaseException as exc:
+            await self._repository.settle_work_occurrences()
+            await self._repository.settle_interrupted_occurrences(
+                occurrence=(automation.id, automation.next_run_at),
+                error_category=type(exc).__name__,
+            )
+            if not isinstance(exc, Exception):
+                raise
             logger.exception("automation_process_failed automation_id=%d", automation.id)
         finally:
             await self._repository.release_claim(automation.id, worker_id=worker_id)
@@ -214,7 +220,6 @@ class AutomationWorker:
             lease = await self._works.acquire(state.id, state.generation)
             if lease is None:
                 return
-            run = None
             activation = None
             try:
                 assert automation.next_run_at is not None
@@ -321,14 +326,6 @@ class AutomationWorker:
                         summary={"result": result.text},
                         finished_at=self._time.clock.now(),
                     )
-            except BaseException as exc:
-                if run is not None:
-                    # Existing Work owns its actual recovery; no outer retry or cursor.
-                    await self._repository.settle_work_occurrences()
-                    await self._repository.settle_interrupted_occurrences(
-                        run_id=run.id, error_category=type(exc).__name__
-                    )
-                raise
             finally:
                 if activation is None:
                     await self._works.release(lease)

@@ -3,6 +3,7 @@
 import asyncio
 import shutil
 import sqlite3
+import threading
 
 import pytest
 from alembic import command
@@ -141,3 +142,46 @@ def test_offline_0141_upgrade_checks_original_foreign_keys_before_commit(tmp_pat
         assert not connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='account_assignments'"
         ).fetchall()
+
+
+def test_alembic_cancel_owns_late_connector_and_closes_original_engine(tmp_path, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    connect, run = sqlite3.connect, asyncio.run
+    native, closed = [], []
+
+    class Connection(sqlite3.Connection):
+        def close(self):
+            closed.append(self)
+            return super().close()
+
+    def blocked_connect(*args, **kwargs):
+        connection = connect(*args, **kwargs, factory=Connection)
+        native.append(connection)
+        entered.set()
+        assert release.wait(5)
+        return connection
+
+    async def cancel_original(coroutine):
+        task = asyncio.create_task(coroutine)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(entered.wait), 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0.01)
+            assert not task.done(), "migration owner left its original connector running"
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert closed == native
+        finally:
+            release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            for connection in native:
+                if connection not in closed:
+                    connection.close()
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite+aiosqlite:///{tmp_path / 'cancel-migration.db'}")
+    monkeypatch.setattr(sqlite3, "connect", blocked_connect)
+    monkeypatch.setattr(asyncio, "run", lambda coroutine: run(cancel_original(coroutine)))
+    command.upgrade(Config("alembic.ini"), "head")
