@@ -4,7 +4,8 @@
 `codex/sqlite-writer-runtime-20261023`。完整范围认[任务书](../architecture/Yuki-SQLite统一写入与短事务重构任务书-2026-10-22.md)。
 
 状态：产品实现与 R1/R2/R3 全范围复审完成，最终产品快照为 `d23a487d`。
-最终全仓 Ruff、mypy 与依赖锁检查通过；固定源码性能确认、Linux 全量与 CI 尚在进行。
+最终全仓 Ruff、mypy 与依赖锁检查通过；44 轮性能确认与真实 512 MiB 对照已完成。
+Linux CI 的 93 项 Native 已通过；integration 首次 831 passed、2 处旧测试调用失败，迁移后定向 23 项通过，最终全量待合流重跑。
 未合并、未部署。任务逐项落点见[交付对照](sqlite-writer-acceptance-20261023.md)，测量见[性能报告](sqlite-writer-performance-20261023.md)。
 
 ## 分工
@@ -51,9 +52,9 @@ job_claim helper。此前逐域验证见各报告，重叠用例不累计为一�
 
 ## 剩余交付
 
-- 固定最终源码完成普通聊天、CPU2 与后台混跑确认，追加实际受限内存组；保留已完成的全部 48 轮结果。
-- Linux 全量 unit/integration 与真实 Native CodeMode 由现有 PR CI 执行，最终结果单独记录。
-- 汇总最终证据并完成 PR；本次交付到 PR，合并和部署另行执行。
+- 按用户后续授权合流 #494 历史来源优化与 #497 本地 Agent 连接，保原来源、paid、writer 与生命周期合同。
+- 在最终合流源码上完成约 2.5 GiB 历史组及质量/完整 CI，保留本次全部 48+44 轮与资源对照。
+- 合并全部三个 PR 后按 Bot-only 流程备份、替换、核验和清理，并连接本机 Codex；实际结果分项记录。
 
 ## 实现后的三轮复审
 

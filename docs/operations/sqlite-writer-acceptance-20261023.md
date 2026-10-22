@@ -1,7 +1,8 @@
 # SQLite 重构交付对照
 
 本表对应[任务书](../architecture/Yuki-SQLite统一写入与短事务重构任务书-2026-10-22.md)，记录实际落点与验证材料，不参与运行时判断。
-当前正在完成 R3 和固定源码性能复测；全量 Linux、最终质量检查与 PR 状态在实施记录更新后才算交付。
+R3 已完成，固定源码 48+44 轮及真实 512 MiB 对照已归档。用户后续授权合流全部 PR、上线和本机 Codex 连接，
+当前继续完成合流、约 2.5 GiB 历史组及完整 CI；实际合并、部署和连接状态在实施记录分项更新。
 
 源码起点是 `c2ce7da66ab54efe192993b9615df48266a62137`。R1、R2、R3 产品快照依次见
 `f8fbe14d`、`1fb34b85`、`c0af6e82`；设计阶段的三次审查不计入实现后复审。
@@ -53,8 +54,8 @@
 | W62 | 文件 WAL、多连接、真实线程 barrier、实际 COMMIT 后丢 ACK 和跨领域回归 | 下列 V 对照、Linux/CI 最终结果 |
 | W63 | 同一脚本、同 fixture、同到达计划、固定 Fake Provider/平台，旧→新→新→旧；真成功 Social receipt 关联输入 | scripts/benchmark_sqlite_writer.py；最终性能报告 |
 | W64 | R1/R2/R3 都按全源码清单审实际 DB 与调用者，纯类型/渲染明确排除；发现后修复再复读 | 实施记录三轮矩阵；R3 最后 PluginManager 与 eager delta 已独立复读 |
-| W65 | 最终提交、推送、PR 与 CI 分别记实 | 待最终验证与 PR |
-| W66 | 生产上线及自然流量验收 | 本次只提 PR，未执行；任务书原定另按上线授权 |
+| W65 | 最终提交、推送、PR 与 CI 分别记实 | PR #498 已开；用户另授权合并 #494/#497/#498，待合流完整 CI |
+| W66 | 生产上线及自然流量验收 | 已获后续上线授权，当前仅只读 preflight；待合并后 Bot-only 备份/替换/健康/清理，保原自然回执 |
 | W67–W68 | Automation task/version/audit 与 occurrence/finish/schedule 原子；准入后 lease 时钟；create_run 丢 ACK 按原 occurrence 结算，不重买模型 | integration/test_automation_lifecycle.py、test_automation_unknown_commit.py |
 | W69 | 根提交确认且释放 owner 后同步发布 CommitHint；已确认 commit 的取消也发布，savepoint 不发布；live span 原显式通知 | unit/test_database_writer.py；公共 owner R3 |
 | W70–W71 | Notification ledger+finish_outbox 合并；旧中间状态据原 receipt 恢复；plugin media 注册未知不直接 unlink | unit/test_notification_preparation_sources.py、test_plugin_notification_idempotency.py；C 域报告 |

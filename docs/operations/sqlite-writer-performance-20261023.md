@@ -49,8 +49,62 @@ mixed 平均只改善 3.4ms、P95 变差；Memory/merge 的几毫秒差距也不
 R1 的约 193ms 已降下来，但不称作比旧版快。只有两个样本，不将其 max/P95 当生产长尾结论。
 
 本次两个 logical CPU 可能是同一物理核的 sibling，记录的是实际 affinity，不把它宣称成两颗独立物理核。
-CPU2 chat 平均多 25.2ms，mixed 多 52.2ms；最终空路径删除后会追加确认组，原四轮数据保留，不用后续
-最快一轮替换本表。
+这个快照中的 CPU2 chat 平均多 25.2ms，mixed 多 52.2ms；最终空路径删除后的确认组见下节，
+本表原四轮数据继续保留。
+
+## 最终热路径确认：d23a487d
+
+空 reader、空 Protocol 准备与局部 eager 调度完成后，固定最终产品快照 `d23a487d94b7be682a3cfdf651c0edde15806b7b`，
+追加 44 轮交叉对照。chat、chat-cpu2、mixed-cpu2 各三个旧→新→新→旧周期，mixed 和 tail 各一个。
+每版本 240 条输入，全部关联成功回执，所有源码/导入检查通过，没有 workload error；
+逐轮参数、样本和关联见[完整摘要](../architecture/sqlite-writer-audit-2026-10-22/performance/d23a487d.json)。
+
+| 场景 | 每版本输入 | 旧平均 / P95（ms） | 新平均 / P95（ms） |
+| --- | ---: | ---: | ---: |
+| chat | 72 | 367.4 / 493.2 | 342.7 / 453.6 |
+| chat-cpu2 | 72 | 356.8 / 470.8 | 331.8 / 428.2 |
+| mixed-cpu2 | 72 | 647.7 / 2806.6 | 656.2 / 2676.4 |
+| mixed | 24 | 418.4 / 530.8 | 400.4 / 637.8 |
+
+普通聊天成功回执平均减少 **24.7ms（6.7%）**，双 logical CPU 减少 **25.0ms（7.0%）**。
+相应 handler 平均分别是 443.1→402.0ms、441.8→403.9ms。之前 CPU2 普通聊天的回退已在这组扭转。
+CPU2 后台混跑平均仍多 8.5ms（1.3%），P95 减少 130.2ms；mixed 平均减少 18.0ms，但 P95 变差。
+本组旧版 57 次 BUSY/BUSY_SNAPSHOT 语句错误，新版 0。它们仍是包含重试的语句次数。
+
+tail 每版本两次，实际原 paid/cursor/checkpoint 核对均通过，恢复平均 38.3→59.9ms，仍有 21.6ms 代价。
+本组沿用同一个测量脚本 SHA `2775b8452519bc7c06c99c7b96ff5aa55ed96dde28473d77befed91e5e201ffd`。
+前表是上一完整场景窗口，本表是最终热路径确认，各自与同时段旧版配对，不跨窗口拼平均值。
+
+## 512 MiB 与双 logical CPU
+
+另在本机 WSL Debian 的原生文件系统上，使用同提交的干净 Linux checkout、同 SHA `2775b845…e201ffd`
+脚本和同一 Python 环境，执行 mixed 的旧→新→新→旧。每轮通过独立 cgroup v2 叶子实际设置
+`memory.max=536870912`、`memory.swap.max=0`，进程 affinity 为 `[0,1]`；不更改父组或宿主限制。
+具体参数、每轮完整 benchmark 与资源 counter 见[四轮材料](../architecture/sqlite-writer-audit-2026-10-22/performance/memory-cap-d23a487d.json)，
+复现入口见[资源限制说明](../architecture/sqlite-writer-audit-2026-10-22/performance/cgroup-memory-cap.md)。
+
+每版本 24 个输入，均有成功回执关联，无 workload error；原 SELF/renew 负载相同。
+成功回执平均 **289.6→279.6ms（减少 3.4%）**，P95 **457.0→495.3ms**；handler 平均 352.4→332.0ms。
+后台提交平均 49.0→65.2ms，renew 10.7→11.2ms。旧版 17 次 BUSY/BUSY_SNAPSHOT 语句错误，新版 0。
+本组样本较少，平均改善与尾部退步同时保留，不和 Windows 组拼均值。
+
+各轮 cgroup peak 为 158.5–179.9 MiB，主进程 peak RSS 为 166.8–177.5 MiB，memory max/oom/oom_kill
+事件均为 0、swap 为 0，叶子均已移除。实际上限生效，但没有逼近上限；这不是内存耗尽测试。
+sidecar 的 CPU、RSS、process I/O 与 cgroup device I/O 包含导入和 fixture，业务计时仍认原 benchmark JSON。
+
+前一组尝试因 Linux Git 无法解析 Windows worktree 的 `.git` 绝对路径，在计时前全部失败，0 个输入。
+其中两个新版进程在 metadata 失败后留下了测试 driver 线程，按原 PID 收尾，实际退出 -15；原尝试完整单列，
+未混入均值。随后改用同提交的原生 Linux checkout，重新执行完整四轮。测量后将 Git metadata 前移到任何
+数据库资源创建之前，schema/seed 纳入原 finally，修复的是探针准备期的资源生命周期，业务计时与完成关联未改。
+
+## 大历史场景
+
+线上调查时业务库约 2.50 GiB。新增可选 `--history-rows` 在计时前批量准备真实 ChatEvent、transport receipt
+和 history FTS，保实际索引、FK、trigger 与 durability。数据由 128 种合成讨论正文组成；同一行数、同一模板，
+原 `/ai new` generation fence 保留冷历史，活跃输入仍按原参数投递。
+
+校准 8192 行实际分配 103702528 bytes，三类行数均为 8192、checkpoint 成功；新旧小规模真实链路冒烟通过。
+正式组预先固定为 **212992 行**，不会按版本分别填到某个大小。正式组尚待完整合流源码冻结后执行。
 
 ## 改动的实际成本
 
@@ -71,7 +125,10 @@ CPU2 chat 平均多 25.2ms，mixed 多 52.2ms；最终空路径删除后会追�
    receipt 继续保在原子单位。显式 FTS rebuild 和整次隐私清退仍可能占用 writer；不以拆坏业务原子性换数字。
 6. 持有 reader 的实际 checkout 后，原来没有 SQL 的空 context 也开始有借还成本。最终复审逐处删除这些
    空路径，包括 Work input、空 Protocol refs、空 initiative 集合、SELF/Dream 与无 scope 查询；只把原纯条件
-   移到 context 外，有数据时原 SQL、source 与权限条件保持。其后确认测量另记。
+   移到 context 外，有数据时原 SQL、source 与权限条件保持。完整聊天结果见上节最终确认组。
+7. 局部采用 Python 3.12 的 [eager task factory](https://docs.python.org/3.12/library/asyncio-task.html#eager-task-factory)，
+   让缓存 checkout、空 flush 等立即完成的操作省去首轮排队与 shield 回调。临时实际调度探针从 4 个 callback
+   降到 0；仍创建一个任务，真正 I/O 仍等待原 Future。47 项公共取消/提交/关闭回归及独立 4 项复核通过。
 
 ## 如何重跑
 

@@ -680,6 +680,7 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
     sys.path[:0] = [str(checkout / "src"), str(checkout)]
     os.chdir(checkout)
     os.environ["SOUL_FILE"] = str(checkout / "config/SOUL.md")
+    metadata = await asyncio.to_thread(checkout_metadata, checkout)
     from sqlalchemy import event, select
     from sqlalchemy.orm import Session
     from tests.conftest import _seed_database
@@ -709,8 +710,6 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
     with tempfile.TemporaryDirectory(prefix="sw-", dir=args.scratch) as temporary:
         root = Path(temporary)
         database = Database(f"sqlite+aiosqlite:///{root / 'load.db'}")
-        await database.create_schema()
-        await _seed_database(database)
         waits: list[float] = []
         scopes: list[float] = []
         acquired_to_end: list[float] = []
@@ -778,7 +777,7 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
             "checkout": str(checkout),
             "source": str(source),
             "scenario": args.scenario,
-            **await asyncio.to_thread(checkout_metadata, checkout),
+            **metadata,
             "python": sys.version,
             "cpu": args.cpu_metadata,
             "dataset": "synthetic logical fixture; setup and post-run verification are untimed",
@@ -786,6 +785,8 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
         }
         app = None
         try:
+            await database.create_schema()
+            await _seed_database(database)
             repository = SelfReflectionRepository(database)
             if args.scenario == "tail":
                 mutations, _, _, _ = await seed(database)
@@ -893,6 +894,12 @@ async def main(args: argparse.Namespace) -> dict[str, object]:
                     per_group_requests_per_minute=100000,
                     global_llm_concurrency=16,
                 )
+                if args.history_rows:
+                    from sqlite_large_history_seed import prepare_large_history
+
+                    result["historical_database"] = await prepare_large_history(
+                        database, environment, args.history_rows, checkout
+                    )
                 dispatch_claimed = app.social_service._dispatch_claimed
 
                 async def observed_dispatch(*arguments, **options):
@@ -1461,6 +1468,12 @@ if __name__ == "__main__":
     parser.add_argument("--background-interval", type=float, default=0.2)
     parser.add_argument("--tail", type=int, default=512)
     parser.add_argument("--scale", type=int, default=128)
+    parser.add_argument(
+        "--history-rows",
+        type=int,
+        default=0,
+        help="Untimed synthetic ledger/FTS history; use the same row count for both versions",
+    )
     parser.add_argument("--family", type=int, default=4)
     parser.add_argument("--payload-chars", type=int, default=4096)
     parser.add_argument("--domain-delay", type=float, default=0.05)
