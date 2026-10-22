@@ -264,10 +264,14 @@ WorkspaceStore 保不可变发布、媒体、short_state、下载及实际引用
 
 ## 共同账本历史与原生平台操作
 
-统一 `query_chat_history(view=recent/search/around)` 读取授权的 canonical 账本；默认当前入口，
-显式内部目标选择原会话。人物/空间有多个入口时返回授权范围内的候选，不猜主动路由。
+统一 `query_chat_history(view=recent/search/around)` 读取 Yuki 实际参与并已入账、当前来源获准读取的
+跨平台 canonical 原账本。内部目标只选择真实查询范围，不猜主动路由；每条结果标明原 Conversation、平台和作者。
+recent 默认当前 Conversation；search 未给 target 时检索所有当前获准的已入账 Conversation。
+Person、Space 或 Binding 对应多个入口时直接合查，around 未给 target 时按内部 event_id 定位原会话。
+sources 提供可读会话名与目录，每条事件保 conversation_id、platform、scope、thread_id，不合并自动上下文。
 `event_id` 定位实际范围内原事件；`operation_id` 沿原发送回执定位真实出站会话及原锚点。
-委托 `read_target_id` 核原 owner，读取尊重既有 starts_after 与 keeper 边界。
+委托 `read_target_id` 核原 owner，执行继续核 actor、委托、插件批准、keeper 与隐私。
+`/ai new` 的 starts_after 只限制自动上下文，不限制显式查找永久原记录；原 generation 失效仍停止旧执行。
 结果标明 coverage=observed，不冒充完整平台历史；平台离线不阻止账本读取。
 
 默认模型已退役任意 OneBot action、戳一戳和远端/raw 转发历史展开。原始 segments、
@@ -280,12 +284,12 @@ readonly alias 仍读自己的真实持久回执，不增加缓存失效总线�
 每项各有实际派发和持久回执；平台适配器不能内部多次发送却只返回一个成功。
 详见[平台适配与升级](platform-adapters.md)。
 
-## 主会话的跨入口读取与发送
+## 跨入口读取与发送
 
-`query_chat_history` 从合格本人 App/ACP 来源按内部 Binding 或 Conversation 显式读取本人
-私聊账本，允许选择当前入口。执行处核真实 actor、来源个人 Binding 及目标归属；其他来源
-继续沿自己的实际范围，不能借本人 UUID 取得个人全历史。读取不修改历史、generation 或
-Main session。分页、搜索及原回执的细节见[聊天记录读取](chat-history.md)。
+`query_chat_history` 的 Binding、Person、Space 和 Conversation 选择共用真实读取授权，
+不按当前入口为 App/ACP、QQ 或其他平台另设全历史资格。读取保原入口来源，不修改公共历史、
+generation、FrozenFragments 或 Main session；平台离线、旧路由与上下文重置不代替授权拒绝读取。
+分页、搜索及原回执的细节见[聊天记录读取](chat-history.md)。
 
 send_message 的 person target 可带 binding_id。从 App/ACP 显式指定 person 目标必须明确绑定，缺失时返回 binding_required 与可选绑定；
 省略目标时仍回复当前个人 Conversation。显式选择不修改主动路由，沿原 Provider 能力与发送权限，
@@ -294,7 +298,7 @@ SocialOperation 的 source_conversation_id 仍是原主会话。文件说明沿�
 
 ## 精简后的领域入口
 
-Main 合同26保持每项固定名称、schema和顺序，各入口共用一份冻结声明及 Code 投影。
+Main 固定合同保持每项固定名称、schema和顺序，各入口共用一份冻结声明及 Code 投影。
 direct 与可选 Code 模式各按实际装配收集工具，批准插件纳入同一合同；工具数量不作运行准入条件。
 
 - `terminal_exec/read/control` 共用原Manager/run/回执。control的input发送原样text；read的wait_seconds只观察，默认不等待，原终态completion与游标同时保留。环境默认无强制期限，显式期限按事实执行。
@@ -307,7 +311,7 @@ Work/source owner，再读取原 prompt；尚查不到 prompt 时，只读查询
 owner 显式 close；未知事实继续保持未知。
 - `workspace_inspect/publish` 只负责原生媒体和不可变交付桥；普通文件操作及apt/pip/npm使用环境内管理员终端，不再提供environment_packages包装。
 - `automation_query(view=list/get/completed/history/diagnose)` 复用原安全目录、人物终态、运行历史与创建审计；`automation_manage(action=create/update/pause/resume/cancel/run_now)` 沿原TaskSpec、owner、版本、创建键与调度回执。
-- `query_chat_history(view=recent/search/around)` 读取原 Conversation；search 使用 start_at/end_at，around 使用内部 event_id 及 before/after 条数。内部目标解析与共享读取内核统一，入口授权认各自真实来源。
+- `query_chat_history(view=recent/search/around)` 读取真实获准的原账本集合；recent 默认当前入口，search 默认全部获准入口，around 按内部 event_id 定位原会话。search 使用 start_at/end_at，around 使用 before/after 条数；内部目标解析与共享读取内核统一，入口授权认各自真实来源。
 - `read_memory(view=fact/evidence)` 保原scope与观察事实；`subagent_control(action=message)` 保原父子ID、ask/reply_to、运行中补充和resume区别。
 
 退役名称不接收新调用，也不注册新执行别名；旧已接受call/result_ref、参数hash、原ID、预算、unknown及原Provider输入继续只读恢复。工具声明变化只在合法新链生效。

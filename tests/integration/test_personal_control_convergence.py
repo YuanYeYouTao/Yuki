@@ -622,13 +622,13 @@ async def test_acp_uses_fixed_common_tools_and_explicit_person_routing(acp_runti
         )
         await asyncio.gather(*tuple(env.app.acp_gateway.tasks), return_exceptions=True)
     runtime.effective_conversation_id = base.conversation_id
-    candidates = await read_personal_history(
-        database, runtime, {"binding_id": principal.binding_id}
-    )
-    assert candidates["error"] == "conversation_ambiguous"
-    assert {item["conversation_id"] for item in candidates["conversations"]} == {
+    combined = await read_personal_history(database, runtime, {"binding_id": principal.binding_id})
+    assert {item["conversation_id"] for item in combined["sources"]} == {
         session["session_id"],
         another["session_id"],
+    }
+    assert {"First ACP entry", "Second ACP entry"} <= {
+        item["content"] for item in combined["events"]
     }
     selected = await read_personal_history(
         database, runtime, {"conversation_id": session["session_id"]}

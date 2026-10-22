@@ -926,7 +926,6 @@ class _MessageFacade:
         record = await ledger.get_reply_event(
             inbound.reply_to_event_id,
             conversation_id=invocation.conversation_id,
-            current_generation_only=True,
         )
         return _record_message(record) if record is not None else None
 
@@ -960,7 +959,6 @@ class _MessageFacade:
             page = await ledger.query_history(
                 session=session,
                 conversation_id=conversation.id,
-                starts_after_event_id=conversation.starts_after_event_id,
                 limit=request.limit or 20,
                 cursor=request.cursor,
                 keyword=request.keyword,

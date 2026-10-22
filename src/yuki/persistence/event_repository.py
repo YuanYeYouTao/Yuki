@@ -317,9 +317,7 @@ class EventLedgerRepository:
             row = await session.get(ChatEventModel, event_id)
         return _event_record(row) if row is not None else None
 
-    async def get_reply_event(
-        self, event_id: int, *, conversation_id: str, current_generation_only: bool = False
-    ) -> EventRecord | None:
+    async def get_reply_event(self, event_id: int, *, conversation_id: str) -> EventRecord | None:
         """Read a resolved reply only from its canonical conversation's live messages."""
         async with self._database.sessions() as session:
             row = await session.scalar(
@@ -330,12 +328,6 @@ class EventLedgerRepository:
                     keeper_event_clause(),
                 )
             )
-            if row is not None and current_generation_only:
-                from yuki.conversation.canonical_db_models import CanonicalConversationModel
-
-                conversation = await session.get(CanonicalConversationModel, conversation_id)
-                if conversation is None or row.id <= conversation.starts_after_event_id:
-                    return None
         return _event_record(row) if row is not None else None
 
     async def read_scope_context(
@@ -630,10 +622,12 @@ class EventLedgerRepository:
 
     @staticmethod
     def _history_conditions(
-        conversation_id: str, event_kind: str, predicates: Collection[Any]
+        conversation_id: str | tuple[str, ...], event_kind: str, predicates: Collection[Any]
     ) -> list[Any]:
         conditions = [
-            ChatEventModel.canonical_conversation_id == conversation_id,
+            ChatEventModel.canonical_conversation_id.in_(conversation_id)
+            if isinstance(conversation_id, tuple)
+            else ChatEventModel.canonical_conversation_id == conversation_id,
             keeper_event_clause(),
             *predicates,
         ]
@@ -646,9 +640,8 @@ class EventLedgerRepository:
     async def query_history(
         self,
         *,
-        conversation_id: str,
+        conversation_id: str | tuple[str, ...],
         session: AsyncSession | None = None,
-        starts_after_event_id: int = 0,
         order: str = "recent",
         limit: int = 20,
         cursor: int | None = None,
@@ -681,7 +674,7 @@ class EventLedgerRepository:
             else prepare_query(keyword, match, exclude)
         )
         metadata_candidates = bool(start_at or end_at or has)
-        lower = max(starts_after_event_id, after_event_id or 0)
+        lower = after_event_id or 0
         upper = before_event_id
         if cursor is not None:
             if order == "recent":
@@ -716,7 +709,9 @@ class EventLedgerRepository:
             conditions.append(
                 ChatEventModel.id.in_(
                     select(ConversationMediaItemModel.source_event_id).where(
-                        ConversationMediaItemModel.conversation_id == conversation_id,
+                        ConversationMediaItemModel.conversation_id.in_(conversation_id)
+                        if isinstance(conversation_id, tuple)
+                        else ConversationMediaItemModel.conversation_id == conversation_id,
                         ConversationMediaItemModel.source_snapshot_json.is_(None),
                         ConversationMediaItemModel.kind.in_(kinds),
                     )
@@ -730,14 +725,27 @@ class EventLedgerRepository:
                 if person_id is not None:
                     family = await person_family_ids(active, person_id)
                     conditions.append(ChatEventModel.author_person_id.in_(family))
-                fts_expression = (
-                    await asyncio.to_thread(
-                        compile_match,
-                        conversation_id,
-                        query,
-                        person_ids=family,
-                        author_kind=author_kind,
+
+                def scoped_match() -> str:
+                    conversations = (
+                        conversation_id
+                        if isinstance(conversation_id, tuple)
+                        else (conversation_id,)
                     )
+                    return " OR ".join(
+                        "("
+                        + cast(
+                            str,
+                            compile_match(
+                                identity, query, person_ids=family, author_kind=author_kind
+                            ),
+                        )
+                        + ")"
+                        for identity in dict.fromkeys(conversations)
+                    )
+
+                fts_expression = (
+                    await asyncio.to_thread(scoped_match)
                     if query.terms and not metadata_candidates
                     else None
                 )
@@ -812,8 +820,7 @@ class EventLedgerRepository:
                     for record in events:
                         _, earlier, later = await self.history_around(
                             session=active,
-                            conversation_id=conversation_id,
-                            starts_after_event_id=starts_after_event_id,
+                            conversation_id=cast(str, record.canonical_conversation_id),
                             event_id=record.id,
                             before=context_before,
                             after=context_after,
@@ -839,12 +846,10 @@ class EventLedgerRepository:
         before: int,
         after: int,
         session: AsyncSession | None = None,
-        starts_after_event_id: int = 0,
         event_kind: str = "message",
         predicates: Collection[Any] = (),
-        anchor_event: EventRecord | None = None,
     ) -> tuple[EventRecord | None, tuple[EventRecord, ...], tuple[EventRecord, ...]]:
-        """Read one actual anchor and ID-adjacent events within the legal range."""
+        """Read one permanent anchor and its ID-adjacent events in the same conversation."""
         from yuki.persistence.unit_of_work import optional_session
 
         if before < 0 or after < 0:
@@ -854,12 +859,6 @@ class EventLedgerRepository:
                 if session is None:
                     await active.execute(text("BEGIN"))
                 conditions = self._history_conditions(conversation_id, event_kind, predicates)
-                if (
-                    anchor_event is None
-                    or anchor_event.id != event_id
-                    or anchor_event.canonical_conversation_id != conversation_id
-                ):
-                    conditions.append(ChatEventModel.id > starts_after_event_id)
                 center = await _history_read(
                     active,
                     select(ChatEventModel).where(*conditions, ChatEventModel.id == event_id),
@@ -871,7 +870,6 @@ class EventLedgerRepository:
                     await self.query_history(
                         session=active,
                         conversation_id=conversation_id,
-                        starts_after_event_id=starts_after_event_id,
                         before_event_id=event_id,
                         event_kind=event_kind,
                         predicates=predicates,
@@ -884,7 +882,6 @@ class EventLedgerRepository:
                     await self.query_history(
                         session=active,
                         conversation_id=conversation_id,
-                        starts_after_event_id=starts_after_event_id,
                         after_event_id=event_id,
                         event_kind=event_kind,
                         predicates=predicates,

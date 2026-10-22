@@ -116,12 +116,15 @@ async def test_plugin_history_has_no_old_caps_and_projects_real_asr_and_ids(data
     )
     try:
         with host.bind(invocation):
-            assert await host.messages.get_recent() == ()
+            recent = await host.messages.get_recent()
+            assert recent[-1].event_id == spoken.id
+            original = await host.messages.search_history("row 0", match="phrase")
+            assert [item.event_id for item in original] == [rows[0].id]
     finally:
         await host.close_host_resources()
 
 
-async def test_operation_anchor_is_original_and_only_receipt_anchor_crosses_floor(
+async def test_operation_anchor_and_permanent_history_survive_new_context_window(
     database, tmp_path
 ):
     env = await social_env(database, tmp_path)
@@ -134,15 +137,19 @@ async def test_operation_anchor_is_original_and_only_receipt_anchor_crosses_floo
         conversation.starts_after_event_id = second["event_id"]
     request = {"view": "recent", "target": {"operation_id": first["operation_id"]}}
     original = await env.service.execute("query_chat_history", request, env.context)
-    assert original["events"] == []
-    assert original["receipt_anchor"]["event"]["event_id"] == first["event_id"]
-    denied = await env.service.execute(
+    assert [row["event_id"] for row in original["events"]][:2] == [
+        second["event_id"],
+        first["event_id"],
+    ]
+    assert original["receipt_anchor"]["event_id"] == first["event_id"]
+    around = await env.service.execute(
         "query_chat_history",
         {**request, "view": "around", "event_id": second["event_id"]},
         env.context,
     )
-    assert denied["events"] == [] and denied["center_status"] == "unavailable"
-    assert original.source_event_ids == (first["event_id"],)
+    assert [row["event_id"] for row in around["events"]] == [second["event_id"]]
+    assert around["center_status"] == "available"
+    assert {first["event_id"], second["event_id"]} <= set(original.source_event_ids)
 
 
 async def test_sdk_fake_preserves_literal_all_any_phrase_exclude_and_cursor():

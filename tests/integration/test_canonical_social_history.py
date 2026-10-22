@@ -1,20 +1,27 @@
 """History follows stored entries and original receipts without remote credentials."""
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
 from tests.support.canonical_identity import ensure_person, ensure_presence
 from tests.support.event_seed import seed_scoped_event
+from tests.support.social_history_cases import history_agent_loop, stored_private_entry
 from tests.support.social_identity_cases import social_env
 
 from yuki.capabilities.invocation import ToolInvocationContext, current_invocation
 from yuki.conversation.canonical_db_models import CanonicalConversationModel
 from yuki.domain.conversations import ConversationScope
-from yuki.identity.db_models import CanonicalPersonModel
+from yuki.identity.canonical_repository import (
+    find_identity_binding,
+    replace_assignment,
+)
+from yuki.identity.db_models import AccountModel, CanonicalPersonModel
 from yuki.identity.person_identity import merge_persons
 from yuki.persistence.models import ChatEventModel
+from yuki.persistence.repositories import EventLedgerRepository
 from yuki.services.agent_tools import ToolRuntime
 from yuki.social.agent_adapter import invoke_social
 from yuki.social.models import SocialError
@@ -33,7 +40,9 @@ async def private_entry(env, account, message_id):
     ).event
 
 
-async def test_same_person_multiple_entries_require_original_conversation(database, tmp_path):
+async def test_same_person_multiple_entries_query_together_without_merging_sources(
+    database, tmp_path
+):
     env = await social_env(database, tmp_path)
     async with database.immediate_session() as session:
         await ensure_presence(session, "80002")
@@ -47,8 +56,8 @@ async def test_same_person_multiple_entries_require_original_conversation(databa
         {"view": "recent", "event_kind": "all", "target": {"person_id": env.person}},
         env.context,
     )
-    assert result["error"] == "conversation_ambiguous"
-    assert {row["conversation_id"] for row in result["conversations"]} == {
+    assert [row["event_id"] for row in result["events"]] == [second.id, first.id]
+    assert {row["conversation_id"] for row in result["sources"]} == {
         first.canonical_conversation_id,
         second.canonical_conversation_id,
     }
@@ -84,7 +93,13 @@ async def test_receipt_and_delegated_history_keep_actual_source_grants(database,
             context,
         )
     unavailable = await env.service.execute(
-        "query_chat_history", {"view": "around", "event_id": receipt["event_id"]}, context
+        "query_chat_history",
+        {
+            "view": "around",
+            "event_id": receipt["event_id"],
+            "target": {"conversation_id": private.canonical_conversation_id},
+        },
+        context,
     )
     assert unavailable["anchor_status"] == "unavailable" and not unavailable["events"]
     token = current_invocation.set(
@@ -111,7 +126,7 @@ async def test_receipt_and_delegated_history_keep_actual_source_grants(database,
     assert env.bot.calls == []
 
 
-async def test_history_respects_existing_reset_boundary(database, tmp_path):
+async def test_permanent_group_history_survives_new_context_window(database, tmp_path):
     env = await social_env(database, tmp_path)
     sent = await env.service.execute("send_message", {"text": "after reset"}, env.context)
     async with database.immediate_session() as session:
@@ -124,9 +139,109 @@ async def test_history_respects_existing_reset_boundary(database, tmp_path):
     result = await env.service.execute(
         "query_chat_history", {"view": "recent", "event_kind": "all"}, env.context
     )
-    assert [row["event_id"] for row in result["events"]] == [sent["event_id"]]
+    assert [row["event_id"] for row in result["events"]] == [sent["event_id"], source.id]
     assert "after reset" in result["events"][0]["content"]
     assert env.bot.calls == []
+
+
+async def test_main_history_empty_arguments_use_recent_without_schema_rejection(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    await history_agent_loop(env, arguments="{}")
+
+
+@pytest.mark.parametrize("platform", ["qq", "telegram", "feishu"])
+async def test_platform_personal_history_and_cross_entry_binding_survive_new_window(
+    database, tmp_path, platform
+):
+    env = await social_env(database, tmp_path)
+    entry = await stored_private_entry(env, platform)
+    original = entry.event
+    async with database.immediate_session() as session:
+        conversation = await session.get(
+            CanonicalConversationModel, original.canonical_conversation_id
+        )
+        conversation.starts_after_event_id = original.id
+        conversation.generation += 1
+    current = (
+        await seed_scoped_event(
+            env.service.writer,
+            scope=entry.scope,
+            platform_message_id="after-new",
+            sender_user_id=entry.scope.private_peer_user_id,
+            direction="inbound",
+            content="现在重新聊",
+        )
+    ).event
+    context = replace(
+        env.context,
+        conversation_id=original.canonical_conversation_id,
+        space_id=None,
+        actor=SimpleNamespace(person_id=env.person, principal_kind="person"),
+    )
+    recent = await env.service.execute("query_chat_history", {"view": "recent"}, context)
+    assert [row["event_id"] for row in recent["events"]] == [current.id, original.id]
+    found = await env.service.execute(
+        "query_chat_history", {"view": "search", "keyword": "雷达站"}, context
+    )
+    assert [row["event_id"] for row in found["events"]] == [original.id]
+    around = await env.service.execute(
+        "query_chat_history", {"view": "around", "event_id": original.id, "after": 1}, context
+    )
+    assert [row["event_id"] for row in around["events"]] == [original.id, current.id]
+    cross_entry = await env.service.execute(
+        "query_chat_history",
+        {"view": "search", "keyword": "雷达站", "target": {"binding_id": entry.binding_id}},
+        replace(env.context, actor=SimpleNamespace(person_id=env.person, principal_kind="person")),
+    )
+    assert cross_entry["events"] == found["events"]
+    assert cross_entry["platform"] == platform
+    assert cross_entry["events"][0]["person_id"] == env.person
+    version, automatic_context = await EventLedgerRepository(database).read_scope_context(
+        entry.scope, limit=20
+    )
+    assert [row.id for row in automatic_context] == [current.id]
+    assert version.generation == 2 and version.starts_after_event_id == original.id
+    async with database.sessions() as session:
+        conversation = await session.get(
+            CanonicalConversationModel, original.canonical_conversation_id
+        )
+        assert conversation.generation == 2
+        assert conversation.starts_after_event_id == original.id
+
+
+async def test_account_transfer_keeps_original_binding_conversation_and_author(database, tmp_path):
+    env = await social_env(database, tmp_path)
+    original = await private_entry(env, "80001", "before-transfer")
+    async with database.immediate_session() as session:
+        old_binding = await find_identity_binding(session, "10001")
+        old_binding_id = old_binding.id
+        target = await ensure_person(session, "10002")
+        account = await session.get(AccountModel, old_binding.account_id)
+        new_binding = await replace_assignment(
+            session,
+            account,
+            old_binding_id,
+            await session.get(CanonicalPersonModel, target),
+            now=datetime.now(UTC),
+        )
+        new_binding_id = new_binding.id
+        conversation = await session.get(
+            CanonicalConversationModel, original.canonical_conversation_id
+        )
+        conversation.starts_after_event_id = original.id
+    current = await private_entry(env, "80001", "after-transfer")
+    assert current.canonical_conversation_id != original.canonical_conversation_id
+    for binding_id, expected in ((old_binding_id, original), (new_binding_id, current)):
+        result = await env.service.execute(
+            "query_chat_history",
+            {"view": "recent", "target": {"binding_id": binding_id}},
+            env.context,
+        )
+        assert result["conversation_id"] == expected.canonical_conversation_id
+        assert [row["event_id"] for row in result["events"]] == [expected.id]
+        assert result["events"][0]["person_id"] == expected.author_person_id
+    assert original.author_person_id == env.person
+    assert current.author_person_id == target
 
 
 @pytest.mark.parametrize("source_disabled", [False, True])
@@ -157,8 +272,8 @@ async def test_history_discovers_original_entries_after_person_merge(
         {"view": "recent", "event_kind": "all", "target": {"person_id": target}},
         env.context,
     )
-    assert entries["error"] == "conversation_ambiguous"
-    assert {row["conversation_id"] for row in entries["conversations"]} == {
+    assert [row["event_id"] for row in entries["events"]] == [other.id, original.id]
+    assert {row["conversation_id"] for row in entries["sources"]} == {
         original.canonical_conversation_id,
         other.canonical_conversation_id,
     }

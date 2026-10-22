@@ -56,7 +56,6 @@ class HistoryQuery(BaseModel):
 
 def history_schema() -> dict[str, object]:
     schema = HistoryQuery.model_json_schema()
-    schema["required"] = ["view"]
     target = schema["$defs"]["HistoryTarget"]
     target["oneOf"] = [{"required": [name]} for name in HistoryTarget.model_fields]
     return schema
@@ -64,8 +63,10 @@ def history_schema() -> dict[str, object]:
 
 HISTORY_TOOL_DESCRIPTION = (
     "查询已观察到的聊天账本。recent 读取近期，search 按原文/本人语音、作者、日期或附件筛选，"
-    "around 按内部 event_id 读取邻文。target 省略为当前 Conversation；跨入口用一个内部 ID，"
-    "有多个会话时先选择候选。target.person_id 选择入口，顶层 person_id 筛选原作者。"
+    "around 按内部 event_id 读取原会话邻文。target 省略时 recent 浏览当前会话，"
+    "search 搜索所有获准的聊天；"
+    "显式目标使用一个内部 ID，多入口合并检索并分别标明平台、私聊/群聊、会话名称与话题来源。"
+    "可查重开上下文前的永久账本。target.person_id 选择私聊入口，顶层 person_id 筛选原作者。"
     "operation_id 沿原发送回执定位会话和原锚点。cursor 按 order 续查 ID 页；"
     "before/after 是 around 条数。日期未带时区按 UTC+8，起点包含、终点不含。"
     "不调用平台补查，不接受平台消息号。"

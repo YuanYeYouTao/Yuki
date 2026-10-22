@@ -44,7 +44,7 @@ Bot 是原件缓存的唯一 writer 与清理 owner。Host 的 `data/conversatio
 身份、类型、大小和修改时间；未过期引用、刚替换的文件和其他来源仍保留。取消等待中的 GC
 先结束当前线程页，再释放锁，不能让后台 unlink 与新发布竞争。正在写入的暂存文件由实际 owner 引用保留，mtime 变旧不证明写入已经结束。
 
-主 Agent 的 `query_chat_history` 按 recent/search/around 返回真实内部事件 ID，聊天上下文与历史读取仍认原 Conversation 和 generation floor。共享原文件是独立的文件访问范围：`inspect_conversation_attachment` 与保存桥按内部 event/index 找到真实入站 keeper，不另加当前 Conversation、generation 或 floor 的读取限制，也不向调用者拼入另一会话的历史。图片与视频选读后才进入原 Main 的原生视觉输入；文档沿本地有界 reader 解析。附件工具不调用独立 Qwen，也不扣辅助模型请求，结果标明真实来源、hash 和处理模式。
+主 Agent 的 `query_chat_history` 按 recent/search/around 返回真实内部事件 ID。自动聊天上下文仍认原 Conversation、generation 与起点；显式历史查询可读当前获准的跨平台永久账本，不受 `/ai new` 的上下文 floor 截断，结果逐条保原入口来源，详见[聊天记录读取](chat-history.md)。共享原文件是独立的文件访问范围：`inspect_conversation_attachment` 与保存桥按内部 event/index 找到真实入站 keeper，不另加当前 Conversation、generation 或 floor 的读取限制，也不向调用者拼入另一会话的自动上下文。图片与视频选读后才进入原 Main 的原生视觉输入；文档沿本地有界 reader 解析。附件工具不调用独立 Qwen，也不扣辅助模型请求，结果标明真实来源、hash 和处理模式。
 
 已知引用复用原 keeper 的内部事件与附件；Yuki 的出站图片沿真实不可变 artifact。原消息从未入账但当前确实观察到引用附件时，`source_snapshot_json` 只保存这一实际 segment，并在本次真实事件下追加附件槽，当前索引标明 `reply_observed`。不从平台消息号制造过去事件、作者或对话。快照在首次 writer 前序列化，编辑沿原内部引用事实处理，不在写事务解析整份历史。
 

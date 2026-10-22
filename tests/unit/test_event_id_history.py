@@ -26,7 +26,6 @@ async def _around(ledger, scope, *, event_id, before, after, message_only=False)
         return await ledger.history_around(
             session=session,
             conversation_id=conversation.id,
-            starts_after_event_id=conversation.starts_after_event_id,
             event_id=event_id,
             before=before,
             after=after,
@@ -94,14 +93,8 @@ async def test_history_around_keeps_original_event_across_presence_switch(
     assert (
         await _around(ledger, new_scope, event_id=old.id, before=0, after=0, message_only=True)
     )[0] is None
-    assert (
-        await ledger.get_reply_event(
-            old.id,
-            conversation_id=old.canonical_conversation_id,
-            current_generation_only=True,
-        )
-        is None
-    )
+    reply = await ledger.get_reply_event(old.id, conversation_id=old.canonical_conversation_id)
+    assert reply is not None and reply.id == old.id
 
 
 @pytest.mark.asyncio
@@ -146,7 +139,8 @@ async def test_history_around_keeps_one_snapshot_and_rejects_duplicate_center(
     assert raced and center.id == events[1].id
     assert [row.id for row in earlier] == [events[0].id]
     assert [row.id for row in later] == [events[2].id]
-    assert (await _around(ledger, scope, event_id=center.id, before=1, after=1))[0] is None
+    retained = (await _around(ledger, scope, event_id=center.id, before=1, after=1))[0]
+    assert retained is not None and retained.id == center.id
     duplicate, _ = await seed_event(
         ledger,
         bot_user_id="8000",

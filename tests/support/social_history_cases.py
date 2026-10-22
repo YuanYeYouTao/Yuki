@@ -1,13 +1,52 @@
 """Common history requests reach real canonical reads in each actual invocation."""
 
 import json
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 from sqlalchemy import select
+from tests.support.event_seed import seed_scoped_event
 
+from yuki.domain.conversations import ConversationScope
+from yuki.identity.canonical_repository import create_presence, ensure_account, replace_assignment
+from yuki.identity.db_models import CanonicalPersonModel
 from yuki.persistence.models import ChatEventModel
 
 
-async def history_agent_loop(env, *, same_batch=False):
+async def stored_private_entry(env, platform, *, content="之前讨论过雷达站", person_id=None):
+    bot_id, peer_id = f"{platform}-history-bot", f"{platform}-history-person"
+    now = datetime.now(UTC)
+    async with env.db.immediate_session() as session:
+        presence = await create_presence(
+            session, external_account_id=bot_id, platform=platform, now=now
+        )
+        account = await ensure_account(
+            session, peer_id, platform=platform, display_name=f"{platform} friend", now=now
+        )
+        binding = await replace_assignment(
+            session,
+            account,
+            None,
+            await session.get(CanonicalPersonModel, person_id or env.person),
+            now=now,
+        )
+        assert binding is not None
+        binding_id, presence_id = binding.id, presence.id
+    scope = ConversationScope.private(bot_id, peer_id, platform=platform, presence_id=presence_id)
+    added = await seed_scoped_event(
+        env.service.writer,
+        scope=scope,
+        platform_message_id="before-new",
+        sender_user_id=peer_id,
+        direction="inbound",
+        content=content,
+    )
+    return SimpleNamespace(event=added.event, scope=scope, binding_id=binding_id)
+
+
+async def history_agent_loop(
+    env, *, same_batch=False, arguments='{"view": "recent", "event_kind": "all"}'
+):
     from tests.conftest import MemorySender, build_harness, make_settings
 
     from yuki.domain.conversations import ScopeType
@@ -23,7 +62,6 @@ async def history_agent_loop(env, *, same_batch=False):
     from yuki.workspace.short_state import ShortState
 
     calls = 0
-    arguments = '{"view": "recent", "event_kind": "all"}'
     env.bot.history = {"messages": [{"message_id": 50, "message": "第一条"}]}
 
     def respond(request):

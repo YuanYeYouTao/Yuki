@@ -23,7 +23,7 @@ async def _event(database, ledger, key, content, **fields):
         ledger,
         bot_user_id="8000",
         scope_type=ScopeType.GROUP,
-        group_id="2001",
+        group_id=fields.pop("group_id", "2001"),
         sender_user_id=fields.pop("sender_user_id", "10001"),
         direction="inbound",
         platform_message_id=key,
@@ -62,7 +62,6 @@ async def test_id_pages_continue_after_deleted_tail_and_native_time_is_not_order
         conversation_id=conversation,
         order="oldest",
         limit=2,
-        starts_after_event_id=rows[0].id,
         after_event_id=rows[1].id,
     )
     assert [row.id for row in oldest.events] == [rows[2].id, rows[4].id]
@@ -94,6 +93,122 @@ async def test_fts_false_positives_do_not_truncate_or_duplicate_matches(database
         conversation_id=conversation, exclude=("abcd",), order="oldest"
     )
     assert [row.content for row in excluded.events] == ["abc ... bcd", "abc ... bcd"]
+
+
+async def test_multi_conversation_pages_merge_matches_and_keep_original_authors(database):
+    ledger = EventLedgerRepository(database)
+    first = await _event(database, ledger, "multi-a-old", "電動車 archive")
+    second = await _event(database, ledger, "multi-b-old", "電動車 archive", group_id="2002")
+    outside, _ = await seed_event(
+        ledger,
+        bot_user_id="8000",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="10001",
+        direction="inbound",
+        platform_message_id="multi-outside",
+        content="電動車 archive",
+    )
+    wrong_author = await _event(
+        database,
+        ledger,
+        "multi-wrong-author",
+        "電動車 archive",
+        group_id="2002",
+        sender_user_id="10002",
+    )
+    third = await _event(database, ledger, "multi-b-new", "電動車 archive", group_id="2002")
+    last = await _event(database, ledger, "multi-a-new", "電動車 archive")
+    conversations = (first.canonical_conversation_id, second.canonical_conversation_id)
+    statements = []
+
+    def observe(_c, _cur, statement, _params, _context, _many):
+        statements.append(statement)
+
+    event.listen(database.engine.sync_engine, "before_cursor_execute", observe)
+    try:
+        page = await ledger.query_history(
+            conversation_id=conversations,
+            keyword="电动车",
+            person_id=first.author_person_id,
+            limit=2,
+        )
+    finally:
+        event.remove(database.engine.sync_engine, "before_cursor_execute", observe)
+    assert [row.id for row in page.events] == [last.id, third.id]
+    assert page.has_more and page.next_cursor == third.id
+    assert sum("chat_history_fts MATCH" in statement for statement in statements) == 1
+    following = await ledger.query_history(
+        conversation_id=conversations,
+        keyword="电动车",
+        person_id=first.author_person_id,
+        limit=2,
+        cursor=page.next_cursor,
+    )
+    assert [row.id for row in following.events] == [second.id, first.id]
+    assert not following.has_more and following.next_cursor is None
+    assert all(row.author_person_id == first.author_person_id for row in following.events)
+    assert not {outside.id, wrong_author.id} & {row.id for row in (*page.events, *following.events)}
+    oldest = await ledger.query_history(
+        conversation_id=conversations,
+        keyword="电动车",
+        person_id=first.author_person_id,
+        order="oldest",
+        limit=2,
+        cursor=first.id,
+    )
+    assert [row.id for row in oldest.events] == [second.id, third.id]
+    assert oldest.has_more and oldest.next_cursor == third.id
+    assert not (await ledger.query_history(conversation_id=(), keyword="电动车")).events
+
+
+async def test_multi_conversation_media_hits_keep_each_neighbors_in_its_original_scene(database):
+    ledger = EventLedgerRepository(database)
+    first_context = await _event(database, ledger, "scene-a-before", "first context")
+    second_context = await _event(
+        database, ledger, "scene-b-before", "second context", group_id="2002"
+    )
+    first = await _event(
+        database,
+        ledger,
+        "scene-a-hit",
+        "电动车",
+        segments=({"type": "image", "data": {}},),
+    )
+    outside, _ = await seed_event(
+        ledger,
+        bot_user_id="8000",
+        scope_type=ScopeType.PRIVATE,
+        sender_user_id="10001",
+        direction="inbound",
+        platform_message_id="scene-outside",
+        content="电动车",
+        segments=({"type": "image", "data": {}},),
+    )
+    second = await _event(
+        database,
+        ledger,
+        "scene-b-hit",
+        "电动车",
+        group_id="2002",
+        segments=({"type": "image", "data": {}},),
+    )
+    first_tail = await _event(database, ledger, "scene-a-after", "first tail")
+    second_tail = await _event(database, ledger, "scene-b-after", "second tail", group_id="2002")
+    page = await ledger.query_history(
+        conversation_id=(first.canonical_conversation_id, second.canonical_conversation_id),
+        keyword="电动车",
+        has=("image",),
+        context_before=1,
+        context_after=1,
+    )
+    assert [row.id for row in page.events] == [second.id, first.id]
+    assert [row.id for row in page.context] == [
+        first_context.id,
+        second_context.id,
+        first_tail.id,
+        second_tail.id,
+    ]
+    assert outside.id not in {row.id for row in (*page.events, *page.context)}
 
 
 @pytest.mark.asyncio
@@ -182,30 +297,30 @@ async def test_metadata_uses_original_author_current_family_and_own_media(databa
 
 
 @pytest.mark.asyncio
-async def test_around_receipt_exception_is_only_its_anchor_and_queries_remain_readonly(database):
+async def test_around_reads_permanent_neighbors_and_queries_remain_readonly(database):
     ledger = EventLedgerRepository(database)
     rows = [await _event(database, ledger, f"around-{i}", str(i)) for i in range(4)]
     conversation = rows[0].canonical_conversation_id
+    async with database.immediate_session() as writer:
+        source = await writer.get(CanonicalConversationModel, conversation)
+        source.starts_after_event_id = rows[1].id
+        source.generation += 1
     center, before, after = await ledger.history_around(
         conversation_id=conversation,
-        starts_after_event_id=rows[1].id,
         event_id=rows[0].id,
         before=8,
         after=8,
-        anchor_event=rows[0],
     )
     assert center.id == rows[0].id and not before
-    assert [row.id for row in after] == [rows[2].id, rows[3].id]
+    assert [row.id for row in after] == [rows[1].id, rows[2].id, rows[3].id]
     assert (
         await ledger.history_around(
             conversation_id=conversation,
-            starts_after_event_id=rows[1].id,
             event_id=rows[1].id,
             before=0,
             after=0,
-            anchor_event=rows[0],
         )
-    )[0] is None
+    )[0].id == rows[1].id
     statements = []
 
     def record(_connection, _cursor, statement, _parameters, _context, _executemany):
@@ -399,16 +514,13 @@ async def test_live_page_continuation_accepts_new_asr_without_replaying_newer_ro
     assert not following.has_more
     assert appended.id > first.next_cursor
     assert [row.id for row in first.events] == [newest.id]
-    async with database.immediate_session() as writer:
-        source = await writer.get(CanonicalConversationModel, conversation)
-        source.starts_after_event_id = awaiting.id
-    after_floor = await ledger.query_history(
+    after_anchor = await ledger.query_history(
         conversation_id=conversation,
         keyword="电动车",
         cursor=first.next_cursor,
-        starts_after_event_id=awaiting.id,
+        after_event_id=awaiting.id,
     )
-    assert not after_floor.events and not after_floor.has_more
+    assert not after_anchor.events and not after_anchor.has_more
 
 
 async def test_distant_hits_merge_overlapping_context_without_returning_the_middle(database):
